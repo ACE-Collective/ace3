@@ -21,6 +21,7 @@ from aceapi_v2.observables.router import router as observables_router
 from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
+from aceapi_v2.svs.alerts.router import router as svs_alerts_router
 from aceapi_v2.svs.catalog.router import router as svs_tests_router
 from aceapi_v2.svs.expectations.router import router as svs_expectations_router
 from aceapi_v2.svs.ignores.router import router as svs_ignores_router
@@ -78,6 +79,8 @@ def create_app() -> FastAPI:
 
     # Include routers
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
+    # one alert's side of SVS: /alerts/{uuid}/svs
+    app.include_router(svs_alerts_router, prefix="/alerts", tags=["svs"])
     app.include_router(common_router, prefix="/common", tags=["common"])
     app.include_router(crashes_router, prefix="/crashes", tags=["crashes"])
     app.include_router(detection_router, prefix="/detection", tags=["detection"])

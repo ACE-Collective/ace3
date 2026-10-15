@@ -53,8 +53,9 @@
                     {% for alert in alerts %}
                     {# we can use this ID to modify an alert row. the queue, owner and disposition
                        feed the selection guard of the bulk actions (selected_alert_descriptions() in
-                       manage_alerts.js) #}
+                       manage_alerts.js); a frozen (SIMULATED) alert's disposition is never changed by hand #}
                     <tr id="alert_row_{{alert.uuid}}" data-queue="{{ alert.queue }}" data-disposition="{{ alert.disposition or '' }}"
+                        data-frozen="{{ '1' if is_frozen_disposition(alert.disposition) else '0' }}"
                         data-owner-id="{{ alert.owner_id if alert.owner_id is not none else '' }}"
                         data-owner-name="{{ alert.owner.gui_display if alert.owner else '' }}"
                         data-owner-enabled="{{ '1' if alert.owner and alert.owner.enabled else '0' }}">

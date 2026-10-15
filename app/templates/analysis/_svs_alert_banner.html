@@ -1,0 +1,88 @@
+{# The alert's SVS status as one banner (docs/SVS.md, Part 3, *What analysts see*): what it means,
+   the runs it links to, and the markers that disagree with their run. With alert:write, the alert
+   can be given back to analysts (static/js/svs_alert.js). Rendered only when SVS touched the
+   alert. #}
+{% from "analysis/_svs_status.html" import svs_status_text, svs_run_text with context %}
+{% if svs_alert %}
+{% set status = svs_alert.status.value %}
+<div id="svs_alert_banner" class="alert {{ 'alert-danger' if status == 'mismatch' else 'alert-light border' }} py-2 mb-2" role="status"
+     data-alert-uuid="{{ alert.uuid }}" data-status="{{ status }}" data-run-count="{{ svs_alert.runs | length }}">
+    <div class="d-flex flex-wrap align-items-baseline gap-2">
+        <span class="fs-6">{{ svs_status_text(status) }}</span>
+        <span class="small">
+        {% if status == 'test' %}
+            Every detection is attributed to an SVS test run. Nothing to do: the run's review covers it.
+        {% elif status == 'test?' %}
+            Every detection is attributed to an SVS test run by context alone, without a marker. Nothing to do unless
+            it looks wrong; then mark it not a test.
+        {% elif status == 'partial' %}
+            Some detections are from an SVS test run; they are greyed out below. Triage the others as usual.
+        {% else %}
+            A marker in this alert doesn't agree with its test run. Treat it as suspicious and investigate.
+        {% endif %}
+        {% if is_frozen_disposition(alert.disposition) %}
+            ACE set {{ alert.disposition }} when the run closed. To treat this as a real alert, use Disassociate from run.
+        {% endif %}
+        </span>
+    </div>
+    {% if svs_alert.runs %}
+    <div class="small mt-1">
+        <span class="text-muted">{{ 'Runs' if svs_alert.runs | length > 1 else 'Run' }}:</span>
+        {% for run in svs_alert.runs %}{{ svs_run_text(run) }}{{ ", " if not loop.last }}{% endfor %}
+    </div>
+    {% endif %}
+    {% for mismatch in svs_alert.mismatches %}
+    <div class="small mt-1">
+        <span class="text-muted">Marker</span> <span class="font-monospace">{{ mismatch.marker }}</span>:
+        {% if mismatch.result == 'unknown' %}
+            no test run has it.
+        {% elif mismatch.result == 'other host' %}
+            the alert involves none of the targets of run {{ svs_run_text(mismatch.run) if mismatch.run else '' }}.
+        {% elif mismatch.result == 'outside window' %}
+            the alert's event is outside the attribution window of run {{ svs_run_text(mismatch.run) if mismatch.run else '' }}.
+        {% else %}
+            {{ mismatch.result }}{% if mismatch.run %} (run {{ svs_run_text(mismatch.run) }}){% endif %}.
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% if svs_alert.runs and has_permission('alert', 'write') %}
+    <div class="mt-2 d-flex flex-wrap gap-1">
+        <button type="button" class="btn btn-outline-dark btn-sm" data-svs-action="disassociate"
+                title="give the alert back to analysts: it is no longer attributed to {{ 'these runs' if svs_alert.runs | length > 1 else 'this run' }}">
+            <span class="bi bi-box-arrow-left"></span> Disassociate from {{ 'runs' if svs_alert.runs | length > 1 else 'run' }}</button>
+        {% if status == 'test?' %}
+        <button type="button" class="btn btn-outline-dark btn-sm" data-svs-action="not-a-test"
+                title="it isn't the run's: there is no marker, only the host and the time">
+            <span class="bi bi-x-circle"></span> Not a test</button>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+{% if svs_alert.runs and has_permission('alert', 'write') %}
+{# asks for a reason before the alert is given back; svs_alert.js fills in the title and the text #}
+<div class="modal fade" id="svs_alert_modal" tabindex="-1" role="dialog" aria-hidden="true" aria-labelledby="svs_alert_modal_title">
+    <form id="svs_alert_form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="svs_alert_modal_title"></h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="svs_alert_modal_text"></p>
+                <label class="form-label" for="svs_alert_reason">Reason</label>
+                <textarea class="form-control" id="svs_alert_reason" rows="3" maxlength="4096"></textarea>
+                <div class="form-text">Recorded in the run's event log.</div>
+                <div id="svs_alert_modal_error" class="alert alert-danger py-2 mt-2 d-none" role="alert"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary" id="svs_alert_submit"></button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+{% endif %}
+{% endif %}

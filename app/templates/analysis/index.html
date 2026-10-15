@@ -335,6 +335,9 @@
     var detection_verdicts_alert_uuid = {{ alert.uuid | tojson }};
     var current_alert_disposition_class = {{ current_alert_disposition_class | tojson }};
     var current_alert_disposition_selectable = {{ current_alert_disposition_selectable | tojson }};
+    // a frozen (SIMULATED) alert's disposition is never changed by hand; the dialog says why
+    var current_alert_frozen = {{ current_alert_frozen | tojson }};
+    var current_alert_frozen_note = {{ current_alert_frozen_note | tojson }};
     var selectable_disposition_classes = {{ selectable_disposition_classes | tojson }};
     var current_user_can_write_alerts = {{ has_permission('alert', 'write') | tojson }};
     var current_user_can_review_alerts = {{ has_permission('alert', 'review') | tojson }};
@@ -343,4 +346,5 @@
 <script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
 <script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_alert.js') }}?version={{ ACE_VERSION }}"></script>
 {% endblock %}

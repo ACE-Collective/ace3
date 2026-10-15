@@ -2,7 +2,8 @@
 
 > **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2
 > landed (PRs #658–#664 and the Samples card, 2026-10-07), phase 3 landed (PRs #668–#674 and the
-> Validations card, 2026-10-13). Parts 5 and 6 were added in review
+> Validations card, 2026-10-13), phase 4 was built on the `jd/svs` integration branch (PRs #683–#718
+> and the alert-page PR, 2026-10-15) for release to `main`. Parts 5 and 6 were added in review
 > rounds 8–10, the pre-implementation review folded in and the design reconciled with the v3.0.121
 > release on 2026-10-02.**
 > This is the design of record.
@@ -572,7 +573,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     actor)`. That new core primitive updates the column and `root.queue`, touches the alert,
     refreshes the search payload, writes an audit line, and records the previous queue and that
     the move was SVS's.
-- **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS badge
+- **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS status
   instead. The automation user (`ace`, `global.automation_user_id`) counts as nobody here: setting
   `SIMULATED` backfills `owner_id` with the dispositioning user, so without this exception a
   re-review could never move a test alert. [FR-15]
@@ -616,8 +617,9 @@ Every alert has at most one SVS status, and alerts SVS never touched show nothin
 | `PARTIAL TEST` | Some detections are from run *R* | normal | Triage the rest as usual. Test detections are greyed out. |
 | `MARKER MISMATCH` | A marker that doesn't fit its context | normal | Treat as suspicious and investigate. |
 
-The status is one badge in the manage list and one banner on the alert page, and it always links
-to the run. Confidence, per-detection attribution, suppression notes and late arrivals live in the
+The status is one line of text in the manage list, with a target icon (not a badge: badges mean tags
+and dispositions), and one banner on the alert page, and it links to the run. A `MARKER MISMATCH` has
+no run of its own; its banner names the marker and the run the marker belongs to, when one does. Confidence, per-detection attribution, suppression notes and late arrivals live in the
 **run review**, which is the SVS operator's screen.
 
 ### Test alerts downstream
@@ -1051,6 +1053,7 @@ reviewed next to the live one. Every SVS table has `updated_at`.
 | `svs:validate` | Requesting a YARA validation (the CI key) |
 | `svs:run_read` | Runs and Tests screens, run pages, coverage, and their read APIs [MGT-6] |
 | `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association [MGT-6] |
+| `alert:write` (existing) | From an alert's page: *Disassociate from run* and *Not a test*, which give a test alert back to analysts |
 | `signature:read` (existing) | The Validations and Samples cards, validation reports, sample metadata and their APIs [FR-28] |
 | `signature:download` (existing) | Sample bytes [FR-28] |
 | `svs:admin` | Retiring and deleting samples, global ignores, the test-host table, configuration |
@@ -1115,7 +1118,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
 | **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
 | **3: YARA validation**. **Landed** (PRs #668–#674 and the Validations card); CI is wired into a signature repository by its operators (`docs/SVS_VALIDATION.md`) | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
-| **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
+| **4: runs**. **Built** on the `jd/svs` integration branch (PRs #683–#718 and the alert-page PR), released to `main` with `jd/svs` | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
 | **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
@@ -1175,15 +1178,16 @@ and the YARA results under it are always shown.
 already does (ACE 3.0.116); prevalence will too. Observables seen mostly in other queues, including
 test alerts, show smaller numbers.
 
-**Alerts from red-team test runs get their own queue and badge** (analysts; phase 4).
+**Alerts from red-team test runs get their own queue and status** (analysts; phase 4).
 - They go to the test queue with the disposition `SIMULATED`. Only ACE sets it, and it can't be
   changed by hand; bulk actions skip those alerts. They can't be reset or re-analyzed either. After
   about 30 days they are archived like false positives: the analysis details go, the alert stays.
-- Badges: `TEST` (nothing to do), `TEST?` (nothing unless it looks wrong; one click marks it *not a
-  test*), `PARTIAL TEST` (triage the non-test detections as usual), and `MARKER MISMATCH`
+- Statuses, shown next to the alert in the list and as a banner on its page: `TEST` (nothing to
+  do), `TEST?` (nothing unless it looks wrong; one click marks it *not a test*), `PARTIAL TEST`
+  (triage the non-test detections as usual; the test ones are greyed out), and `MARKER MISMATCH`
   (**treat as suspicious and investigate**).
 - An alert you own is never moved. If something was wrongly treated as a test, use *Disassociate
-  from run*.
+  from run* on the alert's page; it needs only the permission to change alerts.
 
 **Test runs have their own screens** (detection engineers and whoever runs the test program;
 phase 4).

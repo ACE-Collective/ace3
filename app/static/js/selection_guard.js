@@ -12,9 +12,14 @@
 // alerts alone. A selection spanning more than one queue must be acknowledged before a
 // disposition can be saved.
 //
+// A frozen alert (its disposition, SIMULATED, is one only ACE sets) never has its disposition
+// changed by hand: the server leaves it alone, so the guard says so up front, with the page's
+// note on what to do instead, and doesn't count it as anyone's alert to take.
+//
 // Pages describe each selected alert as
-//   {uuid, queue, owner_id, owner_name, owner_enabled, disposition}
-// and call render() when the dialog opens. The container carries data-current-user-id.
+//   {uuid, queue, owner_id, owner_name, owner_enabled, disposition, frozen, frozen_note}
+// (frozen_note optional) and call render() when the dialog opens. The container carries
+// data-current-user-id.
 
 var SelectionGuard = (function() {
     "use strict";
@@ -25,12 +30,14 @@ var SelectionGuard = (function() {
             take_many: function(n, name) { return "Take " + n + " " + plural(n, "alert") + " from " + name + " and set " + (n == 1 ? "its" : "their") + " disposition"; },
             take_one: function(name) { return "Take this alert from " + name + " and set its disposition"; },
             check_queues: true,
+            leaves_frozen: true,
         },
         take: {
             verb_many: function(n) { return "take ownership of " + n + " " + plural(n, "alert"); },
             take_many: function(n, name) { return "Take " + n + " " + plural(n, "alert") + " from " + name; },
             take_one: function(name) { return "Take this alert from " + name; },
             check_queues: false,
+            leaves_frozen: false,
         },
     };
 
@@ -42,9 +49,10 @@ var SelectionGuard = (function() {
         return Number(container.dataset.currentUserId);
     }
 
-    // true when changing the alert needs its owner's alerts to be taken first
+    // true when changing the alert needs its owner's alerts to be taken first. A frozen alert
+    // belongs to ACE's automation user, and its disposition isn't changed whoever takes it.
     function owned_by_another(alert, user_id) {
-        return alert.owner_id != null && alert.owner_id !== user_id && alert.owner_enabled;
+        return !alert.frozen && alert.owner_id != null && alert.owner_id !== user_id && alert.owner_enabled;
     }
 
     // true when any of these alerts belongs to another active analyst
@@ -144,7 +152,8 @@ var SelectionGuard = (function() {
         const left_alone = other_owners
             .filter(function(owner) { return !state.taken.has(owner.key); })
             .reduce(function(total, owner) { return total + owner.uuids.length; }, 0);
-        const applied = alerts.length - left_alone;
+        const frozen = action.leaves_frozen ? alerts.filter(function(alert) { return alert.frozen; }) : [];
+        const applied = alerts.length - left_alone - frozen.length;
 
         if (alerts.length == 0) {
             container.appendChild(element("div", "small text-muted", "No alerts are selected."));
@@ -174,6 +183,22 @@ var SelectionGuard = (function() {
             container.appendChild(warning);
         }
 
+        if (frozen.length) {
+            const note = element("div", "alert alert-secondary py-2 mb-2");
+            if (alerts.length == 1) {
+                note.textContent = frozen[0].frozen_note || "Only ACE sets this alert's disposition (" +
+                    frozen[0].disposition + "), so it can't be changed by hand.";
+            } else {
+                const names = group_by(frozen, function(alert) { return alert.disposition; },
+                                       function(alert) { return alert.disposition; })
+                    .map(function(group) { return group.label; }).join(", ");
+                note.textContent = frozen.length + " of these alerts " + (frozen.length == 1 ? "is " : "are ") + names +
+                    ", a disposition only ACE sets, and " + (frozen.length == 1 ? "it is" : "they are") + " left alone. " +
+                    "Test alerts are part of an SVS test run: to treat one as a real alert, use Disassociate from run on its page.";
+            }
+            container.appendChild(note);
+        }
+
         other_owners.forEach(function(owner) {
             const warning = element("div", "alert alert-warning py-2 mb-2");
             const count = owner.uuids.length;
@@ -194,12 +219,16 @@ var SelectionGuard = (function() {
 
         // what the button will actually do, once anything needs spelling out
         if (alerts.length > 0 && applied == 0) {
-            container.appendChild(element("div", "small text-muted",
-                "Nothing will change unless you take " + (alerts.length == 1 ? "it" : "them") + "."));
+            container.appendChild(element("div", "small text-muted", left_alone == 0
+                ? "Nothing will change."
+                : "Nothing will change unless you take " + (left_alone == 1 ? "it" : "them") + "."));
         } else if (alerts.length > 1 || other_owners.length) {
             let outcome = "This will " + action.verb_many(applied);
             if (left_alone > 0) {
                 outcome += " and leave " + left_alone + " owned by " + (other_owners.length == 1 ? other_owners[0].label : "other analysts") + " alone";
+            }
+            if (frozen.length > 0) {
+                outcome += (left_alone > 0 ? ", and " : " and leave ") + frozen.length + " that only ACE sets alone";
             }
             if (queue_check_needed && !state.queues_confirmed) {
                 outcome += " once you confirm the queues";

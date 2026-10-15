@@ -275,6 +275,49 @@ class TestNotATestAndKeep:
             association.keep(run.uuid, _alert(marker=run.marker).uuid, user_id, ACTOR)
 
 
+class TestFromTheAlertsSide:
+    def test_every_run_lets_the_alert_go(self, run, user_id):
+        root = _alert(marker=run.marker)
+        other = started_run(GUID)
+        association.associate(other.uuid, root.uuid, user_id, ACTOR)
+
+        result = association.disassociate_alert(root.uuid, user_id, ACTOR, "a real attack")
+        assert result.runs == (run.uuid, other.uuid)
+        assert (result.svs_status, result.queue, result.moved, result.reopened) == (None, QUEUE_DEFAULT, True, False)
+        for held_by in (run, other):
+            (row,) = _attributions(root.uuid, held_by.id)
+            assert (row.removed_by_user_id, row.removal_reason) == (user_id, "a real attack")
+            assert _events(held_by, RunEventKind.DISASSOCIATED)[0]["not_a_test"] is False
+
+    def test_a_simulated_alert_is_given_back_open(self, run, user_id):
+        root = _alert(marker=run.marker)
+        runs.cancel(run.uuid, LAUNCHER)
+        runs.run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
+        assert _row(root.uuid).disposition == DISPOSITION_SIMULATED
+
+        result = association.disassociate_alert(root.uuid, user_id, ACTOR)
+        assert (result.runs, result.reopened, result.moved) == ((run.uuid,), True, True)
+        assert _row(root.uuid).disposition == DISPOSITION_OPEN
+
+    def test_not_a_test(self, run, user_id):
+        root = _alert()
+        result = association.disassociate_alert(root.uuid, user_id, ACTOR, not_a_test=True)
+        assert (result.runs, result.svs_status, result.queue) == ((run.uuid,), None, QUEUE_DEFAULT)
+        assert _attributions(root.uuid, run.id)[0].removal_reason == "not a test"
+
+    def test_not_a_test_only_for_a_context_alert(self, run, user_id):
+        root = _alert(marker=run.marker)
+        with pytest.raises(AssociationConflict):
+            association.disassociate_alert(root.uuid, user_id, ACTOR, not_a_test=True)
+        assert _attributions(root.uuid, run.id)[0].removed_at is None
+
+    def test_nothing_holds_it(self, run, user_id):
+        with pytest.raises(AssociationConflict):
+            association.disassociate_alert(_alert(host="srv-01").uuid, user_id, ACTOR)
+        with pytest.raises(UnknownAlert):
+            association.disassociate_alert(str(uuid.uuid4()), user_id, ACTOR)
+
+
 class TestTheRouterRespectsAPerson:
     def test_a_disassociated_run_never_takes_the_alert_back(self, run, user_id):
         # the engine stage below ends the session the run was read in
