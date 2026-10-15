@@ -182,10 +182,13 @@ def add_catalog_test(guid: str, *, platforms=("windows",), removed: bool = False
 @pytest.fixture
 def no_hunts(monkeypatch):
     """No enabled hunts: a run's observation window is the floor (60 minutes by default)."""
-    monkeypatch.setattr(windows, "hunt_latencies", lambda: {})
+    monkeypatch.setattr(windows, "hunt_info", lambda: {})
 
 
 LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+
+# the signature of the detections attribute_to_run attributes
+SIGNATURE_UUID = "5c1a9e57-0000-4000-8000-00000000a7a7"
 
 
 def add_test_host(hostname: str = "win10-01", **values):
@@ -202,7 +205,8 @@ def started_run(test_guid: str, hostname: str = "win10-01", *, now: Optional[dat
     return run
 
 
-def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str = "0" * 64) -> SVSRun:
+def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str = "0" * 64,
+                     signature_uuid: str = SIGNATURE_UUID) -> SVSRun:
     """Attributes a detection of the alert to a new run in the given state, as the marker router
     would have (saq.svs.attribution). The run's test is added to the catalog if it isn't there."""
     test_guid = "dddddddd-4444-4444-8444-444444444444"
@@ -216,6 +220,6 @@ def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str 
         session.add(run)
         session.flush()
         session.add(SVSAttribution(run_id=run.id, alert_uuid=alert_uuid, content_hash=content_hash,
-                                   confidence="marker", source="router", actor="svs", created_at=datetime.now()))
+                                   signature_uuid=signature_uuid, confidence="marker", source="router", actor="svs", created_at=datetime.now()))
         session.expunge(run)
     return run

@@ -26,16 +26,18 @@ from aceapi_v2.common.listing import (
 )
 from aceapi_v2.svs.runs.schemas import (
     RUN_EVENT_CSV_FIELDS,
+    RUN_RESULT_CSV_FIELDS,
     RUN_ROW_CSV_FIELDS,
     RunDetail,
     RunEvent,
     RunExecutedRequest,
     RunLifecycle,
     RunRegistrationRequest,
+    RunResult,
     RunRow,
     RunTarget,
 )
-from saq.database.model import SVSCatalogTest, SVSRun, SVSRunEvent, User
+from saq.database.model import SVSCatalogTest, SVSRun, SVSRunEvent, SVSRunResult, SVSRunResultState, User
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
@@ -356,3 +358,108 @@ def fetch_event_feed_page(feed: EventFeed, cursor: str | None, limit: int) -> tu
         next_cursor = encode_cursor(k=[last.updated_at.isoformat(), last.id])
 
     return [_event(row) for row in rows], next_cursor
+
+
+#
+# results: one run's in id order, and the feed over every run's in (updated_at, id) order
+#
+
+def _results_statement() -> Select:
+    return select(SVSRunResult, SVSRun.uuid).join(SVSRun, SVSRun.id == SVSRunResult.run_id)
+
+
+def _result(row) -> RunResult:
+    result, run_uuid = row
+    return RunResult(
+        id=result.id, run_id=run_uuid, signature_uuid=result.signature_uuid,
+        signature_family=result.signature_family, signature_name=result.signature_name, status=result.status,
+        alert_count=result.alert_count, late_only=result.late_only, context_only=result.context_only,
+        content_hash=result.content_hash, suppressing_alert_uuid=result.suppressing_alert_uuid,
+        suppression_imprecise=result.suppression_imprecise, reviewed_status=result.reviewed_status,
+        reviewed_alert_count=result.reviewed_alert_count, reviewed_late_only=result.reviewed_late_only,
+        reviewed_content_hash=result.reviewed_content_hash, updated_at=result.updated_at)
+
+
+def run_results_to_csv(rows: list[RunResult], *, header: bool) -> str:
+    return rows_to_csv(rows, RUN_RESULT_CSV_FIELDS, header=header)
+
+
+@dataclass(frozen=True)
+class RunResultSelection:
+    run_db_id: int
+    run_uuid: str
+    stale: bool
+    computed_at: Optional[datetime]
+
+
+def select_run_results(run_id: str) -> RunResultSelection:
+    """The result of one run; 400 for a malformed run id, 404 for an unknown run. A run whose
+    result was never computed or marked is not stale (it has none yet)."""
+    run_uuid = _validate_run_id(run_id)
+    row = get_db().execute(
+        select(SVSRun.id, SVSRunResultState.stale, SVSRunResultState.computed_at)
+        .outerjoin(SVSRunResultState, SVSRunResultState.run_id == SVSRun.id)
+        .where(SVSRun.uuid == run_uuid)).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+
+    run_db_id, stale, computed_at = row
+    return RunResultSelection(run_db_id=run_db_id, run_uuid=run_uuid, stale=bool(stale), computed_at=computed_at)
+
+
+def _parse_result_id(payload: dict) -> int:
+    (result_id,) = payload["k"]
+    return int(result_id)
+
+
+def fetch_run_results_page(selection: RunResultSelection, cursor: str | None,
+                           limit: int) -> tuple[list[RunResult], str | None]:
+    """One page of a run's result rows in id order. Raises InvalidCursor."""
+    statement = _results_statement().where(SVSRunResult.run_id == selection.run_db_id)
+    if cursor is not None:
+        statement = statement.where(SVSRunResult.id > decode_cursor(cursor, _parse_result_id))
+
+    rows = get_db().execute(statement.order_by(SVSRunResult.id).limit(limit + 1)).all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = encode_cursor(k=[rows[-1][0].id])
+
+    return [_result(row) for row in rows], next_cursor
+
+
+@dataclass(frozen=True)
+class ResultFeed:
+    statement: Select
+
+
+def prepare_result_feed(filter_params: list[str], *, changed_since: datetime | None, tz) -> ResultFeed:
+    """The result rows of every run the runs screen's filters (`f=`) match. Raises
+    InvalidListingRequest."""
+    statement = _results_statement()
+    for condition in _filter_conditions(filter_params, tz):
+        statement = statement.where(condition)
+
+    if changed_since is not None:
+        statement = statement.where(SVSRunResult.updated_at >= to_utc_naive(changed_since))
+
+    return ResultFeed(statement=statement)
+
+
+def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> tuple[list[RunResult], str | None]:
+    """One page of the feed in (updated_at, id) order, settled rows only. Raises InvalidCursor."""
+    statement = feed.statement.where(settled(SVSRunResult.updated_at, CHANGED_SINCE_SETTLE_SECONDS))
+    if cursor is not None:
+        updated_at, result_id = decode_cursor(cursor, _parse_feed_key)
+        statement = statement.where(or_(
+            SVSRunResult.updated_at > updated_at,
+            and_(SVSRunResult.updated_at == updated_at, SVSRunResult.id > result_id)))
+
+    rows = get_db().execute(statement.order_by(SVSRunResult.updated_at, SVSRunResult.id).limit(limit + 1)).all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1][0]
+        next_cursor = encode_cursor(k=[last.updated_at.isoformat(), last.id])
+
+    return [_result(row) for row in rows], next_cursor

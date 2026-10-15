@@ -123,5 +123,43 @@ class RunEventPage(BaseModel):
     next_cursor: Optional[str] = None
 
 
+class RunResult(BaseModel):
+    """One signature of a run's result (docs/SVS_RUNS.md, *Results*; docs/SVS_API.md, *Results*)."""
+
+    id: int = Field(description="the row's id")
+    run_id: str = Field(description="the run's uuid")
+    signature_uuid: str
+    signature_family: Optional[str] = Field(default=None, description="yara, hunt, builtin, ...")
+    signature_name: Optional[str] = None
+    status: Optional[str] = Field(
+        default=None,
+        description="hit, missing, possibly_suppressed, candidate, rejected or ignored; null once the signature "
+                    "left the live result and the row holds only the reviewed result")
+    alert_count: int = Field(description="the run's attributed alerts that carry the signature")
+    late_only: bool = Field(description="every attribution of it is late")
+    context_only: bool = Field(description="every attribution of it is by context alone")
+    content_hash: Optional[str] = Field(default=None, description="the rule's own content hash when the result was computed")
+    suppressing_alert_uuid: Optional[str] = Field(
+        default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period")
+    suppression_imprecise: bool = Field(
+        description="the hunt groups or deduplicates its alerts, so that alert may not have suppressed the run's")
+    reviewed_status: Optional[str] = Field(default=None, description="the status as signed off; null until the run is reviewed")
+    reviewed_alert_count: Optional[int] = None
+    reviewed_late_only: Optional[bool] = None
+    reviewed_content_hash: Optional[str] = None
+    updated_at: datetime = Field(description="the feed's changed_since key")
+
+
+class RunResultPage(BaseModel):
+    data: list[RunResult]
+    next_cursor: Optional[str] = None
+    stale: Optional[bool] = Field(
+        default=None,
+        description="one run's results only: something changed since the result was computed, and the timers "
+                    "recompute it shortly")
+    computed_at: Optional[datetime] = Field(default=None, description="one run's results only: when it was last computed")
+
+
 RUN_ROW_CSV_FIELDS = tuple(RunRow.model_fields)
 RUN_EVENT_CSV_FIELDS = tuple(RunEvent.model_fields)
+RUN_RESULT_CSV_FIELDS = tuple(RunResult.model_fields)

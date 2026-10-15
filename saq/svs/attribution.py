@@ -67,6 +67,7 @@ from saq.svs.alert_status import derive_status
 from saq.svs.hosts import InvalidTestHost, host_ips, normalize_ip, split_hostname
 from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import find_markers, find_markers_in_match
+from saq.svs.result_state import mark_runs_stale
 from saq.svs.run_events import new_run_event
 
 # how deep the details walk goes; analysis details are JSON-shaped and shallow
@@ -439,6 +440,8 @@ class Detection:
     content_hash: str
     # the observable the detection's node stands for, None for the root
     carrier: Optional[str]
+    signature_uuid: str = ""
+    signature_family: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -457,6 +460,9 @@ class Attribution:
     confidence: AttributionConfidence
     late: bool
     scan_point: Optional[ScanPoint] = None
+    # the detection's signature
+    signature_uuid: str = ""
+    signature_family: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -508,7 +514,8 @@ def alert_detections(root: RootAnalysis) -> list[Detection]:
     result = {}
     for node, detection in root.detection_points_by_node():
         content_hash = detection_content_hash(node_identity(node), detection)
-        result.setdefault(content_hash, Detection(content_hash, _carrier(node)))
+        result.setdefault(content_hash, Detection(content_hash, _carrier(node), detection.signature_uuid or "",
+                                                  detection.signature_family))
     return list(result.values())
 
 
@@ -611,8 +618,9 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                     if key in attributions or key in blocked:
                         continue
                     if branches.same_branch(sighting.node, detection.carrier):
-                        attributions[key] = Attribution(run, detection.content_hash, AttributionConfidence.MARKER,
-                                                        run.is_late(event_time), sighting.scan_point)
+                        attributions[key] = Attribution(
+                            run, detection.content_hash, AttributionConfidence.MARKER, run.is_late(event_time),
+                            sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
         candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
         if len(candidates) == 1:
@@ -620,7 +628,8 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
             for detection in evaluation.detections:
                 if (run.id, detection.content_hash) not in blocked:
                     attributions[(run.id, detection.content_hash)] = Attribution(
-                        run, detection.content_hash, AttributionConfidence.CONTEXT, run.is_late(event_time))
+                        run, detection.content_hash, AttributionConfidence.CONTEXT, run.is_late(event_time),
+                        signature_uuid=detection.signature_uuid, signature_family=detection.signature_family)
         elif len(candidates) > 1:
             # attributing to the wrong run teaches the wrong expectation [FR-9]
             evaluation.candidate_runs = candidates
@@ -662,8 +671,9 @@ class WriteResult:
 def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[datetime] = None) -> WriteResult:
     """Brings the router's rows for the alert in line with the evaluation, in a transaction of its
     own: adds new ones, restores ones it removed earlier, and removes the ones that no longer hold.
-    Rows of a person are never touched. Logs each change and appends it to its run's event log, and
-    a change to a reviewed run marks the run changed since review."""
+    Rows of a person are never touched. Logs each change and appends it to its run's event log, a
+    change to a reviewed run marks the run changed since review, and every change marks the run's
+    result stale."""
     now = now or datetime.now()
     result = WriteResult()
     desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
@@ -705,6 +715,7 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
             # unique key keeps one row and this insert changes nothing then
             session.execute(mysql_insert(SVSAttribution).values(
                 run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
+                signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
                 confidence=attribution.confidence.value, late=attribution.late,
                 source=AttributionSource.ROUTER.value,
                 scan_point=attribution.scan_point.value if attribution.scan_point else None,
@@ -719,8 +730,9 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
                 runs[run.id] = run
 
         _add_attribution_events(session, alert_uuid, result, now)
-        flagged = _flag_changed_since_review(session, {a.run.id for a in result.written} | {
-            row.run_id for row in result.removed})
+        touched = {a.run.id for a in result.written} | {row.run_id for row in result.removed}
+        flagged = _flag_changed_since_review(session, touched)
+        mark_runs_stale(session, run_ids=touched)
 
     for attribution in result.written:
         logging.info("svs attribution written: alert %s detection %s to run %s", alert_uuid,

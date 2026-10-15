@@ -8,8 +8,9 @@ Part 3).
 This document covers how runs work in ACE and how to operate them. It grows with phase 4. Today it
 covers the test hosts, the Atomic Red Team catalog, how a launcher registers and drives a run, the
 run states and timers, refused registrations, how alerts are attributed to runs and routed to the
-test queue, what happens to a test run's alerts once SVS closes them, and how search treats them.
-Closing a run's alerts, reviewing runs and the SVS screens arrive later in phase 4. The design and
+test queue, what a run found (its result) and the expectations and ignores it is judged by, what
+happens to a test run's alerts once SVS closes them, and how search treats them. Reviewing runs and
+the SVS screens arrive later in phase 4. The design and
 its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 
 ## Permissions
@@ -18,8 +19,8 @@ its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.m
 |---|---|
 | `svs:run_register` | The launcher's run lifecycle calls |
 | `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
-| `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association |
-| `svs:admin` | Adding, changing and removing test hosts (and, for YARA, retiring and deleting samples) |
+| `svs:run_manage` | Ownership, cancel, close, review; a test's expectations, ignores and settings; manual association |
+| `svs:admin` | Adding, changing and removing test hosts; global ignores (and, for YARA, retiring and deleting samples) |
 
 ## Test hosts
 
@@ -190,9 +191,17 @@ timer); `svs_run=<run uuid>` in the site's log search finds everything ACE did a
 
 A run has two windows, both starting at `start`:
 
-- **The observation window** is how long the run waits for its alerts before it ends: the worst-case
-  latency of the slowest signature the test is expected to fire, plus `slack_minutes`, within
-  `floor_minutes` and `ceiling_hours`. A hunt's worst-case latency is its `frequency` (for a cron
+- **The observation window** is how long the run waits for its alerts before it ends. It comes from,
+  in this order:
+  1. **the test's settings** (`PUT /api/v2/svs/tests/{guid}/settings`, `svs:run_manage`): an
+     `observation_minutes` an operator set, used as it is, with no slack and no floor, from 1 minute up
+     to `ceiling_hours`;
+  2. **its expectations**: the worst-case latency of the slowest signature the test is expected to
+     fire (and that isn't ignored), plus `slack_minutes`, within `floor_minutes` and `ceiling_hours`;
+  3. **every hunt**, for a test without expectations (below).
+
+  The `registered` event records which one applied (`observation_source`: `override`, `expected`
+  or `all_hunts`). A hunt's worst-case latency is its `frequency` (for a cron
   frequency, the longest gap between two firings in a week) plus its `time_range` plus its `offset`;
   any other signature fires while the alert is analyzed, so the floor covers it. **A test without
   expectations yet**, which is every test until reviewed runs teach SVS what it fires, waits for the
@@ -201,8 +210,8 @@ A run has two windows, both starting at `start`:
 - **The attribution window** is longer by `attribution_extra_hours`. An alert that arrives after the
   run ended but inside it is still attributed, as *late*.
 
-The lengths are fixed at registration, so a run's windows don't move when hunts change while it
-runs. A per-test window that overrides the computed one is not available yet.
+The lengths are fixed at registration, so a run's windows don't move when hunts, expectations or
+settings change while it runs.
 
 ```yaml
 svs:
@@ -382,6 +391,84 @@ run has carries only `svs_marker`:
 | `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | `svs run … changed since review` | INFO | `alert_uuid` |
 | `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
+
+## Results
+
+When a run ends, ACE works out what it found: one row per signature in `svs_run_results`,
+readable at `GET /api/v2/svs/runs/{run_id}/results` and across runs at `GET …/runs/results`
+(`docs/SVS_API.md`, *Results*). What *fired* is the run's attributions that hold, by the signature
+of each attributed detection. Against what is decided for the test (*Expectations and ignores*,
+below), each signature is:
+
+| Status | When |
+|---|---|
+| `hit` | It is expected, and it fired |
+| `missing` | It is expected, and it did not fire |
+| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunt alerted within that period before the run's window closed (below) |
+| `candidate` | It fired, and nobody has decided about it yet |
+| `rejected` | It fired, and it was rejected for the test |
+| `ignored` | It fired, and it is ignored for the test or globally |
+
+- **Precedence.** A signature that fired is `ignored` before anything else, then `hit`, then
+  `rejected`, then `candidate`. An ignored signature is never missing either.
+- **Signatures that never count.** `generic`, `legacy` and `yara_rule_match` stand for many
+  unrelated detections (no specific signature, detections from before signatures were recorded, a
+  YARA rule without a `uuid`). `observable_flagged_for_detection` fires on whatever analysts
+  flagged, so flagging a value would change results. The SVS built-ins are about runs and are never
+  attributed to one.
+- **Each row also holds:**
+  - how many of the run's alerts carry the signature;
+  - whether every attribution of it was *late*, or by *context* alone;
+  - the signature's family and name;
+  - the content hash of the rule itself as it was when the result was computed. A missing row has
+    one too: coverage uses it to tell when an expected rule changed.
+- **Possibly suppressed.** A hunt checks its `suppression` each time it runs, and the run that would
+  have caught the test comes up to its latency after the start. So ACE looks for an alert carrying
+  a detection of the hunt, inserted from `suppression` before the run started until the run ended,
+  and not attributed to this run. The latest one is named (`suppressing_alert_uuid`).
+  - For a hunt with `group_by` or `dedup_key` the answer is imprecise: that alert may have been for
+    another group or key. The row says so (`suppression_imprecise`).
+  - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
+  - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
+    show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
+- **Kept current.** The result is computed when the run ends. Anything that would change it marks
+  it stale and the timers recompute it on their next pass (`svs.runs.timer_interval_seconds`):
+  - an attribution added or removed, a late alert for one;
+  - a decision about the test: an expectation, an ignore of the test, or any global ignore.
+
+  Only `ended` and `reviewed` runs are recomputed. The API's `stale` says a run's result is about
+  to change. A signature that leaves the result is deleted from it, unless the row holds the result
+  as reviewed (later in phase 4), when only its live `status` becomes null.
+- **The event log** gets a `result_computed` event when the counts per status change.
+
+| Record | Level | Fields |
+|---|---|---|
+| `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
+| `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
+
+## Expectations and ignores
+
+What a run is judged by is decided per test, by a person, and learned from runs rather than from
+the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*).
+
+- **An expectation** is a signature a run of the test should fire (`expected`), or one that fires
+  but isn't what the test is about (`rejected`). A rejected signature is remembered and isn't
+  proposed again. Anything else a run fires is a `candidate` in its result: there is no stored
+  candidate, so nothing goes stale.
+  - Decide with `PUT /api/v2/svs/tests/{guid}/expectations/{signature_uuid}` `{state, reason?,
+    run_id?}` (`svs:run_manage`).
+  - A `run_id` (a run of that test) says which run's result the decision was made from. That run's
+    event log records it (`candidate_decision`).
+  - Removing a decision (`DELETE`) makes the signature a candidate again the next time it fires.
+    Nothing removes an expectation automatically: a flaky signature shows up in the run history.
+- **An ignore** marks a signature as noise during runs, such as the launcher's own WinRM or remoting:
+  - for one test: `PUT …/tests/{guid}/ignores/{signature_uuid}`, `svs:run_manage`;
+  - for every test: `PUT /api/v2/svs/ignores/global/{signature_uuid}`, `svs:admin`, because it
+    changes every test's results.
+- **Every change** is an AUDIT record with who made it, and marks the results of the affected runs
+  stale.
+- **Expected signatures set the window.** A new run of a test with expectations waits for the
+  slowest of them (*Windows*, above).
 
 ## Test alerts and `SIMULATED`
 

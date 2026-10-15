@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from saq.configuration.config import get_config
+from saq.signatures.loaders.util import content_hash
 from saq.signatures.model import SignatureLocation, SignatureType
 from saq.svs import windows
 from saq.svs.windows import InvalidHunt, attribution_window, cron_interval, hunt_latency, observation_window
@@ -68,6 +69,25 @@ def test_hunt_latencies_read_enabled_hunts(hunt_dir, caplog):
     with caplog.at_level(logging.WARNING):
         assert windows.hunt_latencies() == {"fast": timedelta(minutes=10), "daily": timedelta(days=2)}
     assert "broken.yaml" in caplog.text
+
+
+@pytest.mark.integration
+def test_hunt_info_keeps_every_hunt_for_results(hunt_dir):
+    """A run's result needs the name, suppression and rule hash of hunts the windows skip: disabled
+    ones, and ones whose timing can't be read."""
+    _hunt(hunt_dir / "grouped.yaml", "grouped", frequency="00:05:00", suppression="1:00:00:00", group_by="host")
+    _hunt(hunt_dir / "off.yaml", "off", enabled=False, frequency="00:05:00", dedup_key="{{ user }}")
+    _hunt(hunt_dir / "broken.yaml", "broken", frequency="whenever", suppression="01:00:00")
+
+    info = windows.hunt_info()
+    assert set(info) == {"grouped", "off", "broken"}
+    assert (info["grouped"].suppression, info["grouped"].grouped, info["grouped"].latency) == (
+        timedelta(days=1), True, timedelta(minutes=5))
+    assert (info["off"].enabled, info["off"].grouped, info["off"].suppression) == (False, True, None)
+    assert (info["broken"].latency, info["broken"].suppression) == (None, timedelta(hours=1))
+    # the inventory's hash: the raw file, as saq.signatures.loaders.hunt computes it
+    assert info["grouped"].content_hash == content_hash((hunt_dir / "grouped.yaml").read_text())
+    assert windows.hunt_latencies() == {"grouped": timedelta(minutes=5)}
 
 
 @pytest.mark.integration

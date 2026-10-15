@@ -19,6 +19,7 @@ import logging
 import os
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -37,7 +38,7 @@ CRON_HORIZON = timedelta(days=7)
 CRON_MAX_FIRINGS = 20000
 
 _cache_lock = threading.Lock()
-_cache: Optional[tuple[float, dict[str, timedelta]]] = None
+_cache: Optional[tuple[float, dict[str, "HuntInfo"]]] = None
 
 
 class InvalidHunt(ValueError):
@@ -100,13 +101,32 @@ def hunt_locations() -> list[SignatureLocation]:
     return get_signature_locations(SignatureType.HUNT)
 
 
-def _read_hunt_latencies() -> dict[str, timedelta]:
+@dataclass(frozen=True)
+class HuntInfo:
+    """What SVS needs of a hunt: its window latency, and for a run's result its name, suppression
+    and rule hash."""
+    uuid: str
+    name: str
+    enabled: bool
+    # frequency + time_range + offset; None when the hunt's timing can't be read
+    latency: Optional[timedelta]
+    # its suppression period, None without one (or when it can't be read)
+    suppression: Optional[timedelta]
+    # it groups (group_by) or deduplicates (dedup_key) its alerts, so its suppression is per group
+    # or key and an earlier alert need not have suppressed the run's
+    grouped: bool
+    # the content hash of its file, as the signature inventory computes it
+    content_hash: str
+
+
+def _read_hunts() -> dict[str, HuntInfo]:
     # local: both import the saq.collectors.hunter package, which imports the collector and engine
     # stack, which imports aceapi_v2, whose run API imports this module
     from saq.collectors.hunter.loader import load_merged_yaml
     from saq.signatures.loaders.hunt import is_hunt_file
+    from saq.signatures.loaders.util import content_hash
 
-    result: dict[str, timedelta] = {}
+    result: dict[str, HuntInfo] = {}
     for location in hunt_locations():
         if not os.path.isdir(location.path):
             logging.warning("hunt rule_dir %s is not a directory; its hunts don't count toward svs run windows",
@@ -120,30 +140,57 @@ def _read_hunt_latencies() -> dict[str, timedelta]:
             try:
                 merged, _ = load_merged_yaml(entry.path)
                 rule = merged.get("rule") if isinstance(merged, dict) else None
-                if not isinstance(rule, dict) or not rule.get("uuid") or rule.get("enabled") is not True:
+                if not isinstance(rule, dict) or not rule.get("uuid"):
                     continue
-                latency = hunt_latency(rule)
+                with open(entry.path, "r", encoding="utf-8", errors="surrogateescape") as fp:
+                    source = fp.read()
             except Exception as e:
-                logging.warning("unable to read the latency of hunt %s for svs run windows: %s", entry.path, e)
+                logging.warning("unable to read hunt %s for svs: %s", entry.path, e)
                 continue
 
+            enabled = rule.get("enabled") is True
+            latency = None
+            try:
+                latency = hunt_latency(rule)
+            except Exception as e:
+                if enabled:
+                    logging.warning("unable to read the latency of hunt %s for svs run windows: %s", entry.path, e)
+
+            suppression = None
+            try:
+                suppression = _timespec(rule.get("suppression"))
+            except Exception as e:
+                logging.warning("unable to read the suppression of hunt %s for svs run results: %s", entry.path, e)
+
             uuid = str(rule["uuid"]).strip()
-            result[uuid] = max(latency, result.get(uuid, timedelta(0)))
+            info = HuntInfo(uuid=uuid, name=str(rule.get("name") or "unnamed"), enabled=enabled, latency=latency,
+                            suppression=suppression, grouped=bool(rule.get("group_by") or rule.get("dedup_key")),
+                            content_hash=content_hash(source))
+            # one uuid in two files: the enabled one counts, then the slower
+            previous = result.get(uuid)
+            if previous is None or (info.enabled, info.latency or timedelta(0)) > (
+                    previous.enabled, previous.latency or timedelta(0)):
+                result[uuid] = info
 
     return result
 
 
-def hunt_latencies() -> dict[str, timedelta]:
-    """{hunt uuid: worst-case latency} of every enabled hunt, cached per process for
+def hunt_info() -> dict[str, HuntInfo]:
+    """{hunt uuid: HuntInfo} of every hunt, enabled or not, cached per process for
     HUNT_LATENCY_CACHE_SECONDS."""
     global _cache
     with _cache_lock:
         if _cache is not None and time.monotonic() - _cache[0] < HUNT_LATENCY_CACHE_SECONDS:
             return _cache[1]
 
-        latencies = _read_hunt_latencies()
-        _cache = (time.monotonic(), latencies)
-        return latencies
+        hunts = _read_hunts()
+        _cache = (time.monotonic(), hunts)
+        return hunts
+
+
+def hunt_latencies() -> dict[str, timedelta]:
+    """{hunt uuid: worst-case latency} of every enabled hunt whose timing can be read."""
+    return {uuid: info.latency for uuid, info in hunt_info().items() if info.enabled and info.latency is not None}
 
 
 def clear_cache() -> None:

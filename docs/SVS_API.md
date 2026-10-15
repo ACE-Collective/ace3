@@ -424,13 +424,18 @@ removed host just disappears; its removal is an AUDIT line in ACE's log.
 The Atomic Red Team tests runs may be registered for, as `service_svs` reads them from the
 repositories in `svs.catalog.repositories` (`docs/SVS_RUNS.md`, *The Atomic Red Team catalog*).
 Read with `svs:run_read`. The test state, last run and expectations columns of the Tests screen
-come with the runs, later in phase 4.
+come later in phase 4. What is decided about a test's signatures, and its settings, are changed
+under it with `svs:run_manage` (*Expectations*, *Ignores* and *Test settings*, below).
 
 | Endpoint | Permission | Returns |
 |---|---|---|
 | `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
 | `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
 | `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test, or remove the decision |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs, or stop |
+| `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings` | `svs:run_manage` | Set them, or go back to the computed window |
 
 ### Fields
 
@@ -581,15 +586,17 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 
 | `kind` | States | `details` |
 |---|---|---|
-| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra` |
+| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra`, and `observation_source` (`override`, `expected` or `all_hunts`: where its observation window came from, `docs/SVS_RUNS.md`, *Windows*) |
 | `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
 | `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
 | `attributed` | none | `{"alert_uuid", "detections"}`: detections of one alert attributed to the run, each `{"detection", "confidence", "late", "scan_point"}` (`detection` is its `content_hash`; `scan_point` is null for context). Written when an attribution is added or comes back, not on every analysis pass. `actor` is `svs` |
 | `attribution_removed` | none | `{"alert_uuid", "detections", "reason"}`: the `content_hash`es of the alert's detections whose attribution no longer holds (a later analysis pass found the marker disagrees, say) |
 | `alerts_closed` | none | `{"alerts", "disposition", "late"}`: the alerts given `SIMULATED` when the run closed, or (`late: true`) by the timers afterwards (`docs/SVS_RUNS.md`, *Test alerts and `SIMULATED`*) |
+| `result_computed` | none | `{"counts", "previous"}`: the run's result changed; the number of signatures per status, now and before. `actor` is `svs` |
+| `candidate_decision` | none | `{"signature_uuid", "state", "reason"}`: a signature decided for the run's test from this run's result |
 
-Later phase-4 work adds kinds for manual association and disassociation, candidate decisions and
-review. A reader skips kinds it doesn't know. In CSV, `details` is a JSON string.
+Later phase-4 work adds kinds for manual association and disassociation and review. A reader skips
+kinds it doesn't know. In CSV, `details` is a JSON string.
 
 ### The event feed
 
@@ -599,11 +606,77 @@ few seconds after it is written, so a pull resumed from the last event's `update
 one. It may repeat one. This is where a report sees what happened to a run between two pulls, and
 later in phase 4 what was disassociated from it.
 
+### Results
+
+A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read with `svs:run_read`:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/runs/{run_id}/results` (and `/export/ndjson`, `/export/csv`) | One run's rows in id order, with `stale` and `computed_at` |
+| `GET /api/v2/svs/runs/results` (and `/export/ndjson`, `/export/csv`) | The rows of every run the `f=` filters match, in `(updated_at, id)` order, with `changed_since`; a row shows up a few seconds after it is written, as in the event feed |
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `signature_uuid` | The run and the signature; together they are unique. |
+| `signature_family`, `signature_name` | `yara`, `hunt`, `builtin`, ...; and its name, from the rule inventory, or as last known when the rule is gone. |
+| `status` | `hit`, `missing`, `possibly_suppressed`, `candidate`, `rejected` or `ignored`; null once the signature left the live result and the row holds only the reviewed one. |
+| `alert_count` | The run's attributed alerts that carry the signature (0 when missing). |
+| `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
+| `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
+| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
+| `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed (later in phase 4). |
+| `updated_at` | The row's last change; the feed's `changed_since` key. |
+
+`stale` (one run only) is true while something changed since the result was computed: the timers
+recompute it within `svs.runs.timer_interval_seconds`. A run that hasn't ended has no result.
+
 ### Joins
 
 - **Run → test:** `test_guid` = the test's `guid` in `GET /api/v2/svs/tests`.
 - **Event → run:** `run_id` = the run's `run_id`.
+- **Result → run:** `run_id` = the run's `run_id`; **result → signature:** `signature_uuid` = a
+  detection's `signature_uuid` in `GET /api/v2/detection-points`, and a sample's `rule_uuid`.
 - **Run → logs:** `run_id` and `marker` are the `svs_run` and `svs_marker` fields in ACE's log.
+
+## Expectations
+
+What is decided about each test's signatures (`docs/SVS_RUNS.md`, *Expectations and ignores*).
+`GET /api/v2/svs/expectations` (and `/export/ndjson`, `/export/csv`), `svs:run_read`, filtered by
+`test`, `signature` and `state`. A decision is made with `PUT /api/v2/svs/tests/{guid}/expectations/
+{signature_uuid}` `{"state": "expected"|"rejected", "reason"?, "run_id"?}` and removed with `DELETE`,
+both `svs:run_manage` and from a user's key (a config key gets 422: a decision records who made it).
+
+| Field | Meaning |
+|---|---|
+| `test_guid`, `signature_uuid` | The test and the signature; together they are unique. |
+| `state` | `expected` or `rejected`. A candidate is a status in a run's result, never a row here. |
+| `signature_family`, `signature_name` | As last known when the decision was made. |
+| `reason` | Why, as the person wrote it. |
+| `decided_from_run_id` | The run whose result it was decided from, when it was. |
+| `decided_by`, `decided_at` | Who (username) and when. |
+| `updated_at` | The row's last change; with `changed_since` the rows come in `(updated_at, id)` order. A removed decision is gone; the run results it changes show the difference. |
+
+## Ignores
+
+Signatures whose detections during runs are noise. `GET /api/v2/svs/ignores` (and exports),
+`svs:run_read`, filtered by `scope` (`global`, `test`), `test` (that test's own and the global ones,
+which apply to it) and `signature`. A test's ignore is set with `PUT /api/v2/svs/tests/{guid}/
+ignores/{signature_uuid}` (`svs:run_manage`); a global one with `PUT /api/v2/svs/ignores/global/
+{signature_uuid}` (`svs:admin`). Both take `{"reason"?}` and are removed with `DELETE`.
+
+| Field | Meaning |
+|---|---|
+| `scope`, `test_guid` | `global`, or `test` with its guid. |
+| `signature_uuid`, `signature_family`, `signature_name` | The signature, as last known when it was ignored. |
+| `reason`, `created_by`, `created_at` | Why, who (username), when. |
+| `updated_at` | The row's last change (a new reason); the `changed_since` key. |
+
+## Test settings
+
+`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes"}`, the observation
+window of the test's runs registered from then on, used as it is (no slack, no floor) from 1 minute
+up to `svs.runs.observation_window.ceiling_hours` (`docs/SVS_RUNS.md`, *Windows*). The response adds
+`set_by` (username) and `updated_at`. Reading needs `svs:run_read`, changing `svs:run_manage`.
 
 ## Worked examples
 

@@ -7,15 +7,16 @@ import uuid
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from saq.alert_routing import reset_alert_routers
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_HOSTNAME
-from saq.database.model import SVSRun
+from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
+from saq.svs.expectations import set_expectation
 
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
@@ -65,7 +66,8 @@ def test_lifecycle_transitions(caplog):
         start(third.uuid, LAUNCHER, now=T0)
         run_timers(T0 + timedelta(days=2))
 
-    records = _records(caplog, "svs run ")
+    # the transitions, not the other records about runs (an ended run's result, say)
+    records = [r for r in _records(caplog, "svs run ") if " -> " in r.getMessage()]
     assert {(r.from_state, r.to_state) for r in records} == {
         (None, "created"), ("created", "started"), ("started", "error"), ("created", "canceled"),
         ("canceled", "closed"), ("started", "ended"), ("error", "closed")}
@@ -215,3 +217,21 @@ def test_a_run_changed_since_review(caplog, routed):
     (changed,) = _records(caplog, f"svs run {run.uuid} changed since review")
     assert changed.alert_uuid == root.uuid
     _assert_fields(changed, RUN_FIELDS + ("alert_uuid",))
+
+
+def test_a_result(caplog):
+    missing = "22222222-bbbb-4bbb-8bbb-222222222222"
+    user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+    set_expectation(GUID, missing, "expected", user_id)
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    with caplog.at_level(logging.INFO):
+        run_timers(T0 + timedelta(days=2))
+
+    (computed,) = _records(caplog, f"svs run {run.uuid} result computed")
+    assert computed.levelno == logging.INFO and computed.counts == {"missing": 1}
+    _assert_fields(computed, RUN_FIELDS + ("counts",))
+
+    (record,) = _records(caplog, f"svs run {run.uuid} is missing expected signature")
+    assert record.levelno == logging.INFO and record.signature_uuid == missing
+    _assert_fields(record, RUN_FIELDS + ("signature_uuid", "signature_family", "possibly_suppressed"))

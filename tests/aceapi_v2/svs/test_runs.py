@@ -25,7 +25,7 @@ REGISTRATION = {"test_guid": GUID, "targets": [{"hostname": "win10-01.lab.exampl
 @pytest.fixture(autouse=True)
 def setup(monkeypatch):
     # no enabled hunts: the observation window is the floor
-    monkeypatch.setattr(windows, "hunt_latencies", lambda: {})
+    monkeypatch.setattr(windows, "hunt_info", lambda: {})
     add_catalog_test(GUID)
     add_catalog_test(LINUX_GUID, platforms=("linux",))
     create_host(build_spec("win10-01.lab.example", usernames=["svc_art"], platform="windows"), None)

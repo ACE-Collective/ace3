@@ -27,7 +27,7 @@ from saq.database.util.alert import touch_alerts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from saq.detection_verdicts.store import confirm_alert
 from tests.saq.helpers import insert_alert, insert_alert_with_detections
-from tests.saq.svs.conftest import attribute_to_run
+from tests.saq.svs.conftest import SIGNATURE_UUID, attribute_to_run
 
 pytestmark = pytest.mark.integration
 
@@ -143,7 +143,8 @@ def _detections(alert: Alert, *hashes: str) -> None:
 
 def _attribute(alert: Alert, run_id: int, content_hash: str, confidence: str = "marker", removed: bool = False):
     db = get_db()
-    db.add(SVSAttribution(run_id=run_id, alert_uuid=alert.uuid, content_hash=content_hash, confidence=confidence,
+    db.add(SVSAttribution(run_id=run_id, alert_uuid=alert.uuid, content_hash=content_hash,
+                          signature_uuid=SIGNATURE_UUID, confidence=confidence,
                           source="router", actor="svs", created_at=datetime.now(),
                           removed_at=datetime.now() if removed else None))
     db.commit()

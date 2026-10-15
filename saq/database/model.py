@@ -2344,6 +2344,10 @@ class SVSAttribution(Base):
         nullable=False)
     alert_uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, index=True)
     content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    # the detection's signature, copied from it: the attribution is written before the alert's
+    # detection_points rows exist, and a run's result counts what fired by signature
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # saq.svs.constants.AttributionConfidence: a marker that agreed with the run, or the run's
     # target and window alone
     confidence: Mapped[str] = mapped_column(Enum('marker', 'context'), nullable=False)
@@ -2368,12 +2372,182 @@ class SVSAttribution(Base):
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
         nullable=True)
     removal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # set when a person reviewing the run kept a context-only attribution (it is a test)
+    kept_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    kept_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         MYSQL_TIMESTAMP(fsp=6),
         nullable=False,
         index=True,
         server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
         server_onupdate=FetchedValue())
+
+
+class SVSExpectation(Base):
+    """A decision about a signature for an Atomic Red Team test (docs/SVS_RUNS.md, *Expectations and
+    ignores*): expected (a run of the test should fire it) or rejected (it fires, but it is not what
+    the test is about, and it is not proposed again). A signature that fires and has no decision is
+    a candidate, which is a status of a run's result and never a row here. Only
+    saq/svs/expectations.py writes this table."""
+
+    __tablename__ = 'svs_expectations'
+    __table_args__ = (
+        UniqueConstraint('test_guid', 'signature_uuid', name='uq_svs_expectations_test_signature'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    test_guid: Mapped[str] = mapped_column(String(36), nullable=False)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # saq.svs.constants.ExpectationState
+    state: Mapped[str] = mapped_column(Enum('expected', 'rejected'), nullable=False)
+    # the signature as last known, so a decision about a rule that was deleted still reads
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the run whose result the decision was made from, if it was made from one
+    decided_from_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    decided_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSIgnore(Base):
+    """A signature whose detections during a run are launcher noise, not the test (docs/SVS_RUNS.md,
+    *Expectations and ignores*): for every test (global) or for one. scope_key is 'global' or the
+    test's guid, so one unique key covers both scopes. Only saq/svs/expectations.py writes this
+    table."""
+
+    __tablename__ = 'svs_ignores'
+    __table_args__ = (
+        UniqueConstraint('scope_key', 'signature_uuid', name='uq_svs_ignores_scope_signature'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # saq.svs.constants.IgnoreScope
+    scope: Mapped[str] = mapped_column(Enum('global', 'test'), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(36), nullable=False)
+    test_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    created_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSTestSettings(Base):
+    """Per-test settings (docs/SVS_RUNS.md, *Windows*): an observation window that replaces the
+    computed one for every run registered afterwards. Only saq/svs/expectations.py writes this
+    table."""
+
+    __tablename__ = 'svs_test_settings'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    test_guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    observation_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    set_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSRunResult(Base):
+    """One signature of a run's result (docs/SVS_RUNS.md, *Results*): what fired against what the
+    test expects. The live columns are recomputed whenever the run's attributions or the test's
+    decisions change; the reviewed_* columns are the result as signed off, written once when the
+    run is reviewed. A row whose signature left the live result is deleted, unless it holds the
+    reviewed result, when its live status is NULL. Only saq/svs/results.py writes the live
+    columns."""
+
+    __tablename__ = 'svs_run_results'
+    __table_args__ = (
+        UniqueConstraint('run_id', 'signature_uuid', name='uq_svs_run_results_run_signature'),
+        Index('ix_svs_run_results_run_status', 'run_id', 'status'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # saq.svs.constants.ResultStatus; NULL once the signature left the live result
+    status: Mapped[Optional[str]] = mapped_column(
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+    # the alerts attributed to the run that carry the signature
+    alert_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # every one of its attributions is late, or by context alone
+    late_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    context_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
+    content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
+    # the hunt groups or deduplicates its alerts, so that alert may not have suppressed this one
+    suppressing_alert_uuid: Mapped[Optional[str]] = mapped_column(CHAR(36), nullable=True)
+    suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
+    reviewed_status: Mapped[Optional[str]] = mapped_column(
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+    reviewed_alert_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reviewed_late_only: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    reviewed_content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSRunResultState(Base):
+    """Whether a run's live result is current (docs/SVS_RUNS.md, *Results*). A change that affects
+    the result (an attribution, a decision about the test, the run ending) bumps generation and
+    sets stale; the timers recompute stale results, and a computation clears stale only if the
+    generation it read is still the current one. Kept off svs_runs, whose updated_at drives the
+    runs' changed_since."""
+
+    __tablename__ = 'svs_run_result_state'
+
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        primary_key=True,
+        autoincrement=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    computed_generation: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'), index=True)
+    computed_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
 
 
 class Nodes(Base):
