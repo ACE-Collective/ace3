@@ -27,7 +27,7 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.database.util.alert import AlertFrozen, ensure_not_frozen, node_scope_locations
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen, node_scope_locations, touch_alerts
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
@@ -37,12 +37,18 @@ from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
 from saq.search.query import build_listing_query
+from saq.search.tasks import submit_index_task
 from saq.search.types import SearchFilters
 from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
 from saq.util.uuid import is_uuid
 
-from aceapi_v2.alerts.schemas import ALERT_ROW_CSV_FIELDS, AlertRow, BulkAddObservableResult
+from aceapi_v2.alerts.schemas import (
+    ALERT_ROW_CSV_FIELDS,
+    AlertCommentRead,
+    AlertRow,
+    BulkAddObservableResult,
+)
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
@@ -221,6 +227,50 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
             for c in observable_comments
         ],
     }
+
+
+def update_alert_comment(
+    alert_uuid: str, comment_id: int, comment_text: str, user_id: int | None, user_name: str | None
+) -> AlertCommentRead:
+    """Replace the text of an analyst comment on an alert. Only the comment's author may edit it.
+
+    The alert's version is rotated and the alert re-indexed, as when a comment is added."""
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="User authentication required")
+
+    if not is_uuid(alert_uuid):
+        raise HTTPException(status_code=400, detail="invalid alert UUID")
+
+    comment = (
+        get_db()
+        .query(Comment)
+        .filter(Comment.comment_id == comment_id, Comment.uuid == alert_uuid)
+        .one_or_none()
+    )
+    if comment is None:
+        raise HTTPException(status_code=404, detail="comment not found")
+
+    if comment.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Only the comment author can edit this comment")
+
+    # a comment added through the GUI's form was stored with a form submission's CRLF line breaks,
+    # while the edit modal sends a textarea's LF ones, so saving it untouched is not a change
+    if comment.comment.replace("\r\n", "\n") != comment_text.replace("\r\n", "\n"):
+        logger.info("AUDIT: user %s edited comment %s on alert %s from %r to %r",
+                    user_name, comment_id, alert_uuid, comment.comment, comment_text)
+        comment.comment = comment_text
+        touch_alerts([alert_uuid])
+        get_db().commit()
+        submit_index_task(alert_uuid)
+
+    return AlertCommentRead(
+        comment_id=comment.comment_id,
+        alert_uuid=comment.uuid,
+        insert_date=comment.insert_date,
+        user_id=comment.user_id,
+        user_display_name=comment.user.display_name if comment.user else "unknown",
+        comment=comment.comment,
+    )
 
 
 def _run_zip(dest: str, cwd: str, target: str, alert_uuid: str) -> None:

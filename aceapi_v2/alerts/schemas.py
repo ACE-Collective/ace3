@@ -1,8 +1,9 @@
 """Alert schemas for ACE API v2."""
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 
 class BulkAddObservableRequest(BaseModel):
@@ -63,3 +64,16 @@ class AlertListPage(BaseModel):
 
 # the CSV export's columns, in order; tags and svs_runs are joined with ","
 ALERT_ROW_CSV_FIELDS = tuple(AlertRow.model_fields)
+
+
+class AlertCommentUpdate(BaseModel):
+    comment: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class AlertCommentRead(BaseModel):
+    comment_id: int
+    alert_uuid: str
+    insert_date: datetime
+    user_id: int
+    user_display_name: str
+    comment: str

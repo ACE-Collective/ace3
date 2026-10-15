@@ -159,7 +159,7 @@
     {% for comment in alert.comments %}
     <tr>
         <td class="col-md-2">Comment</td>
-        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br><span class="comment-text">{{comment.comment}}</span></td>
+        <td class="col-md-10">{% if comment.user.id == current_user.id %}<span class="bi bi-x-circle" onmousedown="delete_comment({{comment.comment_id}})" title="Delete"></span> <span class="bi bi-pencil" style="cursor: pointer;" onclick="edit_comment({{comment.comment_id}})" title="Edit"></span> {% endif %} {{comment.insert_date}} {{comment.user.gui_display}}<br><span class="comment-text" id="comment_text_{{comment.comment_id}}">{{comment.comment}}</span></td>
     </tr>
     {% endfor %}
 

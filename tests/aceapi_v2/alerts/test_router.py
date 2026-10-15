@@ -904,3 +904,138 @@ class TestGetAlert:
 
         response = await client.get(f"/alerts/{alert.uuid}")
         assert response.status_code == 410
+
+
+def _insert_commented_alert(user_id: int, text: str = "original comment") -> tuple[str, int]:
+    """An alert row with one comment by ``user_id``; returns (alert uuid, comment id)."""
+    alert_uuid = str(uuid4())
+    db = get_db()
+    db.add(Alert(
+        uuid=alert_uuid,
+        location="test-location",
+        storage_dir=alert_uuid,
+        tool="test-tool",
+        tool_instance="test-tool-instance",
+        alert_type="test",
+    ))
+    comment = Comment(uuid=alert_uuid, user_id=user_id, comment=text)
+    db.add(comment)
+    db.commit()
+    return alert_uuid, comment.comment_id
+
+
+def _unittest_user_id() -> int:
+    return get_db().query(User).filter(User.username == "unittest").one().id
+
+
+def _alert_version(alert_uuid: str) -> str:
+    get_db().expire_all()
+    return get_db().query(Alert).filter(Alert.uuid == alert_uuid).one().version
+
+
+def _comment_text(comment_id: int) -> str:
+    get_db().expire_all()
+    return get_db().query(Comment).filter(Comment.comment_id == comment_id).one().comment
+
+
+class TestUpdateAlertComment:
+    """Test the PATCH /alerts/{alert_uuid}/comments/{comment_id} endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, unauth_client: AsyncClient):
+        response = await unauth_client.patch(f"/alerts/{VALID_UUID}/comments/1", json={"comment": "x"})
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_requires_alert_write(self, noperm_client: AsyncClient):
+        response = await noperm_client.patch(f"/alerts/{VALID_UUID}/comments/1", json={"comment": "x"})
+        assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.submit_index_task")
+    async def test_update_comment(self, mock_submit_index_task, client: AsyncClient):
+        user_id = _unittest_user_id()
+        alert_uuid, comment_id = _insert_commented_alert(user_id)
+        version = _alert_version(alert_uuid)
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "  edited comment\n"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["comment_id"] == comment_id
+        assert data["alert_uuid"] == alert_uuid
+        assert data["user_id"] == user_id
+        assert data["comment"] == "edited comment"
+
+        assert _comment_text(comment_id) == "edited comment"
+        # the change is visible to clients polling the alert, and the search index picks it up
+        assert _alert_version(alert_uuid) != version
+        mock_submit_index_task.assert_called_once_with(alert_uuid)
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.submit_index_task")
+    async def test_unchanged_comment_is_not_a_change(self, mock_submit_index_task, client: AsyncClient):
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
+        version = _alert_version(alert_uuid)
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "original comment"})
+        assert response.status_code == 200
+        assert _alert_version(alert_uuid) == version
+        mock_submit_index_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("aceapi_v2.alerts.service.submit_index_task")
+    async def test_line_endings_alone_are_not_a_change(self, mock_submit_index_task, client: AsyncClient):
+        # the GUI's add form stores CRLF; the edit modal's textarea sends LF
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), "first line\r\nsecond line")
+        version = _alert_version(alert_uuid)
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "first line\nsecond line"})
+        assert response.status_code == 200
+        assert _alert_version(alert_uuid) == version
+        assert _comment_text(comment_id) == "first line\r\nsecond line"
+        mock_submit_index_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_author_only(self, client: AsyncClient):
+        other = User(username=f"comment_author_{uuid4().hex[:8]}", email=f"{uuid4().hex[:8]}@test.com",
+                     display_name="Other User", password="pw")
+        get_db().add(other)
+        get_db().commit()
+        alert_uuid, comment_id = _insert_commented_alert(other.id, "other's comment")
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "trying to edit"})
+        assert response.status_code == 403
+        assert _comment_text(comment_id) == "other's comment"
+
+    @pytest.mark.asyncio
+    async def test_comment_on_another_alert(self, client: AsyncClient):
+        _, comment_id = _insert_commented_alert(_unittest_user_id())
+        other_alert_uuid, _ = _insert_commented_alert(_unittest_user_id())
+
+        response = await client.patch(
+            f"/alerts/{other_alert_uuid}/comments/{comment_id}", json={"comment": "edited"})
+        assert response.status_code == 404
+        assert _comment_text(comment_id) == "original comment"
+
+    @pytest.mark.asyncio
+    async def test_unknown_comment(self, client: AsyncClient):
+        response = await client.patch(f"/alerts/{VALID_UUID}/comments/999999999", json={"comment": "x"})
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid(self, client: AsyncClient):
+        response = await client.patch("/alerts/not-a-uuid/comments/1", json={"comment": "x"})
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("text", ["", "   \n"])
+    async def test_empty_comment_rejected(self, client: AsyncClient, text: str):
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
+
+        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": text})
+        assert response.status_code == 422
+        assert _comment_text(comment_id) == "original comment"
