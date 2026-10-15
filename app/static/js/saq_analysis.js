@@ -821,6 +821,8 @@ function current_alert_description() {
         owner_id: current_alert_owner_id != null ? Number(current_alert_owner_id) : null,
         owner_name: current_alert_owner_name,
         owner_enabled: current_alert_owner_enabled,
+        frozen: typeof current_alert_frozen !== "undefined" && current_alert_frozen,
+        frozen_note: typeof current_alert_frozen_note !== "undefined" ? current_alert_frozen_note : null,
     };
 }
 

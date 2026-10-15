@@ -51,6 +51,30 @@ empty for a mismatch. Both are derived from the attributions when the row is rea
 disassociated from its run loses them, and in CSV `svs_runs` is joined with `,` as `tags` is. Test
 alerts are listed like any other; `f=!queue:<svs.queue>` leaves out the ones routed to the test queue.
 
+### An alert's SVS status
+
+One alert's side of SVS, as its page shows it (`docs/SVS_RUNS.md`, *Test alerts in the alert list
+and on the alert page*):
+
+| Endpoint | Permission | Does |
+|---|---|---|
+| `GET /api/v2/alerts/{uuid}/svs` | `alert:read` | `{"alert_uuid", "svs_status", "runs", "detections", "mismatches"}`; 404 for an unknown alert, and a null status with empty lists for one no run touched |
+| `POST /api/v2/alerts/{uuid}/svs/disassociate` `{"reason"?}` | `alert:write` | Disassociate the alert from every run that holds it (409 when none does) |
+| `POST /api/v2/alerts/{uuid}/svs/not-a-test` `{"reason"?}` | `alert:write` | The same for a `TEST?` alert, recorded as *not a test* (409 unless it is `TEST?`) |
+
+- `runs` are the runs whose attributions hold, oldest first, each `{"run_id", "state", "test_guid",
+  "test_name"}`.
+- `detections` are the attributed detections, `{"content_hash", "run_ids"}`, keyed like `GET
+  /api/v2/alerts/{uuid}/detection-points`.
+- `mismatches` are the markers that disagree with their run, `{"marker", "result", "run"}`; `run` is
+  null when no run has the marker.
+- The two actions need a user's key (a config key gets 422). Each answers `{"alert_uuid", "run_ids",
+  "svs_status", "queue", "moved", "reopened"}`: the runs it was disassociated from, and the alert's
+  status and queue afterwards.
+- They are the run-scoped `disassociate` and `not-a-test` (*Attributions*, below), applied to each
+  run in turn. They need `alert:write` rather than `svs:run_manage`: they are an analyst's correction
+  of an alert they triage.
+
 ## Detections
 
 A **detection** (detection point) is one signature firing on one node of an alert's analysis tree.

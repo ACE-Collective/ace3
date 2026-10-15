@@ -58,6 +58,7 @@ from saq.remediation.coverage import get_remediation_coverage
 from saq.search.query import search_alerts, similar_alerts
 from saq.search.syntax import parse_search_query
 from saq.search.types import AlertSearchResult, SearchRequest
+from saq.svs.alert_status import alert_svs_statuses
 
 
 def _ensure_manage_session_defaults(seed_saved_filters: bool = False):
@@ -243,6 +244,11 @@ def build_manage_list_context() -> dict:
     # per-alert email remediation coverage for the badge next to the description
     remediation_coverage = get_remediation_coverage(alerts)
 
+    # each alert's SVS status (docs/SVS.md, Part 3, *What analysts see*), shown as text next to
+    # the description and linking to its run: three queries for the page
+    statuses_by_id = alert_svs_statuses({alert.id: alert.uuid for alert in alerts})
+    svs_statuses = {alert.uuid: statuses_by_id[alert.id] for alert in alerts if alert.id in statuses_by_id}
+
     # alert display timezone
     display_timezone = pytz.utc
     if current_user.timezone and pytz.timezone(current_user.timezone) != pytz.utc:
@@ -294,6 +300,7 @@ def build_manage_list_context() -> dict:
         'remediation_coverage': remediation_coverage,
         'display_timezone_label': display_timezone_label,
         'alert_tags': alert_tags,
+        'svs_statuses': svs_statuses,
         'manage_columns': manage_columns,
         # the column chooser's model: every column, in order, with its visibility
         'manage_column_layout': manage_column_layout(column_preference),

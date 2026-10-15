@@ -36,6 +36,7 @@ function selected_alert_descriptions() {
             owner_id: data.ownerId ? Number(data.ownerId) : null,
             owner_name: data.ownerName || "",
             owner_enabled: data.ownerEnabled === "1",
+            frozen: data.frozen === "1",
         };
     });
 }

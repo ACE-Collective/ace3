@@ -1,0 +1,34 @@
+{# An alert's SVS status (docs/SVS.md, Part 3, *What analysts see*): TEST, TEST?, PARTIAL TEST or
+   MARKER MISMATCH. It is text with an icon, never a badge: badges mean tags and dispositions. Import
+   it `with context`, for has_permission. #}
+
+{% set SVS_STATUSES = {
+    "test": {"label": "TEST", "css": "text-muted",
+             "title": "SVS test alert: every detection is attributed to a test run, at least one by its marker. Nothing to do."},
+    "test?": {"label": "TEST?", "css": "text-muted",
+              "title": "SVS test alert by context alone: every detection is attributed to a test run, without a marker. Nothing to do unless it looks wrong."},
+    "partial": {"label": "PARTIAL TEST", "css": "text-body",
+                "title": "Some detections are from an SVS test run. Triage the others as usual."},
+    "mismatch": {"label": "MARKER MISMATCH", "css": "text-danger fw-semibold",
+                 "title": "A marker in this alert doesn't agree with its SVS test run. Treat it as suspicious and investigate."},
+} %}
+
+{# the status as text; with run_uuid and svs:run_read it links to the run's page #}
+{% macro svs_status_text(status, run_uuid=none) -%}
+{%- set info = SVS_STATUSES.get(status, {"label": status, "css": "", "title": ""}) -%}
+{%- if run_uuid and has_permission('svs', 'run_read') -%}
+<a class="svs-status small text-nowrap text-decoration-none {{ info.css }}" title="{{ info.title }}" href="{{ url_for('svs.run_detail', run_id=run_uuid) }}"><span class="bi bi-crosshair" aria-hidden="true"></span> {{ info.label }}</a>
+{%- else -%}
+<span class="svs-status small text-nowrap {{ info.css }}" title="{{ info.title }}"><span class="bi bi-crosshair" aria-hidden="true"></span> {{ info.label }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{# a run as an alert names it: its test, its short id and state; a link with svs:run_read #}
+{% macro svs_run_text(run) -%}
+{%- set label = (run.test_name or run.test_guid) ~ " (run " ~ run.uuid[:8] ~ ", " ~ run.state ~ ")" -%}
+{%- if has_permission('svs', 'run_read') -%}
+<a href="{{ url_for('svs.run_detail', run_id=run.uuid) }}">{{ label }}</a>
+{%- else -%}
+{{ label }}
+{%- endif -%}
+{%- endmacro %}

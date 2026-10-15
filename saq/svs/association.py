@@ -7,6 +7,8 @@ hand*; docs/SVS.md, Part 3, *Manual (re)association*).
   attributes the alert to that run again. An alert no longer fully attributed goes back to the queue
   it came from, and one already SIMULATED is given back to analysts as OPEN.
 - **Not a test** is a disassociation of a TEST? alert, whose attributions are by context only.
+- From the alert's side, an analyst disassociates the alert from every run that holds it, or marks
+  a TEST? alert not a test (disassociate_alert, alert:write in the API).
 - **Keep** a context attribution: the person confirms a TEST? alert is the run's (run review asks
   for it).
 
@@ -79,6 +81,17 @@ class AssociationResult:
     # the alert moved to another queue
     moved: bool = False
     # the alert was SIMULATED and is OPEN again
+    reopened: bool = False
+
+
+@dataclass(frozen=True)
+class AlertDisassociationResult:
+    alert_uuid: str
+    # the runs the alert was disassociated from, oldest first
+    runs: tuple[str, ...]
+    svs_status: Optional[str]
+    queue: str
+    moved: bool = False
     reopened: bool = False
 
 
@@ -314,3 +327,51 @@ def keep(run_uuid: str, alert_uuid: str, user_id: int, actor: str, now: Optional
     alert = _read_alert(alert.id)
     status = _status(alert)
     return AssociationResult(alert.uuid, status.value if status else None, alert.queue)
+
+
+#
+# from the alert's side
+#
+
+def disassociate_alert(alert_uuid: str, user_id: int, actor: str, reason: Optional[str] = None, *,
+                       not_a_test: bool = False, now: Optional[datetime] = None) -> AlertDisassociationResult:
+    """Disassociates the alert from every run that holds it, oldest run first, so it is given back
+    to analysts (docs/SVS_RUNS.md, *Associating alerts by hand*). not_a_test applies only to a TEST?
+    alert, which its runs hold by context alone. Raises UnknownAlert, AssociationConflict (nothing
+    holds it, or not_a_test on an alert that a marker or a person attributed)."""
+    db = get_db()
+    alert_id = db.execute(select(Alert.id).where(Alert.uuid == alert_uuid)).scalar()
+    if alert_id is None:
+        raise UnknownAlert(f"alert {alert_uuid} not found")
+
+    # the runs that hold it, oldest first
+    run_uuids = list(dict.fromkeys(db.execute(
+        select(SVSRun.uuid)
+        .join(SVSAttribution, SVSAttribution.run_id == SVSRun.id)
+        .where(SVSAttribution.alert_uuid == alert_uuid, SVSAttribution.removed_at.is_(None))
+        .order_by(SVSRun.id)).scalars()))
+    if not run_uuids:
+        raise AssociationConflict(f"alert {alert_uuid} is not attributed to any test run")
+    if not_a_test and _status(_read_alert(alert_id)) != SVSStatus.TEST_CONTEXT:
+        raise AssociationConflict(f"alert {alert_uuid} is not TEST? (attributed by context only): "
+                                  "disassociate it instead")
+
+    done, moved, reopened = [], False, False
+    for run_uuid in run_uuids:
+        try:
+            result = disassociate(run_uuid, alert_uuid, user_id, actor, reason, not_a_test=not_a_test, now=now)
+        except AssociationConflict as e:
+            # a concurrent change released the alert from this run first
+            logging.info(f"svs alert {alert_uuid} was no longer held by run {run_uuid}: {e}",
+                         extra={"svs_run": run_uuid, "alert_uuid": alert_uuid})
+            continue
+        done.append(run_uuid)
+        moved = moved or result.moved
+        reopened = reopened or result.reopened
+
+    if not done:
+        raise AssociationConflict(f"alert {alert_uuid} is not attributed to any test run")
+    alert = _read_alert(alert_id)
+    status = _status(alert)
+    return AlertDisassociationResult(alert.uuid, tuple(done), status.value if status else None, alert.queue,
+                                     moved=moved, reopened=reopened)

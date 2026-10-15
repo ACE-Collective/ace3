@@ -26,7 +26,14 @@ from saq.analysis.detection_chain import (
 )
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.detection_verdicts.query import list_alert_detection_points
-from saq.disposition import get_disposition_class, get_selectable_dispositions, is_selectable_disposition
+from saq.disposition import (
+    get_disposition_class,
+    get_selectable_dispositions,
+    is_frozen_disposition,
+    is_selectable_disposition,
+)
+from saq.svs.alert_status import alert_svs_view
+from saq.svs.constants import SVSStatus
 from saq.database.database_observable import get_observable_disposition_histories
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
@@ -454,6 +461,32 @@ def detection_verdict_context(alert) -> dict:
     }
 
 
+def svs_alert_context(alert) -> dict:
+    """What the alert page shows of SVS (docs/SVS.md, Part 3, *What analysts see*): the status
+    banner with its runs and markers, the detections greyed out on a PARTIAL TEST alert (content
+    hash -> the runs they are from), and what the disposition dialog says of a frozen alert."""
+    view = alert_svs_view(alert.id, alert.uuid)
+    greyed = {}
+    if view is not None and view.status == SVSStatus.PARTIAL:
+        greyed = dict(view.detections)
+
+    frozen_note = None
+    if is_frozen_disposition(alert.disposition):
+        if view is not None and view.runs:
+            names = ", ".join(f"{run.test_name or run.test_guid} ({run.uuid[:8]})" for run in view.runs)
+            frozen_note = (f"Part of SVS test run {names}. Only ACE sets {alert.disposition}, so the disposition "
+                           "can't be changed by hand. To treat this as a real alert, use Disassociate from run.")
+        else:
+            frozen_note = f"Only ACE sets {alert.disposition}, so this alert's disposition can't be changed by hand."
+
+    return {
+        "svs_alert": view,
+        "svs_test_detections": greyed,
+        "current_alert_frozen": is_frozen_disposition(alert.disposition),
+        "current_alert_frozen_note": frozen_note,
+    }
+
+
 def alert_action_context(alert) -> dict:
     """The integration buttons on the alert toolbar (saq/gui/alert_actions.py) and their rendered
     templates, which the page puts in its body after the toolbar. An action whose template is
@@ -756,4 +789,5 @@ def index():
         detection_chain_observable_display_value=observable_display_value,
         **alert_action_context(alert),
         **detection_verdict_context(alert),
+        **svs_alert_context(alert),
     )

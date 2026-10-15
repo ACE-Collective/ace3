@@ -21,6 +21,7 @@ reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 | `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
 | `svs:run_manage` | Ownership, cancel, close, review; a test's expectations, ignores and settings; manual association |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores (and, for YARA, retiring and deleting samples) |
+| `alert:write` (existing) | From an alert's page, *Disassociate from run* and *Not a test* (*Test alerts in the alert list and on the alert page*) |
 
 ## Test hosts
 
@@ -511,11 +512,44 @@ svs:
   log_search_url: https://splunk.example/en-US/app/search/search?q=search%20svs_run%3D{run_uuid}&earliest={earliest}&latest={latest}
 ```
 
+## Test alerts in the alert list and on the alert page
+
+Analysts see an alert's status (*What happens to the alert*, above) where they triage it.
+
+- **In the alert list**, the status is shown after the alert's description as text with a flask
+  icon: `TEST`, `TEST?`, `PARTIAL TEST` or `MARKER MISMATCH`, the last in red. It is not a badge
+  (badges are tags and dispositions). With `svs:run_read` it links to the latest run the alert is
+  attributed to.
+- **On the alert page**, the status is a banner above the alert's summary. It says what the status
+  means and what to do, and names the alert's runs: test, short run id and state, each a link with
+  `svs:run_read`.
+  - A mismatch banner is red. It names each disagreeing marker, why it disagrees, and the run the
+    marker belongs to when there is one.
+  - On a `PARTIAL TEST` alert, the detections attributed to a run are greyed out, in the analysis
+    tree and in the Detection Chains card, so the analyst triages the others.
+- **Giving a test alert back.** With `alert:write`, the banner has *Disassociate from run* and, on a
+  `TEST?` alert, *Not a test*.
+  - Each asks for a reason, then disassociates the alert from every run that holds it (*Associating
+    alerts by hand*, below), and the page reloads.
+  - A `SIMULATED` alert comes back `OPEN`, and an open alert nobody else has taken goes back to the
+    queue SVS took it from.
+  - The run-scoped actions on the run page need `svs:run_manage`. These need only `alert:write`,
+    because they are an analyst's correction of an alert they triage, in the direction that makes it
+    *more* visible.
+- **The disposition dialogs** say why a `SIMULATED` alert is left alone: on its page, *"Part of SVS
+  test run … To treat this as a real alert, use Disassociate from run."*. A selection on the alert
+  list says how many of the selected alerts are left alone and why; Save is disabled when nothing
+  would change. A `SIMULATED` alert is never counted as someone else's to take, although the
+  automation user owns it.
+
 ## Associating alerts by hand
 
 A person with `svs:run_manage` corrects what the router decided, one alert and one run at a time:
 `POST /api/v2/svs/runs/{run_id}/alerts/{alert_uuid}/{action}`, with an optional `{"reason"}`
-(`docs/SVS_API.md`, *Attributions*). Each change is recorded in the run's event log and as an AUDIT
+(`docs/SVS_API.md`, *Attributions*). From the alert's side, an analyst with `alert:write` runs
+`disassociate` or `not-a-test` for every run that holds the alert at once: `POST
+/api/v2/alerts/{alert_uuid}/svs/disassociate|not-a-test` (`docs/SVS_API.md`, *An alert's SVS
+status*), which is what the alert page's banner calls. Each change is recorded in the run's event log and as an AUDIT
 record with who made it, marks the run's result stale (*Results*, below), and marks a reviewed run
 changed since review. Every change can be undone by the opposite one.
 
