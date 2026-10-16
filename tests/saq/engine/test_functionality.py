@@ -2632,11 +2632,11 @@ def test_local_analysis_mode_remote_pickup(mock_api_call, monkeypatch):
     get_config().get_analysis_mode_config("test_single").cleanup = False
 
     # we trick the api server into using the old storage dir
-    import aceapi.engine
+    import aceapi_v2.engine.service
     def mock_storage_dir_from_uuid(uuid):
         return old_storage_dir
 
-    monkeypatch.setattr(aceapi.engine, "storage_dir_from_uuid", mock_storage_dir_from_uuid)
+    monkeypatch.setattr(aceapi_v2.engine.service, "storage_dir_from_uuid", mock_storage_dir_from_uuid)
 
     engine = Engine(config=EngineConfiguration(local_analysis_modes=["test_single"], analysis_pools={"test_single": 1}, default_analysis_mode="test_single"))
 

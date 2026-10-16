@@ -19,11 +19,11 @@ This doc tracks two surfaces:
 | `events`   | _(removed)_   | –         | –              | Migrated   |
 | `email`    | _(removed)_   | –         | –              | Migrated   |
 | `intel`    | _(removed)_   | –         | –              | Deleted    |
-| `analysis` | `analysis.py` | 1         | POST           | Legacy     |
-| `engine`   | `engine.py`   | 3         | GET, POST      | Legacy     |
+| `analysis` | _(removed)_   | –         | –              | Migrated   |
+| `engine`   | _(removed)_   | –         | –              | Migrated   |
 | `hunt`     | `hunt.py`     | 1         | POST           | Legacy     |
 
-**Legacy endpoints remaining: 5** (2 GET, 3 POST).
+**Legacy endpoints remaining: 1** (POST).
 
 GUI routes (`app/`): **no API-shaped candidates left** out of 66 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
@@ -33,8 +33,7 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **`/engine` and `/analysis/submit`**: node to node, so they need a rolling-upgrade plan.
-2. **`/hunt/validate`**, last, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
+1. **`/hunt/validate`**, the last one, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -187,24 +186,6 @@ What decides the cost of each group is less the handler than who calls it. Three
 - **In-process only** (`ace_api` helper, called by nothing in the tree but its tests): the cheapest. The library's external consumers see no change as long as the helper keeps its return shape.
 - **Node to node** (`engine`, and `ace_api.upload`/`submit` aimed at a remote node): one ACE node calls another. During a rolling upgrade the caller can be on the new code while the node it calls is still on the old, so a v2 path that only one side has turns into a 404 for as long as the window lasts. A full replacement here needs either an all-nodes-at-once deploy or one release in which the new caller falls back to the old path.
 - **Separately installed clients** (`hunt/validate` from the `validate-hunt` CLI): installed copies keep calling the old URL until they are upgraded, so the server change and the client release have to be sequenced.
-
-### `/analysis` — `analysis.py`
-
-| Method | URL                                          | Function         | Line | Callers |
-|--------|----------------------------------------------|------------------|------|---------|
-| POST   | `/analysis/submit`                           | `submit`         | 75   | `ace_api.submit` ← GUI new alert (`app/analysis/views/edit/new.py`), `ace submit`, `ace hunt`, external `ace_api` users |
-
-A multipart upload with node-drain rejection (`reject_if_node_draining`) and the widest set of callers, node to node among them, so it moves with `/engine`. The six reads that shared this blueprint are gone; see [the appendix](#analysis-reads--deleted-ace_apiget_analysis--get-apiv2alertsuuid).
-
-### `/engine` — `engine.py`
-
-| Method | URL                                  | Function   | Line | Callers |
-|--------|--------------------------------------|------------|------|---------|
-| GET    | `/engine/download/<uuid>`            | `download` | 40   | `saq/engine/workload_manager/database.py` (pulling work from another node) |
-| POST   | `/engine/upload/<uuid>`              | `upload`   | 84   | `saq/engine/node_manager/drain.py`, `saq/collectors/remote_node.py`, `saq/util/maintenance.py`, `saq/cli/commands/correlate.py` |
-| GET    | `/engine/clear/<uuid>/<lock_uuid>`   | `clear`    | 209  | `saq/engine/workload_manager/database.py` |
-
-Every caller is another ACE node, so this group carries the rolling-upgrade problem above. Tar streaming in both directions; `clear` mutates through a `GET`. Migrate it with `/analysis/submit`, after the GUI routes.
 
 ### `/hunt` — `hunt.py`
 
@@ -483,6 +464,24 @@ Notes:
 - **URL crawl is back in the menu.** It was listed only in `URLObservable.jinja_available_actions` (known defect 1), so no URL observable offered it; it is now registered with `register_observable_action`, next to the clicker actions.
 - **`mark_as_suspect` is gone.** No template sent it, and it did nothing.
 - An observable of a type the action does not apply to is a 422. The clicker searches are an empty list when the Splunk clicker module is not configured, or has no search for the type.
+
+### `/engine` and `/analysis/submit` → `aceapi_v2/engine/`, `aceapi_v2/analysis/`
+
+| Legacy URL                                  | v2 URL                                             |
+|---------------------------------------------|----------------------------------------------------|
+| `GET /api/engine/download/<uuid>`           | `GET /api/v2/engine/download/{uuid}` (`application/x-tar`) |
+| `POST /api/engine/upload/<uuid>`            | `POST /api/v2/engine/upload/{uuid}`                |
+| `GET /api/engine/clear/<uuid>/<lock_uuid>`  | `POST /api/v2/engine/clear/{uuid}/{lock_uuid}`     |
+| `POST /api/analysis/submit`                 | `POST /api/v2/analysis/` *(201)*                   |
+
+The node-to-node surface, and the busiest API in ACE: in 30 days of production, about 1.7 million downloads and as many clears (nodes pulling work from each other's queues), 450,000 uploads (collectors delivering to a scanner), and about 100 submissions (New Alert, `ace hunt --submit-alerts`). Every caller goes through `ace_api.py`, whose `download`, `upload`, `clear` and `submit` now build the v2 URLs; the request bodies are unchanged (multipart: `archive` and the `upload_modifiers` JSON; `analysis` and repeated `file`), and `submit` re-wraps the v2 `{"uuid": ...}` as the library's `{"result": {"uuid": ...}}`. The legacy routes and `aceapi/analysis.py` and `aceapi/engine.py` are deleted; `aceapi/` is down to `/hunt/validate`.
+
+Notes:
+- **No fallback release.** A full replacement of a node-to-node route needs every node on the same version, and every node able to serve `/api/v2`. Every node that serves the legacy API runs `http-api-v2` beside it, and nginx proxies `/api/v2` with the same unlimited body size and 300-second timeout as `/api`. Upgrade all nodes together (drain, stop every node, start them all on the new release), so that nodes never call each other across versions; a deployment that upgrades nodes one at a time would need a release in which the client falls back to the legacy URL.
+- **Capacity** is the same: 12 uvicorn workers serve `/api/v2` where 12 uwsgi processes served `/api`, and the blocking work runs in the thread pool.
+- **Permissions** are unchanged (`engine:download`, `engine:upload`, `engine:clear`, `alert:create`), so the automation key's shipped scope covers the v2 routes; `tests/aceapi_v2/engine/test_node_to_node.py` proves it with that exact scope, and `tests/saq/test_permission_catalog.py` now scans the v2 routers.
+- **Clear is a POST.** It deleted a directory on a GET.
+- **Errors are statuses.** An unknown work target is a 404 (was a 400), a clear with a lock that does not hold the target a 409 (was a 400), an upload over an existing directory without `overwrite` a 409, and an archive the data filter refuses (an absolute link, a link out of the directory) or that is not a tar a 400 that removes the directory it created, where the Flask upload answered a failure with a 200 carrying an error message. A submission whose observable lacks a type or value, or has an unreadable time, is a 400 that names it (was an unhandled 500), and a null `event_time` means now (was a 500).
 
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 

@@ -39,6 +39,12 @@ class ZipFileResponse(FileResponse):
     media_type = "application/zip"
 
 
+class TarFileResponse(FileResponse):
+    """A work target's storage directory as a tar archive (node to node)."""
+
+    media_type = "application/x-tar"
+
+
 class TextFileResponse(FileResponse):
     """A file served as text/plain (an alert's saq.log)."""
 
