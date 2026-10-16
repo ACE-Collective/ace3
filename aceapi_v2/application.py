@@ -18,6 +18,7 @@ from aceapi_v2.events.router import router as events_router
 from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
+from aceapi_v2.hunt.router import router as hunt_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(file_collection_router, prefix="/file-collections", tags=["file-collections"])
     app.include_router(filter_screens_router, prefix="/filter-screens", tags=["saved-filters"])
     app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(hunt_router, prefix="/hunt", tags=["hunt"])
     app.include_router(nodes_router, prefix="/nodes", tags=["nodes"])
     app.include_router(observable_comments_router, prefix="/observable-comments", tags=["observables"])
     app.include_router(observable_types_router, prefix="/observable-types", tags=["observables"])

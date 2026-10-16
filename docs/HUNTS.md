@@ -782,17 +782,21 @@ Because the engine is Jinja2, you have the full Jinja expression and filter lang
 
 ## Validation API
 
-`POST /api/hunt/validate` (permission `hunt:write`) is what `validate-hunt` calls. It takes a
-compiled hunt (the YAML and every file it names, packaged by `hunt_compiler`), unpacks it into a
-directory of its own, validates it, and optionally executes it: running the query, the correlate
-steps, and creating alerts when asked.
+`POST /api/v2/hunt/validate` (permission `hunt:write`) takes a compiled hunt (the YAML and every
+file it names, packaged by `hunt_compiler`), unpacks it into a directory of its own, validates it,
+and optionally executes it: running the query, the correlate steps, and creating alerts when asked.
+It answers 200 `{"valid": true, ...}` or 400 `{"valid": false, "error": ...}`.
+
+`validate-hunt` still calls the legacy `POST /api/hunt/validate`, which runs the same code
+(`aceapi_v2/hunt/service.py`) and answers the same body and status. It stays until every installed
+`validate-hunt` calls the v2 route.
 
 - **The package is all a submitted hunt can reach.** Every asset path, the target, and every file
   the hunt names (`include:`, the query file, `<include:...>` markers, commands' `path` and `files`)
   must be inside the unpacked package, or the request is rejected before anything is parsed.
   Scripts run in the [executable sandbox](CORRELATION_HUNTS.md#executable-sandbox).
 - **Every request is audited.** One `HUNT_AUDIT {json}` line per request on the `ace.hunt_audit`
-  logger (`aceapi/audit.py`), shipped off-box like any other log line. It has the same identity
+  logger (`aceapi_v2/hunt/audit.py`), from either route, shipped off-box like any other log line. It has the same identity
   fields as the AI investigation API's `AI_AUDIT` lines (`user`, `user_id`, `key_id`, `key_name`,
   `src_ip`), plus:
   - `event`: `hunt_validate` (200), `hunt_rejected` (refused before it ran) or `hunt_error` (the
