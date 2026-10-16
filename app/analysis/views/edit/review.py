@@ -1,14 +1,13 @@
 import logging
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
-from app.alert_ownership import describe_frozen
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
 )
-from saq.database.util.alert import set_disposition_reviews
+from saq.database.util.alert import describe_frozen, set_disposition_reviews
 from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
 

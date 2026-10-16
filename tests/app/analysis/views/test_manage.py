@@ -175,6 +175,36 @@ def test_manage_page_wires_datastar(web_client, analyst):
     assert f'id="cb_{alert.uuid}"' in html
 
 
+@pytest.mark.integration
+def test_manage_page_favicon_polls_the_reset_filter_count(web_client, analyst):
+    """The tab's notification dot counts the "Reset" filter through GET /api/v2/alerts/count, so
+    the URL it polls carries exactly that filter for the logged-in analyst."""
+    from urllib.parse import parse_qs, urlsplit
+    from saq.gui.filter_url import decode_filter_query
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    url = html_lib.unescape(re.search(r'data-reset-filter-count-url="([^"]*)"', html).group(1))
+
+    parts = urlsplit(url)
+    assert parts.path == "/api/v2/alerts/count"
+    filters, warnings = decode_filter_query(parse_qs(parts.query)["f"], strict=True)
+    assert warnings == []
+    assert [(f["name"], f["inverted"], f["values"]) for f in filters] == [
+        ("Disposition", False, [DISPOSITION_OPEN]),
+        ("Owner", False, ["None", "john"]),
+        ("Queue", False, [QUEUE_DEFAULT]),
+    ]
+
+
+@pytest.mark.integration
+def test_other_pages_do_not_poll_the_reset_filter_count(web_client, analyst):
+    html = web_client.get(url_for("events.manage")).data.decode()
+    assert "data-reset-filter-count-url" not in html
+
+
 def _search_response(alert_uuids, query="some search query", total=None):
     """A canned saq.search response: the first alert an exact match, the rest semantic."""
     from saq.search.types import LANE_LEXICAL, LANE_SEMANTIC, AlertSearchResult, SearchHit, SearchResponse
@@ -395,24 +425,47 @@ def test_search_endpoint_requires_alert_read(app):
         delete_user("noperm")
 
 
+def _export_url(html: str):
+    """The CSV export URL the filter bar carries, split into its path and query."""
+    from urllib.parse import parse_qs, urlsplit
+
+    url = html_lib.unescape(re.search(r'data-export-url="([^"]*)"', html).group(1))
+    parts = urlsplit(url)
+    return parts.path, parse_qs(parts.query)
+
+
 @pytest.mark.integration
-def test_csv_export_honors_an_active_temporary_filter(web_client, analyst):
-    """The export should match the list on screen, pivot included -- otherwise an analyst
-    exports something different from what they are looking at. export.py used to read the
-    filter payload straight out of the session cookie."""
+def test_csv_export_exports_the_filter_on_screen(web_client, analyst):
+    """Export to CSV downloads GET /api/v2/alerts/export/csv with the filters the bar shows, a
+    temporary pivot included -- otherwise an analyst exports something different from what
+    they are looking at -- and the analyst's timezone for relative dates."""
     import json
+    from saq.gui.filter_url import decode_filter_query
 
-    _insert_alert('export-temp-filter', 'temp filter export test alert')
+    pivot = [{"name": "Description", "inverted": False, "values": ["no-such-description-xyz"]}]
+    web_client.post(url_for("analysis.apply_temp_filter"), data={"filters": json.dumps(pivot), "label": "test"})
 
-    # go through the client so the filter lands in the same session the export request sees
-    web_client.post(url_for("analysis.apply_temp_filter"), data={
-        "filters": json.dumps([{"name": "Description", "inverted": False,
-                                "values": ["no-such-description-xyz"]}]),
-        "label": "test"})
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    assert 'onclick="export_alerts_to_csv()"' in html
 
-    response = web_client.get(url_for("analysis.export_alerts_to_csv"))
-    assert response.status_code == 200
-    assert 'temp filter export test alert' not in response.data.decode()
+    path, query = _export_url(html)
+    assert path == "/api/v2/alerts/export/csv"
+    assert query["tz"] == ["UTC"]
+    assert decode_filter_query(query["f"], strict=True) == (pivot, [])
+
+
+@pytest.mark.integration
+def test_csv_export_url_follows_the_refreshed_filter_bar(web_client, analyst):
+    """The filter bar is what the refresh poll re-renders, so the URL rides on it rather than on
+    the action bar, which is rendered once."""
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=[{"name": "Queue", "inverted": False, "values": ["external"]}])
+
+    refresh = web_client.get(url_for("analysis.manage_refresh")).data.decode()
+
+    path, query = _export_url(refresh)
+    assert path == "/api/v2/alerts/export/csv"
+    assert query["f"] == ["queue:external"]
 
 
 @pytest.mark.integration

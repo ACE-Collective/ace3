@@ -23,10 +23,11 @@ def analyst(global_setup):
 
     yield analyst.id
 
-    # clean up any remediations that reference this user before deleting the user
+    # clean up any remediations and observable comments that reference this user before deleting the user
     from saq.database.pool import get_db
-    from saq.database.model import Remediation
+    from saq.database.model import ObservableComment, Remediation
     get_db().query(Remediation).filter(Remediation.user_id == analyst.id).delete()
+    get_db().query(ObservableComment).filter(ObservableComment.user_id == analyst.id).delete()
     get_db().commit()
 
     delete_user("john")

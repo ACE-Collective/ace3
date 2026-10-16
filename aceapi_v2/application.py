@@ -7,17 +7,22 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from aceapi_v2.alerts.router import router as alerts_router
+from aceapi_v2.analysis.router import router as analysis_router
 from aceapi_v2.common.router import router as common_router
 from aceapi_v2.crashes.router import router as crashes_router
 from aceapi_v2.detection.router import router as detection_router
 from aceapi_v2.detection_points.router import router as detection_points_router
 from aceapi_v2.email.router import router as email_router
+from aceapi_v2.engine.router import router as engine_router
 from aceapi_v2.events.router import router as events_router
+from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
+from aceapi_v2.hunt.router import router as hunt_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
+from aceapi_v2.remediation.router import router as remediation_router
 from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
@@ -81,18 +86,23 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     # one alert's side of SVS: /alerts/{uuid}/svs
     app.include_router(svs_alerts_router, prefix="/alerts", tags=["svs"])
+    app.include_router(analysis_router, prefix="/analysis", tags=["analysis"])
     app.include_router(common_router, prefix="/common", tags=["common"])
     app.include_router(crashes_router, prefix="/crashes", tags=["crashes"])
     app.include_router(detection_router, prefix="/detection", tags=["detection"])
     app.include_router(detection_points_router, prefix="/detection-points", tags=["detection-points"])
     app.include_router(email_router, prefix="/email", tags=["email"])
+    app.include_router(engine_router, prefix="/engine", tags=["engine"])
     app.include_router(events_router, prefix="/events", tags=["events"])
+    app.include_router(file_collection_router, prefix="/file-collections", tags=["file-collections"])
     app.include_router(filter_screens_router, prefix="/filter-screens", tags=["saved-filters"])
     app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(hunt_router, prefix="/hunt", tags=["hunt"])
     app.include_router(nodes_router, prefix="/nodes", tags=["nodes"])
     app.include_router(observable_comments_router, prefix="/observable-comments", tags=["observables"])
     app.include_router(observable_types_router, prefix="/observable-types", tags=["observables"])
     app.include_router(observables_router, prefix="/observables", tags=["observables"])
+    app.include_router(remediation_router, prefix="/remediation", tags=["remediation"])
     app.include_router(saved_filters_router, prefix="/saved-filters", tags=["saved-filters"])
     app.include_router(search_router, prefix="/search", tags=["search"])
     app.include_router(secrets_router, prefix="/secrets", tags=["secrets"])

@@ -10,7 +10,6 @@ import pytest
 
 # Endpoints that mutate database or session state. GET must not reach them.
 POST_ONLY_ENDPOINTS = [
-    "analysis.set_owner",
     "analysis.set_sort_filter",
     "analysis.reset_filters",
     "analysis.select_filter",
@@ -30,7 +29,6 @@ POST_ONLY_ENDPOINTS = [
 # cannot be added later under an already-accepted verb.
 GET_ONLY_ENDPOINTS = [
     "analysis.redirect_to",
-    "analysis.download_file",
     "analysis.load_more_events",
     "analysis.new_alert_observable",
     "analysis.new_filter_option",

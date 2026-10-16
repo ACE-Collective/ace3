@@ -29,9 +29,7 @@ except ImportError:
     dump_pip_instructions_and_die()
 
 import argparse
-import base64
 import copy
-import csv
 import datetime
 import inspect
 import io
@@ -413,7 +411,7 @@ def submit(
         files_params.append(('file', (f[0], f[1])))
 
     # OK everything seems legit
-    return _execute_api_call('analysis/submit', data={
+    response = _execute_api_call('v2/analysis/', data={
         'analysis': json.dumps({
             'analysis_mode': analysis_mode,
             'tool': tool,
@@ -430,6 +428,9 @@ def submit(
             'extensions': extensions,
         }),
     }, files=files_params, method=METHOD_POST, *args, **kwargs).json()
+
+    # the library's published shape: {'result': {'uuid': ...}}
+    return {'result': {'uuid': response['uuid']}}
 
 def _cli_submit(args):
     
@@ -557,109 +558,25 @@ submit_command_parser.add_argument('--playbook-url',
     help="""An optional url to a playbook for this alert.""")
 submit_command_parser.set_defaults(func=_cli_submit)
 
-def resubmit_alert(uuid, *args, **kwargs):
-    """Resubmit an alert for analysis. This means the alert will be re-analyzed as-if it was new.
-
-    :param str uuid: The uuid of the alert to be resubmitted.
-    :return: A result dictionary (has 'result' key).
-    :rtype: dict
-    """
-    return _execute_api_call('analysis/resubmit/{}'.format(uuid), *args, **kwargs).json()
-
-def _cli_resubmit_alert(args):
-    return resubmit_alert(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
-
-#resubmit_command_parser = _api_command(subparsers.add_parser('resubmit',
-    #help="""Resubmit an alert for analysis. This means the alert will be re-analyzed as-if it was new."""))
-#resubmit_command_parser.add_argument('uuid', help="The UUID of the analysis/alert to resubmit.")
-#resubmit_command_parser.set_defaults(func=_cli_resubmit_alert)
-
 def get_analysis(uuid, *args, **kwargs):
-    """Get analysis results.
+    """Get an alert: its analysis tree plus its database state.
 
-    :param str uuid: The UUID of the analysis request.
-    :return: Result dictionary containing any and all analysis results.
+    Served by GET /api/v2/alerts/{uuid}, so only alerts are found; a submission that has not
+    become an alert raises requests.HTTPError (404).
+
+    :param str uuid: The UUID of the alert.
+    :return: {'result': <alert JSON>}
     :rtype: dict
     """
-    return _execute_api_call('analysis/{}'.format(uuid), *args, **kwargs).json()
+    return _execute_api_call('v2/alerts/{}'.format(uuid), *args, **kwargs).json()
 
 def _cli_get_analysis(args):
     return get_analysis(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
 
 get_analysis_command_parser = _api_command(subparsers.add_parser('get-analysis',
-    help="""Get analysis results."""))
-get_analysis_command_parser.add_argument('uuid', help="The UUID of the analysis to get.")
+    help="""Get an alert's analysis results."""))
+get_analysis_command_parser.add_argument('uuid', help="The UUID of the alert to get.")
 get_analysis_command_parser.set_defaults(func=_cli_get_analysis)
-
-def get_analysis_details(uuid, name, *args, **kwargs):
-    # Get external details.
-    return _execute_api_call('analysis/details/{}/{}'.format(uuid, name), *args, **kwargs).json()
-
-def _cli_get_analysis_details(args):
-    return get_analysis_details(remote_host=args.remote_host, 
-                                ssl_verification=args.ssl_verification, 
-                                uuid=args.uuid,
-                                name=args.name,
-                                api_key=args.api_key)
-
-get_analysis_details_command_parser = _api_command(subparsers.add_parser('get-analysis-details',
-    help="""Get detailed analysis results."""))
-get_analysis_details_command_parser.add_argument('uuid', help="The UUID of the analysis to get details from.")
-get_analysis_details_command_parser.add_argument('name', help="The name of the details to get.")
-get_analysis_details_command_parser.set_defaults(func=_cli_get_analysis_details)
-
-def get_analysis_file(uuid, name, output_file=None, output_fp=None, *args, **kwargs):
-    if output_file is None and output_fp is None:
-        output_fp = sys.stdout.buffer
-    elif output_fp is None:
-        output_fp = open(output_file, 'wb')
-
-    r = _execute_api_call('analysis/file/{}/{}'.format(uuid, name), stream=True, *args, **kwargs)
-    
-    size = 0
-    for chunk in r.iter_content(io.DEFAULT_BUFFER_SIZE):
-        if chunk:
-            output_fp.write(chunk)
-            size += len(chunk)
-
-    if output_file is not None:
-        output_fp.close()
-
-    return True
-
-def _cli_get_analysis_file(args):
-    return get_analysis_file(remote_host=args.remote_host,
-                             ssl_verification=args.ssl_verification,
-                             uuid=args.uuid,
-                             name=args.name,
-                             output_file=args.output_file,
-                             output_fp=sys.stdout.buffer if args.output_file is None else None,
-                             api_key=args.api_key)
-
-get_analysis_file_command_parser = _api_command(subparsers.add_parser('get-analysis-file',
-    help="""Download the given file from the given analysis."""))
-get_analysis_file_command_parser.add_argument('uuid', help="The UUID of the analysis to get the file from.")
-get_analysis_file_command_parser.add_argument('name', help="The name of the file to get.")
-get_analysis_file_command_parser.add_argument('-o', '--output-file', 
-    help="""The name of the local file to write to. If this option is not specified then the file is written
-            to standard output.""")
-get_analysis_file_command_parser.set_defaults(func=_cli_get_analysis_file)
-
-def get_analysis_status(uuid, *args, **kwargs):
-    """Get the status of an analysis.
-
-    :param str uuid: The analysis UUID.
-    :return: Result dictionary
-    """
-    return _execute_api_call('analysis/status/{}'.format(uuid), *args, **kwargs).json()
-
-def _cli_get_analysis_status(args):
-    return get_analysis_status(remote_host=args.remote_host, ssl_verification=args.ssl_verification, uuid=args.uuid, api_key=args.api_key)
-
-get_analysis_status_command_parser = _api_command(subparsers.add_parser('get-analysis-status',
-    help="""Get the status of an analysis."""))
-get_analysis_status_command_parser.add_argument('uuid', help="The UUID of the analysis to get the status from.")
-get_analysis_status_command_parser.set_defaults(func=_cli_get_analysis_status)
 
 def download(uuid, target_dir, *args, **kwargs):
     """Download everything related to this uuid and write it to target_dir.
@@ -673,7 +590,7 @@ def download(uuid, target_dir, *args, **kwargs):
     fp, tar_path = tempfile.mkstemp(prefix='download_{}'.format(uuid), suffix='.tar')
 
     try:
-        response = _execute_api_call('engine/download/{}'.format(uuid), stream=True, *args, **kwargs)
+        response = _execute_api_call('v2/engine/download/{}'.format(uuid), stream=True, *args, **kwargs)
 
         size = 0
         for chunk in response.iter_content(io.DEFAULT_BUFFER_SIZE):
@@ -730,7 +647,7 @@ def upload(uuid, source_dir, overwrite=False, sync=True, move=False, is_alert=Tr
             tar.add(source_dir, '.')
 
         with open(tar_path, 'rb') as fp:
-            return _execute_api_call('engine/upload/{}'.format(uuid), data={
+            return _execute_api_call('v2/engine/upload/{}'.format(uuid), data={
                 'upload_modifiers': json.dumps({
                     'overwrite': overwrite,
                     'sync': sync,
@@ -770,7 +687,7 @@ upload_command_parser.add_argument('--move', action="store_true", default=False,
 upload_command_parser.set_defaults(func=_cli_upload)
 
 def clear(uuid, lock_uuid, *args, **kwargs):
-    return _execute_api_call('engine/clear/{}/{}'.format(uuid, lock_uuid), *args, **kwargs).status_code == 200
+    return _execute_api_call('v2/engine/clear/{}/{}'.format(uuid, lock_uuid), method=METHOD_POST, *args, **kwargs).status_code == 200
 
 #
 # supporting backwards comptability for the old ace_client_lib.client library
@@ -857,43 +774,6 @@ class Analysis(object):
     @description.setter
     def description(self, value):
         self.submit_kwargs['description'] = description
-
-    @property
-    def status(self):
-        """Return the human readable status of this Analysis.
-
-            - If this Analysis does not have a uuid, the status is 'UNKNOWN: UUID is None'.
-            - A status of 'COMPLETE: No detections' is returned if this Analysis has a uuid but ACE returned a 404 for it (ACE deletes any analysis that didn't become an Alert).
-            - 'ANALYZING' means ACE is working on the root analysis.
-            - 'DELAYED' means ACE is waiting for one or more Analysis Modules to complete it's work.
-            - 'NEW' means ACE has received the Analysis but hasn't started working on it yet. Analysis shouldn't stay in the NEW state long.
-            - 'COMPLETE (Alerted with # detections)' means the Analysis became an Alert and has # detection points.
-        """
-        if self.uuid is None:
-            return "UNKNOWN: UUID is None. Not submitted?"
-        result = None
-        try:
-            result = get_analysis_status(self.uuid, remote_host=self.remote_host, ssl_verification=self.ssl_verification)
-        except requests.exceptions.HTTPError as e:
-            # UUID is not none, so ACE had to have received this analysis and then delete it after finding no detections
-            return "COMPLETE: No detections"
-        if 'result' not in result:
-            logger.error("Unexpected result when getting analysis status: {}".format(result))
-            return result
-        result = result['result']
-        if 'locks' in result and result['locks'] is not None:
-            return "ANALYZING"
-        if 'delayed_analysis' in result:
-            assert isinstance(result['delayed_analysis'], list)
-        if len(result['delayed_analysis']) > 0:
-            return "DELAYED"
-        if 'workload' in result and result['workload'] is not None:
-            return "NEW"
-        if 'alert' in result and result['alert'] is not None:
-            a = result['alert']
-            return "COMPLETE (Alerted with {} detections)".format(a['detection_count'])
-
-        return "UNKNOWN"
 
     def set_description(self, value):
         self.description = value
@@ -1379,496 +1259,6 @@ def _cli_update_event_status(args):
 #update_event_status_parser.add_argument('--event-id', help="Event ID", required=True)
 #update_event_status_parser.add_argument('--status', help="Event status", required=True)
 #update_event_status_parser.set_defaults(func=_cli_update_event_status)
-
-def get_observables(
-    ids=None,
-    types=None,
-    values=None,
-    b64values=None,
-    for_detection=None,
-    expired=None,
-    fa_hits=None,
-    detection_modified_by_names=None,
-    detection_modified_by_ids=None,
-    batch_ids=None,
-    alert_ids=None,
-    alert_uuids=None,
-    event_ids=None,
-    offset=None,
-    limit=None,
-    *args,
-    **kwargs):
-    """Searches and returns observable data.
-    
-    :return: 
-    :rtype: 
-    """
-    params = {}
-    if isinstance(ids, list) and ids:
-        params["ids"] = ",".join(map(str, ids))
-    if isinstance(types, list) and types:
-        params["types"] = ",".join(types)
-    if isinstance(values, list) and values:
-        params["values"] = ",".join(values)
-    if isinstance(b64values, list) and b64values:
-        params["b64values"] = ",".join(b64values)
-    if isinstance(for_detection, bool):
-        params["for_detection"] = "1" if for_detection else "0"
-    if isinstance(expired, bool):
-        params["expired"] = "1" if expired else "0"
-    if isinstance(fa_hits, str) and fa_hits:
-        params["fa_hits"] = fa_hits
-    if isinstance(detection_modified_by_names, list) and detection_modified_by_names:
-        params["detection_modified_by_names"] = ",".join(detection_modified_by_names)
-    if isinstance(detection_modified_by_ids, list) and detection_modified_by_ids:
-        params["detection_modified_by_ids"] = ",".join(map(str, detection_modified_by_ids))
-    if isinstance(batch_ids, list) and batch_ids:
-        params["batch_ids"] = ",".join(batch_ids)
-    if isinstance(alert_ids, list) and alert_ids:
-        params["alert_ids"] = ",".join(map(str, alert_ids))
-    if isinstance(alert_uuids, list) and alert_uuids:
-        params["alert_uuids"] = ",".join(alert_uuids)
-    if isinstance(event_ids, list) and event_ids:
-        params["event_ids"] = ",".join(map(str, event_ids))
-    if isinstance(offset, int):
-        params["offset"] = str(offset)
-    if isinstance(limit, int):
-        params["limit"] = str(limit)
-
-    return _execute_api_call('intel/observables', method=METHOD_GET, params=params, *args, **kwargs).json()
-
-def iter_get_observables(*args, page_size=10000, **kwargs):
-    # did we specify offset and limit?
-    hard_limit = isinstance(kwargs.get("limit", None), int)
-
-    # otherwise we paginate
-    limit = kwargs.get("limit", None)
-    offset = kwargs.get("offset", None)
-
-    if limit is None:
-        limit = page_size
-
-    if offset is None:
-        offset = 0
-
-    # pull these args out since we pass them on
-    kwargs.pop("limit", None)
-    kwargs.pop("offset", None)
-
-    while True:
-        result = get_observables(offset=offset, limit=limit, *args, **kwargs)
-        if result["error"]:
-            raise RuntimeError(result["error"])
-
-        if not result["results"]:
-            break
-
-        for observable in result["results"]:
-            yield observable
-
-        if hard_limit:
-            break
-
-        if len(result["results"]) < limit:
-            break
-
-        offset += len(result["results"])
-
-def _iter_get_observables_args(args):
-    b64values = None
-    if args.value:
-        b64values = [base64.b64encode(_.encode()).decode() for _ in args.value]
-
-    for_detection = None
-    if args.detection_enabled:
-        for_detection = True
-    elif args.detection_disabled:
-        for_detection = False
-
-    expired = None
-    if args.expired:
-        expired = True
-    elif args.not_expired:
-        expired = False
-
-    for observable in iter_get_observables(
-        ids=args.ids.split(",") if args.ids else None,
-        types=args.types.split(",") if args.types else None,
-        values=args.values.split(",") if args.values else None,
-        b64values=b64values,
-        for_detection=for_detection,
-        expired=expired,
-        fa_hits=args.fa_hits,
-        detection_modified_by_names=args.detection_modified_by.split(",") if args.detection_modified_by else None,
-        detection_modified_by_ids=args.detection_modified_by_ids.split(",") if args.detection_modified_by_ids else None,
-        batch_ids=args.batch_ids.split(",") if args.batch_ids else None,
-        alert_ids=args.alert_ids.split(",") if args.alert_ids else None,
-        alert_uuids=args.alert_uuids.split(",") if args.alert_uuids else None,
-        event_ids=args.event_ids.split(",") if args.event_ids else None,
-        remote_host=args.remote_host, 
-        ssl_verification=args.ssl_verification, 
-        api_key=args.api_key,
-        limit=args.limit,
-        offset=args.offset,
-        page_size=args.page_size):
-
-        yield observable
-
-# NOTE: "id" is the observable_detections row id. "observable_id" is the observables index row for
-# the same value, and is empty for a detection added before the value was ever seen in an alert.
-#
-# "md5" has never been returned by the API, so this column has always been empty -- reading it used
-# to raise KeyError and abort the export on the first row. It is kept (empty) rather than dropped so
-# an existing downstream parser does not see the column count change.
-OBSERVABLE_CSV_HEADERS = [
-    "id",
-    "observable_id",
-    "type",
-    "value",
-    "md5",
-    "fa_hits",
-    "for_detection",
-    "expires_on",
-    "detection_modified_by",
-    "detection_modified_by_display",
-    "batch_id",
-    "context"]
-
-def _cli_get_observables(args):
-    # are we exporting to a csv file?
-    csv_writer = None
-    csv_fp = None
-
-    if hasattr(args, "export_csv") and args.export_csv:
-        if args.export_csv == "-":
-            csv_fp = sys.stdout
-        else:
-            csv_fp = open(args.export_csv, "w")
-
-        csv_writer = csv.writer(csv_fp)
-        csv_writer.writerow(OBSERVABLE_CSV_HEADERS)
-
-    for observable in _iter_get_observables_args(args):
-        observable["value"] = base64.b64decode(observable["value"]).decode()
-        if csv_writer:
-            # every field is read with .get() so that a newer client stays usable against an older
-            # server (and vice versa) instead of dying on a KeyError
-            detection_modified_by = ""
-            detection_modified_by_display = ""
-            if observable.get("detection_modified_by"):
-                detection_modified_by = observable["detection_modified_by"]["username"]
-                detection_modified_by_display = observable["detection_modified_by"]["display_name"]
-
-            expires_on = observable.get("expires_on")
-
-            csv_writer.writerow([
-                observable.get("id"),
-                observable.get("observable_id") or "",
-                observable.get("type"),
-                observable.get("value"),
-                observable.get("md5"),
-                observable.get("fa_hits"),
-                "Yes" if observable.get("for_detection") else "No",
-                datetime.datetime.strptime(expires_on, "%a, %d %b %Y %H:%M:%S %Z").strftime("%Y-%m-%d %H:%M:%S") if expires_on else "",
-                detection_modified_by,
-                detection_modified_by_display,
-                observable.get("batch_id") or "",
-                observable.get("detection_context") or ""])
-        else:
-            pprint.pprint(observable)
-
-    if csv_fp and args.export_csv != "-":
-        csv_fp.close()
-
-get_observables_parser = _api_command(subparsers.add_parser('get-observables',
-    help="""Search ICE observable data."""))
-
-def _add_observable_query_arguments(parser):
-    parser.add_argument("--ids", help="Comma separated list of observable ids.")
-    parser.add_argument("--types", help="Comma separated list of observable types.")
-    parser.add_argument("--values", help="Comma separated list of observable values.")
-    parser.add_argument("--value", action="append",
-        help="Observable value. Can be specified mutiple times. Use this if you have multiple values that might contain commas.")
-    parser.add_argument("--detection-enabled", action="store_true", default=False,
-            help="Return observabes with detection enabled.")
-    parser.add_argument("--detection-disabled", action="store_true", default=False,
-            help="Return observabes with detection disabled.")
-    parser.add_argument("--expired", action="store_true", default=False,
-            help="Return observabes that have expired.")
-    parser.add_argument("--not-expired", action="store_true", default=False,
-            help="Return observabes that have not expired.")
-    parser.add_argument("--fa-hits",
-            help="""Query frequency analysis results. Use one of the following search patterns.
-            | true: Return observables that FAILED frequency anaysis (have more than 1 hit.)
-            | false: Return observables that PASSED frequency analysis (have 0 hits.)
-            | >N: Return observables with > N hits.
-            | <N: Return observables with < N hits.
-            | N: Return observables with exactly N hits.
-            | NOTE: Remember to escape > and < in your shell!""")
-    parser.add_argument("--detection-modified-by", help="Comma separated list of user names.")
-    parser.add_argument("--detection-modified-by-ids", help="Comma separated list of user ids.")
-    parser.add_argument("--batch-ids", help="Comma separated list of batch ids.")
-    parser.add_argument("--alert-ids", help="Comma separated list of alert ids.")
-    parser.add_argument("--alert-uuids", help="Comma separated list of alert uuids.")
-    parser.add_argument("--event-ids", help="Comma separated list of event ids.")
-    parser.add_argument("--limit", type=int, help="Limit the total number of results.")
-    parser.add_argument("--offset", type=int, help="Start at result N.")
-    parser.add_argument("--page-size", type=int, default=10000, help="When not specifying --limit, this is the number of observables to query at once.")
-
-_add_observable_query_arguments(get_observables_parser)
-get_observables_parser.add_argument("--export-csv", help="Export the results to the specified CSV file.")
-get_observables_parser.set_defaults(func=_cli_get_observables)
-
-def set_observables(
-    ids=None,
-    types=None,
-    values=None,
-    b64values=None,
-    for_detection=None,
-    expires_on=None,
-    detection_context=None,
-    batch_id=None,
-    *args,
-    **kwargs):
-    """Modifies observable detections.
-    
-    :return: 
-    :rtype: 
-    """
-    updates = []
-    # then figure out what we want to make those changes to
-    if isinstance(ids, list) and ids:
-        updates.extend([{"id": id} for id in map(str, ids)])
-    if isinstance(types, list) and types:
-        for type in types:
-            if isinstance(values, list) and values:
-                updates.extend([{"type": type, "value": value} for value in values])
-            if isinstance(b64values, list) and b64values:
-                updates.extend([{"type": type, "b64value": b64value} for b64value in b64values])
-    if isinstance(for_detection, bool):
-        for update in updates:
-            update["for_detection"] = for_detection
-    if isinstance(expires_on, bool) or isinstance(expires_on, str):
-        for update in updates:
-            update["expires_on"] = expires_on
-    if isinstance(detection_context, str):
-        for update in updates:
-            update["detection_context"] = detection_context
-    if isinstance(batch_id, str):
-        for update in updates:
-            update["batch_id"] = batch_id
-
-    #print(json.dumps({"updates": updates}))
-    return _execute_api_call('intel/observables', method=METHOD_POST, data={"updates": json.dumps({"updates": updates})}, *args, **kwargs).json()
-
-CSV_COLUMN_ID = "id"
-CSV_COLUMN_TYPE = "type"
-CSV_COLUMN_VALUE = "value"
-CSV_COLUMN_MD5 = "md5"
-CSV_COLUMN_FA_HITS = "fa_hits"
-CSV_COLUMN_FOR_DETECTION = "for_detection"
-CSV_COLUMN_EXPIRES_ON = "expires_on"
-CSV_COLUMN_DETECTION_MODIFIED_BY = "detection_modified_by"
-CSV_COLUMN_DETECTION_MODIFIED_NAME = "detection_modified_by_display"
-CSV_COLUMN_BATCH_ID = "batch_id"
-CSV_COLUMN_CONTEXT = "context"
-CSV_COLUMN_NAMES = set([
-    CSV_COLUMN_ID,
-    CSV_COLUMN_TYPE,
-    CSV_COLUMN_VALUE,
-    CSV_COLUMN_MD5,
-    CSV_COLUMN_FA_HITS,
-    CSV_COLUMN_FOR_DETECTION,
-    CSV_COLUMN_EXPIRES_ON,
-    CSV_COLUMN_DETECTION_MODIFIED_BY,
-    CSV_COLUMN_DETECTION_MODIFIED_NAME,
-    CSV_COLUMN_BATCH_ID,
-    CSV_COLUMN_CONTEXT,
-])
-
-def _get_csv_value(column_mapping: dict, column_name: str, row: list) -> bool:
-    if column_name not in column_mapping:
-        return None
-
-    value = row[column_mapping[column_name]]
-    if isinstance(value, str) and len(value) == 0:
-        return None
-
-    return value
-
-def _cli_set_observables_import_csv(args):
-    is_standard_format = False
-    is_simple_format = False
-
-    with open(args.import_csv, "r") as fp:
-        reader = csv.reader(fp)
-
-        column_mapping = {} # column_name = row index in csv
-        row_number = 0
-        for row in reader:
-            row_number += 1 
-            if row_number == 1:
-                for index, column_name in enumerate(row):
-                    if column_name not in CSV_COLUMN_NAMES:
-                        continue
-
-                    column_mapping[column_name] = index
-
-                if ( CSV_COLUMN_ID not in column_mapping 
-                        and CSV_COLUMN_TYPE not in column_mapping
-                        and CSV_COLUMN_VALUE not in column_mapping ):
-                    sys.stderr.write("ERROR: csv missing basic required columns (see --help)\n")
-                    sys.exit(1)
-
-                continue
-
-            for_detection = None
-            if args.enable_detection:
-                for_detection = True
-            elif args.disable_detection:
-                for_detection = False
-            elif CSV_COLUMN_FOR_DETECTION in column_mapping:
-                # Only act on the column when the csv actually has it. This used to compare
-                # unconditionally, so a csv without a for_detection column silently sent
-                # for_detection=False for every row -- which now means "delete the detection".
-                for_detection = _get_csv_value(column_mapping, CSV_COLUMN_FOR_DETECTION, row) == "Yes"
-
-            expires_on = None
-            if args.expires_on:
-                # check format
-                try:
-                    datetime.datetime.strptime(args.expires_on, "%Y-%m-%d %H:%M:%S")
-                    expires_on = args.expires_on
-                except Exception as e:
-                    sys.stderr.write(f"--expires-on must match format %Y-%m-%d %H:%M:%S\n")
-                    sys.exit(1)
-            elif args.clear_expiration:
-                expires_on = False
-            else:
-                expires_on = _get_csv_value(column_mapping, CSV_COLUMN_EXPIRES_ON, row)
-                if expires_on:
-                    expires_on = datetime.datetime.strptime(expires_on, "%Y-%m-%d %H:%M:%S")
-
-            detection_context = args.context if args.context else _get_csv_value(column_mapping, CSV_COLUMN_CONTEXT, row)
-
-            batch_id = args.batch_id if args.batch_id else _get_csv_value(column_mapping, CSV_COLUMN_BATCH_ID, row)
-            if args.generate_batch_id:
-                batch_id = str(uuid.uuid4())
-
-            csv_id = _get_csv_value(column_mapping, CSV_COLUMN_ID, row)
-            csv_type = _get_csv_value(column_mapping, CSV_COLUMN_TYPE, row)
-            csv_value = _get_csv_value(column_mapping, CSV_COLUMN_VALUE, row)
-
-            result = set_observables(
-                ids=[csv_id] if csv_id else None,
-                types=[csv_type] if csv_id is None else None,
-                b64values = [base64.b64encode(csv_value.encode(errors="ignore")).decode()] if csv_id is None else None,
-                for_detection=for_detection,
-                expires_on=expires_on,
-                detection_context=detection_context,
-                batch_id=batch_id,
-                remote_host=args.remote_host, 
-                ssl_verification=args.ssl_verification, 
-                api_key=args.api_key)
-
-            if result["error"]:
-                sys.stderr.write(f"ERROR: row {row_number}: {result['error']}")
-                continue
-
-            pprint.pprint(result)
-
-def _cli_set_observables(args):
-
-    if args.import_csv:
-        return _cli_set_observables_import_csv(args)
-
-    # first query what observables we want to update
-    # if what we want to do is update observables (not create them)
-    ids = None
-    b64values = None
-
-    if not args.create:
-        observables = list(_iter_get_observables_args(args))
-        if not observables:
-            sys.stderr.write("ERROR: your search parameters did not match any observables to update!\n")
-            sys.exit(1)
-
-        ids = [str(_["id"]) for _ in observables]
-
-    else:
-        if args.value:
-            b64values = [base64.b64encode(_.encode()).decode() for _ in args.value]
-
-    for_detection = None
-    if args.enable_detection:
-        for_detection = True
-    elif args.disable_detection:
-        for_detection = False
-    elif args.create:
-        for_detection = True
-
-    expires_on = None
-    if args.expires_on:
-        # check format
-        try:
-            datetime.datetime.strptime(args.expires_on, "%Y-%m-%d %H:%M:%S")
-            expires_on = args.expires_on
-        except Exception as e:
-            sys.stderr.write(f"--expires-on must match format %Y-%m-%d %H:%M:%S\n")
-            sys.exit(1)
-    elif args.clear_expiration:
-        expires_on = False
-
-    batch_id = args.batch_id
-    if args.generate_batch_id:
-        batch_id = str(uuid.uuid4())
-
-    if for_detection is None and expires_on is None and args.context is None and batch_id is None:
-        sys.stderr.write("INFO: nothing will change\n")
-        sys.exit(0)
-
-    return set_observables(
-        ids=ids,
-        types=args.types.split(",") if args.create and args.types else None,
-        values=args.values.split(",") if args.create and args.values else None,
-        b64values=b64values,
-        for_detection=for_detection,
-        expires_on=expires_on,
-        detection_context=args.context,
-        batch_id=batch_id,
-        remote_host=args.remote_host, 
-        ssl_verification=args.ssl_verification, 
-        api_key=args.api_key)
-
-set_observables_parser = _api_command(subparsers.add_parser('set-observables',
-    help="""Set ICE observable detection."""))
-_add_observable_query_arguments(set_observables_parser)
-set_observables_parser.add_argument("--create", action="store_true", default=False,
-    help="""Create active detections for the given observables if they do not already have one.
-    The observable does not need to have ever been seen in an alert. A detection is live as soon as
-    it exists, so this implies --enable-detection.""")
-set_observables_parser.add_argument("--enable-detection", action="store_true", default=False,
-    help="Enable detection.")
-set_observables_parser.add_argument("--disable-detection", action="store_true", default=False,
-    help="Disable detection. A detection is a row, so this deletes it.")
-set_observables_parser.add_argument("--expires-on", help="Set the detection expiration in %%Y-%%m-%%d %%H:%%M:%%S format.")
-set_observables_parser.add_argument("--clear-expiration", action="store_true", default=False,
-    help="Clear the expiration of the detection so that it never expires.")
-set_observables_parser.add_argument("--context", 
-    help="Free form string to add context to the observable.")
-set_observables_parser.add_argument("--batch-id", 
-    help="UUID assigned to an observable for the purpose of batching frequency analysis work.")
-set_observables_parser.add_argument("--generate-batch-id", action="store_true", default=False,
-    help="Assign a new unique batch ID.")
-set_observables_parser.add_argument("--import-csv",
-    help="""Import and apply the given csv file.
-    The CSV file must have a header row and must have either a column named id or columns named type and value.
-    The CSV file can also contain the following columns: for_detection, expires_on, batch_id, context.
-    Any other columns are ignored.
-    This only updates detections that already exist. Creating a detection for a value that has none
-    requires --enable-detection or a for_detection column set to Yes; other such rows are reported
-    as errors and skipped.""")
-set_observables_parser.set_defaults(func=_cli_set_observables)
 
 def iter_archived_email(message_id: str, *args, **kwargs):
     response = _execute_api_call(

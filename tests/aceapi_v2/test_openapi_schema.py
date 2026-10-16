@@ -18,8 +18,13 @@ import pytest
 V2_BINARY_ROUTES = {
     "/alerts/{alert_uuid}/download": "application/zip",
     "/alerts/{alert_uuid}/logs": "text/plain",
+    "/alerts/{alert_uuid}/observables/{observable_uuid}/hex": "text/plain",
+    "/alerts/{alert_uuid}/observables/{observable_uuid}/image": "image/*",
+    "/alerts/{alert_uuid}/observables/{observable_uuid}/text": "text/plain",
+    "/alerts/{alert_uuid}/observables/{observable_uuid}/zip": "application/zip",
     "/crashes/{crash_id}/download": "application/zip",
     "/email/archive": "message/rfc822",
+    "/engine/download/{uuid}": "application/x-tar",
     "/events/export": "text/csv",
     "/signatures/yara-qa/matches/{match_id}/download": "application/zip",
     "/signatures/yara-qa/{signature_uuid}/download": "application/zip",

@@ -1,6 +1,7 @@
 """Tests for the aceapi_v2 observable-detection router."""
 
 import hashlib
+import logging
 from datetime import datetime
 
 import pytest
@@ -207,6 +208,27 @@ class TestExpiration:
     async def test_unknown_404(self, client: AsyncClient):
         r = await client.patch("/detection/999999/expiration", json={"expires_on": None})
         assert r.status_code == 404
+
+
+class TestAudit:
+    @pytest.mark.asyncio
+    async def test_writes_are_audited(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        """Every write logs who did it and to which value; for the alert page's detection actions
+        this is the only audit trail."""
+        caplog.set_level(logging.INFO, logger="aceapi_v2.detection.router")
+
+        created = await client.post("/detection/", json={
+            "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert"})
+        detection_id = created.json()["id"]
+        await client.patch(f"/detection/{detection_id}/expiration", json={"expires_on": None})
+        await client.delete(f"/detection/{detection_id}")
+
+        audit = [r.getMessage() for r in caplog.records if r.getMessage().startswith("AUDIT:")]
+        assert audit == [
+            f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com': from an alert",
+            f"AUDIT: user unittest set the expiration of detection {detection_id} for fqdn 'audited.example.com' to never",
+            f"AUDIT: user unittest removed detection {detection_id} for fqdn 'audited.example.com'",
+        ]
 
 
 class TestTypes:

@@ -623,10 +623,10 @@ api:
 apikeys:
   # Automatically generated api key used for node-to-node communication. The scope must cover every
   # endpoint the engine calls on a peer node:
-  #   alert:create -> POST /api/analysis/submit
-  #   engine:*     -> GET  /api/engine/download/{uuid}
-  #                   POST /api/engine/upload/{uuid}
-  #                   GET  /api/engine/clear/{uuid}/{lock_uuid}
+  #   alert:create -> POST /api/v2/analysis/
+  #   engine:*     -> GET  /api/v2/engine/download/{uuid}
+  #                   POST /api/v2/engine/upload/{uuid}
+  #                   POST /api/v2/engine/clear/{uuid}/{lock_uuid}
   # The bare-string form (name: <sha256>) is still accepted but deprecated: it carries no scope and
   # bypasses permission checks.
   automation:
@@ -687,12 +687,6 @@ gui:
     - 0
   # secret key used by flask
   secret_key: file:/auth/keys/flask-secret-key
-  # comma separated list of observable types that are excluded from whitelisting
-  whitelist_excluded_observable_types:
-    - ipv4_full_conversation
-    - yara_rule
-    - indicator
-    - snort_sig
   # specifies the number of bytes of read when generating previews for files
   # these are observables of type F_FILE that have the directive PREVIEW set
   file_preview_bytes: 512
@@ -1365,6 +1359,16 @@ analysis_module_html_data_url_extraction:
   enabled: true
   # the maximum number of bytes to read from the file
   max_bytes: 104857600
+
+analysis_module_har_extraction:
+  name: har_extraction
+  python_module: saq.modules.file_analysis.har
+  python_class: HARExtractor
+  enabled: true
+  # largest .har file parsed, in bytes (the whole file is loaded as JSON)
+  max_file_size: 52428800
+  # most response bodies extracted from one .har file, pages first, then scripts in request order
+  max_extracted_files: 50
 
 analysis_module_html_js_extraction:
   name: html_js_extraction
@@ -2429,6 +2433,7 @@ module_group_file:
     - file_hash_analyzer
     - file_path_analysis
     - file_type
+    - har_extraction
     - hidden_mime
     - html_data_url_extraction
     - html_js_extraction

@@ -304,7 +304,6 @@ class GUIConfig(BaseModel):
     default_company_id: int = Field(..., description="default company for manual analysis")
     core_companies: list[int] = Field(..., description="define what companies are core companies")
     secret_key: str = Field(..., description="secret key used by flask")
-    whitelist_excluded_observable_types: list[str] = Field(..., description="comma separated list of observable types that are excluded from whitelisting")
     file_preview_bytes: int = Field(..., description="specifies the number of bytes of read when generating previews for files")
     local_node_only: bool = Field(..., description="by default we only show alerts that exist on the local node")
     show_root_observables: bool = Field(..., description="enabling this option forces all observables in the root analysis to be visible in the critical analysis view")

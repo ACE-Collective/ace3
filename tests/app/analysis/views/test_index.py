@@ -724,6 +724,8 @@ def test_index_renders_detection_and_interesting_actions(
                 for_detection=True,
                 detection_modified_by="tester",
                 detection_context="enabled by tester",
+                detection_id=4242,
+                expires_on=datetime(2099, 1, 2, 3, 4, 5),
             )
             for observable in alert.all_observables
         }
@@ -739,6 +741,33 @@ def test_index_renders_detection_and_interesting_actions(
     body = result.data.decode("utf-8")
     assert "Disable observable for future detection" in body
     assert "Enable observable for future detection" not in body
+
+    # disable and adjust-expiration address the detection by id through /api/v2/detection, and the
+    # expiration dialog opens with the detection's current expiration
+    assert 'aceApi.del("/detection/4242")' in body
+    assert re.search(r'show_detection_expiration_modal_for\(\s*4242,\s*"2099-01-02 03:04:05"\)', body)
+
+
+@pytest.mark.integration
+def test_index_enable_detection_action_posts_to_the_api(
+    web_client, root_analysis, test_context,
+):
+    """An observable without a detection offers "enable", which creates one through
+    POST /api/v2/detection/ with the observable's type and value."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Enable observable for future detection" in body
+    assert 'aceApi.post("/detection/", {' in body
+    assert f'value: "{test_observable.value}"' in body
 
 
 @pytest.mark.integration
@@ -812,6 +841,35 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     action_names = [action.name for action in presenter.available_actions]
     assert ACTION_DISABLE_DETECTION in action_names
     assert ACTION_UNMARK_INTERESTING in action_names
+
+
+@pytest.mark.unit
+def test_the_observable_menu_starts_with_an_action(root_analysis):
+    """The menu opens with the detection action, not a divider, and offers no whitelisting (the
+    Whitelist and Un-Whitelist actions were deleted)."""
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.gui import ObservableActionSeparator
+
+    observable = root_analysis.add_observable_by_spec(F_TEST, "menu")
+    presenter = create_observable_presenter(observable, detection_status=False, is_interesting=False)
+
+    actions = presenter.available_actions
+    assert not isinstance(actions[0], ObservableActionSeparator)
+    assert not any("whitelist" in (action.name or "") for action in actions)
+
+
+@pytest.mark.unit
+def test_a_url_can_be_crawled(root_analysis):
+    """URL observables offer the crawl action (phishkit), next to the clicker actions."""
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.constants import ACTION_CHECK_FOR_CLICKERS, ACTION_URL_CRAWL, F_URL
+
+    observable = root_analysis.add_observable_by_spec(F_URL, "https://evil.example/login")
+    presenter = create_observable_presenter(observable, detection_status=False, is_interesting=False)
+
+    action_names = [action.name for action in presenter.available_actions]
+    assert ACTION_URL_CRAWL in action_names
+    assert ACTION_CHECK_FOR_CLICKERS in action_names
 
 
 #

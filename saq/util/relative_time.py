@@ -193,5 +193,10 @@ def resolve_date_range_for_display(value: str) -> str:
     except (RelativeTimeError, ValueError):
         return ""
 
+    return format_date_range(start, end, tz)
+
+
+def format_date_range(start: datetime, end: datetime, tz: tzinfo) -> str:
+    """A resolved date range as the analyst reads it, in their timezone."""
     return (f"{start.astimezone(tz).strftime(ABSOLUTE_DATE_FORMAT)} – "
             f"{end.astimezone(tz).strftime(ABSOLUTE_DATE_FORMAT)}")

@@ -10,16 +10,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from saq.analysis.module_path import IS_MODULE_PATH
 from saq.detection_verdicts.constants import SOURCES, VERDICTS
+from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 from saq.gui.detection_point_value import normalize_detection_point_value
 from saq.gui.filter_names import (
     DATE_RANGE_FILTER_NAMES,
     DETECTION_POINT_FILTER_SLUGS,
+    FILE_COLLECTION_FILTER_SLUGS,
     FILTER_NAMES,
+    REMEDIATION_FILTER_SLUGS,
     SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
 )
+from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
 from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 from saq.util.uuid import UUID_REGEX
@@ -403,3 +407,100 @@ class RunFilterEntry(FilterEntryBase):
                 raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
 
         return values
+
+
+# the options of the Remediations screen's multiple-choice filters
+REMEDIATION_FILTER_OPTIONS = {
+    "Action": tuple(action.value for action in RemediationAction),
+    "Status": tuple(status.value for status in RemediationStatus),
+    "Result": tuple(result.value for result in RemediatorStatus),
+}
+
+# the options of the File Collections screen's multiple-choice filters
+FILE_COLLECTION_FILTER_OPTIONS = {
+    "Status": tuple(status.value for status in FileCollectionStatus),
+    "Result": tuple(result.value for result in FileCollectorStatus),
+}
+
+
+def _request_filter_values(name: str, values: list, options: dict[str, tuple[str, ...]]) -> list:
+    """The values of a filter of the Remediations or File Collections screen, which list the
+    requests a service works through: an ID is a number, an Alert a uuid, Created a date range,
+    and a multiple-choice value one of its options in any case. Text filters take any text."""
+    if not all(isinstance(value, str) for value in values):
+        raise ValueError(f"values must be strings, got {values!r}")
+
+    if name == "ID":
+        values = [value.strip() for value in values]
+        for value in values:
+            if not value.isdigit():
+                raise ValueError(f"invalid id {value!r} (expected a number)")
+        return values
+
+    if name == "Alert":
+        values = [value.strip().lower() for value in values]
+        for value in values:
+            if not UUID_REGEX.fullmatch(value):
+                raise ValueError(f"invalid alert uuid {value!r}")
+        return values
+
+    if name == "Created":
+        now = datetime.now(pytz.utc)
+        for value in values:
+            try:
+                parse_date_range(value, now=now, tz=pytz.utc)
+            except ValueError as e:
+                raise ValueError(f"invalid date range {value!r}: {e}") from None
+        return values
+
+    allowed = options.get(name)
+    if allowed is None:
+        return values
+
+    by_lower = {option.lower(): option for option in allowed}
+    result = []
+    for value in values:
+        if value.lower() not in by_lower:
+            raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+        result.append(by_lower[value.lower()])
+    return result
+
+
+class RemediationFilterEntry(FilterEntryBase):
+    """A filter entry of the Remediations screen (GET /api/v2/remediation/remediations)."""
+
+    name: str = Field(description="a filter name of the Remediations screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in REMEDIATION_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(REMEDIATION_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        return _request_filter_values(info.data.get("name"), values, REMEDIATION_FILTER_OPTIONS)
+
+
+class FileCollectionFilterEntry(FilterEntryBase):
+    """A filter entry of the File Collections screen (GET /api/v2/file-collections)."""
+
+    name: str = Field(description="a filter name of the File Collections screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in FILE_COLLECTION_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(FILE_COLLECTION_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        return _request_filter_values(info.data.get("name"), values, FILE_COLLECTION_FILTER_OPTIONS)

@@ -1,5 +1,5 @@
 // A filtered, sorted, paged list screen built as a shell over the API (docs/SVS.md, Part 5): the
-// Signatures -> Samples page, and the SVS screens after it.
+// Signatures -> Samples and Validations pages, Remediations and File Collections.
 //
 // The screen's filters are the {name, inverted, values} entries of a filter screen
 // (saq/gui/filter_screens.py). The controller reads the screen's descriptor from
@@ -32,14 +32,21 @@
 //         tz: "America/New_York",        // relative date filters resolve in it
 //         exports: ["csv", "ndjson"],    // formats served at {api}/export/{format}
 //         download: {path, hint},        // optional: a bulk download at {api}{path}?f=...
+//         select: {                      // optional: a checkbox per row, for actions on the selection
+//             key(row),                  //   what identifies a row, such as its id
+//             onChange(rows),            //   optional: the selected rows, after every change
+//             noun: "run",               //   optional, with actions: "3 runs selected"
+//             actions: [{label, title, run(keys, rows)}],    // optional: an Actions menu, see below
+//         },
 //         emptyText: "...",
 //         defaultF: ["needs_attention:true"],    // optional, see below
-//         selection: {                   // optional, see below
-//             key(row),                  // what identifies a row to the actions
-//             noun: "run",               // "3 runs selected"
-//             actions: [{label, title, run(keys, rows)}],
-//         },
 //     });
+//
+// The selection is the ticked rows that are still shown: a row that leaves the list (on another
+// page, filtered out, or gone when refresh() reloads the page that is shown) leaves it. A page
+// either builds its own controls over it (onChange, selected()) or names select.actions, which
+// adds an Actions menu over the table. action.run(keys, rows) returns a promise: the page shown
+// reloads when it resolves to anything but false, and shows the error when it rejects.
 //
 // It creates the page's SAVED_FILTERS instance (saved_filters.js), which the macro's markup
 // calls. Every value shown comes from analyzed data, so it is placed as text, never markup.
@@ -48,12 +55,8 @@
 // name it, so a share link opens the same; no filters at all is then written as a bare "?f=". A
 // quick filter whose filters are the ones shown is marked as open.
 //
-// selection adds a checkbox to every row and an Actions menu over the table. The selection is the
-// rows of the page shown, and loading any page clears it. action.run(keys, rows) returns a promise:
-// the page reloads when it resolves to anything but false, and shows the error when it rejects.
-//
-// The page object create() returns has reload(), setFilters(filters), shareUrl(f) and filters(), a
-// copy of the filters shown.
+// The page object create() returns has reload(), refresh() (the page shown), selected(),
+// setFilters(filters), shareUrl(f) and filters(), a copy of the filters shown.
 
 var FilterListPage = (function() {
     "use strict";
@@ -100,6 +103,7 @@ var FilterListPage = (function() {
         const root = options.root;
         const screen = options.screen;
         const columns = options.columns;
+        const select = options.select || null;
 
         const state = {
             descriptor: null,        // the screen's filters, by name
@@ -115,9 +119,8 @@ var FilterListPage = (function() {
             generation: 0,           // drops responses to requests a newer one replaced
             defaulted: false,        // the URL named no view, so defaultF is shown
             rows: [],                // the rows shown
-            selected: new Map(),     // selection.key(row) -> row, of the rows shown
+            selected: new Map(),     // select.key(row) -> row, for the ticked rows
         };
-        const selection = options.selection || null;
 
         //
         // layout
@@ -134,7 +137,7 @@ var FilterListPage = (function() {
         const tbody = table.createTBody();
         const pager = el("div", "d-flex flex-wrap align-items-center gap-2");
         root.append(error, warning, bar);
-        if (selection) {
+        if (select && select.actions) {
             root.appendChild(selection_bar);
         }
         root.append(table, pager);
@@ -620,11 +623,126 @@ var FilterListPage = (function() {
             return params;
         }
 
+        //
+        // the selection
+        //
+
+        const select_all = el("input", "form-check-input");
+        select_all.type = "checkbox";
+        select_all.title = "select every row on this page";
+        select_all.setAttribute("aria-label", select_all.title);
+        select_all.addEventListener("change", function() {
+            state.rows.forEach(function(row) {
+                if (select_all.checked) {
+                    state.selected.set(select.key(row), row);
+                } else {
+                    state.selected.delete(select.key(row));
+                }
+            });
+            tbody.querySelectorAll("input.filter-list-select").forEach(function(box) {
+                box.checked = select_all.checked;
+            });
+            selection_changed();
+        });
+
+        function selection_changed() {
+            const count = state.selected.size;
+            select_all.checked = state.rows.length > 0 && count === state.rows.length;
+            select_all.indeterminate = count > 0 && count < state.rows.length;
+            if (select.actions) {
+                const noun = select.noun || "row";
+                selection_count.textContent = count ? count + " " + noun + (count === 1 ? "" : "s") + " selected" : "";
+                actions_toggle.disabled = count === 0;
+            }
+            if (select.onChange) {
+                select.onChange(Array.from(state.selected.values()));
+            }
+        }
+
+        // the Actions menu over the table, when select.actions names any
+        const selection_count = el("span", "text-muted small");
+        const actions_toggle = button("btn-outline-dark dropdown-toggle", "Actions");
+        actions_toggle.setAttribute("data-bs-toggle", "dropdown");
+        actions_toggle.setAttribute("aria-expanded", "false");
+        actions_toggle.disabled = true;
+        const actions_menu = el("ul", "dropdown-menu");
+        if (select && select.actions) {
+            select.actions.forEach(function(action) {
+                const link = el("a", "dropdown-item", action.label);
+                link.href = "#";
+                if (action.title) {
+                    link.title = action.title;
+                }
+                link.addEventListener("click", function(event) {
+                    event.preventDefault();
+                    run_action(action);
+                });
+                actions_menu.appendChild(el("li")).appendChild(link);
+            });
+            const actions = el("div", "dropdown");
+            actions.append(actions_toggle, actions_menu);
+            selection_bar.append(actions, selection_count);
+        }
+
+        function run_action(action) {
+            const keys = Array.from(state.selected.keys());
+            const rows = Array.from(state.selected.values());
+            if (keys.length === 0) {
+                return;
+            }
+            show_error("");
+            actions_toggle.disabled = true;
+            Promise.resolve()
+                .then(function() { return action.run(keys, rows); })
+                .then(function(changed) {
+                    if (changed === false) {
+                        selection_changed();
+                        return;
+                    }
+                    return load_page();
+                })
+                .catch(function(err) {
+                    selection_changed();
+                    report(err);
+                });
+        }
+
+        // keeps the ticked rows that are in rows, which replace the shown ones
+        function keep_selected(rows) {
+            const kept = new Map();
+            rows.forEach(function(row) {
+                const key = select.key(row);
+                if (state.selected.has(key)) {
+                    kept.set(key, row);
+                }
+            });
+            state.rows = rows;
+            state.selected = kept;
+        }
+
+        function select_cell(row) {
+            const cell = el("td");
+            const box = el("input", "form-check-input filter-list-select");
+            box.type = "checkbox";
+            box.checked = state.selected.has(select.key(row));
+            box.setAttribute("aria-label", "select this row");
+            box.addEventListener("change", function() {
+                if (box.checked) {
+                    state.selected.set(select.key(row), row);
+                } else {
+                    state.selected.delete(select.key(row));
+                }
+                selection_changed();
+            });
+            cell.appendChild(box);
+            return cell;
+        }
+
         function render_head() {
             const row = el("tr");
-            if (selection) {
+            if (select) {
                 const th = el("th");
-                th.style.width = "2em";
+                th.style.width = "2rem";
                 th.appendChild(select_all);
                 row.appendChild(th);
             }
@@ -667,13 +785,16 @@ var FilterListPage = (function() {
         function message_row(text, css) {
             const row = el("tr");
             const cell = el("td", css || "text-muted", text);
-            cell.colSpan = columns.length + (selection ? 1 : 0);
+            cell.colSpan = columns.length + (select ? 1 : 0);
             row.appendChild(cell);
             tbody.replaceChildren(row);
         }
 
         function render_rows(rows) {
-            state.rows = rows;
+            if (select) {
+                keep_selected(rows);
+                selection_changed();
+            }
             if (rows.length === 0) {
                 message_row(options.emptyText || "Nothing matches these filters.");
                 return;
@@ -681,10 +802,8 @@ var FilterListPage = (function() {
             tbody.replaceChildren();
             rows.forEach(function(data) {
                 const row = el("tr");
-                if (selection) {
-                    const cell = el("td");
-                    cell.appendChild(row_checkbox(data));
-                    row.appendChild(cell);
+                if (select) {
+                    row.appendChild(select_cell(data));
                 }
                 columns.forEach(function(column) {
                     const cell = el("td", column.css || null);
@@ -703,7 +822,6 @@ var FilterListPage = (function() {
         function load_page() {
             const generation = ++state.generation;
             show_error("");
-            clear_selection();
             message_row("Loading…");
             const params = list_params({limit: state.limit, cursor: state.cursors[state.page] || undefined});
             return aceApi.get(options.api + "/" + aceApi.query(params))
@@ -723,6 +841,10 @@ var FilterListPage = (function() {
                         return;
                     }
                     message_row("");
+                    if (select) {
+                        keep_selected([]);
+                        selection_changed();
+                    }
                     render_pager(0);
                     show_error("Unable to load the list: " + err.message);
                 });
@@ -732,103 +854,6 @@ var FilterListPage = (function() {
             state.cursors = [null];
             state.page = 0;
             return load_page();
-        }
-
-        //
-        // the selection
-        //
-
-        const select_all = el("input", "form-check-input");
-        select_all.type = "checkbox";
-        select_all.setAttribute("aria-label", "select every row on this page");
-        select_all.addEventListener("change", function() {
-            state.selected.clear();
-            if (select_all.checked) {
-                state.rows.forEach(function(row) { state.selected.set(selection.key(row), row); });
-            }
-            tbody.querySelectorAll(".filter-list-select").forEach(function(box) { box.checked = select_all.checked; });
-            update_selection();
-        });
-
-        const selection_count = el("span", "text-muted small");
-        const actions_toggle = button("btn-outline-dark dropdown-toggle", "Actions");
-        actions_toggle.setAttribute("data-bs-toggle", "dropdown");
-        actions_toggle.setAttribute("aria-expanded", "false");
-        const actions_menu = el("ul", "dropdown-menu");
-        if (selection) {
-            (selection.actions || []).forEach(function(action) {
-                const link = el("a", "dropdown-item", action.label);
-                link.href = "#";
-                if (action.title) {
-                    link.title = action.title;
-                }
-                link.addEventListener("click", function(event) {
-                    event.preventDefault();
-                    run_action(action);
-                });
-                actions_menu.appendChild(el("li")).appendChild(link);
-            });
-            const actions = el("div", "dropdown");
-            actions.append(actions_toggle, actions_menu);
-            selection_bar.append(actions, selection_count);
-        }
-
-        function row_checkbox(row) {
-            const key = selection.key(row);
-            const box = el("input", "form-check-input filter-list-select");
-            box.type = "checkbox";
-            box.checked = state.selected.has(key);
-            box.setAttribute("aria-label", "select this row");
-            box.addEventListener("change", function() {
-                if (box.checked) {
-                    state.selected.set(key, row);
-                } else {
-                    state.selected.delete(key);
-                }
-                update_selection();
-            });
-            return box;
-        }
-
-        function update_selection() {
-            if (!selection) {
-                return;
-            }
-            const count = state.selected.size;
-            const noun = selection.noun || "row";
-            selection_count.textContent = count ? count + " " + noun + (count === 1 ? "" : "s") + " selected" : "";
-            actions_toggle.disabled = count === 0;
-            select_all.checked = count > 0 && count === state.rows.length;
-            select_all.indeterminate = count > 0 && count < state.rows.length;
-        }
-
-        function clear_selection() {
-            state.selected.clear();
-            state.rows = [];
-            update_selection();
-        }
-
-        function run_action(action) {
-            const keys = Array.from(state.selected.keys());
-            const rows = Array.from(state.selected.values());
-            if (keys.length === 0) {
-                return;
-            }
-            show_error("");
-            actions_toggle.disabled = true;
-            Promise.resolve()
-                .then(function() { return action.run(keys, rows); })
-                .then(function(changed) {
-                    if (changed === false) {
-                        update_selection();
-                        return;
-                    }
-                    return load_page();
-                })
-                .catch(function(err) {
-                    update_selection();
-                    report(err);
-                });
         }
 
         //
@@ -943,6 +968,8 @@ var FilterListPage = (function() {
 
         return {
             reload: load_first_page,
+            refresh: load_page,
+            selected: function() { return Array.from(state.selected.values()); },
             setFilters: function(filters) { return set_filters(filters, null); },
             shareUrl: share_url,
             filters: function() { return JSON.parse(JSON.stringify(state.filters)); },

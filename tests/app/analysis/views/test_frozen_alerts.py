@@ -1,12 +1,12 @@
 """A SIMULATED alert is never reset or re-analyzed from the GUI, and gets no new observables: the
-detections its test run's review froze stay as they are (docs/SVS_RUNS.md)."""
+detections its test run's review froze stay as they are (docs/SVS_RUNS.md). The observable actions
+are API v2 endpoints, tested in tests/aceapi_v2/alerts/test_observable_actions.py."""
 
 from io import BytesIO
 
 import pytest
 from flask import url_for
 
-from saq.constants import ACTION_COLLECT_FILE
 from saq.database.model import Alert, load_alert
 from tests.saq.helpers import insert_alert, make_simulated, workload_count
 
@@ -82,26 +82,3 @@ def test_add_observable_refuses(web_client, simulated):
     assert _observable_count(simulated) == observables
     assert workload_count(simulated.uuid) == 0
     assert _flashes(web_client)[0].startswith(_refusal(simulated))
-
-
-def test_observable_actions_refuse(web_client, simulated):
-    response = web_client.post(url_for("analysis.observable_action"), data={
-        "alert_uuid": simulated.uuid,
-        "observable_uuid": "anything",
-        "action_id": ACTION_COLLECT_FILE,
-    })
-
-    assert response.status_code == 409
-    assert response.text.startswith(_refusal(simulated))
-    assert workload_count(simulated.uuid) == 0
-
-
-def test_check_for_clickers_refuses(web_client, simulated):
-    response = web_client.post(url_for("analysis.observable_action_check_for_clickers"), data={
-        "alert_uuid": simulated.uuid,
-        "observable_uuid": "anything",
-    })
-
-    assert response.status_code == 409
-    assert response.json["message"].startswith(_refusal(simulated))
-    assert workload_count(simulated.uuid) == 0

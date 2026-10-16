@@ -13,16 +13,11 @@ from saq.database.util.observable_detection import (
     UnknownObservableType,
     create_observable_detection,
     delete_observable_detection,
-    disable_observable_detection,
-    enable_observable_detection,
     get_all_observable_detections,
     get_observable_detection,
-    get_observable_detection_for,
     get_observable_detections,
     resolve_detection_identity,
-    set_observable_detection_expiration,
     validate_observable_type,
-    _match_observable,
 )
 from saq.database.util.sync import sync_observable
 from saq.observables.generator import create_observable
@@ -254,15 +249,16 @@ def test_explicit_expiration_beats_the_default(test_user):
 
 
 @pytest.mark.integration
-def test_re_enabling_does_not_reset_an_analyst_chosen_expiration(test_user, test_observable):
+def test_re_creating_does_not_reset_an_analyst_chosen_expiration(test_user, test_observable):
     """The per-type default applies on insert only."""
     get_config().observable_expiration_mappings[test_observable.type] = "01:00:00:00"
     try:
-        detection = enable_observable_detection(test_observable, test_user.id, "enabled")
+        detection = create_observable_detection(test_observable.type, test_observable.value, test_user.id)
         chosen = datetime(2099, 6, 1, 0, 0, 0)
-        set_observable_detection_expiration(detection.id, chosen, test_user.id)
+        detection.expires_on = chosen
+        get_db().commit()
 
-        again = enable_observable_detection(test_observable, test_user.id, "enabled again")
+        again = create_observable_detection(test_observable.type, test_observable.value, test_user.id)
         assert again.expires_on == chosen
     finally:
         del get_config().observable_expiration_mappings[test_observable.type]
@@ -276,81 +272,9 @@ def test_delete_observable_detection(test_user):
     assert delete_observable_detection(detection.id) is False
 
 
-#
-# enable / disable from an in-memory analysis Observable
-#
-
-
-@pytest.mark.integration
-def test_enable_observable_detection_creates_no_observables_row(test_user, test_observable):
-    """Enabling a detection does not insert into the `observables` table."""
-    detection = enable_observable_detection(test_observable, test_user.id, "manually enabled")
-
-    assert detection.type == test_observable.type
-    assert detection.value == test_observable.value
-    assert detection.value_sha256 == test_observable.sha256_bytes
-    assert detection.modified_by == test_user.id
-    assert detection.detection_context == "manually enabled"
-
-    assert get_db().query(DBObservable).filter(
-        DBObservable.sha256 == test_observable.sha256_bytes).one_or_none() is None
-
-
-@pytest.mark.integration
-def test_enable_observable_detection_existing(test_user, test_observable):
-    enable_observable_detection(test_observable, test_user.id, "first")
-    detection = enable_observable_detection(test_observable, test_user.id, "second")
-
-    assert detection.detection_context == "second"
-    assert get_db().query(DBObservableDetection).count() == 1
-
-
-@pytest.mark.integration
-def test_enable_observable_detection_unknown_user(test_observable):
-    with pytest.raises(ValueError):
-        enable_observable_detection(test_observable, 999999, "context")
-
-
-@pytest.mark.integration
-def test_disable_observable_detection_removes_the_row(test_user, test_observable):
-    """A row is an active detection, so disabling deletes it."""
-    enable_observable_detection(test_observable, test_user.id, "enabled")
-    assert disable_observable_detection(test_observable, test_user.id, "disabled") is True
-    assert get_observable_detection_for(test_observable) is None
-
-
-@pytest.mark.integration
-def test_disable_observable_detection_missing_is_a_noop(test_user, test_observable):
-    assert disable_observable_detection(test_observable, test_user.id, "disabled") is False
-
-
-#
-# expiration
-#
-
-
-@pytest.mark.integration
-def test_set_observable_detection_expiration(test_user, test_observable):
-    # NOTE: the unittest config maps ipv4 to a 14 day default, so a new detection of this type
-    # starts with an expiration rather than None
-    detection = enable_observable_detection(test_observable, test_user.id, "enabled")
-
-    expires = datetime(2099, 1, 1, 12, 0, 0)
-    updated = set_observable_detection_expiration(detection.id, expires, test_user.id)
-    assert updated.expires_on == expires
-
-    cleared = set_observable_detection_expiration(detection.id, None, test_user.id)
-    assert cleared.expires_on is None
-
-
-@pytest.mark.integration
-def test_set_observable_detection_expiration_unknown_id(test_user):
-    assert set_observable_detection_expiration(999999, None, test_user.id) is None
-
-
 @pytest.mark.integration
 def test_get_observable_detection_by_type_and_hash(test_user, test_observable):
-    enable_observable_detection(test_observable, test_user.id, "enabled")
+    create_observable_detection(test_observable.type, test_observable.value, test_user.id)
 
     assert get_observable_detection(test_observable.type, test_observable.sha256_bytes) is not None
     # a matching hash under a different type is a different detection
@@ -362,22 +286,34 @@ def test_get_observable_detection_by_type_and_hash(test_user, test_observable):
 #
 
 
+def _detect(observable: Observable, user: User, context: str) -> DBObservableDetection:
+    """Creates a detection the way the alert page's enable action does: from the observable's
+    type and value, which the API re-resolves."""
+    return create_observable_detection(observable.type, observable.value, user.id, detection_context=context)
+
+
 @pytest.mark.integration
 def test_get_observable_detections(test_user, test_observables):
-    enable_observable_detection(test_observables[0], test_user.id, "context one")
-    enable_observable_detection(test_observables[1], test_user.id, "context two")
+    first = _detect(test_observables[0], test_user, "context one")
+    first.expires_on = datetime(2099, 1, 1, 12, 0, 0)
+    get_db().commit()
+    _detect(test_observables[1], test_user, "context two")
 
     detections = get_observable_detections(test_observables)
 
     assert set(detections) == {test_observables[0].uuid, test_observables[1].uuid}
-    assert detections[test_observables[0].uuid].for_detection is True
-    assert detections[test_observables[0].uuid].detection_context == "context one"
-    assert detections[test_observables[0].uuid].detection_modified_by == test_user.display_name
+    summary = detections[test_observables[0].uuid]
+    assert summary.for_detection is True
+    assert summary.detection_context == "context one"
+    assert summary.detection_modified_by == test_user.display_name
+    # what the alert page's disable and adjust-expiration actions send to /api/v2/detection
+    assert summary.detection_id == first.id
+    assert summary.expires_on == datetime(2099, 1, 1, 12, 0, 0)
 
 
 @pytest.mark.integration
 def test_get_observable_detections_omits_observables_without_one(test_user, test_observables):
-    enable_observable_detection(test_observables[0], test_user.id, "context")
+    _detect(test_observables[0], test_user, "context")
     detections = get_observable_detections(test_observables)
     assert test_observables[1].uuid not in detections
 
@@ -389,19 +325,50 @@ def test_get_observable_detections_empty_input():
 
 @pytest.mark.integration
 def test_get_all_observable_detections(test_user, test_root_analysis, test_observables):
-    enable_observable_detection(test_observables[0], test_user.id, "context")
+    _detect(test_observables[0], test_user, "context")
     detections = get_all_observable_detections(test_root_analysis)
     assert test_observables[0].uuid in detections
 
 
 @pytest.mark.integration
-def test_match_observable(test_user, test_observables):
-    detection = enable_observable_detection(test_observables[0], test_user.id, "context")
+def test_get_observable_detections_requires_a_matching_type(test_user):
+    """A detection whose hash matches under another type is not this observable's detection."""
+    create_observable_detection("hostname", "example.com", test_user.id)
+    assert get_observable_detections([Observable(type="fqdn", value="example.com")]) == {}
 
-    assert _match_observable(test_observables, detection) is test_observables[0]
 
-    detection.type = "does_not_match"
-    assert _match_observable(test_observables, detection) is None
+@pytest.mark.integration
+def test_get_observable_detections_gives_every_matching_observable_the_detection(test_user):
+    """Two file observables with the same content at different paths are two observables in one
+    alert. Both show the detection, or the second offers "enable" for a detection that exists."""
+    first = FileObservable(value=FILE_CONTENT_SHA256, file_path="a/malicious.exe")
+    second = FileObservable(value=FILE_CONTENT_SHA256, file_path="b/malicious.exe")
+    detection = create_observable_detection("file", FILE_CONTENT_SHA256, test_user.id)
+
+    detections = get_observable_detections([first, second])
+
+    assert set(detections) == {first.uuid, second.uuid}
+    assert {summary.detection_id for summary in detections.values()} == {detection.id}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("observable_type,value", [
+    ("ipv4", "10.1.2.3"),
+    ("ipv4_conversation", " 1.2.3.4_5.6.7.8 "),
+    ("fqdn", "evil.example.com"),
+    ("hostname", "workstation01"),
+    ("url", "http://evil.example.com/path?q=1"),
+    ("email_address", "attacker@evil.example.com"),
+    ("user", "jdoe"),
+])
+def test_detection_from_an_alert_observable_is_found_by_the_alert_view(test_user, observable_type, value):
+    """The alert page enables a detection by posting the observable's type and value to the API,
+    which resolves them again. That must land on the identity the alert view looks the observable
+    up by, or the action creates a detection the page never shows as enabled."""
+    observable = create_observable(observable_type, value)
+    _detect(observable, test_user, "enabled from the alert page")
+
+    assert observable.uuid in get_observable_detections([observable])
 
 
 #
@@ -441,7 +408,7 @@ def test_get_observable_detections_file_observable(test_user):
     """
     file_obs = FileObservable(value=FILE_CONTENT_SHA256, file_path="malicious.exe")
 
-    detection = enable_observable_detection(file_obs, test_user.id, "file detection context")
+    detection = _detect(file_obs, test_user, "file detection context")
     assert detection.value_sha256 == bytes.fromhex(FILE_CONTENT_SHA256)
 
     detections = get_observable_detections([file_obs])
@@ -469,7 +436,7 @@ def test_file_detection_joins_to_the_observables_index(test_user):
         synced = sync_observable(file_obs)
         db.commit()
 
-        detection = enable_observable_detection(file_obs, test_user.id, "file detection context")
+        detection = _detect(file_obs, test_user, "file detection context")
         assert synced.sha256 == detection.value_sha256
         assert synced.type == detection.type
     finally:
@@ -489,9 +456,13 @@ def test_observable_detection_summary_dataclass():
         for_detection=True,
         detection_modified_by="Test User",
         detection_context="test context",
+        detection_id=42,
+        expires_on=None,
     )
 
     assert summary.observable_uuid == "test-uuid-123"
     assert summary.for_detection is True
     assert summary.detection_modified_by == "Test User"
     assert summary.detection_context == "test context"
+    assert summary.detection_id == 42
+    assert summary.expires_on is None

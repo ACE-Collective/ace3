@@ -242,7 +242,6 @@
             download: null,
             emptyText: "No tests match these filters.",
             defaultF: settings.default_f,
-            selection: null,
         });
     }
 

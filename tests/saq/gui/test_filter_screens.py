@@ -6,8 +6,10 @@ from pydantic import ValidationError
 from aceapi_v2.saved_filters.service import DEFAULT_SAVED_FILTERS
 from saq.gui.filter_entry import (
     DetectionPointFilterEntry,
+    FileCollectionFilterEntry,
     FilterEntry,
     FilterEntryBase,
+    RemediationFilterEntry,
     RunFilterEntry,
     SampleFilterEntry,
     ValidationFilterEntry,
@@ -16,7 +18,9 @@ from saq.gui.filter_names import FILTER_NAMES, FILTER_SLUGS
 from saq.gui.filter_screens import (
     ALERTS_SCREEN,
     DETECTION_POINTS_SCREEN,
+    FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
+    REMEDIATIONS_SCREEN,
     SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
@@ -291,6 +295,73 @@ def test_svs_run_values_are_normalized(name, values, expected):
 def test_svs_runs_rejects_bad_entries(name, values):
     with pytest.raises(ValidationError):
         SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+@pytest.mark.parametrize("screen, entry_model, permission", [
+    (REMEDIATIONS_SCREEN, RemediationFilterEntry, ("remediation", "read")),
+    (FILE_COLLECTIONS_SCREEN, FileCollectionFilterEntry, ("file_collection", "read")),
+])
+def test_the_request_screens(screen, entry_model, permission):
+    assert get_filter_screen(screen.name) is screen
+    assert screen.entry_model is entry_model
+    assert screen.permission == permission
+    assert {f.name for f in screen.fields} == screen.filter_names
+
+
+def test_the_request_screen_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(REMEDIATIONS_SCREEN.slugs) == {
+        "Action": "action",
+        "Analyst": "analyst",
+        "Created": "created",
+        "ID": "id",
+        "Remediator": "remediator",
+        "Result": "result",
+        "Status": "status",
+        "Type": "type",
+        "Value": "value",
+    }
+    assert dict(FILE_COLLECTIONS_SCREEN.slugs) == {
+        "Alert": "alert",
+        "Collector": "collector",
+        "Created": "created",
+        "ID": "id",
+        "Result": "result",
+        "Status": "status",
+        "Type": "type",
+        "Value": "value",
+    }
+
+
+@pytest.mark.parametrize("screen, name, values, expected", [
+    (REMEDIATIONS_SCREEN, "ID", [" 42"], ["42"]),
+    (REMEDIATIONS_SCREEN, "Action", ["REMOVE"], ["remove"]),
+    (REMEDIATIONS_SCREEN, "Status", ["in_progress", "new"], ["IN_PROGRESS", "NEW"]),
+    (REMEDIATIONS_SCREEN, "Result", ["not_found"], ["NOT_FOUND"]),
+    (REMEDIATIONS_SCREEN, "Created", ["-7d"], ["-7d"]),
+    (REMEDIATIONS_SCREEN, "Value", ["Evil.Example"], ["Evil.Example"]),
+    (FILE_COLLECTIONS_SCREEN, "Alert", ["E5F7A1C2-0B3D-4E6F-8A9B-1C2D3E4F5A6B"], ["e5f7a1c2-0b3d-4e6f-8a9b-1c2d3e4f5a6b"]),
+    (FILE_COLLECTIONS_SCREEN, "Result", ["host_offline"], ["HOST_OFFLINE"]),
+])
+def test_request_screen_values_are_normalized(screen, name, values, expected):
+    (entry,) = screen.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("screen, name, values", [
+    (REMEDIATIONS_SCREEN, "ID", ["seven"]),
+    (REMEDIATIONS_SCREEN, "Action", ["obliterate"]),
+    (REMEDIATIONS_SCREEN, "Result", ["HOST_OFFLINE"]),
+    (REMEDIATIONS_SCREEN, "Created", ["not a date"]),
+    (REMEDIATIONS_SCREEN, "Alert", ["e5f7a1c2-0b3d-4e6f-8a9b-1c2d3e4f5a6b"]),
+    (REMEDIATIONS_SCREEN, "Value", [["pair", "value"]]),
+    (FILE_COLLECTIONS_SCREEN, "Alert", ["not-a-uuid"]),
+    (FILE_COLLECTIONS_SCREEN, "Result", ["IGNORE"]),
+    (FILE_COLLECTIONS_SCREEN, "Analyst", ["me"]),
+])
+def test_request_screens_reject_bad_entries(screen, name, values):
+    with pytest.raises(ValidationError):
+        screen.validate_entries([{"name": name, "values": values}])
 
 
 @pytest.mark.parametrize("screen", sorted(DEFAULT_SAVED_FILTERS))

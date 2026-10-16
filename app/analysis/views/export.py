@@ -3,192 +3,18 @@ from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import COMMASPACE, formatdate
-import json
 import logging
 import os
 import smtplib
-from subprocess import PIPE, Popen
-from uuid import uuid4
 import zipfile
-from flask import flash, make_response, redirect, request, session, url_for
+from flask import flash, redirect, request, url_for
 from flask_login import current_user
-from app.analysis.views.session.alert import get_current_alert, load_current_alert
-from app.analysis.views.session.filters import _reset_filters, build_alert_query, get_effective_filters
+from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
-from saq.csv_builder import CSV
-from saq.database.model import Comment
-from saq.database.pool import get_db
-from saq.environment import get_base_dir, get_temp_dir
+from saq.environment import get_base_dir
 from saq.error.reporting import report_exception
-from saq.gui.alert import GUIAlert
-
-@analysis.route('/export_alerts_to_csv', methods=['GET'])
-@require_permission('alert', 'read')
-def export_alerts_to_csv():
-    # use default page settings if first visit. 
-    if 'filter_uuid' not in session:
-        _reset_filters()
-
-    # create alert view by joining required tables, applying the session filters and
-    # scoping to the alerts visible from this node 
-    # honors an active temporary filter on purpose: the CSV should match the list the
-    # analyst is looking at
-    query = build_alert_query(get_effective_filters())
-
-    # group by id to prevent duplicates
-    query = query.group_by(GUIAlert.id)
-
-    # query alerts
-    alerts = query.all()
-
-    # load alert comments
-    # NOTE: We should have the alert class do this automatically
-    comments = {}
-    if alerts:
-        for comment in get_db().query(Comment).filter(Comment.uuid.in_([a.uuid for a in alerts])).order_by(Comment.insert_date.asc()):
-            if comment.uuid not in comments:
-                comments[comment.uuid] = []
-            comments[comment.uuid].append(f'{comment.comment}')
-
-    # converts alerts to csv
-    csv = CSV(
-        'Event Time',
-        'Alert Time', 
-        'Disposition Time', 
-        'Tool', 
-        'Tool Instance', 
-        'Alert Type', 
-        'Description', 
-        'Disposition', 
-        'Owner', 
-        'UUID', 
-        'Queue', 
-        'Tags',
-        'Comments',
-    )
-    for alert in alerts:
-        csv.add_row(
-            alert.display_event_time,
-            alert.display_insert_date, 
-            alert.display_disposition_time if alert.disposition_time is not None else '', 
-            alert.tool,
-            alert.tool_instance,
-            alert.alert_type,
-            alert.description,
-            alert.disposition,
-            alert.owner.gui_display if alert.owner_id is not None else '', 
-            alert.uuid,
-            alert.queue,
-            ', '.join(tag.name for tag in alert.sorted_tags),
-            '\n'.join(comments.get(alert.uuid, [])),
-        )
-
-    # send csv to client
-    output = make_response(str(csv))
-    output.headers["Content-Disposition"] = "attachment; filename=export.csv"
-    output.headers["Content-type"] = "text/csv"
-    return output
-
-@analysis.route('/download_file', methods=['GET'])
-@require_permission('alert', 'read')
-def download_file():
-    alert = get_current_alert()
-    if alert is None:
-        flash("internal error")
-        return redirect(url_for('analysis.index'))
-
-    if not alert.root_analysis.load():
-        flash("internal error")
-        logging.error("unable to load alert {0}".format(alert))
-        return redirect(url_for('analysis.index'))
-
-    file_uuid = request.args.get('file_uuid', None)
-
-    if file_uuid is None:
-        logging.error("missing file_uuid")
-        return "missing file_uuid", 500
-
-    mode = request.args.get('mode', None)
-
-    if mode is None:
-        logging.error("missing mode")
-        return "missing mode", 500
-
-    response = make_response()
-
-    # find the observable with this uuid
-    try:
-        file_observable = alert.root_analysis.get_observable(file_uuid)
-    except KeyError:
-        logging.error("missing file observable uuid {0} for alert {1} user {2}".format(
-            file_uuid, alert, current_user))
-        flash("internal error")
-        return redirect(url_for('analysis.index'))
-
-    if file_observable is None:
-        logging.error("missing file observable uuid {0} for alert {1} user {2}".format(
-            file_uuid, alert, current_user))
-        flash("internal error")
-        return redirect(url_for('analysis.index'))
-
-    # get the full path to the file to expose
-    full_path = file_observable.full_path
-    if not os.path.exists(full_path):
-        logging.error("file path {0} does not exist for alert {1} user {2}".format(full_path, alert, current_user))
-        flash("internal error")
-        return redirect(url_for('analysis.index'))
-
-    if mode == 'hex':
-        p = Popen(['hexdump', '-C', full_path], stdout=PIPE)
-        (stdout, stderr) = p.communicate()
-        response = make_response(stdout)
-        response.headers['Content-Type'] = 'text/plain'
-        return response
-    elif mode == 'zip':
-        try:
-            dest_file = '{}.zip'.format(os.path.join(get_temp_dir(), str(uuid4())))  # noqa: F821
-            logging.debug("creating encrypted zip file {} for {}".format(dest_file, full_path))
-            p = Popen(['zip', '-e', '--junk-paths', '-P', 'infected', dest_file, full_path])
-            p.wait()
-
-            # XXX we're reading it all into memory here
-            with open(dest_file, 'rb') as fp:
-                encrypted_data = fp.read()
-
-            response = make_response(encrypted_data)
-            response.headers['Content-Type'] = 'application/zip'
-            response.headers['Content-Disposition'] = 'filename={}.zip'.format(os.path.basename(full_path))
-            return response
-
-        finally:
-            try:
-                os.remove(dest_file)
-            except Exception as e:
-                logging.error("unable to remove file {}: {}".format(dest_file, str(e)))
-                report_exception()
-    elif mode == 'text':
-        with open(full_path, 'rb') as fp:
-            result = fp.read()
-
-        response = make_response(result)
-        response.headers['Content-Type'] = 'text/plain; charset=utf-8'
-        return response
-    return "", 404
-
-@analysis.route('/get_alert_meta', methods=['GET'])
-@require_permission('alert', 'read')
-def get_alert_metadata():
-    alert = get_current_alert()
-    if alert is None:
-        result = {}
-    else:
-        result = alert.get_metadata_json()
-
-    response = make_response(json.dumps(result))
-    response.mimetype = 'application/json'
-    return response
 
 @analysis.route('/email_file', methods=["POST"])
 @require_permission('alert', 'read')
@@ -272,21 +98,3 @@ def email_file():
         report_exception()
 
     return redirect("/analysis?direct=" + alert.uuid)
-
-@analysis.route('/html_details', methods=['GET'])
-@require_permission('alert', 'read')
-def html_details():
-    alert = load_current_alert()
-    if alert is None:
-        response = make_response("alert not found")
-        response.mimtype = 'text/plain'
-        return response
-
-    if 'field' not in request.args:
-        response = make_response("missing required parameter: field")
-        response.mimtype = 'text/plain'
-        return response
-
-    response = make_response(alert.root_analysis.details[request.args['field']])
-    response.mimtype = 'text/html'
-    return response

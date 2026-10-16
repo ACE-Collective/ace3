@@ -1,8 +1,9 @@
 import logging
 from datetime import datetime
+from urllib.parse import urlencode
 
 import pytz
-from flask import flash, jsonify, make_response, redirect, render_template, request, session, url_for
+from flask import flash, make_response, redirect, render_template, request, session, url_for
 from flask_login import current_user
 from sqlalchemy import distinct, func
 from sqlalchemy.orm import selectinload
@@ -18,13 +19,13 @@ from app.analysis.views.session.filters import (
     get_current_filter,
     get_effective_filters,
     get_quick_filter_display_data,
-    get_reset_filter_alert_count,
     get_saved_filter_list,
     seed_default_saved_filters,
     get_temp_filter,
     getFilters,
     migrate_legacy_session_filters,
     reset_checked_alerts,
+    reset_filter_count_url,
     reset_pagination,
     reset_sort_filter,
 )
@@ -293,6 +294,10 @@ def build_manage_list_context() -> dict:
         'temp_filter': get_temp_filter(),
         # the share link is a pure string build -- no DB write, no round trip
         'share_url': url_for('analysis.manage', f=encode_filter_query(effective_filters), _external=True),
+        # the same filters through the API's CSV export, resolving relative dates as this page does
+        'export_csv_url': '/api/v2/alerts/export/csv?' + urlencode(
+            [('f', value) for value in encode_filter_query(effective_filters)]
+            + [('tz', current_user.timezone or 'UTC')]),
 
         # alert data
         'alerts': alerts,
@@ -386,6 +391,9 @@ def manage():
         # observable modal data
         observable_types=run_async(get_observable_types()),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
+
+        # polled by the browser tab for its notification dot (base.html, static/js/ace.js)
+        reset_filter_count_url=reset_filter_count_url(),
     )
 
 @analysis.route('/manage/refresh')
@@ -397,17 +405,6 @@ def manage_refresh():
     analysis/manage.html and docs/GUI_DATASTAR.md."""
     _ensure_manage_session_defaults()
     response = make_response(render_template('analysis/_manage_refresh.html', **build_manage_list_context()))
-    # per-user data -- must not be handed out by the blueprint's default public cache policy
-    response.headers['Cache-Control'] = 'private, no-store'
-    return response
-
-@analysis.route('/reset_filter_alert_count')
-@require_permission('alert', 'read')
-def reset_filter_alert_count():
-    """Returns the number of alerts matching the "Reset" filter for the current user, as
-    JSON. Polled by the browser tab to drive the favicon notification dot -- see
-    static/js/ace.js."""
-    response = jsonify({"count": get_reset_filter_alert_count()})
     # per-user data -- must not be handed out by the blueprint's default public cache policy
     response.headers['Cache-Control'] = 'private, no-store'
     return response

@@ -145,6 +145,33 @@ SVS_RUN_FILTER_SLUGS = {
     'Test Name': 'test_name',
 }
 
+# The filters of the Remediations page (GET /api/v2/remediation/remediations): display name ->
+# URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+REMEDIATION_FILTER_SLUGS = {
+    'Action': 'action',
+    'Analyst': 'analyst',
+    'Created': 'created',
+    'ID': 'id',
+    'Remediator': 'remediator',
+    'Result': 'result',
+    'Status': 'status',
+    'Type': 'type',
+    'Value': 'value',
+}
+
+# The filters of the File Collections page (GET /api/v2/file-collections): display name -> URL
+# slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+FILE_COLLECTION_FILTER_SLUGS = {
+    'Alert': 'alert',
+    'Collector': 'collector',
+    'Created': 'created',
+    'ID': 'id',
+    'Result': 'result',
+    'Status': 'status',
+    'Type': 'type',
+    'Value': 'value',
+}
+
 __all__ = [
     "FILTER_NAMES",
     "DATE_RANGE_FILTER_NAMES",
@@ -156,4 +183,6 @@ __all__ = [
     "SVS_VALIDATION_FILTER_SLUGS",
     "SVS_TEST_FILTER_SLUGS",
     "SVS_RUN_FILTER_SLUGS",
+    "REMEDIATION_FILTER_SLUGS",
+    "FILE_COLLECTION_FILTER_SLUGS",
 ]

@@ -2,7 +2,8 @@
 
 An *observable detection* is an observable value that ACE should alert on whenever it sees it: an
 analyst-curated indicator. Analysts create them from the alert view ("enable detection" on an
-observable), from the admin detection page, or in bulk through the API. Each is a row in the
+observable) or from the admin detection page, and both call the `/api/v2/detection` routes
+(`aceapi_v2/detection/`, gated by `detection:read` / `detection:write`). Each is a row in the
 `observable_detections` table (`saq/database/model.py::ObservableDetection`) carrying the observable
 type and value, an optional expiration, and free-text context explaining why it was enabled. A
 detection does not need the value to have ever been seen -- adding one ahead of the first sighting is

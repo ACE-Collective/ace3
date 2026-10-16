@@ -1,128 +1,107 @@
 # vim: sw=4:ts=4:et:cc=120
 
-import pytest
-from flask import session, url_for
+"""The File Collections page (/file_collection/manage).
 
-from app.file_collection.constants import (
-    FC_DEFAULT_SORT_FILTER,
-    FC_DEFAULT_SORT_FILTER_DIRECTION,
-    FC_PAGE_OFFSET,
-    FC_PAGE_SIZE,
-    FC_PAGE_SIZE_DEFAULT,
-    FC_SORT_FILTER,
-    FC_SORT_FILTER_DESC,
-    FCH_PAGE_OFFSET,
-    FCH_PAGE_SIZE,
-    FCH_PAGE_SIZE_DEFAULT,
-)
-from app.file_collection.views.manage import (
-    initialize_file_collection_session,
-    reset_file_collection_history_pagination,
-    reset_file_collection_pagination,
-    reset_file_collection_sort_filter,
-)
+The page is a shell whose script gets everything from /api/v2/file-collections (covered by
+tests/aceapi_v2/file_collection/); these tests assert that boundary, the file_collection:read gate
+on the page and the file_collection:write gate on its controls.
+"""
+
+import pytest
+from flask import url_for
+from sqlalchemy import select
+
+from saq.constants import QUEUE_DEFAULT
+from saq.database.model import SavedFilter, User
+from saq.database.pool import get_db
+from saq.database.util.user_management import add_user, delete_user
+from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
 
-class TestFileCollectionSessionFunctions:
-    """Test session management functions for file collection."""
-
-    def test_reset_file_collection_pagination(self, app):
-        """Test resetting file collection pagination to defaults."""
-        with app.test_request_context():
-            reset_file_collection_pagination()
-
-            assert session[FC_PAGE_OFFSET] == 0
-            assert session[FC_PAGE_SIZE] == FC_PAGE_SIZE_DEFAULT
-
-    def test_reset_file_collection_pagination_preserves_page_size(self, app):
-        """Test that reset preserves existing page size."""
-        with app.test_request_context():
-            session[FC_PAGE_SIZE] = 100
-            reset_file_collection_pagination()
-
-            assert session[FC_PAGE_OFFSET] == 0
-            assert session[FC_PAGE_SIZE] == 100
-
-    def test_reset_file_collection_history_pagination(self, app):
-        """Test resetting file collection history pagination to defaults."""
-        with app.test_request_context():
-            reset_file_collection_history_pagination()
-
-            assert session[FCH_PAGE_OFFSET] == 0
-            assert session[FCH_PAGE_SIZE] == FCH_PAGE_SIZE_DEFAULT
-
-    def test_reset_file_collection_history_pagination_preserves_page_size(self, app):
-        """Test that reset preserves existing history page size."""
-        with app.test_request_context():
-            session[FCH_PAGE_SIZE] = 100
-            reset_file_collection_history_pagination()
-
-            assert session[FCH_PAGE_OFFSET] == 0
-            assert session[FCH_PAGE_SIZE] == 100
-
-    def test_reset_file_collection_sort_filter(self, app):
-        """Test resetting sort filter to defaults."""
-        with app.test_request_context():
-            reset_file_collection_sort_filter()
-
-            assert session[FC_SORT_FILTER] == FC_DEFAULT_SORT_FILTER.value
-            assert session[FC_SORT_FILTER_DESC] == FC_DEFAULT_SORT_FILTER_DIRECTION.value
-
-    def test_initialize_file_collection_session_sets_all_defaults(self, app):
-        """Test that initialization sets all session variables."""
-        with app.test_request_context():
-            initialize_file_collection_session()
-
-            # check pagination is set
-            assert FC_PAGE_OFFSET in session
-            assert FC_PAGE_SIZE in session
-            assert session[FC_PAGE_OFFSET] == 0
-            assert session[FC_PAGE_SIZE] == FC_PAGE_SIZE_DEFAULT
-
-            # check history pagination is set
-            assert FCH_PAGE_OFFSET in session
-            assert FCH_PAGE_SIZE in session
-            assert session[FCH_PAGE_OFFSET] == 0
-            assert session[FCH_PAGE_SIZE] == FCH_PAGE_SIZE_DEFAULT
-
-            # check sort filter is set
-            assert FC_SORT_FILTER in session
-            assert FC_SORT_FILTER_DESC in session
-            assert session[FC_SORT_FILTER] == FC_DEFAULT_SORT_FILTER.value
-            assert session[FC_SORT_FILTER_DESC] == FC_DEFAULT_SORT_FILTER_DIRECTION.value
-
-    def test_initialize_file_collection_session_preserves_existing_values(self, app):
-        """Test that initialization preserves existing session values."""
-        with app.test_request_context():
-            # set custom values
-            session[FC_PAGE_OFFSET] = 50
-            session[FC_PAGE_SIZE] = 100
-            session[FCH_PAGE_OFFSET] = 25
-            session[FCH_PAGE_SIZE] = 75
-            session[FC_SORT_FILTER] = "type"
-            session[FC_SORT_FILTER_DESC] = "asc"
-
-            initialize_file_collection_session()
-
-            # verify custom values were preserved
-            assert session[FC_PAGE_OFFSET] == 50
-            assert session[FC_PAGE_SIZE] == 100
-            assert session[FCH_PAGE_OFFSET] == 25
-            assert session[FCH_PAGE_SIZE] == 75
-            assert session[FC_SORT_FILTER] == "type"
-            assert session[FC_SORT_FILTER_DESC] == "asc"
+def _user(username, perms):
+    user = add_user(username=username, email=f"{username}@localhost", display_name=username,
+                    password="TestPass123!", queue=QUEUE_DEFAULT, timezone="UTC")
+    for major, minor in perms:
+        add_user_permission(user.id, major, minor)
+    return username
 
 
-class TestManageRoute:
-    """Test the /file_collection/manage route."""
+def _login(client, username):
+    client.post(url_for("auth.login"), data={"username": username, "password": "TestPass123!"})
 
-    def test_manage_requires_permission(self, app):
-        """Test that manage route requires file_collection read permission."""
-        with app.test_client() as client:
-            response = client.get(url_for("file_collection.manage"))
 
-            # should redirect to login due to missing permission
-            assert response.status_code == 302
-            assert "login" in response.location
+@pytest.fixture
+def collection_reader():
+    yield _user("collection_reader", [("file_collection", "read")])
+    delete_user("collection_reader")
+
+
+@pytest.fixture
+def collection_writer():
+    yield _user("collection_writer", [("file_collection", "read"), ("file_collection", "write")])
+    delete_user("collection_writer")
+
+
+@pytest.fixture
+def nobody():
+    yield _user("nobody", [])
+    delete_user("nobody")
+
+
+def test_the_blueprint_serves_only_get_pages(app):
+    offenders = []
+    for rule in app.url_map.iter_rules():
+        if not str(rule).startswith("/file_collection"):
+            continue
+        methods = rule.methods - {"HEAD", "OPTIONS"}
+        if methods != {"GET"}:
+            offenders.append((str(rule), sorted(methods)))
+    assert offenders == [], f"non-GET file collection routes: {offenders}"
+
+
+def test_requires_file_collection_read(app, nobody):
+    with app.test_client() as client:
+        response = client.get(url_for("file_collection.manage"))
+        assert response.status_code == 302
+        assert "login" in response.location
+
+        _login(client, nobody)
+        assert client.get(url_for("file_collection.manage")).status_code == 403
+
+
+def test_a_reader_gets_the_list_without_the_controls(app, collection_reader):
+    with app.test_client() as client:
+        _login(client, collection_reader)
+        page = client.get(url_for("file_collection.manage"))
+
+    assert page.status_code == 200
+    assert b'data-screen="file_collections"' in page.data
+    assert b'data-can-write="false"' in page.data
+    assert b"js/filter_list_page.js" in page.data
+    assert b"js/file_collections_page.js" in page.data
+    assert b'data-action="' not in page.data
+
+
+def test_a_writer_gets_the_controls(app, collection_writer):
+    with app.test_client() as client:
+        _login(client, collection_writer)
+        page = client.get(url_for("file_collection.manage"))
+
+    assert page.status_code == 200
+    assert b'data-can-write="true"' in page.data
+    for action in (b"retry", b"cancel", b"delete"):
+        assert b'data-action="' + action + b'"' in page.data
+
+
+def test_a_new_user_gets_the_default_saved_filters(app, collection_reader):
+    with app.test_client() as client:
+        _login(client, collection_reader)
+        client.get(url_for("file_collection.manage"))
+
+    get_db().expire_all()
+    names = get_db().execute(
+        select(SavedFilter.name).join(User, User.id == SavedFilter.user_id)
+        .where(User.username == collection_reader, SavedFilter.screen == "file_collections")).scalars().all()
+    assert sorted(names) == ["Failed", "Not completed"]

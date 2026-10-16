@@ -48,22 +48,23 @@ function deselect_alerts(uuids) {
 
 // takes ownership of the given alerts; take_owned confirms taking the ones other analysts own
 function post_set_owner(alert_uuids, take_owned) {
-    const params = new URLSearchParams();
-    alert_uuids.forEach(function(uuid){ params.append('alert_uuids', uuid); });
-    if (take_owned) {
-        params.append('take_owned', take_owned);
-    }
-    fetch('set_owner', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-        body: params,
-        credentials: 'same-origin'
+    const current_user_id = Number(document.getElementById("take_ownership_selection_guard").dataset.currentUserId);
+    aceApi.put("/alerts/owner", {alert_uuids: alert_uuids, owner_id: current_user_id, take_owned: take_owned_map(take_owned)})
+    .then(function(result) {
+        if (result.message) {
+            show_flash_message(result.message);
+        }
+
+        // refreshed in place rather than reloaded, so the selection stays as it was; the
+        // refresh does not run while a dialog is open, so the confirmation closes first
+        const modal = document.getElementById("take_ownership_modal");
+        if (modal.classList.contains("show")) {
+            $(modal).one("hidden.bs.modal", function() { refresh_manage_list(); }).modal("hide");
+        } else {
+            refresh_manage_list();
+        }
     })
-    .then(function(resp){
-        if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-        window.location.replace('/ace/manage');
-    })
-    .catch(function(err){
+    .catch(function(err) {
         alert(err.message);
     });
 }
@@ -670,16 +671,12 @@ $(document).ready(function() {
         post_set_owner(get_all_checked_alerts(), SelectionGuard.take_owned(guard));
     });
 
-    $("#btn-assign-ownership").click(function(e) {
-        all_alert_uuids = get_all_checked_alerts();
-        if (all_alert_uuids.length == 0) {
-            // XXX do this on the disposition button
-            alert("You must select one or more alerts to assign to a user.");
-            return;
+    // assigning refreshes the list in place, like taking ownership, so the selection stays
+    setup_assign_ownership_dialog(selected_alert_descriptions, deselect_alerts, function(result) {
+        if (result.message) {
+            show_flash_message(result.message);
         }
-
-        // add a hidden field to the form and then submit
-        $("#assign-ownership-form").append('<input type="hidden" name="alert_uuids" value="' + all_alert_uuids.join(",") + '" />').submit();
+        $("#assign_ownership_modal").one("hidden.bs.modal", function() { refresh_manage_list(); }).modal("hide");
     });
 
     $('#btn-limit').click(function(e) {
@@ -1000,11 +997,10 @@ function update_relative_date_hint(input) {
     var value = el.val().trim();
     if (value === '') { hint.text(''); return; }
 
-    const params = new URLSearchParams({ value: value });
-    fetch('resolve_date_range?' + params.toString(), { credentials: 'same-origin' })
-    .then(function(resp){ return resp.ok ? resp.json() : { text: '' }; })
-    .then(function(data){ hint.text(data.text || 'not a valid time range'); })
-    .catch(function(){ hint.text(''); });
+    aceApi.get("/alerts/date-range" + aceApi.query({ value: value, tz: el.attr('data-tz') || 'UTC' }))
+    .then(function(data){ hint.text(data.text); })
+    // the API answers 422 for a value it cannot parse
+    .catch(function(){ hint.text('not a valid time range'); });
 }
 
 function toggle_include_exclude(filter_row_unique_id) {
@@ -1023,6 +1019,12 @@ function toggle_include_exclude(filter_row_unique_id) {
 // trip. The link keeps working after this filter is edited or deleted.
 function copy_filter_link(button) {
     copy_to_clipboard(button.dataset.shareUrl);
+}
+
+// The filter bar is re-rendered by the refresh poll and the action bar is not, so the export
+// URL is read from the bar when the button is clicked: it exports the filter the bar shows.
+function export_alerts_to_csv() {
+    window.location.href = document.getElementById("manage_filter_bar").dataset.exportUrl;
 }
 
 //

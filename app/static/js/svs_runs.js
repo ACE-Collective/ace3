@@ -454,7 +454,7 @@
             download: null,
             emptyText: "No runs match these filters.",
             defaultF: settings.default_f,
-            selection: settings.can_manage ? {
+            select: settings.can_manage ? {
                 key: function(row) { return row.run_id; },
                 noun: "run",
                 actions: bulk_actions(settings),

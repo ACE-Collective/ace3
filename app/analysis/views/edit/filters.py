@@ -1,7 +1,7 @@
 import json
 import logging
 
-from flask import jsonify, redirect, render_template, request, session, url_for
+from flask import redirect, render_template, request, session, url_for
 from flask_login import login_required
 from pydantic import ValidationError
 
@@ -24,7 +24,6 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from aceapi_v2.saved_filters.schemas import FilterEntry
 from saq.gui.filter_url import FilterQueryError, decode_legacy_filter_json, encode_filter_query
-from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
 
 
 def _validate(filters: list) -> list:
@@ -194,13 +193,3 @@ def remove_filter_category():
 def new_filter_option():
     return render_template('analysis/alert_filter_input.html', filters=getFilters(),
                            session_filters=[{"name": "Description", "inverted": False, "values": [""]}])
-
-
-@analysis.route('/resolve_date_range', methods=['GET'])
-@require_permission('alert', 'read')
-def resolve_date_range():
-    """What a relative token currently resolves to, for the live hint under the date input.
-
-    Resolved server-side so the hint uses the same parser the query does -- a hint computed
-    in JavaScript could disagree with what the filter actually matches."""
-    return jsonify({"text": resolve_date_range_for_display(request.args.get('value', ''))})

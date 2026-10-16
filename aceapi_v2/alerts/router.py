@@ -5,7 +5,8 @@ import os
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, Security
+import pytz
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, Security, status
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
@@ -21,8 +22,10 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import (
     ZIP_DOWNLOAD_RESPONSES,
     CsvStreamResponse,
+    ImageFileResponse,
     NdjsonStreamResponse,
     TextFileResponse,
+    TextStreamResponse,
     ZipFileResponse,
 )
 from aceapi_v2.sync import run_db_in_thread
@@ -30,13 +33,22 @@ from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import (
     AlertCommentRead,
     AlertCommentUpdate,
+    AlertCount,
     AlertListPage,
+    AlertMeta,
     BulkAddObservableRequest,
     BulkAddObservableResult,
+    ClickerSearch,
+    DateRange,
+    ObservableAnalysisRequested,
+    SetOwnerRequest,
+    SetOwnerResult,
 )
+from aceapi_v2.schemas.base import ListResponse
 from aceapi_v2.detection_points import service as detection_points_service
 from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
 from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
+from saq.util.relative_time import RelativeTimeError, format_date_range, parse_date_range
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +124,25 @@ async def _prepare_listing(
         viewer_user_id=auth.auth_user_id)
 
 
+@router.put("/owner", response_model=SetOwnerResult)
+async def set_alert_owner(
+    body: SetOwnerRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "write"))],
+) -> SetOwnerResult:
+    """Sets the owner of the alerts: the caller takes them when `owner_id` is their own id, assigns
+    them to someone else otherwise, and unassigns them when it is null. An alert another analyst
+    owns is left alone unless `take_owned` confirms taking it from them
+    (saq.database.util.alert.check_alert_ownership)."""
+    if auth.auth_user_id is None:
+        raise HTTPException(status_code=400, detail="changing an alert's owner needs a caller that is a user")
+
+    result = await run_db_in_thread(
+        service.set_alert_owner, body.alert_uuids, body.owner_id, auth.auth_user_id, body.take_owned)
+    logger.info("AUDIT: user %s set the owner of alerts %s to %s",
+                auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody")
+    return result
+
+
 @router.get("/", response_model=AlertListPage)
 async def list_alerts(
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
@@ -146,7 +177,7 @@ async def export_alerts_ndjson(
     changed_since: ChangedSinceParam = None,
     tz: TimezoneParam = "UTC",
 ) -> NdjsonStreamResponse:
-    """Stream every alert the listing matches as NDJSON, one AlertRow per line.
+    """Stream every alert the listing matches as NDJSON, one AlertListRow per line.
 
     A failure part-way through cannot change the status code that was already sent: the
     stream then ends with an {"error": ...} line, and the failure is logged.
@@ -172,6 +203,43 @@ async def export_alerts_csv(
     listing = await _prepare_listing(auth, f, changed_since, tz)
     export = await start_export(service.fetch_alert_page, listing, what="alert")
     return csv_response(export, service.alert_rows_to_csv, "alerts.csv")
+
+
+@router.get("/count", response_model=AlertCount)
+async def count_alerts(
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    response: Response,
+    f: FilterParam,
+    tz: TimezoneParam = "UTC",
+) -> AlertCount:
+    """How many alerts GET /alerts lists for these filters.
+
+    The alert management page's browser tab polls this with the "Reset" filter to show a dot
+    while alerts are waiting.
+    """
+    listing = await _prepare_listing(auth, f, None, tz)
+    count = await run_db_in_thread(service.count_alert_listing, listing)
+    response.headers["Cache-Control"] = "private, no-store"
+    return AlertCount(count=count)
+
+
+@router.get("/date-range", response_model=DateRange)
+async def resolve_date_range(
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    value: Annotated[str, Query(description="a date filter value: `-7d`, `-1d@d - @d`, or an absolute range")],
+    tz: TimezoneParam = "UTC",
+) -> DateRange:
+    """The window a date filter value means right now, resolved as the alert filters resolve it.
+
+    The manage page shows it under the relative date input, so that `-24h` is never opaque.
+    """
+    zone = parse_timezone(tz)
+    try:
+        start, end = parse_date_range(value, now=datetime.now(pytz.utc), tz=zone)
+    except (RelativeTimeError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return DateRange(start=start, end=end, text=format_date_range(start, end, zone))
 
 
 @router.get(
@@ -221,6 +289,175 @@ async def download_alert(
         filename=f"{alert_uuid}.zip",
         background=BackgroundTask(_safe_unlink, zip_path),
     )
+
+
+@router.get("/{alert_uuid}/meta", response_model=AlertMeta)
+async def get_alert_meta(
+    alert_uuid: str,
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    response: Response,
+) -> AlertMeta:
+    """The alert's ownership, disposition, lock and version, which the alert page polls for
+    while it is open. Read from the database alone, without loading the alert."""
+    meta = await run_db_in_thread(service.get_alert_meta, alert_uuid)
+    response.headers["Cache-Control"] = "private, no-store"
+    return AlertMeta(**meta)
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/image", response_class=ImageFileResponse)
+async def get_observable_image(
+    alert_uuid: str,
+    observable_uuid: str,
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> ImageFileResponse:
+    """A file observable of the alert that is an image, served as that image.
+
+    Pages embed it with <img>, but the URL can also be opened as a page: the response is never
+    sniffed as another type and is sandboxed, so an SVG cannot run its scripts on the GUI origin.
+    """
+    path, mime_type = await run_db_in_thread(service.resolve_alert_image, alert_uuid, observable_uuid)
+    return ImageFileResponse(path, media_type=mime_type, headers={
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        # alert content: a browser may keep it, a shared cache may not
+        "Cache-Control": "private",
+    })
+
+
+# a file observable's content opened as a page must stay inert on the GUI origin: never sniffed as
+# HTML, sandboxed, and kept by the browser only
+_FILE_VIEW_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "sandbox",
+    "Cache-Control": "private",
+}
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/text", response_class=TextFileResponse)
+async def view_observable_file_as_text(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> TextFileResponse:
+    """A file observable of the alert, as text: its bytes as they are, served as text/plain
+    (the alert page's View As Text)."""
+    file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s viewed file %s of alert %s as text", auth.auth_name, observable_uuid, alert_uuid)
+    # FileResponse ignores the class attribute; without this it guesses from the filename
+    return TextFileResponse(file_observable.path, media_type="text/plain; charset=utf-8", headers=_FILE_VIEW_HEADERS)
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/hex", response_class=TextStreamResponse)
+async def view_observable_file_as_hex(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> TextStreamResponse:
+    """A file observable of the alert as a hex dump, in the format of `hexdump -C` (the alert
+    page's View As Hex)."""
+    file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s viewed file %s of alert %s as hex", auth.auth_name, observable_uuid, alert_uuid)
+    return TextStreamResponse(service.hexdump(file_observable.path), media_type="text/plain; charset=utf-8",
+                              headers=_FILE_VIEW_HEADERS)
+
+
+@router.get(
+    "/{alert_uuid}/observables/{observable_uuid}/zip",
+    response_class=ZipFileResponse,
+    responses=ZIP_DOWNLOAD_RESPONSES,
+)
+async def download_observable_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> ZipFileResponse:
+    """A file observable of the alert, as a zip encrypted with password 'infected' (the alert
+    page's Download File As ZIP)."""
+    zip_path, file_name = await run_db_in_thread(service.create_encrypted_file_zip, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s downloaded file %s of alert %s", auth.auth_name, observable_uuid, alert_uuid)
+    return ZipFileResponse(
+        zip_path,
+        # FileResponse ignores the class attribute; without this it guesses from the filename
+        media_type="application/zip",
+        filename=file_name,
+        background=BackgroundTask(_safe_unlink, zip_path),
+    )
+
+
+#
+# analysis an analyst requests for one observable: each adds the directive an analysis module
+# waits for, and queues the alert in correlation mode, even when it has been dispositioned. A 409
+# means the alert is locked (being analyzed); the analyst tries again.
+#
+
+async def _request_analysis(request, alert_uuid: str, observable_uuid: str, auth: ApiAuthResult, what: str,
+                            message: str) -> ObservableAnalysisRequested:
+    observable = await run_db_in_thread(request, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s requested %s for observable %s in alert %s", auth.auth_name, what, observable, alert_uuid)
+    return ObservableAnalysisRequested(message=message)
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/collect-file",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def collect_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Collect the file at a file_location observable from its host (the file collectors)."""
+    return await _request_analysis(service.request_file_collection, alert_uuid, observable_uuid, auth,
+                                   "file collection", "File collection requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/render",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def render_file(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Render a file observable (HTML or PDF) and take a screenshot of it (phishkit)."""
+    return await _request_analysis(service.request_render, alert_uuid, observable_uuid, auth,
+                                   "a render", "Render requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/crawl",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def crawl_url(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Download a url observable's content and take a screenshot of it (phishkit)."""
+    return await _request_analysis(service.request_crawl, alert_uuid, observable_uuid, auth,
+                                   "a crawl", "Crawl requested.")
+
+
+@router.post("/{alert_uuid}/observables/{observable_uuid}/check-for-clickers",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def check_for_clickers(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    """Look for anyone who clicked a url or visited an fqdn, with every configured clicker module.
+    Earlier clicker results on the observable are replaced."""
+    return await _request_analysis(service.request_clicker_check, alert_uuid, observable_uuid, auth,
+                                   "a clicker check", "Clicker check requested.")
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/clicker-searches", response_model=ListResponse[ClickerSearch])
+async def get_clicker_searches(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "read"))],
+) -> ListResponse[ClickerSearch]:
+    """The Splunk searches the clicker check runs for this observable, as Splunk web URLs, to run
+    by hand. Empty when none is configured for its type."""
+    searches = await run_db_in_thread(service.clicker_searches, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s opened %d Splunk clicker searches for observable %s in alert %s",
+                auth.auth_name, len(searches), observable_uuid, alert_uuid)
+    return ListResponse(data=searches)
 
 
 @router.get("/{alert_uuid}/logs", response_class=TextFileResponse)

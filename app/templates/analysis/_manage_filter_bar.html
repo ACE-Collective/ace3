@@ -5,8 +5,9 @@
 
    Everything here uses inline handlers on purpose: this markup is re-rendered by the 30s
    poll, so jQuery bindings attached to it would not survive the morph. The filter list in
-   effect rides along as data-effective-filters, so "Save a copy" saves what the bar shows. #}
-<div class="col" id="manage_filter_bar" data-effective-filters='{{ effective_filters | tojson }}'>
+   effect rides along as data-effective-filters, so "Save a copy" saves what the bar shows,
+   and its CSV export URL as data-export-url, so "Export to CSV" exports what the bar shows. #}
+<div class="col" id="manage_filter_bar" data-effective-filters='{{ effective_filters | tojson }}' data-export-url="{{ export_csv_url }}">
     {% if temp_filter %}
     {# A pivot or a shared link is showing. The analyst's own filter is untouched and one
        click away -- this banner is what makes an accidental pivot recoverable instead of

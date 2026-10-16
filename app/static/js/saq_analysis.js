@@ -82,18 +82,7 @@ function check_alert_meta() {
         if (current_alert_uuid == null)
             return;
 
-        var params = new URLSearchParams({ direct: current_alert_uuid });
-        fetch("get_alert_meta?" + params.toString(), {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            credentials: 'same-origin'
-        })
-        .then(function(response) {
-            if (!response.ok) {
-                throw new Error("HTTP " + response.status);
-            }
-            return response.json();
-        })
+        aceApi.get("/alerts/" + encodeURIComponent(current_alert_uuid) + "/meta")
         .then(function(data) {
             ownership_check_failures = 0;
             last_successful_check = Date.now();
@@ -336,9 +325,12 @@ $(document).ready(function() {
         })();
     });
 
-    $('#btn-assign-ownership').click(function(e) {
-        // add a hidden field to the form and then submit
-        $("#assign-ownership-form").append('<input type="hidden" name="alert_uuid" value="' + current_alert_uuid + '" />').submit();
+    // the page reloads to show the new owner, so a skipped alert is reported before it does
+    setup_assign_ownership_dialog(function() { return [current_alert_description()]; }, null, function(result) {
+        if (result.message) {
+            alert(result.message);
+        }
+        window.location.replace(window.location);
     });
 
     $("#btn-analyze_alert").click(function(e) {
@@ -405,7 +397,7 @@ $(document).ready(function() {
         timeFormat: 'HH:mm:ss'
     });
 
-    // add observable expiration time setup
+    // detection expiration modal setup
     $('input[name="observable_expiration_time"]').datetimepicker({
         timezone: 0,
         showSecond: false,
@@ -672,6 +664,16 @@ $(document).ready(function() {
 });
 
 // attachment downloading
+// Asks for analysis of one observable of the alert (an observable action that adds a directive
+// and requeues the alert: collect-file, render, crawl, check-for-clickers, under
+// /api/v2/alerts/{uuid}/observables/{id}/), then reloads the alert page to show it queued. A
+// locked alert is a 409, reported like any other refusal.
+function request_observable_analysis(alert_uuid, observable_uuid, action, reload_url) {
+    aceApi.post("/alerts/" + encodeURIComponent(alert_uuid) + "/observables/" + encodeURIComponent(observable_uuid) + "/" + action)
+        .then(function() { window.location = reload_url; })
+        .catch(function(err) { alert(err.message); });
+}
+
 var $download_element;
 
 function download_url(url) {
@@ -795,6 +797,38 @@ function edit_observable_comment(commentId, element) {
     modal.show();
 }
 
+// currentExpiration is "YYYY-MM-DD HH:MM:SS" (UTC), or null for a detection that never expires
+function show_detection_expiration_modal_for(detectionId, currentExpiration) {
+    $('#detection_expiration_id').val(detectionId.toString());
+    $('#detection_expiration_current').val(currentExpiration || 'never');
+    $('#detection_expiration_new').val('').prop('disabled', false);
+    $('#detection_expiration_never').prop('checked', false);
+    var modal = new bootstrap.Modal(document.getElementById('detection_expiration_modal'));
+    modal.show();
+}
+
+function toggle_detection_never_expires() {
+    $('#detection_expiration_new').prop('disabled', $('#detection_expiration_never').is(':checked'));
+}
+
+function submit_detection_expiration() {
+    var detectionId = $('#detection_expiration_id').val();
+    var expiresOn = null;
+    if (!$('#detection_expiration_never').is(':checked')) {
+        var value = $('#detection_expiration_new').val().trim();
+        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+            alert('Enter the new expiration as YYYY-MM-DD HH:MM:SS (UTC), or check "Never expires".');
+            return;
+        }
+        // the API takes ISO 8601; a value without an offset is stored as given, which is UTC
+        expiresOn = value.replace(' ', 'T');
+    }
+
+    aceApi.patch('/detection/' + detectionId + '/expiration', {expires_on: expiresOn})
+        .then(function() { window.location.reload(); })
+        .catch(function(error) { alert(error.message); });
+}
+
 // This is kind of gross, but it does the job until we have proper searching/filtering routes.
 function filter_events_by_observable_and_status(o_type, o_value, event_status) {
     $(document).ready(function(){
@@ -850,19 +884,15 @@ function set_owner(alert_uuid) {
         return;
     }
 
-    (function() {
-        const params = new URLSearchParams();
-        params.append('alert_uuids', alert_uuid);
-        if (take_owned) {
-            params.append('take_owned', take_owned);
+    aceApi.put("/alerts/owner", {alert_uuids: [alert_uuid], owner_id: current_user_id, take_owned: take_owned_map(take_owned)})
+    .then(function(result) {
+        // the page reloads to show the new owner, so a skipped alert is reported before it does
+        if (result.message) {
+            alert(result.message);
         }
-        fetch('set_owner', { method: 'POST', credentials: 'same-origin', body: params })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace(window.location);
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
+        window.location.replace(window.location);
+    })
+    .catch(function(err) { alert(err.message); });
 }
 
 function toggleCollapseAll(button) {

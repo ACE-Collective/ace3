@@ -44,7 +44,6 @@ class GlobalRuntimeSettings(BaseModel):
     encryption_initialized: bool = Field(default=False, description="")
     encryption_key: Optional[str] = Field(default=None, description="the private key password for encrypting/decrypting archive files")
     forced_alerts: bool = Field(default=False, description="set this to True to force all anlaysis to result in an alert being generated")
-    gui_whitelist_excluded_observable_types: set[str] = Field(default_factory=set, description="list of observable types we want to exclude from whitelisting (via the GUI)")
     instance_type: str = Field(default=INSTANCE_TYPE_DEV, description="what type of instance is this?")
     integration_config_paths: list = Field(default_factory=list, description="list of integration configuration paths to be loaded by the integration loader")
     local_domains: list = Field(default_factory=list, description="")
@@ -250,8 +249,6 @@ def initialize_environment(
 
     # resolve any encrypted values that were referenced in the config
     resolve_configuration(get_config())
-
-    get_global_runtime_settings().gui_whitelist_excluded_observable_types = set(get_config().gui.whitelist_excluded_observable_types)
 
     # what node is this?
     node = get_config().global_settings.node

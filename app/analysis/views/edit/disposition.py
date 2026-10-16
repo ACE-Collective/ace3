@@ -1,12 +1,12 @@
 import logging
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
-from app.alert_ownership import confirmed_takes_from_form, describe_skipped
+from app.alert_ownership import confirmed_takes_from_form
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.database.model import Alert
 from saq.database.pool import get_db
-from saq.database.util.alert import set_dispositions
+from saq.database.util.alert import describe_skipped, set_dispositions
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import VerdictNotAllowed, clear_verdict, confirm_alert, set_verdict
 from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, is_selectable_disposition

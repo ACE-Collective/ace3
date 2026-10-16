@@ -151,10 +151,9 @@ storage directory plus the row.
 | Path | Code | Notes |
 |---|---|---|
 | Collector → local node | `saq/collectors/remote_node.py::submit_local` | duplicates the root, moves it to the node storage dir, `ALERT()` if mode is `correlation`, then `schedule()`. |
-| Collector → remote node | `saq/collectors/remote_node.py::submit_remote` → `ace_api.upload(sync=True)` | the *target* node's `/engine/upload` calls `root.schedule()`. |
-| `POST /api/analysis/submit` | `aceapi/analysis.py` | saves the root, `ALERT()` if `correlation`, then `schedule()`. |
-| `GET /api/analysis/resubmit/<uuid>` | `aceapi/analysis.py` | `root.reset()` then `schedule()`. |
-| `GET /api/engine/upload` (`sync=1`) | `aceapi/engine.py` | used by node-to-node transfer and by drain. Returns the target-computed `storage_dir`. |
+| Collector → remote node | `saq/collectors/remote_node.py::submit_remote` → `ace_api.upload(sync=True)` | the *target* node's `/api/v2/engine/upload` calls `root.schedule()`. |
+| `POST /api/v2/analysis/` | `aceapi_v2/analysis/service.py` | saves the root, `ALERT()` if `correlation`, then `schedule()`. |
+| `POST /api/v2/engine/upload` (`sync=1`) | `aceapi_v2/engine/service.py` | used by node-to-node transfer and by drain. Returns the target-computed `storage_dir`. |
 | Hunts | `aceapi/hunt.py`, `saq/cli/commands/hunt.py` | `new_root.schedule()`. |
 | GUI analyst actions | `app/analysis/views/**` | typically `request_analyst_analysis(root)` (mode → `correlation`, sets `STATE_ANALYST_REQUESTED_ANALYSIS`) then `add_workload()`. |
 | Disposition | `saq/database/util/alert.py::set_dispositions` / `set_disposition_reviews` | bulk `INSERT IGNORE INTO workload ... analysis_mode = 'dispositioned'`, joined against `nodes` on `alerts.location = nodes.name`. Skipped when the disposition is `IGNORE`. |

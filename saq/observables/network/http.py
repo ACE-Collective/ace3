@@ -77,6 +77,8 @@ register_observable_type(F_USER_AGENT, UserAgentObservable)
 register_observable_type(F_URI_PATH, URIPathObservable)
 register_observable_type(F_URL, URLObservable)
 
+# crawl the URL with phishkit
+register_observable_action(F_URL, ObservableActionUrlCrawl)
 # "Check for clickers" (generic) and "Open clicker search in Splunk" (source-specific)
 register_observable_action(F_URL, ObservableActionCheckForClickers)
 register_observable_action(F_URL, ObservableActionOpenSplunkClickerSearch)

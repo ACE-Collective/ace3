@@ -15,6 +15,7 @@ from aceapi_v2.common import listing
 from saq.database.model import (
     Alert,
     AuthUserPermission,
+    Comment,
     Company,
     DetectionPoint,
     SVSAttribution,
@@ -254,7 +255,56 @@ class TestKeysetPaging:
         assert (await client.get("/alerts/", params={"limit": listing.LISTING_MAX_PAGE_SIZE + 1})).status_code == 422
 
 
+class TestComments:
+    """The rows carry the comments on each alert, which the manage page's CSV export always had."""
+
+    @staticmethod
+    def _comment(alert: Alert, text: str, insert_date: datetime) -> None:
+        db = get_db()
+        user = db.query(User).filter(User.username == "unittest").one()
+        db.add(Comment(uuid=alert.uuid, user_id=user.id, comment=text, insert_date=insert_date))
+        db.commit()
+
+    @pytest.mark.asyncio
+    async def test_comments_oldest_first(self, client: AsyncClient):
+        commented = insert_alert()
+        quiet = insert_alert()
+        self._comment(commented, "second, with a comma", datetime(2026, 5, 2))
+        self._comment(commented, "first", datetime(2026, 5, 1))
+
+        rows = {row["uuid"]: row for row in (await client.get("/alerts/")).json()["data"]}
+        assert rows[commented.uuid]["comments"] == ["first", "second, with a comma"]
+        assert rows[quiet.uuid]["comments"] == []
+
+    @pytest.mark.asyncio
+    async def test_csv_puts_each_comment_on_its_own_line(self, client: AsyncClient):
+        alert = insert_alert()
+        self._comment(alert, "first", datetime(2026, 5, 1))
+        self._comment(alert, "second, with a comma", datetime(2026, 5, 2))
+
+        (record,) = csv.DictReader(io.StringIO((await client.get("/alerts/export/csv")).text))
+        assert record["comments"] == "first\nsecond, with a comma"
+
+    @pytest.mark.asyncio
+    async def test_ndjson(self, client: AsyncClient):
+        alert = insert_alert()
+        self._comment(alert, "a note", datetime(2026, 5, 1))
+
+        (line,) = (await client.get("/alerts/export/ndjson")).text.splitlines()
+        assert json.loads(line)["comments"] == ["a note"]
+
+
 class TestFilters:
+    @pytest.mark.asyncio
+    async def test_an_inverted_observable_filter_keeps_alerts_without_observables(self, client: AsyncClient):
+        """"NOT observable X" lists every alert that does not have X, including those with no
+        observables at all. The manage page's CSV export once inner-joined the observable
+        mapping and dropped them, exporting fewer alerts than the analyst was looking at."""
+        alert = insert_alert()
+
+        rows = (await client.get("/alerts/export/csv", params={"f": "!observable:ipv4:10.0.0.1"})).text
+        assert alert.uuid in rows
+
     @pytest.mark.asyncio
     async def test_share_link_filters(self, client: AsyncClient):
         default = insert_alert()

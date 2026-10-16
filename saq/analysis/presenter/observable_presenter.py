@@ -5,7 +5,6 @@ from aceapi_v2.observables.service import observable_is_interesting
 from aceapi_v2.sync import run_async_with_session
 from saq.database.database_observable import observable_is_set_for_detection
 
-from saq.environment import get_global_runtime_settings
 from saq.gui import ObservableAction
 
 # Registry for custom observable presenter classes
@@ -115,8 +114,6 @@ class ObservablePresenter:
         available_actions so that the caching above still applies."""
         from saq.gui import (
             ObservableActionAddComment,
-            ObservableActionUnWhitelist,
-            ObservableActionWhitelist,
             ObservableActionSeparator,
             ObservableActionEnableDetection,
             ObservableActionDisableableDetection,
@@ -124,26 +121,10 @@ class ObservablePresenter:
             ObservableActionMarkInteresting,
             ObservableActionUnmarkInteresting,
         )
-        if self._observable.type in get_global_runtime_settings().gui_whitelist_excluded_observable_types:
-            actions = []
-        else:
-            actions = [
-                ObservableActionWhitelist(),
-                ObservableActionUnWhitelist(),
-            ]
-
         if self.is_set_for_detection:
-            actions.extend(
-                [
-                    ObservableActionSeparator(),
-                    ObservableActionDisableableDetection(),
-                    ObservableActionAdjustExpiration(),
-                ]
-            )
+            actions = [ObservableActionDisableableDetection(), ObservableActionAdjustExpiration()]
         else:
-            actions.extend(
-                [ObservableActionSeparator(), ObservableActionEnableDetection()]
-            )
+            actions = [ObservableActionEnableDetection()]
 
         # add interesting toggle
         if self.is_interesting:

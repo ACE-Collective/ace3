@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlencode
 from flask import g, session
 from flask_login import current_user
 import pytz
@@ -21,13 +22,14 @@ from saq.gui.filter_query import (
     resolve_filter_sentinel,
 )
 from saq.gui.filter_screens import ALERTS_SCREEN
+from saq.gui.filter_url import encode_filter_query
 
 
 def _default_filters() -> list:
     """The filter list the "Reset" action applies: open (or unowned) alerts, owned by no
     one or by the current user, in the current user's default queue. Factored out so the
-    reset-alert notification dot (get_reset_filter_alert_count()) can count against the
-    exact same criteria without touching session state."""
+    reset-alert notification dot (reset_filter_count_url()) can count against the exact
+    same criteria without touching session state."""
     return [
         { "name": "Disposition", "inverted": False, "values": [ "OPEN" ] },
         { "name": "Owner", "inverted": False, "values": [ "None", current_user.display_name ] },
@@ -39,11 +41,11 @@ def _reset_filters():
     that knows how to put the session back to the built-in default."""
     clear_filter_state()
 
-def get_reset_filter_alert_count() -> int:
-    """Returns the number of alerts matching the "Reset" filter for the current user. Used
-    to drive the browser-tab notification dot -- see reset_filter_alert_count() in
-    app/analysis/views/manage.py."""
-    return count_alerts(_default_filters())
+def reset_filter_count_url() -> str:
+    """The API URL that counts the alerts the "Reset" filter shows the current user. The
+    manage page's browser tab polls it for its notification dot -- see static/js/ace.js."""
+    query = urlencode([("f", value) for value in encode_filter_query(_default_filters())])
+    return f"/api/v2/alerts/count?{query}"
 
 def reset_checked_alerts():
     session['checked'] = []

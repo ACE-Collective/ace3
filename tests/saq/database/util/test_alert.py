@@ -22,13 +22,16 @@ from saq.database.util.alert import (
     ALERT,
     AlertFrozen,
     AlertOwner,
+    OwnershipCheck,
+    change_alert_owner,
     check_alert_ownership,
+    describe_frozen,
+    describe_skipped,
     ensure_not_frozen,
     ensure_uuid_not_frozen,
     get_alert_by_uuid,
     set_disposition_reviews,
     set_dispositions,
-    take_ownership,
     touch_alerts,
 )
 from saq.database.util.user_management import add_user, delete_user
@@ -365,6 +368,36 @@ def test_check_alert_ownership_drops_unknown_and_duplicate_alerts():
     assert result.permitted == ["b", "a"]
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("skipped,expected", [
+    ({}, None),
+    ({"a": "Jane"}, "left 1 alert owned by Jane alone"),
+    ({"a": "Jane", "b": "Jane"}, "left 2 alerts owned by Jane alone"),
+    ({"a": "Jane", "b": "Jane", "c": "Raj"}, "left 3 alerts owned by other analysts alone (Jane 2, Raj 1)"),
+])
+def test_describe_skipped(skipped, expected):
+    assert describe_skipped(OwnershipCheck(skipped=skipped)) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("frozen,expected", [
+    ({}, None),
+    ({"a": "SIMULATED"}, "left 1 SIMULATED alert alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED"}, "left 2 SIMULATED alerts alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED", "c": "OTHER"},
+     "left 3 alerts alone whose disposition only ACE sets (SIMULATED 2, OTHER 1)"),
+])
+def test_describe_frozen(frozen, expected):
+    assert describe_frozen(frozen) == expected
+
+
+@pytest.mark.unit
+def test_describe_skipped_names_owned_and_frozen_alerts():
+    ownership = OwnershipCheck(skipped={"a": "Jane"}, frozen={"b": "SIMULATED"})
+    assert describe_skipped(ownership) == (
+        "left 1 alert owned by Jane alone; left 1 SIMULATED alert alone (only ACE sets that disposition)")
+
+
 @pytest.mark.integration
 def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
     """An alert someone else owns is not changed unless it was taken from them."""
@@ -476,7 +509,7 @@ def test_set_dispositions_protects_another_analysts_disposition(two_analysts):
 
 
 @pytest.mark.integration
-def test_take_ownership(two_analysts):
+def test_change_alert_owner_takes(two_analysts):
     owner, other = two_analysts
     owned = insert_alert()
     _set_owner(owned, owner.id)
@@ -484,8 +517,8 @@ def test_take_ownership(two_analysts):
     _set_owner(confirmed, owner.id)
     unowned = insert_alert()
 
-    result = take_ownership([owned.uuid, confirmed.uuid, unowned.uuid], other.id,
-                            confirmed_takes={confirmed.uuid: owner.id})
+    result = change_alert_owner([owned.uuid, confirmed.uuid, unowned.uuid], other.id, other.id,
+                                confirmed_takes={confirmed.uuid: owner.id})
 
     assert result.permitted == [confirmed.uuid, unowned.uuid]
     assert result.reassigned == [confirmed.uuid]
@@ -493,6 +526,74 @@ def test_take_ownership(two_analysts):
     assert _reload(owned).owner_id == owner.id
     assert _reload(confirmed).owner_id == other.id
     assert _reload(unowned).owner_id == other.id
+
+
+@pytest.fixture
+def third_analyst():
+    user = add_user("third_analyst", "third@test.com", "Third Analyst", "password123")
+    yield user
+    delete_user("third_analyst")
+
+
+@pytest.mark.integration
+def test_change_alert_owner_assigns(two_analysts, third_analyst):
+    """Assigning gives the alerts to someone else. An alert the new owner already has needs no
+    confirmation; one a third analyst owns is left alone like any other."""
+    assigner, assignee = two_analysts
+    unowned = insert_alert()
+    mine = insert_alert()
+    _set_owner(mine, assigner.id)
+    already_theirs = insert_alert()
+    _set_owner(already_theirs, assignee.id)
+    someone_elses = insert_alert()
+    _set_owner(someone_elses, third_analyst.id)
+
+    result = change_alert_owner(
+        [unowned.uuid, mine.uuid, already_theirs.uuid, someone_elses.uuid], assignee.id, assigner.id)
+
+    assert result.permitted == [unowned.uuid, mine.uuid, already_theirs.uuid]
+    assert result.reassigned == []
+    assert result.skipped == {someone_elses.uuid: "Third Analyst"}
+    for alert in (unowned, mine, already_theirs):
+        assert _reload(alert).owner_id == assignee.id
+    assert _reload(someone_elses).owner_id == third_analyst.id
+
+
+@pytest.mark.integration
+def test_change_alert_owner_unassigns(two_analysts):
+    owner, other = two_analysts
+    mine = insert_alert()
+    _set_owner(mine, other.id)
+    theirs = insert_alert()
+    _set_owner(theirs, owner.id)
+    confirmed = insert_alert()
+    _set_owner(confirmed, owner.id)
+
+    result = change_alert_owner([mine.uuid, theirs.uuid, confirmed.uuid], None, other.id,
+                                confirmed_takes={confirmed.uuid: owner.id})
+
+    assert result.permitted == [mine.uuid, confirmed.uuid]
+    assert result.skipped == {theirs.uuid: "Original Owner"}
+    for alert in (mine, confirmed):
+        reloaded = _reload(alert)
+        assert (reloaded.owner_id, reloaded.owner_time) == (None, None)
+    assert _reload(theirs).owner_id == owner.id
+
+
+@pytest.mark.integration
+def test_change_alert_owner_audits_who_made_the_change(two_analysts, third_analyst, caplog):
+    """When an alert is taken from someone on another's behalf, the audit line names both the
+    new owner and the analyst who made the change."""
+    owner, assigner = two_analysts
+    alert = insert_alert()
+    _set_owner(alert, owner.id)
+
+    with caplog.at_level(logging.INFO):
+        change_alert_owner([alert.uuid], third_analyst.id, assigner.id, confirmed_takes={alert.uuid: owner.id})
+
+    (record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert ownership taken"]
+    assert (record.alert_owner, record.new_owner, record.changed_by) == (
+        "original_owner", "third_analyst", "new_disposer")
 
 
 @pytest.mark.integration

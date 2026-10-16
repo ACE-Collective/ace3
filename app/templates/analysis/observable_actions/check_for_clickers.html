@@ -1,15 +1,6 @@
 <script type="text/javascript">
     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
         if (! confirm("Check log sources for anyone who clicked this URL / visited this domain?")) { return; }
-        $.post("{{ url_for('analysis.observable_action_check_for_clickers') }}",
-                {"observable_uuid":"{{_observable.uuid}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
-                function(data) {
-                    window.location = '{{url_for("analysis.index", direct=alert.uuid)}}';
-                }
-        ).fail(function(jqXHR, textStatus) {
-            var msg = "Clicker check failed";
-            try { msg += ": " + (jqXHR.responseJSON && jqXHR.responseJSON.message ? jqXHR.responseJSON.message : textStatus); } catch (e) {}
-            alert(msg);
-        });
+        request_observable_analysis("{{alert.uuid}}", "{{_observable.uuid}}", "check-for-clickers", "{{url_for('analysis.index', direct=alert.uuid)}}");
     });
 </script>

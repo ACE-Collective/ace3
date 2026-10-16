@@ -193,6 +193,33 @@
     </div>
 </div>
 
+{# modal for adjusting an observable detection's expiration (AJAX to FastAPI) #}
+<div class="modal fade" id="detection_expiration_modal" tabindex="-1" aria-labelledby="detection_expiration_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <input type="hidden" id="detection_expiration_id" value=""/>
+            <div class="modal-header">
+                <h5 class="modal-title" id="detection_expiration_modal_label">Adjust Detection Expiration</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label" for="detection_expiration_current">Current expiration (UTC)</label>
+                <input type="text" class="form-control mb-3" id="detection_expiration_current" readonly/>
+                <label class="form-label" for="detection_expiration_new">New expiration (UTC)</label>
+                <input type="text" class="form-control mb-3" id="detection_expiration_new" name="observable_expiration_time" placeholder="YYYY-MM-DD HH:MM:SS"/>
+                <div class="form-check">
+                    <input type="checkbox" class="form-check-input" id="detection_expiration_never" onclick="toggle_detection_never_expires()"/>
+                    <label class="form-check-label" for="detection_expiration_never">Never expires</label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-primary" id="btn-save-detection-expiration" onclick="submit_detection_expiration()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <form id="analyze-alert-form" action="{{url_for('analysis.analyze_alert')}}" method="POST">
     <input type="hidden" name="alert_uuid" value="{{alert.uuid}}"/>
 </form>

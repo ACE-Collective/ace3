@@ -62,12 +62,14 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
+    CatalogEntry("file_collection", "write", "Stop, retry and delete file collection requests on the File Collections page."),
     CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),
     CatalogEntry("node", "manage", "Drain and resume nodes via API."),
     CatalogEntry("node", "read", "Read node status and outstanding work counts via API."),
     CatalogEntry("observable", "read", "Query observables via the API."),
     CatalogEntry("observable", "write", "Modify observables and run observable actions."),
     CatalogEntry("remediation", "read", "View remediation actions and history."),
+    CatalogEntry("remediation", "write", "Queue, stop and clear remediations: the alert pages' remediation dialog and the Remediations page."),
     CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
     CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
     CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode and the SVS YARA samples (live malware, in zips protected with the password infected)."),
@@ -80,7 +82,6 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),
-    CatalogEntry("whitelist", "write", "Whitelist observables."),
 )
 
 # Convenience lookups for validation and guard tests. These cover the STATIC entries only; use

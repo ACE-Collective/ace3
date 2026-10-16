@@ -1,3 +1,3 @@
-from app.remediation.views import manage, history, remediations
+from app.remediation.views import manage
 
-__all__ = ['manage', 'history', 'remediations']
+__all__ = ['manage']

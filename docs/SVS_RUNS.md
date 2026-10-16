@@ -748,10 +748,10 @@ whose current disposition is configured that way is *frozen* (`is_frozen_disposi
   frozen alert with *"alert … is SIMULATED, a disposition only ACE sets: it can't be reset,
   re-analyzed or given new observables"*:
   - `ace alert reset` and `ace alert analyze` / `reload` (the alert is skipped and the error logged);
-  - the GUI's *Analyze*, uploading a file to the alert, *Add observable*, and the observable actions
-    (collect file, crawl/render, check for clickers);
-  - `GET /api/analysis/resubmit/<uuid>` (v1) and `POST /api/v2/alerts/bulk-add-observable` (a per-alert
-    failure).
+  - the GUI's *Analyze*, uploading a file to the alert, and *Add observable*;
+  - the observable actions, `POST /api/v2/alerts/{uuid}/observables/{uuid}/collect-file`, `render`,
+    `crawl` and `check-for-clickers` (409), which the alert page calls;
+  - `POST /api/v2/alerts/bulk-add-observable` (a per-alert failure).
 - **Its verdict chips are read-only.** The run review owns those verdicts (`docs/SVS.md`, Part 1).
 
 Tags, comments and ownership changes still work on a frozen alert.

@@ -1,8 +1,0 @@
-{% extends "analysis/alert.html" %}
-{% block alert_details %}
-{% if 'html_content' in analysis.details %}
-    <iframe width="100%" height="500px" src="{{url_for('analysis.html_details', alert_uuid=alert.uuid, field='html_content')}}"></iframe>
-{% else %}
-    <pre>{{ analysis_presenter.details | pprint }}</pre>
-{% endif %}
-{% endblock %}

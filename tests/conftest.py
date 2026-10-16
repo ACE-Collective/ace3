@@ -536,7 +536,7 @@ def mock_api_call(test_client, monkeypatch):
                 api_key = os.environ.get("ICE_API_KEY", None)
 
         if command.startswith("v2/"):
-            return _dispatch_v2(command, method, api_key, data, params, json)
+            return _dispatch_v2(command, method, api_key, data, params, json, files)
 
         if method == ace_api.METHOD_GET:
             func = test_client.get
@@ -600,7 +600,7 @@ def mock_api_call(test_client, monkeypatch):
     monkeypatch.setattr(ace_api, "_execute_api_call", mock_execute_api_call)
 
 
-def _dispatch_v2(command, method, api_key, data, params, json=None):
+def _dispatch_v2(command, method, api_key, data, params, json=None, files=None):
     """Dispatch a `v2/*` ace_api command through the FastAPI ASGI app in-process.
 
     ace_api builds URLs as `/api/<command>`. For v2 commands (`v2/<group>/<name>`),
@@ -623,9 +623,13 @@ def _dispatch_v2(command, method, api_key, data, params, json=None):
     kwargs = {"headers": headers}
     if params is not None:
         kwargs["params"] = params
-    # v2 endpoints take JSON bodies; ace_api passes the body either as `json=`
-    # (preferred) or, for older helpers, as `data=`.
-    if json is not None:
+    # v2 endpoints take JSON bodies, which ace_api passes as `json=` (preferred) or, for older
+    # helpers, as `data=` -- except the multipart ones (engine upload, analysis submit), which
+    # pass `files=` (possibly empty) with the form fields in `data=`
+    if files is not None:
+        kwargs["data"] = data
+        kwargs["files"] = [(field, (name, fp, "application/octet-stream")) for field, (name, fp) in files]
+    elif json is not None:
         kwargs["json"] = json
     elif data is not None:
         kwargs["json"] = data

@@ -6,15 +6,32 @@ import os
 import shutil
 import tempfile
 import uuid as uuidlib
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import aliased
 
-from saq.constants import ANALYSIS_MODE_CORRELATION, VALID_DIRECTIVES
+from saq.analysis.root import load_file_observable
+from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
+from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
+from saq.configuration.config import get_analysis_module_config
+from saq.constants import (
+    ANALYSIS_MODE_CORRELATION,
+    DIRECTIVE_CLICKER_DETECTION,
+    DIRECTIVE_COLLECT_FILE,
+    DIRECTIVE_CRAWL,
+    DIRECTIVE_RENDER,
+    F_FILE,
+    F_FILE_LOCATION,
+    F_FQDN,
+    F_URL,
+    VALID_DIRECTIVES,
+)
 from saq.database.model import (
     Alert,
     Comment,
@@ -27,9 +44,16 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.database.util.alert import AlertFrozen, ensure_not_frozen, node_scope_locations, touch_alerts
+from saq.database.util.alert import (
+    AlertFrozen,
+    change_alert_owner,
+    describe_skipped,
+    ensure_not_frozen,
+    node_scope_locations,
+    touch_alerts,
+)
 from saq.database.util.locking import acquire_lock, release_lock
-from saq.database.util.workload import add_workload
+from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.environment import get_base_dir, get_temp_dir
 from saq.gui.alert import GUIAlert
 from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
@@ -46,10 +70,13 @@ from saq.util.uuid import is_uuid
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
     AlertCommentRead,
+    AlertListRow,
     AlertRow,
     BulkAddObservableResult,
+    ClickerSearch,
+    SetOwnerResult,
 )
-from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
+from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip, safe_file_name
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidCursor,
@@ -60,6 +87,12 @@ from aceapi_v2.common.listing import (
     settled,
 )
 from aceapi_v2.sync import run_db_in_thread
+
+if TYPE_CHECKING:
+    # saq.observables.file imports the presenters, which import aceapi_v2, so a runtime import
+    # here is circular
+    from saq.analysis.observable import Observable
+    from saq.observables.file import FileObservable
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +175,48 @@ def get_alert_version(alert_uuid: str) -> str:
         raise HTTPException(status_code=404, detail="alert not found")
 
     return version
+
+
+def set_alert_owner(alert_uuids: list[str], owner_id: int | None, acting_user_id: int,
+                    take_owned: dict[str, int]) -> SetOwnerResult:
+    """Gives the alerts to owner_id (see change_alert_owner) and reports what was left alone,
+    worded as the GUI tells the analyst."""
+    new_owner = None
+    if owner_id is not None:
+        new_owner = get_db().get(User, owner_id)
+        if new_owner is None or not new_owner.enabled:
+            raise HTTPException(status_code=422, detail=f"user {owner_id} does not exist or is disabled")
+
+    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned)
+
+    skipped = describe_skipped(ownership)
+    message = None
+    if skipped:
+        count = len(ownership.permitted)
+        if owner_id == acting_user_id:
+            action = f"took ownership of {count} alerts"
+        elif owner_id is None:
+            action = f"unassigned {count} alerts"
+        else:
+            action = f"assigned {count} alerts to {new_owner.gui_display}"
+        message = f"{action}; {skipped}"
+
+    return SetOwnerResult(applied=ownership.permitted, skipped=ownership.skipped, message=message)
+
+
+def get_alert_meta(alert_uuid: str) -> dict:
+    """The ownership, disposition, lock and version state the alert page polls for.
+
+    Database state only: the alert is not loaded from disk, and an archived alert still has it.
+    """
+    if not is_uuid(alert_uuid):
+        raise HTTPException(status_code=400, detail="invalid alert UUID")
+
+    alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert_uuid).one_or_none()
+    if alert is None:
+        raise HTTPException(status_code=404, detail="alert not found")
+
+    return alert.get_metadata_json()
 
 
 def get_alert_json(alert_uuid: str) -> dict:
@@ -342,6 +417,192 @@ def resolve_alert_log_path(alert_uuid: str) -> str:
             status_code=404, detail="saq.log not present for this alert"
         )
     return log_path
+
+
+def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> "FileObservable":
+    """A file observable of the alert whose file is on disk; 404 otherwise.
+
+    Only that one observable is loaded, never the analysis tree (see load_file_observable).
+    """
+    file_observable = load_file_observable(_resolve_alert_storage_path(alert_uuid), observable_uuid)
+    if file_observable is None or not os.path.exists(file_observable.path):
+        raise HTTPException(status_code=404, detail="unknown file")
+
+    return file_observable
+
+
+def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
+    """Return (path, mime type) of a file observable of the alert that is an image.
+
+    The alert page fetches one of these per image it shows. The URL can also be opened as a
+    page, so a file that is not an image is a 404 rather than something the browser would render
+    on the GUI origin.
+    """
+    file_observable = resolve_alert_file(alert_uuid, observable_uuid)
+    if not file_observable.is_image:
+        raise HTTPException(status_code=404, detail="not an image")
+
+    return file_observable.path, file_observable.mime_type
+
+
+# how many lines of a hex dump are sent at once
+_HEXDUMP_BATCH_LINES = 4096
+
+
+def _hexdump_line(offset: int, chunk: bytes) -> str:
+    hex_bytes = [f"{byte:02x} " for byte in chunk]
+    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
+    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
+    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
+
+
+def hexdump(path: str) -> Iterator[str]:
+    """The file as `hexdump -C` prints it, in batches of lines: 16 bytes a line as the offset,
+    the bytes in hex and the printable ones as text, a run of lines repeating the one before it
+    as a single "*", and the length last."""
+    lines: list[str] = []
+    offset = 0
+    previous = None
+    squeezing = False
+    with open(path, "rb") as fp:
+        while chunk := fp.read(16):
+            if chunk == previous:
+                if not squeezing:
+                    lines.append("*\n")
+                    squeezing = True
+            else:
+                lines.append(_hexdump_line(offset, chunk))
+                squeezing = False
+            previous = chunk
+            offset += len(chunk)
+            if len(lines) >= _HEXDUMP_BATCH_LINES:
+                yield "".join(lines)
+                lines = []
+
+    if offset:
+        lines.append(f"{offset:08x}\n")
+    if lines:
+        yield "".join(lines)
+
+
+def create_encrypted_file_zip(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
+    """Zip a file observable of the alert, encrypted with the password infected (see
+    aceapi_v2/common/archive.py). Returns (zip path, name to download it as); the caller removes
+    the zip."""
+    file_observable = resolve_alert_file(alert_uuid, observable_uuid)
+    path = file_observable.path
+    dest = os.path.join(get_temp_dir(), f"{uuidlib.uuid4()}.zip")
+    add_to_encrypted_zip(dest, os.path.dirname(path), os.path.basename(path), f"alert {alert_uuid} file {observable_uuid}")
+    return dest, f"{safe_file_name(os.path.basename(path))}.zip"
+
+
+#
+# analysis an analyst requests for one observable (the alert page's observable actions)
+#
+
+# the analysis module whose configuration holds the Splunk clicker searches
+CLICKER_SPLUNK_MODULE_NAME = "clicker_detection_splunk"
+
+
+def _request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
+                                 change: Callable[["Observable"], None]) -> str:
+    """Change one observable of the alert (add the directive an analysis module waits for), and
+    queue the alert for the analysis the analyst asked for. Returns the observable as text, for
+    the audit log.
+
+    request_analyst_analysis() puts the alert back in correlation mode and past the stop on a
+    dispositioned alert, so the requested analysis runs on an alert the analyst already worked.
+    404 for an unknown alert or observable, 422 for an observable of another type, and 409 while
+    the engine, or anything else, holds the alert's lock, or for a SIMULATED alert, which is never
+    re-analyzed (ensure_not_frozen)."""
+    alert = _resolve_alert(alert_uuid)
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    lock_uuid = str(uuidlib.uuid4())
+    if not acquire_lock(str(alert.uuid), lock_uuid):
+        raise HTTPException(status_code=409, detail="the alert is being analyzed; try again in a moment")
+
+    try:
+        if not alert.load():
+            raise HTTPException(status_code=500, detail="unable to load the alert")
+
+        observable = alert.root_analysis.get_observable(observable_uuid)
+        if observable is None:
+            raise HTTPException(status_code=404, detail="observable not found")
+
+        if observable.type not in valid_types:
+            raise HTTPException(status_code=422, detail=f"this applies to {' and '.join(valid_types)} observables, not {observable.type}")
+
+        change(observable)
+        request_analyst_analysis(alert.root_analysis)
+        alert.sync()
+        add_workload(alert.root_analysis)
+        return str(observable)
+    finally:
+        release_lock(str(alert.uuid), lock_uuid)
+
+
+def request_file_collection(alert_uuid: str, observable_uuid: str) -> str:
+    """Collect File: the file collectors fetch the file at this location from its host."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_FILE_LOCATION,),
+        lambda observable: observable.add_directive(DIRECTIVE_COLLECT_FILE))
+
+
+def request_render(alert_uuid: str, observable_uuid: str) -> str:
+    """Render: phishkit renders the file (HTML and PDF) and takes a screenshot."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_FILE,),
+        lambda observable: observable.add_directive(DIRECTIVE_RENDER))
+
+
+def request_crawl(alert_uuid: str, observable_uuid: str) -> str:
+    """Crawl: phishkit downloads the URL's content and takes a screenshot."""
+    return _request_observable_analysis(
+        alert_uuid, observable_uuid, (F_URL,),
+        lambda observable: observable.add_directive(DIRECTIVE_CRAWL))
+
+
+def _check_for_clickers(observable: "Observable") -> None:
+    observable.add_directive(DIRECTIVE_CLICKER_DETECTION)
+    # An analyst asking again wants a fresh check. The engine skips a module whose analysis
+    # already exists (saq/modules/base_module.py accepts()), so the earlier clicker analyses are
+    # dropped. delete_analysis also prunes what the old analysis owned (its detection points,
+    # observables and detail files); the sync that follows reconciles the detection_points table.
+    for existing in list(observable.all_analysis):
+        if type(existing) in REGISTERED_CLICKER_PROVIDERS:
+            observable.delete_analysis(existing)
+
+
+def request_clicker_check(alert_uuid: str, observable_uuid: str) -> str:
+    """Check for clickers: every configured clicker module looks for anyone who clicked the URL or
+    visited the domain."""
+    return _request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
+
+
+def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearch]:
+    """The Splunk searches the clicker check would run for the observable, as Splunk web URLs, so
+    an analyst can run them without the check. Empty when none is configured for its type."""
+    alert = _resolve_alert(alert_uuid)
+    if not alert.load():
+        raise HTTPException(status_code=500, detail="unable to load the alert")
+
+    observable = alert.root_analysis.get_observable(observable_uuid)
+    if observable is None:
+        raise HTTPException(status_code=404, detail="observable not found")
+
+    try:
+        module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
+    except Exception:
+        # the Splunk clicker module is not configured on this node
+        return []
+
+    config = load_clicker_config(module_config.config_path)
+    return [ClickerSearch(name=search["name"], url=search["url"])
+            for search in build_splunk_clicker_search_urls(config, observable, api_name=module_config.api_name)]
 
 
 def _add_observable_to_alert(
@@ -560,11 +821,11 @@ def decode_listing_cursor(cursor: str, order: str) -> list:
 
 def fetch_alert_page(
     listing: AlertListing, cursor: str | None, limit: int
-) -> tuple[list[AlertRow], str | None]:
+) -> tuple[list[AlertListRow], str | None]:
     """One page of the listing after `cursor` (the first page when None), and the cursor of
     the next page (None on the last). Raises InvalidCursor."""
     alert_ids, next_cursor = fetch_alert_page_ids(listing, cursor, limit)
-    return load_alert_rows(alert_ids), next_cursor
+    return load_alert_list_rows(alert_ids), next_cursor
 
 
 def fetch_alert_page_ids(
@@ -598,6 +859,11 @@ def fetch_alert_page_ids(
         next_cursor = encode_listing_cursor(listing.order, last_id, last_updated_at)
 
     return [alert_id for alert_id, _ in keys], next_cursor
+
+
+def count_alert_listing(listing: AlertListing) -> int:
+    """How many alerts the listing matches."""
+    return get_db().execute(select(func.count()).select_from(listing.statement.subquery())).scalar_one()
 
 
 def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
@@ -671,10 +937,30 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
     return [rows[alert_id] for alert_id in alert_ids if alert_id in rows]
 
 
-def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
+def load_alert_list_rows(alert_ids: list[int]) -> list[AlertListRow]:
+    """The listing's rows for these alert ids, in the order given: load_alert_rows() plus the
+    comments on each alert, in one more query."""
+    rows = load_alert_rows(alert_ids)
+    if not rows:
+        return []
+
+    comments: dict[str, list[str]] = {}
+    for alert_uuid, comment in get_db().execute(
+        select(Comment.uuid, Comment.comment)
+        .where(Comment.uuid.in_([row.uuid for row in rows]))
+        .order_by(Comment.insert_date, Comment.comment_id)
+    ):
+        comments.setdefault(alert_uuid, []).append(comment)
+
+    return [AlertListRow(**row.model_dump(), comments=comments.get(row.uuid, [])) for row in rows]
+
+
+def alert_rows_to_csv(rows: list[AlertListRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
     def flatten(values: dict) -> None:
         values["tags"] = ",".join(values["tags"])
         values["svs_runs"] = ",".join(values["svs_runs"])
+        # a comment can hold commas; the csv module quotes the newlines
+        values["comments"] = "\n".join(values["comments"])
 
     return rows_to_csv(rows, ALERT_ROW_CSV_FIELDS, header=header, flatten=flatten)

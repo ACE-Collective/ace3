@@ -244,7 +244,7 @@ Checklist:
 - **Caching.** Only narrow `cache_key()` when the result does not depend on anything in the
   event beyond the options. The default includes the event, which is always correct but caches
   per event.
-- **Validation.** `ace hunt verify` and `POST /api/hunt/validate` check a hunt's custom
+- **Validation.** `ace hunt verify` and `POST /api/v2/hunt/validate` check a hunt's custom
   commands against the registry and `config_class` on that node, so a hunt that names a type
   your integration does not provide there is caught before it runs.
 - **Tests.** Call `register_command_type()` in a fixture and `clear_command_types()` after it.
