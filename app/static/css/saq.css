@@ -17,6 +17,13 @@ th {
     white-space: nowrap;
 }
 
+/* Bootstrap's stripe (5%) and hover (7.5%) shades are too faint to see on many displays. The hover
+   stays darker than the stripe, so a striped row still changes when it is hovered. */
+.table.table-striped {
+    --bs-table-striped-bg: rgba(var(--bs-emphasis-color-rgb), 0.2);
+    --bs-table-hover-bg: rgba(var(--bs-emphasis-color-rgb), 0.3);
+}
+
 #flex_wrapper {
     display: flex; 
     min-height: 100%;
@@ -753,5 +760,6 @@ span.multiselect-native-select select {
 .filter-list-chip { cursor: pointer; }
 .filter-list-chip:hover { text-decoration: underline; }
 .filter-list-table { table-layout: fixed; width: 100%; }
+.filter-list-table.filter-list-fit { table-layout: auto; }
 .filter-list-table td, .filter-list-table th { vertical-align: top; }
 .filter-list-table .text-break-all { overflow-wrap: anywhere; }

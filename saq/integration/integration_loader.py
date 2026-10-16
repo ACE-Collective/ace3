@@ -136,10 +136,11 @@ def _warn_about_undeclared_integrations(imported: set[str]):
     Such a directory is still discovered: its src/ goes on the path and its etc/saq.integration.yaml
     is merged, so its analysis modules and services look configured. But nothing ever imports the
     package, so every module level register_integration_configuration(), register_directive(),
-    register_observable_action() and register_integration_blueprint_callback() call in it silently
-    never runs. The resulting failures are invisible -- a missing integration config surfaces only as
-    a swallowed constructor exception in saq/modules/adapter.py, and a missing observable action or
-    GUI blueprint surfaces as nothing at all. This is what shipped broken in 3.0.101.
+    register_observable_action(), register_integration_blueprint_callback() and
+    register_integration_router() call in it silently never runs. The resulting failures are
+    invisible -- a missing integration config surfaces only as a swallowed constructor exception in
+    saq/modules/adapter.py, a missing observable action or GUI blueprint as nothing at all, and a
+    missing API router as a 404. This is what shipped broken in 3.0.101.
     """
     for dir_path in get_valid_integration_dirs():
         integration_name = get_integration_name_from_path(dir_path)

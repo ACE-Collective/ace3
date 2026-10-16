@@ -1,13 +1,7 @@
 <script type="text/javascript">
     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-        $.post("{{ url_for('example.example_observable_action') }}",
-                {"observable_uuid":"{{_observable.id}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
-                function(data) {
-                    alert(JSON.stringify(data));
-                    //window.location = '{{url_for('analysis.index', direct=alert.uuid)}}';
-                }
-        ).fail(function(data, textStatus, jqXHR) {
-            alert("Action failed: " + textStatus);
-        });
+        aceApi.post("/integrations/example/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/example")
+            .then(function(result) { alert(JSON.stringify(result)); })
+            .catch(function(err) { alert("Action failed: " + err.message); });
     });
 </script>

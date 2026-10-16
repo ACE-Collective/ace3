@@ -3,13 +3,14 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.analysis.router import router as analysis_router
 from aceapi_v2.common.router import router as common_router
 from aceapi_v2.crashes.router import router as crashes_router
+from aceapi_v2.dependencies import get_current_auth
 from aceapi_v2.detection.router import router as detection_router
 from aceapi_v2.detection_points.router import router as detection_points_router
 from aceapi_v2.email.router import router as email_router
@@ -19,6 +20,7 @@ from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
 from aceapi_v2.hunt.router import router as hunt_router
+from aceapi_v2.integrations import router as integrations_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
@@ -120,6 +122,10 @@ def create_app() -> FastAPI:
     # mounted under /users/me so the URL says whose preferences these are; the router itself
     # takes the user from the auth result
     app.include_router(user_preferences_router, prefix="/users/me/preferences", tags=["users"])
+
+    # the routes of integrations, under /integrations/<name> so they never collide with these
+    app.include_router(integrations_router, prefix="/integrations", tags=["integrations"],
+                       dependencies=[Security(get_current_auth)])
 
     return app
 

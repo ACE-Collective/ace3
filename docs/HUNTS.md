@@ -787,9 +787,9 @@ file it names, packaged by `hunt_compiler`), unpacks it into a directory of its 
 and optionally executes it: running the query, the correlate steps, and creating alerts when asked.
 It answers 200 `{"valid": true, ...}` or 400 `{"valid": false, "error": ...}`.
 
-`validate-hunt` still calls the legacy `POST /api/hunt/validate`, which runs the same code
-(`aceapi_v2/hunt/service.py`) and answers the same body and status. It stays until every installed
-`validate-hunt` calls the v2 route.
+`validate-hunt` calls this route. Copies installed before it did call the legacy
+`POST /api/hunt/validate`, which runs the same code (`aceapi_v2/hunt/service.py`) and answers the same
+body and status; it is deleted once production sees no more requests for it.
 
 - **The package is all a submitted hunt can reach.** Every asset path, the target, and every file
   the hunt names (`include:`, the query file, `<include:...>` markers, commands' `path` and `files`)

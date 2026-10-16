@@ -27,6 +27,8 @@
 //             sort, sortDesc,            // an API sort value (or null), and its first direction
 //             render(row),               // a Node or text
 //         }],
+//         fitColumns: true,              // optional: size the columns to their content rather than
+//                                        //   to their widths; mark the ones that must not wrap text-nowrap
 //         defaultSort: "last_captured", defaultDesc: true,
 //         pageSizes: [25, 50, 100], defaultLimit: 50,
 //         tz: "America/New_York",        // relative date filters resolve in it
@@ -132,7 +134,7 @@ var FilterListPage = (function() {
         warning.setAttribute("role", "alert");
         const bar = el("div", "filter-list-bar mb-2");
         const selection_bar = el("div", "d-flex flex-wrap align-items-center gap-2 mb-2 filter-list-selection");
-        const table = el("table", "table table-sm table-hover filter-list-table");
+        const table = el("table", "table table-sm table-hover table-striped filter-list-table" + (options.fitColumns ? " filter-list-fit" : ""));
         const thead = table.createTHead();
         const tbody = table.createTBody();
         const pager = el("div", "d-flex flex-wrap align-items-center gap-2");

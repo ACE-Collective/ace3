@@ -432,7 +432,7 @@ def validate_hunt(
         client_p12=client_p12,
         client_p12_password=client_p12_password,
     )
-    response = connection.request("POST", "/api/hunt/validate", json=json_data)
+    response = connection.request("POST", "/api/v2/hunt/validate", json=json_data)
 
     try:
         response.raise_for_status()

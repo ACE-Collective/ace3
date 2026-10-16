@@ -330,7 +330,7 @@ class TestStaging:
             _run(cmd, tmpdir)
 
     def test_validation_api_script_runs_but_reads_nothing_of_ace(self, tmpdir):
-        """What an agent submits through /api/hunt/validate is materialized under the compiled hunt
+        """What an agent submits through /api/v2/hunt/validate is materialized under the compiled hunt
         dir: it must be stageable from there, and still see neither secrets nor other submissions."""
         compiled_dir = tempfile.mkdtemp(dir=get_compiled_hunt_dir())
         other_submission = tempfile.mkdtemp(dir=get_compiled_hunt_dir())

@@ -7,19 +7,34 @@ function toggle_all_remediation_targets() {
     $("input[name='remediation_target']").prop("checked", checked);
 }
 
-function remediation_cell(row, text) {
-    const cell = document.createElement("td");
+// the table's columns after the checkbox, each with what its cells hold; only Value wraps (the
+// dialog breaks a long value anywhere), every other column is as wide as its longest entry
+const REMEDIATION_TARGET_COLUMNS = [
+    {title: "Type", nowrap: true, text: function(target) { return target.observable_type; }},
+    {title: "Value", nowrap: false, text: function(target) { return target.observable_value; }},
+    {title: "Remediator", nowrap: true, text: function(target) { return target.remediator_display_name || target.remediator; }},
+    {title: "Action", nowrap: true, text: function(target) { return target.current ? target.current.action : ""; }},
+    {title: "Status", nowrap: true, text: function(target) { return target.current ? target.current.status : ""; }},
+    {title: "Result", nowrap: true, text: function(target) { return target.current ? target.current.result : ""; }},
+];
+
+function remediation_cell(row, tag, column, text) {
+    const cell = document.createElement(tag);
+    if (column.nowrap) {
+        cell.className = "text-nowrap";
+    }
     cell.textContent = text || "";
     row.appendChild(cell);
 }
 
 // builds the targets table; each checkbox carries its target and the id of the target's latest
-// remediation, which Stop and Clear act on
+// remediation, which Stop and Clear act on. The rows go in a tbody, which Bootstrap's table
+// styles (stripes, cell padding) select on.
 function render_remediation_targets(targets) {
     const table = document.createElement("table");
     table.className = "table table-striped";
 
-    const header = document.createElement("tr");
+    const header = table.createTHead().insertRow();
     const all = document.createElement("th");
     all.width = 20;
     const all_box = document.createElement("input");
@@ -28,15 +43,13 @@ function render_remediation_targets(targets) {
     all_box.onchange = toggle_all_remediation_targets;
     all.appendChild(all_box);
     header.appendChild(all);
-    ["Type", "Value", "Remediator", "Action", "Status", "Result"].forEach(function(title) {
-        const th = document.createElement("th");
-        th.textContent = title;
-        header.appendChild(th);
+    REMEDIATION_TARGET_COLUMNS.forEach(function(column) {
+        remediation_cell(header, "th", column, column.title);
     });
-    table.appendChild(header);
 
+    const body = table.createTBody();
     targets.forEach(function(target) {
-        const row = document.createElement("tr");
+        const row = body.insertRow();
         const select = document.createElement("td");
         const box = document.createElement("input");
         box.type = "checkbox";
@@ -50,13 +63,9 @@ function render_remediation_targets(targets) {
         select.appendChild(box);
         row.appendChild(select);
 
-        remediation_cell(row, target.observable_type);
-        remediation_cell(row, target.observable_value);
-        remediation_cell(row, target.remediator_display_name || target.remediator);
-        remediation_cell(row, target.current ? target.current.action : "");
-        remediation_cell(row, target.current ? target.current.status : "");
-        remediation_cell(row, target.current ? target.current.result : "");
-        table.appendChild(row);
+        REMEDIATION_TARGET_COLUMNS.forEach(function(column) {
+            remediation_cell(row, "td", column, column.text(target));
+        });
     });
 
     $("#remediation-selection-body").empty().append(table);

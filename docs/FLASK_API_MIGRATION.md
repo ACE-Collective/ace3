@@ -5,9 +5,10 @@ Playbook and progress tracker for moving Flask endpoints to the FastAPI implemen
 Each `aceapi/` blueprint carries its own `url_prefix` (`aceapi/blueprints.py`) and the legacy app is served under `/api`; the FastAPI app is served under `/api/v2`.
 All routes use the `@blueprint.route()` decorator pattern (no `add_url_rule()` calls).
 
-This doc tracks two surfaces:
+This doc tracks three surfaces:
 1. The legacy **`aceapi/` JSON API** (consumed by the `ace_api.py` client) — the original migration scope, below.
 2. **`app/` GUI routes that return a machine-readable payload** (JSON / CSV / file / data) rather than a rendered template — these are *also* fair game for FastAPI, following the precedent set when `export_events_to_csv` was lifted out of the `app/events/views/` GUI blueprint during the `/events` migration. See [Flask GUI routes (`app/`) — non-template migration candidates](#flask-gui-routes-app--non-template-migration-candidates) at the end.
+3. **Routes in an integration's Flask blueprint** (`integrations/<name>/src/<package>/app/`). They move to a router in the integration, served under `/api/v2/integrations/<name>`. See [Integration routes](#integration-routes).
 
 ---
 
@@ -21,11 +22,13 @@ This doc tracks two surfaces:
 | `intel`    | _(removed)_   | –         | –              | Deleted    |
 | `analysis` | _(removed)_   | –         | –              | Migrated   |
 | `engine`   | _(removed)_   | –         | –              | Migrated   |
-| `hunt`     | `hunt.py`     | 1         | POST           | v2 added; legacy kept for the CLI |
+| `hunt`     | `hunt.py`     | 1         | POST           | CLI on v2; legacy kept for old installs |
 
-**Legacy endpoints remaining: 1** (POST), which already has its v2 route.
+**Legacy endpoints remaining: 1** (POST), which already has its v2 route and no longer has a caller in the tree.
 
 GUI routes (`app/`): **no API-shaped candidates left** out of 66 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+
+Integration blueprints: the example integration's one data route is migrated (see [its appendix entry](#integration-routes--apiv2integrationsname)). Integrations kept in other repositories migrate in their own; the playbook is [Integration routes](#integration-routes).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,7 +36,7 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **`/hunt/validate`**, step 2: once production serves `POST /api/v2/hunt/validate`, switch the `validate-hunt` CLI to it, then delete the Flask route (see [`/hunt`](#hunt--huntpy)).
+1. **`/hunt/validate`**, step 3: once production's access log shows no more requests to `POST /api/hunt/validate`, delete the Flask route and `aceapi/` (see [`/hunt`](#hunt--huntpy)).
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -99,6 +102,17 @@ Reference: `aceapi_v2/common/router.py`, `aceapi_v2/observable_types/router.py`.
 - **Flask UI views** (`app/**/*.py`) — if a view calls legacy business logic that now lives in an async service, call it via `run_async_with_session(service_fn)` (`aceapi_v2/sync.py`). Do **not** have the view call back through the v2 HTTP endpoint. Examples: `app/analysis/views/index.py:553-554`, `app/admin/views/users.py:19`, `app/events/views/edit/modal.py:38`.
 - **JavaScript / templates** — call v2 through `aceApi` (`app/static/js/ace_api.js`), which prefixes `/api/v2`, sends the session cookie, and rejects with FastAPI's own error sentence rather than its envelope. Older pages still use raw `fetch`/`$.ajax` to `/api/v2/<group>/<new_name>`. Example: `app/static/js/saq_analysis.js:695-751` (observable-comments).
 
+### Integration routes
+
+An integration's routes move into the integration, not into `aceapi_v2/`: a package `src/<package>/api/` with `router.py` and `service.py` (and `schemas.py` if it needs a model of its own), whose router the package registers on import with `register_integration_router("<name>", router)` (`aceapi_v2/integrations.py`, documented in `docs/INTEGRATIONS.md`). It is served under `/api/v2/integrations/<name>`, so it cannot collide with a core route.
+
+- **The blueprint stays** when it serves templates, static files or pages; only its data routes go. Drop the `import ...app.views` from the blueprint callback and delete the module.
+- **Reuse the core services.** An observable action that adds a directive and queues the alert is `request_observable_analysis()` with the integration's directive; one that only reads is `load_observable()` (both `aceapi_v2/alerts/service.py`). These give the integration the core actions' behavior: 409 on a locked alert, 422 for an observable of another type, correlation mode on a dispositioned alert.
+- **Permissions.** Keep the route's legacy pair. A route that had only `@login_required` gets the pair of the closest core route (`observable:write` for an action that changes the alert or sends its content somewhere, `observable:read` for one that reads).
+- **Callers** are the integration's templates: call the route through `aceApi`, as the core action templates do.
+- **Tests** import the `tests/aceapi_v2/conftest.py` client fixtures into the test module; see `docs/INTEGRATIONS.md`. Give the module a name no other test module has (`test_<integration>_api.py`): some integration test directories are not packages.
+- **Two repositories, two changes.** The integration's change needs a release of ACE that has `register_integration_router()`; merge it after that release, and write its PR description in its own repository.
+
 ### Auth
 
 - `Security(get_current_auth)` accepts API key (`x-ace-auth` header), JWT bearer token, or Flask session cookie.
@@ -144,6 +158,8 @@ If a new group adds endpoints that require new client-side support (file uploads
 - `Company.json` (`saq/database/model.py:762`) and similar ORM-side `.json` properties are not needed in v2 — use Pydantic `model_validate` instead.
 - `tests/saq/test_permission_catalog.py::TestNodeToNodeScope` derives the node-to-node permission surface by scanning `aceapi/engine.py` and names `/api/analysis/submit` explicitly. Migrating `engine` or `submit` means pointing that scan at the new router, not deleting the test: it exists because a hand-maintained list of that surface caused a production outage.
 - If a legacy endpoint already delegates to a v2 service via `run_async_with_session` (e.g. the pre-migration `/common/get_valid_observables`), that service already exists and should be reused, not duplicated.
+- **Routers registered after the app was built.** Integrations are imported during `initialize_environment()`, and importing `aceapi_v2` has built the module-level `app` before that. The app still serves them because `create_app()` includes the shared `/integrations` router once and FastAPI (0.141, pinned) resolves an included router's routes per request. `tests/aceapi_v2/test_integrations.py::TestRegistration::test_registered_after_the_app_was_built` fails if an upgrade changes that.
+- **Route walks.** `app.routes` holds `_IncludedRouter` wrappers, not `APIRoute`s, so walking it for paths finds none; use `effective_route_contexts()` as `tests/saq/test_permission_catalog.py::_iter_effective_routes` does, or `app.openapi()["paths"]`.
 
 ### Deletion checklist
 
@@ -193,10 +209,13 @@ What decides the cost of each group is less the handler than who calls it. Three
 |--------|------------------|-----------------|------|---------|
 | POST   | `/hunt/validate` | `validate_hunt` | 387  | `lib/signature_validator/hunt_compiler/validate.py` (the separately installed `validate-hunt` CLI); documented in `docs/HUNTS.md` |
 
-Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost: the CLI is installed editable from ace3 `main`, by analysts through the signature repository's `install_validator.sh` and by that repository's CI, which clones `main` on every run, so a CLI change reaches CI before the server has the route. Two steps:
+Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost: the CLI is installed editable from ace3 `main`, by analysts through the signature repository's `install_validator.sh` and by that repository's CI, which clones `main` on every run, so a CLI change reaches CI before the server has the route. Three steps:
 
 1. **Done:** `POST /api/v2/hunt/validate` (`aceapi_v2/hunt/`) runs beside this route. Both call `aceapi_v2/hunt/service.py::validate_hunt` and write the same `HUNT_AUDIT` record (`aceapi_v2/hunt/audit.py`); the v2 route answers in this route's shape (200 `{"valid": true, ...}`, 400 `{"valid": false, "error": ...}`, 415 for a body that is not JSON) rather than FastAPI's `{"detail": ...}`, so the CLI changes only its URL. `tests/aceapi/test_hunt.py` runs every test against both routes.
-2. Once production serves the v2 route, switch the CLI (`lib/signature_validator/hunt_compiler/validate.py`) to it and delete this route and `aceapi/`'s remaining modules; analysts re-run `install_validator.sh`. Then the tests run against v2 alone.
+2. **Done:** production serves the v2 route (a schema-only and an executing run of a production hunt through the switched CLI were answered by `/api/v2/hunt/validate`), and the CLI calls it. CI picks the change up on its next run. Analysts pick it up when they re-run `install_validator.sh`, which pulls their `ace3/` clone. Until then their copies keep calling this route, which in the 30 days before the switch answered about 16,000 requests, from CI and analysts.
+3. Once the access log shows no more requests to `/api/hunt/validate`, find the stragglers by client address, then delete this route, `aceapi/`, `api_uwsgi.py`, the `http-api` container and its nginx location, and the Flask half of `tests/aceapi/test_hunt.py`.
+
+Two differences of the v2 route matter for a long or runaway validation. uwsgi's `harakiri` killed a worker at 300 seconds; uvicorn has no request timeout, so a validation nginx has given up on keeps its thread until the hunt's own query and correlate timeouts end it. And hunt scripts now run in `http-api-v2`, beside the node-to-node and GUI traffic, so that container carries the `pids_limit` that bounds a fork loop the sandbox's polling misses. That is where they always ran: until the node-to-node routes moved to v2, the legacy container served them too. What changed is that uwsgi gave each request a process of its own, where a uvicorn worker shares its memory and its GIL among the requests it serves. A container of its own for `/api/v2/hunt/` (its own nginx location, memory limit and process limit) is planned as a separate change.
 
 ---
 
@@ -502,6 +521,20 @@ Module: `aceapi_v2/observables/{router,service,schemas}.py`. Tests: `tests/aceap
 Notes:
 - Identity goes through `resolve_observable_identity()` (`saq/database/util/observable_detection.py`) — the polymorphic sha256 semantics where a `file` observable's hash is `unhex(value)`, not `sha256(value)`. The same change fixed `set_observable_interesting` and observable-comment creation, which previously hashed file values naively and wrote rows the engine never matches.
 - Query shape: chunked `(type, sha256)` row-constructor IN on `i_type_sha256` (500/chunk, per `saq/database/util/index.py`), one GROUP BY aggregate over `observable_mapping ⋈ alerts`, one `ROW_NUMBER()` window query for recent-N (skipped at limit 0), and one `event_mapping ⋈ events` join that never touches `alerts`. No N+1 anywhere.
+
+### Integration routes → `/api/v2/integrations/<name>`
+
+| Legacy Flask URL (integration blueprint)                      | v2 URL                                                                                         |
+|---------------------------------------------------------------|------------------------------------------------------------------------------------------------|
+| `POST /example/example_observable_action` (example integration) | `POST /api/v2/integrations/example/alerts/{alert_uuid}/observables/{observable_uuid}/example` |
+
+New: `aceapi_v2/integrations.py` (`register_integration_router()`), included by `create_app()` under `/integrations` with the same credential check as every core router. Tests: `tests/aceapi_v2/test_integrations.py`.
+
+The example integration (`integrations.example/`), which integration authors copy, now shows the pattern: its observable action calls `example/api/router.py` through `aceApi`, gated on `alert:read`, and its blueprint keeps only its page. The observable actions of the integrations one site runs (five routes in three integrations, every one with traffic in the last six months) moved in the same change, in their own repository.
+
+Notes:
+- **Integration actions reuse the core action services.** `aceapi_v2/alerts/service.py`'s `_request_observable_analysis` became the public `request_observable_analysis()`, and `load_observable()` was split out of `clicker_searches()`. Integration routes that went through them stopped answering a locked alert with a 500 (every 500 one of those routes answered in six months was an engine worker holding the lock) and stopped queueing a dispositioned alert in dispositioned mode, where the modules they wait for do not run.
+- **Credential check at the prefix.** `create_app()` includes the `/integrations` router with `Security(get_current_auth)`, so an integration route can never be reached without a credential, whatever its router declares. The permission gate is still each route's own.
 
 ---
 
