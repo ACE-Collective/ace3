@@ -1,5 +1,5 @@
 // A filtered, sorted, paged list screen built as a shell over the API (docs/SVS.md, Part 5): the
-// Signatures -> Samples page, and the SVS screens after it.
+// Signatures -> Samples and Validations pages, Remediations and File Collections.
 //
 // The screen's filters are the {name, inverted, values} entries of a filter screen
 // (saq/gui/filter_screens.py). The controller reads the screen's descriptor from
@@ -32,8 +32,15 @@
 //         tz: "America/New_York",        // relative date filters resolve in it
 //         exports: ["csv", "ndjson"],    // formats served at {api}/export/{format}
 //         download: {path, hint},        // optional: a bulk download at {api}{path}?f=...
+//         select: {                      // optional: a checkbox per row, for actions on the selection
+//             key(row),                  //   what identifies a row, such as its id
+//             onChange(rows),            //   the selected rows, after every change
+//         },
 //         emptyText: "...",
 //     });
+//
+// The selection is the ticked rows that are still shown: a row that leaves the list (on another
+// page, filtered out, or gone when refresh() reloads the page that is shown) leaves it.
 //
 // It creates the page's SAVED_FILTERS instance (saved_filters.js), which the macro's markup
 // calls. Every value shown comes from analyzed data, so it is placed as text, never markup.
@@ -83,6 +90,7 @@ var FilterListPage = (function() {
         const root = options.root;
         const screen = options.screen;
         const columns = options.columns;
+        const select = options.select || null;
 
         const state = {
             descriptor: null,        // the screen's filters, by name
@@ -96,6 +104,8 @@ var FilterListPage = (function() {
             cursors: [null],         // cursors[i] fetches page i
             page: 0,
             generation: 0,           // drops responses to requests a newer one replaced
+            rows: [],                // the rows shown
+            selected: new Map(),     // select.key(row) -> row, for the ticked rows
         };
 
         //
@@ -582,8 +592,73 @@ var FilterListPage = (function() {
             return params;
         }
 
+        //
+        // the selection
+        //
+
+        const select_all = el("input", "form-check-input");
+        select_all.type = "checkbox";
+        select_all.title = "select every row on this page";
+        select_all.setAttribute("aria-label", select_all.title);
+        select_all.addEventListener("change", function() {
+            state.rows.forEach(function(row) {
+                if (select_all.checked) {
+                    state.selected.set(select.key(row), row);
+                } else {
+                    state.selected.delete(select.key(row));
+                }
+            });
+            tbody.querySelectorAll("input.filter-list-select").forEach(function(box) {
+                box.checked = select_all.checked;
+            });
+            selection_changed();
+        });
+
+        function selection_changed() {
+            select_all.checked = state.rows.length > 0 && state.selected.size === state.rows.length;
+            select_all.indeterminate = state.selected.size > 0 && state.selected.size < state.rows.length;
+            select.onChange(Array.from(state.selected.values()));
+        }
+
+        // keeps the ticked rows that are in rows, which replace the shown ones
+        function keep_selected(rows) {
+            const kept = new Map();
+            rows.forEach(function(row) {
+                const key = select.key(row);
+                if (state.selected.has(key)) {
+                    kept.set(key, row);
+                }
+            });
+            state.rows = rows;
+            state.selected = kept;
+        }
+
+        function select_cell(row) {
+            const cell = el("td");
+            const box = el("input", "form-check-input filter-list-select");
+            box.type = "checkbox";
+            box.checked = state.selected.has(select.key(row));
+            box.setAttribute("aria-label", "select this row");
+            box.addEventListener("change", function() {
+                if (box.checked) {
+                    state.selected.set(select.key(row), row);
+                } else {
+                    state.selected.delete(select.key(row));
+                }
+                selection_changed();
+            });
+            cell.appendChild(box);
+            return cell;
+        }
+
         function render_head() {
             const row = el("tr");
+            if (select) {
+                const th = el("th");
+                th.style.width = "2rem";
+                th.appendChild(select_all);
+                row.appendChild(th);
+            }
             columns.forEach(function(column) {
                 const th = el("th", column.css || null);
                 if (column.width) {
@@ -623,12 +698,16 @@ var FilterListPage = (function() {
         function message_row(text, css) {
             const row = el("tr");
             const cell = el("td", css || "text-muted", text);
-            cell.colSpan = columns.length;
+            cell.colSpan = columns.length + (select ? 1 : 0);
             row.appendChild(cell);
             tbody.replaceChildren(row);
         }
 
         function render_rows(rows) {
+            if (select) {
+                keep_selected(rows);
+                selection_changed();
+            }
             if (rows.length === 0) {
                 message_row(options.emptyText || "Nothing matches these filters.");
                 return;
@@ -636,6 +715,9 @@ var FilterListPage = (function() {
             tbody.replaceChildren();
             rows.forEach(function(data) {
                 const row = el("tr");
+                if (select) {
+                    row.appendChild(select_cell(data));
+                }
                 columns.forEach(function(column) {
                     const cell = el("td", column.css || null);
                     const content = column.render(data);
@@ -672,6 +754,10 @@ var FilterListPage = (function() {
                         return;
                     }
                     message_row("");
+                    if (select) {
+                        keep_selected([]);
+                        selection_changed();
+                    }
                     render_pager(0);
                     show_error("Unable to load the list: " + err.message);
                 });
@@ -792,6 +878,8 @@ var FilterListPage = (function() {
 
         return {
             reload: load_first_page,
+            refresh: load_page,
+            selected: function() { return Array.from(state.selected.values()); },
             setFilters: function(filters) { return set_filters(filters, null); },
             shareUrl: share_url,
         };

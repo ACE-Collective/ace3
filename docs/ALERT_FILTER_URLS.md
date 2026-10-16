@@ -147,6 +147,8 @@ header line and one row per alert.
 `GET /api/v2/detection-points` lists detections with their verdicts in the same encoding, with the
 slugs of its own screen (`signature`, `verdict`, `source`, …), and `GET /api/v2/svs/samples` lists
 the SVS YARA samples with theirs (`label`, `sha256`, `missing_data`, …); see `docs/SVS_API.md`.
+`GET /api/v2/remediation/remediations` and `GET /api/v2/file-collections/` list remediations and file
+collection requests with theirs (`status`, `result`, `created`, …), newest first.
 
 ## The same slugs in the search box
 
@@ -186,9 +188,11 @@ on `/set_filters`.
 
 ## Filter screens and saved filters
 
-The alert manage page is one *filter screen*; other list screens (the SVS screens) are more. Each
-screen has its own filter names and slugs, its own saved filters and quick filters, and the
-permission that reads its data: `alert:read` for this page, `signature:read` for the SVS samples.
+The alert manage page is one *filter screen*; other list screens (the SVS screens, Remediations, File
+Collections) are more. Each screen has its own filter names and slugs, its own saved filters and
+quick filters, and the permission that reads its data: `alert:read` for this page, `signature:read`
+for the SVS samples, `remediation:read` and `file_collection:read` for the Remediations and File
+Collections pages.
 
 - **Saved filters** are rows of `saved_filters`, keyed by screen, served by
   `/api/v2/saved-filters?screen=<name>`. Every route there requires the screen's permission; a
@@ -210,7 +214,7 @@ Manage Filters dialogs (`templates/saved_filters/_modals.html`), Save as, Save, 
 filter order and copy link, all through the API. A page hands it the filter list to save, so
 what is saved is exactly what the page shows. This page then selects the saved filter through
 `POST /ace/select_filter/<uuid>`, because which filter an analyst has selected is Flask session
-state; a screen that keeps its state in the URL instead (the SVS screens) has no session state
+state; a screen that keeps its state in the URL instead (the other screens) has no session state
 and no `working`/`temp` rows.
 
 A screen built as a shell over the API uses `static/js/filter_list_page.js` (`FilterListPage`)
@@ -219,7 +223,9 @@ filters, the table with its sort headers, keyset paging, and an export menu. Eve
 can share is in the page URL (`f`, `sort`, `desc`, `limit`, and `saved` for the open saved
 filter), so back and forward work and a copied address bar is a share link. The URL's `f` values
 go to the list API as they are; the controller decodes them only to show them, and encodes the
-editor's filters, through the routes above. *Signatures → Samples* is the first such screen.
+editor's filters, through the routes above. *Signatures → Samples* was the first such screen;
+Validations, Remediations and File Collections followed. A page can also ask for a checkbox per row
+(`select`) for actions on the selected rows.
 
 ## For developers
 

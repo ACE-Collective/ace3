@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **16 API-shaped candidates** out of 84 routes (9 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **7 API-shaped candidates** out of 73 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -33,10 +33,9 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
-2. **`remediation` and `file_collection`**, after their pagination and sort leave the session. `aceapi_v2/remediation/` already has the remediation row operations to build on.
-3. **GUI Tier 2** observable actions.
-4. **`/engine` and `/analysis/submit`**, last: node to node, so they need a rolling-upgrade plan.
+1. **GUI Tier 2** observable actions.
+2. **`/engine` and `/analysis/submit`**: node to node, so they need a rolling-upgrade plan.
+3. **`/hunt/validate`**, last, in two steps sequenced with a `validate-hunt` CLI release (see [`/hunt`](#hunt--huntpy)).
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -206,7 +205,7 @@ A multipart upload with node-drain rejection (`reject_if_node_draining`) and the
 | POST   | `/engine/upload/<uuid>`              | `upload`   | 84   | `saq/engine/node_manager/drain.py`, `saq/collectors/remote_node.py`, `saq/util/maintenance.py`, `saq/cli/commands/correlate.py` |
 | GET    | `/engine/clear/<uuid>/<lock_uuid>`   | `clear`    | 209  | `saq/engine/workload_manager/database.py` |
 
-Every caller is another ACE node, so this group carries the rolling-upgrade problem above. Tar streaming in both directions; `clear` mutates through a `GET`. Migrate last.
+Every caller is another ACE node, so this group carries the rolling-upgrade problem above. Tar streaming in both directions; `clear` mutates through a `GET`. Migrate it with `/analysis/submit`, after the GUI routes.
 
 ### `/hunt` — `hunt.py`
 
@@ -214,7 +213,10 @@ Every caller is another ACE node, so this group carries the rolling-upgrade prob
 |--------|------------------|-----------------|------|---------|
 | POST   | `/hunt/validate` | `validate_hunt` | 387  | `lib/signature_validator/hunt_compiler/validate.py` (the separately installed `validate-hunt` CLI); documented in `docs/HUNTS.md` |
 
-Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost; see above.
+Compiles and executes a hunt in a request (sync, long-running, per-request log capture via `saq/logging.py`, an audit record per call). Sequencing the CLI release is the main cost: the CLI is installed editable from ace3 `main`, by analysts through the signature repository's `install_validator.sh` and by that repository's CI, which clones `main` on every run, so a CLI change reaches CI before the server has the route. Planned for the end of the migration, in two steps:
+
+1. Add the v2 route beside this one and deploy it.
+2. Once production has it, switch the CLI to it and delete this route. Analysts re-run `install_validator.sh`.
 
 ---
 
@@ -408,8 +410,34 @@ Queueing creates remediation rows, so it is a POST to the collection; Stop is a 
 Notes:
 - **`remediation:write`.** The writes need the new `remediation:write` (catalog entry plus the data-only migration `f26a884b17f3`); the lookup needs `remediation:read`. The Remediations page's writes moved to `remediation:write` in the same change. No grants were copied: like `engine:download`, it is a narrowing, so a principal holding only `remediation:read` becomes read-only, while `*:*` and `remediation:*` cover it.
 - **Defects fixed.** Stop and Clear acted on the first selected target only (the PATCH returned inside its loop); the dialog now sends one request per target and reports what failed. Stop overwrote a completed remediation's result with `CANCELLED`; `saq.remediation.util.cancel_remediation()` stops only a remediation that is queued or in progress (a 409 otherwise) and records history only when it did.
-- **Two cancel rules.** The dialog's Stop has always stopped a queued (NEW) remediation; the Remediations page's cancel (`cancel_remediations()`) stops only IN_PROGRESS ones, which `tests/saq/remediation/test_remediation_util.py` pins. Both stand; a migration of that page should settle on one.
+- **One cancel rule.** The dialog's Stop has always stopped a queued (NEW) remediation, where the Remediations page's cancel stopped only IN_PROGRESS ones. The page now cancels through the same route (see the next entry).
 - Queueing checks every target first (a remediator this node configures, a value its observable type accepts) and queues none on a 422. A restore still uses the restore key of the target's latest successful removal.
+
+### Remediations and File Collections pages → `aceapi_v2/remediation/`, `aceapi_v2/file_collection/`
+
+| Legacy Flask URL (GUI)                                                          | v2 URL                                                                  |
+|---------------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| `POST /remediation/remediations` (HTML list), `/remediations/page`, `/remediations/sort` | `GET /api/v2/remediation/remediations`, `/export/csv`, `/export/ndjson` |
+| `GET /remediation/history/<id>` (HTML), `/history/<id>/page`                    | `GET /api/v2/remediation/remediations/{id}/history`                     |
+| `PUT /remediation/remediations` (Add Remediation), `POST /remediation/mass_remediate` | `POST /api/v2/remediation/targets/lookup` `{"observables": [...]}`, then `POST /api/v2/remediation/remediations` |
+| `PATCH /remediation/remediations` `cancel`                                       | `POST /api/v2/remediation/remediations/{id}/cancel`                     |
+| `PATCH /remediation/remediations` `retry`                                        | `POST /api/v2/remediation/remediations/{id}/retry`                      |
+| `PATCH /remediation/remediations` `restore`                                      | `POST /api/v2/remediation/remediations/{id}/restore` *(201)*            |
+| `DELETE /remediation/remediations`                                               | `DELETE /api/v2/remediation/remediations/{id}` *(204)*                  |
+| `POST /file_collection/collections` (HTML list), `/collections/page`, `/collections/sort` | `GET /api/v2/file-collections/`, `/export/csv`, `/export/ndjson`  |
+| `GET /file_collection/history/<id>` (HTML), `/history/<id>/page`                | `GET /api/v2/file-collections/{id}/history`                             |
+| `PATCH /file_collection/collections` `cancel`, `retry`                           | `POST /api/v2/file-collections/{id}/cancel`, `/{id}/retry`              |
+| `DELETE /file_collection/collections`                                            | `DELETE /api/v2/file-collections/{id}` *(204)*                          |
+
+Both pages are shells like the Signatures pages: Flask serves `GET /remediation/manage` and `GET /file_collection/manage` and nothing else. Each list is a `FilterListPage` on a new filter screen (`remediations`, `file_collections`), with filters in the URL, saved and quick filters (two defaults each), share links, CSV and NDJSON exports and keyset paging. Paging, sort and filters are no longer Flask session state. The two list APIs share `aceapi_v2/listing.py` (filters, keyset pages by id, exports). `FilterListPage` gained an opt-in checkbox column (`select`) for the selection actions, which send one request per row and report what each did.
+
+Notes:
+- **`file_collection:write`.** Stopping, retrying and deleting a request need the new `file_collection:write` (catalog entry plus the data-only migration `434f3139d204`), where `file_collection:read` used to cover them. No grants were copied, as for `remediation:write`.
+- **One cancel rule.** The page's Cancel stops a queued (NEW) or IN_PROGRESS remediation, as the dialog's Stop does, and a completed one is a 409. `cancel_remediations()`, which stopped only IN_PROGRESS ones, is deleted, with the other list helpers only the page used.
+- **Restore** undoes the selected removal with the restore key that removal produced, and is attributed to the analyst who asks; it used to be attributed to whoever had removed it. Only a removal that succeeded can be restored, and only a completed remediation retried (409 otherwise).
+- **Add Remediation and Mass Remediation are one dialog**: a type and one value per line, then the targets found are shown before they are queued. A value its type rejects is a 422 that names it, where Mass Remediation skipped it silently.
+- Column sort is gone: both lists are newest first.
+- Each selection button applies to the selected rows it suits (Cancel to remediations that have not completed, and so on) and says how many it left alone.
 
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
@@ -435,7 +463,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 84** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 73** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -456,15 +484,15 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 |-------------------|------:|---------:|---------------------:|--------------------:|
 | `analysis`        |    43 |        9 |  7 (0 T1 + 7 T2)     | 27 (16 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
-| `remediation`     |     7 |        2 |                    5 |                   0 |
-| `file_collection` |     6 |        2 |                    4 |                   0 |
+| `remediation`     |     1 |        1 |                    0 |                   0 |
+| `file_collection` |     1 |        1 |                    0 |                   0 |
 | `auth`            |     3 |        0 |                    0 |           3 (flow)  |
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **84**|   **29** | **16 (9 T1 + 7 T2)** |              **39** |
+| **Total**         | **73**|   **27** |  **7 (0 T1 + 7 T2)** |              **39** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), and `/remediation_targets` (see the remediation dialog appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), and every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry).
 
 ### `analysis` blueprint
 
@@ -488,44 +516,20 @@ Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `
 
 13 routes total: 5 template, 8 redirect (`remove_alerts`, `edit_event`, `add_tag`, and the five `bulk_*` routes). No candidates remain.
 
-### `remediation` blueprint
-
-7 routes total: 2 template (`/remediation/manage`, `/remediation/history/<id>`), 5 candidates. Front-end: `app/static/js/manage_remediations.js`. The writes (the PUT, PATCH and DELETE verbs of `/remediation/remediations`, and `/remediation/mass_remediate`) need `remediation:write`; the rest need `remediation:read`. `aceapi_v2/remediation/` (the alert pages' remediation dialog) already queues, cancels and deletes remediation rows, which a migration of this page builds on, though its cancel rule differs (see the remediation dialog appendix entry).
-
-| Method(s)          | URL                                              | Function            | file:line                                   | Returns | Notes |
-|--------------------|--------------------------------------------------|---------------------|---------------------------------------------|---------|-------|
-| PUT, PATCH, DELETE | `/remediation/remediations`                      | `remediations`      | `app/remediation/views/remediations.py:133` | JSON    | **Mixed** — POST returns a template fragment and stays. |
-| GET, POST          | `/remediation/remediations/page`                 | `remediations_page` | `app/remediation/views/remediations.py:235` | JSON    | Session pagination read by the POST template branch. |
-| POST               | `/remediation/remediations/sort`                 | `remediations_sort` | `app/remediation/views/remediations.py:280` | JSON    | Session sort. |
-| POST               | `/remediation/mass_remediate`                    | `mass_remediate`    | `app/remediation/views/remediations.py:313` | JSON    | |
-| GET, POST          | `/remediation/history/<int:remediation_id>/page` | `history_page`      | `app/remediation/views/history.py:46`       | JSON    | Session pagination read by the history template route. |
-
-### `file_collection` blueprint
-
-6 routes total: 2 template (`/file_collection/manage`, `/file_collection/history/<id>`), 4 candidates. Front-end: `app/static/js/manage_file_collections.js`. All gated by `file_collection:read`; no write permission exists.
-
-| Method(s)     | URL                                                      | Function           | file:line                                      | Returns | Notes |
-|---------------|----------------------------------------------------------|--------------------|------------------------------------------------|---------|-------|
-| PATCH, DELETE | `/file_collection/collections`                           | `collections`      | `app/file_collection/views/collections.py:102` | JSON    | **Mixed** — POST returns a template fragment and stays. |
-| GET, POST     | `/file_collection/collections/page`                      | `collections_page` | `app/file_collection/views/collections.py:214` | JSON    | Session pagination. |
-| POST          | `/file_collection/collections/sort`                      | `collections_sort` | `app/file_collection/views/collections.py:259` | JSON    | Session sort. |
-| GET, POST     | `/file_collection/history/<int:file_collection_id>/page` | `history_page`     | `app/file_collection/views/history.py:57`      | JSON    | Session pagination. |
-
-The `page`, `sort` and history `page` routes in these two blueprints return JSON, but they are session view-state that the POST template branches read. Porting them means moving pagination and sort client-side (or into user preferences) first, so they are not straight ports.
-
-### Pages-only blueprints: `admin`, `signatures`, `main`, `auth`
+### Pages-only blueprints: `admin`, `signatures`, `remediation`, `file_collection`, `main`, `auth`
 
 - **`admin`** — 4 GET pages (`/admin/`, `/admin/users`, `/admin/detection`, `/admin/secrets`); all data through v2. `tests/app/admin/test_admin_smoke.py::TestAdminIsPagesOnly::test_admin_blueprint_serves_only_get_pages` enforces it.
 - **`signatures`** — 6 GET pages behind a `signature:read` `before_request` gate (`app/signatures/views/access.py`); data from `/api/v2/signatures/yara-qa`, `/svs/samples`, `/svs/yara/validations`, `/filter-screens`, `/saved-filters`. `tests/app/signatures/test_signatures_smoke.py::TestSignaturesIsPagesOnly::test_signatures_blueprint_serves_only_get_pages` enforces it. The samples and validations pages write default saved filters on render (`ensure_default_saved_filters`).
+- **`remediation`**, **`file_collection`** — one GET page each (`/remediation/manage`, `remediation:read`; `/file_collection/manage`, `file_collection:read`), shells over `/api/v2/remediation` and `/api/v2/file-collections` like the Signatures pages. `tests/app/remediation/test_manage.py` and `tests/app/file_collection/test_manage.py` enforce it. Both write default saved filters on render.
 - **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me` and `/api/v2/users/me/preferences`. No pages-only test.
 - **`auth`** — `/login`, `/logout`, `/login/change`: Flask-Login session flow, stays in Flask.
 
-This is the shape every GUI blueprint should converge on: Flask renders GET pages, the browser talks to v2. Copy the pages-only test into the next blueprint that finishes. Both existing tests check only that a route's methods are `{GET}`, so a GET route that returns JSON still passes them.
+This is the shape every GUI blueprint should converge on: Flask renders GET pages, the browser talks to v2. Copy the pages-only test into the next blueprint that finishes. The tests check only that a route's methods are `{GET}`, so a GET route that returns JSON still passes them.
 
 ### Cross-cutting notes for whoever migrates these
 
 - **Callers are JS and templates, not `ace_api.py`.** Migrating a candidate = repoint its caller to `/api/v2/...` (through `aceApi` for JS) and update the response handling.
-- **Mixed handlers must be split.** The POST branch of `/remediation/remediations` and `/file_collection/collections` returns an HTML fragment that JS injects into the page. Only the data verbs can move; the POST stays (or gets split into a JSON endpoint + client-side rendering).
+- **Mixed handlers must be split.** A POST that returns an HTML fragment for JS to inject cannot move with the data verbs of its route. The last two (`/remediation/remediations`, `/file_collection/collections`) went by turning the page into a shell that renders the list in the browser (`FilterListPage`), which is the pattern to follow.
 - **Don't port the bugs.** Several candidates carry defects a straight port would preserve; see [Known defects](#known-defects-in-unmigrated-routes). Fix the behavior in the v2 version (or first, in Flask) and note it in the PR.
 - **Tier 2 routes** load, lock or sync a `RootAnalysis` on disk — reuse the sync-helper-via-`asyncio.to_thread` pattern from `aceapi_v2/alerts/service.py` rather than `AsyncSession`. Treat as non-trivial.
 - **Excluded buckets are intentionally omitted** from the tables above: redirect form-handlers (B), session view-state setters (C), `render_template` pages and fragments, and the auth flow. They render HTML or are Flask-session glue and are not API surface. A redirect handler is not permanently disqualified (`/auth/group/add` migrated), it just costs a front-end change too.
@@ -540,5 +544,4 @@ Found while surveying the routes above. They are to be fixed separately, not as 
 
 1. **Unreachable action lists** (code). The `jinja_available_actions` properties in `saq/observables/` are referenced by no template: the alert page builds its menus in the presenters (`saq/analysis/presenter/observable_presenter.py`).
 2. **`html_details` serves analysis details as HTML on the GUI origin** (code). It returns a field of an analysis's details raw as `text/html`, which `analysis/custom/ews.html` renders in an iframe. It also sets `response.mimtype`, a typo that leaves every response `text/html`, so its errors ("alert not found", "missing required parameter") come back as `200 text/html`, and an unknown `field` raises `KeyError` (500).
-3. **File collection writes gated by a read permission** (code). `/file_collection/collections` PATCH and DELETE require `file_collection:read`. The permission catalog has no `file_collection:write`, so a fix adds it and decides who gets it, as `remediation:write` did (see the remediation dialog appendix entry).
-4. **Whitelist actions report failure with 200** (code). `observable_action_whitelist` and `observable_action_un_whitelist` return `"operation failed: ..."` with status 200, so the page cannot tell failure from success by status.
+3. **Whitelist actions report failure with 200** (code). `observable_action_whitelist` and `observable_action_un_whitelist` return `"operation failed: ..."` with status 200, so the page cannot tell failure from success by status.

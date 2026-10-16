@@ -9,16 +9,16 @@ matches when any of its captures does (a sample captured from three alerts match
 and a rule renamed between commits matches under either name).
 """
 
-from datetime import datetime, tzinfo
+from datetime import tzinfo
 
 import pytz
-from sqlalchemy import and_, case, exists, false, literal, or_, select, true
+from sqlalchemy import case, exists, false, literal, or_, select, true
 from sqlalchemy.sql.elements import ColumnElement
 
 from saq.database.model import SVSYaraCapture
+from saq.gui.filter_conditions import date_range_condition
 from saq.svs.constants import LABEL_FILTER_NONE
 from saq.svs.samples import captures_of
-from saq.util.relative_time import parse_date_range
 
 
 def _in_or_null(expression, values: list[str], null_value: str) -> ColumnElement[bool]:
@@ -36,16 +36,6 @@ def _any_capture(samples, condition_for_value, values: list[str]) -> ColumnEleme
         select(literal(1))
         .where(captures_of(samples))
         .where(or_(*[condition_for_value(value) for value in values])))
-
-
-def date_range_condition(column, values: list[str], tz: tzinfo) -> ColumnElement[bool]:
-    now = datetime.now(pytz.utc)
-    conditions = []
-    for value in values:
-        start, end = parse_date_range(value, now=now, tz=tz)
-        # the capture timestamps are naive UTC
-        conditions.append(and_(column >= start.replace(tzinfo=None), column <= end.replace(tzinfo=None)))
-    return or_(*conditions)
 
 
 def flag_condition(count_column, values: list[str]) -> ColumnElement[bool]:
