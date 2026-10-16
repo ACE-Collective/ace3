@@ -42,6 +42,9 @@ class RunLifecycle(BaseModel):
     marker: str = Field(description="put this where the test's process telemetry shows it (docs/SVS_RUNS.md, *The marker*)")
     state: RunState
     test_guid: str
+    platform: str = Field(description="the platform the run is on, an ATT&CK platform slug: its targets' test hosts' "
+                                      "platform, else the test's only supported platform (docs/SVS_RUNS.md, "
+                                      "*Registering a run*)")
     targets: list[RunTarget]
     observation_seconds: int = Field(description="how long after start the run waits for its alerts before it ends")
     attribution_seconds: int = Field(description="how long after start its alerts are still attributed to it")
@@ -66,6 +69,9 @@ class RunRow(BaseModel):
     test_name: Optional[str] = Field(default=None, description="from the catalog")
     technique: Optional[str] = Field(default=None, description="the test's ATT&CK technique, from the catalog")
     technique_name: Optional[str] = None
+    platform: str = Field(description="the platform the run is on, an ATT&CK platform slug: its targets' test hosts' "
+                                      "platform, else the test's only supported platform (docs/SVS_RUNS.md, "
+                                      "*Registering a run*)")
     marker: str = Field(description="the run's marker; svs_marker in ACE's logs")
     targets: list[RunTarget]
     launcher: str
@@ -94,6 +100,10 @@ class RunRow(BaseModel):
     result_rejected: int = Field(default=0)
     result_ignored: int = Field(default=0)
     result_stale: bool = Field(default=False, description="the result is about to be recomputed")
+    reviewed_hit: int = Field(default=0, description="result_hit as signed off at the run's latest review; 0 until it is reviewed")
+    reviewed_expected: int = Field(default=0, description="result_expected as signed off")
+    reviewed_missing: int = Field(default=0, description="result_missing as signed off, possibly suppressed ones included")
+    reviewed_possibly_suppressed: int = Field(default=0, description="result_possibly_suppressed as signed off")
     alerts: int = Field(default=0, description="the alerts attributed to the run")
     marker_alerts: int = Field(default=0, description="of those, attributed by a marker")
     context_alerts: int = Field(default=0, description="of those, attributed by context alone (TEST?)")
@@ -131,6 +141,21 @@ class RunPage(BaseModel):
 
 class RunCount(BaseModel):
     count: int = Field(description="the runs the filters match")
+
+
+class SuppressionShare(BaseModel):
+    """How many of the expected signatures missing from reviewed runs were possibly suppressed: the
+    trigger to revisit keeping the hunter from suppressing test targets (docs/SVS.md, Part 3, *Hunt
+    suppression*). Read from every run's result as signed off."""
+
+    missing: int = Field(description="expected signatures missing from the signed-off results, possibly suppressed ones included")
+    possibly_suppressed: int = Field(description="of those, the possibly suppressed")
+    share: Optional[float] = Field(default=None, description="possibly_suppressed / missing; null while nothing is missing")
+    reviewed_runs: int = Field(description="the runs with a signed-off result")
+    first_reviewed_at: Optional[datetime] = Field(default=None, description="when the first run was reviewed")
+    trigger_reached: bool = Field(description="50 runs are reviewed, or 90 days passed since the first review")
+    reconsider: bool = Field(description="the trigger is reached and more than 10% of the missing signatures were "
+                                         "possibly suppressed: preventing suppression is worth reconsidering")
 
 
 class RunBatch(BaseModel):

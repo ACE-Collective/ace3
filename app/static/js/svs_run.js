@@ -574,6 +574,7 @@
                 append(targets, index ? ", " : "", target.username ? target.hostname + "/" + target.username : target.hostname);
             });
             fact("Targets", targets);
+            fact("Platform", run.platform);
             fact("Launcher", run.launcher + (run.registered_by ? " (key of " + run.registered_by + ")" : ""));
             if (run.batch_id) {
                 const batch = link("#", run.batch_id, "text-break-all");
@@ -1213,6 +1214,7 @@
             switch (event.kind) {
             case "registered":
                 append(node, "by " + (d.launcher || event.actor) + (d.batch_id ? ", batch " + d.batch_id : "") +
+                       (d.platform ? "; on " + d.platform : "") +
                        (d.observation_source ? "; window from " + d.observation_source : ""));
                 break;
             case "transition":

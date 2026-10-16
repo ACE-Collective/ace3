@@ -18,6 +18,9 @@
             {% endif %}
         </span>
     </div>
+    {% if view == 'runs' %}
+    <div id="svs_runs_share" class="d-none" title="the revisit trigger of preventing hunt suppression for test targets"></div>
+    {% endif %}
     <div id="svs_runs_message" class="alert alert-info d-none" role="status"></div>
     <div id="svs_runs_list"></div>
 </div>

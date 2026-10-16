@@ -425,11 +425,45 @@
         });
     }
 
+    // the share of missing expected signatures that were possibly suppressed, over the reviewed runs:
+    // when it is worth keeping the hunter from suppressing test targets (docs/SVS.md, Part 3, *Hunt
+    // suppression*)
+    function show_suppression_share(settings) {
+        const target = document.getElementById("svs_runs_share");
+        if (!target) {
+            return;
+        }
+        aceApi.get(settings.path + "/suppression-share")
+            .then(function(share) {
+                if (!share.reviewed_runs) {
+                    return;
+                }
+                const percent = share.share === null ? null : Math.round(share.share * 1000) / 10;
+                let text = share.missing === 0
+                    ? "No expected signature is missing from the " + plural(share.reviewed_runs, "reviewed run") + "."
+                    : "Possibly suppressed: " + share.possibly_suppressed + " of the " + share.missing +
+                      " missing expected signatures (" + percent + "%) over " + plural(share.reviewed_runs, "reviewed run") + ".";
+                if (share.reconsider) {
+                    text += " That is more than 10%: keeping the hunter from suppressing test targets is worth reconsidering.";
+                } else if (!share.trigger_reached) {
+                    text += " Judged after 50 reviewed runs or 90 days.";
+                }
+                target.className = "small mb-2 " + (share.reconsider ? "text-warning-emphasis fw-semibold" : "text-muted");
+                target.textContent = text;
+            })
+            .catch(function(err) {
+                // the list works without it
+                console.error("unable to read the suppression share", err);
+            });
+    }
+
     function start_runs(page, settings) {
+        show_suppression_share(settings);
         const columns = [
             {label: "State", width: "8rem", render: state_node},
             {label: "Test", render: function(row) { return test_node(settings, row); }},
             {label: "Targets", width: "11%", render: targets_node},
+            {label: "Platform", width: "6rem", title: "the platform the run is on", render: function(row) { return row.platform; }},
             {label: "Launcher", width: "10%", title: "and batch", render: launcher_node},
             {label: "Times", width: "14rem", title: "UTC", render: times_node},
             {label: "Time left", width: "6rem", title: "until the observation window of a started run ends", render: time_left_node},

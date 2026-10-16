@@ -92,6 +92,8 @@ def test_launcher_calls(caplog):
     for record in records:
         assert record.levelno == logging.INFO and record.svs_run == run.uuid
         _assert_fields(record, LAUNCHER_CALL_FIELDS)
+    # the run's platform is decided at registration (docs/SVS_RUNS.md, *Registering a run*)
+    assert records[0].platform == "windows"
 
 
 def test_a_refused_registration(caplog):

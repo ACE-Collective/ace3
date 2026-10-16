@@ -99,6 +99,8 @@ def run_filter_condition(entry: dict, tz: tzinfo = pytz.utc) -> ColumnElement[bo
         condition = _catalog(or_(*[technique_condition(SVSCatalogTest.technique, value) for value in values]))
     elif name == "Target":
         condition = _target(values)
+    elif name == "Platform":
+        condition = SVSRun.platform.in_(values)
     elif name == "Launcher":
         condition = or_(*[SVSRun.launcher.contains(value, autoescape=True) for value in values])
     elif name == "Batch":
@@ -109,6 +111,8 @@ def run_filter_condition(entry: dict, tz: tzinfo = pytz.utc) -> ColumnElement[bo
         condition = date_range_condition(SVSRun.started_at, values, tz)
     elif name == "Ended":
         condition = date_range_condition(SVSRun.ended_at, values, tz)
+    elif name == "Reviewed":
+        condition = date_range_condition(SVSRun.reviewed_at, values, tz)
     elif name == "Owner":
         condition = _user(SVSRun.owner_id, values)
     elif name == "Reviewer":

@@ -407,6 +407,12 @@ FQDN, and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15] A host's option
 (`windows`, `linux`, `macos`) is what a test's `supported_platforms` is checked against at
 registration; a host without one isn't checked.
 
+**Every run is on exactly one platform**, the grain coverage is judged on (Part 4). It is the
+platform of its targets' test hosts, which have to agree (a host without one is taken to be on
+theirs); when no target's host has one, it is the test's only supported platform, as ATT&CK names
+it (`iaas:aws` is `iaas`). Otherwise registration is refused with 422 and no alert, like a
+platform the test doesn't support.
+
 The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Every call requires
 `svs:run_register`. [ART-2]
 
@@ -691,7 +697,8 @@ the alert where it is. [ART-13]
 `suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
 imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
 deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
-results are *possibly suppressed*, reconsider. The SVS page shows that share. [D-19, ART-8]
+results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
+results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
 
 ### The Atomic Red Team catalog
 
@@ -867,7 +874,7 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Event | Level | Fields beyond the run's own |
 |---|---|---|
 | Lifecycle transition, including timers | INFO | `from_state`, `to_state`, `actor` |
-| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome (and the caller on refusal; after the first refusal per `(caller, host)` in an hour this record is all that is written, no alert) [FR-15] |
+| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome, the run's `platform` on a registration (and the caller on refusal; after the first refusal per `(caller, host)` in an hour this record is all that is written, no alert) [FR-15] |
 | Router decision on an alert, at both stages | INFO | `alert_uuid`, `stage`, `decision` (routed / partial / none / not moved because owned or closed), `queue`, `confidence` |
 | Marker sighting, agreeing or not | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window) |
 | Context attribution refused: more than one candidate run | WARNING | `alert_uuid`, `candidate_runs` (every run UUID; no single `svs_run`) [FR-9] |

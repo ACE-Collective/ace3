@@ -25,6 +25,7 @@ from saq.gui.filter_names import (
 )
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
+from saq.svs.attack import normalize_platform
 from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
@@ -334,7 +335,7 @@ class CatalogTestFilterEntry(FilterEntryBase):
 
 
 # the date range filters of the SVS runs screen
-RUN_DATE_RANGE_FILTER_NAMES = ("Created", "Started", "Ended")
+RUN_DATE_RANGE_FILTER_NAMES = ("Created", "Started", "Ended", "Reviewed")
 
 
 class RunFilterEntry(FilterEntryBase):
@@ -374,6 +375,10 @@ class RunFilterEntry(FilterEntryBase):
 
         if name == "Target":
             return [value.strip().lower() for value in values]
+
+        if name == "Platform":
+            # Atomic Red Team's names find the platform they count as: iaas:aws finds iaas
+            return [normalize_platform(value) for value in values]
 
         if name in ("Owner", "Reviewer"):
             return [value.strip() for value in values]

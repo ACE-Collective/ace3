@@ -38,6 +38,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.svs.alert_status import fully_attributed_condition
+from saq.svs.attack import normalize_platform
 from saq.svs.catalog import supported_platforms
 from saq.svs.expectations import observation_for_test
 from saq.svs.constants import RunEventKind, RunState
@@ -343,6 +344,28 @@ def _validate(registration: Registration) -> tuple[SVSCatalogTest, str]:
     return test, extra
 
 
+def _run_platform(test: SVSCatalogTest, matches) -> str:
+    """The one platform a run is on: the platform of its targets' test hosts, which have to agree (a
+    host without one is taken to be on it too), else the test's only supported platform. Raises
+    InvalidRegistration when neither says."""
+    host_platforms = sorted({match.host.platform for _, match in matches if match.host.platform is not None})
+    if len(host_platforms) > 1:
+        raise InvalidRegistration(
+            f"the targets' test hosts are on different platforms ({', '.join(host_platforms)}); "
+            "a run is on one platform")
+    if host_platforms:
+        return host_platforms[0]
+
+    test_platforms = sorted({normalize_platform(platform) for platform in supported_platforms(test)})
+    if len(test_platforms) == 1:
+        return test_platforms[0]
+
+    raise InvalidRegistration(
+        f"can't tell which platform the run is on: test {test.guid} supports "
+        f"{', '.join(test_platforms) or 'no platform'} and no target's test host has a platform; "
+        "set the test hosts' platform")
+
+
 def register(registration: Registration, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
     """Registers a run in state Created and returns it, with its marker. Raises
     InvalidRegistration, and RegistrationRefused after recording each refused target."""
@@ -374,6 +397,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
                 f"test {test.guid} supports {', '.join(platforms) or 'no platform'}; "
                 f"test host {match.host.hostname} is {match.host.platform}")
 
+    platform = _run_platform(test, matches)
     observation, observation_source = observation_for_test(test.guid)
     attribution = attribution_window(observation)
 
@@ -382,6 +406,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
         test_guid=test.guid,
         test_content_hash=test.content_hash,
         catalog_commit=test.commit,
+        platform=platform,
         state=RunState.CREATED.value,
         marker=new_marker(),
         launcher=registration.launcher,
@@ -407,11 +432,12 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     db.add(run)
     db.flush()
     _add_event(run, RunEventKind.REGISTERED, caller.name, actor_user_id=caller.user_id, to_state=run.state,
-               details={**payload, "observation_source": observation_source.value}, now=now)
+               details={**payload, "platform": run.platform, "observation_source": observation_source.value},
+               now=now)
     db.commit()
 
     log_transition(run, None, run.state, caller.name)
-    _log_call(run, CALL_REGISTER, run.launcher, "created", caller)
+    _log_call(run, CALL_REGISTER, run.launcher, "created", caller, platform=run.platform)
     return run
 
 
