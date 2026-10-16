@@ -122,3 +122,13 @@ class AlertCommentRead(BaseModel):
     user_id: int
     user_display_name: str
     comment: str
+
+
+class ObservableAnalysisRequested(BaseModel):
+    """An analyst asked for analysis of one observable; the alert is queued for it."""
+    message: str
+
+
+class ClickerSearch(BaseModel):
+    name: str = Field(description="the clicker search's configured name")
+    url: str = Field(description="the search in the Splunk web interface")

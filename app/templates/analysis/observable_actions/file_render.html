@@ -1,17 +1,6 @@
 <script type="text/javascript">
     $('#action_{{action.name}}_{{unique_reference}}').on('click', function() {
-        {% if alert.is_locked() %}
-            alert("This alert is currently locked for prior analysis; try again when status is completed.")
-            { return; }
-        {% endif %}
-        if (! confirm("Are you sure you want to render this HTML?")) { return; }
-        $.post("{{ url_for('analysis.observable_action') }}",
-                {"observable_uuid":"{{_observable.uuid}}","alert_uuid":"{{alert.uuid}}", "action_id": "{{action.name}}"},
-                function(data) {
-                    window.location = '{{url_for('analysis.index', direct=alert.uuid)}}';
-                }
-        ).fail(function(data, textStatus, jqXHR) {
-            alert("Action failed: " + textStatus);
-        });
+        if (! confirm("Are you sure you want to render this file?")) { return; }
+        request_observable_analysis("{{alert.uuid}}", "{{_observable.uuid}}", "render", "{{url_for('analysis.index', direct=alert.uuid)}}");
     });
 </script>
