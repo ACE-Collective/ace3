@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
+from saq.svs.attack_files import release_path
 
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
@@ -830,6 +831,15 @@ class SVSConfig(BaseModel):
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
     simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
     log_search_url: Optional[str] = Field(default=None, description="a link to the site's log search for one run, shown in the Logs section of the run page; ACE never queries it. {run_uuid}, {marker}, {test_guid}, {earliest} and {latest} (epoch seconds: the run's start, and the end of its attribution window or now) are replaced, URL-encoded (docs/SVS_RUNS.md, *Logs*)")
+    attack_release: str = Field(default="v20.0", description="the ATT&CK release coverage uses for technique and tactic names, sub-technique parents, platforms and revoked techniques. It names etc/attack/<release>.json, an extract vendored with ACE and built by bin/update-attack-catalog (docs/SVS_COVERAGE.md)")
+
+    @field_validator("attack_release")
+    @classmethod
+    def _check_attack_release(cls, value: str) -> str:
+        path = release_path(value)
+        if not path.is_file():
+            raise ValueError(f"svs.attack_release {value}: {path} is missing; bin/update-attack-catalog {value} builds it")
+        return value
 
     @field_validator("log_search_url")
     @classmethod
