@@ -7,7 +7,7 @@ from flask import url_for
 from saq.configuration import get_config
 from saq.database.model import Alert, Comment, Tag, TagMapping
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT, touch_alerts
+from saq.database.util.alert import ALERT
 from saq.util.time import local_time
 
 
@@ -191,85 +191,6 @@ def test_download_file_removed_modes(web_client, root_analysis, tmpdir, mode):
                             })
     assert result.status_code == 404
     assert b"<script>" not in result.data
-
-
-@pytest.mark.integration
-def test_get_alert_metadata_no_alert(web_client):
-    """Test get_alert_metadata when no alert is loaded."""
-    result = web_client.get(url_for("analysis.get_alert_metadata"))
-    assert result.status_code == 200
-    assert result.get_json() == {}
-
-
-@pytest.mark.integration
-def test_get_alert_metadata_with_alert(web_client, root_analysis):
-    """Test get_alert_metadata with valid alert."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    result = web_client.get(url_for("analysis.get_alert_metadata"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    assert result.mimetype == 'application/json'
-
-    data = result.get_json()
-    assert isinstance(data, dict)
-    assert "owner_id" in data
-    assert "owner_name" in data
-    assert "owner_time" in data
-    # no owner set yet
-    assert data["owner_id"] is None
-    assert data["owner_name"] is None
-    assert data["owner_time"] is None
-
-
-@pytest.mark.integration
-def test_get_alert_metadata_with_owner(web_client, root_analysis):
-    """Test get_alert_metadata returns owner_time when an owner is set."""
-    from datetime import datetime
-    from flask_login import current_user
-
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    db = get_db()
-    db_alert = db.query(Alert).filter(Alert.uuid == alert.uuid).one()
-    db_alert.owner_id = current_user.id
-    db_alert.owner_time = datetime(2026, 3, 30, 12, 0, 0)
-    db.commit()
-
-    result = web_client.get(url_for("analysis.get_alert_metadata"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    data = result.get_json()
-    assert data["owner_id"] == current_user.id
-    assert data["owner_name"] is not None
-    assert data["owner_time"] is not None
-    assert data["owner_time"].endswith("Z")
-
-
-@pytest.mark.integration
-def test_get_alert_metadata_version(web_client, root_analysis):
-    """Test that get_alert_metadata carries alerts.version and reflects a rotation."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-
-    result = web_client.get(url_for("analysis.get_alert_metadata"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    first_version = result.get_json()["version"]
-
-    db = get_db()
-    db_alert = db.query(Alert).filter(Alert.uuid == alert.uuid).one()
-    assert first_version == db_alert.version
-
-    touch_alerts([alert.uuid])
-    db.commit()
-
-    result = web_client.get(url_for("analysis.get_alert_metadata"),
-                          query_string={'direct': alert.uuid})
-    assert result.status_code == 200
-    assert result.get_json()["version"] != first_version
 
 
 @pytest.mark.integration

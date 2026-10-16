@@ -64,6 +64,7 @@
                                    {% if is_relative %}data-relative="1"{% endif %}
                                    list="relative_date_presets"
                                    placeholder="-7d - now"
+                                   data-tz="{{ current_user.timezone or 'UTC' }}"
                                    oninput="update_relative_date_hint(this)"
                                    name="filter_{{unique_reference}}_value_{{name}}"
                                    value="{% if name == filter_name %}{{value}}{% endif %}"/>

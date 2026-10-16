@@ -59,6 +59,33 @@ class AlertListPage(BaseModel):
 ALERT_ROW_CSV_FIELDS = tuple(AlertRow.model_fields)
 
 
+class AlertCount(BaseModel):
+    count: int
+
+
+class DateRange(BaseModel):
+    """A date filter value resolved to the window it means right now."""
+    start: datetime
+    end: datetime
+    text: str = Field(description="the window as the manage page shows it, in the requested timezone")
+
+
+class AlertMeta(BaseModel):
+    """The parts of an alert that change while an analyst has it open, for the alert page's poll.
+
+    Everything here is database state, so it is read without loading the alert from disk.
+    """
+    disposition: str | None = None
+    disposition_user_id: int | None = None
+    disposition_user_name: str | None = None
+    owner_id: int | None = None
+    owner_name: str | None = None
+    owner_time: str | None = Field(default=None, description="ISO 8601, UTC, with a Z suffix")
+    is_locked: bool
+    status: str
+    version: str
+
+
 class AlertCommentUpdate(BaseModel):
     comment: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 

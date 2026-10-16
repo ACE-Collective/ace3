@@ -15,6 +15,7 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import (
     ZIP_DOWNLOAD_RESPONSES,
     CsvStreamResponse,
+    ImageFileResponse,
     NdjsonStreamResponse,
     TextFileResponse,
     ZipFileResponse,
@@ -24,14 +25,18 @@ from aceapi_v2.alerts import service
 from aceapi_v2.alerts.schemas import (
     AlertCommentRead,
     AlertCommentUpdate,
+    AlertCount,
     AlertListPage,
+    AlertMeta,
     AlertRow,
     BulkAddObservableRequest,
     BulkAddObservableResult,
+    DateRange,
 )
 from aceapi_v2.detection_points import service as detection_points_service
 from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
 from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
+from saq.util.relative_time import RelativeTimeError, format_date_range, parse_date_range
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +241,43 @@ async def export_alerts_csv(
     return CsvStreamResponse(_stream(), headers=_attachment("alerts.csv"))
 
 
+@router.get("/count", response_model=AlertCount)
+async def count_alerts(
+    auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    response: Response,
+    f: FilterParam,
+    tz: TimezoneParam = "UTC",
+) -> AlertCount:
+    """How many alerts GET /alerts lists for these filters.
+
+    The alert management page's browser tab polls this with the "Reset" filter to show a dot
+    while alerts are waiting.
+    """
+    listing = await _prepare_listing(auth, f, None, tz)
+    count = await run_db_in_thread(service.count_alert_listing, listing)
+    response.headers["Cache-Control"] = "private, no-store"
+    return AlertCount(count=count)
+
+
+@router.get("/date-range", response_model=DateRange)
+async def resolve_date_range(
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    value: Annotated[str, Query(description="a date filter value: `-7d`, `-1d@d - @d`, or an absolute range")],
+    tz: TimezoneParam = "UTC",
+) -> DateRange:
+    """The window a date filter value means right now, resolved as the alert filters resolve it.
+
+    The manage page shows it under the relative date input, so that `-24h` is never opaque.
+    """
+    zone = _timezone(tz)
+    try:
+        start, end = parse_date_range(value, now=datetime.now(pytz.utc), tz=zone)
+    except (RelativeTimeError, ValueError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    return DateRange(start=start, end=end, text=format_date_range(start, end, zone))
+
+
 @router.get(
     "/{alert_uuid}",
     responses={
@@ -283,6 +325,39 @@ async def download_alert(
         filename=f"{alert_uuid}.zip",
         background=BackgroundTask(_safe_unlink, zip_path),
     )
+
+
+@router.get("/{alert_uuid}/meta", response_model=AlertMeta)
+async def get_alert_meta(
+    alert_uuid: str,
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+    response: Response,
+) -> AlertMeta:
+    """The alert's ownership, disposition, lock and version, which the alert page polls for
+    while it is open. Read from the database alone, without loading the alert."""
+    meta = await run_db_in_thread(service.get_alert_meta, alert_uuid)
+    response.headers["Cache-Control"] = "private, no-store"
+    return AlertMeta(**meta)
+
+
+@router.get("/{alert_uuid}/observables/{observable_uuid}/image", response_class=ImageFileResponse)
+async def get_observable_image(
+    alert_uuid: str,
+    observable_uuid: str,
+    _: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
+) -> ImageFileResponse:
+    """A file observable of the alert that is an image, served as that image.
+
+    Pages embed it with <img>, but the URL can also be opened as a page: the response is never
+    sniffed as another type and is sandboxed, so an SVG cannot run its scripts on the GUI origin.
+    """
+    path, mime_type = await run_db_in_thread(service.resolve_alert_image, alert_uuid, observable_uuid)
+    return ImageFileResponse(path, media_type=mime_type, headers={
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+        # alert content: a browser may keep it, a shared cache may not
+        "Cache-Control": "private",
+    })
 
 
 @router.get("/{alert_uuid}/logs", response_class=TextFileResponse)

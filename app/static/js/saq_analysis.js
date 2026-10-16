@@ -82,18 +82,7 @@ function check_alert_meta() {
         if (current_alert_uuid == null)
             return;
 
-        var params = new URLSearchParams({ direct: current_alert_uuid });
-        fetch("get_alert_meta?" + params.toString(), {
-            method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            credentials: 'same-origin'
-        })
-        .then(function(response) {
-            if (!response.ok) {
-                throw new Error("HTTP " + response.status);
-            }
-            return response.json();
-        })
+        aceApi.get("/alerts/" + encodeURIComponent(current_alert_uuid) + "/meta")
         .then(function(data) {
             ownership_check_failures = 0;
             last_successful_check = Date.now();

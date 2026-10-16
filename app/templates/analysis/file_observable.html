@@ -44,7 +44,7 @@ $(document).ready(function() {
     <img
         width="{{_observable.scaled_width}}"
         height="{{_observable.scaled_height}}"
-        src="{{url_for('analysis.image', alert_uuid=alert.uuid, observable_uuid=_observable.uuid)}}"
+        src="/api/v2/alerts/{{ alert.uuid }}/observables/{{ _observable.uuid }}/image"
         class="img-thumbnail"
     />
 </a>

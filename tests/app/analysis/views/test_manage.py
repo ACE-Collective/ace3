@@ -175,6 +175,36 @@ def test_manage_page_wires_datastar(web_client, analyst):
     assert f'id="cb_{alert.uuid}"' in html
 
 
+@pytest.mark.integration
+def test_manage_page_favicon_polls_the_reset_filter_count(web_client, analyst):
+    """The tab's notification dot counts the "Reset" filter through GET /api/v2/alerts/count, so
+    the URL it polls carries exactly that filter for the logged-in analyst."""
+    from urllib.parse import parse_qs, urlsplit
+    from saq.gui.filter_url import decode_filter_query
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst)
+
+    html = web_client.get(url_for("analysis.manage")).data.decode()
+    url = html_lib.unescape(re.search(r'data-reset-filter-count-url="([^"]*)"', html).group(1))
+
+    parts = urlsplit(url)
+    assert parts.path == "/api/v2/alerts/count"
+    filters, warnings = decode_filter_query(parse_qs(parts.query)["f"], strict=True)
+    assert warnings == []
+    assert [(f["name"], f["inverted"], f["values"]) for f in filters] == [
+        ("Disposition", False, [DISPOSITION_OPEN]),
+        ("Owner", False, ["None", "john"]),
+        ("Queue", False, [QUEUE_DEFAULT]),
+    ]
+
+
+@pytest.mark.integration
+def test_other_pages_do_not_poll_the_reset_filter_count(web_client, analyst):
+    html = web_client.get(url_for("events.manage")).data.decode()
+    assert "data-reset-filter-count-url" not in html
+
+
 def _search_response(alert_uuids, query="some search query", total=None):
     """A canned saq.search response: the first alert an exact match, the rest semantic."""
     from saq.search.types import LANE_LEXICAL, LANE_SEMANTIC, AlertSearchResult, SearchHit, SearchResponse
