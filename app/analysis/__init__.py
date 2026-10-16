@@ -21,5 +21,4 @@ from app.analysis.views.edit.event import add_to_event, load_more_events
 from app.analysis.views.search import search, search_similar
 from app.analysis.views.misc import upload_file, analyze_alert
 from app.analysis.views.image import image_full
-from app.analysis.views.remediation import remediation_targets
 from app.analysis.views.context_processor import generic_functions, add_header

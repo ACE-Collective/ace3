@@ -47,6 +47,40 @@ def cancel_remediations(
     return len(remediation_ids)
 
 
+def cancel_remediation(remediation_id: int, user_id: Optional[int] = None) -> bool:
+    """Stops one remediation that has not completed: queued (NEW) or IN_PROGRESS, which is what
+    the alert pages' remediation dialog has always stopped. Unlike cancel_remediations() it also
+    stops a queued one, and it records history only when it actually cancelled something.
+    Returns False when the remediation does not exist or has already completed."""
+    cancelled = get_db().execute(
+        Remediation.__table__.update()
+        .where(
+            Remediation.id == remediation_id,
+            Remediation.status != RemediationStatus.COMPLETED.value,
+        )
+        .values(
+            status=RemediatorStatus.CANCELLED.remediation_status.value,
+            result=RemediatorStatus.CANCELLED.value,
+            update_time=func.NOW(),
+        )
+    ).rowcount
+    if not cancelled:
+        get_db().rollback()
+        return False
+
+    user = get_db().get(User, user_id) if user_id is not None else None
+    get_db().add(
+        RemediationHistory(
+            remediation_id=remediation_id,
+            result=RemediatorStatus.CANCELLED.value,
+            status=RemediatorStatus.CANCELLED.remediation_status.value,
+            message=f"cancelled by {user.display_name}" if user else "cancelled by unknown user",
+        )
+    )
+    get_db().commit()
+    return True
+
+
 def retry_remediations(remediation_ids: list[int]) -> int:
     update_query = Remediation.__table__.update()
     update_query = update_query.where(

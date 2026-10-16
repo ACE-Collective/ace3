@@ -68,6 +68,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("observable", "read", "Query observables via the API."),
     CatalogEntry("observable", "write", "Modify observables and run observable actions."),
     CatalogEntry("remediation", "read", "View remediation actions and history."),
+    CatalogEntry("remediation", "write", "Queue, stop and clear remediations: the alert pages' remediation dialog and the Remediations page."),
     CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
     CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
     CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode and the SVS YARA samples (live malware, in zips protected with the password infected)."),
