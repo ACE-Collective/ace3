@@ -890,11 +890,13 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
-One SVS record is not about a run and carries no `svs_run`: [FR-15]
+These SVS records are not about a run and carry no `svs_run`: [FR-15]
 
 | Event | Level | Fields |
 |---|---|---|
 | A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
+| Coverage refreshed | INFO | `attack_release`, `rows`, `changed`, `retired`, `duration_ms`, `actor` |
+| A coverage row changed state in a refresh | INFO | `technique`, `platform`, `from_state`, `to_state` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
 *completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
@@ -1109,6 +1111,8 @@ svs:
     scan_timeout_seconds: 1800
     max_concurrent_validations: 1   # [FR-13]
   attack_release: "v20.0"           # names etc/attack/v20.0.json [FR-14]
+  coverage:
+    refresh_interval_seconds: 120   # service_svs recomputes svs_coverage (docs/SVS_COVERAGE.md)
 
 service_svs:                        # one instance, on the primary node [FR-13]
   enabled: true

@@ -103,8 +103,8 @@ def hunt_locations() -> list[SignatureLocation]:
 
 @dataclass(frozen=True)
 class HuntInfo:
-    """What SVS needs of a hunt: its window latency, and for a run's result its name, suppression
-    and rule hash."""
+    """What SVS needs of a hunt: its window latency, for a run's result its name, suppression and
+    rule hash, and for coverage its tags."""
     uuid: str
     name: str
     enabled: bool
@@ -117,6 +117,8 @@ class HuntInfo:
     grouped: bool
     # the content hash of its file, as the signature inventory computes it
     content_hash: str
+    # its tags, as the signature inventory reads them (mitre: tags map it to ATT&CK techniques)
+    tags: tuple[str, ...] = ()
 
 
 def _read_hunts() -> dict[str, HuntInfo]:
@@ -124,7 +126,7 @@ def _read_hunts() -> dict[str, HuntInfo]:
     # stack, which imports aceapi_v2, whose run API imports this module
     from saq.collectors.hunter.loader import load_merged_yaml
     from saq.signatures.loaders.hunt import is_hunt_file
-    from saq.signatures.loaders.util import content_hash
+    from saq.signatures.loaders.util import content_hash, normalize_tags
 
     result: dict[str, HuntInfo] = {}
     for location in hunt_locations():
@@ -165,7 +167,7 @@ def _read_hunts() -> dict[str, HuntInfo]:
             uuid = str(rule["uuid"]).strip()
             info = HuntInfo(uuid=uuid, name=str(rule.get("name") or "unnamed"), enabled=enabled, latency=latency,
                             suppression=suppression, grouped=bool(rule.get("group_by") or rule.get("dedup_key")),
-                            content_hash=content_hash(source))
+                            content_hash=content_hash(source), tags=normalize_tags(rule.get("tags")))
             # one uuid in two files: the enabled one counts, then the slower
             previous = result.get(uuid)
             if previous is None or (info.enabled, info.latency or timedelta(0)) > (

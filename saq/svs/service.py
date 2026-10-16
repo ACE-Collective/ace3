@@ -1,5 +1,6 @@
-"""service_svs: runs the queued YARA validations (docs/SVS_VALIDATION.md, *The svs service*) and
-keeps the Atomic Red Team catalog current (docs/SVS_RUNS.md, *The Atomic Red Team catalog*).
+"""service_svs: runs the queued YARA validations (docs/SVS_VALIDATION.md, *The svs service*), keeps
+the Atomic Red Team catalog current (docs/SVS_RUNS.md, *The Atomic Red Team catalog*), moves test
+runs on by time, and keeps ATT&CK coverage current (docs/SVS_COVERAGE.md, *Refresh*).
 
 Each worker thread claims a validation (saq.svs.validations.claim), runs the replay
 (saq.svs.yara.replay.run_replay) while a heartbeat keeps its lease, and stores the report. The
@@ -13,6 +14,10 @@ svs.catalog.refresh_interval_seconds, also on the primary node only (saq.svs.cat
 The run timer moves test runs whose start timeout or windows have passed every
 svs.runs.timer_interval_seconds (saq.svs.runs.run_timers), on the primary node only. Every move is
 conditional on the run's state, so a second timer somewhere would change nothing [FR-13].
+
+The coverage refresher recomputes ATT&CK coverage every svs.coverage.refresh_interval_seconds, on the
+primary node only (saq.svs.coverage). A refresh holds a lock, so one run by hand never interleaves
+with it.
 """
 
 import logging
@@ -32,6 +37,8 @@ from saq.sandbox.runner import LAUNCHER_STOP_SECONDS
 from saq.service import ACEServiceInterface
 from saq.svs.actions import retired_pairs
 from saq.svs.catalog import refresh_catalog
+from saq.svs.constants import COVERAGE_ACTOR
+from saq.svs.coverage import refresh_coverage
 from saq.svs.runs import run_timers
 from saq.svs.validations import (
     Claim,
@@ -234,6 +241,32 @@ class RunTimer:
             self.shutdown.wait(get_config().svs.runs.timer_interval_seconds)
 
 
+class CoverageRefresher:
+    """Refreshes ATT&CK coverage until stopped."""
+
+    def __init__(self, shutdown: threading.Event):
+        self.shutdown = shutdown
+        self.thread: Optional[threading.Thread] = None
+
+    def start(self):
+        self.thread = threading.Thread(target=self.loop, name="svs-coverage", daemon=True)
+        self.thread.start()
+
+    def run_once(self):
+        try:
+            # a failed refresh changes nothing and is recorded on svs_coverage_state
+            refresh_coverage(COVERAGE_ACTOR)
+        except Exception as e:
+            log_loop_exception(e, "svs coverage refresh failed")
+        finally:
+            remove_all_sessions()
+
+    def loop(self):
+        while not self.shutdown.is_set():
+            self.run_once()
+            self.shutdown.wait(get_config().svs.coverage.refresh_interval_seconds)
+
+
 class SVSService(ACEServiceInterface):
 
     @classmethod
@@ -245,6 +278,7 @@ class SVSService(ACEServiceInterface):
         self.workers: list[ValidationWorker] = []
         self.catalog: Optional[CatalogRefresher] = None
         self.runs: Optional[RunTimer] = None
+        self.coverage: Optional[CoverageRefresher] = None
 
     def _workers(self) -> list[ValidationWorker]:
         config = get_service_config(SERVICE_SVS)
@@ -255,8 +289,8 @@ class SVSService(ACEServiceInterface):
     def start(self):
         if not is_primary_node():
             # the queue, the catalog and the runs are shared; one node runs them
-            logging.info("svs validations, the catalog refresh and the run timers run on the primary node only; "
-                         "this service stays idle")
+            logging.info("svs validations, the catalog refresh, the run timers and the coverage refresh run on the "
+                         "primary node only; this service stays idle")
             return
 
         self.workers = self._workers()
@@ -269,16 +303,20 @@ class SVSService(ACEServiceInterface):
         self.runs = RunTimer(self.shutdown)
         self.runs.start()
 
+        self.coverage = CoverageRefresher(self.shutdown)
+        self.coverage.start()
+
     def wait_for_start(self, timeout: float = 5) -> bool:
         return True
 
     def start_single_threaded(self):
-        """Refreshes the catalog and moves the runs once, and runs every waiting validation, one at a
-        time, then returns. The service is finished then, so wait() returns too (`ace service start
+        """Refreshes the catalog, moves the runs and refreshes coverage once, and runs every waiting
+        validation, one at a time, then returns. The service is finished then, so wait() returns too (`ace service start
         --single-threaded svs` exits)."""
         try:
             CatalogRefresher(self.shutdown).run_once()
             RunTimer(self.shutdown).run_once()
+            CoverageRefresher(self.shutdown).run_once()
             worker = self._workers()[0]
             while not self.shutdown.is_set():
                 try:
@@ -301,6 +339,6 @@ class SVSService(ACEServiceInterface):
         for worker in self.workers:
             if worker.thread is not None:
                 worker.thread.join()
-        for component in (self.catalog, self.runs):
+        for component in (self.catalog, self.runs, self.coverage):
             if component is not None and component.thread is not None:
                 component.thread.join()

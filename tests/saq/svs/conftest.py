@@ -18,6 +18,7 @@ from saq.signatures.builtin import YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
 from saq.database.private_session import private_transaction
 from saq.svs import attribution, windows
+from saq.svs.attack import AttackCatalog, load_attack_catalog
 from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
 from saq.svs.hosts import build_spec, create_host
@@ -156,6 +157,43 @@ def graded_alert(disposition: Optional[str], files: dict[str, list[str]], *, cap
                     insert_capture(root.uuid, key[0], rule_uuid, file_path=name)
 
     return load_alert(root.uuid), observables
+
+
+#
+# ATT&CK
+#
+
+# a miniature ATT&CK release extract (bin/update-attack-catalog's format)
+ATTACK_EXTRACT = {
+    "format": 1,
+    "release": "v99.0",
+    "domain": "enterprise-attack",
+    "source": {"url": "https://example.invalid/", "sha256": "0" * 64},
+    "platforms": [{"slug": "windows", "name": "Windows"}, {"slug": "macos", "name": "macOS"}],
+    "tactics": [{"id": "TA0003", "shortname": "persistence", "name": "Persistence"},
+                {"id": "TA0002", "shortname": "execution", "name": "Execution"}],
+    "techniques": {
+        "T1059": {"name": "Command and Scripting Interpreter", "parent": None, "tactics": ["TA0002"],
+                  "platforms": ["windows", "macos"], "deprecated": False},
+        "T1059.001": {"name": "PowerShell", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["windows"],
+                      "deprecated": False},
+        "T1059.002": {"name": "AppleScript", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["macos"],
+                      "deprecated": False},
+        "T1547": {"name": "Boot or Logon Autostart Execution", "parent": None, "tactics": ["TA0003", "TA0002"],
+                  "platforms": ["windows"], "deprecated": False},
+        "T1099": {"name": "Timestomp", "parent": None, "tactics": [], "platforms": ["windows"], "deprecated": True},
+    },
+    "revoked": {"T1086": "T1059.001", "T1150": "T1099"},
+    "renamed": {"T1059": {"from": "Scripting", "previous_release": "v98.0"}},
+}
+
+
+@pytest.fixture
+def attack_catalog(tmp_path) -> AttackCatalog:
+    """The ATTACK_EXTRACT release."""
+    path = tmp_path / "v99.0.json"
+    path.write_text(json.dumps(ATTACK_EXTRACT))
+    return load_attack_catalog(path)
 
 
 #

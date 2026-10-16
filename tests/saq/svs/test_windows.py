@@ -72,6 +72,19 @@ def test_hunt_latencies_read_enabled_hunts(hunt_dir, caplog):
 
 
 @pytest.mark.integration
+def test_hunt_info_reads_tags(hunt_dir):
+    """Coverage reads a hunt's mitre: tags (docs/SVS_COVERAGE.md, *Manual mappings*)."""
+    _hunt(hunt_dir / "tagged.yaml", "tagged", frequency="00:05:00", tags=["mitre:T1059.001", "phishing", "mitre:T1059.001"])
+    _hunt(hunt_dir / "scalar.yaml", "scalar", frequency="00:05:00", tags="mitre:T1547")
+    _hunt(hunt_dir / "untagged.yaml", "untagged", frequency="00:05:00")
+
+    info = windows.hunt_info()
+    assert info["tagged"].tags == ("mitre:T1059.001", "phishing")
+    assert info["scalar"].tags == ("mitre:T1547",)
+    assert info["untagged"].tags == ()
+
+
+@pytest.mark.integration
 def test_hunt_info_keeps_every_hunt_for_results(hunt_dir):
     """A run's result needs the name, suppression and rule hash of hunts the windows skip: disabled
     ones, and ones whose timing can't be read."""

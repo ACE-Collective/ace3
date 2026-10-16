@@ -2589,6 +2589,85 @@ class SVSRunResultState(Base):
     computed_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
 
 
+class SVSCoverage(Base):
+    """Coverage of one ATT&CK technique on one platform (docs/SVS_COVERAGE.md), as of the last
+    refresh. Recomputed by service_svs; a refresh writes only the columns that changed, so
+    updated_at moves only on a real change. A row the computation no longer produces is retired,
+    never deleted. Only saq/svs/coverage.py writes this table."""
+
+    __tablename__ = 'svs_coverage'
+    __table_args__ = (
+        UniqueConstraint('technique', 'platform', name='uq_svs_coverage_technique_platform'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    technique: Mapped[str] = mapped_column(String(32), nullable=False)
+    # a platform slug (saq.svs.attack)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    is_subtechnique: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    technique_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # JSON-serialized tactic ids (TA0002) from the ATT&CK release
+    tactics: Mapped[str] = mapped_column(Text, nullable=False)
+    # saq.svs.attack.TechniqueStatus
+    catalog_status: Mapped[str] = mapped_column(Enum('active', 'deprecated', 'unknown'), nullable=False)
+    # the ATT&CK release lists the platform for the technique; otherwise only a test brought the row
+    attack_platform: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # saq.svs.constants.CoverageState: rolled up over the technique and its sub-techniques on the
+    # platform, and the technique's own
+    state: Mapped[str] = mapped_column(
+        Enum('failing', 'stale', 'validated', 'manual', 'untested', 'none'), nullable=False)
+    own_state: Mapped[str] = mapped_column(
+        Enum('failing', 'stale', 'validated', 'manual', 'untested', 'none'), nullable=False)
+    # over the same tests and signatures as state
+    tests_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_validated: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_failing: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_stale: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    manual_signatures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    measured_signatures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # the latest review of a run that counts toward the row
+    last_reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    state_changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # when the computation stopped producing the row, NULL while it does
+    retired_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSCoverageState(Base):
+    """The coverage refresh (docs/SVS_COVERAGE.md, *Refresh*): a single row (id 1) that a refresh
+    locks for its whole transaction, so two never interleave, and what the last one did. Only
+    saq/svs/coverage.py writes this table."""
+
+    __tablename__ = 'svs_coverage_state'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    attack_release: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # the last refresh that completed
+    refreshed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rows: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    changed: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    retired: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # mitre: tags naming an id the release doesn't have, and mitre: tags that aren't technique ids
+    # (templated, tactics), over every signature
+    unknown_tags: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    ignored_tags: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    # why the latest refresh failed, NULL once one completes
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

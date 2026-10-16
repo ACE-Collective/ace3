@@ -781,6 +781,12 @@ class SVSCatalogConfig(BaseModel):
     refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
 
 
+class SVSCoverageConfig(BaseModel):
+    """ATT&CK coverage (docs/SVS_COVERAGE.md): the svs_coverage table service_svs keeps current."""
+    model_config = ConfigDict(extra="forbid")
+    refresh_interval_seconds: int = Field(default=120, gt=0, description="how often service_svs recomputes coverage; a refresh writes only the rows that changed")
+
+
 class SVSObservationWindowConfig(BaseModel):
     """How long a started run waits for its alerts before it ends (docs/SVS_RUNS.md, *Windows*): the
     worst-case latency of the signatures it expects, plus slack, within a floor and a ceiling."""
@@ -825,6 +831,7 @@ class SVSConfig(BaseModel):
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
     catalog: SVSCatalogConfig = Field(default_factory=SVSCatalogConfig, description="the Atomic Red Team test catalog")
+    coverage: SVSCoverageConfig = Field(default_factory=SVSCoverageConfig, description="ATT&CK coverage")
     runs: SVSRunsConfig = Field(default_factory=SVSRunsConfig, description="test runs")
     attribution: SVSAttributionConfig = Field(default_factory=SVSAttributionConfig, description="attributing alerts to test runs")
     queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
