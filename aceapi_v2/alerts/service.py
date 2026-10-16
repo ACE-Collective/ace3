@@ -9,8 +9,10 @@ import os
 import shutil
 import tempfile
 import uuid as uuidlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -54,8 +56,13 @@ from aceapi_v2.alerts.schemas import (
     BulkAddObservableResult,
     SetOwnerResult,
 )
-from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
+from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip, safe_file_name
 from aceapi_v2.sync import run_db_in_thread
+
+if TYPE_CHECKING:
+    # saq.observables.file imports the presenters, which import aceapi_v2, so a runtime import
+    # here is circular
+    from saq.observables.file import FileObservable
 
 logger = logging.getLogger(__name__)
 
@@ -382,21 +389,81 @@ def resolve_alert_log_path(alert_uuid: str) -> str:
     return log_path
 
 
-def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
-    """Return (path, mime type) of a file observable of the alert that is an image.
+def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> "FileObservable":
+    """A file observable of the alert whose file is on disk; 404 otherwise.
 
-    Only that one observable is loaded, never the analysis tree: the alert page fetches one of
-    these per image it shows. The URL can also be opened as a page, so a file that is not an
-    image is a 404 rather than something the browser would render on the GUI origin.
+    Only that one observable is loaded, never the analysis tree (see load_file_observable).
     """
     file_observable = load_file_observable(_resolve_alert_storage_path(alert_uuid), observable_uuid)
     if file_observable is None or not os.path.exists(file_observable.path):
         raise HTTPException(status_code=404, detail="unknown file")
 
+    return file_observable
+
+
+def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
+    """Return (path, mime type) of a file observable of the alert that is an image.
+
+    The alert page fetches one of these per image it shows. The URL can also be opened as a
+    page, so a file that is not an image is a 404 rather than something the browser would render
+    on the GUI origin.
+    """
+    file_observable = resolve_alert_file(alert_uuid, observable_uuid)
     if not file_observable.is_image:
         raise HTTPException(status_code=404, detail="not an image")
 
     return file_observable.path, file_observable.mime_type
+
+
+# how many lines of a hex dump are sent at once
+_HEXDUMP_BATCH_LINES = 4096
+
+
+def _hexdump_line(offset: int, chunk: bytes) -> str:
+    hex_bytes = [f"{byte:02x} " for byte in chunk]
+    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
+    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
+    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
+
+
+def hexdump(path: str) -> Iterator[str]:
+    """The file as `hexdump -C` prints it, in batches of lines: 16 bytes a line as the offset,
+    the bytes in hex and the printable ones as text, a run of lines repeating the one before it
+    as a single "*", and the length last."""
+    lines: list[str] = []
+    offset = 0
+    previous = None
+    squeezing = False
+    with open(path, "rb") as fp:
+        while chunk := fp.read(16):
+            if chunk == previous:
+                if not squeezing:
+                    lines.append("*\n")
+                    squeezing = True
+            else:
+                lines.append(_hexdump_line(offset, chunk))
+                squeezing = False
+            previous = chunk
+            offset += len(chunk)
+            if len(lines) >= _HEXDUMP_BATCH_LINES:
+                yield "".join(lines)
+                lines = []
+
+    if offset:
+        lines.append(f"{offset:08x}\n")
+    if lines:
+        yield "".join(lines)
+
+
+def create_encrypted_file_zip(alert_uuid: str, observable_uuid: str) -> tuple[str, str]:
+    """Zip a file observable of the alert, encrypted with the password infected (see
+    aceapi_v2/common/archive.py). Returns (zip path, name to download it as); the caller removes
+    the zip."""
+    file_observable = resolve_alert_file(alert_uuid, observable_uuid)
+    path = file_observable.path
+    dest = os.path.join(get_temp_dir(), f"{uuidlib.uuid4()}.zip")
+    add_to_encrypted_zip(dest, os.path.dirname(path), os.path.basename(path), f"alert {alert_uuid} file {observable_uuid}")
+    return dest, f"{safe_file_name(os.path.basename(path))}.zip"
 
 
 def _add_observable_to_alert(

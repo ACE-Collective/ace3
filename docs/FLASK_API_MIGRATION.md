@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **4 API-shaped candidates** out of 70 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **3 API-shaped candidates** out of 69 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -448,6 +448,22 @@ Three `analysis` routes were deleted rather than migrated:
 
 With them went the action classes and templates, the `gui.whitelist_excluded_observable_types` setting (a site config that still sets it is ignored), the `ACTION_*WHITELIST` constants, and `whitelist:write`: its catalog entry is removed by the data-only migration `e28c9d0a6154`, and existing grants are left alone since nothing checks the pair. The engine's whitelisting is unchanged: the `whitelisted` tag mappings already stored still apply through `user_defined_tagging`, and the email and YARA rules still whitelist emails. The defects listed for these routes (HTML on the GUI origin, failures reported with 200) went with them.
 
+### File views → `GET /api/v2/alerts/{uuid}/observables/{id}/{text,hex,zip}`
+
+| Legacy Flask URL (GUI)                                         | v2 URL                                                        |
+|----------------------------------------------------------------|---------------------------------------------------------------|
+| `GET /download_file?alert_uuid=&file_uuid=&mode=text` (View As Text) | `GET /api/v2/alerts/{uuid}/observables/{id}/text`       |
+| `GET /download_file?...&mode=hex` (View As Hex)                | `GET /api/v2/alerts/{uuid}/observables/{id}/hex`              |
+| `GET /download_file?...&mode=zip` (Download File As ZIP)       | `GET /api/v2/alerts/{uuid}/observables/{id}/zip`              |
+
+Siblings of the `/image` route, and like it they load only the one file observable (`load_file_observable`), never the analysis tree, so this was Tier 2 in name only. The alert page's three file actions open the new URLs; the Flask route is deleted, and old `/ace/download_file` links are not redirected (they 404). The signature repository's rule comments that linked to it were rewritten in its own change.
+
+Notes:
+- **No mode serves the file as-is.** The Flask route's **Open** (`view`, `html`) and **Download File** (`raw`) modes were removed earlier because serving an alert's file inline runs a malicious HTML or JS file on the GUI origin. Don't add one. The text and hex views are `text/plain` with `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, so an HTML or SVG file opened in a tab stays text.
+- **Hex** is formatted in Python in the format of `hexdump -C` (repeated lines squeezed to `*`), streamed in batches, where the Flask route read the whole `hexdump` output into memory first. A test compares it with the real `hexdump -C`.
+- **Zip** uses `aceapi_v2/common/archive.py` (password `infected`), is deleted after it is sent, and is named after the file through `safe_file_name()` rather than the raw file name.
+- All three log an `AUDIT:` line; the permission is `alert:read`, as before.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -472,7 +488,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 70** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 69** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -491,7 +507,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    40 |        9 |  4 (0 T1 + 4 T2)     | 27 (16 B + 11 C)    |
+| `analysis`        |    39 |        9 |  3 (0 T1 + 3 T2)     | 27 (16 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     1 |        1 |                    0 |                   0 |
 | `file_collection` |     1 |        1 |                    0 |                   0 |
@@ -499,13 +515,13 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **70**|   **27** |  **4 (0 T1 + 4 T2)** |              **39** |
+| **Total**         | **69**|   **27** |  **3 (0 T1 + 3 T2)** |              **39** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), and `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), and `/download_file` (see the file views appendix entry).
 
 ### `analysis` blueprint
 
-40 routes total: 9 template, 4 candidates (all Tier 2), 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+39 routes total: 9 template, 3 candidates (all Tier 2), 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 **Tier 1:** none left; see the appendix entries for where they went.
 
@@ -513,7 +529,6 @@ Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `
 
 | Method(s) | URL                                             | Function                                        | file:line                                    | Returns | Callers / notes |
 |-----------|-------------------------------------------------|-------------------------------------------------|----------------------------------------------|---------|-----------------|
-| GET       | `/download_file`                                | `download_file`                                 | `export.py:93`                               | FILE / text | `analysis/observable_actions/{download_file_as_zip,view_as_hex,view_as_text}.html`. Modes `zip`, `hex` and `text`. There is no mode that serves the file as-is: **Open** (`view`, `html`) and **Download File** (`raw`) were removed rather than fixed, because serving an alert's file inline runs a malicious HTML or JS file on the GUI origin. Don't add one back in v2. |
 | POST      | `/observable_action_check_for_clickers`         | same                                            | `edit/observable_action/clicker.py:25`       | JSON    | `observable_actions/check_for_clickers.html:4`. Lock, load, delete old analysis, sync, add workload. |
 | POST      | `/observable_action_open_clicker_search_splunk` | same                                            | `edit/observable_action/clicker.py:91`       | JSON    | `observable_actions/open_clicker_search_splunk.html:3`. Loads without a lock; read-only. |
 | POST      | `/observable_action`                            | `observable_action`                             | `edit/observable_action/legacy.py:18`        | text    | `observable_actions/{collect_file,url_crawl,file_render}.html`. Legacy multi-action (`mark_as_suspect`, `collect_file`, `url_crawl`, `file_render`); lock, load, sync, schedule or add workload. |
