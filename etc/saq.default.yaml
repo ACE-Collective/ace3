@@ -1315,6 +1315,16 @@ analysis_module_html_data_url_extraction:
   # the maximum number of bytes to read from the file
   max_bytes: 104857600
 
+analysis_module_har_extraction:
+  name: har_extraction
+  python_module: saq.modules.file_analysis.har
+  python_class: HARExtractor
+  enabled: true
+  # largest .har file parsed, in bytes (the whole file is loaded as JSON)
+  max_file_size: 52428800
+  # most response bodies extracted from one .har file, pages first, then scripts in request order
+  max_extracted_files: 50
+
 analysis_module_html_js_extraction:
   name: html_js_extraction
   dependencies:
@@ -2369,6 +2379,7 @@ module_group_file:
     - file_hash_analyzer
     - file_path_analysis
     - file_type
+    - har_extraction
     - hidden_mime
     - html_data_url_extraction
     - html_js_extraction

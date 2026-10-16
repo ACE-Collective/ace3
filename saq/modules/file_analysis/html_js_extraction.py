@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import re
+import warnings
 from typing import override
 
+import bs4
+from bs4 import XMLParsedAsHTMLWarning
 from pydantic import Field
 from urlfinderlib.url import URL
 
@@ -26,8 +29,10 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
 
 # DOM snapshot sidecar caps. The overall serialized size is bounded by the
-# module's dom_snapshot_max_bytes config; these bound individual pieces so a
-# single huge attribute or text node can't consume the whole budget.
+# module's dom_snapshot_max_bytes config (default DOM_SNAPSHOT_MAX_BYTES); these
+# bound individual pieces so a single huge attribute or text node can't consume
+# the whole budget.
+DOM_SNAPSHOT_MAX_BYTES = 524288
 DOM_SNAPSHOT_MAX_ELEMENTS = 2000
 DOM_SNAPSHOT_MAX_ATTR_LEN = 16384
 DOM_SNAPSHOT_MAX_TEXT_LEN = 4096
@@ -48,6 +53,109 @@ EVENT_ATTRIBUTES = [
     'onresize', 'onscroll', 'onselect', 'ondrag', 'ondrop', 'ondragstart', 'ondragend',
     'ondragenter', 'ondragleave', 'ondragover',
 ]
+
+
+def parse_document(html: str) -> bs4.BeautifulSoup:
+    """Parse an HTML or SVG document the way this module does. SVG goes through
+    the lxml HTML parser too, which warns about it; the warning is expected."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=XMLParsedAsHTMLWarning)
+        return bs4.BeautifulSoup(html, 'lxml')
+
+
+def get_script_source(script) -> str | None:
+    """The external source a <script> element names, or None for an inline script."""
+    for attr in SCRIPT_SOURCE_ATTRIBUTES:
+        if script.has_attr(attr):
+            return script[attr]
+
+    return None
+
+
+def build_dom_snapshot(soup, max_bytes: int = DOM_SNAPSHOT_MAX_BYTES, url: str | None = None) -> dict | None:
+    """Serialize a parsed document's elements and attributes into the compact
+    dict the JS deobfuscator harness uses to back document lookups with real
+    values. `url` is the address the document was loaded from, which its scripts
+    read as their location. Returns None when no element survives."""
+    elements = []
+    truncated = False
+    total = 0
+    for tag in soup.find_all(True):
+        if tag.name in DOM_SNAPSHOT_SKIP_TAGS:
+            continue
+        if len(elements) >= DOM_SNAPSHOT_MAX_ELEMENTS:
+            truncated = True
+            break
+
+        attrs = {}
+        for name, value in tag.attrs.items():
+            # bs4 returns multi-valued attributes (e.g. class) as a list.
+            if isinstance(value, (list, tuple)):
+                value = " ".join(str(v) for v in value)
+            else:
+                value = str(value)
+            if len(value) > DOM_SNAPSHOT_MAX_ATTR_LEN:
+                value = value[:DOM_SNAPSHOT_MAX_ATTR_LEN]
+                truncated = True
+            attrs[str(name)] = value
+
+        element = {"tag": str(tag.name), "attrs": attrs}
+        own_text = tag.find(string=True, recursive=False)
+        if own_text:
+            text = str(own_text).strip()
+            if text:
+                if len(text) > DOM_SNAPSHOT_MAX_TEXT_LEN:
+                    text = text[:DOM_SNAPSHOT_MAX_TEXT_LEN]
+                    truncated = True
+                element["text"] = text
+
+        # Enforce the overall size budget as elements accumulate so a
+        # document with many small elements can't blow past the cap.
+        total += len(json.dumps(element, separators=(",", ":")))
+        if total > max_bytes:
+            truncated = True
+            break
+        elements.append(element)
+
+    if not elements:
+        return None
+
+    snapshot = {"version": 1, "truncated": truncated, "elements": elements}
+    if url is not None:
+        snapshot["url"] = url
+
+    return snapshot
+
+
+def write_dom_snapshot(path: str, dom_snapshot: dict) -> bool:
+    """Write a snapshot sidecar where the deobfuscator looks for it
+    (`<script>.dom.json`). Not registered as an observable: it is context for
+    the deobfuscator, which finds it by name. A plain file in the storage dir
+    survives node transfer (the whole dir is tarred) and is cleaned up with the
+    alert. Failure here must never fail extraction, so it is logged and
+    reported as False."""
+    try:
+        with open(path, 'w', encoding='utf-8') as fp:
+            json.dump(dom_snapshot, fp, separators=(",", ":"))
+        return True
+    except Exception as e:
+        logging.warning(f"failed to write DOM snapshot sidecar {path}: {e}")
+        return False
+
+
+def is_json_document(content: bytes) -> bool:
+    """True when the whole file is JSON. Markup inside a JSON string value is
+    escaped (`\\"`, `\\n`), so parsing the file as HTML pulls scripts and
+    attribute values out with the escapes still in them."""
+    if content.lstrip()[:1] not in (b'{', b'['):
+        return False
+
+    try:
+        json.loads(content)
+    except (ValueError, RecursionError):
+        return False
+
+    return True
 
 
 class HTMLJavaScriptExtractionAnalysis(Analysis):
@@ -164,7 +272,7 @@ class HTMLJavaScriptExtractionConfig(AnalysisModuleConfig):
     )
 
     dom_snapshot_max_bytes: int = Field(
-        default=524288,
+        default=DOM_SNAPSHOT_MAX_BYTES,
         description="Maximum serialized size in bytes of a DOM snapshot sidecar before it is truncated"
     )
 
@@ -256,6 +364,15 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                 pass
 
             if not mime_type or mime_type not in self.HTML_MIME_TYPES:
+                return AnalysisExecutionResult.COMPLETED
+
+            # A JSON file whose string values hold markup sniffs as text/html too: an
+            # HTTP archive (.har) stores every page it recorded that way. lxml finds the
+            # <script> tags inside the JSON strings and every script comes out with its
+            # JSON escapes, so none of them compiles. har_extraction writes the pages of a
+            # .har out as real documents, which this module then processes.
+            if is_json_document(self._read_html_file(local_file_path)):
+                logging.debug(f"skipping json file {_file.file_name} sniffed as HTML")
                 return AnalysisExecutionResult.COMPLETED
         else:
             # Extension matched -- still try to get MIME type for MHTML detection
@@ -374,18 +491,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         seen_hashes: set
     ):
         """Extract JavaScript from HTML content using BeautifulSoup."""
-        import warnings
-
-        import bs4
-
-        # NOTE this also extracts JS from SVG files, which uses bs4 as an XML parser
-        # they emit a warning for that that we ignore here
-        from bs4 import XMLParsedAsHTMLWarning
-
-        warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-
         try:
-            soup = bs4.BeautifulSoup(html_content.decode(errors='ignore'), 'lxml')
+            soup = parse_document(html_content.decode(errors='ignore'))
         except Exception as e:
             logging.warning(f"failed to parse HTML with BeautifulSoup: {e}")
             return
@@ -415,80 +522,20 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         if not self.emit_dom_snapshot:
             return None
 
-        elements = []
-        truncated = False
-        total = 0
-        for tag in soup.find_all(True):
-            if tag.name in DOM_SNAPSHOT_SKIP_TAGS:
-                continue
-            if len(elements) >= DOM_SNAPSHOT_MAX_ELEMENTS:
-                truncated = True
-                break
-
-            attrs = {}
-            for name, value in tag.attrs.items():
-                # bs4 returns multi-valued attributes (e.g. class) as a list.
-                if isinstance(value, (list, tuple)):
-                    value = " ".join(str(v) for v in value)
-                else:
-                    value = str(value)
-                if len(value) > DOM_SNAPSHOT_MAX_ATTR_LEN:
-                    value = value[:DOM_SNAPSHOT_MAX_ATTR_LEN]
-                    truncated = True
-                attrs[str(name)] = value
-
-            element = {"tag": str(tag.name), "attrs": attrs}
-            own_text = tag.find(string=True, recursive=False)
-            if own_text:
-                text = str(own_text).strip()
-                if text:
-                    if len(text) > DOM_SNAPSHOT_MAX_TEXT_LEN:
-                        text = text[:DOM_SNAPSHOT_MAX_TEXT_LEN]
-                        truncated = True
-                    element["text"] = text
-
-            # Enforce the overall size budget as elements accumulate so a
-            # document with many small elements can't blow past the cap.
-            total += len(json.dumps(element, separators=(",", ":")))
-            if total > self.dom_snapshot_max_bytes:
-                truncated = True
-                break
-            elements.append(element)
-
-        if not elements:
-            return None
-
-        snapshot = {"version": 1, "truncated": truncated, "elements": elements}
-
         # The page's scripts read their own location, and kits key on it: the
         # victim's address rides in the fragment and the script decodes it into
-        # the next hop. Whatever downloaded this document (phishkit's dom.html)
-        # records where it was loaded from.
+        # the next hop. Whatever downloaded this document (phishkit's dom.html,
+        # har_extraction's pages) records where it was loaded from.
+        url = None
         downloaded_from = _file.get_relationship_by_type(R_DOWNLOADED_FROM)
         if downloaded_from is not None and downloaded_from.target.type == F_URL:
-            snapshot["url"] = downloaded_from.target.value
+            url = downloaded_from.target.value
 
-        return snapshot
+        return build_dom_snapshot(soup, self.dom_snapshot_max_bytes, url)
 
     def _write_dom_snapshot(self, path: str, dom_snapshot: dict, analysis: HTMLJavaScriptExtractionAnalysis):
-        """Write a snapshot sidecar. Not registered as an observable: it is context
-        for the deobfuscator, which finds it by name. A plain file in the storage
-        dir survives node transfer (the whole dir is tarred) and is cleaned up with
-        the alert. Failure here must never fail extraction."""
-        try:
-            with open(path, 'w', encoding='utf-8') as fp:
-                json.dump(dom_snapshot, fp, separators=(",", ":"))
-            if os.path.basename(path) not in analysis.dom_snapshot_files:
-                analysis.dom_snapshot_files.append(os.path.basename(path))
-        except Exception as e:
-            logging.warning(f"failed to write DOM snapshot sidecar {path}: {e}")
-
-    def _get_script_source(self, script) -> str | None:
-        for attr in SCRIPT_SOURCE_ATTRIBUTES:
-            if script.has_attr(attr):
-                return script[attr]
-
-        return None
+        if write_dom_snapshot(path, dom_snapshot) and os.path.basename(path) not in analysis.dom_snapshot_files:
+            analysis.dom_snapshot_files.append(os.path.basename(path))
 
     def _extract_inline_scripts(
         self,
@@ -501,7 +548,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         """Extract inline <script> tags."""
         for script in soup.find_all('script'):
             # Skip external scripts
-            if self._get_script_source(script) is not None:
+            if get_script_source(script) is not None:
                 continue
 
             # Get script type attribute
@@ -557,7 +604,7 @@ class HTMLJavaScriptExtractor(AnalysisModule):
         beside the document for the scripts fetched from them."""
         extracted_url = False
         for script in soup.find_all('script'):
-            src_url = self._get_script_source(script)
+            src_url = get_script_source(script)
             if src_url is None:
                 continue
 
