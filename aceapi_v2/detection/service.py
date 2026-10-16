@@ -298,18 +298,19 @@ async def create_detection(
     return await get_detection(session, detection.id)
 
 
-async def delete_detection(session: AsyncSession, detection_id: int) -> bool:
-    """Removes a detection. Returns False if it did not exist.
+async def delete_detection(session: AsyncSession, detection_id: int) -> ObservableDetectionRead | None:
+    """Removes a detection. Returns the detection as it was, or None if it did not exist.
 
     A row here *is* an active detection, so this is how one is turned off.
     """
     detection = await _get(session, detection_id)
     if detection is None:
-        return False
+        return None
 
+    removed = _to_read(detection)
     await session.delete(detection)
     await session.flush()
-    return True
+    return removed
 
 
 async def set_detection_expiration(

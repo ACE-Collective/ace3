@@ -405,7 +405,7 @@ $(document).ready(function() {
         timeFormat: 'HH:mm:ss'
     });
 
-    // add observable expiration time setup
+    // detection expiration modal setup
     $('input[name="observable_expiration_time"]').datetimepicker({
         timezone: 0,
         showSecond: false,
@@ -793,6 +793,38 @@ function edit_observable_comment(commentId, element) {
     $('#obs_comment_modal_title').text('Edit Observable Comment');
     var modal = new bootstrap.Modal(document.getElementById('observable_comment_modal'));
     modal.show();
+}
+
+// currentExpiration is "YYYY-MM-DD HH:MM:SS" (UTC), or null for a detection that never expires
+function show_detection_expiration_modal_for(detectionId, currentExpiration) {
+    $('#detection_expiration_id').val(detectionId.toString());
+    $('#detection_expiration_current').val(currentExpiration || 'never');
+    $('#detection_expiration_new').val('').prop('disabled', false);
+    $('#detection_expiration_never').prop('checked', false);
+    var modal = new bootstrap.Modal(document.getElementById('detection_expiration_modal'));
+    modal.show();
+}
+
+function toggle_detection_never_expires() {
+    $('#detection_expiration_new').prop('disabled', $('#detection_expiration_never').is(':checked'));
+}
+
+function submit_detection_expiration() {
+    var detectionId = $('#detection_expiration_id').val();
+    var expiresOn = null;
+    if (!$('#detection_expiration_never').is(':checked')) {
+        var value = $('#detection_expiration_new').val().trim();
+        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+            alert('Enter the new expiration as YYYY-MM-DD HH:MM:SS (UTC), or check "Never expires".');
+            return;
+        }
+        // the API takes ISO 8601; a value without an offset is stored as given, which is UTC
+        expiresOn = value.replace(' ', 'T');
+    }
+
+    aceApi.patch('/detection/' + detectionId + '/expiration', {expires_on: expiresOn})
+        .then(function() { window.location.reload(); })
+        .catch(function(error) { alert(error.message); });
 }
 
 // This is kind of gross, but it does the job until we have proper searching/filtering routes.

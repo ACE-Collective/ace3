@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 from saq.analysis.observable import Observable, get_observable_type_expiration_time
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_FILE, MAX_DETECTION_VALUE_LENGTH
-from saq.database.model import ObservableDetection as DBObservableDetection, User
+from saq.database.model import ObservableDetection as DBObservableDetection
 from saq.database.pool import get_db
 from saq.observables.generator import create_observable
 from saq.observables.type_hierarchy import get_all_valid_types
@@ -179,12 +179,6 @@ def get_observable_detection(observable_type: str, value_sha256: bytes) -> Optio
         DBObservableDetection.value_sha256 == value_sha256).one_or_none()
 
 
-def get_observable_detection_for(observable: Observable) -> Optional[DBObservableDetection]:
-    """Returns the detection for the given in-memory analysis observable, or None."""
-    identity = _identity_from_observable(observable)
-    return get_observable_detection(identity.type, identity.value_sha256)
-
-
 def create_observable_detection(
         observable_type: str,
         observable_value: str,
@@ -241,56 +235,19 @@ def delete_observable_detection(detection_id: int) -> bool:
     return bool(deleted)
 
 
-def set_observable_detection_expiration(detection_id: int, expires_on: Optional[datetime], user_id: Optional[int]) -> Optional[DBObservableDetection]:
-    """Sets (or clears, with None) the expiration of a detection. Returns None if it does not exist."""
-    db = get_db()
-    detection = db.query(DBObservableDetection).filter(DBObservableDetection.id == detection_id).one_or_none()
-    if detection is None:
-        return None
-
-    detection.expires_on = expires_on
-    detection.modified_by = user_id
-    db.commit()
-    return detection
-
-
-def enable_observable_detection(observable: Observable, detection_modified_by_user_id: int, detection_context: str) -> DBObservableDetection:
-    """Enables detection for the given in-memory analysis observable."""
-    db_user = get_db().query(User).filter(User.id == detection_modified_by_user_id).one_or_none()
-    if db_user is None:
-        raise ValueError(f"User with id {detection_modified_by_user_id} not found")
-
-    # This does not touch the observables table; that table is owned by the ingest path.
-    return _upsert(
-        _identity_from_observable(observable),
-        detection_modified_by_user_id,
-        detection_context,
-        expires_on=None,
-        batch_id=None)
-
-
-def disable_observable_detection(observable: Observable, detection_modified_by_user_id: int, detection_context: str) -> bool:
-    """Disables detection for the given in-memory analysis observable.
-
-    A row in observable_detections *is* an active detection, so disabling removes it. The audit
-    trail for the removal is the caller's AUDIT log line.
-    """
-    identity = _identity_from_observable(observable)
-    db = get_db()
-    deleted = db.query(DBObservableDetection).filter(
-        DBObservableDetection.type == identity.type,
-        DBObservableDetection.value_sha256 == identity.value_sha256).delete()
-    db.commit()
-    return bool(deleted)
-
-
 @dataclass
 class ObservableDetectionSummary:
-    """What the alert view needs to render an observable's detection status."""
+    """What the alert view needs to render an observable's detection status.
+
+    detection_id and expires_on are what the alert page's disable and adjust-expiration actions
+    send to the /api/v2/detection routes.
+    """
     observable_uuid: str
     for_detection: bool
     detection_modified_by: str
     detection_context: Optional[str]
+    detection_id: int
+    expires_on: Optional[datetime]
 
 
 def get_all_observable_detections(alert: RootAnalysis) -> dict[str, ObservableDetectionSummary]:
@@ -307,8 +264,8 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
     if not observables:
         return detections
 
-    # Query by hash alone (one indexed IN), then match on type as well -- the same shape as before,
-    # since a hash can be shared across types.
+    # Query by hash alone (one indexed IN), then match on type as well, since a hash can be shared
+    # across types.
     hashes = {observable.sha256_bytes for observable in observables}
     db_detections = get_db().query(DBObservableDetection).options(
         selectinload(DBObservableDetection.modified_by_user),
@@ -316,24 +273,21 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
         DBObservableDetection.value_sha256.in_(hashes),
     ).all()
 
-    for db_detection in db_detections:
-        observable = _match_observable(observables, db_detection)
-        if observable is None:
+    by_identity = {(d.type, d.value_sha256): d for d in db_detections}
+
+    # Every observable with the detection's identity gets it, not just the first: two file
+    # observables with the same content at different paths are different observables in one alert.
+    for observable in observables:
+        db_detection = by_identity.get((observable.type, observable.sha256_bytes))
+        if db_detection is None:
             continue
 
         detections[observable.uuid] = ObservableDetectionSummary(
             observable_uuid=observable.uuid,
             for_detection=True,
             detection_modified_by=db_detection.modified_by_user.display_name if db_detection.modified_by_user else "unknown",
-            detection_context=db_detection.detection_context)
+            detection_context=db_detection.detection_context,
+            detection_id=db_detection.id,
+            expires_on=db_detection.expires_on)
 
     return detections
-
-
-def _match_observable(observables: list[Observable], db_detection: DBObservableDetection) -> Optional[Observable]:
-    """Returns the Observable matching the given detection row on type and value hash."""
-    for observable in observables:
-        if observable.type == db_detection.type and observable.sha256_bytes == db_detection.value_sha256:
-            return observable
-
-    return None

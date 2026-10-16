@@ -1,5 +1,6 @@
 """Observable-detection settings router (ACE API v2)."""
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
@@ -18,6 +19,8 @@ from aceapi_v2.detection.schemas import (
     ObservableDetectionRead,
     ObservableTypeOptions,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -60,7 +63,7 @@ async def create_detection(
     detection_context = body.detection_context or f"manually added by {auth.auth_name}"
 
     try:
-        return await service.create_detection(
+        detection = await service.create_detection(
             session,
             observable_type=body.type,
             value=body.value,
@@ -74,15 +77,23 @@ async def create_detection(
     except service.DetectionAlreadyExists as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
+    logger.info("AUDIT: user %s added detection %s for %s %r: %s",
+                auth.auth_name, detection.id, detection.type, detection.value, detection_context)
+    return detection
+
 
 @router.delete("/{detection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_detection(
     detection_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    _: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("detection", "write"))],
 ) -> None:
-    if not await service.delete_detection(session, detection_id):
+    removed = await service.delete_detection(session, detection_id)
+    if removed is None:
         raise HTTPException(status_code=404, detail="Detection not found")
+
+    logger.info("AUDIT: user %s removed detection %s for %s %r",
+                auth.auth_name, removed.id, removed.type, removed.value)
 
 
 @router.patch("/{detection_id}/expiration", response_model=ObservableDetectionRead)
@@ -96,4 +107,7 @@ async def set_expiration(
         session, detection_id, body.expires_on, auth.auth_user_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Detection not found")
+
+    logger.info("AUDIT: user %s set the expiration of detection %s for %s %r to %s",
+                auth.auth_name, result.id, result.type, result.value, result.expires_on or "never")
     return result

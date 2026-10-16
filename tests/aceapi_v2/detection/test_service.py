@@ -360,12 +360,14 @@ class TestDeleteDetection:
     @pytest.mark.asyncio
     async def test_delete(self, session: AsyncSession):
         detection = await _make_detection(session, "ipv4", "3.3.3.3")
-        assert await service.delete_detection(session, detection.id) is True
+        removed = await service.delete_detection(session, detection.id)
+        # the caller gets what was removed, for its audit line
+        assert (removed.id, removed.type, removed.value) == (detection.id, "ipv4", "3.3.3.3")
         assert await service.get_detection(session, detection.id) is None
 
     @pytest.mark.asyncio
     async def test_delete_unknown_id(self, session: AsyncSession):
-        assert await service.delete_detection(session, 999999) is False
+        assert await service.delete_detection(session, 999999) is None
 
 
 class TestSetExpiration:

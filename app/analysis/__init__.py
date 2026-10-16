@@ -17,7 +17,6 @@ from app.analysis.views.edit.filters import (
 from app.analysis.views.observables import observables
 from app.analysis.views.prune import toggle_prune, toggle_prune_volatile
 from app.analysis.views.edit.observable_action.whitelist import observable_action_whitelist, observable_action_un_whitelist
-from app.analysis.views.edit.observable_action.detection import observable_action_set_for_detection, observable_action_adjust_expiration
 from app.analysis.views.edit.observable_action.legacy import observable_action
 from app.analysis.views.edit.observable_action.clicker import observable_action_check_for_clickers, observable_action_open_clicker_search_splunk
 from app.analysis.views.edit.event import add_to_event, load_more_events
