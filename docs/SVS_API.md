@@ -533,6 +533,7 @@ launcher that also reads its runs needs both.
 | `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
 | `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
 | `GET /api/v2/svs/runs/count` | `svs:run_read` | `{"count"}`: how many runs the filters match |
+| `GET /api/v2/svs/runs/suppression-share` | `svs:run_read` | How many missing expected signatures were possibly suppressed, over the reviewed runs (*Suppression share*, below) |
 | `GET /api/v2/svs/runs/batches` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | One row per batch over the runs the filters match (*Batches*, below) |
 | `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent, what stands in the way of its review and its log search link |
 | `GET /api/v2/svs/runs/{run_id}/alerts` (and `/export/ndjson`) | `svs:run_read` | The alerts the run holds or held (*Run alerts*, below) |
@@ -541,7 +542,7 @@ launcher that also reads its runs needs both.
 | `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
 
 The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `state`, `test_guid`,
-`targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
+`platform`, `targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
 `close_reason`. Their errors:
 
 | Status | When |
@@ -549,7 +550,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
-| 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, a host or user name can't be used, too many targets, or `extra` is too large. |
+| 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
 
@@ -561,6 +562,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `state` | `created`, `started`, `ended`, `reviewed`, `canceled`, `error` or `closed` (`docs/SVS_RUNS.md`, *Run states and timers*). |
 | `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
 | `test_name`, `technique`, `technique_name` | From the catalog, as it is now. |
+| `platform` | The platform the run is on, an ATT&CK platform slug (`windows`, `linux`, `macos`, `iaas`, …), decided at registration: its targets' test hosts' platform, else the test's only supported platform (`docs/SVS_RUNS.md`, *Registering a run*). |
 | `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. It is `svs_marker` in ACE's log. |
 | `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
 | `launcher`, `batch_id` | As registered. A batch is a label shared by the runs a launcher registered together, not a resource. |
@@ -577,6 +579,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `result_missing`, `result_possibly_suppressed` | Expected signatures it missed (possibly suppressed ones included), and of those the possibly suppressed. |
 | `result_candidate`, `result_rejected`, `result_ignored` | Signatures that fired and nobody decided, were rejected, or are ignored. |
 | `result_stale` | Its result is about to be recomputed. |
+| `reviewed_hit`, `reviewed_expected`, `reviewed_missing`, `reviewed_possibly_suppressed` | The same counts of the result as signed off at its latest review (`reviewed_status`); 0 until it is reviewed. |
 | `alerts`, `marker_alerts`, `context_alerts`, `late_alerts` | The alerts attributed to it; of those, by a marker, by context alone (`TEST?`), and late. |
 | `updated_at` | The row's last change; the `changed_since` key. A change to its result or its alerts doesn't change it: pull the result feed for those. |
 
@@ -606,9 +609,10 @@ The runs, the event feed and the GUI's Runs screen share these filters (screen `
 | `test_name` | Test Name | text the catalog name contains |
 | `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
 | `target` | Target | a host, by its short or fully qualified name |
+| `platform` | Platform | a platform slug; Atomic Red Team's names find the platform they count as (`iaas:aws` finds `iaas`) |
 | `launcher` | Launcher | text the launcher's name contains |
 | `batch` | Batch | a `batch_id` |
-| `created`, `started`, `ended` | Created, Started, Ended | date ranges |
+| `created`, `started`, `ended`, `reviewed` | Created, Started, Ended, Reviewed | date ranges; `reviewed` is the latest review |
 | `owner`, `reviewer` | Owner, Reviewer | usernames |
 | `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
 | `changed_since_review` | Changed Since Review | `true`, `false` |
@@ -638,6 +642,24 @@ time. The pages are then in `(updated_at, id)` order instead of newest first, an
 works with the order it came from (otherwise 400). A row shows up a few seconds after it is
 written, once no open transaction can still write an older `updated_at`. Resume from the last
 row's `updated_at` and you never miss a run.
+
+### Suppression share
+
+Keeping the hunter from suppressing test targets is deferred, with a revisit trigger (`docs/SVS.md`,
+Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
+result as signed off, and the Runs tab shows it above the list:
+
+| Field | Meaning |
+|---|---|
+| `missing` | The expected signatures missing from the signed-off results, possibly suppressed ones included. |
+| `possibly_suppressed` | Of those, the possibly suppressed. |
+| `share` | `possibly_suppressed / missing`; null while nothing is missing. |
+| `reviewed_runs` | The runs with a signed-off result. |
+| `first_reviewed_at` | When the first run was reviewed (the event log's first `reviewed` event). |
+| `trigger_reached` | 50 runs are reviewed, or 90 days passed since the first review. |
+| `reconsider` | The trigger is reached and the share is above 10%. |
+
+It takes no filters: the trigger is about the test program as a whole.
 
 ### Batches
 
@@ -673,7 +695,7 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 
 | `kind` | States | `details` |
 |---|---|---|
-| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra`, and `observation_source` (`override`, `expected` or `all_hunts`: where its observation window came from, `docs/SVS_RUNS.md`, *Windows*) |
+| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra`, the `platform` it decided, and `observation_source` (`override`, `expected` or `all_hunts`: where its observation window came from, `docs/SVS_RUNS.md`, *Windows*) |
 | `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
 | `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
 | `attributed` | none | `{"alert_uuid", "detections"}`: detections of one alert attributed to the run, each `{"detection", "confidence", "late", "scan_point"}` (`detection` is its `content_hash`; `scan_point` is null for context). Written when an attribution is added or comes back, not on every analysis pass. `actor` is `svs` |

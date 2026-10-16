@@ -56,6 +56,7 @@ from aceapi_v2.svs.runs.schemas import (
     RunRow,
     RunTarget,
     SignatureHistory,
+    SuppressionShare,
 )
 from saq.database.model import (
     Alert,
@@ -76,7 +77,7 @@ from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
-from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries
+from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries, suppression_share
 from saq.svs.samples import to_utc_naive
 from saq.util.uuid import UUID_REGEX
 
@@ -90,7 +91,7 @@ def _target(target) -> RunTarget:
 
 def _lifecycle(run: SVSRun) -> RunLifecycle:
     return RunLifecycle(
-        run_id=run.uuid, marker=run.marker, state=run.state, test_guid=run.test_guid,
+        run_id=run.uuid, marker=run.marker, state=run.state, test_guid=run.test_guid, platform=run.platform,
         targets=[_target(t) for t in run.targets],
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
         created_at=run.created_at, started_at=run.started_at, observation_ends_at=run.observation_ends_at,
@@ -182,7 +183,7 @@ def _row_values(row) -> dict:
     run, test_name, technique, technique_name, owner, reviewer, needs_attention = row
     return dict(
         run_id=run.uuid, state=run.state, test_guid=run.test_guid, test_name=test_name, technique=technique,
-        technique_name=technique_name, marker=run.marker, targets=[_target(t) for t in run.targets],
+        technique_name=technique_name, platform=run.platform, marker=run.marker, targets=[_target(t) for t in run.targets],
         launcher=run.launcher, batch_id=run.batch_id, created_at=run.created_at, started_at=run.started_at,
         executed_at=run.executed_at, exit_code=run.exit_code, ended_at=run.ended_at, canceled_at=run.canceled_at,
         closed_at=run.closed_at, observation_ends_at=run.observation_ends_at,
@@ -197,6 +198,9 @@ def _summary_values(summary: RunSummary) -> dict:
         result_missing=summary.missing + summary.possibly_suppressed,
         result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
         result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        reviewed_hit=summary.reviewed_hit, reviewed_expected=summary.reviewed_expected,
+        reviewed_missing=summary.reviewed_missing + summary.reviewed_possibly_suppressed,
+        reviewed_possibly_suppressed=summary.reviewed_possibly_suppressed,
         alerts=summary.alerts, marker_alerts=summary.marker_alerts, context_alerts=summary.context_alerts,
         late_alerts=summary.late_alerts)
 
@@ -289,6 +293,14 @@ def run_rows_to_csv(rows: list[RunRow], *, header: bool) -> str:
 #
 # the count, and the batches: one row per batch_id over the runs the filters match
 #
+
+def get_suppression_share() -> SuppressionShare:
+    share = suppression_share(get_db())
+    return SuppressionShare(
+        missing=share.missing, possibly_suppressed=share.possibly_suppressed, share=share.share,
+        reviewed_runs=share.reviewed_runs, first_reviewed_at=share.first_reviewed_at,
+        trigger_reached=share.trigger_reached, reconsider=share.reconsider)
+
 
 def count_runs(filter_params: list[str], tz) -> RunCount:
     """How many runs the share-link filters match. Raises InvalidListingRequest."""

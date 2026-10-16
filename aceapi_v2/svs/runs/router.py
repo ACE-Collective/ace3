@@ -50,6 +50,7 @@ from aceapi_v2.svs.runs.schemas import (
     RunPage,
     RunRegistrationRequest,
     RunResultPage,
+    SuppressionShare,
 )
 from aceapi_v2.sync import run_db_in_thread
 from saq.svs.refusals import Caller
@@ -64,7 +65,8 @@ FilterParam = Annotated[list[str], Query(
     default_factory=list,
     description="a filter in the share-link encoding (`[!]slug:v1,v2`) with the runs screen's slugs: "
                 "needs_attention, state, test, test_name, technique (T1059 also finds its sub-techniques), target, "
-                "launcher, batch, created, started, ended, owner, reviewer, reason, changed_since_review, "
+                "platform, launcher, batch, created, started, ended, reviewed, owner, reviewer, reason, "
+                "changed_since_review, "
                 "has_open_alerts, has_missing, has_possibly_suppressed, has_candidates, has_late, has_context_only "
                 "(see docs/SVS_API.md); repeat for more. Filters are ANDed, the values of one ORed.")]
 TimezoneParam = Annotated[str, Query(description="the timezone relative date filters (`-7d`, `@d`) resolve in")]
@@ -113,14 +115,21 @@ async def close_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
 
 
 #
-# the count and the batches; declared before /{run_id}, which would take "count" and "batches" for
-# a run id
+# the count, the batches and the suppression share; declared before /{run_id}, which would take
+# "count", "batches" and "suppression-share" for a run id
 #
 
 @router.get("/count", response_model=RunCount)
 async def count_runs(auth: ReadAuth, f: FilterParam, tz: TimezoneParam = "UTC") -> RunCount:
     """How many runs the filters match: f=needs_attention:true is the count on the GUI's SVS entry."""
     return await run_listing(service.count_runs, f, parse_timezone(tz))
+
+
+@router.get("/suppression-share", response_model=SuppressionShare)
+async def get_suppression_share(auth: ReadAuth) -> SuppressionShare:
+    """How many of the expected signatures missing from reviewed runs were possibly suppressed, and
+    whether the revisit trigger is reached (docs/SVS_API.md, *Suppression share*)."""
+    return await run_db_in_thread(service.get_suppression_share)
 
 
 async def _prepare_batches(f: list[str], tz: str) -> service.BatchListing:

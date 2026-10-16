@@ -256,7 +256,9 @@ def test_the_svs_run_slugs_are_a_permanent_contract():
         "Launcher": "launcher",
         "Needs Attention": "needs_attention",
         "Owner": "owner",
+        "Platform": "platform",
         "Reason": "reason",
+        "Reviewed": "reviewed",
         "Reviewer": "reviewer",
         "Started": "started",
         "State": "state",
@@ -275,7 +277,9 @@ def test_the_svs_run_slugs_are_a_permanent_contract():
     ("Owner", [" Alice "], ["Alice"]),
     ("Needs Attention", ["True"], ["true"]),
     ("Started", ["-7d"], ["-7d"]),
+    ("Reviewed", ["-30d"], ["-30d"]),
     ("Launcher", ["ART"], ["ART"]),
+    ("Platform", [" Linux", "iaas:aws", "azure-ad"], ["linux", "iaas", "identity-provider"]),
 ])
 def test_svs_run_values_are_normalized(name, values, expected):
     (entry,) = SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
@@ -289,6 +293,7 @@ def test_svs_run_values_are_normalized(name, values, expected):
     ("Needs Attention", ["yes"]),
     ("Changed Since Review", ["1"]),
     ("Ended", ["not a date"]),
+    ("Reviewed", ["not a date"]),
     ("Batch", [["pair", "value"]]),
     ("Label", ["tp"]),
 ])

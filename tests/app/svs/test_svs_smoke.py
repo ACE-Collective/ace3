@@ -139,6 +139,12 @@ class TestRunsPages:
             test_url = url_for("svs.test_detail", guid="__TEST__")
             assert f'data-test-url="{test_url}"'.encode() in page
 
+    def test_the_runs_view_shows_the_suppression_share(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            assert b'id="svs_runs_share"' in client.get(url_for("svs.runs")).data
+            assert b'id="svs_runs_share"' not in client.get(url_for("svs.batches")).data
+
     def test_bulk_actions_follow_run_manage(self, app, run_reader, run_manager):
         with app.test_client() as client:
             _login(client, run_reader)

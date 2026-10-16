@@ -15,9 +15,11 @@ from aceapi_v2.svs.runs import service
 from saq.database.model import SVSAttribution, SVSRun, SVSRunResult
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import runs, windows
+from saq.svs import run_summary, runs, windows
+from saq.svs.constants import RunEventKind
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
+from saq.svs.run_events import new_run_event
 from saq.svs.runs import Registration, TargetSpec
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.svs.conftest import add_catalog_test
@@ -126,6 +128,7 @@ class TestListing:
         assert row["targets"] == [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art",
                                    "host": "win10-01", "fqdn": "win10-01.lab.example", "user": "svc_art"}]
         assert (row["launcher"], row["batch_id"], row["exit_code"]) == ("art", "nightly", 1)
+        assert row["platform"] == "windows"
         assert row["error_reason"] and row["needs_attention"] is True
         assert row["marker"].startswith("svs-")
 
@@ -149,6 +152,21 @@ class TestListing:
             seeded["ended"]
 
     @pytest.mark.asyncio
+    async def test_a_rows_signed_off_result(self, client: AsyncClient, seeded):
+        """The result as signed off, beside the live one; only expected signatures count."""
+        run_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == seeded["reviewed"])).scalar_one()
+        with private_transaction() as session:
+            for status, reviewed in (("hit", "hit"), ("hit", "missing"), (None, "possibly_suppressed"),
+                                     ("candidate", "candidate"), ("rejected", None)):
+                session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), status=status,
+                                         reviewed_status=reviewed))
+
+        (row,) = (await client.get("/svs/runs/", params={"f": ["state:reviewed", "changed_since_review:false"]})).json()["data"]
+        assert (row["result_hit"], row["result_expected"], row["result_candidate"]) == (2, 2, 1)
+        assert (row["reviewed_hit"], row["reviewed_expected"], row["reviewed_missing"],
+                row["reviewed_possibly_suppressed"]) == (1, 3, 2, 1)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("filters, expected", [
         (["needs_attention:true"], ["reviewed_changed", "error", "ended"]),
         (["needs_attention:false"], ["closed", "reviewed", "started", "created"]),
@@ -162,6 +180,9 @@ class TestListing:
         # a target matches by its short name or its fully qualified one
         (["target:LNX-01.lab.example"], ["started"]),
         (["!target:win10-01"], ["started"]),
+        (["platform:Linux"], ["started"]),
+        (["!platform:windows"], ["started"]),
+        (["platform:macos"], []),
         (["launcher:caldera"], ["started"]),
         (["batch:nightly"], ["closed", "reviewed", "reviewed_changed", "error", "ended", "created"]),
         # an inverted filter keeps the runs with no batch
@@ -169,6 +190,8 @@ class TestListing:
         (["created:-24h"], ["closed", "reviewed", "reviewed_changed", "error", "ended", "started"]),
         (["started:-24h"], ["error", "ended", "started"]),
         (["ended:-24h"], ["ended"]),
+        (["reviewed:-24h"], ["reviewed", "reviewed_changed"]),
+        (["!reviewed:-24h"], ["closed", "error", "ended", "started", "created"]),
         (["owner:unittest"], ["reviewed_changed"]),
         # an inverted owner keeps the runs nobody owns
         (["!owner:unittest"], ["closed", "reviewed", "error", "ended", "started", "created"]),
@@ -184,7 +207,7 @@ class TestListing:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("f", ["state:bogus", "technique:1059", "test:not-a-guid", "needs_attention:maybe",
-                                   "created:yesterday", "nope:1"])
+                                   "created:yesterday", "reviewed:yesterday", "nope:1"])
     async def test_a_bad_filter_is_422(self, client: AsyncClient, f):
         assert (await client.get("/svs/runs/", params={"f": f})).status_code == 422
 
@@ -305,6 +328,7 @@ class TestExport:
         assert [r["run_id"] for r in records] == [seeded[name] for name in NEWEST_FIRST]
         assert next(r for r in records if r["run_id"] == seeded["error"])["targets"] == "win10-01.lab.example/LAB\\svc_art"
         assert next(r for r in records if r["run_id"] == seeded["started"])["targets"] == "lnx-01"
+        assert next(r for r in records if r["run_id"] == seeded["started"])["platform"] == "linux"
 
     @pytest.mark.asyncio
     async def test_events(self, client: AsyncClient, seeded, no_settle):
@@ -340,6 +364,55 @@ class TestCount:
     async def test_a_bad_filter(self, client: AsyncClient):
         assert (await client.get("/svs/runs/count", params={"f": "state:bogus"})).status_code == 422
         assert (await client.get("/svs/runs/count", params={"f": "nope:1"})).status_code == 422
+
+
+class TestSuppressionShare:
+    """GET /svs/runs/suppression-share: the ART-8 revisit trigger, over the signed-off results."""
+
+    @staticmethod
+    def _sign_off(run_uuid: str, *reviewed: str, at: datetime) -> None:
+        run_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == run_uuid)).scalar_one()
+        with private_transaction() as session:
+            for status in reviewed:
+                session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), reviewed_status=status))
+            session.add(new_run_event(run_id, RunEventKind.REVIEWED, "unittest", now=at))
+
+    @pytest.mark.asyncio
+    async def test_nothing_reviewed(self, client: AsyncClient):
+        assert (await client.get("/svs/runs/suppression-share")).json() == {
+            "missing": 0, "possibly_suppressed": 0, "share": None, "reviewed_runs": 0, "first_reviewed_at": None,
+            "trigger_reached": False, "reconsider": False}
+
+    @pytest.mark.asyncio
+    async def test_the_share(self, client: AsyncClient, seeded):
+        first = datetime.now() - timedelta(days=10)
+        self._sign_off(seeded["reviewed"], "hit", "missing", "missing", "possibly_suppressed", at=first)
+        # live statuses and other signed-off ones don't count
+        self._sign_off(seeded["reviewed_changed"], "missing", "candidate", "rejected", at=first + timedelta(days=1))
+
+        share = (await client.get("/svs/runs/suppression-share")).json()
+        assert (share["missing"], share["possibly_suppressed"], share["share"], share["reviewed_runs"]) == (4, 1, 0.25, 2)
+        assert datetime.fromisoformat(share["first_reviewed_at"]) == first
+        # 2 runs in 10 days: not yet time to look
+        assert (share["trigger_reached"], share["reconsider"]) == (False, False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("days, runs_needed, reconsider", [
+        (91, 50, True),     # 3 months since the first review
+        (10, 2, True),      # enough reviewed runs
+    ])
+    async def test_the_trigger(self, client: AsyncClient, seeded, monkeypatch, days, runs_needed, reconsider):
+        monkeypatch.setattr(run_summary, "SUPPRESSION_REVIEW_RUNS", runs_needed)
+        self._sign_off(seeded["reviewed"], "missing", "possibly_suppressed", at=datetime.now() - timedelta(days=days))
+        share = (await client.get("/svs/runs/suppression-share")).json()
+        assert (share["trigger_reached"], share["reconsider"]) == (True, reconsider)
+
+    @pytest.mark.asyncio
+    async def test_at_most_the_threshold_is_not_worth_reconsidering(self, client: AsyncClient, seeded, monkeypatch):
+        monkeypatch.setattr(run_summary, "SUPPRESSION_REVIEW_RUNS", 1)
+        self._sign_off(seeded["reviewed"], *["missing"] * 9, "possibly_suppressed", at=datetime.now())
+        share = (await client.get("/svs/runs/suppression-share")).json()
+        assert (share["share"], share["trigger_reached"], share["reconsider"]) == (0.1, True, False)
 
 
 def _add_results(run_uuid: str, *statuses: str) -> None:
@@ -422,7 +495,7 @@ class TestBatches:
             assert (await client.get(path, params={"f": "state:bogus"})).status_code == 422
 
 
-READS = ["/svs/runs/", "/svs/runs/export/ndjson", "/svs/runs/export/csv", "/svs/runs/events",
+READS = ["/svs/runs/", "/svs/runs/export/ndjson", "/svs/runs/export/csv", "/svs/runs/suppression-share", "/svs/runs/events",
          "/svs/runs/events/export/ndjson", "/svs/runs/events/export/csv", "/svs/runs/count", "/svs/runs/batches",
          "/svs/runs/batches/export/ndjson", "/svs/runs/batches/export/csv"]
 

@@ -41,6 +41,7 @@ async def _register(client: AsyncClient, **values) -> dict:
 async def test_the_lifecycle(client: AsyncClient):
     run = await _register(client)
     assert run["state"] == "created" and MARKER_REGEX.fullmatch(run["marker"])
+    assert run["platform"] == "windows"
     assert (run["observation_seconds"], run["attribution_seconds"]) == (3600, 25 * 3600)
     assert run["targets"] == [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art", "host": "win10-01",
                                "fqdn": "win10-01.lab.example", "user": "svc_art"}]

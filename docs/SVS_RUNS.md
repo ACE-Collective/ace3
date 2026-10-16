@@ -142,6 +142,17 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
   as. A target that is not a test host, or a user the host doesn't list, refuses the whole
   registration with 403 (below). A test whose `supported_platforms` doesn't include a target's
   `platform` is refused with 422. At most `svs.runs.max_targets` (16).
+- **Every run is on one platform** (`platform`, in the answer and on every read), the grain coverage
+  is judged on:
+  - the platform of its targets' test hosts, which have to agree; a host without a `platform` is
+    taken to be on the others';
+  - when no target's host has one, the test's only supported platform, as ATT&CK names it
+    (`iaas:aws` is `iaas`, `azure-ad` is `identity-provider`, `office-365` and
+    `google-workspace` are `office-suite`).
+
+  Hosts on different platforms, or a test that supports more than one platform with no target's
+  host saying which, are refused with 422, without an alert. Set the test hosts' `platform` and a
+  launcher never meets the second case.
 - **`launcher`** names the launcher; **`batch_id`** is a label shared by runs registered together;
   **`extra`** is any JSON object the launcher wants kept with the run, at most
   `svs.runs.max_extra_bytes` (16 KiB) serialized. It is stored and shown on the run page.
@@ -300,8 +311,12 @@ the number of runs that need attention, when any do.
   - A row shows the run's state and test, its targets, launcher and batch, and when it was created,
     started and ended.
   - While a run is `started`, it shows the time left in its observation window.
-  - It also shows the result summary, the alerts by marker, by context and late, and the owner and
-    reviewer.
+  - It also shows its platform, the result summary, the alerts by marker, by context and late, and
+    the owner and reviewer.
+  - Above the list, once a run is reviewed, is the share of missing expected signatures that were
+    possibly suppressed, over every reviewed run's signed-off result. Past 50 reviewed runs or 90
+    days since the first review, a share above 10% says that keeping the hunter from suppressing
+    test targets is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
 - **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
   attention, and the expected hits and missing signatures. The filters carry over between the two
   views, and opening a batch lists its runs.
@@ -328,7 +343,7 @@ the number of runs that need attention, when any do.
 to watch it on while it runs. It reloads itself while the run is `created` or `started`, or while
 its result is being recomputed.
 - **The header** has the test, the run's state, and a timeline of its observation and attribution
-  windows. Below it are the marker, targets, launcher and batch (which opens the batch's runs),
+  windows. Below it are the marker, targets, platform, launcher and batch (which opens the batch's runs),
   the windows' lengths, the owner, and the launcher's exit code, errors and `extra`.
 - **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
   *Mark reviewed* (*Review again* on a reviewed run).
@@ -617,6 +632,7 @@ below), each signature is:
   - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
   - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
     show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
+    `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
 - **Kept current.** The result is computed when the run ends. Anything that would change it marks
   it stale and the timers recompute it on their next pass (`svs.runs.timer_interval_seconds`):
   - an attribution added or removed, a late alert for one;

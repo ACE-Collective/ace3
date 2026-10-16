@@ -2160,6 +2160,8 @@ class SVSRun(Base):
         Index('ix_svs_runs_state_created', 'state', 'created_at'),
         Index('ix_svs_runs_state_observation', 'state', 'observation_ends_at'),
         Index('ix_svs_runs_state_attribution', 'state', 'attribution_ends_at'),
+        # a test's latest reviewed run per platform (coverage)
+        Index('ix_svs_runs_test_platform_state_reviewed', 'test_guid', 'platform', 'state', 'reviewed_at'),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -2167,6 +2169,9 @@ class SVSRun(Base):
     # the catalog test (svs_catalog_tests.guid), its content hash and the repository commit it was
     # read from, as they were when the run was registered
     test_guid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # the platform the run is on, an ATT&CK platform slug (saq.svs.attack.normalize_platform), set at
+    # registration: its targets' test hosts' platform, else the test's only supported platform
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
     test_content_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     catalog_commit: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(

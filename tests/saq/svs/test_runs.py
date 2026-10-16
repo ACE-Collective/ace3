@@ -38,6 +38,7 @@ pytestmark = pytest.mark.integration
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 LINUX_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 REMOVED_GUID = "cccccccc-3333-4333-8333-333333333333"
+IAAS_GUID = "eeeeeeee-5555-4555-8555-555555555555"
 
 LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
 
@@ -49,8 +50,11 @@ def setup(no_hunts, monkeypatch):
     add_catalog_test(GUID)
     add_catalog_test(LINUX_GUID, platforms=("linux", "macos"))
     add_catalog_test(REMOVED_GUID, removed=True)
+    add_catalog_test(IAAS_GUID, platforms=("iaas:aws", "iaas:azure"))
     create_host(build_spec("win10-01.lab.example", usernames=["LAB\\svc_art"], platform="windows"), None)
     create_host(build_spec("anyuser-01"), None)
+    create_host(build_spec("ubuntu-01", platform="linux"), None)
+    create_host(build_spec("mac-01", platform="macos"), None)
     monkeypatch.setattr(runs, "close_run_alerts", _record("closed"))
     monkeypatch.setattr(runs, "on_run_ended", _record("ended"))
     HOOKS.clear()
@@ -92,6 +96,7 @@ def test_register():
     assert run.state == RunState.CREATED
     assert MARKER_REGEX.fullmatch(run.marker)
     assert (run.test_guid, run.catalog_commit, run.launcher, run.batch_id) == (GUID, "a" * 40, "art", "batch-1")
+    assert run.platform == "windows"
     assert json.loads(run.extra) == {"ticket": 42}
     assert (run.observation_seconds, run.attribution_seconds) == (3600, 25 * 3600)
     assert run.started_at is None and run.observation_ends_at is None
@@ -104,6 +109,22 @@ def test_register():
     assert (event.kind, event.from_state, event.to_state, event.actor) == (
         RunEventKind.REGISTERED, None, RunState.CREATED, "art-launcher")
     assert json.loads(event.details)["targets"] == [{"hostname": "WIN10-01", "username": "svc_art@lab.example"}]
+    assert json.loads(event.details)["platform"] == "windows"
+
+
+@pytest.mark.parametrize("test_guid, targets, platform", [
+    # the test hosts' platform
+    (LINUX_GUID, ["ubuntu-01"], "linux"),
+    (LINUX_GUID, ["mac-01"], "macos"),
+    # a host without one is taken to be on the others'
+    (LINUX_GUID, ["anyuser-01", "mac-01"], "macos"),
+    # no host says: the test's only platform, as ATT&CK names it
+    (GUID, ["anyuser-01"], "windows"),
+    (IAAS_GUID, ["anyuser-01"], "iaas"),
+])
+def test_a_run_has_one_platform(test_guid, targets, platform):
+    run = register(_registration(test_guid=test_guid, targets=[TargetSpec(name) for name in targets]), LAUNCHER)
+    assert _state(run.uuid).platform == platform
 
 
 def test_register_dedupes_targets_and_accepts_any_user():
@@ -121,6 +142,11 @@ def test_register_dedupes_targets_and_accepts_any_user():
     ({"extra": ["not", "an", "object"]}, "must be a JSON object"),
     ({"targets": [TargetSpec("bad host")]}, "is not a host name"),
     ({"test_guid": LINUX_GUID}, "test host win10-01 is windows"),
+    # a run is on one platform: hosts that disagree, or nothing that says which
+    ({"test_guid": LINUX_GUID, "targets": [TargetSpec("ubuntu-01"), TargetSpec("mac-01")]},
+     r"different platforms \(linux, macos\)"),
+    ({"test_guid": LINUX_GUID, "targets": [TargetSpec("anyuser-01")]},
+     "can't tell which platform the run is on: test .* supports linux, macos"),
 ])
 def test_register_rejects(values, message):
     with pytest.raises(InvalidRegistration, match=message):

@@ -214,7 +214,7 @@ def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str 
         if session.execute(select(SVSCatalogTest.id).where(SVSCatalogTest.guid == test_guid)).first() is None:
             add_catalog_test(test_guid)
     run = SVSRun(uuid=str(uuid.uuid4()), test_guid=test_guid, test_content_hash="0" * 64, catalog_commit="a" * 40,
-                 state=state, marker=new_marker(), launcher="art", extra="{}", created_at=datetime.now(),
+                 platform="windows", state=state, marker=new_marker(), launcher="art", extra="{}", created_at=datetime.now(),
                  observation_seconds=3600, attribution_seconds=3600 * 25)
     with private_transaction() as session:
         session.add(run)

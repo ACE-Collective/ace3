@@ -109,7 +109,7 @@ async def test_each_tests_state_and_runs(client: AsyncClient, catalog):
     """The state and history columns (saq.svs.test_state, tested there in full)."""
     db = get_db()
     db.add(SVSRun(uuid=RUN_UUID, test_guid=_guid(1), test_content_hash="0" * 64, catalog_commit="a" * 40,
-                  state="ended", marker="svs-" + "a" * 26, launcher="art", extra="{}", created_at=datetime.now(),
+                  platform="windows", state="ended", marker="svs-" + "a" * 26, launcher="art", extra="{}", created_at=datetime.now(),
                   observation_seconds=3600, attribution_seconds=3600))
     db.commit()
 
