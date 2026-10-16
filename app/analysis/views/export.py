@@ -11,7 +11,7 @@ from uuid import uuid4
 import zipfile
 from flask import flash, make_response, redirect, request, url_for
 from flask_login import current_user
-from app.analysis.views.session.alert import get_current_alert, load_current_alert
+from app.analysis.views.session.alert import get_current_alert
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
@@ -186,21 +186,3 @@ def email_file():
         report_exception()
 
     return redirect("/analysis?direct=" + alert.uuid)
-
-@analysis.route('/html_details', methods=['GET'])
-@require_permission('alert', 'read')
-def html_details():
-    alert = load_current_alert()
-    if alert is None:
-        response = make_response("alert not found")
-        response.mimtype = 'text/plain'
-        return response
-
-    if 'field' not in request.args:
-        response = make_response("missing required parameter: field")
-        response.mimtype = 'text/plain'
-        return response
-
-    response = make_response(alert.root_analysis.details[request.args['field']])
-    response.mimtype = 'text/html'
-    return response

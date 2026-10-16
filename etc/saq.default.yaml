@@ -642,12 +642,6 @@ gui:
     - 0
   # secret key used by flask
   secret_key: file:/auth/keys/flask-secret-key
-  # comma separated list of observable types that are excluded from whitelisting
-  whitelist_excluded_observable_types:
-    - ipv4_full_conversation
-    - yara_rule
-    - indicator
-    - snort_sig
   # specifies the number of bytes of read when generating previews for files
   # these are observables of type F_FILE that have the directive PREVIEW set
   file_preview_bytes: 512

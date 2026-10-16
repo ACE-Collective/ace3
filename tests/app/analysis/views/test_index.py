@@ -843,6 +843,21 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     assert ACTION_UNMARK_INTERESTING in action_names
 
 
+@pytest.mark.unit
+def test_the_observable_menu_starts_with_an_action(root_analysis):
+    """The menu opens with the detection action, not a divider, and offers no whitelisting (the
+    Whitelist and Un-Whitelist actions were deleted)."""
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.gui import ObservableActionSeparator
+
+    observable = root_analysis.add_observable_by_spec(F_TEST, "menu")
+    presenter = create_observable_presenter(observable, detection_status=False, is_interesting=False)
+
+    actions = presenter.available_actions
+    assert not isinstance(actions[0], ObservableActionSeparator)
+    assert not any("whitelist" in (action.name or "") for action in actions)
+
+
 #
 # Batched disposition history.
 #

@@ -1,6 +1,6 @@
 from app.analysis.views.manage import manage
 from app.analysis.views.index import index
-from app.analysis.views.export import download_file, email_file, html_details
+from app.analysis.views.export import download_file, email_file
 from app.analysis.views.navigation import redirect_to, set_page_size, set_page_offset
 from app.analysis.views.edit.tag import add_tag, remove_tag
 from app.analysis.views.edit.observable import add_observable
@@ -14,7 +14,6 @@ from app.analysis.views.edit.filters import (
 )
 from app.analysis.views.observables import observables
 from app.analysis.views.prune import toggle_prune, toggle_prune_volatile
-from app.analysis.views.edit.observable_action.whitelist import observable_action_whitelist, observable_action_un_whitelist
 from app.analysis.views.edit.observable_action.legacy import observable_action
 from app.analysis.views.edit.observable_action.clicker import observable_action_check_for_clickers, observable_action_open_clicker_search_splunk
 from app.analysis.views.edit.event import add_to_event, load_more_events

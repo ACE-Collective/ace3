@@ -25,7 +25,7 @@ This doc tracks two surfaces:
 
 **Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
-GUI routes (`app/`): **7 API-shaped candidates** out of 73 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **4 API-shaped candidates** out of 70 routes (all Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Defects found in routes that have not migrated yet are listed under [Known defects](#known-defects-in-unmigrated-routes), for a separate fix.
 
@@ -439,6 +439,15 @@ Notes:
 - Column sort is gone: both lists are newest first.
 - Each selection button applies to the selected rows it suits (Cancel to remediations that have not completed, and so on) and says how many it left alone.
 
+### `/html_details` and the whitelist actions — deleted
+
+Three `analysis` routes were deleted rather than migrated:
+
+- **`GET /html_details`** served a field of an alert's analysis details as raw `text/html` on the GUI origin. Its only caller was `analysis/custom/ews.html`, a template nothing renders, and it had no traffic in six months. The template is deleted with it.
+- **`POST /observable_action_whitelist`** and **`POST /observable_action_un_whitelist`**, the Whitelist and Un-Whitelist items of every observable's menu. Whitelisting stored a `whitelisted` tag for the observable's value, which made every later analysis containing that value stop and never alert, with no expiry and no list of what had been whitelisted. Nobody used them in six months. Suppressing observables that are not worth analyzing will be built on other work, not on these actions.
+
+With them went the action classes and templates, the `gui.whitelist_excluded_observable_types` setting (a site config that still sets it is ignored), the `ACTION_*WHITELIST` constants, and `whitelist:write`: its catalog entry is removed by the data-only migration `e28c9d0a6154`, and existing grants are left alone since nothing checks the pair. The engine's whitelisting is unchanged: the `whitelisted` tag mappings already stored still apply through `user_defined_tagging`, and the email and YARA rules still whitelist emails. The defects listed for these routes (HTML on the GUI origin, failures reported with 200) went with them.
+
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 
 Six `analysis` GUI routes (`/saved_filters` create/update/delete/quick, `/saved_filter_link/<uuid>`, `/saved_filters_modal_body`) were removed. Saved filters are now per *filter screen* and go through the API: `GET`/`POST /api/v2/saved-filters/`, `GET`/`PATCH`/`DELETE /api/v2/saved-filters/{filter_uuid}`, `PUT /api/v2/saved-filters/quick-filters`, `PUT /api/v2/saved-filters/scratch/{kind}`, plus `GET /api/v2/filter-screens/{screen}` and its share-link `encode`/`decode`. The front end is a reusable component (`app/static/js/saved_filters.js`, `app/templates/saved_filters/_modals.html`) used by the alert manage page and the Signatures screens.
@@ -463,7 +472,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 73** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 70** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -482,7 +491,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    43 |        9 |  7 (0 T1 + 7 T2)     | 27 (16 B + 11 C)    |
+| `analysis`        |    40 |        9 |  4 (0 T1 + 4 T2)     | 27 (16 B + 11 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     1 |        1 |                    0 |                   0 |
 | `file_collection` |     1 |        1 |                    0 |                   0 |
@@ -490,13 +499,13 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **73**|   **27** |  **7 (0 T1 + 7 T2)** |              **39** |
+| **Total**         | **70**|   **27** |  **4 (0 T1 + 4 T2)** |              **39** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), and every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry).
+Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), and `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry).
 
 ### `analysis` blueprint
 
-43 routes total: 9 template, 7 candidates (all Tier 2), 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+40 routes total: 9 template, 4 candidates (all Tier 2), 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 **Tier 1:** none left; see the appendix entries for where they went.
 
@@ -505,12 +514,9 @@ Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `
 | Method(s) | URL                                             | Function                                        | file:line                                    | Returns | Callers / notes |
 |-----------|-------------------------------------------------|-------------------------------------------------|----------------------------------------------|---------|-----------------|
 | GET       | `/download_file`                                | `download_file`                                 | `export.py:93`                               | FILE / text | `analysis/observable_actions/{download_file_as_zip,view_as_hex,view_as_text}.html`. Modes `zip`, `hex` and `text`. There is no mode that serves the file as-is: **Open** (`view`, `html`) and **Download File** (`raw`) were removed rather than fixed, because serving an alert's file inline runs a malicious HTML or JS file on the GUI origin. Don't add one back in v2. |
-| GET       | `/html_details`                                 | `html_details`                                  | `export.py:262`                              | text/html data | `analysis/custom/ews.html:4` (iframe). Serves a `details` field raw. See [Known defects](#known-defects-in-unmigrated-routes) 2. |
 | POST      | `/observable_action_check_for_clickers`         | same                                            | `edit/observable_action/clicker.py:25`       | JSON    | `observable_actions/check_for_clickers.html:4`. Lock, load, delete old analysis, sync, add workload. |
 | POST      | `/observable_action_open_clicker_search_splunk` | same                                            | `edit/observable_action/clicker.py:91`       | JSON    | `observable_actions/open_clicker_search_splunk.html:3`. Loads without a lock; read-only. |
 | POST      | `/observable_action`                            | `observable_action`                             | `edit/observable_action/legacy.py:18`        | text    | `observable_actions/{collect_file,url_crawl,file_render}.html`. Legacy multi-action (`mark_as_suspect`, `collect_file`, `url_crawl`, `file_render`); lock, load, sync, schedule or add workload. |
-| POST      | `/observable_action_whitelist`                  | same                                            | `edit/observable_action/whitelist.py:9`      | text    | `observable_actions/whitelist.html:4`. Alert load + tag-mapping write; errors come back as 200. |
-| POST      | `/observable_action_un_whitelist`               | same                                            | `edit/observable_action/whitelist.py:36`     | text    | `observable_actions/un_whitelist.html:4`. Same as whitelist. |
 
 ### `events` blueprint
 
@@ -543,5 +549,3 @@ This is the shape every GUI blueprint should converge on: Flask renders GET page
 Found while surveying the routes above. They are to be fixed separately, not as part of a migration, but a migration of one of these routes must not carry its defect over. "Verified" means reproduced against the dev instance; "code" means read from the source.
 
 1. **Unreachable action lists** (code). The `jinja_available_actions` properties in `saq/observables/` are referenced by no template: the alert page builds its menus in the presenters (`saq/analysis/presenter/observable_presenter.py`).
-2. **`html_details` serves analysis details as HTML on the GUI origin** (code). It returns a field of an analysis's details raw as `text/html`, which `analysis/custom/ews.html` renders in an iframe. It also sets `response.mimtype`, a typo that leaves every response `text/html`, so its errors ("alert not found", "missing required parameter") come back as `200 text/html`, and an unknown `field` raises `KeyError` (500).
-3. **Whitelist actions report failure with 200** (code). `observable_action_whitelist` and `observable_action_un_whitelist` return `"operation failed: ..."` with status 200, so the page cannot tell failure from success by status.
