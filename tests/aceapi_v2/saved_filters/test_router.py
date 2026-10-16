@@ -451,6 +451,14 @@ class TestSeeding:
         assert [e.model_dump() for e in tests[0].filters] == [
             {"name": "Removed", "inverted": False, "values": ["false"]}]
 
+        await service.ensure_default_saved_filters(session, test_user.id, screen="svs_coverage")
+        coverage = await service.get_saved_filters_for_user(session, test_user.id, screen="svs_coverage")
+        assert [(f.name, f.quick_filter_order) for f in coverage] == [
+            ("Endpoint platforms", 0), ("Gaps and failures", 1), ("All", 2)]
+        assert [e.model_dump() for e in coverage[0].filters] == [
+            {"name": "Platform", "inverted": False, "values": ["windows", "linux", "macos"]},
+            {"name": "Retired", "inverted": False, "values": ["false"]}]
+
         # seeding one screen does not count as having been seeded on another
         alerts = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         assert not [f for f in alerts if f.name in ("Conflicted", "Missing data")]

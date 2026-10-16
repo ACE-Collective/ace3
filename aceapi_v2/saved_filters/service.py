@@ -31,6 +31,7 @@ from saq.gui.filter_screens import (
     FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
     REMEDIATIONS_SCREEN,
+    SVS_COVERAGE_SCREEN,
     SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_TESTS_SCREEN,
@@ -154,6 +155,33 @@ DEFAULT_SVS_TEST_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS coverage screen: the endpoint platforms, which the Coverage
+# tab opens on (docs/SVS_COVERAGE.md); every other ATT&CK platform keeps its rows, one filter away.
+# None of them shows a retired row.
+_SVS_ENDPOINT_PLATFORMS = {"name": "Platform", "inverted": False, "values": ["windows", "linux", "macos"]}
+_SVS_COVERAGE_LIVE = {"name": "Retired", "inverted": False, "values": ["false"]}
+DEFAULT_SVS_COVERAGE_SAVED_FILTERS = (
+    {
+        "name": "Endpoint platforms",
+        "description": "Techniques on windows, linux and macos",
+        "filters": [_SVS_ENDPOINT_PLATFORMS, _SVS_COVERAGE_LIVE],
+    },
+    {
+        "name": "Gaps and failures",
+        "description": "Techniques on the endpoint platforms that are failing, stale, untested or not covered at all",
+        "filters": [
+            _SVS_ENDPOINT_PLATFORMS,
+            {"name": "State", "inverted": False, "values": ["failing", "stale", "untested", "none"]},
+            _SVS_COVERAGE_LIVE,
+        ],
+    },
+    {
+        "name": "All",
+        "description": "Techniques on every platform",
+        "filters": [_SVS_COVERAGE_LIVE],
+    },
+)
+
 # What a user starts with on the File Collections screen: the same two lists
 DEFAULT_FILE_COLLECTION_SAVED_FILTERS = (
     {
@@ -178,6 +206,7 @@ DEFAULT_SAVED_FILTERS = {
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
     SVS_RUNS_SCREEN.name: DEFAULT_SVS_RUN_SAVED_FILTERS,
+    SVS_COVERAGE_SCREEN.name: DEFAULT_SVS_COVERAGE_SAVED_FILTERS,
     SVS_TESTS_SCREEN.name: DEFAULT_SVS_TEST_SAVED_FILTERS,
     REMEDIATIONS_SCREEN.name: DEFAULT_REMEDIATION_SAVED_FILTERS,
     FILE_COLLECTIONS_SCREEN.name: DEFAULT_FILE_COLLECTION_SAVED_FILTERS,

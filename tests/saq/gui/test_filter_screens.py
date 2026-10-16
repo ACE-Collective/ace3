@@ -21,6 +21,8 @@ from saq.gui.filter_screens import (
     FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
     REMEDIATIONS_SCREEN,
+    SVS_COVERAGE_HISTORY_SCREEN,
+    SVS_COVERAGE_SCREEN,
     SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
@@ -383,3 +385,73 @@ def test_fields_must_name_the_screens_filters():
     with pytest.raises(ValueError, match="Shape"):
         FilterScreen(name="bad", entry_model=FilterEntryBase, slugs={"Color": "color"},
                      fields=(FilterField("Shape", FilterFieldKind.TEXT),))
+
+
+def test_the_svs_coverage_screens():
+    assert get_filter_screen("svs_coverage") is SVS_COVERAGE_SCREEN
+    assert get_filter_screen("svs_coverage_history") is SVS_COVERAGE_HISTORY_SCREEN
+    for screen in (SVS_COVERAGE_SCREEN, SVS_COVERAGE_HISTORY_SCREEN):
+        assert screen.permission == ("svs", "run_read")
+        assert {f.name for f in screen.fields} == screen.filter_names
+
+
+def test_the_svs_coverage_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_COVERAGE_SCREEN.slugs) == {
+        "ATT&CK Platform": "attack_platform",
+        "Catalog Status": "catalog_status",
+        "Has Manual": "has_manual",
+        "Level": "level",
+        "Name": "name",
+        "Own State": "own_state",
+        "Platform": "platform",
+        "Retired": "retired",
+        "State": "state",
+        "State Changed": "state_changed",
+        "Tactic": "tactic",
+        "Technique": "technique",
+    }
+    assert dict(SVS_COVERAGE_HISTORY_SCREEN.slugs) == {
+        "Date": "date",
+        "Level": "level",
+        "Own State": "own_state",
+        "Platform": "platform",
+        "State": "state",
+        "Technique": "technique",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Technique", [" t1059.001"], ["T1059.001"]),
+    ("Tactic", ["execution", "ta0003"], ["TA0002", "TA0003"]),
+    ("Platform", ["Windows", "iaas:aws", "azure-ad"], ["windows", "iaas", "identity-provider"]),
+    ("State", ["Failing"], ["failing"]),
+    ("Level", ["Sub-Technique"], ["sub-technique"]),
+    ("Catalog Status", ["deprecated"], ["deprecated"]),
+    ("Has Manual", ["True"], ["true"]),
+    ("State Changed", ["-7d"], ["-7d"]),
+])
+def test_svs_coverage_values_are_normalized(name, values, expected):
+    (entry,) = SVS_COVERAGE_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Technique", ["TA0002"]),
+    ("Tactic", ["T1059"]),
+    ("State", ["great"]),
+    ("Level", ["tactic"]),
+    ("Retired", ["yes"]),
+    ("State Changed", ["not a date"]),
+    ("Date", ["-7d"]),
+])
+def test_svs_coverage_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_COVERAGE_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+def test_svs_coverage_history_takes_a_date():
+    (entry,) = SVS_COVERAGE_HISTORY_SCREEN.validate_entries([{"name": "Date", "values": ["-30d"]}])
+    assert entry.values == ["-30d"]
+    with pytest.raises(ValidationError):
+        SVS_COVERAGE_HISTORY_SCREEN.validate_entries([{"name": "Tactic", "values": ["execution"]}])

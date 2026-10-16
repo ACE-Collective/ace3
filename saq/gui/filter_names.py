@@ -147,6 +147,34 @@ SVS_RUN_FILTER_SLUGS = {
     'Test Name': 'test_name',
 }
 
+# The filters of the SVS coverage screen (GET /api/v2/svs/coverage, docs/SVS_API.md): display name
+# -> URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_COVERAGE_FILTER_SLUGS = {
+    'ATT&CK Platform': 'attack_platform',
+    'Catalog Status': 'catalog_status',
+    'Has Manual': 'has_manual',
+    'Level': 'level',
+    'Name': 'name',
+    'Own State': 'own_state',
+    'Platform': 'platform',
+    'Retired': 'retired',
+    'State': 'state',
+    'State Changed': 'state_changed',
+    'Tactic': 'tactic',
+    'Technique': 'technique',
+}
+
+# The filters of the SVS coverage history (GET /api/v2/svs/coverage/history, docs/SVS_API.md):
+# display name -> URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_COVERAGE_HISTORY_FILTER_SLUGS = {
+    'Date': 'date',
+    'Level': 'level',
+    'Own State': 'own_state',
+    'Platform': 'platform',
+    'State': 'state',
+    'Technique': 'technique',
+}
+
 # The filters of the Remediations page (GET /api/v2/remediation/remediations): display name ->
 # URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
 REMEDIATION_FILTER_SLUGS = {

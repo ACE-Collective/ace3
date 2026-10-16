@@ -8,7 +8,9 @@ compute_rows() derives every row from the inputs alone:
 refresh_coverage() locks svs_coverage_state, computes, and writes only the columns that changed, so a
 row's updated_at moves only on a real change. A row the computation no longer produces is retired,
 never deleted. service_svs refreshes every svs.coverage.refresh_interval_seconds on the primary node;
-`ace svs coverage refresh` does it at once.
+`ace svs coverage refresh` does it at once. write_snapshot() refreshes, then copies the rows into
+svs_coverage_snapshots under the day's date (`ace svs coverage snapshot`, daily from cron).
+technique_detail() is the live part of a technique's drill-down (GET /api/v2/svs/coverage/{technique}).
 
 A test's contribution to the row of its technique on a platform is its state there:
 - validated, failing and stale count as themselves;
@@ -24,17 +26,18 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import date, datetime, timezone
 from typing import Iterable, Optional
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import delete, func, insert, literal, select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-from saq.database.model import SVSCatalogTest, SVSCoverage, SVSCoverageState
+from saq.database.model import SVSCatalogTest, SVSCoverage, SVSCoverageSnapshot, SVSCoverageState
 from saq.database.private_session import private_transaction
 from saq.svs.attack import AttackCatalog, TechniqueStatus, get_attack_catalog
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import CoverageState
-from saq.svs.signatures import SignatureTags, signature_techniques
+from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
 from saq.svs.test_state import Evaluation, TestState, evaluate_tests
 
 # the id of the single svs_coverage_state row
@@ -123,15 +126,45 @@ def _worst(states: Iterable[CoverageState]) -> CoverageState:
     return next((state for state in WORST_FIRST if state in states), CoverageState.NONE)
 
 
+def evaluations_by_test(evaluations: dict[tuple[str, str], Evaluation]) -> dict[str, dict[str, Evaluation]]:
+    """evaluate_tests() results as {guid: {platform: evaluation}}."""
+    by_test: dict[str, dict[str, Evaluation]] = {}
+    for (guid, platform), evaluation in evaluations.items():
+        by_test.setdefault(guid, {})[platform] = evaluation
+    return by_test
+
+
+def test_contributions(catalog: AttackCatalog, test: SVSCatalogTest,
+                       evaluations: dict[str, Evaluation]) -> tuple[Optional[str], dict[str, Contribution]]:
+    """The technique a catalog test counts toward (None when its technique isn't a technique id),
+    and what it counts toward that technique's row on each platform. evaluations are the test's
+    evaluate_tests() results by platform. compute_rows() and the coverage drill-down both count a
+    test through this."""
+    try:
+        technique = catalog.resolve(test.technique).technique
+    except ValueError:
+        return None, {}
+
+    # a run or a decision on a platform the test no longer supports still counts there; the empty
+    # platform of a decision from before runs had one doesn't
+    platforms = (set(platform_slugs(test)) | set(evaluations)) - {""}
+    counted = {}
+    for platform in sorted(platforms):
+        evaluation = evaluations.get(platform)
+        counted[platform] = Contribution(
+            test.guid, contribution_state(evaluation),
+            evaluation.run.reviewed_at if evaluation is not None and evaluation.run is not None else None,
+            frozenset(evaluation.expected) if evaluation is not None else frozenset())
+    return technique, counted
+
+
 def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
                  evaluations: dict[tuple[str, str], Evaluation],
                  tags: dict[str, SignatureTags]) -> ComputedCoverage:
     """Every coverage row. tests are the catalog tests that count (not removed), evaluations
     evaluate_tests() of them, and tags signature_techniques()."""
     computed = ComputedCoverage(rows={})
-    evaluated: dict[str, set[str]] = {}
-    for guid, platform in evaluations:
-        evaluated.setdefault(guid, set()).add(platform)
+    by_test = evaluations_by_test(evaluations)
 
     # (technique, platform) -> what each test counts toward it
     contributions: dict[tuple[str, str], list[Contribution]] = {}
@@ -140,24 +173,16 @@ def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
     # technique -> the technique name a test gives it, for one the release doesn't have
     test_names: dict[str, str] = {}
     for test in sorted(tests, key=lambda test: test.guid):
-        try:
-            technique = catalog.resolve(test.technique).technique
-        except ValueError:
+        technique, counted = test_contributions(catalog, test, by_test.get(test.guid, {}))
+        if technique is None:
             computed.skipped_tests.append(test.guid)
             continue
 
         if test.technique_name:
             test_names.setdefault(technique, test.technique_name)
-        # a run or a decision on a platform the test no longer supports still counts there; the
-        # empty platform of a decision from before runs had one doesn't
-        platforms = (set(platform_slugs(test)) | evaluated.get(test.guid, set())) - {""}
-        test_platforms.setdefault(technique, set()).update(platforms)
-        for platform in platforms:
-            evaluation = evaluations.get((test.guid, platform))
-            contributions.setdefault((technique, platform), []).append(Contribution(
-                test.guid, contribution_state(evaluation),
-                evaluation.run.reviewed_at if evaluation is not None and evaluation.run is not None else None,
-                frozenset(evaluation.expected) if evaluation is not None else frozenset()))
+        test_platforms.setdefault(technique, set()).update(counted)
+        for platform, contribution in counted.items():
+            contributions.setdefault((technique, platform), []).append(contribution)
 
     # technique -> the signatures whose tags make it manual
     manual: dict[str, set[str]] = {}
@@ -342,3 +367,150 @@ def coverage_counts(session) -> dict[str, dict[str, int]]:
             .group_by(SVSCoverage.platform, SVSCoverage.state)):
         counts.setdefault(platform, {})[state] = count
     return counts
+
+
+#
+# snapshots
+#
+
+# the svs_coverage columns a snapshot copies, besides technique and platform
+SNAPSHOT_COLUMNS = ("parent", "is_subtechnique", "state", "own_state", "tests_total", "tests_validated",
+                    "tests_failing", "tests_stale", "manual_signatures", "measured_signatures")
+
+
+@dataclass(frozen=True)
+class CoverageSnapshot:
+    snapshot_date: date
+    attack_release: str
+    rows: int
+    # rows of an earlier snapshot the same day that are no longer in coverage
+    deleted: int
+
+
+def write_snapshot(actor: str, *, snapshot_date: Optional[date] = None,
+                   now: Optional[datetime] = None) -> CoverageSnapshot:
+    """Refreshes coverage, then files its rows that aren't retired under snapshot_date (default:
+    today, UTC). A second snapshot on the same day replaces the day. A failed refresh raises before
+    anything is written."""
+    refresh_coverage(actor, now=now)
+    snapshot_date = snapshot_date or datetime.now(timezone.utc).date()
+    with private_transaction() as session:
+        state = _lock(session)
+        attack_release = state.attack_release
+        live = SVSCoverage.retired_at.is_(None)
+        statement = mysql_insert(SVSCoverageSnapshot).from_select(
+            ["snapshot_date", "attack_release", "technique", "platform", *SNAPSHOT_COLUMNS],
+            select(literal(snapshot_date), literal(attack_release), SVSCoverage.technique, SVSCoverage.platform,
+                   *[getattr(SVSCoverage, name) for name in SNAPSHOT_COLUMNS])
+            .where(live).order_by(SVSCoverage.technique, SVSCoverage.platform))
+        session.execute(statement.on_duplicate_key_update(
+            attack_release=statement.inserted.attack_release,
+            **{name: getattr(statement.inserted, name) for name in SNAPSHOT_COLUMNS}))
+        deleted = session.execute(
+            delete(SVSCoverageSnapshot)
+            .where(SVSCoverageSnapshot.snapshot_date == snapshot_date,
+                   ~select(SVSCoverage.id).where(SVSCoverage.technique == SVSCoverageSnapshot.technique,
+                                                 SVSCoverage.platform == SVSCoverageSnapshot.platform,
+                                                 live).exists())).rowcount
+        rows = session.execute(select(func.count()).select_from(SVSCoverage).where(live)).scalar_one()
+
+    logging.info("svs coverage snapshot of %s written: %d rows", snapshot_date, rows,
+                 extra={"snapshot_date": snapshot_date.isoformat(), "rows": rows, "attack_release": attack_release,
+                        "actor": actor})
+    return CoverageSnapshot(snapshot_date, attack_release, rows, deleted)
+
+
+#
+# the drill-down
+#
+
+@dataclass(frozen=True)
+class TestCoverage:
+    """One catalog test on one platform, as it counts toward its technique's row there."""
+    __test__ = False
+
+    test: SVSCatalogTest
+    # the technique it counts toward (its own, revoked ids remapped)
+    technique: str
+    platform: str
+    # None: nothing reviewed or decided there
+    evaluation: Optional[Evaluation]
+    contribution: Contribution
+
+
+@dataclass(frozen=True)
+class ManualMapping:
+    """A signature's mitre: tag naming the technique or one of its sub-techniques."""
+    signature: SignatureTags
+    # the id as the tag names it, and the technique it counts as
+    declared: str
+    technique: str
+    counts: bool
+    # why it doesn't count: disabled (or a YARA rule in QA mode), or an id the release doesn't have
+    reason: Optional[str]
+
+
+@dataclass
+class TechniqueDetail:
+    technique: str
+    tests: list[TestCoverage]
+    removed_tests: list[SVSCatalogTest]
+    manual: list[ManualMapping]
+    # why the manual mappings couldn't be read (they are then empty)
+    manual_error: Optional[str] = None
+
+
+def _covers(catalog: AttackCatalog, technique: str, candidate: str) -> bool:
+    return candidate == technique or catalog.parent_of(candidate) == technique
+
+
+def technique_detail(session, catalog: AttackCatalog, technique: str) -> TechniqueDetail:
+    """What counts toward a technique's rows now, and toward its sub-techniques' (the technique is
+    already resolved). Reads the catalog tests, evaluates the ones of the technique, and reads the
+    signature tags."""
+    tests, removed = [], []
+    # every test's technique, to resolve it as compute_rows() does; the full rows only for the matches
+    matches = {}
+    for test_id, raw, removed_at in session.execute(
+            select(SVSCatalogTest.id, SVSCatalogTest.technique, SVSCatalogTest.removed_at)):
+        try:
+            resolved = catalog.resolve(raw).technique
+        except ValueError:
+            continue
+        if _covers(catalog, technique, resolved):
+            matches[test_id] = removed_at is not None
+
+    if matches:
+        rows = session.execute(select(SVSCatalogTest).where(SVSCatalogTest.id.in_(sorted(matches)))
+                               .order_by(SVSCatalogTest.technique, SVSCatalogTest.name, SVSCatalogTest.id)).scalars()
+        current = []
+        for test in rows:
+            (removed if matches[test.id] else current).append(test)
+        by_test = evaluations_by_test(evaluate_tests(session, current))
+        for test in current:
+            evaluations = by_test.get(test.guid, {})
+            resolved, counted = test_contributions(catalog, test, evaluations)
+            for platform, contribution in counted.items():
+                tests.append(TestCoverage(test, resolved, platform, evaluations.get(platform), contribution))
+
+    detail = TechniqueDetail(technique, tests, removed, [])
+    try:
+        tags = signature_techniques()
+    except SignatureTagsUnavailable as e:
+        detail.manual_error = str(e)
+        tags = {}
+
+    for signature in sorted(tags.values(), key=lambda signature: signature.uuid):
+        for declared in signature.declared:
+            resolution = catalog.resolve(declared)
+            if not _covers(catalog, technique, resolution.technique):
+                continue
+            if resolution.status == TechniqueStatus.UNKNOWN:
+                reason = "unknown_technique"
+            elif not signature.counts:
+                reason = "not_counting"
+            else:
+                reason = None
+            detail.manual.append(ManualMapping(signature, declared, resolution.technique, reason is None, reason))
+
+    return detail

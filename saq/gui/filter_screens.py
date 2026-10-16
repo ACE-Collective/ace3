@@ -19,6 +19,9 @@ from pydantic import BaseModel
 
 from saq.detection_verdicts.constants import SOURCES
 from saq.gui.filter_entry import (
+    CATALOG_STATUSES,
+    COVERAGE_LEVELS,
+    COVERAGE_STATES,
     FILE_COLLECTION_FILTER_OPTIONS,
     REMEDIATION_FILTER_OPTIONS,
     SAMPLE_BOOL_OPTIONS,
@@ -29,6 +32,8 @@ from saq.gui.filter_entry import (
     RemediationFilterEntry,
     SampleFilterEntry,
     CatalogTestFilterEntry,
+    CoverageFilterEntry,
+    CoverageHistoryFilterEntry,
     RunFilterEntry,
     ValidationFilterEntry,
 )
@@ -37,6 +42,8 @@ from saq.gui.filter_names import (
     FILE_COLLECTION_FILTER_SLUGS,
     FILTER_SLUGS,
     REMEDIATION_FILTER_SLUGS,
+    SVS_COVERAGE_FILTER_SLUGS,
+    SVS_COVERAGE_HISTORY_FILTER_SLUGS,
     SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
@@ -210,6 +217,47 @@ SVS_RUNS_SCREEN = FilterScreen(
     ),
 )
 
+# ATT&CK coverage per technique and platform (GET /api/v2/svs/coverage, docs/SVS_API.md); read
+# with svs:run_read. Technique finds a technique's sub-techniques too; Tactic takes an id or a
+# shortname of the pinned release
+SVS_COVERAGE_SCREEN = FilterScreen(
+    name="svs_coverage",
+    entry_model=CoverageFilterEntry,
+    slugs=SVS_COVERAGE_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Name", FilterFieldKind.TEXT),
+        FilterField("Tactic", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Own State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Level", FilterFieldKind.MULTI, COVERAGE_LEVELS),
+        FilterField("ATT&CK Platform", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Catalog Status", FilterFieldKind.MULTI, CATALOG_STATUSES),
+        FilterField("Has Manual", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("State Changed", FilterFieldKind.DATE_RANGE),
+        FilterField("Retired", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
+# the daily coverage snapshots (GET /api/v2/svs/coverage/history, docs/SVS_API.md); read with
+# svs:run_read
+SVS_COVERAGE_HISTORY_SCREEN = FilterScreen(
+    name="svs_coverage_history",
+    entry_model=CoverageHistoryFilterEntry,
+    slugs=SVS_COVERAGE_HISTORY_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Date", FilterFieldKind.DATE_RANGE),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Own State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Level", FilterFieldKind.MULTI, COVERAGE_LEVELS),
+    ),
+)
+
 # the remediations the remediation service works through, and their history (GET
 # /api/v2/remediation/remediations, the Remediations page)
 REMEDIATIONS_SCREEN = FilterScreen(
@@ -256,6 +304,8 @@ FILTER_SCREENS: dict[str, FilterScreen] = {
     SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
     SVS_TESTS_SCREEN.name: SVS_TESTS_SCREEN,
     SVS_RUNS_SCREEN.name: SVS_RUNS_SCREEN,
+    SVS_COVERAGE_SCREEN.name: SVS_COVERAGE_SCREEN,
+    SVS_COVERAGE_HISTORY_SCREEN.name: SVS_COVERAGE_HISTORY_SCREEN,
     REMEDIATIONS_SCREEN.name: REMEDIATIONS_SCREEN,
     FILE_COLLECTIONS_SCREEN.name: FILE_COLLECTIONS_SCREEN,
 }
