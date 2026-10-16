@@ -1,6 +1,6 @@
 """Authoring-time checks for a hunt's correlate block.
 
-These run in the hunt validation path (`ace hunt verify` / `POST /api/hunt/validate`), not
+These run in the hunt validation path (`ace hunt verify` / `POST /api/v2/hunt/validate`), not
 during normal hunt loading -- a production node should not refuse to load a hunt at startup.
 What gets past here fails at runtime as a step error on the event it was evaluating.
 """
