@@ -20,7 +20,7 @@ from saq.email_archive import archive_email
 from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.observables.file import FileObservable
-from saq.util.time import local_time, parse_event_time
+from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir, validate_uuid
 from tests.saq.helpers import create_root_analysis, log_count, start_api_server, stop_api_server
 
@@ -262,10 +262,6 @@ def test_resubmit(mock_api_call):
     assert row[2]
     assert row[3] == ANALYSIS_MODE_CORRELATION
 
-    # now resubmit the alert
-    result = ace_api.resubmit_alert(uuid)
-    assert 'error' not in result
-
 @pytest.mark.integration
 def test_submit_with_utc_timezone(mock_api_call):
     # make sure we can submit with a UTC timezone already set
@@ -300,8 +296,8 @@ def test_submit_with_other_timezone(mock_api_call):
 
 @pytest.mark.integration
 def test_get_analysis(mock_api_call):
-
-    result = _submit()
+    # only alerts are served, and a correlation-mode submission becomes one as it is submitted
+    result = _submit(analysis_mode=ANALYSIS_MODE_CORRELATION)
     assert result
     assert 'result' in result
     result = result['result']
@@ -313,7 +309,8 @@ def test_get_analysis(mock_api_call):
     assert 'result' in result
     result = result['result']
 
-    assert result['analysis_mode'] == 'test_empty'
+    assert result['uuid'] == uuid
+    assert result['analysis_mode'] == ANALYSIS_MODE_CORRELATION
     assert result['tool'] == 'unittest_tool'
     assert result['tool_instance'] == 'unittest_tool_instance'
     assert result['type'] == 'unittest_type'
@@ -327,91 +324,18 @@ def test_get_analysis(mock_api_call):
     assert isinstance(result['file_path'], str)
     assert result['file_path'].startswith('RootAnalysis_')
 
-@pytest.mark.integration
-def test_get_analysis_details(mock_api_call):
-    
-    result = _submit()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    uuid = result['uuid']
-
-    result = ace_api.get_analysis(uuid)
-    assert result
-    assert 'result' in result
-    result = result['result']
-
-    details_result = ace_api.get_analysis_details(uuid, result['file_path'])
-    assert details_result
-    details_result = details_result['result']
-    assert 'hello' in details_result
-    assert details_result['hello'], 'world'
+    # the alert's database state comes with the tree
+    assert isinstance(result['version'], str)
+    assert 'disposition' in result
 
 @pytest.mark.integration
-def test_get_analysis_file(mock_api_call):
-
+def test_get_analysis_is_alerts_only(mock_api_call):
+    """A submission that has not become an alert is not found."""
     result = _submit()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    uuid = result['uuid']
+    uuid = result['result']['uuid']
 
-    result = ace_api.get_analysis(uuid)
-    assert result
-    assert 'result' in result
-    result = result['result']
-
-    # first test getting a file by uuid
-    file_uuid = None
-    for o_uuid in result['observables']:
-        o = result['observable_store'][o_uuid]
-        if o['type'] == 'file' and o['file_path'] == 'sample.dat':
-            file_uuid = o_uuid
-            break
-
-    assert file_uuid
-
-    output_path = os.path.join(get_temp_dir(), 'get_file_test.dat')
-    assert ace_api.get_analysis_file(uuid, file_uuid, output_file=output_path)
-    with open(output_path, 'rb') as fp:
-        assert fp.read() == b'Hello, world!'
-
-    # same thing but with passing a file pointer
-    with open(output_path, 'wb') as fp:
-        assert ace_api.get_analysis_file(uuid, file_uuid, output_fp=fp)
-
-    # now test by using the file name
-    assert ace_api.get_analysis_file(uuid, 'sample.dat', output_file=output_path)
-    with open(output_path, 'rb') as fp:
-        assert fp.read() == b'Hello, world!'
-
-@pytest.mark.integration
-def test_get_analysis_status(mock_api_call):
-
-    result = _submit()
-    assert result
-    assert 'result' in result
-    result = result['result']
-    assert result['uuid']
-    uuid = result['uuid']
-
-    result = ace_api.get_analysis_status(uuid)
-    assert result
-    result = result['result']
-    assert 'workload' in result
-    assert 'delayed_analysis' in result
-    assert 'locks' in result
-    assert 'alert' in result
-    assert result['alert'] is None
-    assert result['delayed_analysis'] == []
-    assert result['locks'] is None
-    assert isinstance(result['workload']['id'], int)
-    assert result['workload']['uuid'] == uuid
-    assert result['workload']['node_id']
-    assert result['workload']['analysis_mode'] == 'test_empty'
-    assert isinstance(parse_event_time(result['workload']['insert_date']), datetime)
+    with pytest.raises(requests.HTTPError):
+        ace_api.get_analysis(uuid)
 
 @pytest.mark.integration
 def test_download(mock_api_call):
@@ -706,23 +630,22 @@ def test_analysis_file_handling(mock_api_call, tmpdir):
     result = analysis.submit()
 
     # make sure it got our files
-    io_buffer = io.BytesIO()
-    ace_api.get_analysis_file(result.uuid, 'normal.txt', output_fp=io_buffer)
+    root = RootAnalysis(storage_dir=get_storage_dir(result.uuid))
+    root.load()
+
+    def _file_bytes(file_name: str) -> bytes:
+        observable = root.find_observable(lambda o: o.type == F_FILE and o.file_path == file_name)
+        with open(observable.full_path, 'rb') as fp:
+            return fp.read()
+
     with open(normal_file_path, 'rb') as fp:
-        assert fp.read() == io_buffer.getvalue()
+        assert _file_bytes('normal.txt') == fp.read()
 
-    io_buffer = io.BytesIO()
-    ace_api.get_analysis_file(result.uuid, 'fp.txt', output_fp=io_buffer)
     with open(fp_file_path, 'rb') as fp:
-        assert fp.read() == io_buffer.getvalue()
+        assert _file_bytes('fp.txt') == fp.read()
 
-    io_buffer = io.BytesIO()
-    ace_api.get_analysis_file(result.uuid, 'str.txt', output_fp=io_buffer)
-    assert b'This is a string.' == io_buffer.getvalue()
-
-    io_buffer = io.BytesIO()
-    ace_api.get_analysis_file(result.uuid, 'bytes.txt', output_fp=io_buffer)
-    assert b'This is a bytes.' == io_buffer.getvalue()
+    assert _file_bytes('str.txt') == b'This is a string.'
+    assert _file_bytes('bytes.txt') == b'This is a bytes.'
 
 @pytest.mark.integration
 def test_get_open_events(mock_api_call):

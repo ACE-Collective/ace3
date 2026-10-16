@@ -19,11 +19,11 @@ This doc tracks two surfaces:
 | `events`   | _(removed)_   | –         | –              | Migrated   |
 | `email`    | _(removed)_   | –         | –              | Migrated   |
 | `intel`    | _(removed)_   | –         | –              | Deleted    |
-| `analysis` | `analysis.py` | 7         | GET, POST      | Legacy     |
+| `analysis` | `analysis.py` | 1         | POST           | Legacy     |
 | `engine`   | `engine.py`   | 3         | GET, POST      | Legacy     |
 | `hunt`     | `hunt.py`     | 1         | POST           | Legacy     |
 
-**Legacy endpoints remaining: 11** (8 GET, 3 POST).
+**Legacy endpoints remaining: 5** (2 GET, 3 POST).
 
 GUI routes (`app/`): **23 API-shaped candidates** out of 92 routes (16 Tier 1, 7 Tier 2); see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
@@ -33,12 +33,11 @@ Defects found in routes that have not migrated yet are listed under [Known defec
 
 Cheapest and lowest-risk first. The `aceapi/` caller classes are explained under [Legacy endpoints awaiting migration](#legacy-endpoints-awaiting-migration).
 
-1. **`/analysis` reads** (6 routes): `ace_api` helpers only; `RootAnalysis` loads through `asyncio.to_thread`.
-2. **GUI Tier 1 remainder**: `get_alert_meta`, `resolve_date_range`, `reset_filter_alert_count`, `image`, `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
-3. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
-4. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
-5. **GUI Tier 2** observable actions.
-6. **`/engine` and `/analysis/submit`**, last: node to node, so they need a rolling-upgrade plan.
+1. **GUI Tier 1 remainder**: `get_alert_meta`, `resolve_date_range`, `reset_filter_alert_count`, `image`, `set_owner`, `remediation_targets`, and `export_alerts_to_csv` once the v2 CSV export has the Comments column and can take the manage page's filters.
+2. **`/hunt/validate`**, sequenced with a `validate-hunt` CLI release.
+3. **`remediation` and `file_collection`**, after their pagination and sort leave the session.
+4. **GUI Tier 2** observable actions.
+5. **`/engine` and `/analysis/submit`**, last: node to node, so they need a rolling-upgrade plan.
 
 Check whether anything still calls a route before scheduling its port (see [Check for callers first](#check-for-callers-first)).
 
@@ -54,8 +53,9 @@ A route nothing calls is deleted, not ported. Before designing a v2 replacement,
 
 - **In the tree:** grep every checkout (this repo, `integrations/`, `signatures/`, and other repos that may call ACE) for the URL path, the `ace_api` helper and any CLI subcommand built on it. A helper whose only callers are its own CLI wrapper and its own tests is not evidence of use.
 - **In production:** the reverse proxy's access log has the request path of every call. Count requests to the route over the log's whole retention, and run the same search for a route you know is busy, so that zero hits mean "unused" rather than "not logged".
+- **When there is traffic, find the caller** before porting for it: the log line's user agent and client address say whether it is ACE itself (a node, a collector) or someone's script, and the git history of every repo that could hold the caller says whether it has since moved to another API. Traffic that stopped weeks ago is usually a caller that already moved.
 
-`/intel` was removed this way (see [the appendix](#intel--deleted-alert-page-detection-actions--aceapi_v2detection)): its richer filters and batch update would have been the largest port so far, and nothing had called them.
+`/intel` and five of the six `/analysis` reads were removed this way (see the [`/intel`](#intel--deleted-alert-page-detection-actions--aceapi_v2detection) and [`/analysis` reads](#analysis-reads--deleted-ace_apiget_analysis--get-apiv2alertsuuid) appendix entries): nothing called them, and porting them would have cost more than any migration so far.
 
 ### URL naming
 
@@ -195,15 +195,9 @@ What decides the cost of each group is less the handler than who calls it. Three
 
 | Method | URL                                          | Function         | Line | Callers |
 |--------|----------------------------------------------|------------------|------|---------|
-| POST   | `/analysis/submit`                           | `submit`         | 79   | `ace_api.submit` ← GUI new alert (`app/analysis/views/edit/new.py`), `ace submit`, `ace hunt`, external `ace_api` users |
-| GET    | `/analysis/resubmit/<uuid>`                  | `resubmit`       | 251  | `ace_api.resubmit_alert` only |
-| GET    | `/analysis/<uuid>`                           | `get_analysis`   | 265  | `ace_api.get_analysis` only |
-| GET    | `/analysis/submission/<uuid>`                | `get_submission` | 280  | none — no `ace_api` helper |
-| GET    | `/analysis/status/<uuid>`                    | `get_status`     | 297  | `ace_api.get_analysis_status` only |
-| GET    | `/analysis/details/<uuid>/<name>`            | `get_details`    | 426  | `ace_api.get_analysis_details` only |
-| GET    | `/analysis/file/<uuid>/<file_uuid_or_name>`  | `get_file`       | 444  | `ace_api.get_analysis_file` only |
+| POST   | `/analysis/submit`                           | `submit`         | 75   | `ace_api.submit` ← GUI new alert (`app/analysis/views/edit/new.py`), `ace submit`, `ace hunt`, external `ace_api` users |
 
-The six reads load a `RootAnalysis` from disk (sync, `asyncio.to_thread`) and can be split from `submit`, which is a multipart upload with node-drain rejection (`reject_if_node_draining`) and the widest set of callers. `GET /api/v2/alerts/{alert_uuid}` overlaps `get_analysis` but is not a replacement: it serves database alerts only, while the legacy route also serves a root that is still in the workload and has no alert row. `resubmit` mutates through a `GET`; its v2 form should be a `POST`.
+A multipart upload with node-drain rejection (`reject_if_node_draining`) and the widest set of callers, node to node among them, so it moves with `/engine`. The six reads that shared this blueprint are gone; see [the appendix](#analysis-reads--deleted-ace_apiget_analysis--get-apiv2alertsuuid).
 
 ### `/engine` — `engine.py`
 
@@ -269,7 +263,7 @@ Module: `aceapi_v2/email/{router,service}.py` (no schemas: the response is the e
 Notes:
 - The Message-ID stays a query parameter: Message-IDs can contain a `/`, which a path segment would split.
 - One archive lookup decides the 404 before the response starts; decryption runs as the body streams, so a decryption failure truncates the download rather than changing its status. Same as the Flask route.
-- `tests/aceapi/test_engine_node_to_node.py` used the Flask email route as the endpoint the `automation` key must be denied. It now probes `GET /api/analysis/<uuid>` (`alert:read`), which also catches the key's scope being widened from `alert:create` to `alert:*`; the v2 email tests check that a key with the automation scope is denied.
+- `tests/aceapi/test_engine_node_to_node.py` used the Flask email route as the endpoint the `automation` key must be denied. It probes `GET /api/v2/alerts/{uuid}` (`alert:read`), which also catches the key's scope being widened from `alert:create` to `alert:*`; the v2 email tests check that a key with the automation scope is denied.
 
 Done in the same change, with no new endpoint: the GUI's `/download_archive` was deleted (no callers; its `md5` parameter actually carried the sha256), `close_event` was deleted and the events page now calls `PATCH /api/v2/events/{event_id}` with the configured `events.closed_status`, and `/<uuid>/event_name_candidate` was deleted together with the Add to Event dialog's event-name suggestion it served, which was not used.
 
@@ -327,6 +321,26 @@ Notes:
 - **Every matching observable gets its detection.** `get_observable_detections()` used to hand a detection to the first observable with its type and hash only. Two file observables with the same content at different paths are two observables, so the second one offered "enable" for a detection that existed. That was harmless when enable upserted; against v2, which answers 409, it was an error.
 - **The adjust-expiration dialog was rebuilt** as one shared modal in `analysis/index.html` (`show_detection_expiration_modal_for()` in `saq_analysis.js`), following the observable-comment modal. The old one was rendered once per detected observable with fixed element ids, so the action opened the first observable's dialog, and its "current expiration" read a field the observable does not have and was always blank.
 - **Audit lines moved to the router.** The GUI routes logged an `AUDIT:` line per enable and disable; `aceapi_v2/detection/router.py` now logs one for every create, delete and expiration change, which also covers the admin page. `service.delete_detection()` returns the removed detection (or `None`) so the line can name the value.
+
+### `/analysis` reads — deleted; `ace_api.get_analysis` → `GET /api/v2/alerts/{uuid}`
+
+| Legacy Flask URL                               | Replacement                                         |
+|------------------------------------------------|-----------------------------------------------------|
+| `GET /analysis/<uuid>`                         | `GET /api/v2/alerts/{uuid}` (already existed)       |
+| `GET /analysis/resubmit/<uuid>`                | _(deleted, no replacement)_                         |
+| `GET /analysis/submission/<uuid>`              | _(deleted, no replacement)_                         |
+| `GET /analysis/status/<uuid>`                  | _(deleted, no replacement)_                         |
+| `GET /analysis/details/<uuid>/<name>`          | _(deleted; the alert download has every details file)_ |
+| `GET /analysis/file/<uuid>/<file_uuid_or_name>`| _(deleted; the alert download has every file)_      |
+
+No new endpoint. In six months of production access logs, `resubmit`, `submission` and `details` had no requests and `status` and `file` one failed request each; their only callers in the tree were `ace_api` helpers and the CLI subcommands built on them. They were deleted with `ace_api.resubmit_alert`, `get_analysis_status`, `get_analysis_details`, `get_analysis_file`, their subcommands, and the `ace_api.Analysis.status` property, which existed only to call `/status`.
+
+`GET /analysis/<uuid>` had a month of requests from a script (`python-requests`, through the external endpoint) that stopped a month before this change and is not in any repo. `ace_api.get_analysis` and `ace_api get-analysis` now call `GET /api/v2/alerts/{uuid}`, which answers with the same `{"result": ...}` envelope around the same tree, plus the alert's database state and version (`Alert.json`), so the helper keeps working for alerts.
+
+Notes:
+- **Alerts only.** The legacy route also served a root that had not become an alert (still in the workload, or analyzed without a detection). `GET /api/v2/alerts/{uuid}` answers 404 for those, which `ace_api.get_analysis` raises as `requests.HTTPError`.
+- `aceapi/analysis.py` holds `submit` alone. Its tests read what a submission saved from storage (`RootAnalysis.load()`, encoded with the legacy `_JSONEncoder`) instead of through the deleted routes, so their assertions are unchanged; the `ace_api` client test of `Analysis.add_file` does the same.
+- `tests/aceapi/test_engine_node_to_node.py::test_automation_scope_still_denies_out_of_scope_endpoints` probed `GET /api/analysis/<uuid>`. No Flask route requires `alert:read` now, so it probes `GET /api/v2/alerts/{uuid}` with the same config key, dispatched on the shared event loop like `tests/conftest.py::_dispatch_v2`.
 
 ### Saved filters → `aceapi_v2/saved_filters/` + `aceapi_v2/filter_screens/`
 

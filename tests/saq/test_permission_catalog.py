@@ -87,7 +87,7 @@ class TestCatalogGuard:
 _ENGINE_MODULE = REPO_ROOT / "aceapi" / "engine.py"
 
 # The one node-to-node call that is NOT an engine_bp route: ace_api.submit() posts to
-# /api/analysis/submit (aceapi/analysis.py:80), used by saq/collectors/remote_node.py and the GUI's
+# /api/analysis/submit (aceapi/analysis.py:76), used by saq/collectors/remote_node.py and the GUI's
 # manual alert entry.
 _SUBMIT_PERMISSION = ("alert", "create")
 

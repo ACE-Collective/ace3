@@ -21,7 +21,10 @@ import uuid
 import pytest
 import yaml
 from flask import url_for
+from httpx import ASGITransport, AsyncClient
 
+from aceapi_v2.application import app as fastapi_app
+from aceapi_v2.sync import run_async
 from saq.configuration.config import get_config
 from saq.configuration.schema import ConfigApiKey
 from saq.database.util.locking import acquire_lock
@@ -126,17 +129,26 @@ def test_upload_allowed_by_shipped_automation_scope(test_client, automation_api_
     assert result.status_code != 403
 
 
+def _get_api_v2(path: str, headers: dict):
+    """A GET against the FastAPI app, run on the loop its cached async database engine is bound to
+    (see tests/conftest.py::_dispatch_v2)."""
+    async def _send():
+        async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:
+            return await client.get(path, headers=headers)
+
+    return run_async(_send())
+
+
 @pytest.mark.integration
-def test_automation_scope_still_denies_out_of_scope_endpoints(test_client, automation_api_key):
+def test_automation_scope_still_denies_out_of_scope_endpoints(automation_api_key):
     """The automation scope must be a real narrowing, not a bypass.
 
     Guards against "fixing" a future scope failure with scope: ["*:*"] or by reverting to the
-    bare-string form -- either would make the three tests above pass vacuously. get_analysis
-    requires alert:read (aceapi/analysis.py), which the node key must not have: it shares the alert
-    major with the key's alert:create, so this also fails if the scope is widened to alert:*.
+    bare-string form -- either would make the three tests above pass vacuously. Reading an alert
+    (GET /api/v2/alerts/{uuid}) requires alert:read, which the node key must not have: it shares the
+    alert major with the key's alert:create, so this also fails if the scope is widened to alert:*.
+    No legacy Flask route requires alert:read any more, so the probe goes to the FastAPI app, which
+    authenticates config keys against the same apikeys config.
     """
-    result = test_client.get(
-        url_for("analysis.get_analysis", uuid=str(uuid.uuid4())),
-        headers=automation_api_key,
-    )
+    result = _get_api_v2(f"/alerts/{uuid.uuid4()}", automation_api_key)
     assert result.status_code == 403
