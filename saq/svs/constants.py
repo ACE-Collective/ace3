@@ -155,3 +155,18 @@ ROUTER_ACTOR = "svs"
 # associating an alert, or disassociating it. The marker router never moves an alert whose latest
 # move is one of these (docs/SVS_RUNS.md, *Associating alerts by hand*)
 SVS_MANUAL_ROUTER = "svs_manual"
+
+
+class CoverageState(StrEnum):
+    """Coverage of a technique on a platform (svs_coverage.state, docs/SVS_COVERAGE.md, *States*),
+    worst first: a row is in the first state any test or mapping that counts toward it is in."""
+    FAILING = "failing"        # a test's latest reviewed run there missed an expected signature
+    STALE = "stale"            # validated, but the test, an expected rule or the expectations changed since
+    VALIDATED = "validated"    # a test's latest reviewed run there hit every expected signature
+    MANUAL = "manual"          # only a signature's mitre: tag claims it
+    UNTESTED = "untested"      # tests exist, none judged there yet
+    NONE = "none"              # no tests and no tags
+
+
+# the actor of the refreshes service_svs runs
+COVERAGE_ACTOR = "svs:coverage"

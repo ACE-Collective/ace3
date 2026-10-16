@@ -206,6 +206,8 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM svs_test_hosts")
         cursor.execute("DELETE FROM svs_catalog_tests")
         cursor.execute("DELETE FROM svs_catalog_repositories")
+        cursor.execute("DELETE FROM svs_coverage")
+        cursor.execute("DELETE FROM svs_coverage_state")
 
         # the automation user, as saq.database.seed creates it, at the id the configuration names
         automation_user_id = get_config().global_settings.automation_user_id

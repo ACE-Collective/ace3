@@ -15,12 +15,14 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.svs import association, review
+from saq.svs import association, coverage, review
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
+from saq.svs.coverage import refresh_coverage
 from saq.svs.expectations import set_expectation
 
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
+from saq.svs.signatures import SignatureTags
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test
@@ -268,3 +270,26 @@ def test_a_review(caplog):
     _assert_fields(transition, TRANSITION_FIELDS)
     (reviewed,) = _records(caplog, f"svs run {run.uuid} reviewed by unittest")
     _assert_fields(reviewed, RUN_FIELDS + ("actor", "counts", "re_review", "alerts_closed", "fp_verdicts"))
+
+
+#
+# records that aren't about a run
+#
+
+def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
+    tags = {}
+    monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
+    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
+    refresh_coverage("unittest")
+    tags["s"] = SignatureTags("s", "hunt", "hunt", True, ("T1547",), ())
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        refresh_coverage("unittest")
+
+    (refreshed,) = _records(caplog, "svs coverage refreshed")
+    assert refreshed.levelno == logging.INFO and (refreshed.changed, refreshed.actor) == (1, "unittest")
+    _assert_fields(refreshed, ("attack_release", "rows", "changed", "retired", "duration_ms", "actor"))
+
+    (changed,) = _records(caplog, "svs coverage of T1547 on windows")
+    assert changed.levelno == logging.INFO and (changed.from_state, changed.to_state) == ("none", "manual")
+    _assert_fields(changed, ("technique", "platform", "from_state", "to_state"))

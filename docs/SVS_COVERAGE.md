@@ -5,8 +5,114 @@ runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags
 carry (`docs/SVS.md`, Part 4).
 
 This document covers how coverage works in ACE and how to operate it. It grows with phase 5. Today
-it covers the ATT&CK release coverage is computed against. The design and its reasoning are in
-`docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
+it covers how coverage is computed and refreshed, and the ATT&CK release it is computed against.
+The design and its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
+
+## Rows
+
+Coverage is one row per **(technique, platform)**, in the `svs_coverage` table. Coverage is global,
+not per company.
+
+A technique has rows on:
+- every platform ATT&CK lists for it;
+- every platform of its tests;
+- for a parent technique, every platform of its sub-techniques' rows.
+
+`attack_platform` says whether ATT&CK itself lists the platform for the technique. A test can run
+somewhere ATT&CK doesn't list; for example, some IaaS atomics run from linux.
+
+Which techniques have rows:
+- every active technique of the pinned release;
+- a deprecated or unknown technique, only while a test or a counting tag names it;
+- the parent of each of those.
+
+A row is never deleted. When nothing produces it any more (a test was removed from its repository,
+an ATT&CK upgrade revoked the technique), it gets `retired_at`. It comes back, with `retired_at`
+cleared, if something produces it again.
+
+## Platforms
+
+A test counts on each of its supported platforms. It also counts on any platform it has a run or
+an expectation on (`docs/SVS_RUNS.md`). A run's platform is the platform of its targets, and
+expectations are kept per platform, so each platform of a multi-platform test is judged on its own.
+
+## States
+
+A test contributes one state to the row of its technique on each of its platforms. That state is
+the test's state on that platform, which is the same judgment the Tests tab shows: the latest
+reviewed run there, against what is expected of the test there, minus ignores
+(`saq/svs/test_state.py`).
+
+| The test on the platform | Counts as |
+|---|---|
+| *validated* | **validated** |
+| *failing* | **failing** |
+| *stale* | **stale** |
+| Something is expected that its latest reviewed run there didn't judge (the Tests tab shows *awaiting review*) | **stale** |
+| Never run there, no reviewed run there, or nothing expected there | **untested** |
+
+A signature's tag adds **manual** (below). A row's state is the worst of everything counting
+toward it:
+
+**failing** > **stale** > **validated** > **manual** > **untested** > **none**
+
+A row nothing counts toward is **none**. *Failing* means that a test of the technique missed an
+expected signature. It doesn't mean that the technique goes undetected.
+
+A row also carries counts over the same tests and signatures as its state:
+- `tests_total`, `tests_validated`, `tests_failing`, `tests_stale`;
+- `manual_signatures`, the signatures whose tags count toward it;
+- `measured_signatures`, the signatures expected of its tests on the platform;
+- `last_reviewed_at`.
+
+Catalog tests removed from their repository don't count.
+
+## Roll-up
+
+A parent technique's row counts its sub-techniques' rows on the same platform, so T1059 on
+windows is *failing* when a T1059.001 test failed there. `state` is rolled up. `own_state` covers
+only what names the technique itself, and `parent` and `is_subtechnique` say where a row sits.
+
+## Manual mappings
+
+A signature's `mitre:` tags claim techniques without a test: a hunt's `tags`, and a YARA rule's tags,
+which include its `mitre_attack` meta.
+- A tag counts only when the signature is enabled, and, for a YARA rule, not in QA mode
+  (`docs/YARA_QA.md`).
+- A tag on technique t makes every row of t **manual**. It doesn't reach t's sub-techniques, but it
+  rolls up to t's parent like anything else.
+- Tags are matched case-insensitively against `T1234` or `T1234.567`. A revoked id counts as its
+  successor.
+- A tag naming an id the release doesn't have doesn't count. Neither does a tag that isn't a
+  technique id at all, such as a tactic (`mitre:TA0002`) or a template (`mitre:{{ technique }}`).
+  Both are counted (`unknown_tags`, `ignored_tags`) in `ace svs coverage status`.
+
+## Refresh
+
+`service_svs` recomputes coverage every `svs.coverage.refresh_interval_seconds` (default 120), on the
+primary node only (`saq/svs/coverage.py`). Coverage therefore trails a review or a new expectation
+by at most that interval.
+
+A refresh:
+1. reads the signatures' tags from the hunts and the YARA rule inventory;
+2. locks the single row of `svs_coverage_state`, so two refreshes never interleave;
+3. reads the catalog tests, their runs, expectations and ignores, and computes every row;
+4. writes only the columns that changed, so a row's `updated_at` moves only on a real change. It
+   inserts new rows and retires missing ones;
+5. records what it did on `svs_coverage_state`, and commits once.
+
+If anything fails, nothing is written. For example, a YARA rule location might not be readable; a
+partial inventory would make every YARA manual mapping vanish for one refresh. The error is
+recorded on `svs_coverage_state` and logged, and the next refresh tries again.
+
+```
+ace svs coverage refresh [--force]   # refresh now; --force off the primary node
+ace svs coverage status              # the last refresh, its error, and rows per state on each platform
+```
+
+Each refresh logs *svs coverage refreshed* with `attack_release`, `rows`, `changed`, `retired`,
+`duration_ms` and `actor`. Each row whose state changed logs *svs coverage of T… on …* with
+`technique`, `platform`, `from_state` and `to_state` (`docs/SVS.md`, *Logging contract*).
 
 ## The ATT&CK release
 

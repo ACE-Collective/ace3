@@ -16,38 +16,13 @@ from saq.svs.attack import (
     normalize_technique_id,
     syntactic_parent,
 )
+from tests.saq.svs.conftest import ATTACK_EXTRACT as EXTRACT
 
 pytestmark = pytest.mark.unit
 
-EXTRACT = {
-    "format": 1,
-    "release": "v99.0",
-    "domain": "enterprise-attack",
-    "source": {"url": "https://example.invalid/", "sha256": "0" * 64},
-    "platforms": [{"slug": "windows", "name": "Windows"}, {"slug": "macos", "name": "macOS"}],
-    "tactics": [{"id": "TA0003", "shortname": "persistence", "name": "Persistence"},
-                {"id": "TA0002", "shortname": "execution", "name": "Execution"}],
-    "techniques": {
-        "T1059": {"name": "Command and Scripting Interpreter", "parent": None, "tactics": ["TA0002"],
-                  "platforms": ["windows", "macos"], "deprecated": False},
-        "T1059.001": {"name": "PowerShell", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["windows"],
-                      "deprecated": False},
-        "T1059.002": {"name": "AppleScript", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["macos"],
-                      "deprecated": False},
-        "T1547": {"name": "Boot or Logon Autostart Execution", "parent": None, "tactics": ["TA0003", "TA0002"],
-                  "platforms": ["windows"], "deprecated": False},
-        "T1099": {"name": "Timestomp", "parent": None, "tactics": [], "platforms": ["windows"], "deprecated": True},
-    },
-    "revoked": {"T1086": "T1059.001", "T1150": "T1099"},
-    "renamed": {"T1059": {"from": "Scripting", "previous_release": "v98.0"}},
-}
-
-
 @pytest.fixture
-def catalog(tmp_path) -> AttackCatalog:
-    path = tmp_path / "v99.0.json"
-    path.write_text(json.dumps(EXTRACT))
-    return load_attack_catalog(path)
+def catalog(attack_catalog) -> AttackCatalog:
+    return attack_catalog
 
 
 def test_normalize_technique_id():

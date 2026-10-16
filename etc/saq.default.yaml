@@ -256,6 +256,10 @@ svs:
     repositories: []
     # how often service_svs looks for a new commit of each repository
     refresh_interval_seconds: 300
+  # ATT&CK coverage per technique and platform (docs/SVS_COVERAGE.md)
+  coverage:
+    # how often service_svs recomputes it (ace svs coverage refresh does it at once)
+    refresh_interval_seconds: 120
   # test runs registered by a launcher (docs/SVS_RUNS.md)
   runs:
     # a run not started this long after it was registered goes to Error and is closed
