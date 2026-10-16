@@ -49,6 +49,7 @@ from saq.util.uuid import is_uuid
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
     AlertCommentRead,
+    AlertListRow,
     AlertRow,
     BulkAddObservableResult,
 )
@@ -612,11 +613,11 @@ def decode_listing_cursor(cursor: str, order: str) -> list:
 
 def fetch_alert_page(
     listing: AlertListing, cursor: str | None, limit: int
-) -> tuple[list[AlertRow], str | None]:
+) -> tuple[list[AlertListRow], str | None]:
     """One page of the listing after `cursor` (the first page when None), and the cursor of
     the next page (None on the last). Raises InvalidCursor."""
     alert_ids, next_cursor = fetch_alert_page_ids(listing, cursor, limit)
-    return load_alert_rows(alert_ids), next_cursor
+    return load_alert_list_rows(alert_ids), next_cursor
 
 
 def fetch_alert_page_ids(
@@ -723,7 +724,25 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
     return [rows[alert_id] for alert_id in alert_ids if alert_id in rows]
 
 
-def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
+def load_alert_list_rows(alert_ids: list[int]) -> list[AlertListRow]:
+    """The listing's rows for these alert ids, in the order given: load_alert_rows() plus the
+    comments on each alert, in one more query."""
+    rows = load_alert_rows(alert_ids)
+    if not rows:
+        return []
+
+    comments: dict[str, list[str]] = {}
+    for alert_uuid, comment in get_db().execute(
+        select(Comment.uuid, Comment.comment)
+        .where(Comment.uuid.in_([row.uuid for row in rows]))
+        .order_by(Comment.insert_date, Comment.comment_id)
+    ):
+        comments.setdefault(alert_uuid, []).append(comment)
+
+    return [AlertListRow(**row.model_dump(), comments=comments.get(row.uuid, [])) for row in rows]
+
+
+def alert_rows_to_csv(rows: list[AlertListRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -732,5 +751,7 @@ def alert_rows_to_csv(rows: list[AlertRow], *, header: bool) -> str:
     for row in rows:
         values = row.model_dump(mode="json")
         values["tags"] = ",".join(row.tags)
+        # a comment can hold commas; the csv module quotes the newlines
+        values["comments"] = "\n".join(row.comments)
         writer.writerow([values[name] if values[name] is not None else "" for name in ALERT_ROW_CSV_FIELDS])
     return buffer.getvalue()

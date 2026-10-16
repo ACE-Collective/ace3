@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from urllib.parse import urlencode
 
 import pytz
 from flask import flash, make_response, redirect, render_template, request, session, url_for
@@ -276,6 +277,10 @@ def build_manage_list_context() -> dict:
         'temp_filter': get_temp_filter(),
         # the share link is a pure string build -- no DB write, no round trip
         'share_url': url_for('analysis.manage', f=encode_filter_query(effective_filters), _external=True),
+        # the same filters through the API's CSV export, resolving relative dates as this page does
+        'export_csv_url': '/api/v2/alerts/export/csv?' + urlencode(
+            [('f', value) for value in encode_filter_query(effective_filters)]
+            + [('tz', current_user.timezone or 'UTC')]),
 
         # alert data
         'alerts': alerts,

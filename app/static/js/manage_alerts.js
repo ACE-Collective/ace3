@@ -1007,6 +1007,12 @@ function copy_filter_link(button) {
     copy_to_clipboard(button.dataset.shareUrl);
 }
 
+// The filter bar is re-rendered by the refresh poll and the action bar is not, so the export
+// URL is read from the bar when the button is clicked: it exports the filter the bar shows.
+function export_alerts_to_csv() {
+    window.location.href = document.getElementById("manage_filter_bar").dataset.exportUrl;
+}
+
 //
 // saved filter management (static/js/saved_filters.js)
 //

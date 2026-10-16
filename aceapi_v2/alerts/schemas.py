@@ -22,7 +22,8 @@ class BulkAddObservableResult(BaseModel):
 
 
 class AlertRow(BaseModel):
-    """One alert as a flat database row: what GET /api/v2/alerts lists and exports.
+    """One alert as a flat database row: the base of what GET /api/v2/alerts lists
+    (AlertListRow) and of the AI API's export rows.
 
     Timestamps are UTC. Users are usernames, the company is its name."""
 
@@ -48,15 +49,21 @@ class AlertRow(BaseModel):
     detection_count: int = 0
 
 
+class AlertListRow(AlertRow):
+    """One alert as GET /api/v2/alerts lists and exports it: the row plus the analysts' comments."""
+
+    comments: list[str] = Field(default_factory=list, description="the comments on the alert, oldest first")
+
+
 class AlertListPage(BaseModel):
-    data: list[AlertRow]
+    data: list[AlertListRow]
     next_cursor: str | None = Field(
         default=None,
         description="pass as ?cursor= with the same filters for the next page; null on the last page")
 
 
-# the CSV export's columns, in order; tags are joined with ","
-ALERT_ROW_CSV_FIELDS = tuple(AlertRow.model_fields)
+# the CSV export's columns, in order; tags are joined with ",", comments with a newline
+ALERT_ROW_CSV_FIELDS = tuple(AlertListRow.model_fields)
 
 
 class AlertCount(BaseModel):
