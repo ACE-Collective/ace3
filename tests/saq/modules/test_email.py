@@ -2,13 +2,14 @@ from datetime import datetime
 import email
 import filecmp
 import gzip
-import json
 import os
 import shutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import pytest
 import pytz
+
+import ace_api
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
@@ -22,7 +23,6 @@ from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone, get_temp_dir
-from saq.json_encoding import _JSONEncoder
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.correlation import URLEmailPivotAnalysis_v2
 from saq.modules.email.logging import EmailLoggingAnalyzer
@@ -207,33 +207,25 @@ def test_mailbox_whitelisted(root_analysis, datadir):
     assert root_analysis.whitelisted
 
 @pytest.mark.integration
-def test_mailbox_submission(test_client, root_analysis, datadir):
-    from flask import url_for
-    from saq.modules.email import EmailAnalysis
-
+def test_mailbox_submission(mock_api_call, root_analysis, datadir):
     event_time = get_local_timezone().localize(datetime.now()).astimezone(pytz.UTC).strftime(EVENT_TIME_FORMAT_JSON_TZ)
     sha256 = sha256_file(str(datadir / 'emails/splunk_logging.email.rfc822'))
     with open(str(datadir / 'emails/splunk_logging.email.rfc822'), 'rb') as fp:
-        result = test_client.post(url_for('analysis.submit'), data={
-            'analysis': json.dumps({
-                'analysis_mode': 'email',
-                'tool': 'unittest',
-                'tool_instance': 'unittest_instance',
-                'type': 'mailbox',
-                'description': 'testing',
-                'event_time': event_time,
-                'details': { },
-                'observables': [
-                    { 'type': F_FILE, 'value': sha256, 'file_path': 'rfc822.email', 'time': event_time, 'tags': [], 'directives': [ DIRECTIVE_ORIGINAL_EMAIL ], 'limited_analysis': [] },
-                ],
-                'tags': [ ],
-            }, cls=_JSONEncoder),
-            'file': (fp, 'rfc822.email'),
-            }, content_type='multipart/form-data', headers = { 'x-ace-auth': get_config().api.api_key })
+        result = ace_api.submit(
+            analysis_mode='email',
+            tool='unittest',
+            tool_instance='unittest_instance',
+            type='mailbox',
+            description='testing',
+            event_time=event_time,
+            details={},
+            observables=[
+                { 'type': F_FILE, 'value': sha256, 'file_path': 'rfc822.email', 'time': event_time, 'tags': [], 'directives': [ DIRECTIVE_ORIGINAL_EMAIL ], 'limited_analysis': [] },
+            ],
+            tags=[],
+            files=[('rfc822.email', fp)])
 
-    result = result.get_json()
     assert result
-
     assert 'result' in result
     result = result['result']
     assert result['uuid']
