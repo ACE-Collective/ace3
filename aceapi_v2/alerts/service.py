@@ -31,7 +31,7 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.database.util.alert import node_scope_locations, touch_alerts
+from saq.database.util.alert import change_alert_owner, describe_skipped, node_scope_locations, touch_alerts
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload
 from saq.environment import get_base_dir, get_temp_dir
@@ -52,6 +52,7 @@ from aceapi_v2.alerts.schemas import (
     AlertListRow,
     AlertRow,
     BulkAddObservableResult,
+    SetOwnerResult,
 )
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip
 from aceapi_v2.sync import run_db_in_thread
@@ -137,6 +138,33 @@ def get_alert_version(alert_uuid: str) -> str:
         raise HTTPException(status_code=404, detail="alert not found")
 
     return version
+
+
+def set_alert_owner(alert_uuids: list[str], owner_id: int | None, acting_user_id: int,
+                    take_owned: dict[str, int]) -> SetOwnerResult:
+    """Gives the alerts to owner_id (see change_alert_owner) and reports what was left alone,
+    worded as the GUI tells the analyst."""
+    new_owner = None
+    if owner_id is not None:
+        new_owner = get_db().get(User, owner_id)
+        if new_owner is None or not new_owner.enabled:
+            raise HTTPException(status_code=422, detail=f"user {owner_id} does not exist or is disabled")
+
+    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned)
+
+    skipped = describe_skipped(ownership)
+    message = None
+    if skipped:
+        count = len(ownership.permitted)
+        if owner_id == acting_user_id:
+            action = f"took ownership of {count} alerts"
+        elif owner_id is None:
+            action = f"unassigned {count} alerts"
+        else:
+            action = f"assigned {count} alerts to {new_owner.gui_display}"
+        message = f"{action}; {skipped}"
+
+    return SetOwnerResult(applied=ownership.permitted, skipped=ownership.skipped, message=message)
 
 
 def get_alert_meta(alert_uuid: str) -> dict:

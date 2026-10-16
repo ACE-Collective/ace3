@@ -513,3 +513,73 @@ function renderJsonTree(data, container, options) {
 
     targetElement.appendChild(ul);
 }
+
+// A message in the same banner a flashed message gets, for a page that reports something without
+// reloading (see #flash_messages in base.html).
+function show_flash_message(text) {
+    const banner = document.createElement("div");
+    banner.className = "alert alert-warning alert-dismissible fade show";
+    banner.setAttribute("role", "alert");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "btn-close";
+    close.setAttribute("data-bs-dismiss", "alert");
+    close.setAttribute("aria-label", "Close");
+    banner.appendChild(close);
+    banner.appendChild(document.createTextNode(text));
+    document.getElementById("flash_messages").appendChild(banner);
+}
+
+// The take_owned form value ("alert_uuid:owner_id,...", see selection_guard.js) as the
+// {alert_uuid: owner_id} map PUT /api/v2/alerts/owner takes.
+function take_owned_map(take_owned) {
+    const result = {};
+    (take_owned || "").split(",").forEach(function(pair) {
+        const parts = pair.trim().split(":");
+        if (parts.length === 2 && parts[0] && /^\d+$/.test(parts[1])) {
+            result[parts[0]] = parseInt(parts[1], 10);
+        }
+    });
+    return result;
+}
+
+// The Assign Ownership dialog (base.html), for a page that describes the alerts it assigns.
+//   alerts()        the alerts to assign, described for SelectionGuard (selection_guard.js)
+//   on_deselect     as SelectionGuard.render takes it, or null where there is no selection
+//   done(result)    runs with the result of PUT /api/v2/alerts/owner
+// Assigning goes through the same rule as taking: an alert another analyst owns is left alone
+// unless the guard's checkbox for that analyst is ticked. Alerts the assignee already owns need
+// no confirmation, so the guard is drawn again whenever the assignee changes.
+function setup_assign_ownership_dialog(alerts, on_deselect, done) {
+    const modal = document.getElementById("assign_ownership_modal");
+    const select = document.getElementById("assign_ownership_user");
+    const guard = document.getElementById("assign_ownership_selection_guard");
+    const button = document.getElementById("btn-assign-ownership");
+
+    function owner_id() {
+        return select.value === "" ? null : Number(select.value);
+    }
+
+    function render() {
+        SelectionGuard.render(guard, alerts(), {
+            action: "assign",
+            new_owner_id: owner_id(),
+            new_owner_name: select.options[select.selectedIndex].text,
+            submit: button,
+            on_deselect: on_deselect,
+        });
+    }
+
+    $(modal).on("show.bs.modal", render);
+    select.addEventListener("change", render);
+    button.addEventListener("click", function() {
+        aceApi.put("/alerts/owner", {
+            alert_uuids: alerts().map(function(alert) { return alert.uuid; }),
+            owner_id: owner_id(),
+            take_owned: take_owned_map(SelectionGuard.take_owned(guard)),
+        })
+        .then(done)
+        .catch(function(err) { alert(err.message); });
+    });
+}
+

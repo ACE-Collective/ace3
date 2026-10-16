@@ -70,6 +70,24 @@ class AlertCount(BaseModel):
     count: int
 
 
+class SetOwnerRequest(BaseModel):
+    alert_uuids: list[str] = Field(min_length=1)
+    owner_id: int | None = Field(
+        description="the user who gets the alerts: the caller's own id takes them, null unassigns them")
+    take_owned: dict[str, int] = Field(
+        default_factory=dict,
+        description="alert uuid -> id of the analyst the caller agreed to take it from. An alert another "
+                    "analyst owns is changed only when it is named here with that analyst; otherwise it is "
+                    "left alone and reported in `skipped`.")
+
+
+class SetOwnerResult(BaseModel):
+    applied: list[str] = Field(description="the alerts that now have the requested owner, in the order asked for")
+    skipped: dict[str, str] = Field(description="alert uuid -> display name of the analyst left owning it")
+    message: str | None = Field(
+        default=None, description="what the GUI tells the analyst when alerts were skipped; null otherwise")
+
+
 class DateRange(BaseModel):
     """A date filter value resolved to the window it means right now."""
     start: datetime

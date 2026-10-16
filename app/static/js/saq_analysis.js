@@ -325,9 +325,12 @@ $(document).ready(function() {
         })();
     });
 
-    $('#btn-assign-ownership').click(function(e) {
-        // add a hidden field to the form and then submit
-        $("#assign-ownership-form").append('<input type="hidden" name="alert_uuid" value="' + current_alert_uuid + '" />').submit();
+    // the page reloads to show the new owner, so a skipped alert is reported before it does
+    setup_assign_ownership_dialog(function() { return [current_alert_description()]; }, null, function(result) {
+        if (result.message) {
+            alert(result.message);
+        }
+        window.location.replace(window.location);
     });
 
     $("#btn-analyze_alert").click(function(e) {
@@ -869,19 +872,15 @@ function set_owner(alert_uuid) {
         return;
     }
 
-    (function() {
-        const params = new URLSearchParams();
-        params.append('alert_uuids', alert_uuid);
-        if (take_owned) {
-            params.append('take_owned', take_owned);
+    aceApi.put("/alerts/owner", {alert_uuids: [alert_uuid], owner_id: current_user_id, take_owned: take_owned_map(take_owned)})
+    .then(function(result) {
+        // the page reloads to show the new owner, so a skipped alert is reported before it does
+        if (result.message) {
+            alert(result.message);
         }
-        fetch('set_owner', { method: 'POST', credentials: 'same-origin', body: params })
-        .then(function(resp){
-            if (!resp.ok) { return resp.text().then(function(t){ throw new Error(t || resp.statusText); }); }
-            window.location.replace(window.location);
-        })
-        .catch(function(err){ alert(err.message); });
-    })();
+        window.location.replace(window.location);
+    })
+    .catch(function(err) { alert(err.message); });
 }
 
 function toggleCollapseAll(button) {
