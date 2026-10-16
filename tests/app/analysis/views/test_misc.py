@@ -1,10 +1,18 @@
+import logging
 import os
 from io import BytesIO
+from urllib.parse import parse_qs, urlparse
+from uuid import uuid4
 
 import pytest
 from flask import url_for
 
-from saq.database.model import Alert
+from saq.analysis.root import RootAnalysis
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS
+from saq.database.model import Alert, ObservableComment
+from saq.database.pool import get_db
+from saq.database.util.alert import get_alert_by_uuid
+from saq.database.util.locking import acquire_lock, release_lock
 
 
 @pytest.mark.integration
@@ -372,3 +380,94 @@ def test_misc_routes_only_accept_post(web_client):
     # Test analyze_alert only accepts POST
     result = web_client.get(url_for('analysis.analyze_alert'))  
     assert result.status_code == 405  # Method not allowed
+
+
+def _upload(web_client, content: bytes, file_name: str, alert_uuid: str = "", comment: str = ""):
+    return web_client.post(url_for('analysis.upload_file'), data={
+        'file_path': (BytesIO(content), file_name),
+        'comment': comment,
+        'alert_uuid': alert_uuid,
+    }, content_type='multipart/form-data')
+
+
+def _new_alert_uuid(web_client, comment: str = "") -> str:
+    result = _upload(web_client, b'first upload', 'first.txt', comment=comment)
+    return parse_qs(urlparse(result.location).query)['direct'][0]
+
+
+def _file_observable(alert_uuid: str, file_name: str):
+    alert = get_alert_by_uuid(alert_uuid)
+    alert.load()
+    return alert, next(o for o in alert.root_analysis.observables if o.type == 'file' and o.file_name == file_name)
+
+
+@pytest.mark.integration
+class TestUploadFileRecordsTheAnalyst:
+    """An uploaded file is the analyst's addition: it says who added it, it is audited, it is
+    analyzed, and the form's comment lands on the file."""
+
+    def test_new_alert_upload_is_marked_added_by(self, web_client, caplog):
+        caplog.set_level(logging.INFO)
+        alert_uuid = _new_alert_uuid(web_client)
+
+        _, file_observable = _file_observable(alert_uuid, 'first.txt')
+        assert file_observable.added_by == 'john'
+        assert file_observable.added_time is not None
+        assert f"AUDIT: user john uploaded file first.txt as new alert {alert_uuid}" in caplog.text
+
+    def test_existing_alert_upload_is_marked_added_by(self, web_client, caplog):
+        alert_uuid = _new_alert_uuid(web_client)
+        caplog.set_level(logging.INFO)
+
+        result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+
+        assert result.status_code == 302
+        _, file_observable = _file_observable(alert_uuid, 'later.txt')
+        assert file_observable.added_by == 'john'
+        assert file_observable.added_time is not None
+        assert f"AUDIT: user john uploaded file later.txt to alert {alert_uuid}" in caplog.text
+
+    def test_upload_to_dispositioned_alert_is_analyzed_in_correlation(self, web_client):
+        alert_uuid = _new_alert_uuid(web_client)
+        alert = get_alert_by_uuid(alert_uuid)
+        alert.load()
+        alert.root_analysis.analysis_mode = ANALYSIS_MODE_DISPOSITIONED
+        alert.root_analysis.save()
+
+        _upload(web_client, b'uploaded after disposition', 'later.txt', alert_uuid=alert_uuid)
+
+        alert, _ = _file_observable(alert_uuid, 'later.txt')
+        assert alert.root_analysis.analysis_mode == ANALYSIS_MODE_CORRELATION
+        assert alert.root_analysis.state.get(STATE_ANALYST_REQUESTED_ANALYSIS) is True
+
+    def test_comment_is_an_observable_comment_on_the_file(self, web_client):
+        alert_uuid = _new_alert_uuid(web_client, comment='new alert upload note')
+        _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid,
+                comment='captured from the detonation VM')
+
+        for file_name, text in (('first.txt', 'new alert upload note'), ('later.txt', 'captured from the detonation VM')):
+            _, file_observable = _file_observable(alert_uuid, file_name)
+            comment = get_db().query(ObservableComment).filter(ObservableComment.comment == text).one()
+            assert comment.user.username == 'john'
+            assert comment.observable.type == 'file'
+            assert comment.observable.value.decode() == file_observable.value
+
+    def test_empty_comment_adds_no_observable_comment(self, web_client):
+        alert_uuid = _new_alert_uuid(web_client)
+        before = get_db().query(ObservableComment).count()
+
+        _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid, comment='  ')
+
+        assert get_db().query(ObservableComment).count() == before
+
+    def test_lock_is_released_when_the_alert_fails_to_load(self, web_client, monkeypatch):
+        alert_uuid = _new_alert_uuid(web_client)
+        monkeypatch.setattr(RootAnalysis, "load", lambda self: False)
+
+        result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+
+        assert result.status_code == 302
+        assert result.location == url_for('analysis.index')
+        lock_uuid = str(uuid4())
+        assert acquire_lock(alert_uuid, lock_uuid)
+        release_lock(alert_uuid, lock_uuid)
