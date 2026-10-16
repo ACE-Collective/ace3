@@ -73,6 +73,7 @@ Follow these steps to bulid a new integration.
 1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 1. (optional) Add correlation hunt query sources or command types. See [Extending correlation hunts](#extending-correlation-hunts).
 1. (optional) Add an alert router that decides which queue an alert goes to. See [Routing alerts](#routing-alerts).
+1. (optional) Add API routes for your pages and actions to call. See [Adding API routes](#adding-api-routes).
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
 
@@ -346,10 +347,10 @@ register_alert_action(VendorAlertAction)
 
 - **The button does nothing by itself.** `action_path` is a template in your integration's
   templates, rendered once into the alert page's body, after the toolbar, with `action` and
-  `alert` in its context. Put the button's modal and script there, and have the script post to a
-  route in your own blueprint. Check the permission again in the route: hiding a button is not
-  access control. If the template is missing or fails to render, the button is left out and the
-  error is logged.
+  `alert` in its context. Put the button's modal and script there, and have the script call a
+  route your integration adds to the API (see [Adding API routes](#adding-api-routes)). Check the
+  permission again in the route: hiding a button is not access control. If the template is missing
+  or fails to render, the button is left out and the error is logged.
 - **`is_available()` runs on every render of the alert page**, so keep it cheap. If it, or the
   action's `__init__`, raises, the button is left out and the error is logged; the page still
   renders.
@@ -357,6 +358,62 @@ register_alert_action(VendorAlertAction)
 
 **Tests.** Patch `saq.gui.alert_actions._ALERT_ACTION_REGISTRY` to an empty list and register
 your action, as `tests/app/analysis/views/test_index.py` does, then render the alert page.
+
+## Adding API routes
+
+Anything an integration's pages, observable actions or alert actions fetch or change goes through
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Register a FastAPI router when
+your package is imported, and its routes are served under `/api/v2/integrations/<name>`:
+
+```python
+# src/vendor/api/router.py
+router = APIRouter()
+
+@router.post("/alerts/{alert_uuid}/observables/{observable_uuid}/submit",
+             response_model=ObservableAnalysisRequested, status_code=status.HTTP_202_ACCEPTED)
+async def submit(
+    alert_uuid: str,
+    observable_uuid: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
+) -> ObservableAnalysisRequested:
+    observable = await run_db_in_thread(service.request_submission, alert_uuid, observable_uuid)
+    logger.info("AUDIT: user %s requested a submission for observable %s in alert %s",
+                auth.auth_name, observable, alert_uuid)
+    return ObservableAnalysisRequested(message="Submission requested.")
+
+# src/vendor/__init__.py
+from aceapi_v2.integrations import register_integration_router
+from vendor.api.router import router as vendor_api_router
+
+register_integration_router("vendor", vendor_api_router)
+```
+
+- **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
+  The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`
+  fails on a route without a gate. Use an existing permission pair; the core route closest to
+  yours shows which (an observable action that queues analysis is `observable:write`, one that
+  only reads is `observable:read`).
+- **Reuse the core services** rather than locking and loading alerts yourself.
+  `aceapi_v2.alerts.service.request_observable_analysis(alert_uuid, observable_uuid, valid_types, change)`
+  is what the core observable actions use: it locks the alert (409 while the engine holds it),
+  checks the observable's type (422), applies `change` (add the directive your module waits for),
+  and queues the alert in correlation mode, past the stop on dispositioned alerts.
+  `load_observable(alert_uuid, observable_uuid)` loads one observable for an action that changes
+  nothing. Both read the alert through the synchronous session, so call them through
+  `run_db_in_thread()`.
+- **Call the route from the template with `aceApi`** (`app/static/js/ace_api.js`), which prefixes
+  `/api/v2`, sends the session cookie and rejects with the API's own error message:
+  `aceApi.post("/integrations/vendor/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/submit")`.
+- The router is registered once, under one name; registering another router under the same name
+  is an error. Keep the Flask blueprint only for templates, static files and pages.
+
+`integrations.example/example/src/example/api/router.py` is a working example.
+
+**Tests.** Integration tests do not get the API client fixtures of `tests/aceapi_v2/conftest.py`
+(conftest fixtures reach only their own directory), so import them into the test module:
+`from tests.aceapi_v2.conftest import client, noperm_client, unauth_client, ...` along with the
+fixtures those depend on (`_override_db_session`, `valid_api_key`, `test_user`, `session`,
+`connection`, `engine`). The routes are served by the same app the core tests use.
 
 ## Notes
 
