@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import fnmatch
 import json
 import os
 import random
@@ -848,6 +849,19 @@ def _safe_to_json(cdp_object):
         print(f"could not serialize {type(cdp_object).__name__} to json: {e}")
         return None
 
+
+def _cdp_enum_value(value) -> Optional[str]:
+    """Returns the protocol string of a mycdp enum ("Document"), or None.
+
+    mycdp's enums are plain Enum subclasses, so str() gives the Python name
+    ("ResourceType.DOCUMENT"), which is not what the protocol, the config or
+    anything reading requests.json calls it.
+    """
+    if value is None:
+        return None
+    return str(getattr(value, "value", value))
+
+
 # Structural CSS selectors the visual_checkbox_bypass handler uses to locate the
 # clickable challenge element when no checkbox image matches. Polymorphic kits
 # randomize text, colors, classes, ids and even the rendered scale (defeating
@@ -904,6 +918,53 @@ class PhishkitConfig:
     # Content types whose top-level body is JavaScript. Narrower than the list
     # above: only these can be handed to ACE's JS deobfuscator.
     script_content_types: list = field(default_factory=lambda: list(DEFAULT_SCRIPT_CONTENT_TYPES))
+    # Hosts Chrome reaches directly even when a proxy is configured. Every other
+    # host, including every hop a bypassed host redirects to, still uses the proxy.
+    proxy_bypass_hosts: list = field(default_factory=list)
+
+
+# A Chrome proxy bypass rule: a host, a *. wildcard, an optional port or scheme
+# prefix, an IP or CIDR. SeleniumBase writes the joined list unescaped into the
+# JavaScript of the extension that carries the proxy credentials, so anything
+# outside this set (a quote, a separator, whitespace) is refused, not escaped.
+PROXY_BYPASS_HOST_RE = re.compile(r"^[A-Za-z0-9.*:\[\]/_-]+$")
+
+
+def _load_proxy_bypass_hosts(value) -> list:
+    """Validates the proxy_bypass_hosts config list, raising ValueError on a bad entry."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"proxy_bypass_hosts must be a list, not {type(value).__name__}")
+    hosts = []
+    for entry in value:
+        if not isinstance(entry, str) or not PROXY_BYPASS_HOST_RE.match(entry):
+            raise ValueError(f"invalid proxy_bypass_hosts entry: {entry!r}")
+        hosts.append(entry)
+    return hosts
+
+
+def _matches_proxy_bypass(host: str, rules: list) -> bool:
+    """Returns True when one of the proxy bypass rules sends a request for host direct.
+
+    Covers the forms proxy_bypass_hosts uses, as Chrome reads them: an exact host
+    ("login.example.com", which does not match its subdomains) and a wildcard
+    ("*.example.com", or ".example.com" for the same). A scheme prefix or port on
+    a rule is ignored, and an IP range rule never matches here.
+    """
+    host = host.lower()
+    for rule in rules:
+        pattern = rule.lower().split("://", 1)[-1]
+        if "/" in pattern or pattern.startswith("["):
+            continue
+        without_port, _, port = pattern.rpartition(":")
+        if port.isdigit():
+            pattern = without_port
+        if pattern.startswith("."):
+            pattern = "*" + pattern
+        if fnmatch.fnmatchcase(host, pattern):
+            return True
+    return False
 
 
 def _load_config(config_path: str) -> PhishkitConfig:
@@ -939,6 +1000,7 @@ def _load_config(config_path: str) -> PhishkitConfig:
             str(x).lower()
             for x in (data.get("script_content_types") or DEFAULT_SCRIPT_CONTENT_TYPES)
         ],
+        proxy_bypass_hosts=_load_proxy_bypass_hosts(data.get("proxy_bypass_hosts")),
     )
 
     print(
@@ -950,7 +1012,8 @@ def _load_config(config_path: str) -> PhishkitConfig:
         f"additional_wait={config.additional_wait}s, "
         f"max_network_wait={config.max_network_wait}s, "
         f"{len(config.non_rendered_content_types)} non-rendered content types, "
-        f"{len(config.script_content_types)} script content types"
+        f"{len(config.script_content_types)} script content types, "
+        f"{len(config.proxy_bypass_hosts)} proxy bypass hosts"
     )
     return config
 
@@ -992,6 +1055,8 @@ class Scanner:
         # them as files the site served. See _route_downloads.
         self.page_downloads: dict[str, dict] = {}
         self.page_downloads_dir: Optional[str] = None
+        # the proxy the scan runs through, or None; decides each hop's route in navigation_chain
+        self._proxy: Optional[str] = None
 
         config = _load_config(config_path)
         self.SKIP_BODY_EXT = config.skip_body_ext
@@ -1003,6 +1068,7 @@ class Scanner:
         self.MAX_NETWORK_WAIT = config.max_network_wait
         self.NON_RENDERED_CONTENT_TYPES = frozenset(config.non_rendered_content_types)
         self.SCRIPT_CONTENT_TYPES = frozenset(config.script_content_types)
+        self.PROXY_BYPASS_HOSTS = config.proxy_bypass_hosts
 
         self._bypass_handlers = {
             "visual_checkbox_bypass": self.visual_checkbox_bypass,
@@ -1043,7 +1109,72 @@ class Scanner:
             "total_bytes_downloaded": self.bytes_downloaded,
             "scan_duration_seconds": round(scan_duration, 2),
             "domain_stats": domain_metrics,
+            "navigation": self.navigation_chain(),
         }
+
+    def navigation_chain(self) -> list[dict]:
+        """Returns the main frame's navigations in order, one hop per URL it loaded.
+
+        Each hop is {"url", "via", "status", "error", "route"}:
+          - via: "start" for the first, "redirect" for an HTTP redirect, otherwise
+            the CDP initiator type of the navigation ("script", "parser", "other")
+          - status: the HTTP status of that URL's response, the 3xx included
+          - error: the net error that ended it, e.g. "net::ERR_HTTP_RESPONSE_CODE_FAILURE"
+          - route: "proxy" or "direct", from the proxy and proxy_bypass_hosts the
+            scan ran with; None for a URL with no host (file:, data:)
+
+        The main frame is the frame of the first Document request; iframes are left out.
+        """
+        navigations = [
+            entry for entry in self.requests
+            if entry.get("type") == "request" and entry.get("resource_type") == "Document"
+        ]
+        if not navigations:
+            return []
+
+        main_frame_id = navigations[0].get("frame_id")
+        hops = []
+        latest_hop = {}  # requestId -> index of its latest hop; a redirect keeps the requestId
+        for entry in navigations:
+            if entry.get("frame_id") != main_frame_id:
+                continue
+            request_id = entry.get("requestId")
+            if entry.get("redirect_status") is not None and request_id in latest_hop:
+                hops[latest_hop[request_id]]["status"] = entry["redirect_status"]
+                via = "redirect"
+            elif not hops:
+                via = "start"
+            else:
+                via = entry.get("initiator_type") or "other"
+            hops.append({
+                "url": entry.get("url"),
+                "via": via,
+                "status": None,
+                "error": None,
+                "route": self._route_for(entry.get("url")),
+            })
+            latest_hop[request_id] = len(hops) - 1
+
+        # the response or failure of a request belongs to the last URL it reached
+        for entry in self.requests:
+            index = latest_hop.get(entry.get("requestId"))
+            if index is None:
+                continue
+            if entry.get("type") == "response" and hops[index]["status"] is None:
+                hops[index]["status"] = entry.get("status_code")
+            elif entry.get("type") == "error":
+                hops[index]["error"] = entry.get("error_text")
+
+        return hops
+
+    def _route_for(self, url: Optional[str]) -> Optional[str]:
+        """Returns "proxy" or "direct" for a request to url, or None when it has no host."""
+        host = urlparse(url or "").hostname
+        if not host:
+            return None
+        if not self._proxy or _matches_proxy_bypass(host, self.PROXY_BYPASS_HOSTS):
+            return "direct"
+        return "proxy"
 
     def _count_inflight_requests(self) -> int:
         """Return the number of unique requestIds with a 'request' event but
@@ -1192,7 +1323,7 @@ class Scanner:
                 # "raw" below. Without it, identifying which response is the page
                 # is guesswork: URL equality with the scanned URL breaks on
                 # redirects, and ordering is only a heuristic.
-                "resource_type": str(event.type_),
+                "resource_type": _cdp_enum_value(event.type_),
                 "raw": _safe_to_json(event.response),
             }
             self.requests.append(request)
@@ -1247,6 +1378,7 @@ class Scanner:
                 "date": datetime.now().isoformat(),
                 "type": "error",
                 "requestId": event.request_id,
+                "resource_type": _cdp_enum_value(event.type_),
                 "error_text": error_text,
                 "canceled": canceled,
             }
@@ -1304,6 +1436,15 @@ class Scanner:
                 "method": event.request.method,
                 "url": event.request.url,
                 "headers": event.request.headers,
+                # "Document" on a navigation; with frame_id, the first Document
+                # request identifies the main frame (see phishkit.py's proxy fallback)
+                "resource_type": _cdp_enum_value(event.type_),
+                "frame_id": str(event.frame_id) if event.frame_id else None,
+                # what started the request ("script", "parser", "other"). An HTTP
+                # redirect instead carries the 3xx response of the URL it left,
+                # under the same requestId; no ResponseReceived fires for that URL.
+                "initiator_type": _cdp_enum_value(event.initiator.type_) if event.initiator else None,
+                "redirect_status": event.redirect_response.status if event.redirect_response else None,
                 "raw": _safe_to_json(event.request),
             }
             self.requests.append(request)
@@ -1926,26 +2067,8 @@ class Scanner:
         if enable_multi_click:
             print(f"reached max_click_iterations={max_iterations}, stopping")
 
-    def scan(
-        self,
-        url: str,
-        output_dir: str,
-        additional_wait: Optional[float] = 3.0,
-        proxy: Optional[str] = None,
-        max_network_wait: Optional[float] = 10.0,
-    ) -> ScanResult:
-
-        # output directory must already exist
-        if not os.path.isdir(output_dir):
-            raise Exception(f"output_dir {output_dir} does not exist")
-
-        self._output_dir = output_dir
-        scan_start_time = time.time()
-        screenshot_path = None
-        downloads = []
-        dom_path = None
-        requests_path = None
-
+    def _sb_kwargs(self, proxy: Optional[str]) -> dict:
+        """Returns the SeleniumBase options for a scan, routed through proxy when one is given."""
         # see https://github.com/seleniumbase/SeleniumBase/blob/master/seleniumbase/plugins/sb_manager.py
         sb_kwargs = dict(
             undetectable=True,  # use undetected-chromedriver to evade bot detection
@@ -1971,8 +2094,35 @@ class Scanner:
             else:
                 redacted = proxy
             print(f"using proxy: {redacted}")
+            if self.PROXY_BYPASS_HOSTS:
+                # semicolon-separated is the form SeleniumBase passes both to
+                # --proxy-bypass-list and to its proxy extension's bypassList
+                sb_kwargs["proxy_bypass_list"] = ";".join(self.PROXY_BYPASS_HOSTS)
+                print(f"bypassing proxy for: {', '.join(self.PROXY_BYPASS_HOSTS)}")
+        return sb_kwargs
 
-        with SB(**sb_kwargs) as sb:
+    def scan(
+        self,
+        url: str,
+        output_dir: str,
+        additional_wait: Optional[float] = 3.0,
+        proxy: Optional[str] = None,
+        max_network_wait: Optional[float] = 10.0,
+    ) -> ScanResult:
+
+        # output directory must already exist
+        if not os.path.isdir(output_dir):
+            raise Exception(f"output_dir {output_dir} does not exist")
+
+        self._output_dir = output_dir
+        self._proxy = proxy
+        scan_start_time = time.time()
+        screenshot_path = None
+        downloads = []
+        dom_path = None
+        requests_path = None
+
+        with SB(**self._sb_kwargs(proxy)) as sb:
             # docker stop delivers SIGTERM with 5s grace before SIGKILL (see
             # --stop-timeout 5 in phishkit/phishkit.py). Best-effort flush of
             # whatever scan state we have so analysts get partial dom/requests

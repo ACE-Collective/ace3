@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from typing import Optional, List, Type, override
+from urllib.parse import urlparse
 from urlfinderlib import find_urls
 from urlfinderlib.url import URL
 
@@ -227,6 +228,10 @@ class PhishkitAnalysis(Analysis):
                     summary += " - fetched via proxy"
                 elif route == "direct" and self.proxy_status.get("configured"):
                     reason = self.proxy_status.get("fallback_reason") or "unknown"
+                    # the page the proxy refused, when the manager knows it
+                    failed_url = (self.proxy_status.get("fallback_details") or {}).get("failed_url")
+                    if failed_url:
+                        reason = f"{reason}: {urlparse(failed_url).netloc or failed_url}"
                     summary += f" - proxy failed ({reason}), fetched direct"
             return summary
         else:

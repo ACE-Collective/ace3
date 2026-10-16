@@ -167,8 +167,12 @@ handlers:
 #
 # NOTE: Only used if proxy_fallback_to_direct is enabled in main config.
 proxy_fallback:
-  # Chrome network error strings that indicate a proxy failure.
-  # Checked against combined stdout+stderr of the scanner process.
+  # Chrome network error strings that indicate a proxy failure. Only a
+  # main-frame navigation that failed with one of these (its error_text in the
+  # proxy attempt's requests.json) triggers the retry: a script, image or iframe
+  # the proxy refused does not, since the page itself still loaded through the
+  # proxy. Without a requests.json, combined stdout+stderr of the scanner
+  # process is checked instead.
   error_patterns:
     - "ERR_TUNNEL_CONNECTION_FAILED"
     - "ERR_PROXY_CONNECTION_FAILED"
@@ -188,6 +192,18 @@ proxy_fallback:
 
   # Whether to retry without proxy when the scanner process times out.
   retry_on_timeout: true
+
+# Hosts the scanner reaches directly even when a proxy is configured. Every other
+# host still goes through the proxy, including every hop a bypassed host
+# redirects to. Use it for a host the proxy refuses that is never the one doing
+# the cloaking: an identity provider's authorize endpoint that a phishing link
+# starts at, and that redirects to the attacker's page, is the typical case.
+# While the proxy refuses the first hop, the fallback above re-runs the whole
+# chain direct, and the attacker's page then sees the scanner's own address.
+#
+# Entries are Chrome proxy bypass rules: "host.example.com", "*.example.com",
+# optionally with a port. A plain host does not match its subdomains.
+proxy_bypass_hosts: []
 
 # Per-scan wait tuning applied by scanner.py after page load.
 #

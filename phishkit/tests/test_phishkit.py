@@ -88,6 +88,130 @@ class TestMatchedProxyErrorPatterns:
 
 
 # ---------------------------------------------------------------------------
+# _proxy_navigation_failure
+# ---------------------------------------------------------------------------
+
+TUNNEL_FAILED = "net::ERR_TUNNEL_CONNECTION_FAILED"
+
+
+def _request(request_id, url, resource_type="Document", frame_id="main"):
+    return {"type": "request", "requestId": request_id, "url": url,
+            "resource_type": resource_type, "frame_id": frame_id}
+
+
+def _error(request_id, url, error_text=TUNNEL_FAILED, resource_type="Document"):
+    return {"type": "error", "requestId": request_id, "url": url,
+            "error_text": error_text, "resource_type": resource_type}
+
+
+def _write_requests(output_dir, entries):
+    with open(os.path.join(output_dir, "requests.json"), "w") as f:
+        json.dump(entries, f)
+
+
+class TestProxyNavigationFailure:
+
+    PATTERNS = FULL_PROXY_FALLBACK["error_patterns"]
+
+    @pytest.mark.unit
+    def test_first_navigation_refused(self, tmpdir):
+        """The proxy refused the page the scan started at."""
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://login.example.com/authorize"),
+            _error("1", "https://login.example.com/authorize"),
+        ])
+        assert _proxy_navigation_failure(str(tmpdir), "", "", self.PATTERNS) == {
+            "matched_error_patterns": ["ERR_TUNNEL_CONNECTION_FAILED"],
+            "failed_url": "https://login.example.com/authorize",
+        }
+
+    @pytest.mark.unit
+    def test_later_navigation_refused(self, tmpdir):
+        """A redirect hop is a main-frame navigation too."""
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://start.example.com/"),
+            _request("2", "https://start.example.com/app.js", resource_type="Script"),
+            _request("3", "https://landing.example.net/"),
+            _error("3", "https://landing.example.net/"),
+        ])
+        result = _proxy_navigation_failure(str(tmpdir), "", "", self.PATTERNS)
+        assert result["failed_url"] == "https://landing.example.net/"
+
+    @pytest.mark.unit
+    def test_refused_subresource_is_not_a_failure(self, tmpdir):
+        """The page loaded through the proxy; one refused script does not justify going direct."""
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://start.example.com/"),
+            _request("2", "https://cdn.example.org/lib.js", resource_type="Script"),
+            _error("2", "https://cdn.example.org/lib.js", resource_type="Script"),
+        ])
+        # stdout carries the error text too, and must not be what decides
+        assert _proxy_navigation_failure(
+            str(tmpdir), f"network request failed: error={TUNNEL_FAILED}", "", self.PATTERNS) is None
+
+    @pytest.mark.unit
+    def test_refused_iframe_is_not_a_failure(self, tmpdir):
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://start.example.com/"),
+            _request("2", "https://frame.example.org/", frame_id="child"),
+            _error("2", "https://frame.example.org/"),
+        ])
+        assert _proxy_navigation_failure(str(tmpdir), "", "", self.PATTERNS) is None
+
+    @pytest.mark.unit
+    def test_navigation_failed_with_another_error(self, tmpdir):
+        """A page that failed on its own (here, the origin's empty 404) is not the proxy's doing."""
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://start.example.com/"),
+            _error("1", "https://start.example.com/", error_text="net::ERR_HTTP_RESPONSE_CODE_FAILURE"),
+        ])
+        assert _proxy_navigation_failure(str(tmpdir), "", "", self.PATTERNS) is None
+
+    @pytest.mark.unit
+    def test_falls_back_to_stdout_without_requests_json(self, tmpdir):
+        """A scanner that died before writing requests.json leaves only its output."""
+        from phishkit import _proxy_navigation_failure
+
+        assert _proxy_navigation_failure(str(tmpdir), TUNNEL_FAILED, "", self.PATTERNS) == {
+            "matched_error_patterns": ["ERR_TUNNEL_CONNECTION_FAILED"],
+        }
+        assert _proxy_navigation_failure(str(tmpdir), "all good", "", self.PATTERNS) is None
+
+    @pytest.mark.unit
+    def test_falls_back_to_stdout_for_requests_without_resource_types(self, tmpdir):
+        """requests.json from a scanner that predates resource_type on requests."""
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            {"type": "request", "requestId": "1", "url": "https://start.example.com/"},
+            {"type": "error", "requestId": "1", "url": "https://start.example.com/", "error_text": TUNNEL_FAILED},
+        ])
+        assert _proxy_navigation_failure(str(tmpdir), TUNNEL_FAILED, "", self.PATTERNS) == {
+            "matched_error_patterns": ["ERR_TUNNEL_CONNECTION_FAILED"],
+        }
+
+    @pytest.mark.unit
+    def test_no_patterns(self, tmpdir):
+        from phishkit import _proxy_navigation_failure
+
+        _write_requests(str(tmpdir), [
+            _request("1", "https://start.example.com/"),
+            _error("1", "https://start.example.com/"),
+        ])
+        assert _proxy_navigation_failure(str(tmpdir), TUNNEL_FAILED, "", []) is None
+
+
+# ---------------------------------------------------------------------------
 # _matched_proxy_status_code
 # ---------------------------------------------------------------------------
 
@@ -661,6 +785,76 @@ class TestRunScanner:
             "ERR_TUNNEL_CONNECTION_FAILED",
         ]
         assert proxy_status["final_route"] == "direct"
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_records_refused_navigation(self, mock_sync, mock_force_stop, tmpdir):
+        from phishkit import _run_scanner
+
+        config_path = self._write_config(tmpdir)
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+        _write_requests(output_dir, [
+            _request("1", "https://start.example.com/"),
+            _error("1", "https://start.example.com/"),
+        ])
+
+        procs = iter([
+            self._make_mock_process(stdout=f"error={TUNNEL_FAILED}", returncode=0),
+            self._make_mock_process(stdout="scan complete", returncode=0),
+        ])
+        with patch("phishkit.Popen", side_effect=lambda *a, **k: next(procs)):
+            _run_scanner(
+                target_args=["https://start.example.com/"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=30,
+                proxy="http://proxy:8080",
+                proxy_fallback_to_direct=True,
+                config_path=config_path,
+            )
+
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["final_route"] == "direct"
+        assert proxy_status["fallback_details"] == {
+            "matched_error_patterns": ["ERR_TUNNEL_CONNECTION_FAILED"],
+            "failed_url": "https://start.example.com/",
+        }
+
+    @pytest.mark.unit
+    @patch("phishkit._force_stop_container")
+    @patch("phishkit._sync_config", return_value=None)
+    def test_run_scanner_keeps_proxy_when_only_a_subresource_failed(self, mock_sync, mock_force_stop, tmpdir):
+        from phishkit import _run_scanner
+
+        config_path = self._write_config(tmpdir)
+        output_dir = str(tmpdir.join("output"))
+        os.makedirs(output_dir)
+        _write_requests(output_dir, [
+            _request("1", "https://start.example.com/"),
+            _request("2", "https://cdn.example.org/lib.js", resource_type="Script"),
+            _error("2", "https://cdn.example.org/lib.js", resource_type="Script"),
+        ])
+
+        proc = self._make_mock_process(stdout=f"error={TUNNEL_FAILED}", returncode=0)
+        with patch("phishkit.Popen", return_value=proc) as mock_popen:
+            _run_scanner(
+                target_args=["https://start.example.com/"],
+                output_dir=output_dir,
+                job_id="test-job",
+                timeout=30,
+                proxy="http://proxy:8080",
+                proxy_fallback_to_direct=True,
+                config_path=config_path,
+            )
+
+        assert mock_popen.call_count == 1
+        with open(os.path.join(output_dir, "proxy.json")) as f:
+            proxy_status = json.load(f)
+        assert proxy_status["fallback_triggered"] is False
+        assert proxy_status["final_route"] == "proxy"
 
     @pytest.mark.unit
     @patch("phishkit._force_stop_container")

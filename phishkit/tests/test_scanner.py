@@ -3,6 +3,7 @@ import time
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import mycdp  # type: ignore
 import pytest
 import yaml
 
@@ -51,6 +52,47 @@ class TestLoadConfig:
         config = _load_config(path)
         assert config.non_rendered_content_types == DEFAULT_NON_RENDERED_CONTENT_TYPES
         assert config.script_content_types == DEFAULT_SCRIPT_CONTENT_TYPES
+
+    @pytest.mark.unit
+    def test_load_config_proxy_bypass_hosts(self, tmpdir, sample_config_data):
+        from scanner import _load_config
+
+        data = dict(sample_config_data)
+        data["proxy_bypass_hosts"] = ["login.example.com", "*.cdn.example.net", "10.0.0.0/8"]
+        path = str(tmpdir.join("bypass.yaml"))
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+
+        config = _load_config(path)
+        assert config.proxy_bypass_hosts == ["login.example.com", "*.cdn.example.net", "10.0.0.0/8"]
+
+    @pytest.mark.unit
+    def test_load_config_proxy_bypass_hosts_default_empty(self, config_file):
+        from scanner import _load_config
+
+        assert _load_config(config_file).proxy_bypass_hosts == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("bad", [
+        ['login.example.com"; alert(1); "'],  # breaks out of the extension's JS string
+        ["a.example.com;b.example.com"],     # a separator would smuggle a second rule
+        ["login.example.com "],
+        [42],
+        "login.example.com",                 # a string, not a list
+    ])
+    def test_load_config_rejects_bad_proxy_bypass_hosts(self, tmpdir, sample_config_data, bad):
+        """SeleniumBase writes the list unescaped into the JavaScript of the extension
+        that holds the proxy credentials, so a bad entry is refused, not escaped."""
+        from scanner import _load_config
+
+        data = dict(sample_config_data)
+        data["proxy_bypass_hosts"] = bad
+        path = str(tmpdir.join("bad_bypass.yaml"))
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+
+        with pytest.raises(ValueError):
+            _load_config(path)
 
     @pytest.mark.unit
     def test_load_config_content_types_are_lowercased(self, tmpdir, sample_config_data):
@@ -430,18 +472,25 @@ def _make_response_event(url="https://example.com/page", request_id="req-1",
     event.response.status = status
     event.response.encoded_data_length = encoded_data_length
     event.response.to_json.return_value = "{}"
-    # CDP ResourceType lives on the event, not event.response
-    event.type_ = resource_type
+    # CDP ResourceType lives on the event, not event.response. A real mycdp enum,
+    # not its string: str() of one is "ResourceType.DOCUMENT", not "Document".
+    event.type_ = mycdp.network.ResourceType(resource_type) if resource_type else None
     return event
 
 
-def _make_request_event(url="https://example.com/page", request_id="req-1", method="GET", headers=None):
+def _make_request_event(url="https://example.com/page", request_id="req-1", method="GET", headers=None,
+                        resource_type="Document", frame_id="main-frame", initiator_type="other",
+                        redirect_status=None):
     event = MagicMock()
     event.request.url = url
     event.request_id = request_id
     event.request.method = method
     event.request.headers = headers or {}
     event.request.to_json.return_value = "{}"
+    event.type_ = mycdp.network.ResourceType(resource_type) if resource_type else None
+    event.frame_id = mycdp.page.FrameId(frame_id) if frame_id else None
+    event.initiator = mycdp.network.Initiator(type_=initiator_type) if initiator_type else None
+    event.redirect_response = MagicMock(status=redirect_status) if redirect_status else None
     return event
 
 
@@ -453,12 +502,13 @@ def _make_loading_finished_event(request_id="req-1", encoded_data_length=500):
 
 
 def _make_loading_failed_event(request_id="req-1", error_text="net::ERR_FAILED",
-                               canceled=False, blocked_reason=None):
+                               canceled=False, blocked_reason=None, resource_type="Document"):
     event = MagicMock()
     event.request_id = request_id
     event.error_text = error_text
     event.canceled = canceled
     event.blocked_reason = blocked_reason
+    event.type_ = mycdp.network.ResourceType(resource_type) if resource_type else None
     return event
 
 
@@ -507,6 +557,17 @@ class TestReceiveHandler:
         event = _make_response_event(url="https://example.com/a.js", resource_type="Script")
         await scanner.receive_handler(event)
         assert scanner.requests[0]["resource_type"] == "Script"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_receive_handler_resource_type_finds_top_level_response(self, scanner):
+        """The stylesheet's response comes first, so only a resource_type of
+        "Document" (not "ResourceType.DOCUMENT") picks the page."""
+        await scanner.receive_handler(_make_response_event(
+            url="https://example.com/a.css", headers={"Content-Type": "text/css"}, resource_type="Stylesheet"))
+        await scanner.receive_handler(_make_response_event(
+            url="https://example.com/", headers={"Content-Type": "text/html"}, request_id="req-2"))
+        assert scanner.top_level_response()["url"] == "https://example.com/"
 
 
 class TestAppendableResponseEntries:
@@ -624,6 +685,36 @@ class TestSendHandler:
         await scanner.send_handler(_make_request_event())
         assert scanner.domain_stats["example.com"]["first_request_time"] == first_time
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_handler_records_resource_type_and_frame(self, scanner):
+        """The proxy fallback finds the main frame's navigations by these two fields."""
+        await scanner.send_handler(_make_request_event(resource_type="Document", frame_id="frame-a"))
+        await scanner.send_handler(_make_request_event(
+            url="https://example.com/a.js", request_id="req-2", resource_type="Script", frame_id="frame-a"))
+        assert scanner.requests[0]["resource_type"] == "Document"
+        assert scanner.requests[0]["frame_id"] == "frame-a"
+        assert scanner.requests[1]["resource_type"] == "Script"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_handler_without_frame(self, scanner):
+        await scanner.send_handler(_make_request_event(
+            resource_type=None, frame_id=None, initiator_type=None))
+        assert scanner.requests[0]["resource_type"] is None
+        assert scanner.requests[0]["frame_id"] is None
+        assert scanner.requests[0]["initiator_type"] is None
+        assert scanner.requests[0]["redirect_status"] is None
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_send_handler_records_navigation_cause(self, scanner):
+        await scanner.send_handler(_make_request_event(initiator_type="script"))
+        await scanner.send_handler(_make_request_event(url="https://example.com/next", redirect_status=302))
+        assert scanner.requests[0]["initiator_type"] == "script"
+        assert scanner.requests[0]["redirect_status"] is None
+        assert scanner.requests[1]["redirect_status"] == 302
+
 
 class TestLoadingFinishedHandler:
 
@@ -685,6 +776,158 @@ class TestLoadingFailedHandler:
         event = _make_loading_failed_event(blocked_reason="inspector")
         await scanner.loading_failed_handler(event)
         assert scanner.requests[-1]["blocked_reason"] == "inspector"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_loading_failed_handler_records_resource_type(self, scanner):
+        event = _make_loading_failed_event(error_text="net::ERR_TUNNEL_CONNECTION_FAILED", resource_type="Image")
+        await scanner.loading_failed_handler(event)
+        assert scanner.requests[-1]["resource_type"] == "Image"
+
+
+def _nav(request_id, url, initiator_type="other", redirect_status=None, frame_id="main", resource_type="Document"):
+    return {"type": "request", "requestId": request_id, "url": url, "resource_type": resource_type,
+            "frame_id": frame_id, "initiator_type": initiator_type, "redirect_status": redirect_status}
+
+
+def _resp(request_id, url, status_code, resource_type="Document"):
+    return {"type": "response", "requestId": request_id, "url": url, "status_code": status_code,
+            "resource_type": resource_type}
+
+
+def _err(request_id, error_text, url=None):
+    return {"type": "error", "requestId": request_id, "url": url, "error_text": error_text}
+
+
+class TestNavigationChain:
+
+    @pytest.mark.unit
+    def test_no_navigation(self, scanner):
+        assert scanner.navigation_chain() == []
+
+    @pytest.mark.unit
+    def test_oauth_redirect_lure(self, scanner):
+        """The shape of an OAuth redirect lure: a scripted reload on the sign-in page,
+        an HTTP redirect to the attacker's redirect URI, a slash redirect, and a
+        scripted hop to a landing page that answers 404. Iframes, scripts and
+        images are not hops."""
+        scanner.requests = [
+            _nav("A", "https://login.example.com/authorize?x=1"),
+            _resp("A", "https://login.example.com/authorize?x=1", 200),
+            _nav("s1", "https://cdn.example.com/app.js", resource_type="Script"),
+            _nav("f1", "https://login.example.com/frame.htm", frame_id="child"),
+            _resp("f1", "https://login.example.com/frame.htm", 200),
+            _nav("B", "https://login.example.com/authorize?x=1&reload=1", initiator_type="script"),
+            _nav("B", "https://redirect.example.net/css?error=1", redirect_status=302),
+            _nav("B", "https://redirect.example.net/css/?error=1", redirect_status=301),
+            _resp("B", "https://redirect.example.net/css/?error=1", 200),
+            _nav("C", "https://landing.example.org/?email=x", initiator_type="script"),
+            _resp("C", "https://landing.example.org/?email=x", 404),
+            _err("C", "net::ERR_HTTP_RESPONSE_CODE_FAILURE"),
+        ]
+        hops = scanner.navigation_chain()
+        assert [(h["via"], h["url"], h["status"], h["error"]) for h in hops] == [
+            ("start", "https://login.example.com/authorize?x=1", 200, None),
+            ("script", "https://login.example.com/authorize?x=1&reload=1", 302, None),
+            ("redirect", "https://redirect.example.net/css?error=1", 301, None),
+            ("redirect", "https://redirect.example.net/css/?error=1", 200, None),
+            ("script", "https://landing.example.org/?email=x", 404, "net::ERR_HTTP_RESPONSE_CODE_FAILURE"),
+        ]
+
+    @pytest.mark.unit
+    def test_refused_first_hop(self, scanner):
+        scanner.requests = [
+            _nav("A", "https://login.example.com/authorize"),
+            _err("A", "net::ERR_TUNNEL_CONNECTION_FAILED"),
+        ]
+        assert scanner.navigation_chain() == [{
+            "url": "https://login.example.com/authorize", "via": "start", "status": None,
+            "error": "net::ERR_TUNNEL_CONNECTION_FAILED", "route": "direct",
+        }]
+
+    @pytest.mark.unit
+    def test_routes_follow_the_bypass_list(self, scanner):
+        scanner._proxy = "user:pass@proxy.example.net:10001"
+        scanner.PROXY_BYPASS_HOSTS = ["login.example.com"]
+        scanner.requests = [
+            _nav("A", "https://login.example.com/authorize"),
+            _nav("A", "https://landing.example.org/", redirect_status=302),
+            _nav("B", "https://sub.login.example.com/", initiator_type="script"),
+        ]
+        assert [h["route"] for h in scanner.navigation_chain()] == ["direct", "proxy", "proxy"]
+
+    @pytest.mark.unit
+    def test_routes_without_proxy(self, scanner):
+        scanner.PROXY_BYPASS_HOSTS = ["login.example.com"]
+        scanner.requests = [
+            _nav("A", "file:///phishkit/input/x/email.html"),
+            _nav("B", "https://landing.example.org/", initiator_type="parser"),
+        ]
+        hops = scanner.navigation_chain()
+        assert [(h["via"], h["route"]) for h in hops] == [("start", None), ("parser", "direct")]
+
+    @pytest.mark.unit
+    def test_compute_metrics_includes_navigation(self, scanner):
+        scanner.requests = [_nav("A", "https://example.com/"), _resp("A", "https://example.com/", 200)]
+        navigation = scanner._compute_metrics("https://example.com/", 0.0)["navigation"]
+        assert navigation == [{"url": "https://example.com/", "via": "start", "status": 200,
+                               "error": None, "route": "direct"}]
+
+
+class TestMatchesProxyBypass:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("host,rules,expected", [
+        ("login.example.com", ["login.example.com"], True),
+        ("LOGIN.example.com", ["login.EXAMPLE.com"], True),
+        ("sub.login.example.com", ["login.example.com"], False),
+        ("cdn.example.net", ["*.example.net"], True),
+        ("example.net", ["*.example.net"], False),
+        ("cdn.example.net", [".example.net"], True),
+        ("login.example.com", ["login.example.com:443"], True),
+        ("login.example.com", ["https://login.example.com"], True),
+        ("10.1.2.3", ["10.0.0.0/8"], False),
+        ("other.example.com", ["login.example.com", "*.example.net"], False),
+        ("login.example.com", [], False),
+    ])
+    def test_matches(self, host, rules, expected):
+        from scanner import _matches_proxy_bypass
+
+        assert _matches_proxy_bypass(host, rules) is expected
+
+
+class TestSbKwargs:
+
+    PROXY = "user:secret@proxy.example.net:10001"
+
+    @pytest.mark.unit
+    def test_no_proxy(self, scanner):
+        kwargs = scanner._sb_kwargs(None)
+        assert "proxy" not in kwargs
+        assert "proxy_bypass_list" not in kwargs
+
+    @pytest.mark.unit
+    def test_proxy_without_bypass_hosts(self, scanner, capsys):
+        kwargs = scanner._sb_kwargs(self.PROXY)
+        assert kwargs["proxy"] == self.PROXY
+        assert "proxy_bypass_list" not in kwargs
+        assert "secret" not in capsys.readouterr().out
+
+    @pytest.mark.unit
+    def test_proxy_with_bypass_hosts(self, scanner, capsys):
+        scanner.PROXY_BYPASS_HOSTS = ["login.example.com", "*.cdn.example.net"]
+        kwargs = scanner._sb_kwargs(self.PROXY)
+        assert kwargs["proxy"] == self.PROXY
+        assert kwargs["proxy_bypass_list"] == "login.example.com;*.cdn.example.net"
+        out = capsys.readouterr().out
+        assert "bypassing proxy for: login.example.com, *.cdn.example.net" in out
+        assert "secret" not in out
+
+    @pytest.mark.unit
+    def test_bypass_hosts_ignored_without_proxy(self, scanner):
+        """The direct retry gets no proxy, and so no bypass list either."""
+        scanner.PROXY_BYPASS_HOSTS = ["login.example.com"]
+        assert "proxy_bypass_list" not in scanner._sb_kwargs(None)
 
 
 class TestTargetAttachedHandler:

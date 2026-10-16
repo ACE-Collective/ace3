@@ -141,6 +141,11 @@ def test_phishkit_analysis_generate_summary():
     # Proxy failed via error pattern, fell back to direct
     ({"configured": True, "fallback_triggered": True, "fallback_reason": "error_pattern", "final_route": "direct"},
      " - proxy failed (error_pattern), fetched direct"),
+    # Proxy refused a known navigation, fell back to direct
+    ({"configured": True, "fallback_triggered": True, "fallback_reason": "error_pattern", "final_route": "direct",
+      "fallback_details": {"matched_error_patterns": ["ERR_TUNNEL_CONNECTION_FAILED"],
+                           "failed_url": "https://login.example.com/authorize?client_id=x"}},
+     " - proxy failed (error_pattern: login.example.com), fetched direct"),
     # Proxy failed via status code, fell back to direct
     ({"configured": True, "fallback_triggered": True, "fallback_reason": "status_code", "final_route": "direct"},
      " - proxy failed (status_code), fetched direct"),
