@@ -490,11 +490,11 @@ def create_encrypted_file_zip(alert_uuid: str, observable_uuid: str) -> tuple[st
 CLICKER_SPLUNK_MODULE_NAME = "clicker_detection_splunk"
 
 
-def _request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
-                                 change: Callable[["Observable"], None]) -> str:
+def request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
+                                change: Callable[["Observable"], None]) -> str:
     """Change one observable of the alert (add the directive an analysis module waits for), and
     queue the alert for the analysis the analyst asked for. Returns the observable as text, for
-    the audit log.
+    the audit log. The observable actions of integrations use it too.
 
     request_analyst_analysis() puts the alert back in correlation mode and past the stop on a
     dispositioned alert, so the requested analysis runs on an alert the analyst already worked.
@@ -527,21 +527,21 @@ def _request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_ty
 
 def request_file_collection(alert_uuid: str, observable_uuid: str) -> str:
     """Collect File: the file collectors fetch the file at this location from its host."""
-    return _request_observable_analysis(
+    return request_observable_analysis(
         alert_uuid, observable_uuid, (F_FILE_LOCATION,),
         lambda observable: observable.add_directive(DIRECTIVE_COLLECT_FILE))
 
 
 def request_render(alert_uuid: str, observable_uuid: str) -> str:
     """Render: phishkit renders the file (HTML and PDF) and takes a screenshot."""
-    return _request_observable_analysis(
+    return request_observable_analysis(
         alert_uuid, observable_uuid, (F_FILE,),
         lambda observable: observable.add_directive(DIRECTIVE_RENDER))
 
 
 def request_crawl(alert_uuid: str, observable_uuid: str) -> str:
     """Crawl: phishkit downloads the URL's content and takes a screenshot."""
-    return _request_observable_analysis(
+    return request_observable_analysis(
         alert_uuid, observable_uuid, (F_URL,),
         lambda observable: observable.add_directive(DIRECTIVE_CRAWL))
 
@@ -560,12 +560,12 @@ def _check_for_clickers(observable: "Observable") -> None:
 def request_clicker_check(alert_uuid: str, observable_uuid: str) -> str:
     """Check for clickers: every configured clicker module looks for anyone who clicked the URL or
     visited the domain."""
-    return _request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
+    return request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
 
 
-def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearch]:
-    """The Splunk searches the clicker check would run for the observable, as Splunk web URLs, so
-    an analyst can run them without the check. Empty when none is configured for its type."""
+def load_observable(alert_uuid: str, observable_uuid: str) -> "Observable":
+    """One observable of the alert, for an action that reads it and changes nothing, so the alert
+    is not locked. 404 for an unknown alert or observable."""
     alert = _resolve_alert(alert_uuid)
     if not alert.load():
         raise HTTPException(status_code=500, detail="unable to load the alert")
@@ -573,6 +573,14 @@ def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearc
     observable = alert.root_analysis.get_observable(observable_uuid)
     if observable is None:
         raise HTTPException(status_code=404, detail="observable not found")
+
+    return observable
+
+
+def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearch]:
+    """The Splunk searches the clicker check would run for the observable, as Splunk web URLs, so
+    an analyst can run them without the check. Empty when none is configured for its type."""
+    observable = load_observable(alert_uuid, observable_uuid)
 
     try:
         module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
