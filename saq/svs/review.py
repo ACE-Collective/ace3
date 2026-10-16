@@ -291,7 +291,7 @@ def _sign_off(run: SVSRun, user_id: int, actor: str, now: datetime) -> tuple[boo
 def ignored_detections(session, run: SVSRun) -> list[tuple[int, str]]:
     """(alert id, content hash) of the run's attributed detections of signatures ignored for its
     test, that nobody has given a verdict yet."""
-    ignored = test_decisions(session, run.test_guid).ignored
+    ignored = test_decisions(session, run.test_guid, run.platform).ignored
     if not ignored:
         return []
     return [(alert_id, content_hash) for alert_id, content_hash in session.execute(

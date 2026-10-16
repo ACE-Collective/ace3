@@ -178,7 +178,7 @@ class TestReview:
         run = _run()
         alert_uuid = _alert(run, RULE)
         run = _ended(run)
-        expectations.set_expectation(GUID, RULE, "expected", user_id)
+        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
         results.recompute_stale_results()
 
         result = review.review(run.uuid, user_id, ACTOR)
@@ -205,7 +205,7 @@ class TestReview:
             review.review(run.uuid, user_id, ACTOR)
         assert e.value.blockers == {"candidates": [RULE]}
 
-        expectations.set_expectation(GUID, RULE, "rejected", user_id)
+        expectations.set_expectation(GUID, RULE, "rejected", user_id, platform="windows")
         with pytest.raises(review.ReviewBlocked) as e:
             review.review(run.uuid, user_id, ACTOR)
         # the stale result still shows the candidate; the recompute settles it
@@ -248,7 +248,7 @@ class TestReview:
     def test_ignored_detections_get_an_fp_verdict(self, user_id):
         run = _run()
         alert_uuid = _alert(run, RULE, NOISE)
-        expectations.set_expectation(GUID, RULE, "expected", user_id)
+        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
         expectations.set_ignore(NOISE, user_id, test_guid=GUID)
         run = _ended(run)
 
@@ -285,14 +285,14 @@ class TestReview:
         run = _run()
         _alert(run, RULE)
         run = _ended(run)
-        expectations.set_expectation(GUID, RULE, "expected", user_id)
+        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
         results.recompute_stale_results()
         review.review(run.uuid, user_id, ACTOR)
 
         # a late alert after the review, of a signature since rejected
         late = _alert(run, NOISE)
         assert _run_row(run).changed_since_review is True
-        expectations.set_expectation(GUID, NOISE, "rejected", user_id)
+        expectations.set_expectation(GUID, NOISE, "rejected", user_id, platform="windows")
         results.recompute_stale_results()
         # an older reviewed row that left the live result is dropped with the old sign-off
         with private_transaction() as session:

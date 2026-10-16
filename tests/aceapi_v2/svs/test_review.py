@@ -62,7 +62,7 @@ async def test_review(client: AsyncClient, test_user):
     assert response.status_code == 409
     assert response.json()["detail"]["candidates"] == [RULE]
 
-    await client.put(f"/svs/tests/{GUID}/expectations/{RULE}", json={"state": "expected"})
+    await client.put(f"/svs/tests/{GUID}/expectations/windows/{RULE}", json={"state": "expected"})
     response = await client.post(f"/svs/runs/{run.uuid}/review")
     assert response.status_code == 409 and response.json()["detail"]["stale"] is True
     runs.run_timers()

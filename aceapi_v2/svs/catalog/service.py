@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, and_, or_, select
 
 from aceapi_v2.common.listing import InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
-from aceapi_v2.svs.catalog.schemas import CATALOG_TEST_CSV_FIELDS, CatalogTest, CatalogTestDetail
+from aceapi_v2.svs.catalog.schemas import CATALOG_TEST_CSV_FIELDS, CatalogTest, CatalogTestDetail, PlatformState
 from saq.database.model import SVSCatalogTest
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_TESTS_SCREEN
@@ -112,4 +112,9 @@ def get_catalog_test(guid: str) -> CatalogTestDetail:
         raise HTTPException(status_code=404, detail=f"test {guid} is not in the catalog")
 
     history = catalog_histories(get_db(), [test])[test.guid]
-    return CatalogTestDetail(**_row(test, history), description=test.description, test=json.loads(test.test))
+    platform_states = [
+        PlatformState(platform=platform, test_state=state.state.value, last_reviewed_run_id=state.last_reviewed_run_uuid,
+                      last_reviewed_at=state.last_reviewed_at, expected_signatures=state.expected)
+        for platform, state in history.platform_states.items()]
+    return CatalogTestDetail(**_row(test, history), platform_states=platform_states, description=test.description,
+                             test=json.loads(test.test))

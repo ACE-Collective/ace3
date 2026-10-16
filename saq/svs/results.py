@@ -4,8 +4,8 @@ expected to fire, one row of svs_run_results per signature.
 What fired is the run's attributions that hold, by the signature of each attributed detection.
 Each signature that fired is, in this order of precedence:
 - ignored: globally or for the test (launcher noise);
-- hit: expected for the test;
-- rejected: decided not to be what the test is about;
+- hit: expected for the test on the run's platform;
+- rejected: decided, for the run's platform, not to be what the test is about;
 - candidate: nobody has decided about it yet.
 
 Each expected signature that did not fire (and is not ignored) is missing, or possibly suppressed
@@ -151,11 +151,13 @@ def fired_signatures(session, run_id: int) -> dict[str, Fired]:
             for uuid, family, alerts, late_only, context_only in session.execute(statement)}
 
 
-def test_decisions(session, test_guid: str) -> Decisions:
-    """The test's expectations and the ignores that apply to its runs."""
+def test_decisions(session, test_guid: str, platform: str) -> Decisions:
+    """The test's expectations on the platform, and the ignores that apply to its runs (on every
+    platform)."""
     decisions = Decisions()
     for expectation in session.execute(
-            select(SVSExpectation).where(SVSExpectation.test_guid == test_guid)).scalars():
+            select(SVSExpectation).where(SVSExpectation.test_guid == test_guid,
+                                         SVSExpectation.platform == platform)).scalars():
         if expectation.state == ExpectationState.EXPECTED:
             decisions.expected[expectation.signature_uuid] = expectation
         else:
@@ -266,7 +268,7 @@ def compute_result(run_id: int, now: Optional[datetime] = None) -> Optional[Comp
 
         known = {row.signature_uuid: row for row in session.execute(
             select(SVSRunResult).where(SVSRunResult.run_id == run_id)).scalars()}
-        rows = _rows(session, run, fired_signatures(session, run_id), test_decisions(session, run.test_guid),
+        rows = _rows(session, run, fired_signatures(session, run_id), test_decisions(session, run.test_guid, run.platform),
                      known, now)
 
         previous_counts = Counter(row.status for row in known.values() if row.status is not None)

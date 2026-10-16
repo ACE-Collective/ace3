@@ -25,6 +25,7 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 NOISE = "33333333-cccc-4ccc-8ccc-333333333333"
+MULTI_GUID = "eeeeeeee-5555-4555-8555-555555555555"
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +50,7 @@ class TestExpectations:
         run = started_run(GUID)
         results.compute_result(run.id)
 
-        response = await client.put(f"/svs/tests/{GUID}/expectations/{SIGNATURE}",
+        response = await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}",
                                     json={"state": "expected", "reason": "the macro", "run_id": run.uuid})
         assert response.status_code == 200, response.text
         expectation = response.json()
@@ -57,27 +58,27 @@ class TestExpectations:
                 expectation["decided_by"]) == ("expected", "the macro", run.uuid, test_user.username)
         assert _stale(run.id)
 
-        await client.put(f"/svs/tests/{OTHER_GUID}/expectations/{NOISE}", json={"state": "rejected"})
+        await client.put(f"/svs/tests/{OTHER_GUID}/expectations/windows/{NOISE}", json={"state": "rejected"})
         rows = (await client.get("/svs/expectations/")).json()["data"]
         assert [(row["test_guid"], row["state"]) for row in rows] == [(GUID, "expected"), (OTHER_GUID, "rejected")]
         rows = (await client.get("/svs/expectations/", params={"test": GUID, "state": "expected"})).json()["data"]
         assert [row["signature_uuid"] for row in rows] == [SIGNATURE]
         assert (await client.get("/svs/expectations/", params={"state": "candidate"})).status_code == 422
 
-        assert (await client.delete(f"/svs/tests/{GUID}/expectations/{SIGNATURE}")).status_code == 204
-        assert (await client.delete(f"/svs/tests/{GUID}/expectations/{SIGNATURE}")).status_code == 404
+        assert (await client.delete(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}")).status_code == 204
+        assert (await client.delete(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}")).status_code == 404
 
     @pytest.mark.asyncio
     async def test_errors(self, client: AsyncClient):
         other_run = started_run(OTHER_GUID)
         unknown = "cccccccc-0000-4000-8000-000000000000"
-        assert (await client.put(f"/svs/tests/{unknown}/expectations/{SIGNATURE}",
+        assert (await client.put(f"/svs/tests/{unknown}/expectations/windows/{SIGNATURE}",
                                  json={"state": "expected"})).status_code == 404
-        assert (await client.put(f"/svs/tests/{GUID}/expectations/not-a-uuid",
+        assert (await client.put(f"/svs/tests/{GUID}/expectations/windows/not-a-uuid",
                                  json={"state": "expected"})).status_code == 422
-        assert (await client.put(f"/svs/tests/{GUID}/expectations/{SIGNATURE}",
+        assert (await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}",
                                  json={"state": "candidate"})).status_code == 422
-        response = await client.put(f"/svs/tests/{GUID}/expectations/{SIGNATURE}",
+        response = await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}",
                                     json={"state": "expected", "run_id": other_run.uuid})
         assert response.status_code == 422 and "is not a run of test" in response.json()["detail"]
 
@@ -85,7 +86,7 @@ class TestExpectations:
     async def test_paging_changed_since_and_exports(self, client: AsyncClient, monkeypatch):
         monkeypatch.setattr(expectations_service, "CHANGED_SINCE_SETTLE_SECONDS", 0)
         for signature in (SIGNATURE, NOISE):
-            await client.put(f"/svs/tests/{GUID}/expectations/{signature}", json={"state": "expected"})
+            await client.put(f"/svs/tests/{GUID}/expectations/windows/{signature}", json={"state": "expected"})
 
         first = (await client.get("/svs/expectations/", params={"limit": 1})).json()
         second = (await client.get("/svs/expectations/", params={"limit": 1, "cursor": first["next_cursor"]})).json()
@@ -102,9 +103,46 @@ class TestExpectations:
         records = list(csv.DictReader(io.StringIO((await client.get("/svs/expectations/export/csv")).text)))
         assert {record["signature_uuid"] for record in records} == {SIGNATURE, NOISE}
 
+    @pytest.mark.asyncio
+    async def test_per_platform(self, client: AsyncClient):
+        add_catalog_test(MULTI_GUID, platforms=("linux", "macos"))
+        add_test_host("lin-01", platform="linux")
+        add_test_host("mac-01", platform="macos")
+        linux, macos = started_run(MULTI_GUID, "lin-01"), started_run(MULTI_GUID, "mac-01")
+        for run in (linux, macos):
+            results.compute_result(run.id)
+
+        response = await client.put(f"/svs/tests/{MULTI_GUID}/expectations/linux/{SIGNATURE}",
+                                    json={"state": "expected", "run_id": macos.uuid})
+        assert response.status_code == 422 and "is on macos" in response.json()["detail"]
+        response = await client.put(f"/svs/tests/{MULTI_GUID}/expectations/windows/{SIGNATURE}",
+                                    json={"state": "expected"})
+        assert response.status_code == 422 and "is not one of" in response.json()["detail"]
+
+        response = await client.put(f"/svs/tests/{MULTI_GUID}/expectations/linux/{SIGNATURE}",
+                                    json={"state": "expected"})
+        assert response.status_code == 200 and response.json()["platform"] == "linux"
+        # only the platform's runs are judged by it
+        assert _stale(linux.id) and not _stale(macos.id)
+        assert results.compute_result(linux.id).counts == {"missing": 1}
+        assert results.compute_result(macos.id).counts == {}
+
+        # the same signature is decided apart on each platform
+        await client.put(f"/svs/tests/{MULTI_GUID}/expectations/macos/{SIGNATURE}", json={"state": "rejected"})
+        rows = (await client.get("/svs/expectations/", params={"test": MULTI_GUID})).json()["data"]
+        assert [(row["platform"], row["state"]) for row in rows] == [("linux", "expected"), ("macos", "rejected")]
+        rows = (await client.get("/svs/expectations/", params={"platform": "macos"})).json()["data"]
+        assert [row["state"] for row in rows] == ["rejected"]
+        records = list(csv.DictReader(io.StringIO((await client.get("/svs/expectations/export/csv")).text)))
+        assert sorted(record["platform"] for record in records) == ["linux", "macos"]
+
+        assert (await client.delete(f"/svs/tests/{MULTI_GUID}/expectations/macos/{SIGNATURE}")).status_code == 204
+        assert (await client.delete(f"/svs/tests/{MULTI_GUID}/expectations/macos/{SIGNATURE}")).status_code == 404
+        assert [row["platform"] for row in (await client.get("/svs/expectations/")).json()["data"]] == ["linux"]
+
     def test_a_config_key_is_refused(self):
         with pytest.raises(HTTPException) as e:
-            expectations_service.set_expectation(GUID, SIGNATURE, ExpectationRequest(state="expected"), None, "ci")
+            expectations_service.set_expectation(GUID, "windows", SIGNATURE, ExpectationRequest(state="expected"), None, "ci")
         assert e.value.status_code == 422
 
 
@@ -167,7 +205,7 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
     async with api_key_client(reader) as client:
         assert (await client.get("/svs/expectations/")).status_code == 200
         assert (await client.get("/svs/ignores/")).status_code == 200
-        assert (await client.put(f"/svs/tests/{GUID}/expectations/{SIGNATURE}",
+        assert (await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}",
                                  json={"state": "expected"})).status_code == 403
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 403
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 30})).status_code == 403
@@ -175,7 +213,7 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
 
     manager = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_manage")])
     async with api_key_client(manager) as client:
-        assert (await client.put(f"/svs/tests/{GUID}/expectations/{SIGNATURE}",
+        assert (await client.put(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}",
                                  json={"state": "expected"})).status_code == 200
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 200
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 30})).status_code == 200

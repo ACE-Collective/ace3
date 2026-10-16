@@ -7,18 +7,20 @@ from pydantic import BaseModel, Field
 
 
 class ExpectationRequest(BaseModel):
-    """A decision about a signature for a test, as svs:run_manage makes it."""
+    """A decision about a signature for a test on a platform, as svs:run_manage makes it."""
 
     state: Literal["expected", "rejected"] = Field(
         description="expected: a run of the test should fire it; rejected: it fires, but it is not what the test is "
                     "about, and it is not proposed again")
     reason: Optional[str] = Field(default=None, max_length=4096)
     run_id: Optional[str] = Field(
-        default=None, description="the run (of this test) whose result the decision was made from; its event log records it")
+        default=None, description="the run (of this test, on this platform) whose result the decision was made from; "
+                                  "its event log records it")
 
 
 class Expectation(BaseModel):
     test_guid: str
+    platform: str = Field(description="the platform the decision is about: only the test's runs on it are judged by it")
     signature_uuid: str
     state: str = Field(description="expected or rejected")
     signature_family: Optional[str] = Field(default=None, description="the signature's family as last known")

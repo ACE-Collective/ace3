@@ -4,9 +4,10 @@ docs/SVS_API.md).
 The tests runs may be registered for, as service_svs reads them from the catalog repositories,
 with each test's state and run history. Read with svs:run_read.
 
-What is decided about a test's signatures (docs/SVS_RUNS.md, *Expectations and ignores*) and its
-settings (*Windows*) are changed here, with svs:run_manage: each change marks the results of the
-test's runs stale, and the timers recompute them.
+What is decided about a test's signatures on each platform (docs/SVS_RUNS.md, *Expectations and
+ignores*), the ignores that apply to its runs on every platform, and its settings (*Windows*) are
+changed here, with svs:run_manage: each change marks the results of the affected runs stale, and the
+timers recompute them.
 """
 
 import logging
@@ -98,19 +99,22 @@ async def get_test(
 # a test's decisions and settings (svs:run_manage)
 #
 
-@router.put("/{guid}/expectations/{signature_uuid}", response_model=Expectation)
-async def set_expectation(guid: str, signature_uuid: str, body: ExpectationRequest, auth: ManageAuth) -> Expectation:
-    """Decide a signature for the test: expected or rejected. 404 for an unknown test; 422 for a
-    run_id that isn't one of the test's runs, or a config key (a decision records who made it)."""
-    return await run_db_in_thread(expectations_service.set_expectation, guid, signature_uuid, body,
+@router.put("/{guid}/expectations/{platform}/{signature_uuid}", response_model=Expectation)
+async def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest,
+                          auth: ManageAuth) -> Expectation:
+    """Decide a signature for the test's runs on the platform: expected or rejected. 404 for an
+    unknown test; 422 for a platform the test doesn't support, a run_id that isn't one of the test's
+    runs on the platform, or a config key (a decision records who made it)."""
+    return await run_db_in_thread(expectations_service.set_expectation, guid, platform, signature_uuid, body,
                                   auth.auth_user_id, auth.auth_name)
 
 
-@router.delete("/{guid}/expectations/{signature_uuid}", status_code=204)
-async def remove_expectation(guid: str, signature_uuid: str, auth: ManageAuth) -> Response:
-    """Remove a decision: the signature is a candidate again the next time a run fires it."""
-    await run_db_in_thread(expectations_service.remove_expectation, guid, signature_uuid, auth.auth_user_id,
-                           auth.auth_name)
+@router.delete("/{guid}/expectations/{platform}/{signature_uuid}", status_code=204)
+async def remove_expectation(guid: str, platform: str, signature_uuid: str, auth: ManageAuth) -> Response:
+    """Remove a decision: the signature is a candidate again the next time a run on the platform
+    fires it."""
+    await run_db_in_thread(expectations_service.remove_expectation, guid, platform, signature_uuid,
+                           auth.auth_user_id, auth.auth_name)
     return Response(status_code=204)
 
 

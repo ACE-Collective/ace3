@@ -13,7 +13,8 @@
 (function() {
     "use strict";
 
-    // a test's state on its latest reviewed run (docs/SVS_RUNS.md, *Tests and their state*)
+    // a test's state on a platform, by its latest reviewed run there; a test's own state is the worst
+    // of its platforms' (docs/SVS_RUNS.md, *Tests and their state*)
     const TEST_STATES = {
         never_run: {css: "text-muted", title: "no run was ever registered for it"},
         awaiting_review: {css: "text-warning-emphasis fw-semibold",
@@ -24,6 +25,8 @@
                 title: "it would be validated, but the test or an expected signature's rule changed since that review"},
         validated: {css: "text-success", title: "its latest reviewed run hit every expected signature"},
     };
+    // the worst first: a test's state is the first of these any of its platforms is in
+    const WORST_FIRST = ["failing", "stale", "awaiting_review", "validated", "no_expectations"];
 
     const RUN_STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
@@ -415,6 +418,7 @@
                 list.appendChild(append(el("dd", "col-sm-10 mb-1"), value));
             }
             fact("State", test_state_node(test));
+            fact("By platform", platform_states_node(test));
             fact("GUID", mono(test.guid));
             fact("Platforms", test.platforms.join(", "));
             fact("Executor", append(el("span"), test.executor || "",
@@ -443,6 +447,36 @@
                 append(expected, muted(", "), missing_node(test), muted(" recent runs missed one"));
             }
             fact("Expectations", expected);
+        }
+
+        function platform_states_node(test) {
+            // one line per platform, worst first, as plain text
+            const states = test.platform_states || [];
+            if (states.length < 2 && !(states.length === 1 && states[0].test_state !== test.test_state)) {
+                return null;
+            }
+            function rank(row) {
+                const index = WORST_FIRST.indexOf(row.test_state);
+                return index < 0 ? WORST_FIRST.length : index;
+            }
+            const node = el("div");
+            states.slice().sort(function(a, b) {
+                return rank(a) - rank(b) || a.platform.localeCompare(b.platform);
+            }).forEach(function(row) {
+                const info = TEST_STATES[row.test_state] || {css: "", title: ""};
+                const line = el("div");
+                const name = el("span", info.css, row.test_state.replace(/_/g, " "));
+                name.title = row.test_state === "never_run" ? "no run of it on " + row.platform + " yet" : info.title;
+                append(line, el("span", "text-muted", row.platform + ": "), name);
+                if (row.expected_signatures) {
+                    line.appendChild(muted(", " + plural(row.expected_signatures, "signature") + " expected"));
+                }
+                if (row.last_reviewed_run_id) {
+                    append(line, muted(", reviewed "), link(run_url(row.last_reviewed_run_id), date(row.last_reviewed_at)));
+                }
+                node.appendChild(line);
+            });
+            return node;
         }
 
         function pre(text) {
@@ -560,6 +594,9 @@
         }
 
         function expectation_order(a, b) {
+            if (a.platform !== b.platform) {
+                return a.platform.localeCompare(b.platform);
+            }
             if (a.state !== b.state) {
                 return a.state === "expected" ? -1 : 1;
             }
@@ -574,16 +611,17 @@
                                     "Nothing is decided for this test yet. A reviewed run's candidates are decided on its page."));
                 return;
             }
-            const headers = ["Signature", "Decision", "By", "When (UTC)", "Reason", "From run"];
+            const headers = ["Platform", "Signature", "Decision", "By", "When (UTC)", "Reason", "From run"];
             if (settings.can_manage) {
                 headers.push("");
             }
             const target = table(headers);
             state.expectations.slice().sort(expectation_order).forEach(function(row) {
                 const decision = el("span", row.state === "expected" ? "text-success" : "text-muted", row.state);
-                decision.title = row.state === "expected" ? "every run of the test should fire it"
-                    : "it fires, but it isn't what the test is about; it isn't proposed again";
+                decision.title = row.state === "expected" ? "every run of the test on " + row.platform + " should fire it"
+                    : "it fires on " + row.platform + ", but it isn't what the test is about; it isn't proposed again";
                 const cells = [
+                    row.platform,
                     signature_node(row),
                     decision,
                     row.decided_by || "",
@@ -595,11 +633,12 @@
                 if (settings.can_manage) {
                     const name = row.signature_name || row.signature_uuid;
                     cells.push(button("Remove", "btn-outline-dark", "undecide it: it is a candidate again", function() {
-                        remove("Remove the decision on " + name + "?",
-                               "It is a candidate again the next time a run of this test fires it." +
-                               (row.state === "expected" ? " Until then, no run misses it." : ""),
-                               "Remove", test_path + "/expectations/" + encodeURIComponent(row.signature_uuid),
-                               "Removed the decision on " + name + ".");
+                        remove("Remove the decision on " + name + " on " + row.platform + "?",
+                               "It is a candidate again the next time a run of this test on " + row.platform +
+                               " fires it." + (row.state === "expected" ? " Until then, no run misses it." : ""),
+                               "Remove", test_path + "/expectations/" + encodeURIComponent(row.platform) + "/" +
+                                         encodeURIComponent(row.signature_uuid),
+                               "Removed the decision on " + name + " on " + row.platform + ".");
                     }));
                 }
                 table_row(target, cells);

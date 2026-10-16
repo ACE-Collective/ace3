@@ -521,8 +521,8 @@ async def export_run_alerts_ndjson(run_id: str, auth: ReadAuth) -> NdjsonStreamR
 async def get_run_history(run_id: str, auth: ReadAuth,
                           runs: Annotated[int, Query(ge=1, le=service.RUN_HISTORY_MAX_RUNS,
                                                      description="how many earlier runs")] = 10) -> RunHistory:
-    """How each signature of the run's result did in the test's ended and reviewed runs registered
-    before it, latest first (docs/SVS_API.md, *Run history*)."""
+    """How each signature of the run's result did in the test's ended and reviewed runs on the
+    run's platform registered before it, latest first (docs/SVS_API.md, *Run history*)."""
     return await run_db_in_thread(service.run_history, run_id, runs)
 
 

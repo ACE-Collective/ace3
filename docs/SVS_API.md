@@ -456,8 +456,8 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
 | `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
 | `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
-| `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test, or remove the decision |
-| `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs, or stop |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test's runs on the platform, or remove the decision |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs on every platform, or stop |
 | `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings` | `svs:run_manage` | Set them, or go back to the computed window |
 
@@ -475,23 +475,28 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `first_seen_at` | When the catalog first read it. |
 | `removed_at` | When it disappeared from its repository, or null. A removed test keeps its row and its runs. |
 | `updated_at` | The row's last change. A change to the test's runs, results or state doesn't change it. |
-| `test_state` | Below. |
+| `test_state` | Below: `never_run`, or the worst of its platforms' states. |
 | `run_count` | Every run registered for it, in any state. |
 | `last_run_id`, `last_run_at` | Its latest run and when it was registered. |
-| `last_reviewed_run_id`, `last_reviewed_at` | Its latest reviewed run and when it was reviewed. |
-| `expected_signatures` | The signatures expected of it that no ignore applies to. |
+| `last_reviewed_run_id`, `last_reviewed_at` | Its latest reviewed run, on any platform, and when it was reviewed. |
+| `expected_signatures` | The signatures expected of it on any platform that no ignore applies to (one expected on two platforms counts once). |
 | `recent_runs`, `recent_runs_missing` | Its latest ended or reviewed runs, at most 5, and how many of them missed an expected signature (missing or possibly suppressed in their live result). |
 
-**Test state**, judged on the latest *reviewed* run, as signed off:
+**Test state.** A test is judged on each platform on its own, on its latest *reviewed* run there,
+as signed off, against what is expected of it there (*Expectations*, below):
 
-| `test_state` | Meaning |
+| State on a platform | Meaning |
 |---|---|
-| `never_run` | No run was ever registered for it. |
-| `awaiting_review` | None of its runs is reviewed, or something was expected of it only after its latest reviewed run, so no review has judged it. |
-| `no_expectations` | It has a reviewed run, and nothing is expected of it. |
-| `failing` | Its latest reviewed run missed an expected signature (possibly suppressed counts). |
+| `never_run` | It has no run and no decision there (only in `platform_states`). |
+| `awaiting_review` | None of its runs there is reviewed, or something was expected of it there only after its latest reviewed run there, so no review has judged it. |
+| `no_expectations` | It has a reviewed run there, and nothing is expected of it there. |
+| `failing` | Its latest reviewed run there missed an expected signature (possibly suppressed counts). |
 | `stale` | It would be validated, but the test (its `content_hash`) or the rule of an expected signature changed since that run was reviewed. A rule ACE can't read now doesn't count as changed. |
-| `validated` | Its latest reviewed run hit every expected signature. |
+| `validated` | Its latest reviewed run there hit every expected signature. |
+
+`test_state` is `never_run` when no run was ever registered for the test, else the worst state of
+the platforms it has a run or a decision on: `failing`, `stale`, `awaiting_review`, `validated`,
+`no_expectations`, in that order.
 
 The state and history are derived when read, so they aren't filters: the rule hashes behind
 `stale` come from the rule inventory, not the database. Its run history is
@@ -499,7 +504,10 @@ The state and history are derived when read, so they aren't filters: the rule ha
 `GET /api/v2/svs/ignores?test={guid}`.
 
 `GET …/{guid}` adds `description` and `test`, the test's whole entry in its atomic file: `executor`
-(`command`, `cleanup_command`, `elevation_required`), `input_arguments`, `dependencies`.
+(`command`, `cleanup_command`, `elevation_required`), `input_arguments`, `dependencies`. It also adds
+`platform_states`, one entry per platform the test supports or has a run or a decision on, by
+platform: `{"platform", "test_state", "last_reviewed_run_id", "last_reviewed_at",
+"expected_signatures"}`.
 
 ### Filters
 
@@ -826,7 +834,8 @@ paged with `cursor`. Its NDJSON export streams every row. The rows nest, so ther
 
 `GET /api/v2/svs/runs/{run_id}/history?runs=10` (1 to 50) answers how each signature of the run's
 result did before: `{"runs", "signatures"}`.
-- `runs` are the test's `ended` and `reviewed` runs registered before this one, latest first, each
+- `runs` are the test's `ended` and `reviewed` runs on this run's platform (the only runs it is
+  compared with) registered before this one, latest first, each
   `{"run_id", "state", "created_at", "reviewed_at"}`.
 - `signatures` has one entry per signature of this run's result, in its order, `{"signature_uuid",
   "statuses"}`. `statuses` lines up with `runs`: the signature's status in that run, as signed off
@@ -845,15 +854,18 @@ result did before: `{"runs", "signatures"}`.
 
 ## Expectations
 
-What is decided about each test's signatures (`docs/SVS_RUNS.md`, *Expectations and ignores*).
-`GET /api/v2/svs/expectations` (and `/export/ndjson`, `/export/csv`), `svs:run_read`, filtered by
-`test`, `signature` and `state`. A decision is made with `PUT /api/v2/svs/tests/{guid}/expectations/
-{signature_uuid}` `{"state": "expected"|"rejected", "reason"?, "run_id"?}` and removed with `DELETE`,
-both `svs:run_manage` and from a user's key (a config key gets 422: a decision records who made it).
+What is decided about each test's signatures on each platform (`docs/SVS_RUNS.md`, *Expectations
+and ignores*). `GET /api/v2/svs/expectations` (and `/export/ndjson`, `/export/csv`), `svs:run_read`,
+filtered by `test`, `platform`, `signature` and `state`. A decision is made with
+`PUT /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` `{"state":
+"expected"|"rejected", "reason"?, "run_id"?}` and removed with `DELETE`, both `svs:run_manage` and
+from a user's key (a config key gets 422: a decision records who made it). The platform has to be
+one the test supports, and a `run_id` a run of the test on that platform; otherwise the answer is
+422.
 
 | Field | Meaning |
 |---|---|
-| `test_guid`, `signature_uuid` | The test and the signature; together they are unique. |
+| `test_guid`, `platform`, `signature_uuid` | The test, the platform its runs are judged on with it, and the signature; together they are unique. |
 | `state` | `expected` or `rejected`. A candidate is a status in a run's result, never a row here. |
 | `signature_family`, `signature_name` | As last known when the decision was made. |
 | `reason` | Why, as the person wrote it. |

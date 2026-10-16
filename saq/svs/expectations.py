@@ -1,12 +1,14 @@
 """What has been decided about a test's signatures (docs/SVS_RUNS.md, *Expectations and ignores*,
 *Windows*): its expectations, the ignores that apply to its runs, and its settings.
 
-- An **expectation** is a signature a run of the test should fire (expected), or one that fires but
-  is not what the test is about (rejected, and not proposed again). Anything else a run fires is a
-  candidate in that run's result. Only a person decides, and removing a decision makes the
-  signature a candidate again the next time it fires.
-- An **ignore** marks a signature as launcher noise, for one test (svs:run_manage) or for every
-  test (global, svs:admin). An ignored signature is never a candidate and never missing.
+- An **expectation** is a signature a run of the test on one platform should fire (expected), or
+  one that fires there but is not what the test is about (rejected, and not proposed again). A run
+  is judged by its own platform's decisions only. Anything else a run fires is a candidate in that
+  run's result. Only a person decides, and removing a decision makes the signature a candidate
+  again the next time it fires.
+- An **ignore** marks a signature as launcher noise, for one test on every platform
+  (svs:run_manage) or for every test (global, svs:admin). An ignored signature is never a candidate
+  and never missing.
 - A test's **settings** hold an observation window that replaces the computed one.
 
 Every change marks the affected runs' results stale (saq/svs/result_state.py), so the timers
@@ -32,6 +34,7 @@ from saq.database.model import (
     SVSTestSettings,
 )
 from saq.database.pool import get_db
+from saq.svs.catalog import platform_slugs
 from saq.svs.constants import GLOBAL_SCOPE_KEY, ExpectationState, IgnoreScope, ObservationSource, RunEventKind
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.run_events import new_run_event, run_log_fields
@@ -91,19 +94,31 @@ def _audit(message: str, **fields) -> None:
 # expectations (svs:run_manage)
 #
 
-def get_expectation(test_guid: str, signature_uuid: str) -> SVSExpectation:
+def _platform(test: SVSCatalogTest, platform: Optional[str]) -> str:
+    """The platform, which has to be one of the test's. Raises InvalidDecision."""
+    platform = (platform or "").strip().lower()
+    platforms = platform_slugs(test)
+    if platform not in platforms:
+        raise InvalidDecision(f"platform {platform!r} is not one of test {test.guid}'s "
+                              f"({', '.join(platforms) or 'it supports none'})")
+    return platform
+
+
+def get_expectation(test_guid: str, platform: str, signature_uuid: str) -> SVSExpectation:
     expectation = get_db().execute(select(SVSExpectation).where(
-        SVSExpectation.test_guid == test_guid, SVSExpectation.signature_uuid == signature_uuid)).scalar_one_or_none()
+        SVSExpectation.test_guid == test_guid, SVSExpectation.platform == platform,
+        SVSExpectation.signature_uuid == signature_uuid)).scalar_one_or_none()
     if expectation is None:
-        raise UnknownDecision(f"no decision about signature {signature_uuid} for test {test_guid}")
+        raise UnknownDecision(f"no decision about signature {signature_uuid} for test {test_guid} on {platform}")
     return expectation
 
 
 def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: int, *,
-                    reason: Optional[str] = None, run_uuid: Optional[str] = None, actor: Optional[str] = None,
-                    now: Optional[datetime] = None) -> SVSExpectation:
-    """Decides a signature for a test: expected or rejected. With run_uuid (a run of the test), the
-    decision was made from that run's result, and the run's event log records it. Raises
+                    platform: Optional[str] = None, reason: Optional[str] = None, run_uuid: Optional[str] = None,
+                    actor: Optional[str] = None, now: Optional[datetime] = None) -> SVSExpectation:
+    """Decides a signature for a test on a platform: expected or rejected. With run_uuid (a run of
+    the test), the decision was made from that run's result, it is about the run's platform, and the
+    run's event log records it; without one, platform names one of the test's platforms. Raises
     UnknownTest, InvalidDecision."""
     now = now or datetime.now()
     test = _test(test_guid)
@@ -119,38 +134,45 @@ def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: in
         run = db.execute(select(SVSRun).where(SVSRun.uuid == run_uuid)).scalar_one_or_none()
         if run is None or run.test_guid != test.guid:
             raise InvalidDecision(f"run {run_uuid} is not a run of test {test.guid}")
+        if platform is not None and platform.strip().lower() != run.platform:
+            raise InvalidDecision(f"run {run_uuid} is on {run.platform or 'no platform'}, not {platform}")
+        platform = run.platform
+    platform = _platform(test, platform)
 
     family, name = _last_known(signature_uuid, run.id if run else None)
     values = {"state": state.value, "signature_family": family, "signature_name": name, "reason": reason,
               "decided_from_run_id": run.id if run else None, "decided_by_user_id": user_id, "decided_at": now}
     db.execute(mysql_insert(SVSExpectation)
-               .values(test_guid=test.guid, signature_uuid=signature_uuid, **values)
+               .values(test_guid=test.guid, platform=platform, signature_uuid=signature_uuid, **values)
                .on_duplicate_key_update(**values))
     if run is not None:
         db.add(new_run_event(run.id, RunEventKind.CANDIDATE_DECISION, actor or str(user_id), actor_user_id=user_id,
-                             now=now, details={"signature_uuid": signature_uuid, "state": state.value,
-                                               "reason": reason}))
-    mark_runs_stale(db, SVSRun.test_guid == test.guid)
+                             now=now, details={"signature_uuid": signature_uuid, "platform": platform,
+                                               "state": state.value, "reason": reason}))
+    mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
 
     _audit("svs expectation decided", **{
-        **(run_log_fields(run) if run is not None else {}), "svs_test": test.guid, "signature_uuid": signature_uuid,
-        "state": state.value, "reason": reason, "actor": actor, "actor_user_id": user_id})
-    return get_expectation(test.guid, signature_uuid)
+        **(run_log_fields(run) if run is not None else {}), "svs_test": test.guid, "platform": platform,
+        "signature_uuid": signature_uuid, "state": state.value, "reason": reason, "actor": actor,
+        "actor_user_id": user_id})
+    return get_expectation(test.guid, platform, signature_uuid)
 
 
-def remove_expectation(test_guid: str, signature_uuid: str, user_id: int, *, actor: Optional[str] = None) -> None:
-    """Removes a decision: the signature is a candidate again the next time it fires. Raises
-    UnknownTest, UnknownDecision."""
+def remove_expectation(test_guid: str, platform: str, signature_uuid: str, user_id: int, *,
+                       actor: Optional[str] = None) -> None:
+    """Removes a decision: the signature is a candidate again the next time a run on the platform
+    fires it. Raises UnknownTest, UnknownDecision, InvalidDecision."""
     test = _test(test_guid)
-    expectation = get_expectation(test.guid, _signature_uuid(signature_uuid))
+    platform = (platform or "").strip().lower()
+    expectation = get_expectation(test.guid, platform, _signature_uuid(signature_uuid))
     state = expectation.state
     db = get_db()
     db.delete(expectation)
-    mark_runs_stale(db, SVSRun.test_guid == test.guid)
+    mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
-    _audit("svs expectation removed", svs_test=test.guid, signature_uuid=expectation.signature_uuid, state=state,
-           actor=actor, actor_user_id=user_id)
+    _audit("svs expectation removed", svs_test=test.guid, platform=platform,
+           signature_uuid=expectation.signature_uuid, state=state, actor=actor, actor_user_id=user_id)
 
 
 #
@@ -263,11 +285,12 @@ def remove_test_settings(test_guid: str, user_id: int, *, actor: Optional[str] =
 # windows
 #
 
-def expected_signatures(test_guid: str) -> set[str]:
-    """The test's expected signatures that no ignore applies to."""
+def expected_signatures(test_guid: str, platform: str) -> set[str]:
+    """The test's expected signatures on the platform that no ignore applies to."""
     db = get_db()
     expected = set(db.execute(select(SVSExpectation.signature_uuid).where(
-        SVSExpectation.test_guid == test_guid, SVSExpectation.state == ExpectationState.EXPECTED.value)).scalars())
+        SVSExpectation.test_guid == test_guid, SVSExpectation.platform == platform,
+        SVSExpectation.state == ExpectationState.EXPECTED.value)).scalars())
     if not expected:
         return expected
     ignored = set(db.execute(select(SVSIgnore.signature_uuid).where(
@@ -275,15 +298,16 @@ def expected_signatures(test_guid: str) -> set[str]:
     return expected - ignored
 
 
-def observation_for_test(test_guid: str) -> tuple[timedelta, ObservationSource]:
-    """The observation window of a run of the test registered now, and where it comes from: the
-    test's settings, else the latency of its expected signatures, else the slowest enabled hunt."""
+def observation_for_test(test_guid: str, platform: str) -> tuple[timedelta, ObservationSource]:
+    """The observation window of a run of the test on the platform registered now, and where it
+    comes from: the test's settings, else the latency of its expected signatures on the platform,
+    else the slowest enabled hunt."""
     settings = get_db().execute(
         select(SVSTestSettings.observation_minutes).where(SVSTestSettings.test_guid == test_guid)).scalar()
     if settings:
         return timedelta(minutes=settings), ObservationSource.OVERRIDE
 
-    expected = expected_signatures(test_guid)
+    expected = expected_signatures(test_guid, platform)
     if expected:
         return observation_window(expected), ObservationSource.EXPECTED
     return observation_window(), ObservationSource.ALL_HUNTS
