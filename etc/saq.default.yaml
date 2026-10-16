@@ -239,6 +239,9 @@ svs:
   # {run_uuid}, {marker}, {test_guid}, {earliest} and {latest} (epoch seconds) are replaced
   # (docs/SVS_RUNS.md, *Logs*). For example:
   # log_search_url: https://splunk.example/en-US/app/search/search?q=search%20svs_run%3D{run_uuid}&earliest={earliest}&latest={latest}
+  # the ATT&CK release coverage is computed against: names etc/attack/<release>.json, an extract
+  # vendored with ACE (bin/update-attack-catalog builds one; docs/SVS_COVERAGE.md)
+  attack_release: v20.0
   # the YARA samples captured from dispositioned alerts (Signatures -> Samples, /api/v2/svs/samples).
   # docs/SVS_SAMPLES.md
   samples:

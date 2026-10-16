@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""
+Build the ATT&CK extract SVS coverage reads (docs/SVS_COVERAGE.md, *The ATT&CK release*).
+
+Production ACE never fetches ATT&CK. A developer runs this when ACE adds support for a release and
+commits the file it writes, etc/attack/<release>.json, which svs.attack_release then names. It
+downloads the release's enterprise STIX bundle from MITRE's attack-stix-data repository (or reads
+one given with --input) and keeps only what SVS uses: technique ids and names, sub-technique to
+parent, tactics, platforms, deprecated techniques and the revoked ones with their successors.
+
+Usage:
+    update-attack-catalog v20.0
+    update-attack-catalog v20.0 --input enterprise-attack-20.0.json
+    update-attack-catalog v20.1 --previous etc/attack/v20.0.json
+
+--previous adds the techniques whose name changed since that extract (informational: a rename
+keeps the technique id, so nothing is remapped).
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+from typing import Optional
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = REPO_ROOT / "etc" / "attack"
+
+# the version of the extract's layout (saq/svs/attack.py refuses any other)
+FORMAT = 1
+
+SOURCE_URL = ("https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/"
+              "enterprise-attack/enterprise-attack-{version}.json")
+DOWNLOAD_TIMEOUT_SECONDS = 300
+
+DOMAIN = "enterprise-attack"
+KILL_CHAIN = "mitre-attack"
+
+# the platform slugs SVS uses, in display order, with the name ATT&CK gives each today
+PLATFORMS = {
+    "windows": "Windows",
+    "linux": "Linux",
+    "macos": "macOS",
+    "esxi": "ESXi",
+    "iaas": "IaaS",
+    "containers": "Containers",
+    "saas": "SaaS",
+    "office-suite": "Office Suite",
+    "identity-provider": "Identity Provider",
+    "network-devices": "Network Devices",
+    "pre": "PRE",
+}
+
+# every platform name a release has used, current or not, to its slug. A name not listed here
+# stops the build: a new platform has to be given a slug, never dropped
+PLATFORM_NAMES = {name: slug for slug, name in PLATFORMS.items()} | {
+    "Office 365": "office-suite",
+    "Google Workspace": "office-suite",
+    "Azure AD": "identity-provider",
+    "Network": "network-devices",
+    "AWS": "iaas",
+    "GCP": "iaas",
+    "Azure": "iaas",
+}
+
+RELEASE_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?$")
+TECHNIQUE_RE = re.compile(r"^T\d{4}(\.\d{3})?$")
+
+
+class BuildError(Exception):
+    pass
+
+
+def parse_release(value: str) -> str:
+    """The release as the extract names it (v20.0), from v20.0, 20.0, v20 or 20."""
+    match = RELEASE_RE.match(value.strip())
+    if match is None:
+        raise BuildError(f"{value!r} is not an ATT&CK release (for example v20.0)")
+    return f"v{int(match.group(1))}.{int(match.group(2) or 0)}"
+
+
+def download(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "ace-update-attack-catalog"})
+    try:
+        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+            return response.read()
+    except OSError as e:
+        raise BuildError(f"downloading {url} failed: {e}")
+
+
+def _external_id(obj: dict) -> Optional[str]:
+    for reference in obj.get("external_references", []):
+        if reference.get("source_name") == "mitre-attack" and reference.get("external_id"):
+            return reference["external_id"]
+    return None
+
+
+def _platforms(technique_id: str, names: list[str]) -> list[str]:
+    slugs = set()
+    for name in names:
+        if name not in PLATFORM_NAMES:
+            raise BuildError(f"{technique_id} names platform {name!r}, which has no slug; "
+                             "add it to PLATFORMS or PLATFORM_NAMES")
+        slugs.add(PLATFORM_NAMES[name])
+    return [slug for slug in PLATFORMS if slug in slugs]
+
+
+def _check_release(objects: list[dict], release: str) -> None:
+    for obj in objects:
+        if obj.get("type") == "x-mitre-collection" and obj.get("x_mitre_version"):
+            if f"v{obj['x_mitre_version']}" != release:
+                raise BuildError(f"the bundle is ATT&CK {obj.get('name')} {obj['x_mitre_version']}, not {release}")
+            return
+    warn(f"the bundle doesn't say which release it is; trusting that it is {release}")
+
+
+def _tactics(objects: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    """The tactics in the matrix's order, and each shortname's TA id."""
+    by_stix_id = {}
+    for obj in objects:
+        if obj.get("type") != "x-mitre-tactic" or obj.get("revoked") or obj.get("x_mitre_deprecated"):
+            continue
+        tactic_id = _external_id(obj)
+        if tactic_id is None:
+            raise BuildError(f"tactic {obj.get('name')!r} has no ATT&CK id")
+        by_stix_id[obj["id"]] = {"id": tactic_id, "shortname": obj["x_mitre_shortname"], "name": obj["name"]}
+
+    order = []
+    for obj in objects:
+        if obj.get("type") == "x-mitre-matrix" and not obj.get("revoked"):
+            order.extend(ref for ref in obj.get("tactic_refs", []) if ref in by_stix_id and ref not in order)
+    # a tactic no matrix lists still counts, after the ones it does
+    order.extend(sorted((ref for ref in by_stix_id if ref not in order), key=lambda ref: by_stix_id[ref]["id"]))
+    tactics = [by_stix_id[ref] for ref in order]
+    return tactics, {tactic["shortname"]: tactic["id"] for tactic in tactics}
+
+
+def build(bundle: bytes, release: str, source: str, previous: Optional[dict] = None) -> dict:
+    """The extract of one enterprise STIX bundle (STIX 2.0 or 2.1)."""
+    try:
+        objects = json.loads(bundle)["objects"]
+    except (ValueError, KeyError, TypeError) as e:
+        raise BuildError(f"not a STIX bundle: {e}")
+
+    _check_release(objects, release)
+    tactics, tactic_ids = _tactics(objects)
+    tactic_order = {tactic["id"]: index for index, tactic in enumerate(tactics)}
+
+    patterns = [obj for obj in objects if obj.get("type") == "attack-pattern"
+                and DOMAIN in obj.get("x_mitre_domains", [DOMAIN])]
+    stix_to_id = {}
+    for obj in patterns:
+        technique_id = _external_id(obj)
+        if technique_id is None or not TECHNIQUE_RE.match(technique_id):
+            warn(f"skipped attack-pattern {obj['id']} ({obj.get('name')!r}): no technique id")
+            continue
+        stix_to_id[obj["id"]] = technique_id
+
+    relationships = [obj for obj in objects if obj.get("type") == "relationship" and not obj.get("revoked")]
+    parent_refs = {rel["source_ref"]: rel["target_ref"] for rel in relationships
+                   if rel.get("relationship_type") == "subtechnique-of"}
+    revoked_by = {rel["source_ref"]: rel["target_ref"] for rel in relationships
+                  if rel.get("relationship_type") == "revoked-by"}
+
+    techniques = {}
+    revoked_refs = {}
+    for obj in patterns:
+        technique_id = stix_to_id.get(obj["id"])
+        if technique_id is None:
+            continue
+        if obj.get("revoked"):
+            revoked_refs[technique_id] = obj["id"]
+            continue
+        if technique_id in techniques:
+            raise BuildError(f"{technique_id} appears twice in the bundle")
+
+        phases = set()
+        for phase in obj.get("kill_chain_phases", []):
+            if phase.get("kill_chain_name") != KILL_CHAIN:
+                continue
+            if phase["phase_name"] not in tactic_ids:
+                raise BuildError(f"{technique_id} names tactic {phase['phase_name']!r}, which the bundle doesn't have")
+            phases.add(tactic_ids[phase["phase_name"]])
+
+        parent = stix_to_id.get(parent_refs.get(obj["id"]))
+        if parent is None and "." in technique_id:
+            # a sub-technique the bundle doesn't relate to its parent: the id says which it is
+            parent = technique_id.split(".")[0]
+        techniques[technique_id] = {
+            "name": obj["name"],
+            "parent": parent,
+            "tactics": sorted(phases, key=tactic_order.__getitem__),
+            "platforms": _platforms(technique_id, obj.get("x_mitre_platforms", [])),
+            "deprecated": bool(obj.get("x_mitre_deprecated")),
+        }
+
+    for technique_id, technique in techniques.items():
+        if technique["parent"] is not None and technique["parent"] not in techniques:
+            warn(f"{technique_id}'s parent {technique['parent']} is not in the bundle")
+
+    revoked = {}
+    for technique_id, stix_id in sorted(revoked_refs.items()):
+        if technique_id in techniques:
+            warn(f"{technique_id} is both revoked and current; the current technique wins")
+            continue
+        successor = _successor(technique_id, stix_id, revoked_by, stix_to_id, techniques)
+        if successor is not None:
+            revoked[technique_id] = successor
+
+    renamed = {}
+    if previous is not None:
+        for technique_id, technique in techniques.items():
+            before = previous["techniques"].get(technique_id)
+            if before is not None and before["name"] != technique["name"]:
+                renamed[technique_id] = {"from": before["name"], "previous_release": previous["release"]}
+
+    used = {slug for technique in techniques.values() for slug in technique["platforms"]}
+    return {
+        "format": FORMAT,
+        "release": release,
+        "domain": DOMAIN,
+        "source": {"url": source, "sha256": hashlib.sha256(bundle).hexdigest()},
+        "platforms": [{"slug": slug, "name": name} for slug, name in PLATFORMS.items() if slug in used],
+        "tactics": tactics,
+        "techniques": techniques,
+        "revoked": revoked,
+        "renamed": renamed,
+    }
+
+
+def _successor(technique_id: str, stix_id: str, revoked_by: dict, stix_to_id: dict, techniques: dict) -> Optional[str]:
+    """The current technique a revoked one ends up at, following revocations of revocations."""
+    seen = [technique_id]
+    current = stix_id
+    while True:
+        target = revoked_by.get(current)
+        if target is None:
+            warn(f"{seen[-1]} is revoked without a successor; {technique_id} is left out of the revoked map")
+            return None
+        target_id = stix_to_id.get(target)
+        if target_id is None:
+            warn(f"{seen[-1]} is revoked by {target}, which is not a technique in the bundle; "
+                 f"{technique_id} is left out of the revoked map")
+            return None
+        if target_id in seen:
+            raise BuildError(f"revocations form a cycle: {' -> '.join(seen + [target_id])}")
+        if target_id in techniques:
+            return target_id
+        seen.append(target_id)
+        current = target
+
+
+def render(extract: dict) -> str:
+    return json.dumps(extract, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def write_atomically(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            fp.write(text)
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, path)
+    except BaseException:
+        os.unlink(temp_path)
+        raise
+
+
+def warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Build etc/attack/<release>.json from an ATT&CK enterprise STIX bundle.")
+    parser.add_argument("release", help="the ATT&CK release, for example v20.0")
+    parser.add_argument("--input", type=Path, help="read this STIX bundle instead of downloading the release's")
+    parser.add_argument("--previous", type=Path, help="an earlier extract, to list the techniques renamed since")
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR, help=f"where to write the extract (default {OUTPUT_DIR})")
+    args = parser.parse_args(argv)
+
+    try:
+        release = parse_release(args.release)
+        source = SOURCE_URL.format(version=release[1:])
+        if args.input is not None:
+            bundle = args.input.read_bytes()
+        else:
+            print(f"downloading {source}", file=sys.stderr)
+            bundle = download(source)
+        previous = json.loads(args.previous.read_text(encoding="utf-8")) if args.previous is not None else None
+        extract = build(bundle, release, source, previous)
+    except (BuildError, OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    path = args.output_dir / f"{release}.json"
+    write_atomically(path, render(extract))
+    print(f"wrote {path}: {len(extract['techniques'])} techniques, {len(extract['tactics'])} tactics, "
+          f"{len(extract['revoked'])} revoked, {len(extract['renamed'])} renamed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

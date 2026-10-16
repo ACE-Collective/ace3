@@ -1095,7 +1095,7 @@ svs:
     repositories: [signatures]      # names of the git_repo_* sections SVS may validate
     scan_timeout_seconds: 1800
     max_concurrent_validations: 1   # [FR-13]
-  attack_release: "v17"             # names etc/attack/v17.json [FR-14]
+  attack_release: "v20.0"           # names etc/attack/v20.0.json [FR-14]
 
 service_svs:                        # one instance, on the primary node [FR-13]
   enabled: true
@@ -1236,8 +1236,9 @@ probably suppressed.
 ## Related
 
 - **Operating documents.** `docs/SVS_SAMPLES.md` covers the captured samples,
-  `docs/SVS_VALIDATION.md` the YARA validation and `docs/SVS_RUNS.md` the test runs and their
-  alerts; `docs/SVS_API.md` is the API's data dictionary.
+  `docs/SVS_VALIDATION.md` the YARA validation, `docs/SVS_RUNS.md` the test runs and their
+  alerts, and `docs/SVS_COVERAGE.md` coverage and its ATT&CK release; `docs/SVS_API.md` is the
+  API's data dictionary.
 - **Hunt validation.** `lib/signature_validator` (`validate-hunt` → `POST /api/hunt/validate`)
   compiles and ad-hoc-executes a hunt from a repository's CI. SVS's YARA validation follows the same
   direction (the repository's CI calls ACE), but the two are separate systems. [D-11]
