@@ -2424,16 +2424,21 @@ class SVSExpectation(Base):
     """A decision about a signature for an Atomic Red Team test (docs/SVS_RUNS.md, *Expectations and
     ignores*): expected (a run of the test should fire it) or rejected (it fires, but it is not what
     the test is about, and it is not proposed again). A signature that fires and has no decision is
-    a candidate, which is a status of a run's result and never a row here. Only
-    saq/svs/expectations.py writes this table."""
+    a candidate, which is a status of a run's result and never a row here. A decision is about the
+    test on one platform: a run is judged only by its own platform's (a test runs different commands
+    per platform, and so fires different signatures). Only saq/svs/expectations.py writes this
+    table."""
 
     __tablename__ = 'svs_expectations'
     __table_args__ = (
-        UniqueConstraint('test_guid', 'signature_uuid', name='uq_svs_expectations_test_signature'),
+        UniqueConstraint('test_guid', 'platform', 'signature_uuid',
+                         name='uq_svs_expectations_test_platform_signature'),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     test_guid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # a platform slug (saq.svs.attack), one of the test's supported platforms
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
     signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     # saq.svs.constants.ExpectationState
     state: Mapped[str] = mapped_column(Enum('expected', 'rejected'), nullable=False)

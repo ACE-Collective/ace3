@@ -731,11 +731,12 @@ HISTORY_STATES = (RunState.ENDED.value, RunState.REVIEWED.value)
 
 
 def run_history(run_id: str, max_runs: int) -> RunHistory:
-    """How each signature of the run's result did in the test's ended and reviewed runs registered
-    before it, the latest max_runs of them; 400 for a malformed run id, 404 for an unknown run."""
+    """How each signature of the run's result did in the test's ended and reviewed runs on the
+    run's platform (the only runs it is compared with) registered before it, the latest max_runs of
+    them; 400 for a malformed run id, 404 for an unknown run."""
     run_uuid = _validate_run_id(run_id)
     db = get_db()
-    run = db.execute(select(SVSRun.id, SVSRun.test_guid, SVSRun.created_at)
+    run = db.execute(select(SVSRun.id, SVSRun.test_guid, SVSRun.platform, SVSRun.created_at)
                      .where(SVSRun.uuid == run_uuid)).first()
     if run is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
@@ -745,7 +746,7 @@ def run_history(run_id: str, max_runs: int) -> RunHistory:
                                  .order_by(SVSRunResult.id)).scalars())
     earlier = db.execute(
         select(SVSRun.id, SVSRun.uuid, SVSRun.state, SVSRun.created_at, SVSRun.reviewed_at)
-        .where(SVSRun.test_guid == run.test_guid, SVSRun.state.in_(HISTORY_STATES),
+        .where(SVSRun.test_guid == run.test_guid, SVSRun.platform == run.platform, SVSRun.state.in_(HISTORY_STATES),
                or_(SVSRun.created_at < run.created_at,
                    and_(SVSRun.created_at == run.created_at, SVSRun.id < run.id)))
         .order_by(SVSRun.created_at.desc(), SVSRun.id.desc())

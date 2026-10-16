@@ -120,6 +120,13 @@ async def test_each_tests_state_and_runs(client: AsyncClient, catalog):
     assert (rows[_guid(3)]["test_state"], rows[_guid(3)]["run_count"]) == ("never_run", 0)
     detail = (await client.get(f"/svs/tests/{_guid(1)}")).json()
     assert detail["test_state"] == "awaiting_review"
+    assert [(row["platform"], row["test_state"]) for row in detail["platform_states"]] == [("windows", "awaiting_review")]
+    # one state per supported platform, never_run where it has no run or decision
+    detail = (await client.get(f"/svs/tests/{_guid(2)}")).json()
+    assert [(row["platform"], row["test_state"]) for row in detail["platform_states"]] == [
+        ("linux", "never_run"), ("macos", "never_run")]
+    # the list carries the roll-up only
+    assert "platform_states" not in ran
     records = list(csv.DictReader(io.StringIO((await client.get("/svs/tests/export/csv")).text)))
     assert {record["test_state"] for record in records} == {"awaiting_review", "never_run"}
 

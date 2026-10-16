@@ -76,7 +76,7 @@ class TestDetail:
         detail = (await client.post(f"/svs/runs/{run.uuid}/review")).json()["detail"]
         assert (detail["candidates"], detail["context_alerts"]) == ([RULE], [context])
 
-        await client.put(f"/svs/tests/{GUID}/expectations/{RULE}", json={"state": "expected"})
+        await client.put(f"/svs/tests/{GUID}/expectations/windows/{RULE}", json={"state": "expected"})
         await client.post(f"/svs/runs/{run.uuid}/alerts/{context}/keep")
         blockers = (await client.get(f"/svs/runs/{run.uuid}")).json()["review_blockers"]
         # the result still names the candidate until the timers recompute it
@@ -182,9 +182,10 @@ class TestAlerts:
         assert (await client.get("/svs/runs/not-a-uuid/alerts")).status_code == 400
 
 
-def _run_with_results(state: str, created: datetime, results: dict[str, tuple], guid: str = GUID) -> str:
+def _run_with_results(state: str, created: datetime, results: dict[str, tuple], guid: str = GUID,
+                      host: str = "win10-01") -> str:
     """A run of the test in that state, with result rows: signature -> (status, reviewed_status)."""
-    run = started_run(guid, now=created)
+    run = started_run(guid, host, now=created)
     db = get_db()
     db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state=state))
     db.commit()
@@ -218,6 +219,21 @@ class TestHistory:
 
         body = (await client.get(f"/svs/runs/{run}/history", params={"runs": 1})).json()
         assert ([row["run_id"] for row in body["runs"]], body["signatures"][0]["statuses"]) == ([ended], ["missing"])
+
+    @pytest.mark.asyncio
+    async def test_only_runs_on_the_same_platform(self, client: AsyncClient):
+        multi = "eeeeeeee-5555-4555-8555-555555555555"
+        add_catalog_test(multi, platforms=("windows", "linux"))
+        add_test_host("windows-01", platform="windows")
+        add_test_host("linux-01", platform="linux")
+        now = datetime.now()
+        earlier = _run_with_results("ended", now - timedelta(days=3), {SIGNATURE_A: ("hit", None)}, multi, "linux-01")
+        _run_with_results("ended", now - timedelta(days=2), {SIGNATURE_A: ("missing", None)}, multi, "windows-01")
+        run = _run_with_results("ended", now - timedelta(days=1), {SIGNATURE_A: ("hit", None)}, multi, "linux-01")
+
+        body = (await client.get(f"/svs/runs/{run}/history")).json()
+        assert [row["run_id"] for row in body["runs"]] == [earlier]
+        assert body["signatures"] == [{"signature_uuid": SIGNATURE_A, "statuses": ["hit"]}]
 
     @pytest.mark.asyncio
     async def test_a_first_run(self, client: AsyncClient):

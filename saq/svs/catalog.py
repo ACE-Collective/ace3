@@ -33,6 +33,7 @@ from saq.configuration.config import get_config
 from saq.database.model import SVSCatalogRepository, SVSCatalogTest
 from saq.database.pool import get_db
 from saq.git import get_commit_hash
+from saq.svs.attack import normalize_platform
 from saq.util import abs_path
 
 ATOMICS_GLOB = os.path.join("atomics", "T*", "T*.yaml")
@@ -335,3 +336,9 @@ def refresh_catalog(*, force: bool = False) -> list[RefreshResult]:
 def supported_platforms(test: SVSCatalogTest) -> list[str]:
     """A catalog test's supported_platforms, lower case."""
     return json.loads(test.platforms)
+
+
+def platform_slugs(test: SVSCatalogTest) -> list[str]:
+    """The platforms a run of the test can be on: its supported_platforms as platform slugs,
+    sorted."""
+    return sorted({normalize_platform(platform) for platform in supported_platforms(test)})

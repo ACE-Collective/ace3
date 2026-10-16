@@ -317,7 +317,8 @@ class SignatureHistory(BaseModel):
 class RunHistory(BaseModel):
     """How the signatures of a run's result did in the test's earlier runs (docs/SVS_API.md, *Run history*)."""
 
-    runs: list[HistoryRun] = Field(description="the test's ended and reviewed runs registered before this one, newest first")
+    runs: list[HistoryRun] = Field(description="the test's ended and reviewed runs on this run's platform "
+                                                    "registered before this one, newest first")
     signatures: list[SignatureHistory] = Field(description="one per signature of this run's result, in its order")
 
 

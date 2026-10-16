@@ -14,7 +14,7 @@ from saq.database.private_session import private_transaction
 from saq.svs import expectations, signatures
 from saq.svs.run_filters import run_filter_conditions
 from saq.svs.run_summary import run_summaries
-from saq.svs.test_state import RECENT_RUNS, TestState, catalog_histories
+from saq.svs.test_state import RECENT_RUNS, TestState, catalog_histories, evaluate_tests
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 pytestmark = pytest.mark.integration
@@ -22,6 +22,7 @@ pytestmark = pytest.mark.integration
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 OTHER = "44444444-dddd-4ddd-8ddd-444444444444"
+MULTI = "eeeeeeee-5555-4555-8555-555555555555"
 RULE_HASH = "a" * 64
 
 
@@ -68,7 +69,7 @@ class TestStates:
         assert _history().state == TestState.NEVER_RUN
 
     def test_awaiting_review_until_a_run_is_reviewed(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _run("ended")
         assert _history().state == TestState.AWAITING_REVIEW
 
@@ -77,7 +78,7 @@ class TestStates:
         assert _history().state == TestState.NO_EXPECTATIONS
 
     def test_validated(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         run = _reviewed()
         _result(run, SIGNATURE, "hit", "hit")
         history = _history()
@@ -86,41 +87,124 @@ class TestStates:
 
     @pytest.mark.parametrize("reviewed_status", ["missing", "possibly_suppressed"])
     def test_failing(self, user_id, reviewed_status):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(), SIGNATURE, "hit", reviewed_status)
         # judged as signed off: a live hit since doesn't change it
         assert _history().state == TestState.FAILING
 
     def test_only_the_latest_reviewed_run_counts(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(timedelta(days=2)), SIGNATURE, "missing", "missing")
         _result(_reviewed(), SIGNATURE, "hit", "hit")
         assert _history().state == TestState.VALIDATED
 
     def test_an_expectation_added_after_the_review_waits_for_one(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(), SIGNATURE, "hit", "hit")
-        expectations.set_expectation(GUID, OTHER, "expected", user_id)
+        expectations.set_expectation(GUID, OTHER, "expected", user_id, platform="windows")
         assert _history().state == TestState.AWAITING_REVIEW
         # an ignored one doesn't count
         expectations.set_ignore(OTHER, user_id, test_guid=GUID)
         assert _history().state == TestState.VALIDATED
 
     def test_stale_when_the_rule_changed(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(), SIGNATURE, "hit", "hit", reviewed_content_hash="b" * 64)
         assert _history().state == TestState.STALE
 
     def test_stale_when_the_test_changed(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(test_content_hash="c" * 64), SIGNATURE, "hit", "hit")
         assert _history().state == TestState.STALE
 
     def test_a_rule_ace_cannot_read_is_not_counted_as_changed(self, user_id, monkeypatch):
         monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id)
+        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(), SIGNATURE, "hit", "hit", reviewed_content_hash="b" * 64)
         assert _history().state == TestState.VALIDATED
+
+
+def _platform_run(platform: str, state: str = "reviewed", created_ago: timedelta = timedelta(hours=1)) -> SVSRun:
+    """A run of MULTI on the platform's test host."""
+    run = started_run(MULTI, f"{platform}-01")
+    values = {"state": state, "created_at": datetime.now() - created_ago}
+    if state == "reviewed":
+        values["reviewed_at"] = datetime.now() - created_ago + timedelta(minutes=30)
+    db = get_db()
+    db.execute(update(SVSRun).where(SVSRun.id == run.id).values(**values))
+    db.commit()
+    db.expire_all()
+    return db.get(SVSRun, run.id)
+
+
+class TestPlatforms:
+    """A test is judged on each platform by its runs there against what is expected of it there."""
+
+    @pytest.fixture(autouse=True)
+    def multi(self):
+        add_catalog_test(MULTI, platforms=("windows", "linux", "macos"))
+        add_test_host("windows-01", platform="windows")
+        add_test_host("linux-01", platform="linux")
+
+    def _history(self):
+        test = get_db().execute(select(SVSCatalogTest).where(SVSCatalogTest.guid == MULTI)).scalar_one()
+        return catalog_histories(get_db(), [test])[MULTI]
+
+    def _evaluations(self):
+        test = get_db().execute(select(SVSCatalogTest).where(SVSCatalogTest.guid == MULTI)).scalar_one()
+        return {platform: evaluation for (_, platform), evaluation in evaluate_tests(get_db(), [test]).items()}
+
+    def test_each_platform_on_its_own(self, user_id):
+        for platform in ("windows", "linux"):
+            expectations.set_expectation(MULTI, SIGNATURE, "expected", user_id, platform=platform)
+        _result(_platform_run("windows"), SIGNATURE, "hit", "hit")
+        _result(_platform_run("linux"), SIGNATURE, "missing", "missing")
+
+        history = self._history()
+        assert history.state == TestState.FAILING
+        assert {platform: state.state for platform, state in history.platform_states.items()} == {
+            "linux": TestState.FAILING, "macos": TestState.NEVER_RUN, "windows": TestState.VALIDATED}
+        assert history.platform_states["windows"].expected == 1 and history.platform_states["macos"].expected == 0
+        # a signature expected on two platforms is one expected signature
+        assert history.expected == 1
+        # a platform without a run or a decision isn't evaluated
+        assert set(self._evaluations()) == {"windows", "linux"}
+
+    def test_worst_first(self, user_id):
+        expectations.set_expectation(MULTI, SIGNATURE, "expected", user_id, platform="windows")
+        _result(_platform_run("windows"), SIGNATURE, "hit", "hit")
+        linux = _platform_run("linux", "ended")
+        # a platform whose runs aren't reviewed yet holds the test in review
+        assert self._history().state == TestState.AWAITING_REVIEW
+
+        # nothing expected on linux: validated wins over no expectations
+        get_db().execute(update(SVSRun).where(SVSRun.id == linux.id).values(state="reviewed",
+                                                                           reviewed_at=datetime.now()))
+        get_db().commit()
+        history = self._history()
+        assert history.state == TestState.VALIDATED
+        assert history.platform_states["linux"].state == TestState.NO_EXPECTATIONS
+        assert history.last_reviewed_run_uuid == linux.uuid
+
+    def test_an_expectation_on_a_platform_without_runs(self, user_id):
+        expectations.set_expectation(MULTI, SIGNATURE, "expected", user_id, platform="windows")
+        _result(_platform_run("windows"), SIGNATURE, "hit", "hit")
+        expectations.set_expectation(MULTI, OTHER, "expected", user_id, platform="macos")
+
+        assert self._history().state == TestState.AWAITING_REVIEW
+        macos = self._evaluations()["macos"]
+        assert (macos.state, macos.run, macos.unjudged_expectations) == (TestState.AWAITING_REVIEW, None, True)
+
+    def test_an_expectation_after_the_review_is_unjudged(self, user_id):
+        expectations.set_expectation(MULTI, SIGNATURE, "expected", user_id, platform="linux")
+        run = _platform_run("linux")
+        _result(run, SIGNATURE, "hit", "hit")
+        assert not self._evaluations()["linux"].unjudged_expectations
+
+        expectations.set_expectation(MULTI, OTHER, "expected", user_id, platform="linux")
+        linux = self._evaluations()["linux"]
+        assert (linux.state, linux.run.id, linux.unjudged_expectations) == (TestState.AWAITING_REVIEW, run.id, True)
+        assert linux.expected == {SIGNATURE, OTHER}
 
 
 class TestRunHistory:

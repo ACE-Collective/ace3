@@ -671,12 +671,16 @@ no run of its own; its banner names the marker and the run the marker belongs to
 ### Expectations
 
 Expectations are **learned from reviewed runs**, not derived from declared techniques. [D-9, ART-11]
+They are learned **per platform**: an expectation (or a rejection) is about a test on one platform,
+and a run is judged by its own platform's only, because a test runs different commands, and fires
+different signatures, on each platform it supports. Ignores are per test (on every platform) or
+global.
 
-1. **Discovery.** The first Reviewed run of a test proposes every attributed signature, minus the
-   ignore lists, as a *candidate*. The analyst accepts (*expected*) or rejects each one. A rejected
-   candidate is remembered and not proposed again. A candidate is a status of a run's result, not a
-   stored decision: only *expected* and *rejected* are rows, so nothing goes stale when a run is
-   reconsidered.
+1. **Discovery.** The first Reviewed run of a test on a platform proposes every attributed
+   signature, minus the ignore lists, as a *candidate*. The analyst accepts (*expected*) or rejects
+   each one. A rejected candidate is remembered and not proposed again. A candidate is a status of
+   a run's result, not a stored decision: only *expected* and *rejected* are rows, so nothing goes
+   stale when a run is reconsidered.
 2. **Steady state.** Later runs compare against the expected set:
    - an expected signature that doesn't fire is *missing*;
    - a signature that fires and isn't expected becomes a new candidate.
@@ -833,7 +837,9 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
 - **Columns:** technique; name; platforms; repository; test state; last run; last reviewed run;
   number of runs; expected signatures; missing in the last *n* runs.
 - **Test state:** *never run*, *awaiting review*, *no expectations*, *validated*, *failing*, *stale*
-  (with the same meanings as in Part 4).
+  (with the same meanings as in Part 4). A test is judged on each platform on its own, and its
+  state is the worst of its platforms': *failing*, *stale*, *awaiting review*, *validated*, *no
+  expectations*. The detail page shows each platform's state.
 - **Sort and filters:** the default sort is technique, then name. There is no suggested order.
 - **The detail page:** the test's description, commands and input arguments from the catalog, its
   expectations and ignores, and its run history. It is also where an operator sets the test's
@@ -1039,7 +1045,7 @@ tables are on the main chain.
 | `svs_catalog_tests`, `svs_catalog_repositories` | The ART catalog: guid, repository, technique, name, platforms, commit, content hash; and the commit each repository was last read at |
 | `svs_runs`, `svs_run_targets` | Runs, their lifecycle timestamps, marker, windows, and targets |
 | `svs_attributions` | `(run, alert uuid, detection content_hash, the detection's signature, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23], and carrying the signature because its `detection_points` row doesn't exist yet either |
-| `svs_expectations` | `(test guid, signature uuid, state: expected/rejected, who, when, the run it was decided from)`; a candidate is derived, never stored |
+| `svs_expectations` | `(test guid, platform, signature uuid, state: expected/rejected, who, when, the run it was decided from)`; a candidate is derived, never stored |
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_test_settings` | Per test: an observation window that replaces the computed one |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |

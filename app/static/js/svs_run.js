@@ -623,10 +623,20 @@
         }
 
         function decision(signature_uuid) {
-            const expectation = state.expectations.find(function(e) { return e.signature_uuid === signature_uuid; });
+            // the run is judged by its own platform's expectations only
+            const expectation = state.expectations.find(function(e) {
+                return e.signature_uuid === signature_uuid && e.platform === state.run.platform;
+            });
             const test_ignore = state.ignores.find(function(i) { return i.signature_uuid === signature_uuid && i.scope === "test"; });
             const global_ignore = state.ignores.find(function(i) { return i.signature_uuid === signature_uuid && i.scope === "global"; });
             return {expectation: expectation, test_ignore: test_ignore, global_ignore: global_ignore};
+        }
+
+        function expected_elsewhere(signature_uuid) {
+            // the test's other platforms that expect the signature: a hint for deciding it here
+            return state.expectations.filter(function(e) {
+                return e.signature_uuid === signature_uuid && e.platform !== state.run.platform && e.state === "expected";
+            }).map(function(e) { return e.platform; }).sort();
         }
 
         function decision_node(signature_uuid) {
@@ -677,9 +687,10 @@
             const found = decision(signature_uuid);
             const guid = encodeURIComponent(state.run.test_guid);
             const sig = encodeURIComponent(signature_uuid);
+            const platform = encodeURIComponent(state.run.platform);
             const requests = [];
             if (found.expectation) {
-                requests.push(aceApi.del(settings.path + "/tests/" + guid + "/expectations/" + sig));
+                requests.push(aceApi.del(settings.path + "/tests/" + guid + "/expectations/" + platform + "/" + sig));
             }
             if (found.test_ignore) {
                 requests.push(aceApi.del(settings.path + "/tests/" + guid + "/ignores/" + sig));
@@ -782,7 +793,8 @@
                                                 "Remove what was decided about this signature for the test", function() {
                             act(ask({title: "Remove the decision?", submit: "Remove it",
                                      text: "What was decided about " + (row.signature_name || row.signature_uuid) +
-                                           " is removed for every run of this test" +
+                                           " is removed for " + (found.test_ignore || found.global_ignore
+                                               ? "every run of this test" : "this test's runs on " + state.run.platform) +
                                            (found.global_ignore && settings.is_admin ? ", and its global ignore for every test" : "") +
                                            ". It is a candidate again the next time it fires, and the results of the " +
                                            "affected runs are recomputed."})
@@ -810,12 +822,15 @@
         function decide(row, how) {
             const guid = encodeURIComponent(state.run.test_guid);
             const sig = encodeURIComponent(row.signature_uuid);
+            const platform = state.run.platform;
             const name = row.signature_name || row.signature_uuid;
             const options = {
-                expected: {title: "Expect " + name + "?", submit: "Expected",
-                           text: "Every run of this test should fire it. A run where it doesn't is missing it."},
-                rejected: {title: "Reject " + name + "?", submit: "Rejected",
-                           text: "It fires, but it isn't what this test is about. It isn't proposed again."},
+                expected: {title: "Expect " + name + " on " + platform + "?", submit: "Expected",
+                           text: "Every run of this test on " + platform + " should fire it. A run where it doesn't " +
+                                 "is missing it."},
+                rejected: {title: "Reject " + name + " on " + platform + "?", submit: "Rejected",
+                           text: "It fires, but it isn't what this test is about on " + platform + ". It isn't " +
+                                 "proposed again for runs on " + platform + "."},
                 ignore_test: {title: "Ignore " + name + " for this test?", submit: "Ignore it",
                               text: "It is noise during this test's runs, such as the launcher's own remoting. " +
                                     "Reviewing a run gives its detections an FP verdict."},
@@ -828,7 +843,8 @@
                     return false;
                 }
                 if (how === "expected" || how === "rejected") {
-                    return aceApi.put(settings.path + "/tests/" + guid + "/expectations/" + sig,
+                    return aceApi.put(settings.path + "/tests/" + guid + "/expectations/" +
+                                      encodeURIComponent(platform) + "/" + sig,
                                       {state: how, reason: answer.reason, run_id: settings.run_id});
                 }
                 if (how === "ignore_test") {
@@ -856,7 +872,8 @@
                 return;
             }
             node.appendChild(el("p", "small text-muted mb-1",
-                                "Signatures that fired during the run and that nobody has decided about for this test. " +
+                                "Signatures that fired during the run and that nobody has decided about for this test " +
+                                "on " + state.run.platform + ". " +
                                 "A run is reviewed once each is decided."));
             const list = el("div", "list-group mb-1");
             candidates.forEach(function(row) {
@@ -872,6 +889,13 @@
                                alert_link(alert.alert_uuid, alert.alert && alert.alert.description ? alert.alert.description : null));
                     });
                     about.appendChild(alerts);
+                }
+                const elsewhere = expected_elsewhere(row.signature_uuid);
+                if (elsewhere.length) {
+                    const hint = el("div", "small text-muted", "expected on " + elsewhere.join(", "));
+                    hint.title = "this test's runs on " + (elsewhere.length > 1 ? "those platforms" : "that platform") +
+                        " expect it; a decision here is for " + state.run.platform + " only";
+                    about.appendChild(hint);
                 }
                 item.appendChild(about);
                 const found = decision(row.signature_uuid);

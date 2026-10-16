@@ -23,19 +23,35 @@ class CatalogTest(BaseModel):
     removed_at: Optional[datetime] = Field(default=None, description="when the test disappeared from its repository; it keeps its runs")
     updated_at: datetime = Field(description="when the catalog row last changed; the changed_since key. A change "
                                              "to the test's runs or state doesn't change it")
-    test_state: str = Field(description="never_run, awaiting_review, no_expectations, failing, stale or validated "
+    test_state: str = Field(description="never_run, awaiting_review, no_expectations, failing, stale or validated: "
+                                        "never_run without runs, else the worst of its platforms' states "
                                         "(docs/SVS_API.md, *Tests*)")
     run_count: int = Field(default=0, description="every run registered for it")
     last_run_id: Optional[str] = Field(default=None, description="its latest run's uuid")
     last_run_at: Optional[datetime] = Field(default=None, description="when its latest run was registered")
     last_reviewed_run_id: Optional[str] = None
     last_reviewed_at: Optional[datetime] = None
-    expected_signatures: int = Field(default=0, description="signatures expected of it that no ignore applies to")
+    expected_signatures: int = Field(default=0, description="signatures expected of it on any platform that no ignore "
+                                                            "applies to")
     recent_runs: int = Field(default=0, description="its latest ended or reviewed runs looked at (at most 5)")
     recent_runs_missing: int = Field(default=0, description="of those, the runs that missed an expected signature")
 
 
+class PlatformState(BaseModel):
+    """How a test does on one platform."""
+
+    platform: str
+    test_state: str = Field(description="never_run (no run or decision on it), awaiting_review, no_expectations, "
+                                        "failing, stale or validated")
+    last_reviewed_run_id: Optional[str] = Field(default=None, description="its latest reviewed run on the platform")
+    last_reviewed_at: Optional[datetime] = None
+    expected_signatures: int = Field(default=0, description="signatures expected of it on the platform that no ignore "
+                                                            "applies to")
+
+
 class CatalogTestDetail(CatalogTest):
+    platform_states: list[PlatformState] = Field(
+        default_factory=list, description="each platform it supports or has a run or a decision on, by platform")
     description: Optional[str] = None
     test: dict[str, Any] = Field(description="the test's entry in its atomic file: executor (commands), input_arguments, dependencies")
 

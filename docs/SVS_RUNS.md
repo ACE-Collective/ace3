@@ -97,20 +97,26 @@ finds its sub-techniques), name, platform, executor, repository or `removed`.
 
 ### Tests and their state
 
-`GET /api/v2/svs/tests` lists the catalog with each test's state, judged on its latest reviewed run
-as signed off (`docs/SVS_API.md`, *Tests*):
+`GET /api/v2/svs/tests` lists the catalog with each test's state (`docs/SVS_API.md`, *Tests*). A
+test is judged on each platform on its own: by its latest reviewed run on that platform, as signed
+off, against what is expected of it there (*Expectations and ignores*, below).
 
-| State | Meaning |
+| State on a platform | Meaning |
 |---|---|
-| `never_run` | no run was ever registered for it |
-| `awaiting_review` | no run of it is reviewed yet, or something was expected of it only after its latest review |
-| `no_expectations` | it has a reviewed run, and nothing is expected of it |
-| `failing` | its latest reviewed run missed an expected signature |
+| `awaiting_review` | no run of it there is reviewed yet, or something was expected of it there only after its latest review there |
+| `no_expectations` | it has a reviewed run there, and nothing is expected of it there |
+| `failing` | its latest reviewed run there missed an expected signature |
 | `stale` | it would be validated, but the test or an expected signature's rule changed since that review |
-| `validated` | its latest reviewed run hit every expected signature |
+| `validated` | its latest reviewed run there hit every expected signature |
 
-Each row also has its run count, its latest run and latest reviewed run, how many signatures are
-expected of it, and how many of its latest 5 ended or reviewed runs missed an expected signature.
+The test's own state is `never_run` when no run was ever registered for it. Otherwise it is the
+worst of the states of the platforms it has a run or a decision on, in this order: `failing`,
+`stale`, `awaiting_review`, `validated`, `no_expectations`. So a test validated on windows and not
+yet reviewed on linux is `awaiting_review`. The test's detail lists every platform's state
+(`platform_states`), with `never_run` for a supported platform it has no run or decision on.
+
+Each row also has its run count, its latest run and latest reviewed run (on any platform), how many
+signatures are expected of it on any platform, and how many of its latest 5 ended or reviewed runs missed an expected signature.
 Nothing suggests what to run next: that stays the team's call. The GUI's Tests tab and each test's
 page show the same (*In the GUI*, below).
 
@@ -227,7 +233,8 @@ A run has two windows, both starting at `start`:
      `observation_minutes` an operator set, used as it is, with no slack and no floor, from 1 minute up
      to `ceiling_hours`;
   2. **its expectations**: the worst-case latency of the slowest signature the test is expected to
-     fire (and that isn't ignored), plus `slack_minutes`, within `floor_minutes` and `ceiling_hours`;
+     fire on the run's platform (and that isn't ignored), plus `slack_minutes`, within
+     `floor_minutes` and `ceiling_hours`;
   3. **every hunt**, for a test without expectations (below).
 
   The `registered` event records which one applied (`observation_source`: `override`, `expected`
@@ -352,14 +359,15 @@ its result is being recomputed.
     nothing but the recompute is left.
   - Each action on a run someone else owns asks before it takes the run from them.
 - **Result** is one row per signature: its status, how many alerts carry it, the result as signed
-  off, what is decided about it for the test and by whom, and a mark for each of the test's last
-  ten ended or reviewed runs, each linking to that run.
+  off, what is decided about it for the test on the run's platform and by whom, and a mark for each
+  of the test's last ten ended or reviewed runs on that platform, each linking to that run.
   - A decision can be undone there (*Undo*), which makes the signature a candidate again.
   - A missing YARA signature links to the files captured from the run's alerts (Signatures →
     Samples, with `signature:read`).
 - **Candidates** lists the undecided signatures and the alerts that carry them, with *Expected*,
   *Rejected*, *Ignore for this test* and, with `svs:admin`, *Ignore everywhere*
-  (*Expectations and ignores*, below).
+  (*Expectations and ignores*, below). A candidate the test's runs on another platform expect says
+  so (*expected on linux*); that is only a hint, and the decision is still made for this platform.
 - **Alerts** lists every alert the run holds, then those it no longer holds. Each shows its SVS
   status, how it is attributed, its detections, and its queue, disposition and owner.
   - *Keep*, *Not a test*, *Disassociate* and *Associate* (*Associating alerts by hand*, below) are
@@ -371,14 +379,14 @@ its result is being recomputed.
 
 **The test page** (`/ace/svs/tests/<guid>`, opened from the Tests tab, from a run's page and from the
 guid on a row of the Runs tab) shows one test.
-- **Its facts:** state, platforms, executor, repository and path, commit and content hash, runs, and
-  expectations.
+- **Its facts:** state, and the state on each platform when they differ, platforms, executor,
+  repository and path, commit and content hash, runs, and expectations.
 - **The catalog entry:** the description, commands (command, manual steps, cleanup), input arguments
   and dependencies.
 - **Its observation window** (*Windows*, above): computed, or the minutes an operator set. With
   `svs:run_manage` it is set here, or cleared to go back to the computed window.
-- **Expectations:** every decided signature, with who decided it, when, why and from which run. With
-  `svs:run_manage`, *Remove* makes one a candidate again.
+- **Expectations:** every decided signature, by platform, with who decided it, when, why and from
+  which run. With `svs:run_manage`, *Remove* makes one a candidate again on that platform.
 - **Ignores** that apply to the test: its own, which `svs:run_manage` removes, and the global ones,
   which only `svs:admin` removes.
 - **Runs:** its latest 25, newest first, each linking to its run page, and a link to all of them on
@@ -650,29 +658,36 @@ below), each signature is:
 
 ## Expectations and ignores
 
-What a run is judged by is decided per test, by a person, and learned from runs rather than from
-the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*).
+What a run is judged by is decided per test and platform, by a person, and learned from runs rather
+than from the techniques a test declares (`docs/SVS.md`, Part 3, *Expectations*).
 
-- **An expectation** is a signature a run of the test should fire (`expected`), or one that fires
-  but isn't what the test is about (`rejected`). A rejected signature is remembered and isn't
-  proposed again. Anything else a run fires is a `candidate` in its result: there is no stored
-  candidate, so nothing goes stale.
-  - Decide with `PUT /api/v2/svs/tests/{guid}/expectations/{signature_uuid}` `{state, reason?,
-    run_id?}` (`svs:run_manage`).
-  - A `run_id` (a run of that test) says which run's result the decision was made from. That run's
-    event log records it (`candidate_decision`).
-  - Removing a decision (`DELETE`) makes the signature a candidate again the next time it fires.
-    Nothing removes an expectation automatically: a flaky signature shows up in the run history.
+- **An expectation** is a signature a run of the test on a platform should fire (`expected`), or
+  one that fires there but isn't what the test is about (`rejected`). A rejected signature is
+  remembered and isn't proposed again for that platform. Anything else a run fires is a `candidate`
+  in its result: there is no stored candidate, so nothing goes stale.
+  - **A run is judged by its own platform's decisions only** (every run has one platform,
+    *Registering a run*). A test that supports several platforms runs different commands on each,
+    and so fires different signatures: what a linux run taught isn't expected of a windows run.
+  - Decide with `PUT /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` `{state,
+    reason?, run_id?}` (`svs:run_manage`). The platform has to be one the test supports (its
+    `supported_platforms` as platform slugs, so `iaas:aws` is `iaas`), or the answer is 422.
+  - A `run_id` (a run of that test, on that platform, or 422) says which run's result the decision
+    was made from. That run's event log records it (`candidate_decision`).
+  - Removing a decision (`DELETE`, same path) makes the signature a candidate again the next time a
+    run on that platform fires it. Nothing removes an expectation automatically: a flaky signature
+    shows up in the run history.
   - In the GUI, decisions are made among a run's candidates on its page, and undone there or on the
     test's page (*In the GUI*, above).
-- **An ignore** marks a signature as noise during runs, such as the launcher's own WinRM or remoting:
+- **An ignore** marks a signature as noise during runs on every platform, such as the launcher's own
+  WinRM or remoting:
   - for one test: `PUT …/tests/{guid}/ignores/{signature_uuid}`, `svs:run_manage`;
   - for every test: `PUT /api/v2/svs/ignores/global/{signature_uuid}`, `svs:admin`, because it
     changes every test's results.
 - **Every change** is an AUDIT record with who made it, and marks the results of the affected runs
-  stale.
-- **Expected signatures set the window.** A new run of a test with expectations waits for the
-  slowest of them (*Windows*, above).
+  stale: a decision, the test's runs on its platform; an ignore, all the test's runs (or every
+  test's).
+- **Expected signatures set the window.** A new run of a test with expectations on its platform
+  waits for the slowest of them (*Windows*, above).
 
 ## Reviewing runs
 

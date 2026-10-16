@@ -38,8 +38,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.svs.alert_status import fully_attributed_condition
-from saq.svs.attack import normalize_platform
-from saq.svs.catalog import supported_platforms
+from saq.svs.catalog import platform_slugs, supported_platforms
 from saq.svs.expectations import observation_for_test
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.hosts import InvalidTestHost, match_target, normalize_username, split_hostname
@@ -356,7 +355,7 @@ def _run_platform(test: SVSCatalogTest, matches) -> str:
     if host_platforms:
         return host_platforms[0]
 
-    test_platforms = sorted({normalize_platform(platform) for platform in supported_platforms(test)})
+    test_platforms = platform_slugs(test)
     if len(test_platforms) == 1:
         return test_platforms[0]
 
@@ -398,7 +397,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
                 f"test host {match.host.hostname} is {match.host.platform}")
 
     platform = _run_platform(test, matches)
-    observation, observation_source = observation_for_test(test.guid)
+    observation, observation_source = observation_for_test(test.guid, platform)
     attribution = attribution_window(observation)
 
     run = SVSRun(

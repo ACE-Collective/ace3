@@ -63,7 +63,8 @@ def _statement() -> Select:
 def _row(row) -> Expectation:
     expectation, run_uuid, username = row
     return Expectation(
-        test_guid=expectation.test_guid, signature_uuid=expectation.signature_uuid, state=expectation.state,
+        test_guid=expectation.test_guid, platform=expectation.platform, signature_uuid=expectation.signature_uuid,
+        state=expectation.state,
         signature_family=expectation.signature_family, signature_name=expectation.signature_name,
         reason=expectation.reason, decided_from_run_id=run_uuid, decided_by=username,
         decided_at=expectation.decided_at, updated_at=expectation.updated_at)
@@ -75,12 +76,14 @@ class ExpectationListing:
     changed_since: bool
 
 
-def prepare_listing(test: Optional[str], signature: Optional[str], state: Optional[str],
+def prepare_listing(test: Optional[str], platform: Optional[str], signature: Optional[str], state: Optional[str],
                     changed_since: Optional[datetime]) -> ExpectationListing:
     """The expectations matching the filters. Raises InvalidListingRequest."""
     statement = _statement()
     if test:
         statement = statement.where(SVSExpectation.test_guid == test.strip())
+    if platform:
+        statement = statement.where(SVSExpectation.platform == platform.strip().lower())
     if signature:
         statement = statement.where(SVSExpectation.signature_uuid == signature.strip())
     if state:
@@ -134,9 +137,10 @@ def expectations_to_csv(rows: list[Expectation], *, header: bool) -> str:
     return rows_to_csv(rows, EXPECTATION_CSV_FIELDS, header=header)
 
 
-def _expectation(test_guid: str, signature_uuid: str) -> Expectation:
+def _expectation(test_guid: str, platform: str, signature_uuid: str) -> Expectation:
     row = get_db().execute(_statement().where(
-        SVSExpectation.test_guid == test_guid, SVSExpectation.signature_uuid == signature_uuid)).one()
+        SVSExpectation.test_guid == test_guid, SVSExpectation.platform == platform,
+        SVSExpectation.signature_uuid == signature_uuid)).one()
     return _row(row)
 
 
@@ -144,21 +148,22 @@ def _expectation(test_guid: str, signature_uuid: str) -> Expectation:
 # deciding (svs:run_manage)
 #
 
-def set_expectation(guid: str, signature_uuid: str, body: ExpectationRequest, user_id: Optional[int],
+def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest, user_id: Optional[int],
                     actor: Optional[str]) -> Expectation:
     user_id = require_user(user_id)
     try:
-        expectation = expectations.set_expectation(guid, signature_uuid, body.state, user_id, reason=body.reason,
-                                                   run_uuid=body.run_id, actor=actor)
+        expectation = expectations.set_expectation(guid, signature_uuid, body.state, user_id, platform=platform,
+                                                   reason=body.reason, run_uuid=body.run_id, actor=actor)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
-    return _expectation(expectation.test_guid, expectation.signature_uuid)
+    return _expectation(expectation.test_guid, expectation.platform, expectation.signature_uuid)
 
 
-def remove_expectation(guid: str, signature_uuid: str, user_id: Optional[int], actor: Optional[str]) -> None:
+def remove_expectation(guid: str, platform: str, signature_uuid: str, user_id: Optional[int],
+                       actor: Optional[str]) -> None:
     user_id = require_user(user_id)
     try:
-        expectations.remove_expectation(guid, signature_uuid, user_id, actor=actor)
+        expectations.remove_expectation(guid, platform, signature_uuid, user_id, actor=actor)
     except (expectations.UnknownTest, expectations.UnknownDecision, expectations.InvalidDecision) as e:
         raise decision_errors(e)
 

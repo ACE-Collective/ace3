@@ -225,7 +225,7 @@ def test_a_run_changed_since_review(caplog, routed):
 def test_a_result(caplog):
     missing = "22222222-bbbb-4bbb-8bbb-222222222222"
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-    set_expectation(GUID, missing, "expected", user_id)
+    set_expectation(GUID, missing, "expected", user_id, platform="windows")
     run = register(_registration(), LAUNCHER, now=T0)
     start(run.uuid, LAUNCHER, now=T0)
     with caplog.at_level(logging.INFO):

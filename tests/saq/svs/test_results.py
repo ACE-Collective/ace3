@@ -38,6 +38,14 @@ HUNT = "11111111-aaaa-4aaa-8aaa-111111111111"
 YARA = "22222222-bbbb-4bbb-8bbb-222222222222"
 NOISE = "33333333-cccc-4ccc-8ccc-333333333333"
 OTHER = "44444444-dddd-4ddd-8ddd-444444444444"
+MULTI = "eeeeeeee-5555-4555-8555-555555555555"
+
+
+def _multi_platform_test():
+    """MULTI, a test of windows and linux, and a test host on each."""
+    add_catalog_test(MULTI, platforms=("windows", "linux"))
+    add_test_host("windows-01", platform="windows")
+    add_test_host("linux-01", platform="linux")
 
 
 @pytest.fixture(autouse=True)
@@ -119,12 +127,12 @@ class TestStatuses:
         run = _run()
         for signature in (HUNT, YARA, NOISE, OTHER):
             _attribute(run, signature)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
-        expectations.set_expectation(GUID, YARA, "rejected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, YARA, "rejected", user_id, platform="windows")
         expectations.set_ignore(NOISE, user_id, reason="winrm")
         # expected and never fired
         missing = "55555555-eeee-4eee-8eee-555555555555"
-        expectations.set_expectation(GUID, missing, "expected", user_id)
+        expectations.set_expectation(GUID, missing, "expected", user_id, platform="windows")
 
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "hit", YARA: "rejected", NOISE: "ignored", OTHER: "candidate",
@@ -133,8 +141,8 @@ class TestStatuses:
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()
         _attribute(run, HUNT)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
-        expectations.set_expectation(GUID, YARA, "expected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
         expectations.set_ignore(HUNT, user_id, test_guid=GUID)
         expectations.set_ignore(YARA, user_id, test_guid=GUID)
 
@@ -145,10 +153,24 @@ class TestStatuses:
     def test_another_tests_decisions_do_not_apply(self, user_id):
         run = _run()
         _attribute(run, HUNT)
-        expectations.set_expectation(OTHER_GUID, HUNT, "expected", user_id)
+        expectations.set_expectation(OTHER_GUID, HUNT, "expected", user_id, platform="windows")
         expectations.set_ignore(HUNT, user_id, test_guid=OTHER_GUID)
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "candidate"}
+
+    def test_another_platforms_decisions_do_not_apply(self, user_id):
+        _multi_platform_test()
+        run = started_run(MULTI, "linux-01")
+        _attribute(run, HUNT)
+        expectations.set_expectation(MULTI, HUNT, "rejected", user_id, platform="windows")
+        expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="windows")
+        results.compute_result(run.id)
+        assert _statuses(run) == {HUNT: "candidate"}
+
+        # but the test's ignores apply on every platform
+        expectations.set_ignore(HUNT, user_id, test_guid=MULTI)
+        results.compute_result(run.id)
+        assert _statuses(run) == {HUNT: "ignored"}
 
     def test_signatures_that_stand_for_many_never_count(self):
         run = _run()
@@ -180,7 +202,7 @@ class TestStatuses:
         monkeypatch.setattr(signatures, "_yara_signatures", lambda: {YARA: type("Signature", (), {
             "name": "Suspicious_Macro", "content_hash": "a" * 64})()})
         monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt()})
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
 
         results.compute_result(run.id)
         yara, hunt = _row(run, YARA), _row(run, HUNT)
@@ -200,7 +222,7 @@ class TestStatuses:
 class TestSuppression:
     @pytest.fixture(autouse=True)
     def expected_hunt(self, user_id):
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
 
     def test_a_hunt_alert_within_its_suppression_period(self, monkeypatch):
         monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt()})
@@ -265,7 +287,7 @@ class TestKeepingRows:
         monkeypatch.setattr(windows, "hunt_info", lambda: {})
         run = _run()
         _attribute(run, YARA)
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
 
         with caplog.at_level(logging.DEBUG):
             results.compute_result(run.id)
@@ -367,10 +389,21 @@ class TestDecisionsMarkRunsStale:
         for run in runs_:
             results.compute_result(run.id)
 
+    def test_a_decision_marks_only_the_platforms_runs(self, user_id):
+        _multi_platform_test()
+        linux, windows_run = started_run(MULTI, "linux-01"), started_run(MULTI, "windows-01")
+        self._clear(linux, windows_run)
+        expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="linux")
+        assert _state(linux).stale and not _state(windows_run).stale
+
+        self._clear(linux)
+        expectations.remove_expectation(MULTI, "linux", YARA, user_id)
+        assert _state(linux).stale and not _state(windows_run).stale
+
     def test_a_tests_decision_marks_its_runs(self, user_id):
         mine, other = _run(), _run(OTHER_GUID)
         self._clear(mine, other)
-        expectations.set_expectation(GUID, YARA, "expected", user_id)
+        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
         assert _state(mine).stale and not _state(other).stale
 
         self._clear(mine)
@@ -400,7 +433,22 @@ class TestDecisions:
         db = get_db()
         (event,) = db.execute(select(SVSRunEvent).where(
             SVSRunEvent.run_id == run.id, SVSRunEvent.kind == RunEventKind.CANDIDATE_DECISION.value)).scalars()
-        assert json.loads(event.details) == {"signature_uuid": YARA, "state": "expected", "reason": "the macro"}
+        assert json.loads(event.details) == {"signature_uuid": YARA, "platform": "windows", "state": "expected",
+                                           "reason": "the macro"}
+
+    def test_a_decision_is_about_one_of_the_tests_platforms(self, user_id):
+        _multi_platform_test()
+        linux = started_run(MULTI, "linux-01")
+        with pytest.raises(expectations.InvalidDecision, match="is not one of"):
+            expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="macos")
+        with pytest.raises(expectations.InvalidDecision, match="is not one of"):
+            expectations.set_expectation(MULTI, YARA, "expected", user_id)
+        with pytest.raises(expectations.InvalidDecision, match="is on linux"):
+            expectations.set_expectation(MULTI, YARA, "expected", user_id, platform="windows", run_uuid=linux.uuid)
+        # from a run, the decision is about the run's platform
+        assert expectations.set_expectation(MULTI, YARA, "expected", user_id, run_uuid=linux.uuid).platform == "linux"
+        with pytest.raises(expectations.UnknownDecision):
+            expectations.get_expectation(MULTI, "windows", YARA)
 
     def test_a_run_of_another_test_is_refused(self, user_id):
         other = _run(OTHER_GUID)
@@ -414,14 +462,14 @@ class TestDecisions:
     ])
     def test_refused(self, user_id, test_guid, signature_uuid, state, error):
         with pytest.raises(error):
-            expectations.set_expectation(test_guid, signature_uuid, state, user_id)
+            expectations.set_expectation(test_guid, signature_uuid, state, user_id, platform="windows")
 
     def test_deciding_again_replaces_the_decision_and_removing_it_forgets_it(self, user_id):
-        expectations.set_expectation(GUID, YARA, "expected", user_id)
-        assert expectations.set_expectation(GUID, YARA, "rejected", user_id).state == "rejected"
-        expectations.remove_expectation(GUID, YARA, user_id)
+        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
+        assert expectations.set_expectation(GUID, YARA, "rejected", user_id, platform="windows").state == "rejected"
+        expectations.remove_expectation(GUID, "windows", YARA, user_id)
         with pytest.raises(expectations.UnknownDecision):
-            expectations.get_expectation(GUID, YARA)
+            expectations.get_expectation(GUID, "windows", YARA)
 
     def test_settings_are_bounded(self, user_id):
         with pytest.raises(expectations.InvalidDecision):
@@ -452,14 +500,26 @@ class TestWindows:
         slow = HuntInfo(uuid=OTHER, name="slow", enabled=True, latency=timedelta(hours=20), suppression=None,
                         grouped=False, content_hash="d" * 64)
         monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(latency=timedelta(hours=2)), OTHER: slow})
-        expectations.set_expectation(GUID, HUNT, "expected", user_id)
-        expectations.set_expectation(GUID, OTHER, "expected", user_id)
+        expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, OTHER, "expected", user_id, platform="windows")
         # an ignored expectation doesn't hold the window open
         expectations.set_ignore(OTHER, user_id, test_guid=GUID)
 
         run = self._register()
         assert self._source(run) == ObservationSource.EXPECTED
         assert run.observation_seconds == int(timedelta(hours=2, minutes=30).total_seconds())
+
+    def test_only_the_runs_platforms_expected_signatures(self, monkeypatch, user_id):
+        _multi_platform_test()
+        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(latency=timedelta(hours=2))})
+        expectations.set_expectation(MULTI, HUNT, "expected", user_id, platform="linux")
+
+        def register(hostname: str) -> SVSRun:
+            return runs.register(Registration(test_guid=MULTI, targets=[TargetSpec(hostname)], launcher="art"),
+                                 LAUNCHER)
+
+        assert self._source(register("linux-01")) == ObservationSource.EXPECTED
+        assert self._source(register("windows-01")) == ObservationSource.ALL_HUNTS
 
     def test_the_tests_override(self, user_id):
         expectations.set_test_settings(GUID, user_id, observation_minutes=15)
