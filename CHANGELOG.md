@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.127] - 2026-10-16
+
+- [Record who uploaded a file to an alert](https://github.com/ACE-Collective/ace3/pull/729)
+- [Extract pages and scripts from HTTP archives (.har)](https://github.com/ACE-Collective/ace3/pull/728)
+- [Port test_mailbox_submission to the v2 analysis submit endpoint](https://github.com/ACE-Collective/ace3/pull/727)
+- [Bump urlfinderlib to 0.27.0](https://github.com/ACE-Collective/ace3/pull/726)
+- [Add POST /api/v2/hunt/validate beside the legacy route](https://github.com/ACE-Collective/ace3/pull/724)
+- [Node-to-node transfer and analysis submission use /api/v2](https://github.com/ACE-Collective/ace3/pull/723)
+- [The alert page's observable actions use /api/v2; fix Collect File and Render, restore URL crawl](https://github.com/ACE-Collective/ace3/pull/722)
+- [The alert page's file views use /api/v2; delete /download_file](https://github.com/ACE-Collective/ace3/pull/720)
+- [Delete /html_details and the Whitelist / Un-Whitelist observable actions](https://github.com/ACE-Collective/ace3/pull/719)
+- [Remediations and File Collections pages are shells over /api/v2; add file_collection:write](https://github.com/ACE-Collective/ace3/pull/717)
+- [Remediation dialog uses /api/v2/remediation; add remediation:write](https://github.com/ACE-Collective/ace3/pull/715)
+- [Take and Assign Ownership use PUT /api/v2/alerts/owner](https://github.com/ACE-Collective/ace3/pull/713)
+- [Manage page Export to CSV downloads the API's CSV export](https://github.com/ACE-Collective/ace3/pull/712)
+- [Move four read-only GUI routes to /api/v2/alerts](https://github.com/ACE-Collective/ace3/pull/711)
+- [Delete the legacy /api/analysis reads; ace_api.get_analysis reads /api/v2/alerts/{uuid}](https://github.com/ACE-Collective/ace3/pull/709)
+- [removed invalid test](https://github.com/ACE-Collective/ace3/pull/707)
+- [Delete /api/intel and move the alert page's detection actions to /api/v2/detection](https://github.com/ACE-Collective/ace3/pull/706)
+
 ## [3.0.126] - 2026-10-15
 
 - [Let analysts edit their own alert comments](https://github.com/ACE-Collective/ace3/pull/701)
