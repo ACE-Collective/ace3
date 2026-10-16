@@ -136,7 +136,7 @@
                     body.replaceChildren(el("div", "text-muted", "No attempts yet."));
                     return;
                 }
-                const table = el("table", "table table-sm");
+                const table = el("table", "table table-sm table-striped");
                 const head = table.createTHead().insertRow();
                 ["Time (UTC)", "Status", "Result", "Message"].forEach(function(label) {
                     head.appendChild(el("th", null, label));
@@ -166,13 +166,14 @@
         // the actions reach the list through this, since the list is created after them
         const list_ref = {list: null};
 
+        // the columns fit their content (fitColumns): only Value wraps
         const columns = [
-            {label: "ID", width: "5rem", render: function(row) { return row.id; }},
-            {label: "Created", width: "10rem", title: "UTC", render: function(row) { return date(row.insert_date); }},
-            {label: "Collector", width: "10%", css: "text-break-all", render: function(row) { return row.collector; }},
-            {label: "Type", width: "9rem", css: "text-break-all", render: function(row) { return row.observable_type; }},
+            {label: "ID", css: "text-nowrap", render: function(row) { return row.id; }},
+            {label: "Created", css: "text-nowrap", title: "UTC", render: function(row) { return date(row.insert_date); }},
+            {label: "Collector", css: "text-nowrap", render: function(row) { return row.collector; }},
+            {label: "Type", css: "text-nowrap", render: function(row) { return row.observable_type; }},
             {label: "Value", css: "text-break-all", render: function(row) { return row.observable_value; }},
-            {label: "Alert", width: "4rem", render: function(row) {
+            {label: "Alert", css: "text-nowrap", render: function(row) {
                 if (!row.alert_uuid) {
                     return "";
                 }
@@ -183,12 +184,12 @@
                 link.appendChild(el("span", "bi bi-box-arrow-up-right"));
                 return link;
             }},
-            {label: "Status", width: "8.5rem", render: function(row) { return row.status; }},
-            {label: "Result", width: "9rem", title: "hover for the collector's message", render: function(row) {
+            {label: "Status", css: "text-nowrap", render: function(row) { return row.status; }},
+            {label: "Result", css: "text-nowrap", title: "hover for the collector's message", render: function(row) {
                 return result_node(row.result, row.result_message);
             }},
-            {label: "Attempts", width: "5rem", render: function(row) { return row.retry_count + " / " + row.max_retries; }},
-            {label: "", width: "3rem", render: function(row) {
+            {label: "Attempts", css: "text-nowrap", render: function(row) { return row.retry_count + " / " + row.max_retries; }},
+            {label: "", css: "text-nowrap", render: function(row) {
                 const button = el("button", "btn btn-xs btn-outline-dark");
                 button.type = "button";
                 button.title = "history";
@@ -204,6 +205,7 @@
             screen: page.dataset.screen,
             api: API,
             columns: columns,
+            fitColumns: true,
             // the API has one order, newest first
             defaultSort: null,
             defaultDesc: true,
