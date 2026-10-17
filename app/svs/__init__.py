@@ -13,6 +13,7 @@ from app.svs.views.runs import batches, run_detail, runs, svs_home
 from app.svs.views.tabs import svs_tab_context
 from app.svs.views.test_hosts import test_hosts
 from app.svs.views.tests import test_detail, tests
+from app.svs.views.worklist import worklist, worklist_signature
 
 __all__ = [
     'batches',
@@ -25,4 +26,6 @@ __all__ = [
     'test_detail',
     'test_hosts',
     'tests',
+    'worklist',
+    'worklist_signature',
 ]

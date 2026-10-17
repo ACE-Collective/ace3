@@ -1,5 +1,6 @@
 """GET /api/v2/svs/runs, the runs, their event logs and the event feed (docs/SVS_API.md, *Runs*)."""
 
+import collections
 import csv
 import io
 import json
@@ -498,6 +499,44 @@ class TestBatches:
 READS = ["/svs/runs/", "/svs/runs/export/ndjson", "/svs/runs/export/csv", "/svs/runs/suppression-share", "/svs/runs/events",
          "/svs/runs/events/export/ndjson", "/svs/runs/events/export/csv", "/svs/runs/count", "/svs/runs/batches",
          "/svs/runs/batches/export/ndjson", "/svs/runs/batches/export/csv"]
+
+
+@pytest.mark.asyncio
+async def test_worked_example_pass_rate_per_month(client: AsyncClient, test_user):
+    """docs/SVS_API.md, *Test pass rate per month*, run against the API."""
+    now = datetime.now()
+    last_month = (now.replace(day=1) - timedelta(days=1)).replace(day=15, hour=12)
+
+    def reviewed(at: datetime, *statuses: str) -> None:
+        run_uuid = _register(at - timedelta(hours=2))
+        _set(run_uuid, state="reviewed", reviewer_id=test_user.id, reviewed_at=at)
+        run_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == run_uuid)).scalar_one()
+        with private_transaction() as session:
+            for status in statuses:
+                session.add(SVSRunResult(run_id=run_id, signature_uuid=str(uuid.uuid4()), status=status,
+                                         reviewed_status=status))
+
+    reviewed(last_month, "hit", "hit")
+    reviewed(last_month, "hit", "missing")
+    reviewed(last_month, "candidate")           # nothing expected: not judged
+    reviewed(now, "hit", "possibly_suppressed")
+    _set(_register(now - timedelta(hours=1)), state="ended", ended_at=now)    # not reviewed
+
+    months = collections.defaultdict(lambda: [0, 0])    # month -> [judged, passed]
+    params = {"f": ["state:reviewed", "reviewed:-365d"], "limit": 1000}
+    while True:
+        page = (await client.get("/svs/runs/", params=params)).json()
+        for run in page["data"]:
+            if run["reviewed_expected"]:
+                month = run["reviewed_at"][:7]
+                months[month][0] += 1
+                months[month][1] += run["reviewed_missing"] == 0
+        if page["next_cursor"] is None:
+            break
+        params["cursor"] = page["next_cursor"]
+
+    report = [(month, f"{passed}/{judged}", round(passed / judged, 3)) for month, (judged, passed) in sorted(months.items())]
+    assert report == [(last_month.strftime("%Y-%m"), "1/2", 0.5), (now.strftime("%Y-%m"), "0/1", 0.0)]
 
 
 @pytest.mark.asyncio

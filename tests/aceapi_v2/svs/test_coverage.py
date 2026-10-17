@@ -393,6 +393,28 @@ class TestHistory:
 
 
 @pytest.mark.asyncio
+async def test_worked_example_coverage_over_time(client: AsyncClient, attack_catalog):
+    """docs/SVS_API.md, *Technique coverage over time*, run against the API."""
+    _snapshot(date(2026, 9, 30), "T1059", "windows", "untested")
+    _snapshot(date(2026, 9, 30), "T1547", "windows", "manual")
+    _snapshot(date(2026, 9, 30), "T1059.001", "windows", "validated")     # a sub-technique: left out
+    _snapshot(date(2026, 9, 30), "T1059", "iaas", "validated")            # not an endpoint platform
+    _snapshot(date(2026, 10, 15), "T1059", "windows", "validated")
+    _snapshot(date(2026, 10, 15), "T1547", "windows", "failing")
+
+    params = {"group": "month", "f": ["platform:windows,linux,macos", "level:technique"]}
+    counts = (await client.get("/svs/coverage/history/counts", params=params)).json()
+    report = []
+    for period in counts["data"]:
+        if period["rows"]:
+            states = period["states"]
+            report.append((period["period"], f"{states['validated'] / period['rows']:.0%} validated",
+                           f"{states['failing'] / period['rows']:.0%} failing"))
+
+    assert report == [("2026-09", "0% validated", "0% failing"), ("2026-10", "50% validated", "50% failing")]
+
+
+@pytest.mark.asyncio
 async def test_permissions(_override_db_session, session: AsyncSession, test_user, rows, noperm_client):
     key = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
     async with api_key_client(key) as client:

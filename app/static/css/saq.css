@@ -763,3 +763,5 @@ span.multiselect-native-select select {
 .filter-list-table.filter-list-fit { table-layout: auto; }
 .filter-list-table td, .filter-list-table th { vertical-align: top; }
 .filter-list-table .text-break-all { overflow-wrap: anywhere; }
+/* a grouped list (filter_list_page.js, group) isn't striped: its group header rows set it apart */
+.filter-list-table tr.filter-list-group > td { --bs-table-bg-type: var(--bs-secondary-bg); border-top: 2px solid var(--bs-border-color); }
