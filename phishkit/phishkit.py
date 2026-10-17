@@ -268,6 +268,64 @@ def _matched_proxy_error_patterns(stdout: str, stderr: str, error_patterns: list
     return [pattern for pattern in error_patterns if pattern in combined]
 
 
+def _proxy_navigation_failure(output_dir: str, stdout: str, stderr: str, error_patterns: list[str]) -> dict | None:
+    """Return why the proxy attempt should be retried direct, or None.
+
+    Only a main-frame navigation that failed with one of error_patterns means the
+    proxy kept the page itself from loading. A script, image or iframe the proxy
+    refused leaves the page rendered through the proxy, and retrying the whole
+    scan direct for one of those gives up the proxy for every hop the page went
+    through, showing each one the scanner's own address, which kits cloak against.
+
+    The main frame is the frame of the first Document request; navigations keep
+    it. When requests.json is missing or was written by a scanner that did not
+    record resource types, this falls back to matching stdout/stderr.
+
+    Returns {"matched_error_patterns": [...]} plus "failed_url" when the
+    navigation that failed is known.
+    """
+    if not error_patterns:
+        return None
+
+    requests_data = None
+    try:
+        with open(os.path.join(output_dir, "requests.json"), "r") as f:
+            requests_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        logger.debug("could not read requests.json from %s: %s", output_dir, e)
+
+    if not isinstance(requests_data, list) or not any(
+        entry.get("type") == "request" and "resource_type" in entry for entry in requests_data
+    ):
+        matched = _matched_proxy_error_patterns(stdout, stderr, error_patterns)
+        return {"matched_error_patterns": matched} if matched else None
+
+    main_frame_id = None
+    navigations = {}  # requestId -> the Document request entry
+    for entry in requests_data:
+        if entry.get("type") == "request" and entry.get("resource_type") == "Document":
+            if main_frame_id is None:
+                main_frame_id = entry.get("frame_id")
+            navigations[entry.get("requestId")] = entry
+
+    for entry in requests_data:
+        if entry.get("type") != "error":
+            continue
+        error_text = entry.get("error_text") or ""
+        matched = [pattern for pattern in error_patterns if pattern in error_text]
+        if not matched:
+            continue
+        navigation = navigations.get(entry.get("requestId"))
+        if navigation is None or navigation.get("frame_id") != main_frame_id:
+            continue
+        return {
+            "matched_error_patterns": matched,
+            "failed_url": entry.get("url") or navigation.get("url"),
+        }
+
+    return None
+
+
 def _matched_proxy_status_code(output_dir: str, proxy_status_codes: list[int]) -> int | None:
     """Return the main page response status code if it indicates a proxy error, else None.
 
@@ -451,13 +509,14 @@ def _run_scanner(
                     logging.info(f"stderr> {line}")
 
             if proxy and proxy_fallback_to_direct:
-                matched_patterns = _matched_proxy_error_patterns(
-                    _stdout, _stderr, proxy_fallback.get("error_patterns", []),
+                navigation_failure = _proxy_navigation_failure(
+                    output_dir, _stdout, _stderr, proxy_fallback.get("error_patterns", []),
                 )
-                if matched_patterns:
+                if navigation_failure:
                     fallback_reason = "error_pattern"
-                    fallback_details["matched_error_patterns"] = matched_patterns
-                    logger.warning("proxy error detected for job %s, retrying without proxy", job_id)
+                    fallback_details.update(navigation_failure)
+                    logger.warning("proxy error detected for job %s, retrying without proxy: %s",
+                                   job_id, navigation_failure.get("failed_url"))
                 else:
                     matched_code = _matched_proxy_status_code(
                         output_dir, proxy_fallback.get("proxy_status_codes", []),

@@ -1,0 +1,49 @@
+{# where each phishkit scan went, hop by hop (saq/modules/phishkit_chain.py) #}
+{% if crawl_chains %}
+<div class="row">
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>Crawl Chains <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_crawl_chains" aria-expanded="true" aria-controls="collapse_crawl_chains">(hide/show)</a></h5>
+            </div>
+            <div class="card-body collapse show" id="collapse_crawl_chains">
+                {% for chain in crawl_chains %}
+                    <div class="crawl-chain{% if not loop.last %} mb-3{% endif %}">
+                        <span class="text-muted small">{{ chain.target.type }}</span>
+                        <a href="#{{ chain.target.uuid }}" title="{{ chain.target.value }}">{{ chain.target_display }}</a>
+                        <span class="text-muted small ms-2">{{ chain.route }}</span>
+                        {% if chain.screenshot %}
+                            <a class="small ms-2" href="#{{ chain.screenshot.uuid }}">screenshot</a>
+                        {% endif %}
+                        <table class="table table-sm table-borderless small mb-0 ms-3" style="width: auto;">
+                            {% for hop in chain.hops %}
+                                <tr>
+                                    <td class="text-muted text-end pe-2">{{ loop.index }}</td>
+                                    <td class="text-muted text-nowrap pe-2">{{ hop.via_label }}</td>
+                                    <td class="pe-2" style="word-break: break-all;">
+                                        {% if hop.observable %}
+                                            <a href="#{{ hop.observable.uuid }}" title="{{ hop.url }}">{{ hop.display_url }}</a>
+                                        {% else %}
+                                            <span title="{{ hop.url }}">{{ hop.display_url }}</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-nowrap pe-2{% if hop.failed %} text-danger{% endif %}">
+                                        {% if hop.status is not none %}{{ hop.status }}{% endif %}
+                                        {% if hop.error %}{{ hop.error }}{% endif %}
+                                    </td>
+                                    {% if chain.show_routes %}
+                                        <td class="text-muted text-nowrap">{{ hop.route or '' }}</td>
+                                    {% endif %}
+                                </tr>
+                            {% endfor %}
+                        </table>
+                        {% if chain.final_page %}
+                            <div class="small text-muted ms-3">final page: {{ chain.final_page }}</div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}

@@ -32,6 +32,7 @@ from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.error.reporting import report_exception
 from saq.gui.alert_actions import get_alert_actions
+from saq.modules.phishkit_chain import build_crawl_chains
 from saq.permissions.logic import user_has_permission
 from saq.remediation.coverage import get_remediation_coverage
 from saq.remediation.external.database import get_external_checks_for_alert
@@ -547,6 +548,7 @@ def index():
 
     detection_chain_merged_tree = build_merged_detection_tree(build_detection_chains(alert.root_analysis))
     detection_chain_root_detections = build_root_detections(alert.root_analysis)
+    crawl_chains = build_crawl_chains(alert.root_analysis)
 
     # get all observable comments for the analysis tree
     all_observables = list(alert.root_analysis.all_observables)
@@ -754,6 +756,7 @@ def index():
         detection_chain_root_detections=detection_chain_root_detections,
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
+        crawl_chains=crawl_chains,
         **alert_action_context(alert),
         **detection_verdict_context(alert),
     )
