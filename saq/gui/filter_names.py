@@ -175,6 +175,19 @@ SVS_COVERAGE_HISTORY_FILTER_SLUGS = {
     'Technique': 'technique',
 }
 
+# The filters of the SVS worklist (GET /api/v2/svs/worklist, docs/SVS_API.md): display name -> URL
+# slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
+SVS_WORKLIST_FILTER_SLUGS = {
+    'Family': 'family',
+    'Kind': 'kind',
+    'Resolution': 'resolution',
+    'Resolved': 'resolved',
+    'Resolved By': 'resolved_by',
+    'Signature': 'signature',
+    'Status': 'status',
+    'Technique': 'technique',
+}
+
 # The filters of the Remediations page (GET /api/v2/remediation/remediations): display name ->
 # URL slug, under the same PERMANENT CONTRACT as FILTER_SLUGS.
 REMEDIATION_FILTER_SLUGS = {

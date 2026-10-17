@@ -5,8 +5,8 @@ ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
 with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
 (phase 2), the YARA validations (phase 3), the test hosts, the Atomic Red Team test catalog and the
-runs with their event logs (phase 4), and ATT&CK coverage with its daily snapshots (phase 5, so
-far).
+runs with their event logs (phase 4), and ATT&CK coverage with its daily snapshots and the
+declared-vs-measured worklist (phase 5, so far).
 
 ## Conventions
 
@@ -975,7 +975,7 @@ a technique id is a 400, and a technique without rows that the release doesn't h
 | `rows`, `sub_technique_rows` | Its rows and its sub-techniques' rows, retired ones included, as in the list. |
 | `tests` | One entry per (test, platform) counting toward the technique or a sub-technique: `guid`, `name`, `test_technique` (as its atomic file names it), `technique` (what it counts toward), `platform`, `test_state` (as on the Tests screen; `never_run` when it has no run or decision there), `contribution` (what it counts as), `last_reviewed_run_id`, `last_reviewed_at` and `expected_signatures`. |
 | `measured_signatures` | Each signature expected of those tests: `signature_uuid`, its `name` and `family` when ACE knows the signature, and the `tests` (`guid`, `platform`) expecting it. |
-| `manual_signatures` | Each `mitre:` tag naming the technique or a sub-technique: `signature_uuid`, `name`, `family` (`hunt`, `yara`), `declared` (the id in the tag), `technique`, `counts`, and `reason` when it doesn't count: `not_counting` (the signature is disabled, or a YARA rule in QA mode) or `unknown_technique`. |
+| `manual_signatures` | Each `mitre:` tag naming the technique or a sub-technique: `signature_uuid`, `name`, `family` (`hunt`, `yara`), `declared` (the id in the tag), `technique`, `counts`, and `reason` when it doesn't count: `not_counting` (the signature is disabled, or a YARA rule in QA mode), `unknown_technique`, or `removed` (resolved *remove* on the worklist). |
 | `manual_signatures_error` | Why the tags couldn't be read (a YARA rule location that can't be loaded); `manual_signatures` is then empty and the rest is unaffected. |
 | `removed_tests` | The technique's tests removed from their repository (`guid`, `name`, `technique`, `removed_at`); they don't count. |
 
@@ -987,7 +987,8 @@ a technique id is a 400, and a technique without rows that the release doesn't h
   `GET /api/v2/svs/runs?f=technique:{technique}&f=platform:{platform}` lists them all.
 - **Coverage → signatures:** `signature_uuid` is a detection's `signature_uuid` in
   `GET /api/v2/detection-points`, and `GET /api/v2/svs/expectations?signature={uuid}` lists where it
-  is expected.
+  is expected. `GET /api/v2/svs/worklist?f=technique:{technique}` lists the tags on the technique
+  and what was decided about them.
 
 ## Coverage history
 
@@ -1014,6 +1015,97 @@ sub-techniques), `platform`, `state`, `own_state`, `level`, with the values of *
 (`2026-10`) counts that month's **last** snapshot, which `snapshot_date` names, because adding up
 daily snapshots would count each row once a day. The days come from the `date` filter alone, so a
 day the other filters leave empty is still there, with zeros.
+
+## Worklist
+
+The declared-vs-measured worklist (`docs/SVS_COVERAGE.md`, *The worklist*): one row per (signature,
+ATT&CK technique) for each signature that is expected of a catalog test, comparing the techniques
+its `mitre:` tags claim with the ones its tests measure. Everything but the resolution is derived on
+each coverage refresh; read with `svs:run_read`, resolved with `svs:run_manage`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/worklist` | Rows by signature, then technique, filtered and paged |
+| `GET /api/v2/svs/worklist/export/ndjson`, `/export/csv` | The same, streamed (the CSV joins `declared_as` and `measured_techniques` with `,`) |
+| `GET /api/v2/svs/worklist/{signature_uuid}` | A signature's rows, retired ones included, and what it is measured on now; 404 when it has none |
+| `PUT /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution` | Resolve a row (below); answers the row |
+| `DELETE /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution` | Clear a row's resolution; 404 when it has none |
+| `POST /api/v2/svs/worklist/bulk/resolve` | Resolve many rows alike |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `signature_uuid`, `technique` | The signature and the ATT&CK technique, as the pinned release has it (a revoked tag id counts as its successor); together they are unique. |
+| `technique_name` | From the pinned release; null for an id it doesn't have. |
+| `kind` | `declared` (a tag of the signature), `undeclared` (a technique it is measured on that no tag names) or `unknown` (a tag naming an id the release doesn't have). |
+| `status` | `confirmed`, `open`, `kept`, `remove_pending`, `removed`, `undeclared`, `unknown` or `retired` (`docs/SVS_COVERAGE.md`, *The worklist*). |
+| `declared_as` | The tag ids, as the signature writes them, that count as `technique`: usually one; two when a revoked id and its successor are both tagged. |
+| `tag_present` | The signature has a tag that counts as `technique` now. |
+| `signature_counts` | The signature is enabled, and isn't a YARA rule in QA mode. |
+| `counts` | The tag counts toward coverage as a manual mapping. After a resolution this is already the new value; coverage follows at the next refresh. |
+| `measured`, `measured_techniques` | The signature is expected of a catalog test, and the techniques it is measured on. |
+| `signature_family`, `signature_name` | `hunt`, `yara`, ... and the name, as of the last refresh. |
+| `resolution`, `reason`, `reference` | `keep` or `remove`, why, and a link (the pull request removing the tag); null when nobody resolved the row. A resolution is kept whatever the status becomes. |
+| `resolved_by`, `resolved_at` | Who (username) and when. |
+| `first_seen_at`, `status_changed_at` | When the row appeared, and when `status` last changed. |
+| `updated_at` | The row's last change: a refresh writes only what changed. The `changed_since` key. |
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `signature` | Signature | a signature uuid, or text in its name |
+| `family` | Family | `hunt`, `yara`, `builtin`, `observable_modifier` |
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `status` | Status | the statuses above |
+| `kind` | Kind | `declared`, `undeclared`, `unknown` |
+| `resolution` | Resolution | `keep`, `remove`, `none` (nobody resolved it) |
+| `resolved_by` | Resolved By | a username |
+| `resolved` | Resolved | a date range |
+
+The GUI's default saved filters are *Needs decision* (`status:open`), *Remove pending*
+(`status:remove_pending`) and *Undeclared* (`status:undeclared`).
+
+### Incremental pulls
+
+With `changed_since`, a row is returned when it was added, its status or anything derived changed,
+or someone resolved it, at or after that time, in `(updated_at, id)` order. A cursor from one order
+doesn't page the other: 400.
+
+### A signature
+
+`GET …/{signature_uuid}` answers `signature_family`, `signature_name`, `rows` (every row of the
+signature, as in the list) and `measured`: each technique it is measured on now, with
+`technique_name` and the `tests` (`guid`, `name`, `platform`) that expect it, ignores applied and
+removed tests left out. `measured` is computed at the request, `rows` at the last refresh.
+
+### Resolving
+
+`PUT …/{signature_uuid}/{technique}/resolution` takes `{"resolution": "keep"|"remove", "reason",
+"reference"?}`:
+- `keep`: the tag covers something no test reaches; it keeps counting.
+- `remove`: the signature repository will drop the tag; `reference` is the pull request. The tag
+  stops counting from the next coverage refresh, while it is still there.
+
+A reason is required, and `reference` must be an http(s) URL. Only `open`, `kept` and
+`remove_pending` rows can be resolved; resolving again replaces the resolution. A `confirmed`,
+`undeclared`, `unknown`, `retired` or `removed` row answers 409, an unknown row 404, and a bad body
+or a config key (a resolution records who made it) 422. `DELETE` clears the resolution of any row
+that has one: the tag counts again from the next refresh.
+
+`POST …/bulk/resolve` takes the same body plus `rows: [{"signature_uuid", "technique"}]` (1 to 500)
+and resolves them in one transaction. It answers `{"done": [...], "conflicts": [{"signature_uuid",
+"technique", "status"}], "unknown": [...]}`; conflicting and unknown rows are left alone.
+
+### Joins
+
+- **Worklist → coverage:** `GET /api/v2/svs/coverage?f=technique:{technique}`; the drill-down
+  `GET /api/v2/svs/coverage/{technique}` shows each tag with `counts` and its `reason`.
+- **Worklist → expectations:** `GET /api/v2/svs/expectations?signature={signature_uuid}` lists the
+  tests and platforms the signature is expected on, which is what *measured* means.
+- **Worklist → detections:** `signature_uuid` is a detection's `signature_uuid` in
+  `GET /api/v2/detection-points`.
 
 ## Worked examples
 

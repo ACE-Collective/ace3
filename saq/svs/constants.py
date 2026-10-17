@@ -170,3 +170,28 @@ class CoverageState(StrEnum):
 
 # the actor of the refreshes service_svs runs
 COVERAGE_ACTOR = "svs:coverage"
+
+
+class WorklistKind(StrEnum):
+    """What a declared-vs-measured worklist row is about (svs_technique_worklist.kind,
+    docs/SVS_COVERAGE.md, *The worklist*)."""
+    DECLARED = "declared"          # a mitre: tag of a measured signature
+    UNDECLARED = "undeclared"      # a technique the signature is measured on that no tag of it covers
+    UNKNOWN = "unknown"            # a mitre: tag naming an id the ATT&CK release doesn't have
+
+
+class WorklistStatus(StrEnum):
+    """Where a worklist row stands, derived on every refresh; only the resolution is stored."""
+    CONFIRMED = "confirmed"            # what the tag claims is measured
+    OPEN = "open"                      # not measured, not resolved
+    KEPT = "kept"                      # resolved keep: it covers something no test reaches
+    REMOVE_PENDING = "remove_pending"  # resolved remove, the tag is still there
+    REMOVED = "removed"                # resolved remove, the tag is gone
+    UNDECLARED = "undeclared"          # informational
+    UNKNOWN = "unknown"                # informational
+    RETIRED = "retired"                # the signature isn't measured any more, or the tag went away unresolved
+
+
+class WorklistResolution(StrEnum):
+    KEEP = "keep"
+    REMOVE = "remove"

@@ -25,6 +25,10 @@ from saq.gui.filter_entry import (
     FILE_COLLECTION_FILTER_OPTIONS,
     REMEDIATION_FILTER_OPTIONS,
     SAMPLE_BOOL_OPTIONS,
+    SIGNATURE_FAMILIES,
+    WORKLIST_KINDS,
+    WORKLIST_RESOLUTIONS,
+    WORKLIST_STATUSES,
     DetectionPointFilterEntry,
     FileCollectionFilterEntry,
     FilterEntry,
@@ -36,6 +40,7 @@ from saq.gui.filter_entry import (
     CoverageHistoryFilterEntry,
     RunFilterEntry,
     ValidationFilterEntry,
+    WorklistFilterEntry,
 )
 from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
@@ -48,6 +53,7 @@ from saq.gui.filter_names import (
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
+    SVS_WORKLIST_FILTER_SLUGS,
 )
 from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 
@@ -258,6 +264,25 @@ SVS_COVERAGE_HISTORY_SCREEN = FilterScreen(
     ),
 )
 
+# the declared-vs-measured worklist (GET /api/v2/svs/worklist, docs/SVS_API.md); read with
+# svs:run_read
+SVS_WORKLIST_SCREEN = FilterScreen(
+    name="svs_worklist",
+    entry_model=WorklistFilterEntry,
+    slugs=SVS_WORKLIST_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Status", FilterFieldKind.MULTI, WORKLIST_STATUSES),
+        FilterField("Signature", FilterFieldKind.TEXT),
+        FilterField("Family", FilterFieldKind.MULTI, SIGNATURE_FAMILIES),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Kind", FilterFieldKind.MULTI, WORKLIST_KINDS),
+        FilterField("Resolution", FilterFieldKind.MULTI, WORKLIST_RESOLUTIONS),
+        FilterField("Resolved By", FilterFieldKind.TEXT),
+        FilterField("Resolved", FilterFieldKind.DATE_RANGE),
+    ),
+)
+
 # the remediations the remediation service works through, and their history (GET
 # /api/v2/remediation/remediations, the Remediations page)
 REMEDIATIONS_SCREEN = FilterScreen(
@@ -306,6 +331,7 @@ FILTER_SCREENS: dict[str, FilterScreen] = {
     SVS_RUNS_SCREEN.name: SVS_RUNS_SCREEN,
     SVS_COVERAGE_SCREEN.name: SVS_COVERAGE_SCREEN,
     SVS_COVERAGE_HISTORY_SCREEN.name: SVS_COVERAGE_HISTORY_SCREEN,
+    SVS_WORKLIST_SCREEN.name: SVS_WORKLIST_SCREEN,
     REMEDIATIONS_SCREEN.name: REMEDIATIONS_SCREEN,
     FILE_COLLECTIONS_SCREEN.name: FILE_COLLECTIONS_SCREEN,
 }

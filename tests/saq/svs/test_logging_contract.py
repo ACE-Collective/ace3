@@ -15,7 +15,7 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.svs import association, coverage, review
+from saq.svs import association, coverage, review, signatures, worklist
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
 from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
@@ -288,7 +288,8 @@ def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
 
     (refreshed,) = _records(caplog, "svs coverage refreshed")
     assert refreshed.levelno == logging.INFO and (refreshed.changed, refreshed.actor) == (1, "unittest")
-    _assert_fields(refreshed, ("attack_release", "rows", "changed", "retired", "duration_ms", "actor"))
+    _assert_fields(refreshed, ("attack_release", "rows", "changed", "retired", "duration_ms", "worklist_rows",
+                               "worklist_changed", "actor"))
 
     (changed,) = _records(caplog, "svs coverage of T1547 on windows")
     assert changed.levelno == logging.INFO and (changed.from_state, changed.to_state) == ("none", "manual")
@@ -304,3 +305,33 @@ def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
     (written,) = _records(caplog, "svs coverage snapshot of 2026-10-16 written")
     assert written.levelno == logging.INFO and (written.snapshot_date, written.actor) == ("2026-10-16", "unittest")
     _assert_fields(written, ("snapshot_date", "rows", "attack_release", "actor"))
+
+
+def test_worklist_records(caplog, monkeypatch, attack_catalog):
+    signature = "22222222-bbbb-4bbb-8bbb-222222222222"
+    user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+    tags = {signature: SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())}
+    monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
+    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
+    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+    set_expectation(GUID, signature, "expected", user_id, platform="windows")
+    refresh_coverage("unittest")
+
+    with caplog.at_level(logging.INFO):
+        worklist.resolve(signature, "T1547", "remove", "why", user_id, actor="unittest")
+        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, (), ())
+        refresh_coverage("unittest")
+        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())
+        refresh_coverage("unittest")
+
+    (resolved,) = _records(caplog, "AUDIT: svs worklist resolution set")
+    assert resolved.levelno == logging.INFO and (resolved.resolution, resolved.actor) == ("remove", "unittest")
+    _assert_fields(resolved, ("signature_uuid", "technique", "resolution", "actor"))
+
+    (changed,) = _records(caplog, f"svs worklist row of signature {signature} on T1547: remove_pending -> removed")
+    assert changed.levelno == logging.INFO
+    _assert_fields(changed, ("signature_uuid", "technique", "from_status", "to_status"))
+
+    (cleared,) = _records(caplog, f"svs worklist resolution remove of signature {signature} on T1547 cleared")
+    assert cleared.levelno == logging.INFO and (cleared.resolution, cleared.actor) == (None, "unittest")
+    _assert_fields(cleared, ("signature_uuid", "technique", "resolution", "actor"))

@@ -14,16 +14,13 @@ from typing import Callable
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import Select, func, or_, select
 
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
-    InvalidCursor,
     InvalidListingRequest,
-    decode_cursor,
-    encode_cursor,
+    keyset_page,
     rows_to_csv,
-    settled,
 )
 from aceapi_v2.svs.coverage.schemas import (
     COVERAGE_CSV_FIELDS,
@@ -84,48 +81,11 @@ def _counts(rows) -> dict[str, int]:
     return counts
 
 
-#
-# keyset paging over a list of columns
-#
-
-def _after(columns, values) -> object:
-    """Rows strictly after values in the order of columns (all ascending)."""
-    conditions = []
-    for index, column in enumerate(columns):
-        conditions.append(and_(*[columns[i] == values[i] for i in range(index)], column > values[index]))
-    return or_(*conditions)
-
-
 def _page(statement: Select, table, order: str, order_columns: dict[str, tuple[str, ...]],
           parse_value: dict[str, Callable], cursor: str | None, limit: int) -> tuple[list, str | None]:
     """One page of statement in the order named, and the next page's cursor."""
-    names = order_columns[order]
-    columns = [getattr(table, name) for name in names]
-
-    def parse(payload: dict) -> list:
-        if payload["o"] != order:
-            raise InvalidCursor(
-                f"this cursor pages a listing ordered by {payload['o']}, not {order}: "
-                "pass the same changed_since (or none) as the request that returned it")
-        values = payload["k"]
-        if len(values) != len(names):
-            raise InvalidCursor("this cursor is for another listing")
-        return [parse_value.get(name, lambda value: value)(value) for name, value in zip(names, values)]
-
-    if order == LISTING_ORDER_UPDATED:
-        statement = statement.where(settled(table.updated_at, CHANGED_SINCE_SETTLE_SECONDS))
-    if cursor is not None:
-        statement = statement.where(_after(columns, decode_cursor(cursor, parse)))
-
-    rows = get_db().execute(statement.order_by(*columns).limit(limit + 1)).scalars().all()
-    next_cursor = None
-    if len(rows) > limit:
-        rows = rows[:limit]
-        last = rows[-1]
-        next_cursor = encode_cursor(o=order, k=[
-            value.isoformat() if isinstance(value, (date, datetime)) else value
-            for value in (getattr(last, name) for name in names)])
-    return rows, next_cursor
+    return keyset_page(get_db(), statement, table, order, order_columns, parse_value, cursor, limit,
+                       settle_order=LISTING_ORDER_UPDATED, settle_seconds=CHANGED_SINCE_SETTLE_SECONDS)
 
 
 #

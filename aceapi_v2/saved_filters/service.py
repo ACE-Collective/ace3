@@ -36,6 +36,7 @@ from saq.gui.filter_screens import (
     SVS_SAMPLES_SCREEN,
     SVS_TESTS_SCREEN,
     SVS_VALIDATIONS_SCREEN,
+    SVS_WORKLIST_SCREEN,
     FilterScreen,
     get_filter_screen,
 )
@@ -182,6 +183,27 @@ DEFAULT_SVS_COVERAGE_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS worklist (docs/SVS_COVERAGE.md, *The worklist*): the tags
+# that need a decision, which the Worklist tab opens on, the removals waiting for their pull
+# request, and the techniques signatures are measured on that no tag names.
+DEFAULT_SVS_WORKLIST_SAVED_FILTERS = (
+    {
+        "name": "Needs decision",
+        "description": "Tags no test confirms that nobody has resolved",
+        "filters": [{"name": "Status", "inverted": False, "values": ["open"]}],
+    },
+    {
+        "name": "Remove pending",
+        "description": "Tags resolved remove that the signature still has",
+        "filters": [{"name": "Status", "inverted": False, "values": ["remove_pending"]}],
+    },
+    {
+        "name": "Undeclared",
+        "description": "Techniques signatures are measured on that none of their tags names",
+        "filters": [{"name": "Status", "inverted": False, "values": ["undeclared"]}],
+    },
+)
+
 # What a user starts with on the File Collections screen: the same two lists
 DEFAULT_FILE_COLLECTION_SAVED_FILTERS = (
     {
@@ -207,6 +229,7 @@ DEFAULT_SAVED_FILTERS = {
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
     SVS_RUNS_SCREEN.name: DEFAULT_SVS_RUN_SAVED_FILTERS,
     SVS_COVERAGE_SCREEN.name: DEFAULT_SVS_COVERAGE_SAVED_FILTERS,
+    SVS_WORKLIST_SCREEN.name: DEFAULT_SVS_WORKLIST_SAVED_FILTERS,
     SVS_TESTS_SCREEN.name: DEFAULT_SVS_TEST_SAVED_FILTERS,
     REMEDIATIONS_SCREEN.name: DEFAULT_REMEDIATION_SAVED_FILTERS,
     FILE_COLLECTIONS_SCREEN.name: DEFAULT_FILE_COLLECTION_SAVED_FILTERS,

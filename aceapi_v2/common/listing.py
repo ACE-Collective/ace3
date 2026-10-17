@@ -19,12 +19,13 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, Optional, TypeVar
 
 import pytz
 from fastapi import HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, text
+from sqlalchemy import Select, and_, func, or_, text
 from sqlalchemy.sql.elements import ColumnElement
 
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
@@ -92,6 +93,55 @@ def settled(column, seconds: float) -> ColumnElement[bool]:
     (updated_at, id) keyset page carries (CHANGED_SINCE_SETTLE_SECONDS); the caller passes its
     module's copy of the constant so a test can shorten it."""
     return column < func.timestampadd(text("MICROSECOND"), -int(seconds * 1000000), func.now(6))
+
+
+#
+# keyset pages over named columns
+#
+
+def keyset_after(columns: Sequence, values: Sequence) -> ColumnElement[bool]:
+    """Rows strictly after values in the order of columns (all ascending)."""
+    conditions = []
+    for index, column in enumerate(columns):
+        conditions.append(and_(*[columns[i] == values[i] for i in range(index)], column > values[index]))
+    return or_(*conditions)
+
+
+def keyset_page(session, statement: Select, table, order: str, order_columns: dict[str, tuple[str, ...]],
+                parse_value: dict[str, Callable], cursor: Optional[str], limit: int, *,
+                settle_order: Optional[str] = None, settle_seconds: float = 0) -> tuple[list, Optional[str]]:
+    """One page of statement's rows in the order named, and the next page's cursor (None on the
+    last). order_columns names each order's columns of table, ascending; parse_value turns a column's
+    cursor value back into its type (a date or datetime is carried as ISO text). The page of
+    settle_order (the (updated_at, id) order of a changed_since pull) only holds settled rows.
+    Raises InvalidCursor, also for a cursor of the listing in another order."""
+    names = order_columns[order]
+    columns = [getattr(table, name) for name in names]
+
+    def parse(payload: dict) -> list:
+        if payload["o"] != order:
+            raise InvalidCursor(
+                f"this cursor pages a listing ordered by {payload['o']}, not {order}: "
+                "pass the same changed_since (or none) as the request that returned it")
+        values = payload["k"]
+        if len(values) != len(names):
+            raise InvalidCursor("this cursor is for another listing")
+        return [parse_value.get(name, lambda value: value)(value) for name, value in zip(names, values)]
+
+    if order == settle_order:
+        statement = statement.where(settled(table.updated_at, settle_seconds))
+    if cursor is not None:
+        statement = statement.where(keyset_after(columns, decode_cursor(cursor, parse)))
+
+    rows = session.execute(statement.order_by(*columns).limit(limit + 1)).scalars().all()
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        last = rows[-1]
+        next_cursor = encode_cursor(o=order, k=[
+            value.isoformat() if isinstance(value, (date, datetime)) else value
+            for value in (getattr(last, name) for name in names)])
+    return rows, next_cursor
 
 
 #

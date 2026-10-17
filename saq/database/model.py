@@ -2704,6 +2704,62 @@ class SVSCoverageSnapshot(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSTechniqueWorklist(Base):
+    """The declared-vs-measured worklist (docs/SVS_COVERAGE.md, *The worklist*): one row per
+    (signature, ATT&CK technique) for each signature that is measured, i.e. expected of a catalog
+    test. Everything but the resolution is derived on each coverage refresh; status included. A row
+    is never deleted; one the computation no longer produces is retired. Only saq/svs/worklist.py
+    writes this table."""
+
+    __tablename__ = 'svs_technique_worklist'
+    __table_args__ = (
+        UniqueConstraint('signature_uuid', 'technique', name='uq_svs_technique_worklist_signature_technique'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the technique as the pinned ATT&CK release has it (a revoked tag id is its successor)
+    technique: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # saq.svs.constants.WorklistKind
+    kind: Mapped[str] = mapped_column(Enum('declared', 'undeclared', 'unknown'), nullable=False)
+    # saq.svs.constants.WorklistStatus
+    status: Mapped[str] = mapped_column(
+        Enum('confirmed', 'open', 'kept', 'remove_pending', 'removed', 'undeclared', 'unknown', 'retired'),
+        nullable=False)
+    # JSON-serialized tag ids as the signature writes them (upper-cased), that count as technique
+    declared_as: Mapped[str] = mapped_column(Text, nullable=False)
+    # the signature has the tag now
+    tag_present: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the signature is enabled, and isn't a YARA rule in QA mode
+    signature_counts: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the tag counts toward coverage as a manual mapping
+    counts: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the signature is expected of a catalog test
+    measured: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # JSON-serialized techniques the signature is measured on
+    measured_techniques: Mapped[str] = mapped_column(Text, nullable=False)
+    signature_family: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # saq.svs.constants.WorklistResolution; a person's decision, kept whatever the status
+    resolution: Mapped[Optional[str]] = mapped_column(Enum('keep', 'remove'), nullable=True)
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # a link, such as the signature repository's pull request removing the tag
+    reference: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    resolved_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    status_changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

@@ -24,11 +24,21 @@ from saq.gui.filter_names import (
     SVS_SAMPLE_FILTER_SLUGS,
     SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
+    SVS_WORKLIST_FILTER_SLUGS,
 )
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
 from saq.svs.attack import TechniqueStatus, get_attack_catalog, normalize_platform
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES, CoverageState
+from saq.svs.constants import (
+    LABEL_FILTER_NONE,
+    LABELS,
+    RUN_STATES,
+    VALIDATION_STATES,
+    CoverageState,
+    WorklistKind,
+    WorklistResolution,
+    WorklistStatus,
+)
 from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
 
@@ -515,6 +525,67 @@ class CoverageHistoryFilterEntry(FilterEntryBase):
     @classmethod
     def validate_values(cls, values: list, info) -> list:
         return _coverage_values(info.data.get("name"), values)
+
+
+WORKLIST_STATUSES = tuple(status.value for status in WorklistStatus)
+WORKLIST_KINDS = tuple(kind.value for kind in WorklistKind)
+SIGNATURE_FAMILIES = tuple(signature_type.value for signature_type in SignatureType)
+# a row nobody resolved
+WORKLIST_RESOLUTION_NONE = "none"
+WORKLIST_RESOLUTIONS = (*(resolution.value for resolution in WorklistResolution), WORKLIST_RESOLUTION_NONE)
+
+
+class WorklistFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS worklist (GET /api/v2/svs/worklist)."""
+
+    name: str = Field(description="a filter name of the SVS worklist")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_WORKLIST_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_WORKLIST_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            return _coverage_values(name, values)
+
+        if name in ("Signature", "Resolved By"):
+            # a signature uuid, or text its name contains; a username
+            return [value.strip() for value in values]
+
+        if name == "Resolved":
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "Family": SIGNATURE_FAMILIES,
+            "Status": WORKLIST_STATUSES,
+            "Kind": WORKLIST_KINDS,
+            "Resolution": WORKLIST_RESOLUTIONS,
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.strip().lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+        return values
 
 
 # the options of the Remediations screen's multiple-choice filters

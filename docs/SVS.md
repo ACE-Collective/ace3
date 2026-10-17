@@ -895,9 +895,11 @@ These SVS records are not about a run and carry no `svs_run`: [FR-15]
 | Event | Level | Fields |
 |---|---|---|
 | A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
-| Coverage refreshed | INFO | `attack_release`, `rows`, `changed`, `retired`, `duration_ms`, `actor` |
+| Coverage refreshed | INFO | `attack_release`, `rows`, `changed`, `retired`, `duration_ms`, `worklist_rows`, `worklist_changed`, `actor` |
 | A coverage row changed state in a refresh | INFO | `technique`, `platform`, `from_state`, `to_state` |
 | Coverage snapshot written | INFO | `snapshot_date`, `rows`, `attack_release`, `actor` |
+| Worklist resolution set or cleared: by a person (AUDIT), or by a refresh when a tag comes back or an ATT&CK upgrade moves it (plus `from_technique`) | INFO | `signature_uuid`, `technique`, `resolution`, `actor` |
+| A worklist row changed status in a refresh | INFO | `signature_uuid`, `technique`, `from_status`, `to_status` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
 *completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
@@ -1053,7 +1055,7 @@ tables are on the main chain.
 | `svs_test_settings` | Per test: an observation window that replaces the computed one |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
 | `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
-| `svs_technique_worklist` | Declared-vs-measured flags and their resolution |
+| `svs_technique_worklist` | The declared-vs-measured worklist: one row per signature × technique; the resolution is stored, the status derived on each coverage refresh |
 | `svs_run_events` | Append-only run event log (Part 5) |
 | `svs_coverage_snapshots` | One row per technique × platform per day: its state and counts (Part 6) |
 | `detection_point_verdict_history` | Append-only verdict changes (Part 6; core) |

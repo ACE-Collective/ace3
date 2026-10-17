@@ -156,6 +156,14 @@ class TestComputeRows:
         assert _states(computed)[("T1059", "windows")] == ("none", "none")
         assert computed.ignored_tags == 2
 
+    def test_tags_the_worklist_resolved_remove_do_not_count(self, attack_catalog):
+        tags = {SIGNATURE: _tag(SIGNATURE, "T1547", "T1086"), OTHER_SIGNATURE: _tag(OTHER_SIGNATURE, "T1547")}
+        computed = compute_rows(attack_catalog, [], {}, tags,
+                                excluded=frozenset({(SIGNATURE, "T1547"), (SIGNATURE, "T1059.001")}))
+        assert computed.rows[("T1547", "windows")].manual_signatures == 1
+        # excluded by the technique the tag counts as
+        assert _states(computed)[("T1059.001", "windows")] == ("none", "none")
+
     def test_revoked_ids_count_as_their_successor(self, attack_catalog):
         computed = compute_rows(attack_catalog, [_test(technique="T1086")],
                                 {(GUID, "windows"): _evaluation(TestState.VALIDATED)},
