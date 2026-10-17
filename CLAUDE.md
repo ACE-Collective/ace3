@@ -201,6 +201,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 - `app/` — Flask GUI (blueprints: `main`, `auth`, `analysis`, `events`, `remediation`, `file_collection`), Jinja templates, the analyst-facing alert view.
 - `aceapi/` — legacy Flask API (`/api/...`), used by `ace_api.py` and the CLI.
 - `aceapi_v2/` — newer FastAPI app, router-per-resource under `aceapi_v2/<resource>/router.py`.
+- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
 
 ### CLI
 

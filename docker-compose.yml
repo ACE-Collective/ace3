@@ -349,6 +349,7 @@ services:
       - http-app
       - http-api
       - http-api-v2
+      - http-api-engine
       - http-api-ai
       - fluent-bit
     volumes:
@@ -376,6 +377,7 @@ services:
       - http-app
       - http-api
       - http-api-v2
+      - http-api-engine
       - http-api-ai
       - fluent-bit
     volumes:
@@ -456,6 +458,32 @@ services:
     hostname: ace
     expose:
       - "3032"
+    networks:
+      - ace
+
+  # The node-to-node API: the /api/v2/engine/ routes (work transfer, drain, remote collector
+  # delivery), which nginx sends here instead of to http-api-v2. Its own processes, threads and
+  # database pools, so no amount of user traffic on http-api-v2 can starve the engines of the
+  # API they talk to each other through. Its load grows with the number of engine workers on the
+  # other nodes that pull from this one, so the worker count is set per node with
+  # ACE_API_ENGINE_WORKERS; see docs/ENGINE_API.md for how to size it.
+  http-api-engine:
+    platform: linux/amd64
+    environment:
+      <<: *common-env
+      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
+      FLUENT_BIT_TAG: ace-api-engine
+    image: ${ACE3_IMAGE_URL:-ace3:latest}
+    depends_on:
+      - ace
+    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uvicorn api_engine_uvicorn:application --host 0.0.0.0 --port 3034 --workers ${ACE_API_ENGINE_WORKERS:-4} --timeout-keep-alive 300 --timeout-graceful-shutdown 45"
+    init: true
+    restart: always
+    stop_grace_period: 60s
+    volumes: *common-volumes
+    hostname: ace
+    expose:
+      - "3034"
     networks:
       - ace
 
