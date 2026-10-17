@@ -1,8 +1,9 @@
 """Smoke tests for the /svs blueprint.
 
 The area renders pages and nothing else: the Runs tab and the run page are shells over
-/api/v2/svs/runs, the Tests tab and the test page over /api/v2/svs/tests, and the Test hosts tab
-over /api/v2/svs/test-hosts (tests/aceapi_v2/svs/). These
+/api/v2/svs/runs, the Tests tab and the test page over /api/v2/svs/tests, the Coverage tab and the
+technique page over /api/v2/svs/coverage, and the Test hosts tab over /api/v2/svs/test-hosts
+(tests/aceapi_v2/svs/). These
 tests assert that boundary, the svs:run_read gate on the area and its nav link, and the permissions
 the tabs and the actions layer on top.
 """
@@ -19,7 +20,7 @@ from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
-PAGE_VIEWS = ("svs.svs_home", "svs.runs", "svs.batches", "svs.tests", "svs.test_hosts")
+PAGE_VIEWS = ("svs.svs_home", "svs.runs", "svs.batches", "svs.tests", "svs.coverage", "svs.test_hosts")
 # the run page takes the run's uuid and the test page the test's guid; whether either exists is the
 # API's answer, not the page's
 RUN_ID = "C0FFEE00-1111-4111-8111-111111111111"
@@ -29,6 +30,7 @@ TEST_GUID = "BEEF0000-2222-4222-8222-222222222222"
 SVS_NAV_LINK = b'>SVS<span id="svs_nav_count"'
 TEST_HOSTS_TAB = b">Test hosts</a>"
 TESTS_TAB = b">Tests</a>"
+COVERAGE_TAB = b">Coverage</a>"
 
 
 def _make_user(username, perms):
@@ -83,7 +85,7 @@ def svs_admin():
 
 class TestSVSIsPagesOnly:
     def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS + ("svs.run_detail", "svs.test_detail"):
+        for endpoint in PAGE_VIEWS + ("svs.run_detail", "svs.test_detail", "svs.coverage_detail"):
             assert endpoint in app.view_functions, endpoint
 
     def test_svs_blueprint_serves_only_get_pages(self, app):
@@ -313,6 +315,94 @@ class TestTestsPages:
             assert b'id="svs_test_ask_modal"' in page and b'id="svs_test_window_form"' not in page
 
 
+class TestCoveragePages:
+    def test_requires_auth(self, app):
+        with app.test_client() as client:
+            for page_url in (url_for("svs.coverage"), url_for("svs.coverage_detail", technique="T1059")):
+                resp = client.get(page_url)
+                assert resp.status_code == 302, page_url
+                assert "login" in resp.location
+
+    def test_the_list_is_driven_by_the_v2_api(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            assert COVERAGE_TAB in client.get(url_for("svs.runs")).data
+            page = client.get(url_for("svs.coverage"))
+            assert page.status_code == 200
+            data = page.data
+            assert b'aria-current="page" href="' + url_for("svs.coverage").encode() + b'">Coverage</a>' in data
+            assert b'data-api="/api/v2/svs/coverage"' in data
+            assert b'data-screen="svs_coverage"' in data
+            # Coverage opens on the endpoint platforms' rows that aren't retired
+            assert b"""data-default-f='["platform:windows,linux,macos", "retired:false"]'""" in data
+            technique_url = url_for("svs.coverage_detail", technique="__TECHNIQUE__")
+            assert f'data-technique-url="{technique_url}"'.encode() in data
+            # the pinned release names the platforms and tactics
+            assert b"data-attack='" in data and b'"windows": "Windows"' in data and b'"TA0002": "Execution"' in data
+            assert b'id="svs_coverage_summary"' in data
+            assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
+                    < data.index(b"filter_list_page.js") < data.index(b"svs_coverage.js"))
+            assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
+
+    def test_the_list_seeds_the_default_saved_filters_once(self, app, run_reader):
+        assert _saved_filter_names(run_reader, "svs_coverage") == []
+        expected = ["All", "Endpoint platforms", "Gaps and failures"]
+        with app.test_client() as client:
+            _login(client, run_reader)
+            client.get(url_for("svs.coverage"))
+            assert _saved_filter_names(run_reader, "svs_coverage") == expected
+            client.get(url_for("svs.coverage"))
+            assert _saved_filter_names(run_reader, "svs_coverage") == expected
+
+    def test_the_technique_page_is_driven_by_the_v2_api(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            page = client.get(url_for("svs.coverage_detail", technique="T1059"))
+            assert page.status_code == 200
+            data = page.data
+            assert b'data-api="/api/v2/svs"' in data
+            assert b'data-technique="T1059"' in data
+            # its tests and runs are those screens' Technique filter on it; its history leaves its
+            # sub-techniques out
+            assert b"""data-tests-f='["technique:T1059"]'""" in data
+            assert b"""data-runs-f='["technique:T1059"]'""" in data
+            assert b"""data-history-f='["technique:T1059", "level:technique", "date:-365d"]'""" in data
+            assert f'data-tests-url="{url_for("svs.tests")}"'.encode() in data
+            assert f'data-runs-url="{url_for("svs.runs")}"'.encode() in data
+            assert f'data-test-url="{url_for("svs.test_detail", guid="__TEST__")}"'.encode() in data
+            assert f'data-run-url="{url_for("svs.run_detail", run_id="__RUN__")}"'.encode() in data
+            assert data.index(b"ace_api.js") < data.index(b"svs_coverage.js")
+            # the Coverage tab is the open one
+            assert b'aria-current="page" href="' + url_for("svs.coverage").encode() + b'">Coverage</a>' in data
+            for section in (b"svs_technique_facts", b"svs_technique_rows", b"svs_technique_subs",
+                            b"svs_technique_tests", b"svs_technique_measured", b"svs_technique_manual",
+                            b"svs_technique_removed", b"svs_technique_history"):
+                assert b'id="' + section + b'"' in data
+
+    def test_a_sub_technique_id_is_normalized(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            data = client.get(url_for("svs.coverage_detail", technique="t1059.001")).data
+            assert b'data-technique="T1059.001"' in data
+            assert b"""data-history-f='["technique:T1059.001", "level:sub-technique", "date:-365d"]'""" in data
+
+    def test_a_revoked_id_links_its_successor(self, app, run_reader):
+        # the vendored release revoked T1150 in favor of T1647; the API answers for the successor, and
+        # the rows, runs and snapshots are kept under it
+        with app.test_client() as client:
+            _login(client, run_reader)
+            data = client.get(url_for("svs.coverage_detail", technique="T1150")).data
+            assert b'data-technique="T1150"' in data
+            assert b"""data-tests-f='["technique:T1647"]'""" in data
+            assert b"""data-history-f='["technique:T1647", "level:technique", "date:-365d"]'""" in data
+
+    def test_not_a_technique_id(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            for value in ("TA0002", "not-a-technique", "T105", "T1059.1"):
+                assert client.get(url_for("svs.coverage_detail", technique=value)).status_code == 404, value
+
+
 class TestNavigation:
     def test_the_svs_entry_replaces_detectops(self, app, run_reader):
         with app.test_client() as client:
@@ -353,6 +443,7 @@ class TestSVSAreaGate:
                     assert client.get(url_for(endpoint)).status_code == 403, endpoint
                 assert client.get(url_for("svs.run_detail", run_id=RUN_ID)).status_code == 403
                 assert client.get(url_for("svs.test_detail", guid=TEST_GUID)).status_code == 403
+                assert client.get(url_for("svs.coverage_detail", technique="T1059")).status_code == 403
 
                 # the nav link and its count are gated too, so they are absent on a page they can load
                 page = client.get(url_for("auth.change_password"))
@@ -374,5 +465,6 @@ class TestSVSAreaGate:
 
     def test_superuser_sees_the_area(self, app, web_client):
         assert SVS_NAV_LINK in web_client.get(url_for("svs.runs")).data
-        for page_url in _list_pages() + (url_for("svs.tests"), url_for("svs.test_hosts")):
+        for page_url in _list_pages() + (url_for("svs.tests"), url_for("svs.coverage"),
+                                          url_for("svs.coverage_detail", technique="T1059"), url_for("svs.test_hosts")):
             assert web_client.get(page_url).status_code == 200, page_url
