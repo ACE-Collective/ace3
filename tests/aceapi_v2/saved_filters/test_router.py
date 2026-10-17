@@ -459,6 +459,13 @@ class TestSeeding:
             {"name": "Platform", "inverted": False, "values": ["windows", "linux", "macos"]},
             {"name": "Retired", "inverted": False, "values": ["false"]}]
 
+        await service.ensure_default_saved_filters(session, test_user.id, screen="svs_worklist")
+        worklist = await service.get_saved_filters_for_user(session, test_user.id, screen="svs_worklist")
+        assert [(f.name, f.quick_filter_order) for f in worklist] == [
+            ("Needs decision", 0), ("Remove pending", 1), ("Undeclared", 2)]
+        assert [e.model_dump() for e in worklist[0].filters] == [
+            {"name": "Status", "inverted": False, "values": ["open"]}]
+
         # seeding one screen does not count as having been seeded on another
         alerts = await service.get_saved_filters_for_user(session, test_user.id, screen="alerts")
         assert not [f for f in alerts if f.name in ("Conflicted", "Missing data")]

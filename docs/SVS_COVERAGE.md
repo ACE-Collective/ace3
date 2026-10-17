@@ -5,10 +5,11 @@ runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags
 carry (`docs/SVS.md`, Part 4).
 
 This document covers how coverage works in ACE and how to operate it. It grows with phase 5. Today
-it covers how coverage is computed, refreshed and snapshotted, and the ATT&CK release it is computed
-against. The design and its reasoning are in `docs/SVS.md`. Coverage is read through
-`/api/v2/svs/coverage` (`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage* and
-*Coverage history*.
+it covers how coverage is computed, refreshed and snapshotted, the declared-vs-measured worklist, and
+the ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
+Coverage is read through `/api/v2/svs/coverage` and the worklist through `/api/v2/svs/worklist`
+(`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage*, *Coverage history* and
+*Worklist*.
 
 ## Rows
 
@@ -81,6 +82,8 @@ A signature's `mitre:` tags claim techniques without a test: a hunt's `tags`, an
 which include its `mitre_attack` meta.
 - A tag counts only when the signature is enabled, and, for a YARA rule, not in QA mode
   (`docs/YARA_QA.md`).
+- A tag resolved *remove* on the worklist (below) doesn't count, unless the signature's tests
+  confirm it.
 - A tag on technique t makes every row of t **manual**. It doesn't reach t's sub-techniques, but it
   rolls up to t's parent like anything else.
 - Tags are matched case-insensitively against `T1234` or `T1234.567`. A revoked id counts as its
@@ -88,6 +91,73 @@ which include its `mitre_attack` meta.
 - A tag naming an id the release doesn't have doesn't count. Neither does a tag that isn't a
   technique id at all, such as a tactic (`mitre:TA0002`) or a template (`mitre:{{ technique }}`).
   Both are counted (`unknown_tags`, `ignored_tags`) in `ace svs coverage status`.
+
+## The worklist
+
+A tag claims a technique; a test measures one. Once a signature is *measured* (expected of a catalog
+test on some platform, ignores applied, removed tests left out), the **declared-vs-measured
+worklist** compares the two, so that every tag ends up either confirmed by a test or decided about
+by a person. It is the `svs_technique_worklist` table, one row per (signature, technique), recomputed
+by every coverage refresh (`saq/svs/worklist.py`).
+
+A measured signature has a row:
+- for each technique its tags claim (`declared`). Tag ids that resolve to one technique, such as a
+  revoked id and its successor, share that technique's row; `declared_as` lists them;
+- for each technique it is measured on that none of its tags covers (`undeclared`, information
+  only: a tag to add);
+- for each tag naming an id the release doesn't have (`unknown`, information only), unless a test
+  measures that id (a custom atomic's technique), which makes it a declaration.
+
+A signature that no test measures has no rows; its tags simply count as manual mappings.
+
+**Matching.** A declared technique is *confirmed* when the signature is measured on it, or on one of
+its sub-techniques:
+
+| The tag claims | The signature is measured on | The tag is |
+|---|---|---|
+| T1059 | T1059.001 | confirmed |
+| T1059.001 | T1059.001 | confirmed |
+| T1059.001 | T1059 | not confirmed, and T1059 gets an `undeclared` row |
+| T1059.001 | T1059.003 | not confirmed, and T1059.003 gets an `undeclared` row |
+
+**Status.** Only the resolution is stored; the status is derived from the facts on every refresh,
+and at once when someone resolves a row.
+
+| Status | When |
+|---|---|
+| `confirmed` | Measurement confirms the tag. A resolution recorded earlier is kept, but has no effect. |
+| `open` | Not confirmed, and nobody resolved it. The *Needs decision* list. |
+| `kept` | Resolved *keep*: the tag covers something no test reaches. |
+| `remove_pending` | Resolved *remove*, and the signature still has the tag. |
+| `removed` | Resolved *remove*, and the tag is gone. |
+| `undeclared`, `unknown` | Information only; they can't be resolved. |
+| `retired` | The signature isn't measured any more, or the tag went away without a *remove*. The resolution is kept. |
+
+**Resolutions** take `svs:run_manage` and a reason (`docs/SVS_API.md`, *Worklist*):
+- *keep*: the tag keeps counting.
+- *remove*: a pull request to the signature repository will drop the tag (its link goes in
+  `reference`). The tag stops counting from the next refresh, while it is still there. A *remove*
+  keeps excluding the tag if the row later retires because the signature stopped being measured.
+
+A resolution is cleared by hand, or in two cases by a refresh, which logs it:
+- **the tag comes back** on a `removed` row: what was decided about it no longer stands, so the
+  resolution is cleared and the row is `open` again;
+- **an ATT&CK upgrade revokes** the row's technique. A tag `mitre:T1086`, say, now counts as
+  T1059.001, so a new row appears for T1059.001, and the old T1086 row retires. When the new row has
+  no resolution yet, the old row's resolution (with its reason, reference, who and when) moves to
+  it.
+
+**Timing.** A refresh computes the worklist first, then coverage from it, in one transaction under
+the refresh lock. A resolution takes the same lock, so it never lands in the middle of a refresh; it
+can wait behind one. The row's `status` and `counts` change at once; coverage follows at the next
+refresh, at most `svs.coverage.refresh_interval_seconds` later.
+
+`ace svs coverage status` prints the rows per status. Each status a refresh changes logs *svs
+worklist row of signature … on T…* with `signature_uuid`, `technique`, `from_status` and
+`to_status`. A person's resolution is an AUDIT record (*svs worklist resolution set* or *cleared*),
+and a refresh's own clear or move is logged too (*svs worklist resolution … cleared* or *moved*),
+all with `signature_uuid`, `technique`, `resolution` and `actor` (`docs/SVS.md`, *Logging
+contract*).
 
 ## Refresh
 
@@ -98,7 +168,8 @@ by at most that interval.
 A refresh:
 1. reads the signatures' tags from the hunts and the YARA rule inventory;
 2. locks the single row of `svs_coverage_state`, so two refreshes never interleave;
-3. reads the catalog tests, their runs, expectations and ignores, and computes every row;
+3. reads the catalog tests, their runs, expectations and ignores, refreshes the worklist (above),
+   and computes every row;
 4. writes only the columns that changed, so a row's `updated_at` moves only on a real change. It
    inserts new rows and retires missing ones;
 5. records what it did on `svs_coverage_state`, and commits once.
@@ -113,7 +184,7 @@ ace svs coverage status              # the last refresh, its error, and rows per
 ```
 
 Each refresh logs *svs coverage refreshed* with `attack_release`, `rows`, `changed`, `retired`,
-`duration_ms` and `actor`. Each row whose state changed logs *svs coverage of T… on …* with
+`duration_ms`, `worklist_rows`, `worklist_changed` and `actor`. Each row whose state changed logs *svs coverage of T… on …* with
 `technique`, `platform`, `from_state` and `to_state` (`docs/SVS.md`, *Logging contract*).
 
 ## Snapshots

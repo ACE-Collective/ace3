@@ -5,8 +5,9 @@ compute_rows() derives every row from the inputs alone:
 - the mitre: tags of the hunts and YARA rules (saq.svs.signatures.signature_techniques);
 - the pinned ATT&CK release (saq.svs.attack).
 
-refresh_coverage() locks svs_coverage_state, computes, and writes only the columns that changed, so a
-row's updated_at moves only on a real change. A row the computation no longer produces is retired,
+refresh_coverage() locks svs_coverage_state, refreshes the declared-vs-measured worklist
+(saq.svs.worklist) first, computes, and writes only the columns that changed, so a row's updated_at
+moves only on a real change. A row the computation no longer produces is retired,
 never deleted. service_svs refreshes every svs.coverage.refresh_interval_seconds on the primary node;
 `ace svs coverage refresh` does it at once. write_snapshot() refreshes, then copies the rows into
 svs_coverage_snapshots under the day's date (`ace svs coverage snapshot`, daily from cron).
@@ -16,8 +17,8 @@ A test's contribution to the row of its technique on a platform is its state the
 - validated, failing and stale count as themselves;
 - an expectation that no reviewed run there has judged yet makes it stale;
 - otherwise (never run there, no reviewed run there, nothing expected there) it is untested.
-A signature's mitre: tag naming technique t, when it counts, makes every row of t manual (not those
-of t's sub-techniques). A row's state is the worst of what counts toward it and toward its
+A signature's mitre: tag naming technique t, when it counts (not resolved remove on the worklist,
+unless measurement confirms it), makes every row of t manual (not those of t's sub-techniques). A row's state is the worst of what counts toward it and toward its
 sub-techniques' rows on the same platform (CoverageState order); own_state leaves the
 sub-techniques out; a row nothing counts toward is none.
 """
@@ -37,11 +38,10 @@ from saq.database.private_session import private_transaction
 from saq.svs.attack import AttackCatalog, TechniqueStatus, get_attack_catalog
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import CoverageState
+from saq.svs.coverage_lock import STATE_ID, lock_refresh
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
 from saq.svs.test_state import Evaluation, TestState, evaluate_tests
-
-# the id of the single svs_coverage_state row
-STATE_ID = 1
+from saq.svs.worklist import Measured, excluded_mappings, log_worklist_refresh, refresh_worklist
 
 # worst first: a row is in the first of these anything counting toward it is in
 WORST_FIRST = (CoverageState.FAILING, CoverageState.STALE, CoverageState.VALIDATED, CoverageState.MANUAL,
@@ -102,6 +102,9 @@ class CoverageRefresh:
     inserted: int
     retired: int
     duration_ms: int
+    # worklist rows that aren't retired, and how many changed
+    worklist_rows: int = 0
+    worklist_changed: int = 0
 
 
 def contribution_state(evaluation: Optional[Evaluation]) -> CoverageState:
@@ -158,11 +161,29 @@ def test_contributions(catalog: AttackCatalog, test: SVSCatalogTest,
     return technique, counted
 
 
+def measured_by_signature(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
+                          evaluations: dict[tuple[str, str], Evaluation]) -> Measured:
+    """{signature uuid: {technique: {(test guid, platform)}}}: where each signature is expected,
+    ignores applied, counted as compute_rows() counts the tests."""
+    measured: Measured = {}
+    by_test = evaluations_by_test(evaluations)
+    for test in tests:
+        technique, counted = test_contributions(catalog, test, by_test.get(test.guid, {}))
+        if technique is None:
+            continue
+        for platform, contribution in counted.items():
+            for signature_uuid in contribution.measured:
+                measured.setdefault(signature_uuid, {}).setdefault(technique, set()).add((test.guid, platform))
+    return measured
+
+
 def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
                  evaluations: dict[tuple[str, str], Evaluation],
-                 tags: dict[str, SignatureTags]) -> ComputedCoverage:
+                 tags: dict[str, SignatureTags],
+                 excluded: frozenset[tuple[str, str]] = frozenset()) -> ComputedCoverage:
     """Every coverage row. tests are the catalog tests that count (not removed), evaluations
-    evaluate_tests() of them, and tags signature_techniques()."""
+    evaluate_tests() of them, tags signature_techniques(), and excluded the (signature uuid,
+    technique) tags the worklist resolved remove (saq.svs.worklist.excluded_mappings)."""
     computed = ComputedCoverage(rows={})
     by_test = evaluations_by_test(evaluations)
 
@@ -192,7 +213,7 @@ def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
             resolution = catalog.resolve(declared)
             if resolution.status == TechniqueStatus.UNKNOWN:
                 computed.unknown_tags += 1
-            elif signature.counts:
+            elif signature.counts and (signature.uuid, resolution.technique) not in excluded:
                 manual.setdefault(resolution.technique, set()).add(signature.uuid)
 
     # the techniques with rows: every active one in the release, every one a test or a counting tag
@@ -251,12 +272,6 @@ def compute_rows(catalog: AttackCatalog, tests: Iterable[SVSCatalogTest],
                 last_reviewed_at=max(reviewed, default=None))
 
     return computed
-
-
-def _lock(session) -> SVSCoverageState:
-    session.execute(insert(SVSCoverageState).prefix_with("IGNORE").values(id=STATE_ID))
-    return session.execute(
-        select(SVSCoverageState).where(SVSCoverageState.id == STATE_ID).with_for_update()).scalar_one()
 
 
 @dataclass
@@ -322,11 +337,15 @@ def refresh_coverage(actor: str, *, now: Optional[datetime] = None) -> CoverageR
         # read from the filesystem before taking the lock; nothing else waits on it, but refreshes do
         tags = signature_techniques()
         with private_transaction() as session:
-            state = _lock(session)
+            state = lock_refresh(session)
             # read after the lock, so a refresh never writes what it read before another one wrote
             tests = list(session.execute(
                 select(SVSCatalogTest).where(SVSCatalogTest.removed_at.is_(None))).scalars())
-            computed = compute_rows(catalog, tests, evaluate_tests(session, tests), tags)
+            evaluations = evaluate_tests(session, tests)
+            # the worklist first: what it resolved remove doesn't count
+            worklist = refresh_worklist(session, catalog, tags, measured_by_signature(catalog, tests, evaluations),
+                                        now)
+            computed = compute_rows(catalog, tests, evaluations, tags, worklist.excluded)
             written = _write(session, computed, now)
 
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -344,6 +363,7 @@ def refresh_coverage(actor: str, *, now: Optional[datetime] = None) -> CoverageR
         raise
 
     # logged once committed
+    log_worklist_refresh(worklist, actor)
     for technique, platform, from_state, to_state in written.transitions:
         logging.info("svs coverage of %s on %s: %s -> %s", technique, platform, from_state, to_state,
                      extra={"technique": technique, "platform": platform, "from_state": from_state,
@@ -351,11 +371,13 @@ def refresh_coverage(actor: str, *, now: Optional[datetime] = None) -> CoverageR
     if computed.skipped_tests:
         logging.warning("svs coverage left out %d catalog tests whose technique isn't an ATT&CK technique id",
                         len(computed.skipped_tests), extra={"svs_tests": computed.skipped_tests})
-    logging.info("svs coverage refreshed: %d rows, %d changed, %d retired in %dms", len(computed.rows),
-                 written.changed, written.retired, duration_ms,
+    logging.info("svs coverage refreshed: %d rows, %d changed, %d retired in %dms; worklist %d rows, %d changed",
+                 len(computed.rows), written.changed, written.retired, duration_ms, worklist.rows, worklist.changed,
                  extra={"attack_release": catalog.release, "rows": len(computed.rows), "changed": written.changed,
-                        "retired": written.retired, "duration_ms": duration_ms, "actor": actor})
-    return CoverageRefresh(len(computed.rows), written.changed, written.inserted, written.retired, duration_ms)
+                        "retired": written.retired, "duration_ms": duration_ms, "worklist_rows": worklist.rows,
+                        "worklist_changed": worklist.changed, "actor": actor})
+    return CoverageRefresh(len(computed.rows), written.changed, written.inserted, written.retired, duration_ms,
+                           worklist.rows, worklist.changed)
 
 
 def coverage_counts(session) -> dict[str, dict[str, int]]:
@@ -395,7 +417,7 @@ def write_snapshot(actor: str, *, snapshot_date: Optional[date] = None,
     refresh_coverage(actor, now=now)
     snapshot_date = snapshot_date or datetime.now(timezone.utc).date()
     with private_transaction() as session:
-        state = _lock(session)
+        state = lock_refresh(session)
         attack_release = state.attack_release
         live = SVSCoverage.retired_at.is_(None)
         statement = mysql_insert(SVSCoverageSnapshot).from_select(
@@ -446,7 +468,8 @@ class ManualMapping:
     declared: str
     technique: str
     counts: bool
-    # why it doesn't count: disabled (or a YARA rule in QA mode), or an id the release doesn't have
+    # why it doesn't count: disabled (or a YARA rule in QA mode), an id the release doesn't have, or
+    # resolved remove on the worklist
     reason: Optional[str]
 
 
@@ -500,6 +523,7 @@ def technique_detail(session, catalog: AttackCatalog, technique: str) -> Techniq
         detail.manual_error = str(e)
         tags = {}
 
+    excluded = excluded_mappings(session)
     for signature in sorted(tags.values(), key=lambda signature: signature.uuid):
         for declared in signature.declared:
             resolution = catalog.resolve(declared)
@@ -509,6 +533,8 @@ def technique_detail(session, catalog: AttackCatalog, technique: str) -> Techniq
                 reason = "unknown_technique"
             elif not signature.counts:
                 reason = "not_counting"
+            elif (signature.uuid, resolution.technique) in excluded:
+                reason = "removed"
             else:
                 reason = None
             detail.manual.append(ManualMapping(signature, declared, resolution.technique, reason is None, reason))

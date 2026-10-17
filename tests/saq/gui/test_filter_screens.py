@@ -26,6 +26,7 @@ from saq.gui.filter_screens import (
     SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
+    SVS_WORKLIST_SCREEN,
     FilterScreen,
     UnknownFilterScreen,
     get_filter_screen,
@@ -455,3 +456,52 @@ def test_svs_coverage_history_takes_a_date():
     assert entry.values == ["-30d"]
     with pytest.raises(ValidationError):
         SVS_COVERAGE_HISTORY_SCREEN.validate_entries([{"name": "Tactic", "values": ["execution"]}])
+
+
+def test_the_svs_worklist_screen():
+    assert get_filter_screen("svs_worklist") is SVS_WORKLIST_SCREEN
+    assert SVS_WORKLIST_SCREEN.permission == ("svs", "run_read")
+    assert {f.name for f in SVS_WORKLIST_SCREEN.fields} == SVS_WORKLIST_SCREEN.filter_names
+
+
+def test_the_svs_worklist_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_WORKLIST_SCREEN.slugs) == {
+        "Family": "family",
+        "Kind": "kind",
+        "Resolution": "resolution",
+        "Resolved": "resolved",
+        "Resolved By": "resolved_by",
+        "Signature": "signature",
+        "Status": "status",
+        "Technique": "technique",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Technique", [" t1059"], ["T1059"]),
+    ("Status", ["Remove_Pending"], ["remove_pending"]),
+    ("Kind", ["Undeclared"], ["undeclared"]),
+    ("Resolution", ["Keep", "none"], ["keep", "none"]),
+    ("Family", ["YARA"], ["yara"]),
+    ("Signature", [" powershell "], ["powershell"]),
+    ("Resolved By", ["analyst"], ["analyst"]),
+    ("Resolved", ["-7d"], ["-7d"]),
+])
+def test_svs_worklist_values_are_normalized(name, values, expected):
+    (entry,) = SVS_WORKLIST_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Technique", ["TA0002"]),
+    ("Status", ["closed"]),
+    ("Kind", ["manual"]),
+    ("Resolution", ["maybe"]),
+    ("Family", ["sigma"]),
+    ("Resolved", ["not a date"]),
+    ("Platform", ["windows"]),
+])
+def test_svs_worklist_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_WORKLIST_SCREEN.validate_entries([{"name": name, "values": values}])

@@ -297,8 +297,9 @@ def cli_coverage_status(args):
     """Print the last coverage refresh and the rows per state on each platform."""
     from saq.database.model import SVSCoverageState
     from saq.database.pool import get_db
-    from saq.svs.constants import CoverageState
+    from saq.svs.constants import CoverageState, WorklistStatus
     from saq.svs.coverage import STATE_ID, coverage_counts
+    from saq.svs.worklist import worklist_counts
 
     state = get_db().get(SVSCoverageState, STATE_ID)
     if state is None or state.refreshed_at is None:
@@ -313,6 +314,10 @@ def cli_coverage_status(args):
     for platform, counts in sorted(coverage_counts(get_db()).items()):
         print(f"  {platform}: " + ", ".join(f"{counts[value]} {value}" for value in (s.value for s in CoverageState)
                                            if value in counts))
+
+    worklist = worklist_counts(get_db())
+    print("worklist: " + (", ".join(f"{worklist[value]} {value}" for value in (s.value for s in WorklistStatus)
+                                     if value in worklist) or "empty"))
     return 0
 
 
