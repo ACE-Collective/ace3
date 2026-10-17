@@ -4,8 +4,9 @@ ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
 is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
 with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
-(phase 2), the YARA validations (phase 3), and the test hosts, the Atomic Red Team test catalog and
-the runs with their event logs (phase 4, so far).
+(phase 2), the YARA validations (phase 3), the test hosts, the Atomic Red Team test catalog and the
+runs with their event logs (phase 4), and ATT&CK coverage with its daily snapshots (phase 5, so
+far).
 
 ## Conventions
 
@@ -27,7 +28,7 @@ the runs with their event logs (phase 4, so far).
 - **Scope.** Alert data is scoped to the alerts this node shows, as the GUI is. SVS data (samples,
   validations, tests, runs) is global.
 - **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`,
-  validation UUID, test GUID, run UUID.
+  validation UUID, test GUID, run UUID, ATT&CK technique id.
 
 ## Alerts
 
@@ -894,6 +895,125 @@ ignores/{signature_uuid}` (`svs:run_manage`); a global one with `PUT /api/v2/svs
 window of the test's runs registered from then on, used as it is (no slack, no floor) from 1 minute
 up to `svs.runs.observation_window.ceiling_hours` (`docs/SVS_RUNS.md`, *Windows*). The response adds
 `set_by` (username) and `updated_at`. Reading needs `svs:run_read`, changing `svs:run_manage`.
+
+## Coverage
+
+ATT&CK coverage per technique and platform, as `service_svs` last refreshed it
+(`docs/SVS_COVERAGE.md`): at most `svs.coverage.refresh_interval_seconds` (default 120) behind a
+review. Read with `svs:run_read`; nothing here writes.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/coverage` | Rows by technique, then platform, filtered and paged |
+| `GET /api/v2/svs/coverage/export/ndjson`, `/export/csv` | The same, streamed (the CSV joins `tactics` with `,`) |
+| `GET /api/v2/svs/coverage/summary` | The rows the filters match, counted, and the last refresh |
+| `GET /api/v2/svs/coverage/{technique}` | One technique's drill-down |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `technique`, `platform` | The ATT&CK technique id and a platform slug (`windows`, `linux`, `macos`, `esxi`, `iaas`, `containers`, `saas`, `office-suite`, `identity-provider`, `network-devices`, `pre`, or one only a test names); together they are unique. |
+| `parent`, `is_subtechnique` | The parent of a sub-technique, and whether the row is one. |
+| `technique_name`, `tactics` | From the pinned release (`tactics` are ids, `TA0002`); for a technique it doesn't have, the name a test gives it and no tactics. |
+| `catalog_status` | `active`, `deprecated`, or `unknown` (not in the pinned release; only a test names it). A revoked id never has a row: it counts as its successor. |
+| `attack_platform` | ATT&CK lists the platform for the technique; `false` when only a test brought the row. |
+| `state` | `failing`, `stale`, `validated`, `manual`, `untested` or `none`: the worst of what counts toward the technique and its sub-techniques on the platform (`docs/SVS_COVERAGE.md`, *States*). |
+| `own_state` | The same, leaving the sub-techniques out. |
+| `tests_total`, `tests_validated`, `tests_failing`, `tests_stale` | The tests counted toward `state`, the sub-techniques' included. A test whose expectations no reviewed run judged yet is `stale`. |
+| `manual_signatures` | Signatures whose `mitre:` tag counts toward `state`. |
+| `measured_signatures` | Signatures expected of the counted tests on the platform, ignores applied. |
+| `last_reviewed_at` | The latest review of a run that counts. |
+| `state_changed_at`, `first_seen_at` | When `state` last changed, and when the row appeared. |
+| `retired_at` | When the computation stopped producing the row (its test was removed, an ATT&CK upgrade revoked it), or null. Rows are never deleted, and a row that comes back is live again. |
+| `updated_at` | The row's last change: a refresh writes only what changed. The `changed_since` key. |
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `name` | Name | text the technique name contains |
+| `tactic` | Tactic | a tactic id (`TA0002`) or shortname (`execution`) of the pinned release |
+| `platform` | Platform | a platform slug; Atomic Red Team's names find the slug they count as (`iaas:aws` finds `iaas`) |
+| `state`, `own_state` | State, Own State | `failing`, `stale`, `validated`, `manual`, `untested`, `none` |
+| `level` | Level | `technique`, `sub-technique` |
+| `attack_platform` | ATT&CK Platform | `true`, `false` |
+| `catalog_status` | Catalog Status | `active`, `deprecated`, `unknown` |
+| `has_manual` | Has Manual | `true`, `false` |
+| `state_changed` | State Changed | a date range |
+| `retired` | Retired | `true`, `false` |
+
+The GUI's default saved filters are *Endpoint platforms* (`platform:windows,linux,macos` and
+`retired:false`), *Gaps and failures* (the same, plus `state:failing,stale,untested,none`) and *All*
+(`retired:false`).
+
+### Incremental pulls
+
+With `changed_since`, a row is returned when it was added, changed, retired or came back at or
+after that time, in `(updated_at, id)` order. A cursor from one order doesn't page the other: 400.
+
+### Summary
+
+`GET …/summary` takes the same filters and counts the rows they match: `rows`, `states` and
+`own_states` (every state named, zeros included), and the same per platform in `platforms`, in the
+release's platform order. It also carries the last refresh from `svs_coverage_state`:
+`attack_release`, `refreshed_at` (null before the first), `duration_ms`, `unknown_tags` and
+`ignored_tags` (`mitre:` tags naming an id the release doesn't have, and ones that aren't technique
+ids), and `error`, why the latest refresh failed, null once one completes.
+
+### Drill-down
+
+`GET …/{technique}` answers what a technique's coverage rests on. A revoked id answers for its
+successor (`requested` is the id asked for, `technique` the one answered for); something that isn't
+a technique id is a 400, and a technique without rows that the release doesn't have a 404.
+
+| Field | Meaning |
+|---|---|
+| `name`, `parent`, `is_subtechnique`, `catalog_status`, `tactics`, `attack_release` | The technique in the pinned release. |
+| `refreshed_at` | When `rows` were refreshed. Everything below them is read now, so the two can disagree for up to one refresh interval. |
+| `rows`, `sub_technique_rows` | Its rows and its sub-techniques' rows, retired ones included, as in the list. |
+| `tests` | One entry per (test, platform) counting toward the technique or a sub-technique: `guid`, `name`, `test_technique` (as its atomic file names it), `technique` (what it counts toward), `platform`, `test_state` (as on the Tests screen; `never_run` when it has no run or decision there), `contribution` (what it counts as), `last_reviewed_run_id`, `last_reviewed_at` and `expected_signatures`. |
+| `measured_signatures` | Each signature expected of those tests: `signature_uuid`, its `name` and `family` when ACE knows the signature, and the `tests` (`guid`, `platform`) expecting it. |
+| `manual_signatures` | Each `mitre:` tag naming the technique or a sub-technique: `signature_uuid`, `name`, `family` (`hunt`, `yara`), `declared` (the id in the tag), `technique`, `counts`, and `reason` when it doesn't count: `not_counting` (the signature is disabled, or a YARA rule in QA mode) or `unknown_technique`. |
+| `manual_signatures_error` | Why the tags couldn't be read (a YARA rule location that can't be loaded); `manual_signatures` is then empty and the rest is unaffected. |
+| `removed_tests` | The technique's tests removed from their repository (`guid`, `name`, `technique`, `removed_at`); they don't count. |
+
+### Joins
+
+- **Coverage → tests:** `GET /api/v2/svs/tests?f=technique:{technique}&f=platform:{platform}`; the
+  drill-down's `guid` is a test's `guid`.
+- **Coverage → runs:** the drill-down's `last_reviewed_run_id` is a run's `run_id`;
+  `GET /api/v2/svs/runs?f=technique:{technique}&f=platform:{platform}` lists them all.
+- **Coverage → signatures:** `signature_uuid` is a detection's `signature_uuid` in
+  `GET /api/v2/detection-points`, and `GET /api/v2/svs/expectations?signature={uuid}` lists where it
+  is expected.
+
+## Coverage history
+
+One row per technique × platform per day, filed by the daily snapshot (`docs/SVS_COVERAGE.md`,
+*Snapshots*): the live coverage rows of that UTC day. Read with `svs:run_read`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/coverage/history` | Snapshot rows by day, then technique and platform, oldest first |
+| `GET /api/v2/svs/coverage/history/export/ndjson`, `/export/csv` | The same, streamed |
+| `GET /api/v2/svs/coverage/history/counts?group=day\|month` | Rows per state and own state, per period |
+
+Fields: `snapshot_date` (the UTC day), `technique`, `platform`, `attack_release`, `parent`,
+`is_subtechnique`, `state`, `own_state`, `tests_total`, `tests_validated`, `tests_failing`,
+`tests_stale`, `manual_signatures`, `measured_signatures`, all as in *Coverage* on that day, and
+`updated_at`, when the row was written (a second snapshot the same day rewrites what changed). With
+`changed_since` the rows come in `(updated_at, id)` order.
+
+Filters: `date` (a date range; a snapshot counts when its day is in it), `technique` (with its
+sub-techniques), `platform`, `state`, `own_state`, `level`, with the values of *Coverage*.
+
+`…/counts` takes the same filters and answers `{"group", "data": [{"period", "snapshot_date",
+"rows", "states", "own_states"}]}`, oldest first. A day's period is the day (`2026-10-16`); a month's
+(`2026-10`) counts that month's **last** snapshot, which `snapshot_date` names, because adding up
+daily snapshots would count each row once a day. The days come from the `date` filter alone, so a
+day the other filters leave empty is still there, with zeros.
 
 ## Worked examples
 

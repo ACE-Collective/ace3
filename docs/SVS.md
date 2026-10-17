@@ -897,6 +897,7 @@ These SVS records are not about a run and carry no `svs_run`: [FR-15]
 | A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
 | Coverage refreshed | INFO | `attack_release`, `rows`, `changed`, `retired`, `duration_ms`, `actor` |
 | A coverage row changed state in a refresh | INFO | `technique`, `platform`, `from_state`, `to_state` |
+| Coverage snapshot written | INFO | `snapshot_date`, `rows`, `attack_release`, `actor` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
 *completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
@@ -981,7 +982,7 @@ query` and `ace search similar` brings them back. This is the same split as prev
 These can't be rebuilt later, so they are recorded from day one. [RPT-4]
 1. **A run's result as signed off**, kept alongside the live result.
 2. **Daily coverage snapshots.** `etc/cron/daily/svs-coverage-snapshot` writes one row per
-   technique × state per day.
+   technique × platform per day, with its state.
 3. **Verdict history.** `detection_point_verdict_history` is append-only:
    `(alert_id, content_hash, signature_uuid, old_verdict, new_verdict, user_id, changed_at)`. It is
    written in the same transaction as each change, including *Confirm*. The verdicts are the stored
@@ -1054,7 +1055,7 @@ tables are on the main chain.
 | `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
 | `svs_technique_worklist` | Declared-vs-measured flags and their resolution |
 | `svs_run_events` | Append-only run event log (Part 5) |
-| `svs_coverage_snapshots` | Daily technique × state rows (Part 6) |
+| `svs_coverage_snapshots` | One row per technique × platform per day: its state and counts (Part 6) |
 | `detection_point_verdict_history` | Append-only verdict changes (Part 6; core) |
 
 `svs_runs` also carries an owner and a reviewer, and `svs_run_results` carries the result as

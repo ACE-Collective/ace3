@@ -2,14 +2,22 @@
 
 import json
 from argparse import Namespace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
 
-from saq.cli.commands.svs import cli_coverage_refresh, cli_coverage_status
-from saq.database.model import SVSCatalogTest, SVSCoverage, SVSCoverageState, SVSRun, SVSRunResult, User
+from saq.cli.commands.svs import cli_coverage_refresh, cli_coverage_snapshot, cli_coverage_status
+from saq.database.model import (
+    SVSCatalogTest,
+    SVSCoverage,
+    SVSCoverageSnapshot,
+    SVSCoverageState,
+    SVSRun,
+    SVSRunResult,
+    User,
+)
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util import node
@@ -21,6 +29,7 @@ from saq.svs.coverage import (
     compute_rows,
     contribution_state,
     refresh_coverage,
+    write_snapshot,
 )
 from saq.svs.service import CoverageRefresher, SVSService
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
@@ -33,6 +42,7 @@ OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 OTHER_SIGNATURE = "44444444-dddd-4ddd-8ddd-444444444444"
 T0 = datetime(2026, 10, 16, 12, 0, 0)
+DAY = date(2026, 10, 16)
 
 
 def _test(guid: str = GUID, technique: str = "T1059.001", platforms=("windows",),
@@ -408,3 +418,78 @@ class TestRefresh:
         assert "coverage refresh failed: boom" in capsys.readouterr().out
         cli_coverage_status(Namespace())
         assert "the latest refresh failed: boom" in capsys.readouterr().out
+
+
+#
+# write_snapshot
+#
+
+def _snapshots() -> dict[tuple[date, str, str], SVSCoverageSnapshot]:
+    with private_transaction() as session:
+        rows = {(row.snapshot_date, row.technique, row.platform): row
+                for row in session.execute(select(SVSCoverageSnapshot)).scalars()}
+        session.expunge_all()
+    return rows
+
+
+@pytest.mark.integration
+class TestSnapshot:
+    def test_a_snapshot_copies_the_live_rows(self, refreshable, user_id):
+        add_catalog_test(GUID)
+        _validated_run(GUID, user_id)
+        result = write_snapshot("test", snapshot_date=DAY)
+        assert (result.snapshot_date, result.attack_release, result.rows, result.deleted) == (DAY, "v99.0", 5, 0)
+
+        snapshots = _snapshots()
+        assert len(snapshots) == 5
+        row = snapshots[(DAY, "T1059", "windows")]
+        assert (row.attack_release, row.state, row.own_state, row.tests_total, row.tests_validated,
+                row.measured_signatures, row.is_subtechnique) == ("v99.0", "validated", "none", 1, 1, 1, False)
+
+    def test_a_second_snapshot_the_same_day_replaces_it(self, refreshable):
+        add_catalog_test(GUID, technique="T1234.001")
+        write_snapshot("test", snapshot_date=DAY)
+        assert (DAY, "T1234.001", "windows") in _snapshots()
+        before = _snapshots()[(DAY, "T1059", "windows")].updated_at
+
+        # the test goes away: its rows retire, so they leave the day's snapshot
+        db = get_db()
+        db.execute(update(SVSCatalogTest).where(SVSCatalogTest.guid == GUID).values(removed_at=datetime.now()))
+        db.commit()
+        result = write_snapshot("test", snapshot_date=DAY)
+        assert (result.rows, result.deleted) == (5, 2)
+        snapshots = _snapshots()
+        assert (DAY, "T1234.001", "windows") not in snapshots
+        assert len(snapshots) == 5
+        # a row that didn't change isn't rewritten
+        assert snapshots[(DAY, "T1059", "windows")].updated_at == before
+
+        # another day is another snapshot
+        write_snapshot("test", snapshot_date=DAY + timedelta(days=1))
+        assert len(_snapshots()) == 10
+
+    def test_today_in_utc_by_default(self, refreshable):
+        assert write_snapshot("test").snapshot_date == datetime.now(timezone.utc).date()
+
+    def test_a_failed_refresh_writes_no_snapshot(self, refreshable, monkeypatch):
+        monkeypatch.setattr(coverage, "signature_techniques",
+                            lambda: (_ for _ in ()).throw(SignatureTagsUnavailable("boom")))
+        with pytest.raises(SignatureTagsUnavailable):
+            write_snapshot("test", snapshot_date=DAY)
+        assert _snapshots() == {}
+
+    def test_cli(self, refreshable, monkeypatch, capsys):
+        monkeypatch.setattr(node, "is_primary_node", lambda: False)
+        assert cli_coverage_snapshot(Namespace(force=False)) == 0
+        assert "not the primary node" in capsys.readouterr().out
+        assert _snapshots() == {}
+
+        assert cli_coverage_snapshot(Namespace(force=True)) == 0
+        today = datetime.now(timezone.utc).date()
+        assert f"snapshot of {today} against ATT&CK v99.0: 5 rows" in capsys.readouterr().out
+        assert len(_snapshots()) == 5
+
+        monkeypatch.setattr(coverage, "signature_techniques",
+                            lambda: (_ for _ in ()).throw(SignatureTagsUnavailable("boom")))
+        assert cli_coverage_snapshot(Namespace(force=True)) == 1
+        assert "coverage snapshot failed: boom" in capsys.readouterr().out

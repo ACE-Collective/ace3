@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source /opt/ace/bin/initialize-environment.sh
+
+# refresh svs att&ck coverage and file today's (utc) snapshot of it (docs/SVS_COVERAGE.md,
+# *Snapshots*); history that is not written on the day can't be rebuilt later. the command exits 0
+# without doing anything unless ACE_IS_PRIMARY_NODE is 1, because the snapshots are shared state.
+ace svs coverage snapshot

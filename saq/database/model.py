@@ -2668,6 +2668,42 @@ class SVSCoverageState(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSCoverageSnapshot(Base):
+    """svs_coverage as it was on one day (docs/SVS_COVERAGE.md, *Snapshots*): a copy of each row
+    that wasn't retired, written daily by `ace svs coverage snapshot` (etc/cron/daily). A second
+    snapshot on the same day replaces the day. Only saq/svs/coverage.py writes this table."""
+
+    __tablename__ = 'svs_coverage_snapshots'
+    __table_args__ = (
+        UniqueConstraint('snapshot_date', 'technique', 'platform', name='uq_svs_coverage_snapshots_day_row'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # the UTC day
+    snapshot_date: Mapped[date] = mapped_column(DATE, nullable=False)
+    technique: Mapped[str] = mapped_column(String(32), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    attack_release: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    is_subtechnique: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    state: Mapped[str] = mapped_column(
+        Enum('failing', 'stale', 'validated', 'manual', 'untested', 'none'), nullable=False)
+    own_state: Mapped[str] = mapped_column(
+        Enum('failing', 'stale', 'validated', 'manual', 'untested', 'none'), nullable=False)
+    tests_total: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_validated: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_failing: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    tests_stale: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    manual_signatures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    measured_signatures: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class Nodes(Base):
 
     __tablename__ = 'nodes'

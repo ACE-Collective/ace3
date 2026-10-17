@@ -4,7 +4,7 @@ table is a contract; this keeps a refactor from dropping a field."""
 
 import logging
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select, update
@@ -17,7 +17,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.svs import association, coverage, review
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
-from saq.svs.coverage import refresh_coverage
+from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
 
 from saq.svs.hosts import build_spec, create_host
@@ -293,3 +293,14 @@ def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
     (changed,) = _records(caplog, "svs coverage of T1547 on windows")
     assert changed.levelno == logging.INFO and (changed.from_state, changed.to_state) == ("none", "manual")
     _assert_fields(changed, ("technique", "platform", "from_state", "to_state"))
+
+
+def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
+    monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
+    monkeypatch.setattr(coverage, "signature_techniques", lambda: {})
+    with caplog.at_level(logging.INFO):
+        write_snapshot("unittest", snapshot_date=date(2026, 10, 16))
+
+    (written,) = _records(caplog, "svs coverage snapshot of 2026-10-16 written")
+    assert written.levelno == logging.INFO and (written.snapshot_date, written.actor) == ("2026-10-16", "unittest")
+    _assert_fields(written, ("snapshot_date", "rows", "attack_release", "actor"))

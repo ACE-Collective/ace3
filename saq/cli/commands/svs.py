@@ -6,8 +6,9 @@ validations CI requests are run by service_svs instead. ``yara layout`` prints w
 each repository in svs.yara.repositories the yara service loads. ``yara prune`` removes the
 validations older than svs.yara.retention_days (daily cron). ``catalog refresh`` reads the Atomic
 Red Team catalog repositories (service_svs does it on its own) and ``catalog status`` prints them
-(docs/SVS_RUNS.md). ``coverage refresh`` recomputes ATT&CK coverage (service_svs does it on its own)
-and ``coverage status`` prints the last refresh and the rows per state (docs/SVS_COVERAGE.md).
+(docs/SVS_RUNS.md). ``coverage refresh`` recomputes ATT&CK coverage (service_svs does it on its own),
+``coverage snapshot`` refreshes it and files the day's copy (daily from cron), and ``coverage status``
+prints the last refresh and the rows per state (docs/SVS_COVERAGE.md).
 """
 
 import json
@@ -317,3 +318,30 @@ def cli_coverage_status(args):
 
 coverage_status_parser = svs_coverage_sp.add_parser("status", help="Print the last coverage refresh and the rows per state.")
 coverage_status_parser.set_defaults(func=cli_coverage_status)
+
+
+def cli_coverage_snapshot(args):
+    """Refresh ATT&CK coverage and file today's snapshot of it."""
+    from saq.database.util.node import is_primary_node
+    from saq.svs.coverage import write_snapshot
+
+    # the snapshots are shared state, written once a day by the primary node's cron
+    if not (is_primary_node() or args.force):
+        print("skipping: not the primary node (use --force to snapshot anyway)")
+        return 0
+
+    try:
+        result = write_snapshot("cli")
+    except Exception as e:
+        print(f"coverage snapshot failed: {e}")
+        return 1
+
+    print(f"snapshot of {result.snapshot_date} against ATT&CK {result.attack_release}: {result.rows} rows"
+          + (f", {result.deleted} earlier rows of the day removed" if result.deleted else ""))
+    return 0
+
+
+coverage_snapshot_parser = svs_coverage_sp.add_parser(
+    "snapshot", help="Refresh ATT&CK coverage and file today's (UTC) snapshot; a rerun replaces the day.")
+coverage_snapshot_parser.add_argument("--force", action="store_true", default=False, help="Snapshot even when this is not the primary node.")
+coverage_snapshot_parser.set_defaults(func=cli_coverage_snapshot)

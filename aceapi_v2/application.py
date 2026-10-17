@@ -30,6 +30,7 @@ from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
 from aceapi_v2.svs.alerts.router import router as svs_alerts_router
 from aceapi_v2.svs.catalog.router import router as svs_tests_router
+from aceapi_v2.svs.coverage.router import router as svs_coverage_router
 from aceapi_v2.svs.expectations.router import router as svs_expectations_router
 from aceapi_v2.svs.ignores.router import router as svs_ignores_router
 from aceapi_v2.svs.runs.router import router as svs_runs_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(svs_expectations_router, prefix="/svs/expectations", tags=["svs"])
     app.include_router(svs_ignores_router, prefix="/svs/ignores", tags=["svs"])
     app.include_router(svs_runs_router, prefix="/svs/runs", tags=["svs"])
+    app.include_router(svs_coverage_router, prefix="/svs/coverage", tags=["svs"])
     app.include_router(yara_qa_router, prefix="/signatures/yara-qa", tags=["signatures"])
     app.include_router(threat_types_router, prefix="/threat-types", tags=["threats"])
     app.include_router(threats_router, prefix="/threats", tags=["threats"])

@@ -5,8 +5,10 @@ runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags
 carry (`docs/SVS.md`, Part 4).
 
 This document covers how coverage works in ACE and how to operate it. It grows with phase 5. Today
-it covers how coverage is computed and refreshed, and the ATT&CK release it is computed against.
-The design and its reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
+it covers how coverage is computed, refreshed and snapshotted, and the ATT&CK release it is computed
+against. The design and its reasoning are in `docs/SVS.md`. Coverage is read through
+`/api/v2/svs/coverage` (`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage* and
+*Coverage history*.
 
 ## Rows
 
@@ -113,6 +115,35 @@ ace svs coverage status              # the last refresh, its error, and rows per
 Each refresh logs *svs coverage refreshed* with `attack_release`, `rows`, `changed`, `retired`,
 `duration_ms` and `actor`. Each row whose state changed logs *svs coverage of T… on …* with
 `technique`, `platform`, `from_state` and `to_state` (`docs/SVS.md`, *Logging contract*).
+
+## Snapshots
+
+Coverage is the current state only; a report of coverage over time needs history, which can't be
+rebuilt later (`docs/SVS.md`, Part 6, *History kept for reports*). So once a day the primary node
+files a copy of it in `svs_coverage_snapshots`:
+
+```
+ace svs coverage snapshot [--force]   # refresh, then file today's (UTC) snapshot; --force off the primary node
+```
+
+`etc/cron/daily/svs-coverage-snapshot` runs it (`docs/CRON.md`). The command:
+1. refreshes coverage, exactly as `ace svs coverage refresh` does. If the refresh fails, no
+   snapshot is written and the command exits 1, so the cron job reports it;
+2. locks `svs_coverage_state`, like a refresh, and copies every row that isn't retired under
+   today's UTC date: its state, own state, test counts, manual and measured signature counts, and
+   the ATT&CK release.
+
+A second snapshot on the same day replaces the day: its rows are rewritten (a row that didn't change
+keeps its `updated_at`), and the day's rows that are no longer in coverage are removed. A day the
+job didn't run has no snapshot; there is no way to file one afterwards, because it would be today's
+coverage under another date. Snapshots are kept forever: about 1,900 rows a day with the vendored
+release and the Atomic Red Team catalog.
+
+Each snapshot logs *svs coverage snapshot of … written* with `snapshot_date`, `rows`,
+`attack_release` and `actor`.
+
+`GET /api/v2/svs/coverage/history` lists the snapshot rows, and `…/history/counts?group=day|month`
+counts them per state: per day, or per month from each month's last snapshot.
 
 ## The ATT&CK release
 
