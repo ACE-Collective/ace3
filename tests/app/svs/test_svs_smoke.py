@@ -2,7 +2,8 @@
 
 The area renders pages and nothing else: the Runs tab and the run page are shells over
 /api/v2/svs/runs, the Tests tab and the test page over /api/v2/svs/tests, the Coverage tab and the
-technique page over /api/v2/svs/coverage, and the Test hosts tab over /api/v2/svs/test-hosts
+technique page over /api/v2/svs/coverage, the Worklist tab and the signature page over
+/api/v2/svs/worklist, and the Test hosts tab over /api/v2/svs/test-hosts
 (tests/aceapi_v2/svs/). These
 tests assert that boundary, the svs:run_read gate on the area and its nav link, and the permissions
 the tabs and the actions layer on top.
@@ -20,17 +21,20 @@ from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
-PAGE_VIEWS = ("svs.svs_home", "svs.runs", "svs.batches", "svs.tests", "svs.coverage", "svs.test_hosts")
+PAGE_VIEWS = ("svs.svs_home", "svs.runs", "svs.batches", "svs.tests", "svs.coverage", "svs.worklist",
+              "svs.test_hosts")
 # the run page takes the run's uuid and the test page the test's guid; whether either exists is the
 # API's answer, not the page's
 RUN_ID = "C0FFEE00-1111-4111-8111-111111111111"
 TEST_GUID = "BEEF0000-2222-4222-8222-222222222222"
+SIGNATURE_UUID = "9A9A9A9A-0000-4000-8000-00000000A001"
 
 # the nav link is `<a ...>SVS<span id="svs_nav_count" ...></span></a>`
 SVS_NAV_LINK = b'>SVS<span id="svs_nav_count"'
 TEST_HOSTS_TAB = b">Test hosts</a>"
 TESTS_TAB = b">Tests</a>"
 COVERAGE_TAB = b">Coverage</a>"
+WORKLIST_TAB = b">Worklist</a>"
 
 
 def _make_user(username, perms):
@@ -85,7 +89,8 @@ def svs_admin():
 
 class TestSVSIsPagesOnly:
     def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS + ("svs.run_detail", "svs.test_detail", "svs.coverage_detail"):
+        for endpoint in PAGE_VIEWS + ("svs.run_detail", "svs.test_detail", "svs.coverage_detail",
+                                    "svs.worklist_signature"):
             assert endpoint in app.view_functions, endpoint
 
     def test_svs_blueprint_serves_only_get_pages(self, app):
@@ -371,6 +376,9 @@ class TestCoveragePages:
             assert f'data-runs-url="{url_for("svs.runs")}"'.encode() in data
             assert f'data-test-url="{url_for("svs.test_detail", guid="__TEST__")}"'.encode() in data
             assert f'data-run-url="{url_for("svs.run_detail", run_id="__RUN__")}"'.encode() in data
+            # its signatures link to their worklist pages
+            signature_url = url_for("svs.worklist_signature", signature_uuid="__SIGNATURE__")
+            assert f'data-signature-url="{signature_url}"'.encode() in data
             assert data.index(b"ace_api.js") < data.index(b"svs_coverage.js")
             # the Coverage tab is the open one
             assert b'aria-current="page" href="' + url_for("svs.coverage").encode() + b'">Coverage</a>' in data
@@ -401,6 +409,85 @@ class TestCoveragePages:
             _login(client, run_reader)
             for value in ("TA0002", "not-a-technique", "T105", "T1059.1"):
                 assert client.get(url_for("svs.coverage_detail", technique=value)).status_code == 404, value
+
+
+class TestWorklistPages:
+    def test_requires_auth(self, app):
+        with app.test_client() as client:
+            for page_url in (url_for("svs.worklist"), url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID)):
+                resp = client.get(page_url)
+                assert resp.status_code == 302, page_url
+                assert "login" in resp.location
+
+    def test_the_list_is_driven_by_the_v2_api(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            assert WORKLIST_TAB in client.get(url_for("svs.runs")).data
+            page = client.get(url_for("svs.worklist"))
+            assert page.status_code == 200
+            data = page.data
+            assert b'aria-current="page" href="' + url_for("svs.worklist").encode() + b'">Worklist</a>' in data
+            assert b'data-api="/api/v2/svs/worklist"' in data
+            assert b'data-screen="svs_worklist"' in data
+            # the Worklist opens on the tags that need a decision
+            assert b"""data-default-f='["status:open"]'""" in data
+            signature_url = url_for("svs.worklist_signature", signature_uuid="__SIGNATURE__")
+            assert f'data-signature-url="{signature_url}"'.encode() in data
+            technique_url = url_for("svs.coverage_detail", technique="__TECHNIQUE__")
+            assert f'data-technique-url="{technique_url}"'.encode() in data
+            assert (data.index(b"ace_api.js") < data.index(b"saved_filters.js")
+                    < data.index(b"filter_list_page.js") < data.index(b"svs_worklist.js"))
+            assert b'id="save_filter_modal"' in data and b'id="manage_filters_modal"' in data
+
+    def test_the_list_seeds_the_default_saved_filters_once(self, app, run_reader):
+        assert _saved_filter_names(run_reader, "svs_worklist") == []
+        expected = ["Needs decision", "Remove pending", "Undeclared"]
+        with app.test_client() as client:
+            _login(client, run_reader)
+            client.get(url_for("svs.worklist"))
+            assert _saved_filter_names(run_reader, "svs_worklist") == expected
+            client.get(url_for("svs.worklist"))
+            assert _saved_filter_names(run_reader, "svs_worklist") == expected
+
+    def test_the_signature_page_is_driven_by_the_v2_api(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            page = client.get(url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID))
+            assert page.status_code == 200
+            data = page.data
+            assert b'data-api="/api/v2/svs/worklist"' in data
+            # kept as written: signature uuids are stored as their sources write them
+            assert f'data-signature="{SIGNATURE_UUID}"'.encode() in data
+            # its rows on the Worklist tab
+            assert f"""data-worklist-f='["signature:{SIGNATURE_UUID}"]'""".encode() in data
+            assert f'data-worklist-url="{url_for("svs.worklist")}"'.encode() in data
+            assert f'data-test-url="{url_for("svs.test_detail", guid="__TEST__")}"'.encode() in data
+            assert data.index(b"ace_api.js") < data.index(b"svs_worklist.js")
+            assert b'aria-current="page" href="' + url_for("svs.worklist").encode() + b'">Worklist</a>' in data
+            for section in (b"svs_signature_rows", b"svs_signature_measured"):
+                assert b'id="' + section + b'"' in data
+
+    def test_not_a_signature_uuid(self, app, run_reader):
+        with app.test_client() as client:
+            _login(client, run_reader)
+            for value in ("not-a-uuid", "9a9a9a9a", SIGNATURE_UUID + "0"):
+                assert client.get(url_for("svs.worklist_signature", signature_uuid=value)).status_code == 404, value
+
+    def test_resolving_follows_run_manage(self, app, run_reader, run_manager):
+        pages = (url_for("svs.worklist"), url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID))
+        with app.test_client() as client:
+            _login(client, run_reader)
+            for page_url in pages:
+                data = client.get(page_url).data
+                assert b'data-can-manage="false"' in data, page_url
+                assert b'id="svs_worklist_resolve_modal"' not in data, page_url
+
+        with app.test_client() as client:
+            _login(client, run_manager)
+            for page_url in pages:
+                data = client.get(page_url).data
+                assert b'data-can-manage="true"' in data, page_url
+                assert b'id="svs_worklist_resolve_modal"' in data, page_url
 
 
 class TestNavigation:
@@ -444,6 +531,7 @@ class TestSVSAreaGate:
                 assert client.get(url_for("svs.run_detail", run_id=RUN_ID)).status_code == 403
                 assert client.get(url_for("svs.test_detail", guid=TEST_GUID)).status_code == 403
                 assert client.get(url_for("svs.coverage_detail", technique="T1059")).status_code == 403
+                assert client.get(url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID)).status_code == 403
 
                 # the nav link and its count are gated too, so they are absent on a page they can load
                 page = client.get(url_for("auth.change_password"))
@@ -466,5 +554,7 @@ class TestSVSAreaGate:
     def test_superuser_sees_the_area(self, app, web_client):
         assert SVS_NAV_LINK in web_client.get(url_for("svs.runs")).data
         for page_url in _list_pages() + (url_for("svs.tests"), url_for("svs.coverage"),
-                                          url_for("svs.coverage_detail", technique="T1059"), url_for("svs.test_hosts")):
+                                          url_for("svs.coverage_detail", technique="T1059"), url_for("svs.worklist"),
+                                          url_for("svs.worklist_signature", signature_uuid=SIGNATURE_UUID),
+                                          url_for("svs.test_hosts")):
             assert web_client.get(page_url).status_code == 200, page_url

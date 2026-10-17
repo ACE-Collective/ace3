@@ -4,9 +4,9 @@ SVS coverage answers "which ATT&CK techniques do we actually detect?" from the A
 runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags signatures already
 carry (`docs/SVS.md`, Part 4).
 
-This document covers how coverage works in ACE and how to operate it. It grows with phase 5. Today
-it covers how coverage is computed, refreshed and snapshotted, the declared-vs-measured worklist, the
-Coverage tab, and the ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
+This document covers how coverage works in ACE and how to operate it: how coverage is computed,
+refreshed and snapshotted, the declared-vs-measured worklist, the Coverage and Worklist tabs, and the
+ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
 Coverage is read through `/api/v2/svs/coverage` and the worklist through `/api/v2/svs/worklist`
 (`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage*, *Coverage history* and
 *Worklist*.
@@ -247,13 +247,39 @@ revoked id opens its successor's page and says so. The page shows:
 - **Measured signatures**: the signatures expected of those tests, and which (test, platform) pairs
   expect each;
 - **Manual signatures**: the signatures whose tags name the technique or a sub-technique, and whether
-  each counts (a disabled signature or a YARA rule in QA mode doesn't);
+  each counts (a disabled signature, a YARA rule in QA mode, or a tag resolved *remove* doesn't);
 - **Removed tests**: the technique's tests that left their repositories;
 - **History**: from the daily snapshots of the last year (*Snapshots*), each platform's first state
   and every day it changed, with CSV and NDJSON exports of those snapshot rows.
 
 The rows are as of the last refresh; the tests and signatures are read when the page loads, so right
 after a review the page can be ahead of its rows by up to one refresh interval.
+
+Each signature, measured or manual, links to its worklist page (below).
+
+**SVS → Worklist** (`/ace/svs/worklist`, `svs:run_read`) lists the worklist rows (*The worklist*),
+grouped per signature: a header row per signature names it, its family and uuid, and the techniques it
+is measured on, and says when its tags don't count because it is disabled or a YARA rule in QA mode.
+It is a shell over `/api/v2/svs/worklist`, with the worklist screen's filters, saved filters, share
+links and CSV/NDJSON export.
+
+- **Columns:** technique (with the tag ids that count as it, when they differ, such as a revoked id),
+  kind, status and since when, whether the tag counts and why not, and the resolution (keep or remove,
+  the reason, the reference link, who and when). Statuses are plain text.
+- **Saved filters**, created for each user the first time they open the tab: *Needs decision* (`open`,
+  the default), *Remove pending* and *Undeclared*.
+- **Resolving** needs `svs:run_manage`. An `open` row can be kept or removed; a `kept` row removed or
+  reopened; a `remove_pending` row kept or reopened. Keep and Remove ask for a reason, and for a link
+  (for a removal, the pull request dropping the tag). Reopen clears the resolution. Other rows can't be
+  resolved; a resolution they still hold is shown. The selected rows can be kept or removed in bulk;
+  rows that can't be resolved are left alone and listed.
+
+A row's status and whether it counts change at once; coverage follows at the next refresh.
+
+Each signature links to its page, `/ace/svs/worklist/<signature_uuid>` (`/{signature_uuid}` in the
+API): every row of the signature, retired ones included, with the same actions, and each technique it
+is measured on now with the tests (and platforms) that expect it. A signature no test measures has no
+rows, and the page says so: its tags count as manual mappings.
 
 ## The ATT&CK release
 

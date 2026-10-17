@@ -42,6 +42,7 @@
     const MANUAL_REASONS = {
         not_counting: "it doesn't count: the signature is disabled, or a YARA rule in QA mode",
         unknown_technique: "it doesn't count: the release has no such technique",
+        removed: "it doesn't count: resolved remove on the worklist",
     };
 
     const PAGE_SIZE = 500;
@@ -408,6 +409,7 @@
             technique_url: data.techniqueUrl,
             test_url: data.testUrl,
             run_url: data.runUrl,
+            signature_url: data.signatureUrl,
         };
         const names = namer(parse_json(data.attack, {}));
         const state = {};
@@ -604,9 +606,13 @@
             node.appendChild(responsive(target));
         }
 
+        // a signature links to its worklist page, which says so when no test measures it
         function signature_node(row) {
             const node = el("div");
-            append(node, row.name || "");
+            const anchor = link(settings.signature_url.replace("__SIGNATURE__", encodeURIComponent(row.signature_uuid)),
+                                row.name || row.signature_uuid);
+            anchor.title = "its technique tags on the worklist";
+            node.appendChild(anchor);
             const details = el("div", "small text-muted");
             append(details, row.family ? row.family + " · " : "", mono(row.signature_uuid));
             node.appendChild(details);

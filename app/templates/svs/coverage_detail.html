@@ -16,6 +16,7 @@
      data-technique-url="{{ technique_url }}"
      data-test-url="{{ test_url }}"
      data-run-url="{{ run_url }}"
+     data-signature-url="{{ signature_url }}"
      data-tz="{{ current_user.timezone or 'UTC' }}">
     <p class="mb-2"><a href="{{ url_for('svs.coverage') }}"><span class="bi bi-arrow-left"></span> Coverage</a></p>
     <div id="svs_technique_error" class="alert alert-danger d-none" role="alert"></div>

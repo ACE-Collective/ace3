@@ -65,4 +65,5 @@ def coverage_detail(technique: str):
                            history_f=history_f, attack=_attack_names(catalog),
                            technique_url=url_for("svs.coverage_detail", technique="__TECHNIQUE__"),
                            test_url=url_for("svs.test_detail", guid="__TEST__"),
-                           run_url=url_for("svs.run_detail", run_id="__RUN__"))
+                           run_url=url_for("svs.run_detail", run_id="__RUN__"),
+                           signature_url=url_for("svs.worklist_signature", signature_uuid="__SIGNATURE__"))

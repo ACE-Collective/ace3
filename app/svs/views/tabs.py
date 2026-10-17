@@ -11,9 +11,10 @@ from aceapi_v2.saved_filters.service import (
     DEFAULT_SVS_COVERAGE_SAVED_FILTERS,
     DEFAULT_SVS_RUN_SAVED_FILTERS,
     DEFAULT_SVS_TEST_SAVED_FILTERS,
+    DEFAULT_SVS_WORKLIST_SAVED_FILTERS,
 )
 from app.blueprints import svs
-from saq.gui.filter_screens import SVS_COVERAGE_SCREEN, SVS_RUNS_SCREEN, SVS_TESTS_SCREEN
+from saq.gui.filter_screens import SVS_COVERAGE_SCREEN, SVS_RUNS_SCREEN, SVS_TESTS_SCREEN, SVS_WORKLIST_SCREEN
 from saq.gui.filter_url import encode_filter_query
 from saq.permissions.logic import user_has_permission
 
@@ -38,6 +39,13 @@ SVS_TABS = [
         "endpoint": "svs.coverage",
         "title": "Coverage",
         "active": ("svs.coverage", "svs.coverage_detail"),
+        "major": "svs",
+        "minor": "run_read",
+    },
+    {
+        "endpoint": "svs.worklist",
+        "title": "Worklist",
+        "active": ("svs.worklist", "svs.worklist_signature"),
         "major": "svs",
         "minor": "run_read",
     },
@@ -81,6 +89,14 @@ def svs_coverage_default_f() -> list[str]:
     """The f= values of the coverage screen's default view, the endpoint platforms' rows that aren't
     retired: what the Coverage tab opens with."""
     return encode_filter_query(list(DEFAULT_SVS_COVERAGE_SAVED_FILTERS[0]["filters"]), screen=SVS_COVERAGE_SCREEN)
+
+
+@svs.app_template_global()
+@cache
+def svs_worklist_default_f() -> list[str]:
+    """The f= values of the worklist screen's default view, the tags that need a decision: what the
+    Worklist tab opens with."""
+    return encode_filter_query(list(DEFAULT_SVS_WORKLIST_SAVED_FILTERS[0]["filters"]), screen=SVS_WORKLIST_SCREEN)
 
 
 @svs.app_template_global()

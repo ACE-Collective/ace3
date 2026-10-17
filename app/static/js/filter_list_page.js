@@ -40,6 +40,10 @@
 //             noun: "run",               //   optional, with actions: "3 runs selected"
 //             actions: [{label, title, run(keys, rows)}],    // optional: an Actions menu, see below
 //         },
+//         group: {                       // optional: a header row over each run of rows that share a key
+//             key(row),                  //   what the rows of a group share, such as their signature
+//             render(rows),              //   the header's content (a Node or text), from the group's
+//         },                             //   rows on the page shown
 //         emptyText: "...",
 //         defaultF: ["needs_attention:true"],    // optional, see below
 //         onLoad(params),                // optional: called with {f, sort, desc, tz} each time the
@@ -52,6 +56,10 @@
 // either builds its own controls over it (onChange, selected()) or names select.actions, which
 // adds an Actions menu over the table. action.run(keys, rows) returns a promise: the page shown
 // reloads when it resolves to anything but false, and shows the error when it rejects.
+//
+// A group is consecutive rows, so the API's order has to keep a group's rows together; a group that
+// continues on the next page gets its header there too. A header row is not a row of the list: it
+// has no checkbox, and the selection is only ever rows. A grouped list isn't striped.
 //
 // It creates the page's SAVED_FILTERS instance (saved_filters.js), which the macro's markup
 // calls. Every value shown comes from analyzed data, so it is placed as text, never markup.
@@ -137,7 +145,9 @@ var FilterListPage = (function() {
         warning.setAttribute("role", "alert");
         const bar = el("div", "filter-list-bar mb-2");
         const selection_bar = el("div", "d-flex flex-wrap align-items-center gap-2 mb-2 filter-list-selection");
-        const table = el("table", "table table-sm table-hover table-striped filter-list-table" + (options.fitColumns ? " filter-list-fit" : ""));
+        // a grouped list isn't striped: the stripes would run across its group headers
+        const table = el("table", "table table-sm table-hover filter-list-table" + (options.group ? "" : " table-striped") +
+                         (options.fitColumns ? " filter-list-fit" : ""));
         const thead = table.createTHead();
         const tbody = table.createTBody();
         const pager = el("div", "d-flex flex-wrap align-items-center gap-2");
@@ -680,6 +690,8 @@ var FilterListPage = (function() {
                 }
                 link.addEventListener("click", function(event) {
                     event.preventDefault();
+                    // the action's own modal keeps the menu from closing by itself
+                    bootstrap.Dropdown.getOrCreateInstance(actions_toggle).hide();
                     run_action(action);
                 });
                 actions_menu.appendChild(el("li")).appendChild(link);
@@ -795,6 +807,26 @@ var FilterListPage = (function() {
             tbody.replaceChildren(row);
         }
 
+        // the header of the group whose first row on the page is rows[start]
+        function group_row(rows, start) {
+            const key = options.group.key(rows[start]);
+            let end = start + 1;
+            while (end < rows.length && options.group.key(rows[end]) === key) {
+                end += 1;
+            }
+            const row = el("tr", "filter-list-group");
+            const cell = el("td");
+            cell.colSpan = columns.length + (select ? 1 : 0);
+            const content = options.group.render(rows.slice(start, end));
+            if (content instanceof Node) {
+                cell.appendChild(content);
+            } else if (content !== null && content !== undefined) {
+                cell.textContent = String(content);
+            }
+            row.appendChild(cell);
+            return row;
+        }
+
         function render_rows(rows) {
             if (select) {
                 keep_selected(rows);
@@ -805,7 +837,10 @@ var FilterListPage = (function() {
                 return;
             }
             tbody.replaceChildren();
-            rows.forEach(function(data) {
+            rows.forEach(function(data, index) {
+                if (options.group && (index === 0 || options.group.key(rows[index - 1]) !== options.group.key(data))) {
+                    tbody.appendChild(group_row(rows, index));
+                }
                 const row = el("tr");
                 if (select) {
                     row.appendChild(select_cell(data));

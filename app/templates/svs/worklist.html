@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+{# The Worklist tab (docs/SVS_COVERAGE.md, *In the GUI*): a shell whose script, static/js/svs_worklist.js,
+   lists the worklist from the API named here, one group per signature. Rows are resolved with
+   svs:run_manage, which the API enforces. #}
+<div id="svs_worklist_page"
+     data-api="/api/v2/svs/worklist"
+     data-screen="{{ worklist_screen }}"
+     data-default-f='{{ svs_worklist_default_f() | tojson }}'
+     data-signature-url="{{ signature_url }}"
+     data-technique-url="{{ technique_url }}"
+     data-can-manage="{{ 'true' if has_permission('svs', 'run_manage') else 'false' }}"
+     data-tz="{{ current_user.timezone or 'UTC' }}">
+    <p class="text-muted small mb-2">
+        Each signature that a test measures, its technique tags against the techniques its tests measure. A tag no
+        test confirms is kept or removed; a removed tag stops counting toward coverage. Statuses are as of the last
+        coverage refresh. Times are UTC.
+    </p>
+    <div id="svs_worklist_message" class="alert d-none" role="status"></div>
+    <div id="svs_worklist_list"></div>
+</div>
+
+{{ saved_filter_modals() }}
+
+{% if has_permission('svs', 'run_manage') %}
+{% include "svs/_worklist_modal.html" %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_worklist.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

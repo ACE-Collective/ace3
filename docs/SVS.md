@@ -2,10 +2,10 @@
 
 > **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2
 > landed (PRs #658–#664 and the Samples card, 2026-10-07), phase 3 landed (PRs #668–#674 and the
-> Validations card, 2026-10-13), phase 4 was built on the `jd/svs` integration branch (PRs #683–#721,
-> 2026-10-15) for release to `main`. Parts 5 and 6 were added in review
-> rounds 8–10, the pre-implementation review folded in and the design reconciled with the v3.0.121
-> release on 2026-10-02.**
+> Validations card, 2026-10-13), and phases 4 and 5 were built on the `jd/svs` integration branch
+> (phase 4: PRs #683–#721, 2026-10-15; phase 5: PRs #725–#741, 2026-10-17) for release to `main`.
+> Parts 5 and 6 were added in review rounds 8–10, the pre-implementation review folded in and the
+> design reconciled with the v3.0.121 release on 2026-10-02.**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
@@ -717,8 +717,10 @@ test's technique. [ART-12]
 
 ## Part 4 — Coverage
 
-**Grain:** technique × environment, rolled up to parent techniques. Coverage is **global**, not per
-company. [COV-1]
+**Grain:** technique × platform, rolled up to parent techniques. The environment is the ATT&CK
+platform a run is on (`windows`, `linux`, `macos`, ...): every run has exactly one, and expectations
+are kept per platform (Part 3). Every ATT&CK platform keeps its rows; the screens open on windows,
+linux and macos. Coverage is **global**, not per company. [COV-1]
 
 **Where technique facts come from:** [D-17, ART-11, ART-16]
 
@@ -729,7 +731,8 @@ company. [COV-1]
 | signature → technique, **manual** | The existing `mitre_attack` YARA meta and `mitre:` hunt tags |
 
 - **Manual mappings count until resolved.** A signature's techniques are the union of measured and
-  manual. A manual mapping keeps counting until someone resolves it.
+  manual. A manual mapping keeps counting until someone resolves it *remove*. Tags on a disabled
+  signature or a YARA rule in QA mode don't count.
 - **When a tagged signature is measured**, it goes on a single **declared-vs-measured worklist**
   (once per signature) with three resolutions:
   - *tag confirmed*: automatic when measured and declared agree;
@@ -738,21 +741,30 @@ company. [COV-1]
 - **On day one every tagged signature is manual.** That is an honest starting picture: claimed,
   not measured.
 
-**States per technique:**
+**States per technique and platform:**
 
 | State | Meaning |
 |---|---|
-| **validated** | A test for it has expectations, and its latest Reviewed run hit all of them. |
+| **validated** | A test for it has expectations on the platform, and its latest Reviewed run there hit all of them. |
 | **failing** | The latest Reviewed run of a test for it had a *missing* expected signature. |
-| **stale** | Validated, but an expected signature's per-rule `content_hash`, or the test, has changed since. |
+| **stale** | Validated, but an expected signature's per-rule `content_hash`, or the test, has changed since; or something is expected that no Reviewed run has judged yet. |
 | **untested** | Atomics exist, but none has a Reviewed run with accepted expectations. |
 | **manual** | Covered only through manual mappings. |
 | **none** | No atomics and no mappings. |
+
+A row's state is the **worst** of what counts toward it, in this order: failing, stale, validated,
+manual, untested, none. A parent's state includes its sub-techniques' on the same platform; its *own
+state* leaves them out.
 
 *Failing* means a test of the technique missed an expected signature. It does not mean the
 technique is undetected; the drill-down shows which tests and signatures cover it. The ATT&CK
 release used for names and roll-up is pinned in config. Revoked or renamed techniques are mapped on
 upgrade.
+
+**Coverage is materialized.** `service_svs` recomputes the worklist, then coverage, into tables
+(`svs_technique_worklist`, `svs_coverage`) every `svs.coverage.refresh_interval_seconds`, writes only
+what changed, and files a daily snapshot, so the screens filter and page them like every other SVS
+list and reports read their history (`docs/SVS_COVERAGE.md`).
 
 **The ATT&CK catalog ships in the image.** [FR-14] Production ACE never fetches it from the
 internet. A compact extract per supported release is vendored in this repo at
@@ -858,6 +870,19 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
 - **The detail page**, per technique: its rows and its sub-techniques', the tests behind them with
   their latest reviewed runs, the measured and manual signatures, removed tests, and the days its
   state changed in the daily snapshots.
+
+### Worklist
+
+`/ace/svs/worklist` is Part 4's declared-vs-measured worklist, one row per signature × technique,
+grouped per signature (`docs/SVS_COVERAGE.md`, *In the GUI*).
+- **Columns:** technique; kind (*declared*, *undeclared*, *unknown*); status; whether the tag counts;
+  the resolution, with its reason, link, who and when.
+- **Default view, *Needs decision*:** tags no test confirms that nobody has resolved. *Remove pending*
+  and *Undeclared* are the other saved filters.
+- **Actions** (`svs:run_manage`): keep or remove a tag, with a reason and, for a removal, the pull
+  request; reopen a resolution; keep or remove the selected rows in bulk.
+- **The signature page:** every row of the signature, retired ones included, and the tests that
+  measure it on each technique.
 
 ### Debugging a run
 
@@ -1152,7 +1177,7 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 | **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
 | **3: YARA validation**. **Landed** (PRs #668–#674 and the Validations card); CI is wired into a signature repository by its operators (`docs/SVS_VALIDATION.md`) | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
 | **4: runs**. **Built** on the `jd/svs` integration branch (PRs #683–#721), released to `main` with `jd/svs` | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
-| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
+| **5: coverage**. **Built** on the `jd/svs` integration branch (PRs #725–#741), released to `main` with `jd/svs` | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
 `CHANGELOG.md`.
@@ -1255,8 +1280,9 @@ that came with the alert are kept. The GUI already couldn't open extracted files
 
 **★ ATT&CK coverage is measured first, declared second** (detection engineers, SOC leads; phase 5).
 - Coverage comes from test runs wherever a test exists.
-- Existing `mitre_attack` / `mitre:` tags count as manual mappings until a test measures the
-  signature. Then they go on a worklist: confirm, keep, or remove.
+- Existing `mitre_attack` / `mitre:` tags count as manual mappings, alongside whatever tests measure.
+  Once a test measures the signature, the tags no test confirms go on a worklist: keep, or remove. A
+  removed tag stops counting.
 - For signatures no test can exercise, the tag *is* the mapping, so keep those accurate.
 
 **SVS only knows about alerts created after it is deployed** (SOC leads, detection engineers).

@@ -2,11 +2,10 @@
 
 ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can be pulled through
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
-is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
-with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
-(phase 2), the YARA validations (phase 3), the test hosts, the Atomic Red Team test catalog and the
-runs with their event logs (phase 4), and ATT&CK coverage with its daily snapshots and the
-declared-vs-measured worklist (phase 5, so far).
+is the data dictionary for those endpoints, the joins between them, and worked examples. It covers
+alerts and detections (phases 0 and 1), the YARA samples (phase 2), the YARA validations (phase 3),
+the test hosts, the Atomic Red Team test catalog and the runs with their event logs (phase 4), and
+ATT&CK coverage with its daily snapshots and the declared-vs-measured worklist (phase 5).
 
 ## Conventions
 
@@ -1164,3 +1163,62 @@ while True:
 for rule_name, count in conflicted.most_common():
     print(rule_name, count)
 ```
+
+### Test pass rate per month
+
+Of the runs reviewed in the last year, count per month how many hit every expected signature. A run
+with nothing expected (`reviewed_expected` is 0) isn't judged. Missing includes possibly suppressed.
+`tests/aceapi_v2/svs/test_run_reads.py::test_worked_example_pass_rate_per_month` runs the same code
+against the API.
+
+```python
+import collections
+import requests
+
+ACE = "https://ace.example.com/api/v2"
+HEADERS = {"x-ace-auth": "<api key>"}
+
+months = collections.defaultdict(lambda: [0, 0])    # month -> [judged, passed]
+params = {"f": ["state:reviewed", "reviewed:-365d"], "limit": 1000}
+while True:
+    page = requests.get(f"{ACE}/svs/runs/", params=params, headers=HEADERS).json()
+    for run in page["data"]:
+        if run["reviewed_expected"]:
+            month = run["reviewed_at"][:7]
+            months[month][0] += 1
+            months[month][1] += run["reviewed_missing"] == 0
+    if page["next_cursor"] is None:
+        break
+    params["cursor"] = page["next_cursor"]
+
+for month, (judged, passed) in sorted(months.items()):
+    print(month, f"{passed}/{judged}", round(passed / judged, 3))
+```
+
+`reviewed_at` is a run's latest review, so a run reviewed again counts in the month of that review.
+Add `f=platform:linux` or `f=technique:T1059` to narrow it.
+
+### Technique coverage over time
+
+The share of techniques (sub-techniques left out) on the endpoint platforms that are validated, and
+failing, at the end of each month, from the daily snapshots.
+`tests/aceapi_v2/svs/test_coverage.py::test_worked_example_coverage_over_time` runs the same code
+against the API.
+
+```python
+import requests
+
+ACE = "https://ace.example.com/api/v2"
+HEADERS = {"x-ace-auth": "<api key>"}
+
+params = {"group": "month", "f": ["platform:windows,linux,macos", "level:technique"]}
+counts = requests.get(f"{ACE}/svs/coverage/history/counts", params=params, headers=HEADERS).json()
+for period in counts["data"]:
+    if period["rows"]:
+        states = period["states"]
+        print(period["period"], f"{states['validated'] / period['rows']:.0%} validated",
+              f"{states['failing'] / period['rows']:.0%} failing")
+```
+
+A month counts its last snapshot (*Coverage history*). Use `group=day` for a finer line, and add
+`f=date:-365d` to limit it to the last year.

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+{# A signature's worklist rows (docs/SVS_COVERAGE.md, *In the GUI*): a shell whose script,
+   static/js/svs_worklist.js, reads everything from the API named here. Rows are resolved with
+   svs:run_manage, which the API enforces. #}
+<div id="svs_worklist_signature_page"
+     data-api="/api/v2/svs/worklist"
+     data-signature="{{ signature_uuid }}"
+     data-worklist-f='{{ worklist_f | tojson }}'
+     data-worklist-url="{{ url_for('svs.worklist') }}"
+     data-signature-url="{{ signature_url }}"
+     data-technique-url="{{ technique_url }}"
+     data-test-url="{{ test_url }}"
+     data-can-manage="{{ 'true' if has_permission('svs', 'run_manage') else 'false' }}"
+     data-tz="{{ current_user.timezone or 'UTC' }}">
+    <p class="mb-2"><a href="{{ url_for('svs.worklist') }}"><span class="bi bi-arrow-left"></span> Worklist</a></p>
+    <div id="svs_worklist_message" class="alert d-none" role="status"></div>
+    <div id="svs_signature_loading" class="text-muted">Loading…</div>
+
+    <div id="svs_signature_body" class="d-none">
+        <div class="mb-3">
+            <h3 class="mb-0" id="svs_signature_title"></h3>
+            <div class="text-muted small" id="svs_signature_subtitle"></div>
+        </div>
+
+        <section class="mb-4" aria-labelledby="svs_signature_rows_title">
+            <h4 id="svs_signature_rows_title">Rows</h4>
+            <div id="svs_signature_rows"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_signature_measured_title">
+            <h4 id="svs_signature_measured_title">Measured on</h4>
+            <div id="svs_signature_measured"></div>
+        </section>
+    </div>
+</div>
+
+{% if has_permission('svs', 'run_manage') %}
+{% include "svs/_worklist_modal.html" %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_worklist.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}
