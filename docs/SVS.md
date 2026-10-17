@@ -846,6 +846,19 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
   observation window and removes a decision or an ignore; nothing else on the Tests tab changes
   anything.
 
+### Coverage
+
+`/ace/svs/coverage` is a **read-only** view of Part 4, one row per technique × platform
+(`docs/SVS_COVERAGE.md`, *In the GUI*).
+- **Columns:** technique; name; tactics; platform; state and own state; tests counted (validated,
+  failing, stale); measured and manual signatures; last reviewed; state changed.
+- **Default view, *Endpoint platforms*:** windows, linux and macos. Every other ATT&CK platform keeps
+  its rows, one filter away. A summary above the list counts the matching rows per platform and
+  state.
+- **The detail page**, per technique: its rows and its sub-techniques', the tests behind them with
+  their latest reviewed runs, the measured and manual signatures, removed tests, and the days its
+  state changed in the daily snapshots.
+
 ### Debugging a run
 
 **Test failures are debugged from ACE's logs, in the site's own log tooling.** SVS doesn't build

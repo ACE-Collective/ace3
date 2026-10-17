@@ -5,8 +5,8 @@ runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags
 carry (`docs/SVS.md`, Part 4).
 
 This document covers how coverage works in ACE and how to operate it. It grows with phase 5. Today
-it covers how coverage is computed, refreshed and snapshotted, the declared-vs-measured worklist, and
-the ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
+it covers how coverage is computed, refreshed and snapshotted, the declared-vs-measured worklist, the
+Coverage tab, and the ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
 Coverage is read through `/api/v2/svs/coverage` and the worklist through `/api/v2/svs/worklist`
 (`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage*, *Coverage history* and
 *Worklist*.
@@ -215,6 +215,45 @@ Each snapshot logs *svs coverage snapshot of … written* with `snapshot_date`, 
 
 `GET /api/v2/svs/coverage/history` lists the snapshot rows, and `…/history/counts?group=day|month`
 counts them per state: per day, or per month from each month's last snapshot.
+
+## In the GUI
+
+**SVS → Coverage** (`/ace/svs/coverage`, `svs:run_read`) lists the coverage rows, one per technique
+and platform, in technique then platform order, a parent before its sub-techniques. Like every SVS
+list it is a shell over the API (`/api/v2/svs/coverage`), with the coverage screen's filters, saved
+filters, share links and CSV/NDJSON export. It is read-only.
+
+- **Columns:** technique (deprecated, unknown and retired rows say so), name, tactics, platform (and
+  whether ATT&CK lists it for the technique), state (and the own state when the sub-techniques make it
+  differ), the tests counted with how many are validated, failing and stale, the measured and manual
+  signature counts, the latest review that counts, and when the state last changed. States are plain
+  text.
+- **Saved filters**, created for each user the first time they open the tab: *Endpoint platforms*
+  (windows, linux and macos; the default), *Gaps and failures* (failing, stale, untested and none on
+  those platforms) and *All*. None of them shows retired rows.
+- **The summary** above the list counts the rows the filters match per platform and state
+  (`/summary`). Each count opens the list on that platform and state. Under it: when coverage was last
+  computed and against which ATT&CK release, the tags that name a technique the release doesn't have
+  or aren't technique ids, and the error of a failed refresh.
+
+Each technique links to its page, `/ace/svs/coverage/<technique>` (`/{technique}` in the API). A
+revoked id opens its successor's page and says so. The page shows:
+- the technique: its parent, tactics, status in the release, and when its rows were computed; links to
+  its tests on the Tests tab and its runs on the Runs tab;
+- **By platform**: its rows, as in the list, retired ones included;
+- **Sub-techniques**: their rows, each linking to its own page;
+- **Tests**: each test of the technique and its sub-techniques on each of its platforms, with its
+  state there (as the Tests tab judges it), what it counts as, and its latest reviewed run;
+- **Measured signatures**: the signatures expected of those tests, and which (test, platform) pairs
+  expect each;
+- **Manual signatures**: the signatures whose tags name the technique or a sub-technique, and whether
+  each counts (a disabled signature or a YARA rule in QA mode doesn't);
+- **Removed tests**: the technique's tests that left their repositories;
+- **History**: from the daily snapshots of the last year (*Snapshots*), each platform's first state
+  and every day it changed, with CSV and NDJSON exports of those snapshot rows.
+
+The rows are as of the last refresh; the tests and signatures are read when the page loads, so right
+after a review the page can be ahead of its rows by up to one refresh interval.
 
 ## The ATT&CK release
 

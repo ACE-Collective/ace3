@@ -42,6 +42,9 @@
 //         },
 //         emptyText: "...",
 //         defaultF: ["needs_attention:true"],    // optional, see below
+//         onLoad(params),                // optional: called with {f, sort, desc, tz} each time the
+//                                        //   list loads from its first page, so a page can keep
+//                                        //   something of its own (a summary) on the same filters
 //     });
 //
 // The selection is the ticked rows that are still shown: a row that leaves the list (on another
@@ -855,6 +858,9 @@ var FilterListPage = (function() {
         function load_first_page() {
             state.cursors = [null];
             state.page = 0;
+            if (options.onLoad) {
+                options.onLoad(list_params());
+            }
             return load_page();
         }
 
