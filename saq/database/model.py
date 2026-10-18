@@ -2640,6 +2640,32 @@ class SVSCoverage(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSServiceLoop(Base):
+    """service_svs's loops (docs/SVS.md, Part 5, *Health*): one row per loop (the run timers, the
+    catalog and coverage refreshes, the validation workers), with when it last went round and when it
+    last failed, by the database clock, so `ace svs status` can tell a stopped service from a quiet
+    one. Only saq/svs/health.py writes this table."""
+
+    __tablename__ = 'svs_service_loops'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # saq.svs.health.Loop
+    name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    # the node the service runs on (the primary node)
+    node: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # when the service last started
+    started_at: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    # the last pass that went through, and the last one that failed (with why)
+    passed_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    failed_at: Mapped[Optional[datetime]] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class SVSCoverageState(Base):
     """The coverage refresh (docs/SVS_COVERAGE.md, *Refresh*): a single row (id 1) that a refresh
     locks for its whole transaction, so two never interleave, and what the last one did. Only

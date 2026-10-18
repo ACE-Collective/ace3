@@ -22,6 +22,7 @@ with it.
 
 import logging
 import threading
+import time
 from typing import Optional, Type
 
 from pydantic import Field, model_validator
@@ -39,6 +40,7 @@ from saq.svs.actions import retired_pairs
 from saq.svs.catalog import refresh_catalog
 from saq.svs.constants import COVERAGE_ACTOR
 from saq.svs.coverage import refresh_coverage
+from saq.svs.health import Loop, record_pass, record_start
 from saq.svs.runs import run_timers
 from saq.svs.validations import (
     Claim,
@@ -93,6 +95,7 @@ class ValidationWorker:
         self.thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._cancel: Optional[threading.Event] = None
+        self._recorded = 0.0
 
     def start(self):
         self.thread = threading.Thread(target=self.loop, name=self.name, daemon=True)
@@ -104,13 +107,23 @@ class ValidationWorker:
             if self._cancel is not None:
                 self._cancel.set()
 
+    def _alive(self, error: Optional[str] = None):
+        """Records that the worker is going round (saq.svs.health), at most once per heartbeat
+        interval unless it failed."""
+        if error is None and time.monotonic() - self._recorded < self.config.heartbeat_interval_seconds:
+            return
+        record_pass(Loop.VALIDATIONS, error)
+        self._recorded = time.monotonic()
+
     def loop(self):
         while not self.shutdown.is_set():
             ran = False
             try:
                 ran = self.run_once()
+                self._alive()
             except Exception as e:
                 log_loop_exception(e, "svs validation worker failed")
+                self._alive(str(e))
             finally:
                 remove_all_sessions()
 
@@ -152,6 +165,8 @@ class ValidationWorker:
                     lost.set()
                     cancel.set()
                     return
+                # a worker busy with a long validation is still going round
+                self._alive()
 
         keeper = threading.Thread(target=_keep_lease, name=f"{self.name}-lease", daemon=True)
         keeper.start()
@@ -204,8 +219,10 @@ class CatalogRefresher:
         try:
             # a failure of one repository is recorded on its row and logged by refresh_catalog
             refresh_catalog()
+            record_pass(Loop.CATALOG)
         except Exception as e:
             log_loop_exception(e, "svs catalog refresh failed")
+            record_pass(Loop.CATALOG, str(e))
         finally:
             remove_all_sessions()
 
@@ -230,8 +247,10 @@ class RunTimer:
         try:
             # a run that can't be moved is logged by run_timers and retried on the next pass
             run_timers()
+            record_pass(Loop.TIMERS)
         except Exception as e:
             log_loop_exception(e, "svs run timers failed")
+            record_pass(Loop.TIMERS, str(e))
         finally:
             remove_all_sessions()
 
@@ -256,8 +275,10 @@ class CoverageRefresher:
         try:
             # a failed refresh changes nothing and is recorded on svs_coverage_state
             refresh_coverage(COVERAGE_ACTOR)
+            record_pass(Loop.COVERAGE)
         except Exception as e:
             log_loop_exception(e, "svs coverage refresh failed")
+            record_pass(Loop.COVERAGE, str(e))
         finally:
             remove_all_sessions()
 
@@ -293,6 +314,7 @@ class SVSService(ACEServiceInterface):
                          "primary node only; this service stays idle")
             return
 
+        record_start(list(Loop))
         self.workers = self._workers()
         for worker in self.workers:
             worker.start()

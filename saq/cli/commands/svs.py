@@ -8,7 +8,9 @@ validations older than svs.yara.retention_days (daily cron). ``catalog refresh``
 Red Team catalog repositories (service_svs does it on its own) and ``catalog status`` prints them
 (docs/SVS_RUNS.md). ``coverage refresh`` recomputes ATT&CK coverage (service_svs does it on its own),
 ``coverage snapshot`` refreshes it and files the day's copy (daily from cron), and ``coverage status``
-prints the last refresh and the rows per state (docs/SVS_COVERAGE.md).
+prints the last refresh and the rows per state (docs/SVS_COVERAGE.md). ``status`` says whether
+service_svs is running and keeping up, and exits non-zero when it isn't (docs/SVS.md, Part 5,
+*Health*).
 """
 
 import json
@@ -22,6 +24,65 @@ from saq.cli.cli_main import get_cli_subparsers
 
 svs_parser = get_cli_subparsers().add_parser("svs", help="The Signature Validation System (docs/SVS.md).")
 svs_sp = svs_parser.add_subparsers(dest="svs_cmd")
+
+def _age(seconds) -> str:
+    if seconds is None:
+        return "never"
+    if seconds < 120:
+        return f"{seconds:.0f}s ago"
+    if seconds < 7200:
+        return f"{seconds / 60:.0f}m ago"
+    return f"{seconds / 3600:.1f}h ago"
+
+
+def cli_status(args):
+    """Print the health of service_svs: each loop's last pass against its interval, and what the
+    data shows (overdue runs, waiting and abandoned validations). Exits 1 when it is not healthy."""
+    from saq.svs.health import LoopState, service_health
+
+    health = service_health()
+    if args.json:
+        print(json.dumps({
+            "healthy": health.healthy, "problems": health.problems, "warnings": health.warnings,
+            "now": health.now.isoformat(),
+            "loops": [{"loop": loop.loop.value, "state": loop.state.value, "interval_seconds": loop.interval_seconds,
+                       "node": loop.node, "started_at": loop.started_at.isoformat() if loop.started_at else None,
+                       "passed_at": loop.passed_at.isoformat() if loop.passed_at else None,
+                       "age_seconds": loop.age_seconds,
+                       "failed_at": loop.failed_at.isoformat() if loop.failed_at else None, "error": loop.error}
+                      for loop in health.loops],
+            "overdue_runs": health.overdue_runs, "queued_validations": health.queued_validations,
+            "oldest_queued_seconds": health.oldest_queued_seconds,
+            "abandoned_validations": health.abandoned_validations,
+        }, indent=2))
+        return 0 if health.healthy else 1
+
+    print(f"service_svs: {'healthy' if health.healthy else 'NOT HEALTHY'}")
+    for loop in health.loops:
+        if loop.state == LoopState.IDLE:
+            detail = "nothing to do (no repositories configured)"
+        else:
+            detail = f"last pass {_age(loop.age_seconds)}, every {loop.interval_seconds:.0f}s"
+            if loop.node:
+                detail += f", on {loop.node}, started {loop.started_at}"
+            if loop.state == LoopState.FAILING:
+                detail += f"; failing: {loop.error}"
+        print(f"  {loop.loop.value:<12} {loop.state.value:<8} {detail}")
+    print(f"  runs past their observation window: {health.overdue_runs}")
+    print(f"  validations queued: {health.queued_validations}"
+          + (f" (oldest {_age(health.oldest_queued_seconds)})" if health.oldest_queued_seconds is not None else "")
+          + f", running with an expired lease: {health.abandoned_validations}")
+    for problem in health.problems:
+        print(f"problem: {problem}")
+    for warning in health.warnings:
+        print(f"warning: {warning}")
+    return 0 if health.healthy else 1
+
+
+status_parser = svs_sp.add_parser("status", help="Is service_svs running and keeping up? Exits 1 when not.")
+status_parser.add_argument("--json", action="store_true", default=False, help="Print it as JSON, for monitoring.")
+status_parser.set_defaults(func=cli_status)
+
 
 svs_yara_parser = svs_sp.add_parser("yara", help="YARA rule validation.")
 svs_yara_sp = svs_yara_parser.add_subparsers(dest="svs_yara_cmd")

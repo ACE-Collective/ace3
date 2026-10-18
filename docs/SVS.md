@@ -907,6 +907,39 @@ append-only row per:
 Each row records its actor and time. The run page renders it as a timeline, it holds the reason
 for a close, and it is the run's change feed (Part 6). [MGT-5]
 
+### Health
+
+Nothing in the data tells a stopped `service_svs` from a quiet one: runs simply stay `started` past
+their observation window and validations sit `queued`. So each of the service's loops (the run
+timers, the catalog refresh, the coverage refresh and the validation workers) records in
+`svs_service_loops` when it last went round and when it last failed, by the database clock
+(`saq/svs/health.py`). `ace svs status` judges each against its interval, next to what the data
+shows, and exits 1 when the service is not healthy, so a monitor can run it:
+
+```
+$ ace svs status
+service_svs: NOT HEALTHY
+  timers       stale    last pass 107s ago, every 10s, on ace, started 2026-10-18 14:56:58
+  catalog      stale    last pass 117s ago, every 30s, on ace, started 2026-10-18 14:56:58
+  ...
+  runs past their observation window: 0
+  validations queued: 0, running with an expired lease: 0
+problem: the timers loop last went round 107s ago (every 10s): service_svs looks stopped
+```
+
+| Loop state | Means |
+|---|---|
+| `ok` | It went round within three of its intervals (at least 60 seconds) |
+| `failing` | Its last pass failed; the error is shown |
+| `stale` | It hasn't gone round for three intervals: the service looks stopped |
+| `never` | It never ran: is `service_svs` running on the primary node? |
+| `idle` | Nothing to do: the catalog loop without `svs.catalog.repositories`, the validation workers without `svs.yara.repositories` |
+
+The service is also not healthy while a started run is more than three timer intervals past its
+observation window, or a running validation's lease has expired (its worker stopped). Validations
+queued for more than ten minutes are a warning only: one long validation keeps the rest waiting.
+`--json` prints the same as one object (`healthy`, `problems`, `warnings`, `loops`, …).
+
 ### Logging contract
 
 ACE's convention applies: the message text describes the event, and `extra={}` carries the fields.
