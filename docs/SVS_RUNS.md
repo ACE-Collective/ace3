@@ -159,8 +159,10 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
   Hosts on different platforms, or a test that supports more than one platform with no target's
   host saying which, are refused with 422, without an alert. Set the test hosts' `platform` and a
   launcher never meets the second case.
-- **`launcher`** names the launcher; **`batch_id`** is a label shared by runs registered together;
-  **`extra`** is any JSON object the launcher wants kept with the run, at most
+- **`launcher`** is required (422 without it): a name for the launcher, 1 to 256 characters, kept
+  with the run and in every log record of its calls. It is a label: any name is accepted, and it
+  grants nothing (the API key does). **`batch_id`** (optional) is a label shared by runs registered
+  together; **`extra`** (optional) is any JSON object the launcher wants kept with the run, at most
   `svs.runs.max_extra_bytes` (16 KiB) serialized. It is stored and shown on the run page.
 - A call that doesn't apply to the run's state (starting a run twice, `executed` before `start`)
   answers 409 with the run's current state. Each call, accepted or not, is in the run's event log
