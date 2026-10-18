@@ -195,6 +195,27 @@ class TestKeysetPaging:
         assert len(seen) == len(set(seen)) == 7
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sort", ["capture_count", "last_captured"])
+    async def test_a_sample_captured_again_between_pages_is_neither_skipped_nor_repeated(
+            self, client: AsyncClient, corpus, sort):
+        """Its sort value grows past the cursor; the listing counts the captures as they were when
+        its first page was read, as does an export, which pages the same way."""
+        params = {"sort": sort, "desc": "true"}
+        everything = await _get(client, **params, limit=100)
+        first = (await client.get("/svs/samples/", params={**params, "limit": 2})).json()
+        last = everything[-1]
+        for _ in range(3):
+            insert_capture(str(uuid.uuid4()), last["sha256"], last["rule_uuid"],
+                           created_at=datetime.now().replace(microsecond=0))
+
+        rest = await _all_pages(client, {**params, "cursor": first["next_cursor"]}, 2)
+        seen = first["data"] + rest
+        assert _keys(seen) == _keys(everything)
+        assert [row["capture_count"] for row in seen] == [row["capture_count"] for row in everything]
+        # a new listing counts them
+        assert max(row["capture_count"] for row in await _get(client, **params, limit=100)) >= 4
+
+    @pytest.mark.asyncio
     async def test_a_cursor_belongs_to_its_order(self, client: AsyncClient, corpus):
         cursor = (await client.get("/svs/samples/", params={"limit": 2, "sort": "rule"})).json()["next_cursor"]
         assert (await client.get("/svs/samples/", params={"cursor": cursor, "sort": "rule"})).status_code == 200

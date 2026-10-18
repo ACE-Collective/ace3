@@ -65,6 +65,7 @@ from saq.svs.samples import (
     get_sample,
     is_local,
     keyset_condition,
+    latest_capture_id,
     missing_by_rule,
     order_by,
     parse_json_column,
@@ -130,7 +131,9 @@ def validate_sample_key(sha256: str, rule_uuid: str) -> str:
 #
 # GET /svs/samples: the listing, paged by keyset on (sort value, sha256, rule_uuid), never by
 # offset. The statement is built once per request (relative dates resolve then) and each page runs
-# in its own thread.
+# in its own thread. The sort values (a capture count, the last capture) change as captures arrive,
+# so a listing counts only the captures that existed when its first page was read: their newest id
+# travels in the cursor, and a sample whose count grows mid-walk is neither skipped nor repeated.
 #
 
 @dataclass(frozen=True)
@@ -142,6 +145,8 @@ class SampleListing:
     statement: Select
     sort: SampleSort
     descending: bool
+    # the newest capture the listing counts (None: there were none)
+    through_capture_id: Optional[int] = None
 
 
 def _filter_entries(filter_params: list[str]) -> list[dict]:
@@ -156,13 +161,22 @@ def _filter_entries(filter_params: list[str]) -> list[dict]:
         raise InvalidListingRequest(e.errors(include_url=False, include_context=False))
 
 
+def _cursor_snapshot(payload: dict) -> Optional[int]:
+    """The newest capture a cursor's listing counts; None for a cursor from before there was one."""
+    value = payload.get("h")
+    return int(value) if value is not None else None
+
+
 def prepare_sample_listing(
-    filter_params: list[str], *, sort: SampleSort, descending: bool, changed_since: datetime | None, tz
+    filter_params: list[str], *, sort: SampleSort, descending: bool, changed_since: datetime | None, tz,
+    cursor: str | None = None,
 ) -> SampleListing:
-    """Builds the listing statement from share-link filters (`f=`) of the samples screen. Raises
-    InvalidListingRequest."""
+    """Builds the listing statement from share-link filters (`f=`) of the samples screen, over the
+    captures the cursor's listing counted, or those that exist now for a first page (or an export).
+    Raises InvalidListingRequest, InvalidCursor."""
     entries = _filter_entries(filter_params)
-    samples = samples_subquery()
+    through = decode_cursor(cursor, _cursor_snapshot) if cursor is not None else latest_capture_id()
+    samples = samples_subquery(through)
     statement = select(samples)
     for condition in sample_filter_conditions(samples, entries, tz):
         statement = statement.where(condition)
@@ -170,11 +184,12 @@ def prepare_sample_listing(
     if changed_since is not None:
         statement = statement.where(changed_since_condition(samples, changed_since))
 
-    return SampleListing(samples=samples, statement=statement, sort=sort, descending=descending)
+    return SampleListing(samples=samples, statement=statement, sort=sort, descending=descending,
+                         through_capture_id=through)
 
 
 def encode_listing_cursor(listing: SampleListing, key: list) -> str:
-    return encode_cursor(o=listing.sort.value, d=listing.descending, k=key)
+    return encode_cursor(o=listing.sort.value, d=listing.descending, k=key, h=listing.through_capture_id)
 
 
 def decode_listing_cursor(cursor: str, listing: SampleListing) -> list:
