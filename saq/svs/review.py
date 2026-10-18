@@ -142,7 +142,9 @@ def take_ownership(run_uuids: list[str], user_id: int, actor: str,
 
 def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int], now: datetime) -> None:
     """Checks that the person may act on the run, taking it from its owner when they confirmed it.
-    Commits. Raises UnknownRun, RunOwned."""
+    Commits only a take; otherwise the run's row stays locked until the action that follows commits
+    or rolls back, so nobody can take the run between this check and the action. Raises UnknownRun,
+    RunOwned."""
     owners = _owners([run_uuid])
     if run_uuid not in owners:
         get_db().rollback()
@@ -155,7 +157,8 @@ def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
         raise RunOwned(run_uuid, check.skipped[run_uuid], owner.user_id)
     if run_uuid in check.reassigned:
         _take(run_uuid, owner, user_id, actor, now)
-    get_db().commit()
+        # taken from its owner, it is the person's now: anyone else must confirm taking it from them
+        get_db().commit()
 
 
 def _bulk(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optional[dict[str, int]],
