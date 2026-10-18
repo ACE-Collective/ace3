@@ -6,6 +6,7 @@ import uuid
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import update
 
 from saq.alert_routing import AlertRouter, RouteDecision, RouteStage, register_alert_router
 from saq.analysis.root import RootAnalysis, load_root
@@ -13,6 +14,7 @@ from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, QUEUE_DEFAULT
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
 from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT, get_last_queue_change, move_alert_to_queue
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
@@ -157,6 +159,27 @@ class TestMoveAlertToQueue:
         alert = ALERT(root)
         move_alert_to_queue(alert, "triage", "moved", root=root)
         assert root.queue == "triage"
+
+    @pytest.mark.parametrize("change, moved", [
+        ({"owner_id": "unittest"}, False),
+        ({"disposition": DISPOSITION_FALSE_POSITIVE}, False),
+        ({"owner_id": "ace"}, True),
+    ])
+    def test_a_conditional_move_judges_the_row_as_it_is_written(self, submitted_payloads, change, moved):
+        """The caller read the alert unowned and OPEN; someone changed it since."""
+        alert = ALERT(_saved_root())
+        values = dict(change)
+        if "owner_id" in values:
+            values["owner_id"] = get_db().query(User.id).filter(User.username == values["owner_id"]).scalar()
+        with private_transaction() as session:
+            session.execute(update(Alert).where(Alert.id == alert.id).values(**values))
+
+        automation = get_config().global_settings.automation_user_id
+        assert move_alert_to_queue(alert, "svs", "attributed", router="svs_marker",
+                                   open_unless_owned_by_others={automation}) is moved
+        assert _stored_queue(alert.uuid) == ("svs" if moved else QUEUE_DEFAULT)
+        assert len(_changes(alert.id)) == int(moved)
+        assert submitted_payloads == ([alert.uuid] if moved else [])
 
     @pytest.mark.parametrize("queue", ["", "q" * 65])
     def test_a_bad_queue_is_refused(self, queue):

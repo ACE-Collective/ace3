@@ -4,13 +4,16 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from saq.alert_routing import RouteDecision, RouteStage, route_alert
 from saq.analysis.root import RootAnalysis
 from saq.constants import (
     ANALYSIS_MODE_DISPOSITIONED,
     DISPOSITION_IGNORE,
+    DISPOSITION_OPEN,
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
     REVIEW_COMMENT_PREFIX,
@@ -267,8 +270,12 @@ def move_alert_to_queue(
     *,
     router: str | None = None,
     root: RootAnalysis | None = None,
+    open_unless_owned_by_others: Collection[int] | None = None,
 ) -> bool:
-    """Moves an existing alert to another queue. Returns False when it is already there.
+    """Moves an existing alert to another queue. Returns False when it is already there, or when
+    open_unless_owned_by_others is given and the alert is no longer OPEN, or is owned by someone
+    not in it: judged by the row as it is updated, so an analyst who takes or dispositions the
+    alert at the same moment keeps it where they took it.
 
     Updates the passed Alert in its own session (so a caller holding it, like the engine, never
     writes the old queue back), rotates its version, records the move in alert_queue_changes
@@ -286,15 +293,25 @@ def move_alert_to_queue(
 
     from_queue = alert.queue
     session = Session.object_session(alert) or get_db()
-    alert.queue = queue
-    alert.version = new_alert_version()
+    version = new_alert_version()
+    conditions = [Alert.id == alert.id, Alert.queue == from_queue]
+    if open_unless_owned_by_others is not None:
+        conditions += [Alert.disposition == DISPOSITION_OPEN,
+                       or_(Alert.owner_id.is_(None), Alert.owner_id.in_(list(open_unless_owned_by_others)))]
+    moved = session.execute(update(Alert).where(*conditions).values(queue=queue, version=version)
+                            .execution_options(synchronize_session=False)).rowcount == 1
+    if not moved:
+        return False
+
+    # what the row now holds, so the caller's Alert never writes the old queue back
+    set_committed_value(alert, "queue", queue)
+    set_committed_value(alert, "version", version)
     if root is not None:
         root.queue = queue
 
     session.add(AlertQueueChange(
         alert_id=alert.id, from_queue=from_queue, to_queue=queue, reason=reason,
         router=router, actor_user_id=actor_user_id))
-    session.add(alert)
     session.commit()
 
     submit_payload_task(alert.uuid)

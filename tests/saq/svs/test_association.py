@@ -35,6 +35,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT, set_dispositions
+from saq.database.util.user_management import add_user
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.execution_context import EngineExecutionContext
@@ -171,6 +172,21 @@ class TestAssociate:
     def test_a_dispositioned_alert_is_not_moved(self, run, user_id):
         root = _alert(host="srv-01")
         set_dispositions([root.uuid], DISPOSITION_FALSE_POSITIVE, user_id)
+        result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
+
+    def test_an_alert_taken_meanwhile_is_not_moved(self, run, user_id, monkeypatch):
+        """associate reads the alert, then moves it: an analyst who takes it in between keeps it."""
+        root = _alert(host="srv-01")
+        analyst = add_user("bob", "bob@localhost", "Bob", "bob").id
+        movable = association._movable
+
+        def taken_first(alert, user):
+            with private_transaction() as session:
+                session.execute(update(Alert).where(Alert.uuid == root.uuid).values(owner_id=analyst))
+            return movable(alert, user)
+
+        monkeypatch.setattr(association, "_movable", taken_first)
         result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
         assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
 

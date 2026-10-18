@@ -138,9 +138,12 @@ def _movable(alert: _Alert, user_id: int) -> bool:
 
 
 def _move(alert: _Alert, queue: str, reason: str, user_id: int) -> bool:
+    """Moves the alert while _movable still holds for it when the row is written: an analyst may
+    have taken it since it was read."""
     db = get_db()
     row = db.get(Alert, alert.id)
-    return move_alert_to_queue(row, queue, reason, actor_user_id=user_id, router=SVS_MANUAL_ROUTER)
+    return move_alert_to_queue(row, queue, reason, actor_user_id=user_id, router=SVS_MANUAL_ROUTER,
+                               open_unless_owned_by_others={get_config().global_settings.automation_user_id, user_id})
 
 
 def _changed(run: SVSRun, session) -> None:

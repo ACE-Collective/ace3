@@ -552,7 +552,11 @@ class AnalysisOrchestrator:
                 extra={"alert_uuid": root.uuid, "queue": decision.queue, "router": decision.router})
             return
 
-        move_alert_to_queue(alert, decision.queue, decision.reason, router=decision.router, root=root)
+        # checked again as the row is written: an analyst may take the alert while it is analyzed
+        if not move_alert_to_queue(alert, decision.queue, decision.reason, router=decision.router, root=root,
+                                   open_unless_owned_by_others={get_config().global_settings.automation_user_id}):
+            logging.info(f"not moving alert {root} to queue {decision.queue}: it was taken or dispositioned meanwhile",
+                         extra={"alert_uuid": root.uuid, "queue": decision.queue, "router": decision.router})
 
     def _handle_cleanup(self, execution_context: EngineExecutionContext, has_outstanding_work: bool):
         """Handle cleanup if the analysis mode supports it."""
