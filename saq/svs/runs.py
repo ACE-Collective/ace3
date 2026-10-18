@@ -35,6 +35,7 @@ from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget
 from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception, report_exception
 from saq.svs.alert_status import fully_attributed_condition
@@ -218,19 +219,30 @@ def _closable_alerts(*conditions) -> list[tuple[int, str]]:
     return [(run_id, alert_uuid) for run_id, alert_uuid in get_db().execute(statement)]
 
 
+def _still_fully_attributed(alert_uuids: list[str]) -> set[str]:
+    """Those of the alerts whose every detection is still attributed to a run. A private transaction,
+    so it reads what is committed now rather than what the caller's transaction saw when it chose
+    the alerts."""
+    with private_transaction() as session:
+        return set(session.execute(
+            select(Alert.uuid).where(Alert.uuid.in_(alert_uuids), fully_attributed_condition())).scalars())
+
+
 def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *, comment: Optional[str] = None,
                   reviewed: bool = False) -> int:
     """Gives the alerts SIMULATED, through the disposition writer analysts use, as the automation
-    user. An alert dispositioned or taken by an analyst in the meantime is left alone."""
+    user. An alert dispositioned or taken by an analyst in the meantime is left alone, and so is
+    one no longer fully attributed: checked again under the alert's row lock, which disassociating
+    takes too, so an alert disassociated while its run closes is never frozen without a run."""
     if not alert_uuids:
         return 0
 
     result = set_dispositions(
         alert_uuids, DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
         user_comment=comment or f"closed with SVS test run {run.uuid}", system=True,
-        expected_dispositions={DISPOSITION_OPEN})
+        expected_dispositions={DISPOSITION_OPEN}, eligible=_still_fully_attributed)
     closed = result.permitted
-    left_alone = sorted(set(result.skipped) | set(result.unexpected))
+    left_alone = sorted(set(result.skipped) | set(result.unexpected) | set(result.ineligible))
     if closed:
         get_db().add(new_run_event(run.id, RunEventKind.ALERTS_CLOSED, actor, details={
             "alerts": closed, "disposition": DISPOSITION_SIMULATED, "late": late, "reviewed": reviewed}))

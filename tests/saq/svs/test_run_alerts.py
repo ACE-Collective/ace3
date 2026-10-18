@@ -24,7 +24,7 @@ from saq.database.model import Alert, Comment, SVSAttribution, SVSRun, SVSRunEve
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, set_dispositions
 from saq.signatures.builtin import GENERIC
-from saq.svs import runs
+from saq.svs import association, runs
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.run_filters import needs_attention_condition, open_alerts_condition
@@ -170,6 +170,24 @@ class TestClosingARun:
         monkeypatch.setattr(runs, "_closable_alerts", analyst_first)
         _close(run)
         assert _alert_row(alert_uuid).disposition == DISPOSITION_FALSE_POSITIVE
+        assert _events(run.uuid, RunEventKind.ALERTS_CLOSED) == []
+
+    def test_an_alert_disassociated_meanwhile_stays_open(self, run, monkeypatch):
+        """Closing chooses the fully attributed alerts, then checks again under the row lock: an
+        alert a person disassociated in between is not frozen without a run."""
+        alert_uuid = _alert(marker=run.marker)
+        chosen = runs._closable_alerts(SVSAttribution.run_id == run.id)
+        user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+
+        def disassociated_first(*conditions):
+            # the timers' late-alert sweep chooses again after the close
+            if not _events(run.uuid, RunEventKind.DISASSOCIATED):
+                association.disassociate(run.uuid, alert_uuid, user_id, "unittest")
+            return chosen
+
+        monkeypatch.setattr(runs, "_closable_alerts", disassociated_first)
+        _close(run)
+        assert _alert_row(alert_uuid).disposition == DISPOSITION_OPEN
         assert _events(run.uuid, RunEventKind.ALERTS_CLOSED) == []
 
     def test_a_failure_never_undoes_the_close(self, run, monkeypatch):
