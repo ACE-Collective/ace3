@@ -504,7 +504,9 @@ READS = ["/svs/runs/", "/svs/runs/export/ndjson", "/svs/runs/export/csv", "/svs/
 @pytest.mark.asyncio
 async def test_worked_example_pass_rate_per_month(client: AsyncClient, test_user):
     """docs/SVS_API.md, *Test pass rate per month*, run against the API."""
-    now = datetime.now()
+    # svs_runs times are stored to the second, rounded half up: a run reviewed at the exact time
+    # could be stored after the request's now, which ends the reviewed:-365d range
+    now = datetime.now().replace(microsecond=0)
     last_month = (now.replace(day=1) - timedelta(days=1)).replace(day=15, hour=12)
 
     def reviewed(at: datetime, *statuses: str) -> None:
