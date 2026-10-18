@@ -357,7 +357,7 @@ def run_replay(repository: str, base_sha: str, head_sha: str, *, branch: Optiona
         _check_cancel(cancel)
         try:
             with mirror.lock():
-                mirror.ensure([branch or repo_config.branch, repo_config.branch])
+                mirror.ensure([repo_config.branch], optional=[branch] if branch else [])
                 resolved = {BASE: _resolve(mirror, base_sha), HEAD: _resolve(mirror, head_sha)}
                 for side in (BASE, HEAD):
                     trees[side] = os.path.join(workdir, side, "tree")

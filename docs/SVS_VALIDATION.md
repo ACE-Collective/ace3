@@ -159,9 +159,11 @@ catalog current (`docs/SVS_RUNS.md`).
 
 1. **Fetch.** SVS keeps its own bare mirror of the repository under `svs.yara.mirror_dir`
    (`saq/svs/yara/repository.py`). It is never the checkout the yara service loads, so a validation
-   cannot change what production scans. The mirror fetches the head commit's branch and the
-   repository's configured branch. A commit no fetched branch contains any more (a rebased PR) is
-   fetched by id, which most servers allow for a reachable commit. Only one validation fetches a
+   cannot change what production scans. The mirror fetches the repository's configured branch,
+   which must exist, and then the head commit's branch on its own: a branch the remote doesn't have
+   (a pull request's branch deleted on merge, or one that exists only in a fork) is logged and
+   skipped. A commit no fetched branch contains (a rebased PR, or such a branch) is fetched by id,
+   which most servers allow for a reachable commit. Only one validation fetches a
    given mirror at a time.
 2. **Export.** Each commit's tree is unpacked with `git archive` into a private working directory
    under `svs.yara.work_dir`. Unpacking refuses absolute paths, paths that leave the directory,

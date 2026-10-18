@@ -74,6 +74,24 @@ def test_a_commit_no_branch_contains_is_fetched_by_id(rule_repo, tmp_path):
 
 
 @pytest.mark.unit
+def test_an_optional_branch_missing_from_the_remote_is_skipped(rule_repo, tmp_path, caplog):
+    """A pull request's branch deleted on merge, or one only a fork has: the target branch is still
+    fetched, and nothing fails."""
+    merged = rule_repo.commit({"a.yar": "rule a { condition: false }\n"})
+    feature = rule_repo.commit({"b.yar": "rule b { condition: false }\n"}, branch="feature")
+
+    mirror = _mirror(rule_repo, tmp_path)
+    mirror.ensure(["main"], optional=["merged-and-deleted", "feature"])
+    assert mirror.resolve(merged) == merged
+    assert mirror.resolve(feature) == feature
+    assert any("unable to fetch merged-and-deleted" in r.getMessage() for r in caplog.records)
+
+    # the target branch itself is required
+    with pytest.raises(RepositoryError):
+        mirror.ensure(["no-such-target"])
+
+
+@pytest.mark.unit
 def test_an_escaping_symlink_is_skipped_and_recorded(rule_repo, tmp_path):
     sha = rule_repo.commit(
         {"yara/acme/a.yar": "rule a { condition: false }\n"},
