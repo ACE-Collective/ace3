@@ -83,10 +83,10 @@ def _safe_rmtree(path: str) -> None:
 
 
 async def _prepare_listing(f: list[str], sort: SampleSort, desc: bool, changed_since: datetime | None,
-                           tz: str) -> service.SampleListing:
+                           tz: str, cursor: str | None = None) -> service.SampleListing:
     return await run_listing(
         service.prepare_sample_listing, f, sort=sort, descending=desc, changed_since=changed_since,
-        tz=parse_timezone(tz))
+        tz=parse_timezone(tz), cursor=cursor)
 
 
 @router.get("/", response_model=SampleListPage)
@@ -105,7 +105,7 @@ async def list_samples(
     Pages are keyset pages in the requested order: follow next_cursor, with the same filters and
     sort, until it is null.
     """
-    listing = await _prepare_listing(f, sort, desc, changed_since, tz)
+    listing = await _prepare_listing(f, sort, desc, changed_since, tz, cursor)
     rows, next_cursor = await run_listing(service.fetch_sample_page, listing, cursor, limit)
     return SampleListPage(data=rows, next_cursor=next_cursor)
 

@@ -211,7 +211,10 @@ changes can be tested against it (`docs/SVS.md`, Part 2; `docs/SVS_SAMPLES.md`).
 
 The listing takes `sort` (`last_captured`, the default, `first_captured`, `capture_count`, `rule`,
 `label` or `sha256`) and `desc` (default `true`). A cursor belongs to its sort and direction; using
-it with another is a 400.
+it with another is a 400. A listing, and an export, count the captures that existed when its first
+page was read: the cursor carries the newest one, so a sample captured again mid-walk keeps its place
+(and its count as of then) instead of moving past the cursor and being skipped; a new listing counts
+the new captures. A `label` sort can still move a sample relabeled mid-walk.
 
 **Downloads** are zips encrypted with the password `infected`, as for YARA QA results. Each file is
 in a zip once, under `<sha256>/`, next to a `match-<capture id>.json` per capture; `manifest.json`
