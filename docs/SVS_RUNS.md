@@ -440,6 +440,17 @@ which every marker reaches. A marker found only inside one attachment attributes
 detections and the root's, and leaves a detection on an unrelated URL of the same email
 unattributed. That alert is *partially* attributed and stays in its queue.
 
+Siblings are not on each other's branch, and that includes a process's command line and the file it
+dropped. When a hunt puts the marker on a `command_line` observable and a YARA rule fires on a
+`file` observable next to it (both children of the root, say), the marker reaches neither the
+other node nor its detection. If the marker is the only one in the alert, the alert gets no status
+at all: it is not a mismatch, it has no banner, and it stays in its queue. So a launcher that puts
+the marker only in the command line should expect file detections to be attributed only when:
+
+- the file is found beneath the command line in the tree;
+- or the marker also shows in the file, in the alert's details, or in the detection itself (its
+  description or details, which is where a hunt's query results usually carry it).
+
 ### Without a marker: context
 
 An alert with no marker at all is attributed by **context** when exactly one run could have caused
