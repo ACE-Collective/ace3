@@ -5,6 +5,7 @@ import logging
 import os
 import time
 from argparse import Namespace
+from datetime import datetime
 
 import pytest
 import yaml
@@ -224,6 +225,50 @@ def test_changes_removals_and_returns(checkout):
 
 
 @pytest.mark.integration
+def test_a_repository_taken_out_of_the_config_is_retired(checkout, monkeypatch, caplog):
+    checkout.commit({"atomics/T1003/T1003.yaml": _atomic("T1003", "OS Credential Dumping", _test("Dump", GUID_A), _test("Keep", GUID_B))})
+    refresh_catalog()
+
+    monkeypatch.setattr(get_config().svs.catalog, "repositories", [])
+    with caplog.at_level(logging.WARNING):
+        results = refresh_catalog()
+
+    assert [(r.repository, r.retired, r.removed, r.error) for r in results] == [(REPOSITORY, True, 2, None)]
+    # its tests keep their rows, so their runs keep their test
+    assert all(test.removed_at is not None for test in _tests().values())
+    repository = _repository()
+    assert repository.test_count == 0 and repository.error == catalog.RETIRED_ERROR
+    retired = [r for r in caplog.records if "is no longer in svs.catalog.repositories" in r.getMessage()]
+    assert retired[0].levelno == logging.WARNING and retired[0].removed == 2
+
+    # nothing is left to retire on the next refresh
+    assert refresh_catalog() == []
+
+    # listed again, it is read again although its commit did not change
+    monkeypatch.setattr(get_config().svs.catalog, "repositories", [REPOSITORY])
+    assert refresh_catalog()[0].refreshed
+    assert all(test.removed_at is None for test in _tests().values())
+    assert _repository().error is None
+
+
+@pytest.mark.integration
+def test_retiring_leaves_the_configured_repositories_alone(checkout):
+    checkout.commit({"atomics/T1003/T1003.yaml": _atomic("T1003", "OS Credential Dumping", _test("Dump", GUID_A))})
+    db = get_db()
+    # a test of a repository that was never configured here, with no repository row
+    db.add(SVSCatalogTest(guid=GUID_C, repository="hand_made", technique="T1105", name="Copy", platforms="[]",
+                          test="{}", content_hash="0" * 64, commit="1" * 40, path="atomics/T1105/T1105.yaml",
+                          first_seen_at=datetime.now()))
+    db.commit()
+
+    results = refresh_catalog()
+
+    assert [(r.repository, r.retired, r.removed) for r in results] == [(REPOSITORY, False, 0), ("hand_made", True, 1)]
+    tests = _tests()
+    assert tests[GUID_A].removed_at is None and tests[GUID_C].removed_at is not None
+
+
+@pytest.mark.integration
 def test_a_guid_of_another_repository_is_not_taken(checkout, tmp_path, monkeypatch):
     other = Checkout(str(tmp_path / "custom-atomics"))
     get_config().add_git_repo_config("custom_atomics", GitRepoConfig(
@@ -367,6 +412,19 @@ def test_cli_refresh_and_status(checkout, capsys):
 
     assert cli_catalog_status(Namespace()) == 0
     assert f"{REPOSITORY}: 1 tests at {commit[:12]}" in capsys.readouterr().out
+
+
+@pytest.mark.integration
+def test_cli_refresh_reports_a_retired_repository(checkout, capsys, monkeypatch):
+    commit = checkout.commit({"atomics/T1003/T1003.yaml": _atomic("T1003", "OS Credential Dumping", _test("Dump", GUID_A))})
+    refresh_catalog()
+    monkeypatch.setattr(get_config().svs.catalog, "repositories", [])
+
+    assert cli_catalog_refresh(Namespace(repository=None, force=False)) == 0
+    assert f"{REPOSITORY}: no longer in svs.catalog.repositories, 1 tests removed" in capsys.readouterr().out
+
+    assert cli_catalog_status(Namespace()) == 0
+    assert capsys.readouterr().out.startswith(f"{REPOSITORY} ({catalog.RETIRED_ERROR}): 0 tests at {commit[:12]}")
 
 
 @pytest.mark.integration

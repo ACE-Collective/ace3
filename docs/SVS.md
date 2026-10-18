@@ -714,6 +714,8 @@ test's technique. [ART-12]
 - Custom repositories follow the ART schema and must carry `auto_generated_guid`. A test without
   one is skipped with a warning.
 - A GUID that disappears from the catalog keeps its run history.
+- A repository taken out of the configuration has its tests removed the same way, since nothing
+  reads it any more.
 
 ## Part 4 — Coverage
 

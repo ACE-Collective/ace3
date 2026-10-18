@@ -71,6 +71,12 @@ and to know its ATT&CK technique.
 - **A repository that can't be read** (no `git_repo_` section, no checkout yet, a broken file system)
   keeps its tests; the error is logged at ERROR, kept on the repository's row and shown by
   `ace svs catalog status`. The next successful read clears it.
+- **A repository taken out of `svs.catalog.repositories`** is no longer read, so the next refresh
+  removes its tests (`removed_at` set, as for a test that disappears; their runs keep them) and logs
+  a WARNING naming it and the number of tests removed. Its row keeps that as its error, so
+  `ace svs catalog status` shows it and, if it is listed again, the next refresh reads it again
+  whatever its commit and its tests come back. So a misspelled name retires the real repository's
+  tests until the name is fixed: check for that WARNING after editing the list.
 
 ```yaml
 git_repo_atomic_red_team:

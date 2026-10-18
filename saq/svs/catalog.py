@@ -9,7 +9,8 @@ keeps its checkout at local_path up to date, and service_svs reads `atomics/T*/T
 checkout into svs_catalog_tests whenever its commit changes (refresh_catalog). A test without an
 `auto_generated_guid` is skipped with a warning, and a GUID already taken by another test (in this
 repository or another) is skipped too: the first one read keeps it. A test that disappears keeps
-its row, with removed_at set, so its runs keep their test.
+its row, with removed_at set, so its runs keep their test. So does every test of a repository taken
+out of svs.catalog.repositories: nothing reads it any more, so its tests can't stay in the catalog.
 
 A refresh locks its repository's row while it writes, so two nodes never interleave. When the
 checkout's commit moves while the files are read (service_git pulled), nothing is stored and the
@@ -171,6 +172,8 @@ class RefreshResult:
     removed: int = 0
     skipped: list[tuple[str, Optional[str], str]] = field(default_factory=list)
     error: Optional[str] = None
+    # the repository is no longer in svs.catalog.repositories and its tests were removed
+    retired: bool = False
 
 
 def _checkout(repository: str) -> str:
@@ -328,9 +331,48 @@ def refresh_repository(repository: str, *, force: bool = False) -> RefreshResult
     return result
 
 
+RETIRED_ERROR = "no longer in svs.catalog.repositories; its tests were removed"
+
+
+def retire_repository(repository: str) -> RefreshResult:
+    """Removes the tests of a repository that is no longer in svs.catalog.repositories. They keep
+    their rows and runs, as a test that disappears does. The error on its row makes the next refresh
+    read it again if it is listed again, whatever its commit."""
+    result = RefreshResult(repository=repository, retired=True)
+    db = get_db()
+    now = datetime.now()
+    try:
+        row = _lock_repository(repository)
+        result.removed = db.query(SVSCatalogTest).filter(
+            SVSCatalogTest.repository == repository,
+            SVSCatalogTest.removed_at.is_(None)).update({SVSCatalogTest.removed_at: now}, synchronize_session=False)
+        row.test_count = 0
+        row.error = RETIRED_ERROR
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    logging.warning("svs catalog repository %s is no longer in svs.catalog.repositories: %d tests removed",
+                    repository, result.removed, extra={"repository": repository, "removed": result.removed})
+    return result
+
+
 def refresh_catalog(*, force: bool = False) -> list[RefreshResult]:
-    """Refreshes every repository in svs.catalog.repositories."""
-    return [refresh_repository(repository, force=force) for repository in get_config().svs.catalog.repositories]
+    """Refreshes every repository in svs.catalog.repositories, and retires every other repository
+    that still has tests in the catalog."""
+    configured = get_config().svs.catalog.repositories
+    results = [refresh_repository(repository, force=force) for repository in configured]
+    unconfigured = [repository for (repository,) in get_db().query(SVSCatalogTest.repository).filter(
+        SVSCatalogTest.removed_at.is_(None), SVSCatalogTest.repository.notin_(configured)).distinct()]
+    for repository in sorted(unconfigured):
+        try:
+            results.append(retire_repository(repository))
+        except Exception as e:
+            logging.error("unable to retire the svs catalog repository %s: %s", repository, e,
+                          extra={"repository": repository}, exc_info=True)
+            results.append(RefreshResult(repository=repository, retired=True, error=f"retire failed: {e}"))
+    return results
 
 
 def supported_platforms(test: SVSCatalogTest) -> list[str]:
