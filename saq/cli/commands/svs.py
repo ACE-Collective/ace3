@@ -215,6 +215,8 @@ def cli_catalog_refresh(args):
         if result.error:
             print(f"{result.repository}: {result.error}")
             status = 1
+        elif result.retired:
+            print(f"{result.repository}: no longer in svs.catalog.repositories, {result.removed} tests removed")
         elif result.refreshed:
             print(f"{result.repository} @ {_short(result.commit)}: {result.tests} tests ({result.added} added, "
                   f"{result.changed} changed, {result.removed} removed, {len(result.skipped)} skipped)")
@@ -240,6 +242,7 @@ def cli_catalog_status(args):
     from saq.configuration.config import get_config
     from saq.database.model import SVSCatalogRepository, SVSCatalogTest
     from saq.database.pool import get_db
+    from saq.svs.catalog import RETIRED_ERROR
 
     configured = get_config().svs.catalog.repositories
     rows = {row.name: row for row in get_db().query(SVSCatalogRepository)}
@@ -248,13 +251,16 @@ def cli_catalog_status(args):
     for name in sorted(set(configured) | set(rows)):
         row = rows.get(name)
         state = "" if name in configured else " (no longer in svs.catalog.repositories)"
+        error = row.error if row is not None else None
+        if error == RETIRED_ERROR:
+            state, error = f" ({RETIRED_ERROR})", None
         if row is None or row.refreshed_at is None:
-            print(f"{name}{state}: never read" + (f"; last error: {row.error}" if row is not None and row.error else ""))
+            print(f"{name}{state}: never read" + (f"; last error: {error}" if error else ""))
             continue
 
         print(f"{name}{state}: {row.test_count} tests at {_short(row.commit)}, read {row.refreshed_at}, "
               f"{row.skipped_count} skipped, {removed.get(name, 0)} removed since"
-              + (f"; last error: {row.error}" if row.error else ""))
+              + (f"; last error: {error}" if error else ""))
     return 0
 
 

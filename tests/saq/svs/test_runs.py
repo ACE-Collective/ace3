@@ -366,11 +366,12 @@ def test_a_run_that_fails_to_move_does_not_stop_the_others(monkeypatch):
 #
 
 def test_the_service_moves_runs(monkeypatch):
-    run = register(_registration(), LAUNCHER, now=datetime.now() - timedelta(hours=1))
+    # the uuid now: the catalog refresh retires the fixture's unconfigured repository and expires the run
+    uuid = register(_registration(), LAUNCHER, now=datetime.now() - timedelta(hours=1)).uuid
 
     SVSService().start_single_threaded()
 
-    assert _state(run.uuid).state == RunState.CLOSED
+    assert _state(uuid).state == RunState.CLOSED
 
 
 def test_the_run_timer_runs_until_stopped_and_survives_a_failure(monkeypatch):
