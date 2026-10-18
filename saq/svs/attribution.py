@@ -59,6 +59,7 @@ from saq.observables.file import FileObservable
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.svs.constants import (
     ROUTER_ACTOR,
+    RUN_SIGNATURES,
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
@@ -515,9 +516,12 @@ class Evaluation:
 
 
 def alert_detections(root: RootAnalysis) -> list[Detection]:
-    """The alert's detections, keyed as their detection_points rows are."""
+    """The alert's detections, keyed as their detection_points rows are, except those of the SVS
+    built-ins (RUN_SIGNATURES)."""
     result = {}
     for node, detection in root.detection_points_by_node():
+        if detection.signature_uuid in RUN_SIGNATURES:
+            continue
         content_hash = detection_content_hash(node_identity(node), detection)
         result.setdefault(content_hash, Detection(content_hash, _carrier(node), detection.signature_uuid or "",
                                                   detection.signature_family))

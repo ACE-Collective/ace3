@@ -268,7 +268,8 @@ A registration whose target is not a test host, or names a user the host doesn't
 **creates an alert** in the `default` queue through the normal alert path: alert type
 `svs - registration refused`, a detection from the built-in signature `svs_registration_refused`,
 and the target host and user and the caller's name and address as observables. A launcher pointed
-at a production host is something an analyst should see.
+at a production host is something an analyst should see, so the alert is never attributed to a run,
+even one live on the host it names: it stays in triage.
 
 A launcher retrying in a loop must not flood the queue, so the alerts are **collapsed to one per
 (caller, host) per clock hour**. Later refusals in that hour are counted in

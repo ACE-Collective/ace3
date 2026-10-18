@@ -43,12 +43,11 @@ from saq.signatures.builtin import (
     GENERIC,
     LEGACY,
     OBSERVABLE_FLAGGED,
-    SVS_MARKER_MISMATCH,
-    SVS_REGISTRATION_REFUSED,
     YARA_RULE_MATCH,
 )
 from saq.svs.constants import (
     GLOBAL_SCOPE_KEY,
+    RUN_SIGNATURES,
     AttributionConfidence,
     ExpectationState,
     ResultStatus,
@@ -65,9 +64,7 @@ from saq.svs.windows import HuntInfo
 # OBSERVABLE_FLAGGED fires on whatever analysts flagged, so flagging a value would change results;
 # the SVS built-ins are about runs and are never attributed to one
 UNTRACKED_SIGNATURES = frozenset({
-    GENERIC.uuid, LEGACY.uuid, YARA_RULE_MATCH.uuid, OBSERVABLE_FLAGGED.uuid, SVS_REGISTRATION_REFUSED.uuid,
-    SVS_MARKER_MISMATCH.uuid,
-})
+    GENERIC.uuid, LEGACY.uuid, YARA_RULE_MATCH.uuid, OBSERVABLE_FLAGGED.uuid}) | RUN_SIGNATURES
 
 # the runs whose result the timers recompute; a started run is computed when it ends
 COMPUTED_STATES = (RunState.ENDED.value, RunState.REVIEWED.value)
