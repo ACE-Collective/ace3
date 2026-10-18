@@ -44,6 +44,43 @@ def _stale(run_id: int) -> bool:
     return state is not None and state.stale
 
 
+class TestConflictingDecisions:
+    """Two reviewers deciding the same candidate, and a stale reason (docs/SVS_API.md, *Conflicting
+    writes*)."""
+
+    @pytest.mark.asyncio
+    async def test_a_candidate_decided_twice(self, client: AsyncClient, test_user):
+        path = f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}"
+        undecided = {"If-None-Match": "*"}
+        first = await client.put(path, json={"state": "expected"}, headers=undecided)
+        assert first.status_code == 200, first.text
+        second = await client.put(path, json={"state": "rejected"}, headers=undecided)
+        assert second.status_code == 412
+        assert second.json()["detail"]["current"]["state"] == "expected"
+
+        # a change from the decision as last read
+        seen = {"If-Match": first.json()["updated_at"]}
+        changed = await client.put(path, json={"state": "rejected"}, headers=seen)
+        assert changed.status_code == 200 and changed.json()["state"] == "rejected"
+        assert (await client.put(path, json={"state": "expected"}, headers=seen)).status_code == 412
+        # removed since it was read
+        assert (await client.delete(path)).status_code == 204
+        stale = await client.put(path, json={"state": "expected"}, headers={"If-Match": changed.json()["updated_at"]})
+        assert stale.status_code == 412 and stale.json()["detail"]["current"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", [f"/svs/tests/{GUID}/ignores/{NOISE}", f"/svs/ignores/global/{NOISE}"])
+    async def test_an_ignore_added_twice_and_a_stale_reason(self, client: AsyncClient, test_user, path):
+        first = await client.put(path, json={"reason": "launcher noise"}, headers={"If-None-Match": "*"})
+        assert first.status_code == 200, first.text
+        assert (await client.put(path, json={"reason": "x"}, headers={"If-None-Match": "*"})).status_code == 412
+
+        seen = {"If-Match": first.json()["updated_at"]}
+        assert (await client.put(path, json={"reason": "winrm"}, headers=seen)).status_code == 200
+        stale = await client.put(path, json={"reason": "stale"}, headers=seen)
+        assert stale.status_code == 412 and stale.json()["detail"]["current"]["reason"] == "winrm"
+
+
 class TestExpectations:
     @pytest.mark.asyncio
     async def test_decide_list_and_remove(self, client: AsyncClient, test_user):

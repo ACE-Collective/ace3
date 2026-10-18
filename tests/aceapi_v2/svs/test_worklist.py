@@ -172,6 +172,40 @@ class TestList:
 
 class TestResolutions:
     @pytest.mark.asyncio
+    async def test_a_stale_resolution_is_refused(self, client: AsyncClient, rows):
+        """Two people on the same worklist page: the second write, made from the row as both loaded it,
+        is refused with the row as it is now instead of overwriting the first (docs/SVS_API.md,
+        *Conflicting writes*)."""
+        path = f"/svs/worklist/{SIGNATURE}/T1547/resolution"
+        (loaded,) = [row for row in (await client.get("/svs/worklist/")).json()["data"]
+                     if (row["signature_uuid"], row["technique"]) == (SIGNATURE, "T1547")]
+        seen = {"If-Match": loaded["updated_at"]}
+
+        first = await client.put(path, json={"resolution": "remove", "reason": "it doesn't"}, headers=seen)
+        assert first.status_code == 200, first.text
+        second = await client.put(path, json={"resolution": "keep", "reason": "stale keep"}, headers=seen)
+        assert second.status_code == 412
+        detail = second.json()["detail"]
+        assert "changed by someone else" in detail["message"]
+        assert (detail["current"]["resolution"], detail["current"]["status"]) == ("remove", "remove_pending")
+
+        # nothing was overwritten, and a reopen from the stale page is refused too
+        assert (await client.delete(path, headers=seen)).status_code == 412
+        assert await _keys(client, "status:remove_pending") == [f"{SIGNATURE}/T1547", ORDER[3]]
+        # from the row as it is now, it goes through; without a precondition, as before
+        assert (await client.put(path, json={"resolution": "keep", "reason": "r"},
+                                 headers={"If-Match": first.json()["updated_at"]})).status_code == 200
+        assert (await client.put(path, json={"resolution": "remove", "reason": "r"})).status_code == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{"If-Match": "yesterday"}, {"If-None-Match": "\"abc\""},
+                                         {"If-Match": "2026-01-01T00:00:00", "If-None-Match": "*"}])
+    async def test_a_malformed_precondition(self, client: AsyncClient, rows, headers):
+        response = await client.put(f"/svs/worklist/{SIGNATURE}/T1547/resolution",
+                                    json={"resolution": "keep", "reason": "r"}, headers=headers)
+        assert response.status_code == 400
+
+    @pytest.mark.asyncio
     async def test_set_and_clear(self, client: AsyncClient, rows):
         response = await client.put(f"/svs/worklist/{SIGNATURE}/t1547/resolution",
                                     json={"resolution": "keep", "reason": "no test reaches it"})

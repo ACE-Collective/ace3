@@ -14,6 +14,7 @@ from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import LISTING_MAX_PAGE_SIZE, csv_response, ndjson_response, run_listing, start_export
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
+from aceapi_v2.svs.preconditions import WritePrecondition
 from aceapi_v2.svs.test_hosts import service
 from aceapi_v2.svs.test_hosts.schemas import TestHost, TestHostPage, TestHostRequest
 from aceapi_v2.sync import run_db_in_thread
@@ -80,9 +81,10 @@ async def update_test_host(
     host_id: int,
     body: TestHostRequest,
     auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
+    precondition: WritePrecondition,
 ) -> TestHost:
-    """Replace a test host's fields."""
-    return await run_db_in_thread(service.update_test_host, host_id, body, auth.auth_name)
+    """Replace a test host's fields. 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
+    return await run_db_in_thread(service.update_test_host, host_id, body, auth.auth_name, precondition)
 
 
 @router.delete("/{host_id}", status_code=204)

@@ -309,7 +309,14 @@
                     }
                     return reload();
                 })
-                .catch(function(err) { message(err.message, "alert-danger"); });
+                .catch(function(err) {
+                    if (err.status === 412) {
+                        // someone else decided first: show the page as it is now
+                        message(err.message + ". This page now shows their decision.", "alert-warning");
+                        return reload();
+                    }
+                    message(err.message, "alert-danger");
+                });
         }
 
         //
@@ -842,15 +849,19 @@
                 if (!answer) {
                     return false;
                 }
+                // a candidate has no decision: only while there still is none, or a reviewer deciding
+                // at the same time would be overwritten without knowing
+                const undecided = {"If-None-Match": "*"};
                 if (how === "expected" || how === "rejected") {
                     return aceApi.put(settings.path + "/tests/" + guid + "/expectations/" +
                                       encodeURIComponent(platform) + "/" + sig,
-                                      {state: how, reason: answer.reason, run_id: settings.run_id});
+                                      {state: how, reason: answer.reason, run_id: settings.run_id}, undecided);
                 }
                 if (how === "ignore_test") {
-                    return aceApi.put(settings.path + "/tests/" + guid + "/ignores/" + sig, {reason: answer.reason});
+                    return aceApi.put(settings.path + "/tests/" + guid + "/ignores/" + sig, {reason: answer.reason},
+                                      undecided);
                 }
-                return aceApi.put(settings.path + "/ignores/global/" + sig, {reason: answer.reason});
+                return aceApi.put(settings.path + "/ignores/global/" + sig, {reason: answer.reason}, undecided);
             });
         }
 

@@ -23,6 +23,7 @@ from aceapi_v2.common.listing import (
 )
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
+from aceapi_v2.svs.preconditions import WritePrecondition
 from aceapi_v2.svs.worklist import service
 from aceapi_v2.svs.worklist.schemas import (
     BulkResolutionRequest,
@@ -102,17 +103,19 @@ async def get_signature(signature_uuid: str, auth: ReadAuth) -> SignatureWorklis
 
 @router.put("/{signature_uuid}/{technique}/resolution", response_model=WorklistRow)
 async def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest,
-                         auth: ManageAuth) -> WorklistRow:
+                         auth: ManageAuth, precondition: WritePrecondition) -> WorklistRow:
     """Resolve a tag measurement doesn't confirm: keep it, or remove it (it stops counting toward
     coverage from the next refresh). 404 for an unknown row; 409 for a row that is confirmed,
     informational, retired or removed; 422 for an invalid body or a config key (a resolution records
-    who made it)."""
+    who made it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
     return await run_db_in_thread(service.set_resolution, signature_uuid, technique, body, auth.auth_user_id,
-                                  auth.auth_name)
+                                  auth.auth_name, precondition)
 
 
 @router.delete("/{signature_uuid}/{technique}/resolution", status_code=204)
-async def clear_resolution(signature_uuid: str, technique: str, auth: ManageAuth) -> Response:
-    """Clear a row's resolution; 404 when the row doesn't exist or has none."""
-    await run_db_in_thread(service.clear_resolution, signature_uuid, technique, auth.auth_user_id, auth.auth_name)
+async def clear_resolution(signature_uuid: str, technique: str, auth: ManageAuth,
+                           precondition: WritePrecondition) -> Response:
+    """Clear a row's resolution; 404 when the row doesn't exist or has none; 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
+    await run_db_in_thread(service.clear_resolution, signature_uuid, technique, auth.auth_user_id, auth.auth_name,
+                           precondition)
     return Response(status_code=204)

@@ -4,7 +4,8 @@
 // write only from this origin, which a same-origin fetch satisfies. Every call resolves to the
 // parsed JSON body (null for an empty one) or rejects with an Error whose message is the API's
 // own sentence rather than its envelope; the Error also carries the HTTP status and the parsed
-// detail (null when there is none), for a caller that acts on what a 409 names.
+// detail (null when there is none), for a caller that acts on what a 409 or 412 names. A write may
+// pass request headers, such as the If-Match precondition of an SVS write.
 
 var aceApi = (function() {
     "use strict";
@@ -40,8 +41,8 @@ var aceApi = (function() {
         }
     }
 
-    function request(method, path, body) {
-        const options = {method: method, credentials: "same-origin", headers: {}};
+    function request(method, path, body, headers) {
+        const options = {method: method, credentials: "same-origin", headers: Object.assign({}, headers || {})};
         if (body !== undefined) {
             options.headers["Content-Type"] = "application/json";
             options.body = JSON.stringify(body);
@@ -80,8 +81,8 @@ var aceApi = (function() {
         query: query,
         get: function(path) { return request("GET", path); },
         post: function(path, body) { return request("POST", path, body); },
-        put: function(path, body) { return request("PUT", path, body); },
+        put: function(path, body, headers) { return request("PUT", path, body, headers); },
         patch: function(path, body) { return request("PATCH", path, body); },
-        del: function(path) { return request("DELETE", path); },
+        del: function(path, headers) { return request("DELETE", path, undefined, headers); },
     };
 })();

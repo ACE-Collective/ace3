@@ -18,6 +18,7 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.svs.ignores import service
 from aceapi_v2.svs.ignores.schemas import Ignore, IgnorePage, IgnoreRequest
+from aceapi_v2.svs.preconditions import WritePrecondition
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,12 @@ async def export_ignores_csv(
 
 
 @router.put("/global/{signature_uuid}", response_model=Ignore)
-async def set_global_ignore(signature_uuid: str, body: IgnoreRequest, auth: AdminAuth) -> Ignore:
+async def set_global_ignore(signature_uuid: str, body: IgnoreRequest, auth: AdminAuth,
+                            precondition: WritePrecondition) -> Ignore:
     """Ignore a signature during every test's runs; setting it again replaces its reason. 422 for a
-    config key (an ignore records who added it)."""
-    return await run_db_in_thread(service.set_ignore, signature_uuid, body, auth.auth_user_id, auth.auth_name)
+    config key (an ignore records who added it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
+    return await run_db_in_thread(service.set_ignore, signature_uuid, body, auth.auth_user_id, auth.auth_name,
+                                  None, precondition)
 
 
 @router.delete("/global/{signature_uuid}", status_code=204)

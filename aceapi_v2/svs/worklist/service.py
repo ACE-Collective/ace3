@@ -24,6 +24,7 @@ from aceapi_v2.common.listing import (
     rows_to_csv,
 )
 from aceapi_v2.svs.expectations.service import require_user
+from aceapi_v2.svs.preconditions import stale_write
 from aceapi_v2.svs.worklist.schemas import (
     WORKLIST_CSV_FIELDS,
     BulkResolutionRequest,
@@ -44,6 +45,7 @@ from saq.svs import worklist
 from saq.svs.attack import get_attack_catalog
 from saq.svs.constants import ExpectationState
 from saq.svs.coverage import measured_by_signature
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
 from saq.svs.test_state import evaluate_tests
 from saq.svs.worklist_filters import worklist_filter_conditions
@@ -178,23 +180,36 @@ def _errors(e: Exception) -> HTTPException:
     return HTTPException(status_code=422, detail=str(e))
 
 
+def _current_row(signature_uuid: str, technique: str) -> Optional[WorklistRow]:
+    row = get_db().execute(select(SVSTechniqueWorklist).where(
+        SVSTechniqueWorklist.signature_uuid == signature_uuid,
+        SVSTechniqueWorklist.technique == technique.strip().upper())
+        .execution_options(populate_existing=True)).scalar_one_or_none()
+    return _rows([row])[0] if row is not None else None
+
+
 def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest, user_id: Optional[int],
-                   actor: Optional[str]) -> WorklistRow:
+                   actor: Optional[str], precondition: Precondition = NONE) -> WorklistRow:
     user_id = require_user(user_id)
     try:
         row = worklist.resolve(signature_uuid, technique, body.resolution, body.reason, user_id,
-                               reference=body.reference, actor=actor)
+                               reference=body.reference, actor=actor, precondition=precondition)
     except (worklist.UnknownWorklistRow, worklist.WorklistConflict, worklist.InvalidResolution) as e:
         raise _errors(e)
+    except StaleWrite as e:
+        raise stale_write(e, lambda: _current_row(signature_uuid, technique))
     return _rows([row])[0]
 
 
-def clear_resolution(signature_uuid: str, technique: str, user_id: Optional[int], actor: Optional[str]) -> None:
+def clear_resolution(signature_uuid: str, technique: str, user_id: Optional[int], actor: Optional[str],
+                     precondition: Precondition = NONE) -> None:
     user_id = require_user(user_id)
     try:
-        worklist.reopen(signature_uuid, technique, user_id, actor=actor)
+        worklist.reopen(signature_uuid, technique, user_id, actor=actor, precondition=precondition)
     except worklist.UnknownWorklistRow as e:
         raise _errors(e)
+    except StaleWrite as e:
+        raise stale_write(e, lambda: _current_row(signature_uuid, technique))
 
 
 def bulk_resolve(body: BulkResolutionRequest, user_id: Optional[int], actor: Optional[str]) -> BulkResolutionResult:

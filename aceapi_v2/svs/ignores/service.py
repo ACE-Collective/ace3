@@ -20,10 +20,12 @@ from aceapi_v2.common.listing import (
 )
 from aceapi_v2.svs.expectations.service import decision_errors, require_user
 from aceapi_v2.svs.ignores.schemas import IGNORE_CSV_FIELDS, Ignore, IgnoreRequest
+from aceapi_v2.svs.preconditions import stale_write
 from saq.database.model import SVSIgnore, User
 from saq.database.pool import get_db
 from saq.svs import expectations
 from saq.svs.constants import GLOBAL_SCOPE_KEY, IgnoreScope
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
 
 
@@ -108,14 +110,25 @@ def _ignore(ignore: SVSIgnore) -> Ignore:
     return _row(get_db().execute(_statement().where(SVSIgnore.id == ignore.id)).one())
 
 
+def _current_ignore(signature_uuid: str, test_guid: Optional[str]) -> Optional[Ignore]:
+    try:
+        return _ignore(expectations.get_ignore(signature_uuid.strip().lower(),
+                                               test_guid.strip().lower() if test_guid else None))
+    except expectations.UnknownDecision:
+        return None
+
+
 def set_ignore(signature_uuid: str, body: IgnoreRequest, user_id: Optional[int], actor: Optional[str],
-               test_guid: Optional[str] = None) -> Ignore:
+               test_guid: Optional[str] = None, precondition: Precondition = NONE) -> Ignore:
     """A test's ignore (svs:run_manage), or a global one when test_guid is None (svs:admin)."""
     user_id = require_user(user_id)
     try:
-        ignore = expectations.set_ignore(signature_uuid, user_id, test_guid=test_guid, reason=body.reason, actor=actor)
+        ignore = expectations.set_ignore(signature_uuid, user_id, test_guid=test_guid, reason=body.reason, actor=actor,
+                                         precondition=precondition)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
+    except StaleWrite as e:
+        raise stale_write(e, lambda: _current_ignore(signature_uuid, test_guid))
     return _ignore(ignore)
 
 

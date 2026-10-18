@@ -36,6 +36,7 @@ from saq.database.private_session import private_transaction
 from saq.svs.attack import AttackCatalog, TechniqueStatus
 from saq.svs.constants import WorklistKind, WorklistResolution, WorklistStatus
 from saq.svs.coverage_lock import lock_refresh
+from saq.svs.preconditions import NONE, Precondition
 from saq.svs.signatures import SignatureTags, describe_signatures
 
 # the statuses a person can resolve: a declared tag that measurement doesn't confirm
@@ -408,16 +409,17 @@ def _detached(session, row: SVSTechniqueWorklist) -> SVSTechniqueWorklist:
 
 
 def resolve(signature_uuid: str, technique: str, resolution: str, reason: Optional[str], user_id: int, *,
-            reference: Optional[str] = None, actor: Optional[str] = None,
+            reference: Optional[str] = None, actor: Optional[str] = None, precondition: Precondition = NONE,
             now: Optional[datetime] = None) -> SVSTechniqueWorklist:
     """Resolves a declared tag measurement doesn't confirm: keep it, or remove it. A remove stops the
     tag counting toward coverage from the next refresh. Raises UnknownWorklistRow, WorklistConflict,
-    InvalidResolution."""
+    InvalidResolution, StaleWrite."""
     resolution, reason, reference = _validated(resolution, reason, reference)
     now = now or datetime.now()
     with private_transaction() as session:
         lock_refresh(session)
         row = _row(session, signature_uuid, technique)
+        precondition.check(row, f"the worklist row of {row.technique}")
         _resolve_row(row, resolution, reason, reference, user_id, now)
         row = _detached(session, row)
 
@@ -462,13 +464,14 @@ def resolve_many(keys: Iterable[tuple[str, str]], resolution: str, reason: Optio
 
 
 def reopen(signature_uuid: str, technique: str, user_id: int, *, actor: Optional[str] = None,
-           now: Optional[datetime] = None) -> SVSTechniqueWorklist:
+           precondition: Precondition = NONE, now: Optional[datetime] = None) -> SVSTechniqueWorklist:
     """Clears a row's resolution: an unconfirmed tag is open again and counts from the next refresh.
-    Raises UnknownWorklistRow (also when the row has no resolution)."""
+    Raises UnknownWorklistRow (also when the row has no resolution), StaleWrite."""
     now = now or datetime.now()
     with private_transaction() as session:
         lock_refresh(session)
         row = _row(session, signature_uuid, technique)
+        precondition.check(row, f"the worklist row of {row.technique}")
         if row.resolution is None:
             raise UnknownWorklistRow(f"the worklist row of signature {signature_uuid} on {technique} has no resolution")
         previous = row.resolution

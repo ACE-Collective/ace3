@@ -36,6 +36,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.svs.catalog import platform_slugs
 from saq.svs.constants import GLOBAL_SCOPE_KEY, ExpectationState, IgnoreScope, ObservationSource, RunEventKind
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.run_events import new_run_event, run_log_fields
 from saq.svs.windows import observation_window
@@ -104,6 +105,29 @@ def _platform(test: SVSCatalogTest, platform: Optional[str]) -> str:
     return platform
 
 
+def _upsert(db, model, keys: dict, values: dict, update: dict, precondition: Precondition, what: str) -> None:
+    """Inserts the row, or updates it with update, as the precondition allows (saq.svs.preconditions):
+    a row the client saw none of is inserted only while there still is none, and one it read is
+    changed only while it is unchanged since, read under its row lock. Raises StaleWrite, having
+    rolled back."""
+    insert = mysql_insert(model).values(**keys, **values)
+    if precondition.absent:
+        if db.execute(insert.prefix_with("IGNORE")).rowcount != 1:
+            db.rollback()
+            raise StaleWrite(f"{what} was decided by someone else since you loaded it")
+        return
+
+    if precondition.updated_at is not None:
+        existing = db.execute(select(model).filter_by(**keys).with_for_update()
+                              .execution_options(populate_existing=True)).scalar_one_or_none()
+        try:
+            precondition.check(existing, what)
+        except StaleWrite:
+            db.rollback()
+            raise
+    db.execute(insert.on_duplicate_key_update(**update))
+
+
 def get_expectation(test_guid: str, platform: str, signature_uuid: str) -> SVSExpectation:
     expectation = get_db().execute(select(SVSExpectation).where(
         SVSExpectation.test_guid == test_guid, SVSExpectation.platform == platform,
@@ -115,11 +139,12 @@ def get_expectation(test_guid: str, platform: str, signature_uuid: str) -> SVSEx
 
 def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: int, *,
                     platform: Optional[str] = None, reason: Optional[str] = None, run_uuid: Optional[str] = None,
-                    actor: Optional[str] = None, now: Optional[datetime] = None) -> SVSExpectation:
+                    actor: Optional[str] = None, precondition: Precondition = NONE,
+                    now: Optional[datetime] = None) -> SVSExpectation:
     """Decides a signature for a test on a platform: expected or rejected. With run_uuid (a run of
     the test), the decision was made from that run's result, it is about the run's platform, and the
     run's event log records it; without one, platform names one of the test's platforms. Raises
-    UnknownTest, InvalidDecision."""
+    UnknownTest, InvalidDecision, StaleWrite."""
     now = now or datetime.now()
     test = _test(test_guid)
     signature_uuid = _signature_uuid(signature_uuid)
@@ -142,9 +167,8 @@ def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: in
     family, name = _last_known(signature_uuid, run.id if run else None)
     values = {"state": state.value, "signature_family": family, "signature_name": name, "reason": reason,
               "decided_from_run_id": run.id if run else None, "decided_by_user_id": user_id, "decided_at": now}
-    db.execute(mysql_insert(SVSExpectation)
-               .values(test_guid=test.guid, platform=platform, signature_uuid=signature_uuid, **values)
-               .on_duplicate_key_update(**values))
+    _upsert(db, SVSExpectation, {"test_guid": test.guid, "platform": platform, "signature_uuid": signature_uuid},
+            values, values, precondition, f"the decision about {name or signature_uuid} on {platform}")
     if run is not None:
         db.add(new_run_event(run.id, RunEventKind.CANDIDATE_DECISION, actor or str(user_id), actor_user_id=user_id,
                              now=now, details={"signature_uuid": signature_uuid, "platform": platform,
@@ -197,9 +221,10 @@ def _ignored_runs(test_guid: Optional[str]) -> tuple:
 
 
 def set_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = None, reason: Optional[str] = None,
-               actor: Optional[str] = None, now: Optional[datetime] = None) -> SVSIgnore:
+               actor: Optional[str] = None, precondition: Precondition = NONE,
+               now: Optional[datetime] = None) -> SVSIgnore:
     """Ignores a signature during the test's runs, or every test's (test_guid None). Setting it
-    again replaces its reason. Raises UnknownTest, InvalidDecision."""
+    again replaces its reason. Raises UnknownTest, InvalidDecision, StaleWrite."""
     now = now or datetime.now()
     if test_guid is not None:
         test_guid = _test(test_guid).guid
@@ -207,12 +232,12 @@ def set_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = 
     family, name = _last_known(signature_uuid)
 
     db = get_db()
-    db.execute(mysql_insert(SVSIgnore)
-               .values(scope=(IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value,
-                       scope_key=_scope_key(test_guid), test_guid=test_guid, signature_uuid=signature_uuid,
-                       signature_family=family, signature_name=name, reason=reason, created_by_user_id=user_id,
-                       created_at=now)
-               .on_duplicate_key_update(reason=reason))
+    _upsert(db, SVSIgnore, {"scope_key": _scope_key(test_guid), "signature_uuid": signature_uuid},
+            {"scope": (IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, "test_guid": test_guid,
+             "signature_family": family, "signature_name": name, "reason": reason, "created_by_user_id": user_id,
+             "created_at": now},
+            {"reason": reason}, precondition,
+            f"the ignore of {name or signature_uuid} {'for this test' if test_guid else 'for every test'}")
     mark_runs_stale(db, *_ignored_runs(test_guid))
     db.commit()
 
