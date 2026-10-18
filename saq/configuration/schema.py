@@ -1000,6 +1000,21 @@ class ACEConfig(BaseModel):
                     f"disposition_classification:; see etc/saq.default.yaml")
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_svs_service(cls, data):
+        """service_svs is checked as the configuration is read, not only when the service starts
+        (service configs are otherwise resolved lazily): a lease its heartbeat can't keep would
+        have every validation taken over, then failed."""
+        if isinstance(data, dict) and isinstance(data.get("service_svs"), dict):
+            # saq.svs.service_config imports this module
+            from saq.svs.service_config import SVSServiceConfig
+            try:
+                SVSServiceConfig.model_validate(data["service_svs"])
+            except ValidationError as e:
+                raise ValueError(f"service_svs: {'; '.join(error['msg'] for error in e.errors())}") from None
+        return data
+
     @model_validator(mode="after")
     def _check_dispositions(self):
         for name in self.dispositions:

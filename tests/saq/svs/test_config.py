@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.configuration.schema import SVSConfig
+from saq.configuration.schema import ACEConfig, SVSConfig
 from saq.svs.yara.replay import ReplayError, _check_work_root
 
 
@@ -30,6 +30,21 @@ def test_unknown_svs_keys_are_rejected():
 
     with pytest.raises(ValidationError):
         SVSConfig.model_validate({"nope": {}})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("timings", [
+    {"lease_seconds": 10, "heartbeat_interval_seconds": 30},    # the lease ends before the heartbeat
+    {"lease_seconds": 60, "heartbeat_interval_seconds": 30},    # one late heartbeat loses it
+])
+def test_a_lease_its_heartbeat_cannot_keep_is_refused_when_the_configuration_is_read(timings):
+    """Not only when service_svs starts: every process refuses the configuration."""
+    raw = get_config().raw._data
+    with pytest.raises(ValidationError, match="service_svs: .*must not exceed lease_seconds"):
+        ACEConfig.model_validate({**raw, "service_svs": {**raw["service_svs"], **timings}})
+
+    assert ACEConfig.model_validate({**raw, "service_svs": {**raw["service_svs"], "lease_seconds": 90,
+                                                            "heartbeat_interval_seconds": 30}})
 
 
 @pytest.mark.unit

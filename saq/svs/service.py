@@ -24,8 +24,6 @@ import logging
 import threading
 from typing import Optional, Type
 
-from pydantic import Field, model_validator
-
 from saq.configuration.config import get_config, get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_SVS
@@ -33,13 +31,13 @@ from saq.database.pool import remove_all_sessions
 from saq.database.util.node import is_primary_node
 from saq.environment import get_global_runtime_settings
 from saq.error.reporting import log_loop_exception
-from saq.sandbox.runner import LAUNCHER_STOP_SECONDS
 from saq.service import ACEServiceInterface
 from saq.svs.actions import retired_pairs
 from saq.svs.catalog import refresh_catalog
 from saq.svs.constants import COVERAGE_ACTOR
 from saq.svs.coverage import refresh_coverage
 from saq.svs.runs import run_timers
+from saq.svs.service_config import SVSServiceConfig
 from saq.svs.validations import (
     Claim,
     LeaseLost,
@@ -55,31 +53,8 @@ from saq.svs.validations import (
 from saq.svs.yara.layout import LayoutError
 from saq.svs.yara.replay import ReplayCancelled, ReplayError, run_replay
 
-# what a stopping worker needs beyond the sandbox launcher's own stop: release its claim
-SHUTDOWN_MARGIN_SECONDS = 5
 
 INTERNAL_ERROR = "internal error; see the svs service log"
-
-
-class SVSServiceConfig(ServiceConfig):
-    poll_interval_seconds: float = Field(default=5, gt=0, description="how long an idle worker waits before it looks for a queued validation again")
-    heartbeat_interval_seconds: int = Field(default=30, gt=0, description="how often a worker running a validation renews its lease")
-    lease_seconds: int = Field(default=300, gt=0, description="how long a lease lasts without a heartbeat; after that another worker may take the validation over")
-    max_attempts: int = Field(default=3, ge=1, description="how many times a validation is claimed before one whose worker stopped heartbeating is failed instead")
-
-    @model_validator(mode="after")
-    def _timings_fit(self) -> "SVSServiceConfig":
-        if self.heartbeat_interval_seconds * 3 > self.lease_seconds:
-            raise ValueError(
-                f"heartbeat_interval_seconds ({self.heartbeat_interval_seconds}) times 3 must not exceed "
-                f"lease_seconds ({self.lease_seconds}): one late heartbeat must not lose the lease")
-
-        if self.shutdown_deadline_seconds < LAUNCHER_STOP_SECONDS + SHUTDOWN_MARGIN_SECONDS:
-            raise ValueError(
-                f"shutdown_deadline_seconds ({self.shutdown_deadline_seconds}) must be at least "
-                f"{LAUNCHER_STOP_SECONDS + SHUTDOWN_MARGIN_SECONDS}: a stopping worker cancels its scan "
-                "and releases its validation")
-        return self
 
 
 class ValidationWorker:
