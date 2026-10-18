@@ -592,8 +592,8 @@ changed since review. Every change can be undone by the opposite one.
   moved.
 - **Giving a `SIMULATED` alert back.** Disassociating a `SIMULATED` alert that is then no longer
   fully attributed sets it back to `OPEN`. The automation user, which set `SIMULATED` and owns it,
-  writes it, with the comment *disassociated from SVS test run … by …*. Analysts triage it like
-  any other alert. An alert still fully attributed to another run keeps its queue and disposition.
+  writes it, with the comment *disassociated from SVS test run … by …*, and gives it up, so the
+  alert is unowned and analysts triage it like any other alert. An alert still fully attributed to another run keeps its queue and disposition.
   An alert disassociated while its run is closed or reviewed is never left `SIMULATED` without a
   run: closing checks again that each alert is fully attributed under the alert's row lock, which
   disassociating takes too, so either the alert stays `OPEN` or it is given back.

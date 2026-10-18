@@ -35,6 +35,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT, set_dispositions
+from saq.database.util.user_management import add_user
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.execution_context import EngineExecutionContext
@@ -215,8 +216,26 @@ class TestDisassociate:
         alert = _row(root.uuid)
         assert alert.disposition == DISPOSITION_OPEN
         assert alert.disposition_user_id == get_config().global_settings.automation_user_id
+        # given up by the automation user that owned it as SIMULATED
+        assert alert.owner_id is None
         comments = get_db().execute(select(Comment.comment).where(Comment.uuid == root.uuid)).scalars().all()
         assert f"disassociated from SVS test run {run.uuid} by {ACTOR}" in comments
+
+    def test_an_analyst_who_takes_the_reopened_alert_keeps_it(self, run, user_id, monkeypatch):
+        root = _alert(marker=run.marker)
+        runs.cancel(run.uuid, LAUNCHER)
+        runs.run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
+        bob = add_user("bob", "bob@localhost", "Bob", "bob").id
+        give_up = association.change_alert_owner
+
+        def bob_takes_it_first(alert_uuids, owner_id, acting_user_id):
+            with private_transaction() as session:
+                session.execute(update(Alert).where(Alert.uuid == root.uuid).values(owner_id=bob))
+            return give_up(alert_uuids, owner_id, acting_user_id)
+
+        monkeypatch.setattr(association, "change_alert_owner", bob_takes_it_first)
+        assert association.disassociate(run.uuid, root.uuid, user_id, ACTOR).reopened
+        assert _row(root.uuid).owner_id == bob
 
     def test_an_alert_still_fully_attributed_to_another_run_stays(self, run, user_id):
         root = _alert(marker=run.marker)
@@ -297,7 +316,7 @@ class TestFromTheAlertsSide:
 
         result = association.disassociate_alert(root.uuid, user_id, ACTOR)
         assert (result.runs, result.reopened, result.moved) == ((run.uuid,), True, True)
-        assert _row(root.uuid).disposition == DISPOSITION_OPEN
+        assert (_row(root.uuid).disposition, _row(root.uuid).owner_id) == (DISPOSITION_OPEN, None)
 
     def test_not_a_test(self, run, user_id):
         root = _alert()

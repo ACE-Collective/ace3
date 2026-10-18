@@ -36,7 +36,7 @@ from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Alert, AlertQueueChange, DetectionPoint, SVSAttribution, SVSRun
 from saq.database.pool import get_db
-from saq.database.util.alert import move_alert_to_queue, set_dispositions
+from saq.database.util.alert import change_alert_owner, move_alert_to_queue, set_dispositions
 from saq.svs.alert_status import alert_svs_statuses
 from saq.svs.attribution import alert_event_time, flag_changed_since_review
 from saq.svs.constants import (
@@ -281,11 +281,16 @@ def disassociate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reaso
     if alert.disposition == DISPOSITION_SIMULATED:
         # the automation user set SIMULATED and owns the alert, so it is the writer; the comment
         # names the person
+        automation_user_id = get_config().global_settings.automation_user_id
         result = set_dispositions(
-            [alert.uuid], DISPOSITION_OPEN, get_config().global_settings.automation_user_id,
+            [alert.uuid], DISPOSITION_OPEN, automation_user_id,
             user_comment=f"disassociated from SVS test run {run.uuid} by {actor}", system=True,
             expected_dispositions={DISPOSITION_SIMULATED})
         reopened = alert.uuid in result.permitted
+        if reopened:
+            # nobody is working the alert it gives back: unowned, it is picked up like a new one. An
+            # analyst who took it meanwhile keeps it
+            change_alert_owner([alert.uuid], None, automation_user_id)
         alert = _read_alert(alert.id)
 
     moved = False
