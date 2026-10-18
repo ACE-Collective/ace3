@@ -167,7 +167,7 @@ def test_register_refuses_a_target_that_is_not_a_test_host(target, reason):
 
     assert len(error.value.reasons) == 1 and reason in error.value.reasons[0]
     assert get_db().execute(select(SVSRun)).first() is None
-    assert get_db().execute(select(SVSRegistrationRefusal.host)).scalars().all() == [target.hostname.split(".")[0]]
+    assert get_db().execute(select(SVSRegistrationRefusal.host)).scalars().all() == [target.hostname.lower()]
 
 
 #

@@ -53,12 +53,12 @@ def test_the_first_refusal_alerts(caplog):
 
     (row,) = _rows()
     assert (row.caller, row.host, row.hour, row.count, row.alert_uuid) == (
-        "art-launcher", "prod-dc-01", datetime(2026, 10, 14, 12), 1, alert_uuid)
+        "art-launcher", "prod-dc-01.corp.example", datetime(2026, 10, 14, 12), 1, alert_uuid)
 
     (record,) = [r for r in caplog.records if r.message.startswith("svs run registration refused")]
     assert record.levelno == logging.WARNING
     assert (record.caller, record.host, record.alerted, record.alert_uuid) == (
-        "art-launcher", "prod-dc-01", True, alert_uuid)
+        "art-launcher", "prod-dc-01.corp.example", True, alert_uuid)
 
 
 def test_refusals_collapse_per_caller_host_and_hour(caplog):
@@ -66,7 +66,7 @@ def test_refusals_collapse_per_caller_host_and_hour(caplog):
 
     caplog.clear()
     with caplog.at_level(logging.WARNING):
-        assert refuse(CALLER, "PROD-DC-01.corp.example", None, "not a test host", now=T0 + timedelta(minutes=40)) is None
+        assert refuse(CALLER, "PROD-DC-01", None, "not a test host", now=T0 + timedelta(minutes=40)) is None
     assert [r.alerted for r in caplog.records if r.message.startswith("svs run registration refused")] == [False]
     (row,) = _rows()
     assert (row.count, row.last_at) == (2, T0 + timedelta(minutes=40))
@@ -76,6 +76,17 @@ def test_refusals_collapse_per_caller_host_and_hour(caplog):
     assert refuse(Caller(name="other-launcher"), "prod-dc-01", None, "not a test host", now=T0) is not None
     assert refuse(CALLER, "prod-dc-01", None, "not a test host", now=T0 + timedelta(hours=1)) is not None
     assert len(_alerts()) == 4
+
+
+def test_a_host_in_another_domain_is_another_host():
+    """A production host that shares a test host's short name is not folded into the test host's
+    alert: each is its own refusal, with its own alert."""
+    assert refuse(CALLER, "win10-01", "mallory", "mallory is not a user of test host win10-01", now=T0) is not None
+    assert refuse(CALLER, "WIN10-01.prod.example", "svc_art", "is not test host win10-01.lab.example",
+                  now=T0 + timedelta(minutes=5)) is not None
+    assert refuse(CALLER, "win10-01.prod.example", "svc_art", "again", now=T0 + timedelta(minutes=6)) is None
+    assert [(row.host, row.count) for row in _rows()] == [("win10-01", 1), ("win10-01.prod.example", 2)]
+    assert len(_alerts()) == 2
 
 
 def test_an_ipv6_caller_is_not_an_ipv4_observable():

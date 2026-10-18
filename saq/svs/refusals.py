@@ -55,8 +55,12 @@ class Caller:
 
 
 def _host_key(hostname: str) -> str:
+    """The refused host as the caller named it, normalized: its fully qualified name when it has one.
+    Not the short name a test host matches on: a production host that shares a test host's short
+    name in another domain is another host, and gets its own alert."""
     try:
-        return split_hostname(hostname)[0]
+        short, fqdn = split_hostname(hostname)
+        return (fqdn or short)[:MAX_HOST]
     except InvalidTestHost:
         return (hostname or "").strip().lower()[:MAX_HOST]
 
