@@ -272,7 +272,9 @@ at a production host is something an analyst should see, so the alert is never a
 even one live on the host it names: it stays in triage.
 
 A launcher retrying in a loop must not flood the queue, so the alerts are **collapsed to one per
-(caller, host) per clock hour**. Later refusals in that hour are counted in
+(caller, host) per clock hour**. The host is the name as the caller gave it, lower-cased: a fully
+qualified name is its own host, so `win10-01.prod.example` is not folded into the alert of test host
+`win10-01`. Later refusals in that hour are counted in
 `svs_registration_refusals` and logged at WARNING (`caller`, `host`, `reason`, `launcher`,
 `svs_test`, `alerted`), which every refusal is. A refusal is refused even when its alert can't be
 created; that failure is logged at ERROR.
