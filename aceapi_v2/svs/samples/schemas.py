@@ -111,6 +111,9 @@ class SampleCapture(BaseModel):
 
 class SampleDetail(SampleRow):
     captures: list[SampleCapture] = Field(description="every capture, newest first")
+    relabel_refusal: str | None = Field(
+        default=None, description="why a relabel would be refused (no contributing detection can take a verdict: "
+                                  "every one is on an FP or SIMULATED alert, say), or null when it can be relabeled")
 
 
 class MissingCount(BaseModel):

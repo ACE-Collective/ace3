@@ -631,6 +631,25 @@ class TestActionAccess:
 
 class TestLabelActions:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("disposition, refusal", [
+        ("DELIVERY", None),
+        ("FALSE_POSITIVE", "every detection on a false positive alert is FP"),
+        ("SIMULATED", "are set by ACE, not by analysts"),
+    ])
+    async def test_the_detail_says_when_relabel_cannot_apply(self, client: AsyncClient, disposition, refusal):
+        """The GUI offers Relabel only when it would write a verdict; a refusal is the reason a
+        relabel answers 409 with."""
+        _, sha256, _ = _sample(disposition, [RULE_UUID])
+        detail = (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).json()
+        relabel = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "fp"})
+        if refusal is None:
+            assert detail["relabel_refusal"] is None
+            assert relabel.status_code == 200, relabel.text
+        else:
+            assert refusal in detail["relabel_refusal"]
+            assert relabel.status_code == 409 and refusal in relabel.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_relabel_reset_and_confirm(self, client: AsyncClient):
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
         path = f"/svs/samples/{sha256}/{RULE_UUID}"

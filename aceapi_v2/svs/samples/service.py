@@ -254,7 +254,8 @@ def get_sample_detail(sha256: str, rule_uuid: str) -> SampleDetail:
     node = bytes_nodes([sha256]).get(sha256)
     return SampleDetail(
         **record, local=is_local(node),
-        captures=[_capture(row, detections.get(row.id, [])) for row in captures])
+        captures=[_capture(row, detections.get(row.id, [])) for row in captures],
+        relabel_refusal=actions.relabel_refusal(sha256, rule_uuid, detections))
 
 
 def missing_summary() -> list[MissingCount]:
