@@ -2,6 +2,7 @@
 runs*): take it, cancel it, close it, review it and comment on it."""
 
 import json
+import threading
 import uuid
 from datetime import datetime, timedelta
 
@@ -171,6 +172,53 @@ class TestCancelAndClose:
         result = review.close_runs([run.uuid], user_id, ACTOR, confirmed_takes={run.uuid: bob.id})
         assert result.done == [run.uuid]
         assert (_run_row(run).state, _run_row(run).owner_id) == (RunState.CLOSED, user_id)
+
+
+class TestTakingWhileActing:
+    """A run someone takes while another person acts on it: the take waits for the action."""
+
+    @pytest.mark.parametrize("action", ["close", "review"])
+    def test_the_take_waits_for_the_action(self, user_id, bob, monkeypatch, action):
+        run = _ended(_run())
+        taken = threading.Event()
+        threads = []
+
+        def take():
+            review.take_ownership([run.uuid], bob.id, "bob")
+            get_db().remove()
+            taken.set()
+
+        claim = review._claim
+
+        def bob_takes_it_meanwhile(*args, **kwargs):
+            claim(*args, **kwargs)
+            threads.append(threading.Thread(target=take))
+            threads[0].start()
+            # with the run's row no longer locked, bob's take would go through here, before the action
+            assert not taken.wait(1)
+
+        monkeypatch.setattr(review, "_claim", bob_takes_it_meanwhile)
+        if action == "close":
+            review.close_runs([run.uuid], user_id, ACTOR, reason="not needed")
+        else:
+            review.review(run.uuid, user_id, ACTOR)
+        threads[0].join(10)
+        assert taken.is_set()
+
+        db = get_db()
+        db.expire_all()
+        kinds = [(e.kind, e.actor) for e in db.execute(select(SVSRunEvent).where(SVSRunEvent.run_id == run.id)
+                                                       .order_by(SVSRunEvent.id)).scalars()
+                 if e.kind in (RunEventKind.OWNERSHIP_TAKEN.value, RunEventKind.REVIEWED.value)
+                 or (e.kind == RunEventKind.TRANSITION.value and e.to_state == RunState.CLOSED.value)]
+        if action == "close":
+            # the close came first, and bob took the closed run
+            assert kinds[-1] == (RunEventKind.OWNERSHIP_TAKEN.value, "bob")
+            assert ACTOR in [actor for _, actor in kinds[:-1]]
+        else:
+            # the review took the run first, so bob, who never confirmed taking it from them, is refused
+            assert (RunEventKind.OWNERSHIP_TAKEN.value, "bob") not in kinds
+            assert _run_row(run).owner_id == user_id
 
 
 class TestReview:
