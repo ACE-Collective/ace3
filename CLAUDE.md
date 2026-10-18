@@ -137,6 +137,8 @@ make db-seed
 
 Migrations are applied at startup by `docker/startup/setup.sh` (the `ace-setup` service), one `upgrade head` per chain.
 
+A transaction MySQL may pick as a deadlock victim runs through `run_private_transaction` (`saq/database/private_session.py`), which runs the whole private transaction again on 1213/1205; the function it runs must have no effects outside its session. Taking locks in a consistent order is still the fix; the retry is the backstop. `retry_on_deadlock` and `execute_with_retry` (`saq/database/retry.py`) are the same idea for the shared `get_db()` session and raw cursors.
+
 CI enforces two things on PRs touching `saq/database/model.py` or any `versions/` dir: **a single Alembic head per chain** (rebase so one migration's `down_revision` points at the other) and **no model drift** vs. the migrated schema. Run the relevant `*-db-check` before pushing a model change. `bin/check_model_drift.py` builds a throwaway database, migrates it to head, compares and drops it; setting the chain's env var (`DATABASE_NAME=ace ...`) checks that existing database instead, which is what CI does.
 
 ## Configuration

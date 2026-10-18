@@ -53,7 +53,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
 from saq.database.model import SVSAttribution, SVSRun, SVSTestHost
-from saq.database.private_session import private_transaction
+from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_local_timezone
 from saq.observables.file import FileObservable
 from saq.observables.type_hierarchy import get_type_hierarchy
@@ -80,6 +80,10 @@ from saq.svs.run_events import new_run_event
 MAX_WALK_DEPTH = 32
 
 REMOVAL_NO_LONGER_APPLIES = "no longer attributed by the marker router"
+
+# how many times write_attributions runs its transaction when MySQL picks it as a deadlock victim
+# (1213) or it waits too long for a lock (1205): a marker alert whose write fails is never routed
+WRITE_ATTEMPTS = 5
 
 
 #
@@ -694,60 +698,11 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
     own: adds new ones, restores ones it removed earlier, and removes the ones that no longer hold.
     Rows of a person are never touched. Logs each change and appends it to its run's event log, a
     change to a reviewed run marks the run changed since review, and every change marks the run's
-    result stale."""
+    result stale. A transaction that deadlocks anyway is run again, up to WRITE_ATTEMPTS times."""
     now = now or datetime.now()
-    result = WriteResult()
-    desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
-    runs = {a.run.id: a.run for a in evaluation.attributions}
-
-    with private_transaction() as session:
-        rows = {(row.run_id, row.content_hash): row for row in session.execute(
-            select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars()}
-
-        for key, row in rows.items():
-            if row.source != AttributionSource.ROUTER or removed_by_person(row):
-                continue
-            attribution = desired.get(key)
-            if attribution is None:
-                if row.removed_at is None and _update_own_row(
-                        session, row.id, SVSAttribution.removed_at.is_(None), removed_at=now,
-                        removed_by=ROUTER_ACTOR, removal_reason=REMOVAL_NO_LONGER_APPLIES):
-                    result.removed.append(RemovedAttribution(row.run_id, row.content_hash, row.confidence, row.late))
-                continue
-
-            values = {}
-            if row.removed_at is not None:
-                values.update(removed_at=None, removed_by=None, removal_reason=None)
-            scan_point = attribution.scan_point.value if attribution.scan_point else None
-            if (row.confidence, row.late, row.scan_point) != (attribution.confidence.value, attribution.late, scan_point):
-                values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
-            if values and _update_own_row(session, row.id, **values):
-                result.written.append(attribution)
-
-        for key, attribution in desired.items():
-            if key in rows:
-                continue
-            # another process may be writing the same alert (an engine pass racing an insert, or a
-            # person associating it); the unique key keeps the row that came first
-            inserted = session.execute(mysql_insert(SVSAttribution).prefix_with("IGNORE").values(
-                run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
-                signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
-                confidence=attribution.confidence.value, late=attribution.late,
-                source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
-                actor=ROUTER_ACTOR, created_at=now))
-            if inserted.rowcount == 1:
-                result.written.append(attribution)
-
-        removed_runs = {row.run_id for row in result.removed} - set(runs)
-        if removed_runs:
-            for run in _snapshots(session, list(session.execute(
-                    select(SVSRun).where(SVSRun.id.in_(removed_runs))).scalars())):
-                runs[run.id] = run
-
-        _add_attribution_events(session, alert_uuid, result, now)
-        touched = {a.run.id for a in result.written} | {row.run_id for row in result.removed}
-        flagged = flag_changed_since_review(session, touched)
-        mark_runs_stale(session, run_ids=touched)
+    result, runs, flagged = run_private_transaction(
+        _write_attributions, alert_uuid, evaluation, now, attempts=WRITE_ATTEMPTS,
+        description=f"svs attributions of alert {alert_uuid}", extra={"alert_uuid": alert_uuid})
 
     for attribution in result.written:
         logging.info("svs attribution written: alert %s detection %s to run %s", alert_uuid,
@@ -768,6 +723,81 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
         logging.info("svs run %s changed since review: alert %s", run.uuid if run else run_id, alert_uuid,
                      extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid})
     return result
+
+
+def _lock_runs(session, alert_uuid: str, run_ids: Iterable[int]) -> None:
+    """Locks, in id order, the runs a write of the alert's attributions can touch: run_ids and the
+    runs of its existing rows. Every attribution row takes a shared lock on its run (the foreign
+    key), and marking the run changed or stale needs an exclusive one, so two alerts of one run
+    written at once would each hold the first and wait for the second: taken first, the run's lock
+    makes them wait their turn instead."""
+    session.execute(
+        select(SVSRun.id)
+        .where(or_(SVSRun.id.in_(sorted(set(run_ids))),
+                   SVSRun.id.in_(select(SVSAttribution.run_id).where(SVSAttribution.alert_uuid == alert_uuid))))
+        .order_by(SVSRun.id)
+        .with_for_update()).all()
+
+
+def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
+                        now: datetime) -> tuple[WriteResult, dict[int, RunSnapshot], list[int]]:
+    """write_attributions' transaction, run again whole when it deadlocks, so it changes nothing
+    outside the session. Returns what it changed, the runs involved by id, and the runs it marked
+    changed since review."""
+    result = WriteResult()
+    desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
+    runs = {a.run.id: a.run for a in evaluation.attributions}
+
+    _lock_runs(session, alert_uuid, runs)
+    rows = {(row.run_id, row.content_hash): row for row in session.execute(
+        select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars()}
+
+    for key, row in rows.items():
+        if row.source != AttributionSource.ROUTER or removed_by_person(row):
+            continue
+        attribution = desired.get(key)
+        if attribution is None:
+            if row.removed_at is None and _update_own_row(
+                    session, row.id, SVSAttribution.removed_at.is_(None), removed_at=now,
+                    removed_by=ROUTER_ACTOR, removal_reason=REMOVAL_NO_LONGER_APPLIES):
+                result.removed.append(RemovedAttribution(row.run_id, row.content_hash, row.confidence, row.late))
+            continue
+
+        values = {}
+        if row.removed_at is not None:
+            values.update(removed_at=None, removed_by=None, removal_reason=None)
+        scan_point = attribution.scan_point.value if attribution.scan_point else None
+        if (row.confidence, row.late, row.scan_point) != (attribution.confidence.value, attribution.late, scan_point):
+            values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
+        if values and _update_own_row(session, row.id, **values):
+            result.written.append(attribution)
+
+    for key, attribution in desired.items():
+        if key in rows:
+            continue
+        # another process may be writing the same alert (an engine pass racing an insert, or a
+        # person associating it); the unique key keeps the row that came first
+        inserted = session.execute(mysql_insert(SVSAttribution).prefix_with("IGNORE").values(
+            run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
+            signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
+            confidence=attribution.confidence.value, late=attribution.late,
+            source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
+            actor=ROUTER_ACTOR, created_at=now))
+        if inserted.rowcount == 1:
+            result.written.append(attribution)
+
+    removed_runs = {row.run_id for row in result.removed} - set(runs)
+    if removed_runs:
+        for run in _snapshots(session, list(session.execute(
+                select(SVSRun).where(SVSRun.id.in_(removed_runs))).scalars())):
+            runs[run.id] = run
+
+    _add_attribution_events(session, alert_uuid, result, now)
+    touched = {a.run.id for a in result.written} | {row.run_id for row in result.removed}
+    flagged = flag_changed_since_review(session, touched)
+    mark_runs_stale(session, run_ids=touched)
+
+    return result, runs, flagged
 
 
 def _update_own_row(session, row_id: int, *conditions, **values) -> bool:
