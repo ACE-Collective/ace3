@@ -26,6 +26,7 @@ from aceapi_v2.svs.expectations import service as expectations_service
 from aceapi_v2.svs.expectations.schemas import Expectation, ExpectationRequest, TestSettings, TestSettingsRequest
 from aceapi_v2.svs.ignores import service as ignores_service
 from aceapi_v2.svs.ignores.schemas import Ignore, IgnoreRequest
+from aceapi_v2.svs.preconditions import WritePrecondition
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -101,12 +102,12 @@ async def get_test(
 
 @router.put("/{guid}/expectations/{platform}/{signature_uuid}", response_model=Expectation)
 async def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest,
-                          auth: ManageAuth) -> Expectation:
+                          auth: ManageAuth, precondition: WritePrecondition) -> Expectation:
     """Decide a signature for the test's runs on the platform: expected or rejected. 404 for an
     unknown test; 422 for a platform the test doesn't support, a run_id that isn't one of the test's
-    runs on the platform, or a config key (a decision records who made it)."""
+    runs on the platform, or a config key (a decision records who made it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
     return await run_db_in_thread(expectations_service.set_expectation, guid, platform, signature_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+                                  auth.auth_user_id, auth.auth_name, precondition)
 
 
 @router.delete("/{guid}/expectations/{platform}/{signature_uuid}", status_code=204)
@@ -119,10 +120,11 @@ async def remove_expectation(guid: str, platform: str, signature_uuid: str, auth
 
 
 @router.put("/{guid}/ignores/{signature_uuid}", response_model=Ignore)
-async def set_test_ignore(guid: str, signature_uuid: str, body: IgnoreRequest, auth: ManageAuth) -> Ignore:
-    """Ignore a signature during the test's runs; setting it again replaces its reason."""
+async def set_test_ignore(guid: str, signature_uuid: str, body: IgnoreRequest, auth: ManageAuth,
+                          precondition: WritePrecondition) -> Ignore:
+    """Ignore a signature during the test's runs; setting it again replaces its reason. 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
     return await run_db_in_thread(ignores_service.set_ignore, signature_uuid, body, auth.auth_user_id,
-                                  auth.auth_name, guid)
+                                  auth.auth_name, guid, precondition)
 
 
 @router.delete("/{guid}/ignores/{signature_uuid}", status_code=204)

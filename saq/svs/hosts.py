@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 from saq.database.model import SVSTestHost
 from saq.database.pool import get_db
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 
 # the Atomic Red Team names of the platforms a test host can be (a test's supported_platforms
 # also names cloud platforms, which are not hosts)
@@ -134,8 +135,9 @@ def host_ips(host: SVSTestHost) -> list[str]:
     return json.loads(host.ips)
 
 
-def get_host(host_id: int) -> SVSTestHost:
-    host = get_db().get(SVSTestHost, host_id)
+def get_host(host_id: int, *, lock: bool = False) -> SVSTestHost:
+    """The host; with lock, read again and locked until the transaction ends."""
+    host = get_db().get(SVSTestHost, host_id, with_for_update=lock, populate_existing=lock)
     if host is None:
         raise UnknownTestHost(f"test host {host_id} not found")
     return host
@@ -231,9 +233,16 @@ def create_host(spec: HostSpec, user_id: Optional[int], actor: Optional[str] = N
     return host
 
 
-def update_host(host_id: int, spec: HostSpec, actor: Optional[str] = None) -> SVSTestHost:
-    """Replaces a test host's fields. Raises UnknownTestHost, DuplicateTestHost."""
-    host = get_host(host_id)
+def update_host(host_id: int, spec: HostSpec, actor: Optional[str] = None,
+                precondition: Precondition = NONE) -> SVSTestHost:
+    """Replaces a test host's fields. Raises UnknownTestHost, DuplicateTestHost, StaleWrite."""
+    # a write from a form loaded before someone else changed the host is refused, not applied over it
+    host = get_host(host_id, lock=precondition.given)
+    try:
+        precondition.check(host, f"test host {host.hostname}")
+    except StaleWrite:
+        get_db().rollback()
+        raise
     before = _audit_extra(host, actor)
     _apply(host, spec)
     _commit(host)

@@ -29,6 +29,30 @@ ATT&CK coverage with its daily snapshots and the declared-vs-measured worklist (
 - **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`,
   validation UUID, test GUID, run UUID, ATT&CK technique id.
 
+### Conflicting writes
+
+A write that two people can make from the same page may say what it was made from, as an HTTP
+precondition, so that the second of two writes from one read is refused instead of silently
+replacing the first (`saq/svs/preconditions.py`):
+
+- `If-Match: <updated_at>`: the row's `updated_at` exactly as it was read. The write applies only
+  while the row is unchanged since.
+- `If-None-Match: *`: the client saw no row. The write applies only while there still is none.
+
+A precondition that no longer holds answers **412** with `{"detail": {"message", "current"}}`, where
+`current` is the row as it is now (null when it was removed), and changes nothing. A malformed one,
+or both headers at once, is a 400. Without either header a write applies as before, which is what a
+script that owns its data wants. The GUI always sends one.
+
+| Write | Precondition the GUI sends |
+|---|---|
+| `PUT /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution`, and its `DELETE` | `If-Match` of the row on the page |
+| `PUT /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `If-None-Match: *` (a candidate has no decision) |
+| `PUT /api/v2/svs/tests/{guid}/ignores/{signature_uuid}`, `PUT /api/v2/svs/ignores/global/{signature_uuid}` | `If-None-Match: *` |
+| `PUT /api/v2/svs/test-hosts/{host_id}` | `If-Match` of the host the form loaded |
+
+The bulk worklist resolution takes no precondition: it resolves the rows as they are.
+
 ## Alerts
 
 `GET /api/v2/alerts` (and `/export/ndjson`, `/export/csv`) lists alerts as flat rows with the alert

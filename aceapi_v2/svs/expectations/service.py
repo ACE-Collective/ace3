@@ -28,10 +28,12 @@ from aceapi_v2.svs.expectations.schemas import (
     TestSettings,
     TestSettingsRequest,
 )
+from aceapi_v2.svs.preconditions import stale_write
 from saq.database.model import SVSExpectation, SVSRun, SVSTestSettings, User
 from saq.database.pool import get_db
 from saq.svs import expectations
 from saq.svs.constants import ExpectationState
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
 
 
@@ -144,18 +146,28 @@ def _expectation(test_guid: str, platform: str, signature_uuid: str) -> Expectat
     return _row(row)
 
 
+def _current_expectation(test_guid: str, platform: str, signature_uuid: str) -> Optional[Expectation]:
+    row = get_db().execute(_statement().where(
+        SVSExpectation.test_guid == test_guid, SVSExpectation.platform == platform.strip().lower(),
+        SVSExpectation.signature_uuid == signature_uuid.strip().lower())).one_or_none()
+    return _row(row) if row is not None else None
+
+
 #
 # deciding (svs:run_manage)
 #
 
 def set_expectation(guid: str, platform: str, signature_uuid: str, body: ExpectationRequest, user_id: Optional[int],
-                    actor: Optional[str]) -> Expectation:
+                    actor: Optional[str], precondition: Precondition = NONE) -> Expectation:
     user_id = require_user(user_id)
     try:
         expectation = expectations.set_expectation(guid, signature_uuid, body.state, user_id, platform=platform,
-                                                   reason=body.reason, run_uuid=body.run_id, actor=actor)
+                                                   reason=body.reason, run_uuid=body.run_id, actor=actor,
+                                                   precondition=precondition)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
+    except StaleWrite as e:
+        raise stale_write(e, lambda: _current_expectation(guid.strip().lower(), platform, signature_uuid))
     return _expectation(expectation.test_guid, expectation.platform, expectation.signature_uuid)
 
 

@@ -38,6 +38,24 @@ async def test_create_read_update_delete(client: AsyncClient, test_user):
 
 
 @pytest.mark.asyncio
+async def test_a_change_from_a_stale_form_is_refused(client: AsyncClient, test_user):
+    """docs/SVS_API.md, *Conflicting writes*"""
+    host = (await client.post("/svs/test-hosts/", json=WIN10)).json()
+    seen = {"If-Match": host["updated_at"]}
+    path = f"/svs/test-hosts/{host['id']}"
+
+    first = await client.put(path, json={**WIN10, "notes": "lab 4"}, headers=seen)
+    assert first.status_code == 200, first.text
+    second = await client.put(path, json={**WIN10, "usernames": []}, headers=seen)
+    assert second.status_code == 412
+    assert second.json()["detail"]["current"]["notes"] == "lab 4"
+    assert (await client.get(path)).json()["usernames"] == ["svc_art"]
+
+    assert (await client.put(path, json={**WIN10, "usernames": []},
+                             headers={"If-Match": first.json()["updated_at"]})).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_errors(client: AsyncClient):
     assert (await client.post("/svs/test-hosts/", json=WIN10)).status_code == 201
     assert (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).status_code == 409

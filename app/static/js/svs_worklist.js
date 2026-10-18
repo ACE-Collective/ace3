@@ -374,15 +374,17 @@
                 if (!answer) {
                     return false;
                 }
+                // only while the row is as this page shows it: someone may have resolved it since
                 return aceApi.put(row_path(settings, row), {resolution: resolution, reason: answer.reason,
-                                                            reference: answer.reference})
+                                                            reference: answer.reference},
+                                  {"If-Match": row.updated_at})
                     .then(function() {
                         message(info.done + " " + row_label(row) + ".", "alert-success");
                         return true;
                     });
             })
             .catch(function(err) {
-                message("Unable to resolve " + row_label(row) + ": " + err.message, "alert-danger");
+                message("Unable to resolve " + row_label(row) + ": " + err.message + stale_detail(err), "alert-danger");
                 return true;
             });
     }
@@ -397,15 +399,26 @@
                 if (!answer) {
                     return false;
                 }
-                return aceApi.del(row_path(settings, row)).then(function() {
+                return aceApi.del(row_path(settings, row), {"If-Match": row.updated_at}).then(function() {
                     message("Reopened " + row_label(row) + ".", "alert-success");
                     return true;
                 });
             })
             .catch(function(err) {
-                message("Unable to reopen " + row_label(row) + ": " + err.message, "alert-danger");
+                message("Unable to reopen " + row_label(row) + ": " + err.message + stale_detail(err), "alert-danger");
                 return true;
             });
+    }
+
+    // what a 412 says the row is now, after someone else changed it
+    function stale_detail(err) {
+        const current = err.status === 412 && err.detail ? err.detail.current : null;
+        if (!current) {
+            return "";
+        }
+        const by = current.resolved_by ? " by " + current.resolved_by : "";
+        return ". It is now " + current.status.replace("_", " ") +
+            (current.resolution ? ", resolved " + current.resolution + by : "") + "; the list shows it as it is now.";
     }
 
     function report(verb, rows_by_key, result) {

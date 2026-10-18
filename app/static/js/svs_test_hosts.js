@@ -165,15 +165,23 @@
                 ips: lines(field("ips").value),
                 notes: field("notes").value.trim() || null,
             };
+            // a change applies only to the host as this form loaded it, not over someone else's change
             const request = state.editing
-                ? aceApi.put(path + "/" + state.editing.id, body)
+                ? aceApi.put(path + "/" + state.editing.id, body, {"If-Match": state.editing.updated_at})
                 : aceApi.post(path + "/", body);
             request
                 .then(function() {
                     bootstrap.Modal.getOrCreateInstance(modal).hide();
                     return state.editing ? load() : reload_first();
                 })
-                .catch(function(err) { show(form_error, err.message); });
+                .catch(function(err) {
+                    if (err.status === 412) {
+                        show(form_error, err.message + ". Close this form and open the host again to see " +
+                                         "the change; your edits were not saved.");
+                        return load();
+                    }
+                    show(form_error, err.message);
+                });
         });
 
         //

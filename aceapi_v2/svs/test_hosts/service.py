@@ -11,10 +11,12 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from aceapi_v2.common.listing import decode_cursor, encode_cursor, rows_to_csv
+from aceapi_v2.svs.preconditions import stale_write
 from aceapi_v2.svs.test_hosts.schemas import TEST_HOST_CSV_FIELDS, TestHost, TestHostRequest
 from saq.database.model import SVSTestHost, User
 from saq.database.pool import get_db
 from saq.svs import hosts
+from saq.svs.preconditions import NONE, Precondition, StaleWrite
 from saq.svs.samples import to_utc_naive
 
 
@@ -85,12 +87,23 @@ def create_test_host(body: TestHostRequest, user_id: Optional[int], actor: Optio
     return _row(host, _username(host))
 
 
-def update_test_host(host_id: int, body: TestHostRequest, actor: Optional[str]) -> TestHost:
+def _current_host(host_id: int) -> Optional[TestHost]:
+    try:
+        host = hosts.get_host(host_id)
+    except hosts.UnknownTestHost:
+        return None
+    return _row(host, _username(host))
+
+
+def update_test_host(host_id: int, body: TestHostRequest, actor: Optional[str],
+                     precondition: Precondition = NONE) -> TestHost:
     spec = _spec(body)
     try:
-        host = hosts.update_host(host_id, spec, actor)
+        host = hosts.update_host(host_id, spec, actor, precondition)
     except hosts.UnknownTestHost as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except StaleWrite as e:
+        raise stale_write(e, lambda: _current_host(host_id))
     except hosts.DuplicateTestHost as e:
         raise HTTPException(status_code=409, detail=str(e))
     return _row(host, _username(host))
