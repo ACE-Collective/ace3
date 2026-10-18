@@ -1,6 +1,6 @@
 import logging
 from collections import Counter
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -95,6 +95,8 @@ class OwnershipCheck:
     # alert uuid -> its disposition, for the alerts left alone because their disposition was not
     # one the caller expected (set_dispositions' expected_dispositions)
     unexpected: dict[str, str] = field(default_factory=dict)
+    # the alerts left alone because the caller's eligible check no longer held for them
+    ineligible: list[str] = field(default_factory=list)
 
 
 def check_alert_ownership(
@@ -394,7 +396,8 @@ def _reassign_owner(c, alert_uuids: list, user_id: int | None) -> None:
               [user_id, new_alert_version(), *alert_uuids])
 
 def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None,
-                     system: bool = False, expected_dispositions: Collection[str] | None = None) -> OwnershipCheck:
+                     system: bool = False, expected_dispositions: Collection[str] | None = None,
+                     eligible: Callable[[list[str]], Collection[str]] | None = None) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
 
     An alert owned by another analyst is left alone unless the user confirmed taking it, in
@@ -411,6 +414,10 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
        :param expected_dispositions: when given, an alert whose disposition is not one of these
            (read under the row lock) is left alone: an analyst dispositioned it after the caller
            chose it.
+       :param eligible: when given, called with the alerts that would change, once their rows are
+           locked, and returns those that still may: the caller's own condition, re-checked where
+           nothing that takes the alert's row lock can change it. It reads on a connection of its
+           own, which sees whatever was committed before the lock was granted.
        :returns: which alerts were dispositioned and which were left alone."""
 
     with get_db_connection() as db:
@@ -436,6 +443,11 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
             owners, user_id, confirmed_takes)
         ownership.frozen = frozen
         ownership.unexpected = unexpected
+        if eligible is not None and ownership.permitted:
+            still = set(eligible(list(ownership.permitted)))
+            ownership.ineligible = [alert_uuid for alert_uuid in ownership.permitted if alert_uuid not in still]
+            ownership.permitted = [alert_uuid for alert_uuid in ownership.permitted if alert_uuid in still]
+            ownership.reassigned = [alert_uuid for alert_uuid in ownership.reassigned if alert_uuid in still]
         alert_uuids = ownership.permitted
         if not alert_uuids:
             return ownership

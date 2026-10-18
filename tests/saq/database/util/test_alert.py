@@ -425,6 +425,29 @@ def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
 
 
 @pytest.mark.integration
+def test_set_dispositions_leaves_ineligible_alerts_alone(two_analysts):
+    """The caller's eligible check runs once the rows are locked, with the alerts that would change;
+    those it drops are left alone."""
+    _, other = two_analysts
+    kept, dropped = insert_alert(), insert_alert()
+    asked = []
+
+    def eligible(alert_uuids):
+        asked.append(alert_uuids)
+        return {kept.uuid}
+
+    result = set_dispositions([kept.uuid, dropped.uuid], DISPOSITION_FALSE_POSITIVE, other.id, "sweeping",
+                              eligible=eligible)
+
+    assert asked == [[kept.uuid, dropped.uuid]]
+    assert result.permitted == [kept.uuid]
+    assert result.ineligible == [dropped.uuid]
+    assert _reload(kept).disposition == DISPOSITION_FALSE_POSITIVE
+    assert _reload(dropped).disposition != DISPOSITION_FALSE_POSITIVE
+    assert get_db().query(Comment).filter(Comment.uuid == dropped.uuid).count() == 0
+
+
+@pytest.mark.integration
 def test_set_dispositions_takes_confirmed_alert(two_analysts, caplog):
     """A confirmed take changes the disposition and makes the taker the owner."""
     owner, other = two_analysts

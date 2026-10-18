@@ -594,6 +594,9 @@ changed since review. Every change can be undone by the opposite one.
   fully attributed sets it back to `OPEN`. The automation user, which set `SIMULATED` and owns it,
   writes it, with the comment *disassociated from SVS test run … by …*. Analysts triage it like
   any other alert. An alert still fully attributed to another run keeps its queue and disposition.
+  An alert disassociated while its run is closed or reviewed is never left `SIMULATED` without a
+  run: closing checks again that each alert is fully attributed under the alert's row lock, which
+  disassociating takes too, so either the alert stays `OPEN` or it is given back.
 - **A queue set by hand is held.** Every move made here is recorded with the router name
   `svs_manual`. While that is the alert's latest move, the `svs_marker` router still attributes the
   alert on each correlation pass but keeps it where it is (`held (manual)` in its decision log). A
