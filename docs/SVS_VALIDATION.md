@@ -131,7 +131,9 @@ catalog current (`docs/SVS_RUNS.md`).
   holds a **lease** on it: it renews a heartbeat every `heartbeat_interval_seconds` while it runs.
   A validation whose worker stopped heartbeating for `lease_seconds` (the node died, say) is taken
   over by another worker; after `max_attempts` claims it is `failed` instead. The lease times come
-  from the database clock.
+  from the database clock. `heartbeat_interval_seconds` must be at most a third of `lease_seconds`,
+  so one late heartbeat never loses the lease: a configuration that breaks this is refused when it
+  is read, by every `ace` process, not only when `service_svs` starts.
 - **Running.** The worker runs the replay (below) with the samples retired at that moment, and
   stores the report: its counts, the commits' compile results, the rules added, removed and changed,
   the skipped samples and timings in `svs_validations`, and each listed pair, with the sample's label

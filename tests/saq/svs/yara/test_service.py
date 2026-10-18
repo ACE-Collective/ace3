@@ -17,7 +17,8 @@ from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.sandbox.runner import landlock_available
 from saq.svs import actions, service as svs_service
-from saq.svs.service import INTERNAL_ERROR, SVSService, SVSServiceConfig, ValidationWorker
+from saq.svs.service import INTERNAL_ERROR, SVSService, ValidationWorker
+from saq.svs.service_config import SVSServiceConfig
 from saq.svs.validations import claim, request_validation
 from saq.svs.yara.diff import Category
 from saq.svs.yara.replay import ReplayCancelled, ReplayError, ReplayResult, SideReport
