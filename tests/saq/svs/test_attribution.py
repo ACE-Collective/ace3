@@ -13,6 +13,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
+from saq.database import private_session
 from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
@@ -531,6 +532,7 @@ class TestDatabase:
         assert get_db().get(SVSRun, run.id).changed_since_review
 
     def test_a_deadlock_is_tried_again(self, monkeypatch, caplog):
+        monkeypatch.setattr(private_session.time, "sleep", lambda _: None)
         run = started_run(GUID)
         root = self._root(run)
         flag = attribution.flag_changed_since_review
@@ -552,21 +554,22 @@ class TestDatabase:
                 SVSRunEvent.run_id == run.id, SVSRunEvent.kind == RunEventKind.ATTRIBUTED.value)).scalar() == 1
         assert any("trying again" in r.getMessage() for r in caplog.records)
 
-    @pytest.mark.parametrize("code, attempts", [(1213, 5), (1062, 1)])
-    def test_a_write_that_keeps_failing_raises(self, monkeypatch, code, attempts):
-        """A deadlock is tried WRITE_ATTEMPTS times, any other error once, and the router reports it."""
+    def test_a_deadlock_that_keeps_happening_raises(self, monkeypatch):
+        """A deadlock is tried WRITE_ATTEMPTS times, then the router reports it (the retry itself
+        is tested in tests/saq/database/test_private_session.py)."""
+        monkeypatch.setattr(private_session.time, "sleep", lambda _: None)
         run = started_run(GUID)
         root = self._root(run)
         calls = []
 
         def fail(session, run_ids):
             calls.append(run_ids)
-            raise OperationalError("UPDATE svs_runs", {}, pymysql.err.OperationalError(code, "no"))
+            raise OperationalError("UPDATE svs_runs", {}, pymysql.err.OperationalError(1213, "Deadlock found"))
 
         monkeypatch.setattr(attribution, "flag_changed_since_review", fail)
         with pytest.raises(OperationalError):
             write_attributions(root.uuid, evaluate(root, _soon()))
-        assert len(calls) == attempts
+        assert len(calls) == attribution.WRITE_ATTEMPTS
         assert self._rows(root.uuid) == []
 
     def test_a_person_removal_is_never_undone(self):
