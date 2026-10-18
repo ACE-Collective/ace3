@@ -1119,6 +1119,11 @@ Plus `cas:purge` and `cas:hold` from the CAS. Each new `svs:*` permission is add
 gates the Signatures area. A reporting key gets the `*_read` permissions, `alert:read` and
 `signature:read`.
 
+Give run reviewers `signature:read` too. Without it the run page works, but a missing YARA
+signature's link to the files captured from the run's alerts (*Debugging a run*) is not shown: it
+leads to the Samples page, which needs `signature:read`, and that link is how a reviewer tells "the
+rule didn't fire" from "the file never reached ACE".
+
 ## Configuration (sketch)
 
 ```yaml

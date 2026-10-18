@@ -364,7 +364,8 @@ its result is being recomputed.
   of the test's last ten ended or reviewed runs on that platform, each linking to that run.
   - A decision can be undone there (*Undo*), which makes the signature a candidate again.
   - A missing YARA signature links to the files captured from the run's alerts (Signatures →
-    Samples, with `signature:read`).
+    Samples). The link is shown only with `signature:read`, so give run reviewers that permission
+    as well.
 - **Candidates** lists the undecided signatures and the alerts that carry them, with *Expected*,
   *Rejected*, *Ignore for this test* and, with `svs:admin`, *Ignore everywhere*
   (*Expectations and ignores*, below). A candidate the test's runs on another platform expect says
