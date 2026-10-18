@@ -1,16 +1,19 @@
 """Attributing alerts to test runs (saq.svs.attribution, docs/SVS_RUNS.md, *Attribution*)."""
 
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pymysql
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
-from saq.database.model import SVSAttribution, SVSRun, User
+from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.environment import get_local_timezone
@@ -40,6 +43,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     MarkerResult,
+    RunEventKind,
     RunState,
     ScanPoint,
     SVSStatus,
@@ -490,6 +494,80 @@ class TestDatabase:
         result = write_attributions(root.uuid, evaluate(root, _soon()))
         assert len(result.written) == 1
         assert [removed for _, removed, _, _ in self._rows(root.uuid)] == [False, False]
+
+    def _reviewed_run(self):
+        run = started_run(GUID)
+        get_db().execute(SVSRun.__table__.update().where(SVSRun.id == run.id).values(
+            state=RunState.REVIEWED.value, changed_since_review=False))
+        get_db().commit()
+        return run
+
+    def test_alerts_of_one_run_written_at_once(self, monkeypatch):
+        """Each write locks the run before its rows, so alerts of one run arriving together wait
+        their turn instead of deadlocking (no retries here to hide one)."""
+        monkeypatch.setattr(attribution, "WRITE_ATTEMPTS", 1)
+        run = self._reviewed_run()
+        roots = [self._root(run) for _ in range(8)]
+        evaluations = [evaluate(root, _soon()) for root in roots]
+        barrier = threading.Barrier(len(roots))
+        errors = []
+
+        def write(root, evaluation):
+            try:
+                barrier.wait()
+                write_attributions(root.uuid, evaluation)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=write, args=pair) for pair in zip(roots, evaluations)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        assert all(len(self._rows(root.uuid)) == 2 for root in roots)
+        get_db().expire_all()
+        assert get_db().get(SVSRun, run.id).changed_since_review
+
+    def test_a_deadlock_is_tried_again(self, monkeypatch, caplog):
+        run = started_run(GUID)
+        root = self._root(run)
+        flag = attribution.flag_changed_since_review
+        calls = []
+
+        def deadlock_once(session, run_ids):
+            calls.append(run_ids)
+            if len(calls) == 1:
+                raise OperationalError("UPDATE svs_runs", {}, pymysql.err.OperationalError(1213, "Deadlock found"))
+            return flag(session, run_ids)
+
+        monkeypatch.setattr(attribution, "flag_changed_since_review", deadlock_once)
+        result = write_attributions(root.uuid, evaluate(root, _soon()))
+
+        assert len(calls) == 2 and len(result.written) == 2
+        assert len(self._rows(root.uuid)) == 2
+        with private_transaction() as session:
+            assert session.execute(select(func.count()).select_from(SVSRunEvent).where(
+                SVSRunEvent.run_id == run.id, SVSRunEvent.kind == RunEventKind.ATTRIBUTED.value)).scalar() == 1
+        assert any("trying again" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("code, attempts", [(1213, 5), (1062, 1)])
+    def test_a_write_that_keeps_failing_raises(self, monkeypatch, code, attempts):
+        """A deadlock is tried WRITE_ATTEMPTS times, any other error once, and the router reports it."""
+        run = started_run(GUID)
+        root = self._root(run)
+        calls = []
+
+        def fail(session, run_ids):
+            calls.append(run_ids)
+            raise OperationalError("UPDATE svs_runs", {}, pymysql.err.OperationalError(code, "no"))
+
+        monkeypatch.setattr(attribution, "flag_changed_since_review", fail)
+        with pytest.raises(OperationalError):
+            write_attributions(root.uuid, evaluate(root, _soon()))
+        assert len(calls) == attempts
+        assert self._rows(root.uuid) == []
 
     def test_a_person_removal_is_never_undone(self):
         run = started_run(GUID)

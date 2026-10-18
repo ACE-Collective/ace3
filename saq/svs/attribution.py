@@ -45,6 +45,7 @@ from typing import Any, Iterable, Iterator, Optional
 
 from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.exc import DBAPIError
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
@@ -54,6 +55,7 @@ from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
 from saq.database.model import SVSAttribution, SVSRun, SVSTestHost
 from saq.database.private_session import private_transaction
+from saq.database.retry import get_dbapi_error_code
 from saq.environment import get_local_timezone
 from saq.observables.file import FileObservable
 from saq.observables.type_hierarchy import get_type_hierarchy
@@ -79,6 +81,11 @@ from saq.svs.run_events import new_run_event
 MAX_WALK_DEPTH = 32
 
 REMOVAL_NO_LONGER_APPLIES = "no longer attributed by the marker router"
+
+# how many times write_attributions runs its transaction when MySQL picks it as a deadlock victim
+# (1213) or it waits too long for a lock (1205): a marker alert whose write fails is never routed
+WRITE_ATTEMPTS = 5
+RETRY_ERROR_CODES = frozenset({1205, 1213})
 
 
 #
@@ -690,13 +697,63 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
     own: adds new ones, restores ones it removed earlier, and removes the ones that no longer hold.
     Rows of a person are never touched. Logs each change and appends it to its run's event log, a
     change to a reviewed run marks the run changed since review, and every change marks the run's
-    result stale."""
+    result stale. A transaction that deadlocks anyway is run again, up to WRITE_ATTEMPTS times."""
     now = now or datetime.now()
+    for attempt in range(1, WRITE_ATTEMPTS + 1):
+        try:
+            result, runs, flagged = _write_attributions(alert_uuid, evaluation, now)
+            break
+        except DBAPIError as e:
+            if get_dbapi_error_code(e) not in RETRY_ERROR_CODES or attempt == WRITE_ATTEMPTS:
+                raise
+            logging.warning("svs attributions of alert %s not written: %s; trying again (attempt %d of %d)",
+                            alert_uuid, e.orig, attempt + 1, WRITE_ATTEMPTS, extra={"alert_uuid": alert_uuid})
+
+    for attribution in result.written:
+        logging.info("svs attribution written: alert %s detection %s to run %s", alert_uuid,
+                     attribution.content_hash, attribution.run.uuid,
+                     extra={**attribution.run.log_fields(), "alert_uuid": alert_uuid,
+                            "detection": attribution.content_hash, "confidence": attribution.confidence.value,
+                            "late": attribution.late, "source": AttributionSource.ROUTER.value,
+                            "scan_point": attribution.scan_point.value if attribution.scan_point else None})
+    for row in result.removed:
+        run = runs.get(row.run_id)
+        logging.info("svs attribution removed: alert %s detection %s from run %s", alert_uuid, row.content_hash,
+                     run.uuid if run else row.run_id,
+                     extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid,
+                            "detection": row.content_hash, "confidence": row.confidence, "late": row.late,
+                            "source": AttributionSource.ROUTER.value, "reason": REMOVAL_NO_LONGER_APPLIES})
+    for run_id in flagged:
+        run = runs.get(run_id)
+        logging.info("svs run %s changed since review: alert %s", run.uuid if run else run_id, alert_uuid,
+                     extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid})
+    return result
+
+
+def _lock_runs(session, alert_uuid: str, run_ids: Iterable[int]) -> None:
+    """Locks, in id order, the runs a write of the alert's attributions can touch: run_ids and the
+    runs of its existing rows. Every attribution row takes a shared lock on its run (the foreign
+    key), and marking the run changed or stale needs an exclusive one, so two alerts of one run
+    written at once would each hold the first and wait for the second: taken first, the run's lock
+    makes them wait their turn instead."""
+    session.execute(
+        select(SVSRun.id)
+        .where(or_(SVSRun.id.in_(sorted(set(run_ids))),
+                   SVSRun.id.in_(select(SVSAttribution.run_id).where(SVSAttribution.alert_uuid == alert_uuid))))
+        .order_by(SVSRun.id)
+        .with_for_update()).all()
+
+
+def _write_attributions(alert_uuid: str, evaluation: Evaluation,
+                        now: datetime) -> tuple[WriteResult, dict[int, RunSnapshot], list[int]]:
+    """write_attributions' transaction. Returns what it changed, the runs involved by id, and the
+    runs it marked changed since review."""
     result = WriteResult()
     desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
     runs = {a.run.id: a.run for a in evaluation.attributions}
 
     with private_transaction() as session:
+        _lock_runs(session, alert_uuid, runs)
         rows = {(row.run_id, row.content_hash): row for row in session.execute(
             select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars()}
 
@@ -745,25 +802,7 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
         flagged = flag_changed_since_review(session, touched)
         mark_runs_stale(session, run_ids=touched)
 
-    for attribution in result.written:
-        logging.info("svs attribution written: alert %s detection %s to run %s", alert_uuid,
-                     attribution.content_hash, attribution.run.uuid,
-                     extra={**attribution.run.log_fields(), "alert_uuid": alert_uuid,
-                            "detection": attribution.content_hash, "confidence": attribution.confidence.value,
-                            "late": attribution.late, "source": AttributionSource.ROUTER.value,
-                            "scan_point": attribution.scan_point.value if attribution.scan_point else None})
-    for row in result.removed:
-        run = runs.get(row.run_id)
-        logging.info("svs attribution removed: alert %s detection %s from run %s", alert_uuid, row.content_hash,
-                     run.uuid if run else row.run_id,
-                     extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid,
-                            "detection": row.content_hash, "confidence": row.confidence, "late": row.late,
-                            "source": AttributionSource.ROUTER.value, "reason": REMOVAL_NO_LONGER_APPLIES})
-    for run_id in flagged:
-        run = runs.get(run_id)
-        logging.info("svs run %s changed since review: alert %s", run.uuid if run else run_id, alert_uuid,
-                     extra={**(run.log_fields() if run else {}), "alert_uuid": alert_uuid})
-    return result
+    return result, runs, flagged
 
 
 def _update_own_row(session, row_id: int, *conditions, **values) -> bool:
