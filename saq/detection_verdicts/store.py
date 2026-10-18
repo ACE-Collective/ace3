@@ -44,6 +44,16 @@ def _check_alert(disposition: Optional[str], analyst: bool):
             f"the verdicts of an alert with the disposition {disposition} are set by ACE, not by analysts")
 
 
+def verdict_refusal(disposition: Optional[str], *, analyst: bool = True) -> Optional[str]:
+    """Why no detection of an alert with this disposition can take a verdict, or None when they
+    can: the rule set_verdicts applies, for a caller that wants to offer only what will work."""
+    try:
+        _check_alert(disposition, analyst)
+    except VerdictNotAllowed as e:
+        return str(e)
+    return None
+
+
 def _check_detection(detection: DetectionPoint):
     # the identity of a row synced before the node was part of it is not the one verdicts are
     # keyed on (saq.analysis.detection_identity); the alert's next sync replaces the row

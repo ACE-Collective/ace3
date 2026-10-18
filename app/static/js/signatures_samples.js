@@ -435,7 +435,8 @@
         const buttons = [];
         const votes = sample.votes;
 
-        if (settings.can_relabel) {
+        // relabel is offered only when it would write something (sample.relabel_refusal says why not)
+        if (settings.can_relabel && !sample.relabel_refusal) {
             ["tp", "fp"].forEach(function(verdict) {
                 const name = verdict.toUpperCase();
                 buttons.push(action_button("Relabel " + name, "btn-outline-dark",
@@ -445,6 +446,8 @@
                         "this rule on this file, on every alert it was captured from that analysts can grade.",
                         function() { return aceApi.put(context.path + "/label", {verdict: verdict}); })));
             });
+        }
+        if (settings.can_relabel) {
             if (votes.tp_explicit + votes.fp_explicit > 0) {
                 buttons.push(action_button("Reset to inherited", "btn-outline-dark",
                     "clear the explicit verdicts, so the label follows the alerts' dispositions again",
@@ -619,6 +622,9 @@
             }
         }
         action_buttons(context, sample).forEach(function(button) { actions.appendChild(button); });
+        if (context.settings.can_relabel && sample.relabel_refusal) {
+            actions.appendChild(el("span", "small text-muted", "Can't be relabeled: " + sample.relabel_refusal + "."));
+        }
         body.appendChild(actions);
         label.appendChild(body);
 

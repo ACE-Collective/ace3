@@ -26,11 +26,11 @@ from saq.cas import get_cas
 from saq.cas.errors import LegalHoldActive
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
-from saq.database.model import SVSSampleDeletion, SVSSampleRetirement, SVSValidationResult, SVSYaraCapture
+from saq.database.model import Alert, SVSSampleDeletion, SVSSampleRetirement, SVSValidationResult, SVSYaraCapture
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_MULTI, VERDICT_TP
-from saq.detection_verdicts.store import SkipCause, VerdictBatch, VerdictNotAllowed, set_verdicts
+from saq.detection_verdicts.store import SkipCause, VerdictBatch, VerdictNotAllowed, set_verdicts, verdict_refusal
 from saq.environment import get_global_runtime_settings
 from saq.svs.samples import bytes_nodes, contributing_detections, get_captures, get_sample, is_local, to_utc_naive
 from saq.svs.storage import purge_deleted_file, release_capture_holds
@@ -118,7 +118,34 @@ def _label_change(sha256: str, rule_uuid: str, batch: VerdictBatch, alert_uuids:
 
 def _require_targets(targets: list) -> None:
     if not targets:
-        raise VerdictNotAllowed("the sample has no contributing detection left: the alerts it was captured from were deleted")
+        raise VerdictNotAllowed(NO_DETECTION_LEFT)
+
+
+NO_DETECTION_LEFT = "the sample has no contributing detection left: the alerts it was captured from were deleted"
+
+
+def relabel_refusal(sha256: str, rule_uuid: str, detections: Optional[dict[int, list[dict]]] = None) -> Optional[str]:
+    """Why relabel would be refused for the sample (no contributing detection can take a verdict),
+    or None when it would write at least one: so the GUI offers it only when it works.
+    detections is contributing_detections() of its captures, when the caller has it."""
+    if detections is None:
+        detections = contributing_detections(capture.id for capture in get_captures(sha256, rule_uuid))
+    rows = [row for capture_rows in detections.values() for row in capture_rows]
+    if not rows:
+        return NO_DETECTION_LEFT
+
+    dispositions = dict(get_db().execute(select(Alert.id, Alert.disposition)
+                                         .where(Alert.id.in_({row["alert_id"] for row in rows}))).all())
+    reasons = set()
+    for row in rows:
+        if row["node_kind"] is None:
+            reason = "the detection predates detection identity; re-sync the alert first"
+        else:
+            reason = verdict_refusal(dispositions.get(row["alert_id"]))
+        if reason is None:
+            return None
+        reasons.add(reason)
+    return "no contributing detection of the sample can take the verdict: " + "; ".join(sorted(reasons))
 
 
 def relabel(sha256: str, rule_uuid: str, verdict: str, user_id: int) -> LabelChange:

@@ -312,7 +312,10 @@ so it needs a user's API key or session; a config key gets 422.
   - `label` and `label_source` are the sample's label afterwards.
 
   They answer 409 when no contributing detection can take the verdict, and 404 for an unknown
-  sample.
+  sample. A sample's detail (`GET …/{sha256}/{rule_uuid}`) carries `relabel_refusal`: the reason a
+  relabel would answer 409 (every contributing detection is on an FP or `SIMULATED` alert, say), or
+  null when it would write a verdict. The Samples page offers *Relabel* only when it is null, and
+  shows the reason otherwise.
 - **`PUT …/retirement`** `{"reason": …}` and **`DELETE …/retirement`** answer the retirement:
   `retired`, `reason`, `retired_by`, `retired_at`, `unretired_by`, `unretired_at`. Retiring a
   retired sample changes nothing. Unretiring one that is not retired is a 404.
