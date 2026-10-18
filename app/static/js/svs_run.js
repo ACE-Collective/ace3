@@ -1216,11 +1216,17 @@
         if (comment_form) {
             comment_form.addEventListener("submit", function(event) {
                 event.preventDefault();
+                // one comment per submit: a double click must not post it twice
+                const submit = comment_form.querySelector("button[type=submit]");
+                if (submit.disabled) {
+                    return;
+                }
+                submit.disabled = true;
                 const field = document.getElementById("svs_run_comment_text");
                 act(aceApi.post(run_path + "/comments", {comment: field.value}).then(function(result) {
                     field.value = "";
                     return result;
-                }));
+                })).then(function() { submit.disabled = false; });
             });
         }
 
