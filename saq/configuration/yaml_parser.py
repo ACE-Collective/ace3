@@ -12,6 +12,8 @@ from saq.environment import get_base_dir
 ENV_PREFIX = "env:"
 ENCRYPTED_PREFIX = "encrypted:"
 FILE_PREFIX = "file:"
+# a file: URL (RFC 8089), such as a git_url naming a local repository, is a value, not a file to read
+FILE_URL_PREFIX = "file://"
 
 
 class DuplicateKeyWarningLoader(yaml.SafeLoader):
@@ -67,6 +69,20 @@ custom_merger = Merger(
 )
 
 
+def _read_file_value(value: str) -> str:
+    """The contents of the file a file:PATH value names (relative to SAQ_HOME), without trailing
+    whitespace. A file that can't be read raises its OSError, naming the value and the file."""
+    path = value[len(FILE_PREFIX):]
+    if not os.path.isabs(path):
+        path = os.path.join(get_base_dir(), path)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().rstrip()
+    except OSError as e:
+        raise type(e)(e.errno, f"the configuration value {value!r} reads its value from {path}, which failed: "
+                               f"{e.strerror} (a local git repository is a plain path or a file:/// URL)", path) from None
+
+
 class YAMLConfig:
     """YAML-based configuration interface.
     - Supports recursive includes via top-level 'config' mapping or list of paths.
@@ -101,12 +117,8 @@ class YAMLConfig:
             # resolved lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py); the
             # marker is left intact so it validates into a SecretRef field. See resolve_all_values.
 
-            if value.startswith(FILE_PREFIX):
-                path = value[len(FILE_PREFIX):]
-                if not os.path.isabs(path):
-                    path = os.path.join(get_base_dir(), path)
-                with open(path, "r", encoding="utf-8") as f:
-                    return f.read().rstrip()
+            if value.startswith(FILE_PREFIX) and not value.startswith(FILE_URL_PREFIX):
+                return _read_file_value(value)
 
         # otherwise no special handling
         return value
@@ -226,14 +238,15 @@ class YAMLConfig:
                 sys.path.append(resolved)
 
     def resolve_all_values(self) -> None:
-        """Recursively resolve env:VAR_NAME and file:PATH values in the configuration, in place.
+        """Recursively resolve env:VAR_NAME and file:PATH values in the configuration, in place. A
+        file:// URL is left as it is.
 
         encrypted:<name> markers are intentionally left unresolved: encrypted secrets are resolved
         lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py), so the marker must
         survive into model validation where it becomes a SecretRef field.
         """
         def _resolve_recursive(mapping: dict[str, Any]) -> None:
-            """Recursively decrypt and resolve values in a mapping."""
+            """Recursively resolve the values in a mapping."""
             for key, value in mapping.items():
                 if isinstance(value, dict):
                     _resolve_recursive(value)
@@ -242,39 +255,9 @@ class YAMLConfig:
                         if isinstance(item, dict):
                             _resolve_recursive(item)
                         elif isinstance(item, str):
-                            # encrypted:<name> is intentionally left unresolved -- resolved lazily at
-                            # point-of-use via SecretRef (saq/configuration/secret_ref.py)
-                            if item.startswith("env:"):
-                                # resolve env:VAR_NAME values in lists
-                                var = item[len("env:"):]
-                                if var not in os.environ:
-                                    raise RuntimeError(
-                                        f"configuration referenced unknown environment variable {var}"
-                                    )
-                                value[index] = os.environ[var]
-                            elif item.startswith("file:"):
-                                file_path = item[len("file:"):]
-                                if not os.path.isabs(file_path):
-                                    file_path = os.path.join(get_base_dir(), file_path)
-                                with open(file_path, "r", encoding="utf-8") as f:
-                                    value[index] = f.read().rstrip()
+                            value[index] = self._resolve_value(item)
                 elif isinstance(value, str):
-                    # encrypted:<name> is intentionally left unresolved -- resolved lazily at
-                    # point-of-use via SecretRef (saq/configuration/secret_ref.py)
-                    if value.startswith("env:"):
-                        # resolve env:VAR_NAME string values
-                        var = value[len("env:"):]
-                        if var not in os.environ:
-                            raise RuntimeError(
-                                f"configuration referenced unknown environment variable {var}"
-                            )
-                        mapping[key] = os.environ[var]
-                    elif value.startswith("file:"):
-                        file_path = value[len("file:"):]
-                        if not os.path.isabs(file_path):
-                            file_path = os.path.join(get_base_dir(), file_path)
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            mapping[key] = f.read().rstrip()
+                    mapping[key] = self._resolve_value(value)
 
         # process all values in the configuration
         for key, value in self._data.items():

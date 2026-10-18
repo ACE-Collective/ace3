@@ -582,6 +582,25 @@ def test_yaml_config_file_prefix_missing_file():
 
 
 @pytest.mark.unit
+def test_a_file_url_is_a_value_not_a_file_to_read(tmpdir):
+    """A git_repo section's git_url may name a local repository as a file:// URL."""
+    repository = tmpdir.mkdir("rules.git")
+    config = YAMLConfig()
+    assert config._resolve_value(f"file://{repository}") == f"file://{repository}"
+
+    config._data = {"git_repo_rules": {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}}
+    config.resolve_all_values()
+    assert config._data["git_repo_rules"] == {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}
+
+
+@pytest.mark.unit
+def test_a_file_value_that_cannot_be_read_names_itself(tmpdir):
+    directory = tmpdir.mkdir("not-a-file")
+    with pytest.raises(IsADirectoryError, match=f"the configuration value 'file:{directory}' reads its value"):
+        YAMLConfig()._resolve_value(f"file:{directory}")
+
+
+@pytest.mark.unit
 def test_yaml_config_file_prefix_strips_trailing_whitespace(tmpdir):
     """Test file: prefix strips trailing whitespace from file contents."""
     secret_file = tmpdir.join("secret_with_newlines.txt")
