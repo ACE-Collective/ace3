@@ -14,6 +14,7 @@ from saq.database.model import SVSAttribution, SVSRun, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.environment import get_local_timezone
+from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 from saq.svs import attribution
 from saq.svs.attribution import (
     AlertHosts,
@@ -312,6 +313,17 @@ class TestEvaluate:
         assert evaluation.confidence == AttributionConfidence.CONTEXT
         assert {a.run.id for a in evaluation.attributions} == {run.id}
         assert len(evaluation.attributions) == 2
+
+    @pytest.mark.parametrize("signature", [SVS_REGISTRATION_REFUSED, SVS_MARKER_MISMATCH])
+    def test_the_svs_built_ins_are_never_attributed(self, runs, signature):
+        root, parent, child, url = _tree()
+        root.add_detection_point("svs built-in", signature_uuid=signature.uuid)
+        runs["window"] = [_run()]
+
+        evaluation = evaluate(root, T0)
+        assert evaluation.detections == []
+        assert evaluation.status is None
+        assert evaluation.attributions == []
 
     def test_context_with_two_candidates_attributes_nothing(self, runs):
         root, parent, child, url = _tree()

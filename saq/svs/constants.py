@@ -5,6 +5,7 @@ and the API can use them."""
 from enum import StrEnum
 
 from saq.detection_verdicts.constants import VERDICT_FP, VERDICT_TP
+from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 
 
 class CaptureState(StrEnum):
@@ -195,3 +196,9 @@ class WorklistStatus(StrEnum):
 class WorklistResolution(StrEnum):
     KEEP = "keep"
     REMOVE = "remove"
+
+
+# the SVS built-ins are about runs, not detections a test fires: a refused registration names the
+# test host, so context attribution would claim its alert for a run live there and hide it from
+# triage. They are never attributed (saq/svs/attribution.py) and never counted in a result
+RUN_SIGNATURES = frozenset({SVS_REGISTRATION_REFUSED.uuid, SVS_MARKER_MISMATCH.uuid})

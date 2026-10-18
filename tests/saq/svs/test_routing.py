@@ -32,6 +32,7 @@ from saq.engine.executor import AnalysisExecutor
 from saq.svs import routing
 from saq.svs.attribution import saved_sightings
 from saq.svs.constants import ScanPoint
+from saq.svs.refusals import Caller, refuse
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraServiceUnavailable
@@ -41,6 +42,7 @@ from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
+CALLER = Caller(name="art-launcher", address="10.1.2.3")
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +144,14 @@ class TestPreInsert:
         ALERT(root)
         assert _queue(root.uuid) == get_config().svs.queue
         assert _attributions(root.uuid) == [("context", False)]
+
+    def test_a_refused_registration_on_a_test_host_stays_in_triage(self):
+        # its alert names the host of the live run, which context attribution would claim it for
+        started_run(GUID, now=datetime.now() - timedelta(minutes=1))
+        alert_uuid = refuse(CALLER, "win10-01", "CORP\\mallory", "mallory is not a user of win10-01",
+                            launcher="art", test_guid=GUID, payload={})
+        assert _queue(alert_uuid) == QUEUE_DEFAULT
+        assert _attributions(alert_uuid) == []
 
     def test_nothing_happens_without_runs(self):
         root = _root(marker="svs-" + "a" * 26)
