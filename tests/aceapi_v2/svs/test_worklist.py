@@ -29,7 +29,8 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 YARA = "33333333-cccc-4ccc-8ccc-333333333333"
 OTHER = "44444444-dddd-4ddd-8ddd-444444444444"
-T0 = datetime(2026, 10, 17, 12, 0, 0)
+# long enough ago that a filter on the last day (resolved:-1d) never finds a row resolved at T0
+T0 = datetime.now().replace(microsecond=0) - timedelta(days=30)
 
 
 @pytest.fixture
