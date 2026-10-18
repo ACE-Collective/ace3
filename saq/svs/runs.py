@@ -463,7 +463,9 @@ def _conflict(run: SVSRun, call: str, caller: Caller, payload: Optional[dict] = 
 
 def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
     """Created -> Started; the windows start now. Raises UnknownRun, RunStateConflict."""
-    now = now or datetime.now()
+    # the windows are stored to the second, and MySQL rounds a fraction half up: a window stored
+    # from the exact time could start after the test fired, so it starts at the whole second instead
+    now = (now or datetime.now()).replace(microsecond=0)
     run = get_run(run_uuid)
     if run.state != RunState.CREATED or not _transition(
             run, RunState.CREATED, RunState.STARTED, caller.name, actor_user_id=caller.user_id, now=now,

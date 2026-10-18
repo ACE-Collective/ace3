@@ -129,7 +129,7 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 | Call | Does |
 |---|---|
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
-| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now. |
+| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). |
 | `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
 
