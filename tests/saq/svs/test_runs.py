@@ -190,6 +190,17 @@ def test_start():
     ]
 
 
+def test_the_windows_start_at_the_whole_second_of_start():
+    # stored to the second, a window from the exact time would round up past an alert of that second
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=5, milliseconds=600))
+
+    run = _state(run.uuid)
+    assert run.started_at == T0 + timedelta(minutes=5)
+    assert run.observation_ends_at == T0 + timedelta(minutes=65)
+    assert run.attribution_ends_at == T0 + timedelta(hours=25, minutes=5)
+
+
 def test_a_call_that_does_not_apply_is_a_conflict_and_is_recorded():
     run = register(_registration(), LAUNCHER)
     start(run.uuid, LAUNCHER)
