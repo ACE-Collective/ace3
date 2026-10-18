@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 
 import pytest
 
@@ -126,6 +127,17 @@ def test_stored_fields():
     assert (row.hostname, row.fqdn) == ("win10-01", "win10-01.corp.example")
     assert json.loads(row.usernames) == ["alice"] and json.loads(row.ips) == ["10.0.0.5"]
     assert row.created_at is not None and row.updated_at is not None
+
+
+@pytest.mark.integration
+def test_a_host_is_never_created_after_it_was_updated(monkeypatch):
+    """created_at is stored to the second; written with a fraction of .5 or more, MySQL rounded it
+    up past the updated_at the server stamps on the same insert."""
+    late_in_the_second = datetime.now().replace(microsecond=999_000)
+    monkeypatch.setattr(hosts, "datetime", type("clock", (), {"now": staticmethod(lambda: late_in_the_second)}))
+    host = hosts.create_host(build_spec("win10-07"), None)
+    assert host.created_at == late_in_the_second.replace(microsecond=0)
+    assert host.created_at <= host.updated_at
 
 
 @pytest.mark.integration

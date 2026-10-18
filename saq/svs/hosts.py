@@ -223,7 +223,9 @@ def _commit(host: SVSTestHost) -> None:
 
 def create_host(spec: HostSpec, user_id: Optional[int], actor: Optional[str] = None) -> SVSTestHost:
     """Adds a test host. Raises DuplicateTestHost when its short name is taken."""
-    host = SVSTestHost(created_by=user_id, created_at=datetime.now())
+    # created_at is stored to the second and MySQL rounds a fraction up: floored, it is never after
+    # the updated_at the server stamps on the same insert
+    host = SVSTestHost(created_by=user_id, created_at=datetime.now().replace(microsecond=0))
     _apply(host, spec)
     get_db().add(host)
     _commit(host)
