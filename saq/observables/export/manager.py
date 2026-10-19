@@ -66,7 +66,7 @@ def run_exports(names: Optional[list[str]] = None, force: bool = False) -> int:
             result = os.EX_SOFTWARE
             continue
 
-        fingerprint = export_list.fingerprint()
+        fingerprint = export.fingerprint(export_list)
         if not force and fingerprint == export.get_last_fingerprint():
             logging.info(f"no updates needed for observable export {export.name}")
             continue

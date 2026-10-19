@@ -134,6 +134,24 @@ class ObservableExport(ABC):
         """Records a successful publish. Called only after publish() returns cleanly."""
         write_fingerprint(self.name, fingerprint)
 
+    def fingerprint_salt(self) -> str:
+        """Anything besides the export list that changes what this target publishes.
+
+        Mixed into the change-detection fingerprint, so a target whose output also depends on code or
+        configuration republishes when that changes. Empty by default: the fingerprint is then exactly
+        the export list's.
+        """
+        return ""
+
+    def fingerprint(self, export_list: ObservableExportList) -> str:
+        """The change-detection fingerprint for publishing the given list to this target."""
+        fingerprint = export_list.fingerprint()
+        salt = self.fingerprint_salt()
+        if not salt:
+            return fingerprint
+
+        return hashlib.sha256(f"{fingerprint}:{salt}".encode("utf8")).hexdigest()
+
     @abstractmethod
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
         """Returns what this target would publish, given the active detections by type.

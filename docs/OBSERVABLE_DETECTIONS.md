@@ -50,6 +50,25 @@ alerts a hunt creates. It follows that enabling a detection on a newly added obs
 no ACE config change -- the type reaches the collection on the next export, and only the hunt
 consuming it has to exist.
 
+### The yara target
+
+Each detection becomes one yara string named `$obsd_<id>` (the `observable_detections` row), plus
+`$obsd_json_<id>` for its JSON-escaped form when that differs; a match on either is resolved back to
+the detection. By default a string is a text string carrying the modifiers from
+`yara_export_string_modifiers`, and a text string matches anywhere, so `evil-example.com` would also
+hit inside `acme-evil-example.com` (and `fullword` does not help, because yara treats `-` as a word
+boundary). A type listed in `yara_export_string_boundaries` instead gets a regex that only matches the
+value as a whole token: no hostname character may sit right before it or right after it, so
+`evil-example.com` no longer matches inside `acme-evil-example.com`, `evil-example.com.au` or
+`evil-example.community`, but still matches in `https://evil-example.com/login` or `block evil-example.com.`
+The same applies to email addresses, IPv4/IPv6 addresses (`1.2.3.4` not inside `5.1.2.3.4`) and hashes.
+A side only gets a boundary when the value's edge character is a word character, so a partial url
+ending in `/` or `=` still matches whatever follows it. `fullword` is dropped from a bounded string,
+and a value longer than 500 characters keeps a text string, because libyara stops matching a regex
+whose match is longer than about 1KB. Setting `yara_export_string_boundaries: {}` turns all of this
+off. A change to the code's output format or to either config block is part of the export
+fingerprint, so the next export rewrites the rule files without needing `--force`.
+
 ## The Splunk KV store collection
 
 Disabled by default: a stock install has no Splunk to publish to. Enable it by setting `collection` and

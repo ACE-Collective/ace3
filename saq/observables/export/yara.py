@@ -8,6 +8,8 @@ Each detection becomes a yara string named ``$obsd_<id>``, where the id is the
 detection fired -- see saq/modules/file_analysis/yara.py.
 
 Settings come from the existing ``yara_export:`` and ``yara_export_string_modifiers:`` config blocks.
+Types listed in ``yara_export_string_boundaries:`` get a regex string instead of a text string, one
+that only matches the value as a whole token (see ``format_bounded_yara_regex``).
 
 Note that ``export_minimum_length`` drops very short values, which for the ``ip`` observable type
 means abbreviated IPv6 addresses like ``::1`` and ``fe80::`` are not exported. That is intended --
@@ -16,6 +18,7 @@ strings that short match everything and are worthless as yara content.
 
 from datetime import date
 import io
+import json
 import logging
 import os
 import re
@@ -59,6 +62,63 @@ def format_yara_json_string(value: str) -> str:
     return value.replace('\\', '\\\\\\\\').replace('"', '\\"').replace("\n", "").replace("\r", "")
 
 
+# bumped whenever the generated strings change shape, so the next export rewrites every rule file
+# even though the detections themselves did not change (see fingerprint_salt)
+YARA_EXPORT_FORMAT_VERSION = "2"
+
+# characters that are special inside a yara /regex/ (the slash ends the regex)
+YARA_REGEX_SPECIAL = frozenset('\\/^$.|?*+()[]{}')
+
+# A boundary family: the characters that make up a "word" on each side. A bounded value may not have a
+# word character directly before or after it. dot_aware: a "." after the value only counts as a boundary
+# when no word character follows it, so evil.com.au is rejected but "block evil.com." at the end of a
+# sentence still hits. The class strings are valid in Python regexes too (get_string_boundary relies on it).
+BOUNDARY_FAMILIES = {
+    "hostname": {"left": r"a-zA-Z0-9_\-", "right": r"a-zA-Z0-9_\-", "dot_aware": True},
+    # "." and "+" are legal in the local part, so neither may precede the address
+    "email_address": {"left": r"a-zA-Z0-9_\-.+", "right": r"a-zA-Z0-9_\-", "dot_aware": True},
+    # 1.2.3.4 must not sit inside 5.1.2.3.4, 11.2.3.4, 1.2.3.45 or 1.2.3.4.5
+    "ipv4": {"left": r"0-9.", "right": r"0-9", "dot_aware": True},
+    "ipv6": {"left": r"0-9a-fA-F:", "right": r"0-9a-fA-F:", "dot_aware": False},
+    "hex": {"left": r"a-fA-F0-9", "right": r"a-fA-F0-9", "dot_aware": False},
+}
+
+# libyara (4.5) stops matching a regex string once the match is about 1KB long -- 1023 characters
+# ascii, 511 wide -- while a text string of any length still matches. A value longer than this keeps
+# its text string, so a long detection can never silently stop firing.
+MAX_BOUNDED_VALUE_LENGTH = 500
+
+
+def format_yara_regex(value: str) -> str:
+    """Escapes an observable value for use inside a yara /regex/."""
+    value = value.replace("\n", "").replace("\r", "")
+    return "".join("\\" + c if c in YARA_REGEX_SPECIAL else c for c in value)
+
+
+def format_bounded_yara_regex(value: str, family: str) -> str:
+    """The value as a yara regex that only matches when it is not part of a longer token.
+
+    `value` is the literal text to find (already in its raw or JSON-escaped form). A side only gets a
+    boundary when the value's edge character is a word character of the family, so a partial url
+    ending in "/" or "=" still matches whatever follows it.
+    """
+    spec = BOUNDARY_FAMILIES[family]
+    core = format_yara_regex(value)
+
+    left = ""
+    if value and re.fullmatch(f"[{spec['left']}]", value[0]):
+        left = f"(^|[^{spec['left']}])"
+
+    right = ""
+    if value and re.fullmatch(f"[{spec['right']}]", value[-1]):
+        if spec["dot_aware"]:
+            right = f"([^{spec['right']}.]|\\.[^{spec['right']}]|\\.?$)"
+        else:
+            right = f"([^{spec['right']}]|$)"
+
+    return f"/{left}{core}{right}/"
+
+
 class YaraObservableExport(ObservableExport):
 
     @property
@@ -79,6 +139,26 @@ class YaraObservableExport(ObservableExport):
         """
         modifiers = get_config().yara_export_string_modifiers or {}
         return modifiers.get(observable_type.lower(), modifiers.get("default", ""))
+
+    def get_string_boundary(self, observable_type: str, value: str) -> str | None:
+        """The boundary family for a value of this type, or None to keep a plain text string."""
+        boundaries = get_config().yara_export_string_boundaries or {}
+        family = boundaries.get(observable_type.lower())
+        if family == "ip":
+            family = "ipv6" if ":" in value else "ipv4"
+
+        if family is not None and family not in BOUNDARY_FAMILIES:
+            logging.error(f"unknown yara export boundary {family} for {observable_type} - using a text string")
+            return None
+
+        return family
+
+    def fingerprint_salt(self) -> str:
+        # the generated strings depend on the format and on both string config blocks, not only on
+        # the detections, so a change to any of them has to republish
+        return YARA_EXPORT_FORMAT_VERSION + json.dumps(
+            [get_config().yara_export_string_boundaries, get_config().yara_export_string_modifiers],
+            sort_keys=True)
 
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
         """The detections of a configured type that are long enough to be worth a yara string.
@@ -167,14 +247,35 @@ class YaraObservableExport(ObservableExport):
 
     def _format_strings(self, entry: ExportEntry, modifiers: str) -> str:
         """The yara strings for one detection: the raw value, plus its JSON form if that differs."""
+        family = self.get_string_boundary(entry.type, entry.value)
+
+        raw = entry.value.replace("\n", "").replace("\r", "")
+        json_form = raw.replace("\\", "\\\\").replace('"', '\\"')
+        if family is not None and len(json_form) > MAX_BOUNDED_VALUE_LENGTH:
+            logging.debug(f"observable type {entry.type} id {entry.id} is too long for a bounded "
+                          f"yara string - using a text string")
+            family = None
+
         string_data = io.StringIO()
 
-        yara_value = format_yara_string(entry.value)
-        string_data.write(f'          $obsd_{entry.id} = "{yara_value}" {modifiers}\n')
+        if family is None:
+            yara_value = format_yara_string(entry.value)
+            string_data.write(f'          $obsd_{entry.id} = "{yara_value}" {modifiers}\n')
 
-        yara_json_value = format_yara_json_string(entry.value)
-        if yara_value != yara_json_value:
-            string_data.write(f'          $obsd_json_{entry.id} = "{yara_json_value}" {modifiers}\n')
+            yara_json_value = format_yara_json_string(entry.value)
+            if yara_value != yara_json_value:
+                string_data.write(f'          $obsd_json_{entry.id} = "{yara_json_value}" {modifiers}\n')
+
+            return string_data.getvalue()
+
+        # the regex consumes the boundary character, so fullword would test the character beyond it
+        # and reject a plain "a evil.com"
+        modifiers = " ".join(modifier for modifier in modifiers.split() if modifier != "fullword")
+
+        string_data.write(f'          $obsd_{entry.id} = {format_bounded_yara_regex(raw, family)} {modifiers}\n')
+        if json_form != raw:
+            string_data.write(
+                f'          $obsd_json_{entry.id} = {format_bounded_yara_regex(json_form, family)} {modifiers}\n')
 
         return string_data.getvalue()
 
