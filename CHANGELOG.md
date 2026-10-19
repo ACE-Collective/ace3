@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.128] - 2026-10-19
+
+- [Fix test-suite deadlock when a fork handler logs](https://github.com/ACE-Collective/ace3/pull/768)
+- [Add GUI themes: System, Light, Dark and 👴 JD](https://github.com/ACE-Collective/ace3/pull/767)
+- [Add /ace-review skill and write down ACE's engineering values](https://github.com/ACE-Collective/ace3/pull/765)
+- [Serve the node-to-node API routes from their own container](https://github.com/ACE-Collective/ace3/pull/742)
+- [Phishkit: bypass the proxy for chosen hosts, narrow the direct fallback, show crawl chains](https://github.com/ACE-Collective/ace3/pull/735)
+- [Restore striped rows and fitted columns in the remediation and file collection tables](https://github.com/ACE-Collective/ace3/pull/733)
+- [Point validate-hunt at POST /api/v2/hunt/validate](https://github.com/ACE-Collective/ace3/pull/732)
+- [Let integrations add API routes under /api/v2/integrations/<name>](https://github.com/ACE-Collective/ace3/pull/730)
+
 ## [3.0.127] - 2026-10-16
 
 - [Record who uploaded a file to an alert](https://github.com/ACE-Collective/ace3/pull/729)
