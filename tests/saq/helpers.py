@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 import logging
 from multiprocessing import Manager, Pipe, Process, RLock
+import multiprocessing.util
 import os
 import secrets
 
@@ -525,7 +526,26 @@ memory_log_handler = None
 # so eventually this class goes away
 
 class MemoryLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        # the pid in which the test_log_messages proxy is safe to use: this process, and a
+        # forked child once multiprocessing's after-fork hooks have given it a connection of
+        # its own. In between -- inside os.fork(), where os.register_at_fork child handlers run
+        # (huggingface_hub closes its httpx client there, and httpcore logs the close) -- the
+        # proxy still holds the parent's connection, and a child writing to it takes the
+        # parent's reply: both processes then wait forever.
+        self.proxy_pid = os.getpid()
+        multiprocessing.util.register_after_fork(self, MemoryLogHandler._after_fork)
+
+    def _after_fork(self):
+        self.proxy_pid = os.getpid()
+
     def emit(self, record):
+        # a record from inside the fork window cannot be delivered safely; dropping it is the
+        # only option, and only fork-handler chatter is ever emitted there
+        if os.getpid() != self.proxy_pid:
+            return
+
         try:
             test_log_messages.append(record)
         except Exception as e:
