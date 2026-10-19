@@ -70,11 +70,11 @@ async def lifespan(app: FastAPI):
         logger.debug("error stopping the background event loop: %s", e)
 
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
+def _new_app(title: str, description: str) -> FastAPI:
+    """A FastAPI application under /api/v2 with the shared lifespan and exception handler."""
     app = FastAPI(
-        title="ACE API v2",
-        description="Analysis Correlation Engine API v2",
+        title=title,
+        description=description,
         version="2.0.0",
         root_path="/api/v2",
         lifespan=lifespan,
@@ -86,7 +86,29 @@ def create_app() -> FastAPI:
         report_exception()
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
-    # Include routers
+    return app
+
+
+def create_engine_app() -> FastAPI:
+    """Create the node-to-node application served by the http-api-engine container.
+
+    nginx routes /api/v2/engine/ to that container so that engine traffic never competes with
+    user traffic for the workers of http-api-v2 (see docs/ENGINE_API.md). It mounts nothing a
+    user would call."""
+    app = _new_app("ACE API v2 (engine)", "Analysis Correlation Engine API v2: node-to-node routes")
+    app.include_router(engine_router, prefix="/engine", tags=["engine"])
+    app.include_router(health_router, prefix="/health", tags=["health"])
+    app.include_router(common_router, prefix="/common", tags=["common"])
+    return app
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    app = _new_app("ACE API v2", "Analysis Correlation Engine API v2")
+
+    # Include routers. The engine routes are mounted here too, so this app stays complete (tests,
+    # ace gui start --api-v2); in the container deployment nginx sends /api/v2/engine/ to
+    # create_engine_app() instead.
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     # one alert's side of SVS: /alerts/{uuid}/svs
     app.include_router(svs_alerts_router, prefix="/alerts", tags=["svs"])

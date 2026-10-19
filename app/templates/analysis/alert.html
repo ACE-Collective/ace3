@@ -185,6 +185,8 @@
 
 {% include 'analysis/detection_chains.html' %}
 
+{% include 'analysis/crawl_chains.html' %}
+
 {% if observable_open_event_counts %}
     <div class="panel panel-default">
     {% set matching_open_events = observable_open_event_counts|dictsort(false, 'value')  %}
