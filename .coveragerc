@@ -6,3 +6,6 @@ source =
     app
     saq
     aceapi
+    aceapi_v2
+parallel = True
+concurrency = multiprocessing,thread
