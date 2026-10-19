@@ -33,12 +33,29 @@ class ObservableModifierConfig(AnalysisModuleConfig):
     )
 
 
+KEY_MATCHED_RULES = "matched_rules"
+
+
 class ObservableModifierAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
             "matched_rules": [],
         }
+        # a copy of details["matched_rules"] kept in data.json, so the alert page can list
+        # the rules that matched without opening the details file of every matched observable
+        self.matched_rules: list[dict] = []
+
+    @property
+    def json(self):
+        result = super().json
+        result[KEY_MATCHED_RULES] = self.matched_rules
+        return result
+
+    @json.setter
+    def json(self, value):
+        Analysis.json.fset(self, value)
+        self.matched_rules = value.get(KEY_MATCHED_RULES, [])
 
     @override
     @property
@@ -1151,6 +1168,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
         analysis = self.create_analysis(observable)
         analysis.completed = completed
         analysis.details["matched_rules"] = matched_rules
+        analysis.matched_rules = matched_rules
         analysis.summary = analysis.generate_summary()
 
         for match in matched_rules:
@@ -1158,3 +1176,36 @@ class ObservableModifierAnalyzer(AnalysisModule):
             if rule_uuid and rule_uuid not in emitted_uuids:
                 analysis.add_observable_by_spec(F_SIGNATURE_ID, rule_uuid)
                 emitted_uuids.add(rule_uuid)
+
+
+@dataclass
+class ModifierRuleMatches:
+    """A rule that matched in an alert, as the alert page's Observable Modifier Rules card shows it."""
+    name: str
+    uuid: str
+    # the actions it applied (RuleActions field names), in the order first seen
+    actions: list[str] = field(default_factory=list)
+    observables: list[Observable] = field(default_factory=list)
+    # the observables its ignore action removed. One whose .ignored is still False was taken
+    # only from the parent analyses the rule matched it under and is shown elsewhere in the tree.
+    ignored: list[Observable] = field(default_factory=list)
+
+
+def build_modifier_rule_matches(root: RootAnalysis) -> list[ModifierRuleMatches]:
+    """Returns every rule that matched an observable in root, the ones that ignored something first."""
+    rules: dict[str, ModifierRuleMatches] = {}
+    for analysis in root.all_analysis:
+        if not isinstance(analysis, ObservableModifierAnalysis):
+            continue
+        for match in analysis.matched_rules:
+            rule = rules.get(match["uuid"])
+            if rule is None:
+                rule = rules[match["uuid"]] = ModifierRuleMatches(name=match["name"], uuid=match["uuid"])
+            rule.observables.append(analysis.observable)
+            for action in match["actions_applied"]:
+                if action not in rule.actions:
+                    rule.actions.append(action)
+            if match["actions_applied"].get("ignore"):
+                rule.ignored.append(analysis.observable)
+
+    return sorted(rules.values(), key=lambda rule: (not rule.ignored, rule.name.lower()))

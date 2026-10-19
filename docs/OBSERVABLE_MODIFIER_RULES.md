@@ -284,6 +284,13 @@ Whenever a rule matches an observable, ACE:
 3. emits a `signature_id` observable carrying the rule's `uuid` (deduplicated, so a rule that
    matches in both phases emits it only once).
 
+The alert page lists every rule that matched in the alert in an **Observable Modifier Rules** card,
+with the number of observables it matched and the actions it applied. Rules that ignored something
+come first, each with the observables they took out of the tree. The card starts collapsed, and
+its header counts the observables that were ignored. The card reads the copy of the matches the analysis keeps in
+`data.json` (`ObservableModifierAnalysis.matched_rules`), so an alert analyzed before that copy
+existed has no card until it is analyzed again.
+
 ### Worked examples
 
 The examples below are illustrative — they mirror the structure of real production rules but use

@@ -1,0 +1,41 @@
+{# the observable modifier rules that matched in this alert, and what their ignore actions took out of the tree (saq/modules/util/observable_modifier.py) #}
+{% if modifier_rule_matches %}
+{% set ignored_count = modifier_rule_matches | map(attribute='ignored') | map('length') | sum %}
+<div class="row">
+    <div class="col">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h5>Observable Modifier Rules
+                    {% if ignored_count %}<span class="badge text-bg-warning">{{ ignored_count }} ignored</span>{% endif %}
+                    <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_observable_modifier_rules" aria-expanded="false" aria-controls="collapse_observable_modifier_rules">(hide/show)</a></h5>
+            </div>
+            <div class="card-body collapse" id="collapse_observable_modifier_rules">
+                <table class="table table-sm table-borderless small mb-0" style="width: auto;">
+                    {% for rule in modifier_rule_matches %}
+                        <tr>
+                            <td class="pe-1">{% if rule.ignored %}<span class="bi bi-eye-slash-fill text-warning" title="ignored observables"></span>{% endif %}</td>
+                            <td class="pe-3" title="{{ rule.uuid }}">{{ rule.name }}</td>
+                            <td class="text-muted text-nowrap pe-3">{{ rule.observables | length }} observable{{ 's' if rule.observables | length != 1 }}</td>
+                            <td class="text-muted">{{ rule.actions | join(', ') }}</td>
+                        </tr>
+                        {% for observable in rule.ignored %}
+                            <tr>
+                                <td></td>
+                                <td colspan="3" class="ps-3" style="word-break: break-all;">
+                                    <span class="text-muted">{{ observable.type }}</span>
+                                    <span title="{{ observable.value }}">{{ detection_chain_observable_display_value(observable) }}</span>
+                                    {% if observable.ignored %}
+                                        <span class="text-muted">hidden from the analysis tree</span>
+                                    {% else %}
+                                        <span class="text-muted">removed where the rule matched it, still shown elsewhere</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
