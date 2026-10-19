@@ -4,6 +4,7 @@ import logging
 import os
 
 import pytest
+from sqlalchemy import text
 from unittest.mock import Mock, patch
 
 from aceapi.auth import create_api_key
@@ -12,6 +13,7 @@ from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.collectors.hunter.query_hunter import QueryHunt
 from saq.configuration.config import get_config
 from saq.constants import TAG_HUNT_VALIDATION
+from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
 from saq.logging import ThreadSuppressionFilter
 from saq.permissions.user import add_user_permission
@@ -66,6 +68,11 @@ class _V2HuntApi:
     """POST /api/v2/hunt/validate, called like the Flask test client calls the legacy route. Run
     on the loop the cached async database engine is bound to (see tests/conftest.py::_dispatch_v2)."""
 
+    def __init__(self, raise_app_exceptions: bool = True):
+        # Starlette re-raises an unhandled exception after its handler has answered 500; False
+        # returns that answer instead
+        self.raise_app_exceptions = raise_app_exceptions
+
     def post(self, path, json=None, data=None, content_type=None, headers=None):
         from httpx import ASGITransport, AsyncClient
         from aceapi_v2.application import app as fastapi_app
@@ -81,7 +88,8 @@ class _V2HuntApi:
                 request_headers["content-type"] = content_type
 
         async def _send():
-            async with AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://testserver") as client:
+            transport = ASGITransport(app=fastapi_app, raise_app_exceptions=self.raise_app_exceptions)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 return await client.post(path, headers=request_headers, **kwargs)
 
         return _V2Response(run_async(_send()))
@@ -1950,3 +1958,48 @@ def test_validate_hunt_audits_an_execution_error(hunt_api, auth_headers, hunt_au
     assert [record["event"] for record in hunt_audit_records] == ["hunt_error"]
     assert "Connection failed to SIEM" in hunt_audit_records[0]["detail"]
     assert "result" not in hunt_audit_records[0]
+
+
+def _query_and_leave_open():
+    # what Persistable.register_persistence_source() does: a SELECT through get_db() and no commit
+    get_db().execute(text("SELECT 1"))
+
+
+def _query_then_lose_connection():
+    # MySQL server has gone away mid-request: the connection is invalidated inside the
+    # transaction, and the session refuses every later statement with PendingRollbackError
+    get_db().execute(text("SELECT 1"))
+    get_db().connection().invalidate()
+    get_db().execute(text("SELECT 1"))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("load_hunt_managers,expected_status", [
+    (_query_and_leave_open, 200),
+    (_query_then_lose_connection, 500),
+])
+def test_validate_hunt_v2_resets_the_thread_session(auth_headers, hunt_audit_records, load_hunt_managers, expected_status):
+    """The worker thread's get_db() session is removed after every request, so one left in a
+    transaction, or holding a dropped connection, cannot fail later requests on that thread."""
+    sessions = []
+
+    def _load_hunt_managers():
+        sessions.append(get_db()())
+        load_hunt_managers()
+
+    with patch("aceapi_v2.hunt.service.HunterService") as mock_hunter_service:
+        mock_manager = Mock()
+        mock_manager.load_hunt_from_config.return_value = Mock()
+        mock_instance = mock_hunter_service.return_value
+        mock_instance.hunt_managers = {"test": mock_manager}
+        mock_instance.load_hunt_managers = Mock(side_effect=_load_hunt_managers)
+
+        result = _V2HuntApi(raise_app_exceptions=False).post(
+            HUNT_VALIDATE_URL, json=_make_compiled_payload(VALID_HUNT_YAML), headers=auth_headers)
+
+    assert result.status_code == expected_status
+    assert len(sessions) == 1
+    assert not sessions[0].in_transaction()
+    if expected_status == 500:
+        assert [record["event"] for record in hunt_audit_records] == ["hunt_rejected"]
+        assert "PendingRollbackError" in hunt_audit_records[0]["detail"]
