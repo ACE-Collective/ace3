@@ -5,6 +5,7 @@ import re
 
 import pytest
 from flask import url_for
+from sqlalchemy.exc import OperationalError
 
 from aceapi_v2.sync import run_async_with_session
 from aceapi_v2.user_preferences import service
@@ -54,6 +55,22 @@ def test_unreadable_stored_theme_falls_back_to_system(web_client, analyst, caplo
         html = web_client.get(url_for("analysis.manage")).data.decode()
     assert _html_attributes(html) == ("system", "light")
     assert any("preference theme is unreadable" in record.getMessage() for record in caplog.records)
+
+
+def test_theme_lookup_failure_falls_back_to_system(web_client, analyst, monkeypatch, caplog):
+    _set_theme(analyst, "dark")
+
+    def _broken_db():
+        raise OperationalError("SELECT", {}, Exception("database is gone"))
+
+    monkeypatch.setattr("app.user_preferences.get_db", _broken_db)
+    with caplog.at_level(logging.ERROR):
+        response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    assert _html_attributes(response.data.decode()) == ("system", "light")
+    assert any(record.levelno == logging.ERROR
+               and f"reading the theme preference of user {analyst}" in record.getMessage()
+               for record in caplog.records)
 
 
 def test_login_page_follows_the_system(app):
