@@ -215,7 +215,7 @@ A sample's **label** for a rule aggregates the effective verdicts of its contrib
 Capture is Part 2's first half. The module `YaraSampleCapture` (`saq/modules/svs.py`) is enabled in `analysis_mode_dispositioned` (`enabled_modules` in `etc/saq.default.yaml`), where both disposition writers requeue an alert. It works in `execute_post_analysis`, analyzes no observable and leaves the tree as it is.
 
 1. It reads the alert's disposition from the database, because roots don't carry it, together with `unreviewed_run_condition`. An unclassified alert, or one attributed to a run that is not reviewed, is skipped.
-2. `saq/svs/capture.py::candidates_from_root` lists one candidate per `(file sha256, rule uuid)`: a YARA detection on a file observable with the structured details the YARA module gives it. Detections without those details (alerts from before SVS) and rules without a uuid are skipped.
+2. `saq/svs/capture.py::candidates_from_root` lists one candidate per `(file sha256, rule uuid)`: a YARA detection on a file observable with the structured details the YARA module gives it. A detection without those details, and a rule without a uuid, is skipped.
 3. For each candidate, `capture()` checks `svs_sample_deletions` first (`saq/svs/storage.py::is_deleted`), then `_capture()` inserts or claims the `svs_yara_captures` row in a private session, puts the file and the match record into the pool with a hold `Hold("svs_capture", <row id>)` (`storage.capture_hold`), and updates the row to `stored` or `missing` with a reason (`file`, `match_record`, `storage`).
 4. It checks the deletion audit again after storing, because a deletion can commit between the two; a capture that lost that race removes what it wrote.
 
@@ -466,7 +466,7 @@ To refresh screenshots:
 
 ## Logging
 
-ACE's convention applies: the message describes the event, and `extra={}` carries the fields, which `saq.log` renders as `key=value` and the fluent formatter makes top-level fields in the site's log tooling. SVS adds a contract on top (`SVS.md`, Part 5, *Logging contract*): every record about a run carries `svs_run`, `svs_test` and `svs_marker` (`run_events.py::run_log_fields`, or `RunSnapshot.log_fields` in attribution), so one search on `svs_run=<uuid>` returns everything ACE did about a run across services and nodes.
+ACE's convention applies: the message describes the event, and `extra={}` carries the fields, which `saq.log` renders as `key=value` and the fluent formatter makes top-level fields in the site's log tooling. Every record about a run carries `svs_run`, `svs_test` and `svs_marker` (`SVS.md`, Part 5, *Logging contract*; `run_events.py::run_log_fields`, or `RunSnapshot.log_fields` in attribution), so one search on `svs_run=<uuid>` returns everything ACE did about a run across services and nodes.
 
 | Record | Where | Fields beyond the run's |
 |---|---|---|

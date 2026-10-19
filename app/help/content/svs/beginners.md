@@ -13,7 +13,8 @@ By the end of it you will know:
 - the two halves of SVS, and what SVS deliberately does not do;
 - the words the SVS screens use;
 - where each SVS screen lives, who uses it and what permission it needs;
-- what changes for you when you triage alerts every day.
+- how triage works day to day: dispositions grade detections, test alerts have their own queue and
+  status, and search leaves them out.
 
 ## ACE in five minutes
 
@@ -33,8 +34,8 @@ malicious into **alerts** that analysts triage in the ACE web interface (the GUI
 - A **queue** is a named bucket of alerts. Analysts normally work the `default` queue; other teams
   or purposes get their own queues.
 
-Analysts pick alerts off a queue, take ownership, investigate, and set a disposition. That last step
-matters more than it used to: SVS reads every disposition as a grade of the alert's detections.
+Analysts pick alerts off a queue, take ownership, investigate, and set a disposition. SVS reads
+every disposition as a grade of the alert's detections.
 
 ## Why signatures need testing
 
@@ -100,7 +101,7 @@ catching what it shouldn't?"
   whether the log data never reached your SIEM or the signature didn't match. It flags when a hunt
   was probably suppressed, and the rest is for a person to investigate.
 - It doesn't regression-test signatures other than YARA rules.
-- It doesn't grade alerts created before it was deployed. Samples and attributions start empty.
+- It doesn't backfill. It grades the alerts it analyzes, and samples and attributions start empty.
 - It doesn't suggest what to test next. That stays the team's call.
 
 ## The two loops
@@ -220,9 +221,9 @@ engineers open a report from here or from the link CI posts on their PR.
 
 ![The Validations list](images/validations-list.png)
 
-## What changes for you in day-to-day triage
+## Day-to-day triage
 
-Most of SVS is invisible to someone triaging alerts. A few things are worth knowing.
+Most of SVS stays off the alert queue. These are the parts of triage it takes part in.
 
 ### Your disposition grades the detections
 
@@ -243,7 +244,7 @@ alert list and as a banner at the top of the alert page:
 |---|---|---|
 | `TEST` | Every detection is attributed to a run by its marker. | Nothing. The run's review covers it. |
 | `TEST?` | Every detection is attributed by context alone: the right host at the right time, but no marker. | Nothing, unless it looks wrong. Then mark it *Not a test*. |
-| `PARTIAL TEST` | Some detections are from a run and some aren't. The alert stays in its normal queue, and the test detections are greyed out. | Triage the other detections as usual. |
+| `PARTIAL TEST` | Some detections are from a run and some aren't. The alert stays in its normal queue, and the test detections are greyed out. | Triage the other detections. |
 | `MARKER MISMATCH` | A marker in the alert doesn't agree with its run: wrong host, outside the run's window, or a marker no run has. The alert stays in its normal queue, and the banner is red. | Treat it as suspicious and investigate. A test marker where it doesn't belong, such as on a production host, is exactly what an analyst should see. |
 
 `TEST?` and `MARKER MISMATCH` are the two worth a look. An alert you already own is never moved,

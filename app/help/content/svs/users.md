@@ -391,7 +391,7 @@ description in the alert list.
 |---|---|---|
 | **TEST** | Every detection is attributed to a run by its marker. Once the run is reviewed or closed, ACE has set `SIMULATED` | Nothing. To treat it as a real alert after all, *Disassociate from run* |
 | **TEST?** | Every detection is attributed by context alone | Nothing unless it looks wrong; then *Not a test* |
-| **PARTIAL TEST** | Some detections are from a run and some aren't. The test detections are greyed out | Triage the other detections as usual |
+| **PARTIAL TEST** | Some detections are from a run and some aren't. The test detections are greyed out | Triage the other detections |
 | **MARKER MISMATCH** | A marker in the alert doesn't agree with its run: another host, outside the window, or a marker no run has. The banner is red and has no buttons | Investigate it as a real alert |
 
 ![A TEST? banner, attributed by context alone](images/alert-context.png)

@@ -51,7 +51,9 @@ The catalog, timer and coverage loops run on the primary node whether or not YAR
 
 ## Roles, users and API keys
 
-SVS adds five permissions to ACE's permission catalog. They are grants like any other (`ace perm`), and nobody has them after an upgrade until you grant them.
+SVS is governed by five permissions, plus `signature:read`, `signature:download` and `alert:write`,
+which the rest of ACE uses as well. They are grants like any other (`ace perm`). An SVS permission
+does nothing until you grant it.
 
 | Permission | Grants |
 |---|---|
@@ -60,9 +62,9 @@ SVS adds five permissions to ACE's permission catalog. They are grants like any 
 | `svs:admin` | Adding, changing and removing test hosts; global ignores; retiring and deleting YARA samples |
 | `svs:run_register` | The launcher's calls: register, start, executed, cancel |
 | `svs:validate` | Requesting a YARA validation and reading its status (counts and rule names only) |
-| `signature:read` (existing) | The Signatures hub, including the Samples and Validations cards and validation reports |
-| `signature:download` (existing) | The bytes of samples and QA matches, in zips protected with the password `infected` |
-| `alert:write` (existing) | *Disassociate from run* and *Not a test* on an alert's page |
+| `signature:read` | The Signatures hub, including the Samples and Validations cards and validation reports |
+| `signature:download` | The bytes of samples and QA matches, in zips protected with the password `infected` |
+| `alert:write` | *Disassociate from run* and *Not a test* on an alert's page |
 
 A few rules decide how you combine them:
 
