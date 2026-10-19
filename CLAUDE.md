@@ -38,7 +38,7 @@ before this: the volume names changed, so an existing stack has to be brought do
 Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
 
 ```bash
-pytest                                    # default: -m "unit or integration" over tests/
+pytest                                    # default: -m "unit or integration or system" over tests/
 pytest tests/saq/modules/test_command_line.py::test_command_line_analyzer -v
 pytest -m "unit or integration or system" # full local suite
 pytest -m unit                            # fast, no DB/engine
@@ -287,6 +287,62 @@ The engine does not scan with YARA itself: `YaraScanner_v3_4` (`saq/modules/file
 `js_deobfuscator/` is a JavaScript sandbox that reports what a sample *did* rather than what it says: it lives outside the `saq` namespace and never imports it, and it is a Celery worker that runs `harness.js` in a throwaway container per sample, exchanging payloads and results only through the shared `ace-js-deobfuscator` volume. The harness executes the sample in a `node:vm` context where browser/Acrobat globals are recording Proxies, and emits a pseudo-JS trace of everything the sample touched. ACE reaches it only through `saq/js_deobfuscator.py`, a thin Celery client; the consumer is `JavaScriptDeobfuscationAnalyzer` (`saq/modules/file_analysis/js.py`, config block `analysis_module_javascript_deobfuscation`), which calls **synchronously** rather than via delayed analysis, and re-emits the trace and any extracted payloads as file observables for URL extraction.
 
 js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.md` as needed.
+
+## Engineering values
+
+What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section, so a rule that is not written here is not enforced.
+
+### Uptime
+
+ACE is never down for more than a few minutes, and when something is wrong someone finds out.
+
+- No unbounded `join()`, `wait()`, lock acquire or network call on a service's run, stop or shutdown path. Each one gets a timeout, or a comment naming what bounds it.
+- Services never install signal handlers, and long-running loops check `is_shutting_down()` (`docs/SERVICES.md`, `docs/SHUTDOWN.md`).
+- Deletes and updates over a table that grows are batched by primary key, never unbounded (`saq/cas/index.py`). Comparisons against stored timestamps use the database's `NOW()`, not the application clock.
+- A migration or DDL statement must be safe on a live, populated table. That means no full-table copy or long lock on a large table, and the partition rules in `docs/DATABASE_PARTITIONS.md` apply.
+- Code on the crash, shutdown or monitoring path never raises (`saq/crash_report.py`).
+- A new failure mode that an operator needs to hear about reaches them through a log record at ERROR plus an error report, or through a monitor (`saq/monitor.py`). It must not be logged at DEBUG and forgotten.
+
+### Logging
+
+The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
+
+- A caught exception that should be logged goes through `log_loop_exception(e, context)` (`saq/error/reporting.py`), not bare `logging.error()`/`logging.exception()`. This applies everywhere, not just in loops: it logs, writes the error report, emits the monitor event, and stays quiet during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
+- Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
+- A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.
+
+### Tests
+
+The target is close to full coverage. CI does not run the suite, so the PR is the only place tests are checked.
+
+- New and changed code comes with tests, and the failure paths get tested too: the exception raised, the log record emitted (`caplog`, `search_log`, `wait_for_log_count`), and the fallback taken.
+- Every test carries a `unit`, `integration` or `system` marker. A test without one is silently never run.
+- Wait with `wait_for_condition` / `wait_for_log_count` (`tests/saq/helpers.py`), never with `time.sleep`.
+- New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/conftest.py`). The suite runs in random order.
+- Measure coverage of changed lines with `pytest --cov --cov-report=xml` and then `diff-cover coverage.xml --compare-branch=main`.
+- The PR description has a Testing section: the command run, its pass/fail counts, and any manual checks.
+
+### Performance
+
+The analyst's experience comes first.
+
+- No N+1 queries. Batch per-row lookups into one query (`docs/GUI_ALERT_PAGE_PERFORMANCE.md`).
+- List endpoints page by keyset, never by OFFSET (e.g. `aceapi_v2/detection_points/`).
+- Nothing expensive per render or per request: no process forks, file opens, or reloading a `RootAnalysis` to read one field. Persist derived values instead.
+- An analysis module avoids redundant work across observables and uses analysis caching where it fits (`docs/ANALYSIS_CACHING.md`).
+
+### Keep it lean
+
+- Before writing a helper, search for an existing one and use it (e.g. `saq/gui/filter_conditions.py`, `saq/util/`). If the existing one is close but not right, extend it.
+- One concern per PR. A refactor the feature doesn't need, or an unrelated fix, goes in its own PR.
+- Comments and docstrings say *why*, not what the code says. Skip the module docstring that retells the design doc.
+- No new module, base class, exception class or config knob without a second caller or a concrete need. A plain function in an existing module is the default.
+- Remove dead code you replace. Don't leave shims for callers that no longer exist.
+
+### GUI
+
+GUI code (`app/`, templates, static JS/CSS) must work, be fast, and be safe: escape output, check permissions, no N+1 in the view. How it is implemented is not reviewed.
 
 ## Conventions
 

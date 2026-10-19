@@ -10,6 +10,7 @@ cryptography
 dateparser
 deepmerge
 dhash
+diff-cover
 distorm3
 dnspython
 fakeredis[lua]
@@ -55,6 +56,7 @@ PySocks
 pytesseract
 pytest
 pytest-asyncio
+pytest-cov
 pytest-datadir
 pytest-print
 pytest-pythonpath
