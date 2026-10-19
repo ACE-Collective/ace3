@@ -2265,8 +2265,9 @@ class SVSRunTarget(Base):
 
 class SVSRunEvent(Base):
     """One append-only row of a run's event log (docs/SVS.md, Part 5, *Debugging a run*): a state
-    transition, a launcher call with its payload, and later attributions and decisions. Only
-    saq/svs/runs.py writes this table."""
+    transition, a launcher call with its payload, and later attributions and decisions. Rows are
+    built only by saq/svs/run_events.py::new_run_event, which the run lifecycle, attribution,
+    results, review, association and expectations all append through."""
 
     __tablename__ = 'svs_run_events'
     __table_args__ = (

@@ -203,6 +203,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 - `app/` — Flask GUI (blueprints: `main`, `auth`, `analysis`, `events`, `remediation`, `file_collection`), Jinja templates, the analyst-facing alert view.
 - `aceapi/` — legacy Flask API (`/api/...`), used by `ace_api.py` and the CLI.
 - `aceapi_v2/` — newer FastAPI app, router-per-resource under `aceapi_v2/<resource>/router.py`.
+- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
 
 ### CLI
 
@@ -286,6 +287,10 @@ Periodic maintenance is one executable per task in `etc/cron/{hourly,daily,weekl
 #### YARA scanner
 
 The engine does not scan with YARA itself: `YaraScanner_v3_4` (`saq/modules/file_analysis/yara.py`) sends each file's path to the `yara` service (`saq/yara_scanning/`, `docs/YARA_SCANNER.md`) through a unix socket in `service_yara.socket_dir`, and the worker reads the file contents at that path. The path must be the same on both sides. The service is a pre-fork server. A manager process owns one listening socket and watches the rules. Each *generation* compiles the rules once, then forks the workers, which all accept on that socket. A rule change starts a new generation, and the old one retires only after the new one is serving, so a ruleset that fails to compile never replaces a working one. Each process is stopped through a control pipe from its parent (a byte, or EOF when the parent dies), never by a signal. Every forked child must close the pipe ends that belong to other processes, or a process never sees EOF when its parent dies. The client raises a different exception for each failure (`client.py`); only `YaraServiceUnavailable` falls back to an in-process scanner. The manager also runs a qa recorder process that records QA-mode matches the workers spool (see YARA QA results); nothing on the scanning path touches the database. The `yara_scanner_v2` library (3.0.0+) only compiles, tracks and filters rules; it no longer has a server. `ace yara scan FILE` scans through the running service.
+
+#### Documentation and training guides
+
+The GUI's **Documentation** area (`app/help/`, `/ace/help/`, any logged-in user) serves training guides written in Markdown: one directory per guide set under `app/help/content/<set>/`, one `<guide>.md` per guide plus `images/`, registered in `app/help/guides.py` and rendered by `app/help/rendering.py` (Python-Markdown `extra` + `toc`; `other.md#anchor` links become guide links, `> [!TIP]` becomes a callout, only `http(s)` links open a new tab). `tests/app/help/test_help_content.py` fails on a missing image, a dangling link or anchor, an unknown `/ace/...` GUI page, or an image no guide uses. The SVS guides' screenshots are reproducible on a dev stack: `bin/training/svs_demo_seed.py` seeds the demo data (DEV only; `setup` prints the `etc/saq.yaml` overlay it needs), then `bin/training/svs_guide_screenshots.py` retakes them from a GUI started from the checkout (`ace gui start --port 5050 --api-v2`).
 
 #### js_deobfuscator
 

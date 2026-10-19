@@ -365,13 +365,14 @@ service_search_indexer:
   # the number of worker processes to spawn (each loads its own copy of the embedding model)
   worker_count: 2
 
-# runs the queued SVS YARA validations (docs/SVS_VALIDATION.md); it idles while
-# svs.yara.repositories is empty, and off the primary node
+# SVS's background work, on the primary node only (it idles on any other): the queued YARA
+# validations (docs/SVS_VALIDATION.md), the Atomic Red Team catalog refresh, the run timers
+# (docs/SVS_RUNS.md) and the coverage refresh (docs/SVS_COVERAGE.md)
 service_svs:
   name: svs
   python_module: saq.svs.service
   python_class: SVSService
-  description: SVS - runs the queued YARA validations
+  description: SVS - YARA validations, catalog refresh, run timers and coverage refresh
   enabled: true
   # a stopping worker cancels its scan and returns its validation to the queue
   shutdown_deadline_seconds: 30

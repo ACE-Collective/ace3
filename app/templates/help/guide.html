@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% macro toc_list(entries) %}
+<ul class="list-unstyled">
+    {% for entry in entries %}
+    <li><a href="#{{ entry.id }}">{{ entry.name | safe }}</a>
+        {% if entry.children %}{{ toc_list(entry.children) }}{% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endmacro %}
+
+{% block page_content %}
+<div class="row help-page">
+    <nav class="col-lg-3 col-xl-2 help-sidebar" aria-label="Guides">
+        <div class="help-sidebar-inner">
+            <p class="mb-1"><a href="{{ url_for('help.help_index') }}">Documentation</a></p>
+            <p class="fw-semibold mb-1">{{ guide_set.title }}</p>
+            <ul class="list-unstyled help-guide-list">
+                {% for g in guide_set.guides %}
+                <li>
+                    {% if g.slug == guide.slug %}
+                    <span class="fw-semibold" aria-current="page">{{ g.title }}</span>
+                    {% else %}
+                    <a href="{{ url_for('help.guide', set_slug=guide_set.slug, guide_slug=g.slug) }}">{{ g.title }}</a>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            {% if rendered.toc %}
+            <p class="fw-semibold mb-1 mt-3">On this page</p>
+            <div class="help-toc">{{ toc_list(rendered.toc) }}</div>
+            {% endif %}
+        </div>
+    </nav>
+    <div class="col-lg-9 col-xl-10">
+        <article class="help-guide">
+            {{ rendered.html }}
+        </article>
+        <nav class="help-pager d-flex justify-content-between border-top pt-3 mt-4 mb-4" aria-label="Previous and next guide">
+            <div>
+                {% if previous_guide %}
+                <a href="{{ url_for('help.guide', set_slug=guide_set.slug, guide_slug=previous_guide.slug) }}"><i class="bi bi-arrow-left"></i> {{ previous_guide.title }}</a>
+                {% endif %}
+            </div>
+            <div>
+                {% if next_guide %}
+                <a href="{{ url_for('help.guide', set_slug=guide_set.slug, guide_slug=next_guide.slug) }}">{{ next_guide.title }} <i class="bi bi-arrow-right"></i></a>
+                {% endif %}
+            </div>
+        </nav>
+    </div>
+</div>
+{% endblock %}

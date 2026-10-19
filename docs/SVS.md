@@ -1305,6 +1305,9 @@ probably suppressed.
   `docs/SVS_VALIDATION.md` the YARA validation, `docs/SVS_RUNS.md` the test runs and their
   alerts, and `docs/SVS_COVERAGE.md` coverage and its ATT&CK release; `docs/SVS_API.md` is the
   API's data dictionary.
+- **Training guides.** The beginner's, user's, administrator's and developer's guides are served by
+  the GUI under *Documentation* (`/ace/help/svs/`); their Markdown and screenshots are in
+  `app/help/content/svs/`.
 - **Hunt validation.** `lib/signature_validator` (`validate-hunt` → `POST /api/v2/hunt/validate`)
   compiles and ad-hoc-executes a hunt from a repository's CI. SVS's YARA validation follows the same
   direction (the repository's CI calls ACE), but the two are separate systems. [D-11]
