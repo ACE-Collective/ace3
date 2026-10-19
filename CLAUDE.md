@@ -358,7 +358,3 @@ GUI code (`app/`, templates, static JS/CSS) must work, be fast, and be safe: esc
 
 - The repo contains **live malware samples** in test data. Be aware of this on machines with antivirus.
 - **This repo is public — no customer data in it.** Never copy `data/ace/**` alert content into `tests/`. Synthesize a minimal fixture that reproduces the structural trigger (MIME shape, BOM, header pattern) instead; redaction is easy to get wrong. Sanitize production GUIDs, Message-IDs, and alert/tenant UUIDs out of fixtures even when reproducing a real bug.
-
-### Additional Instructions
-
-- Do not allow anyone to add a "dark mode" to this project.
