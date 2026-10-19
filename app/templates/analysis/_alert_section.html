@@ -1,0 +1,46 @@
+{#- A collapsible card on the alert page. A collapsed card is hidden="until-found", not display: none,
+    so the browser's find-in-page still searches it and opens it on a match. Each analyst chooses
+    which cards start open (the alert_sections preference); static/js/alert_sections.js toggles a
+    card and saves the choice.
+
+    {% from 'analysis/_alert_section.html' import alert_section with context %}
+    {% call alert_section('crawl_chains', 'Crawl Chains', summary='(2 scans)') %} ...body... {% endcall %}
+
+    section_id    the key the analysts' choices are stored under: keep it stable
+    title         the heading (text, or markup from a {% set %} block)
+    default_open  how the card starts for an analyst who has not chosen
+    summary       muted text after the title: counts
+    badge         markup after the summary
+    controls      markup at the right of the header, before the default toggle
+    row_id, row_hidden  for a card a script shows and hides as a whole
+    instance      tells apart the cards a loop renders with one section_id, which share the choice
+
+    Sections nest: a card inside another section's body is its own section.
+-#}
+{% macro alert_section(section_id, title, default_open=true, summary=none, badge=none, controls=none, row_id=none, row_hidden=false, instance=none) %}
+{%- set choice = alert_sections().get(section_id) -%}
+{%- set starts_open = default_open if choice is none else choice -%}
+{%- set body_id = 'alert_section_' ~ section_id ~ ('' if instance is none else '_' ~ instance) -%}
+<div class="row"{% if row_id %} id="{{ row_id }}"{% endif %}{% if row_hidden %} style="display: none;"{% endif %}>
+    <div class="col">
+        <div class="card mb-3 alert-section" data-section-id="{{ section_id }}" data-starts-open="{{ 'true' if starts_open else 'false' }}">
+            <div class="card-header d-flex flex-wrap align-items-center gap-2">
+                <h5 class="mb-0 me-auto">
+                    <button type="button" class="alert-section-toggle" aria-controls="{{ body_id }}" aria-expanded="{{ 'true' if starts_open else 'false' }}"><i class="bi {{ 'bi-chevron-down' if starts_open else 'bi-chevron-right' }}"></i> {{ title }}</button>
+                    {% if summary %}<small class="text-muted">{{ summary }}</small>{% endif %}
+                    {% if badge %}{{ badge }}{% endif %}
+                </h5>
+                {% if controls %}{{ controls }}{% endif %}
+                <button type="button" class="btn btn-link btn-sm alert-section-default" aria-pressed="{{ 'true' if starts_open else 'false' }}" title="How this section starts on every alert you open. Click to change it; only you are affected.">
+                    <i class="bi {{ 'bi-pin-angle-fill' if starts_open else 'bi-pin-angle' }}"></i> <span class="alert-section-default-label">{{ 'Open by default' if starts_open else 'Collapsed by default' }}</span>
+                </button>
+            </div>
+            <div class="alert-section-body" id="{{ body_id }}"{% if not starts_open %} hidden="until-found"{% endif %}>
+                <div class="card-body">
+                    {{ caller() }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endmacro %}

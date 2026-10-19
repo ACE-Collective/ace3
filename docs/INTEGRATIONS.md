@@ -359,6 +359,32 @@ register_alert_action(VendorAlertAction)
 **Tests.** Patch `saq.gui.alert_actions._ALERT_ACTION_REGISTRY` to an empty list and register
 your action, as `tests/app/analysis/views/test_index.py` does, then render the alert page.
 
+## Adding cards to the alert page
+
+An integration's alert template (one that extends `analysis/alert.html`) adds a collapsible card
+with the `alert_section` macro (`app/templates/analysis/_alert_section.html`), not its own card
+markup:
+
+```jinja
+{% from 'analysis/_alert_section.html' import alert_section with context %}
+{% call alert_section('vendor_events', 'Vendor Events', default_open=false, summary='(3 events)') %}
+    ...the card's body...
+{% endcall %}
+```
+
+- **A collapsed section can still be found.** Its body is `hidden="until-found"`, so the
+  browser's find-in-page searches it and opens it on a match. Nothing inside a Bootstrap
+  `.collapse` can be found until someone opens it, because it is `display: none`.
+- **Each analyst chooses how a section starts** with the pin in its header. The choice is stored
+  per user under the section id (the `alert_sections` preference), so keep the id stable and
+  unique on the page: `[a-z0-9_]`, at most 64 characters. `default_open` is how the section
+  starts for an analyst who has not chosen.
+- **A loop that renders one card per item** passes `instance` (the loop index, say). The cards
+  share the analyst's choice but get their own element ids.
+- **Sections nest**, so a card inside the Alert Details block is a section too. A collapsed
+  `renderJsonTree()` node (`app/static/js/ace.js`) is also searchable, so raw events stay
+  findable inside a collapsed section.
+
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through

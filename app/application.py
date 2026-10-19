@@ -12,7 +12,7 @@ import urllib
 from app.blueprints import register_blueprints
 
 from app.integration import register_integration_blueprints
-from app.user_preferences import get_theme_preference
+from app.user_preferences import get_alert_sections_preference, get_theme_preference
 from saq.configuration.config import get_config
 from flask_config import get_flask_config
 from flask_login import LoginManager
@@ -186,6 +186,20 @@ def create_app(testing: Optional[bool]=False):
             return cache[0]
 
         return {"ui_theme": ui_theme, "THEME_CHOICES": THEME_CHOICES}
+
+    @flask_app.context_processor
+    def inject_alert_sections():
+        # the analyst's choices for which alert page sections start open
+        # (analysis/_alert_section.html): a callable, so only a page with sections reads the
+        # preference, memoized per render because every section on the page asks
+        cache = []
+
+        def alert_sections() -> dict[str, bool]:
+            if not cache:
+                cache.append(get_alert_sections_preference().sections)
+            return cache[0]
+
+        return {"alert_sections": alert_sections}
 
     @flask_app.context_processor
     def inject_dispositions():

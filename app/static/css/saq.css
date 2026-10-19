@@ -1033,3 +1033,34 @@ span.multiselect-native-select select {
 [data-bs-theme=dark] .border-strong {
     border-color: var(--bs-border-color) !important;
 }
+
+/* Bootstrap's reboot puts display: none !important on every [hidden], which would take
+   hidden="until-found" content out of find-in-page: until-found hides it with content-visibility
+   instead (the alert page's sections, renderJsonTree() nodes). revert restores the element's own
+   display, or display: none in a browser that does not know until-found. */
+[hidden="until-found"] {
+    display: revert !important;
+}
+
+/* the alert page's collapsible sections (templates/analysis/_alert_section.html). The body
+   wrapper has no padding of its own, so a collapsed section takes no space. */
+.alert-section > .card-header:has(+ .alert-section-body[hidden]) {
+    border-bottom: 0;
+    border-radius: var(--bs-card-inner-border-radius);
+}
+.alert-section-toggle {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+.alert-section-default {
+    padding: 0;
+    color: var(--bs-secondary-color);
+    text-decoration: none;
+}
+.alert-section-default[aria-pressed="true"] {
+    color: var(--bs-link-color);
+}

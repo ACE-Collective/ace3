@@ -1,12 +1,7 @@
 {# where each phishkit scan went, hop by hop (saq/modules/phishkit_chain.py) #}
+{% from 'analysis/_alert_section.html' import alert_section with context %}
 {% if crawl_chains %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>Crawl Chains <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_crawl_chains" aria-expanded="true" aria-controls="collapse_crawl_chains">(hide/show)</a></h5>
-            </div>
-            <div class="card-body collapse show" id="collapse_crawl_chains">
+{% call alert_section('crawl_chains', 'Crawl Chains', summary='(' ~ crawl_chains | length ~ ' scan' ~ ('' if crawl_chains | length == 1 else 's') ~ ')') %}
                 {% for chain in crawl_chains %}
                     <div class="crawl-chain{% if not loop.last %} mb-3{% endif %}">
                         <span class="text-muted small">{{ chain.target.type }}</span>
@@ -42,8 +37,5 @@
                         {% endif %}
                     </div>
                 {% endfor %}
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}

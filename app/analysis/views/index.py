@@ -21,6 +21,7 @@ from saq.analysis.detection_chain import (
     build_detection_chains,
     build_merged_detection_tree,
     build_root_detections,
+    count_merged_detections,
     module_display_name,
     observable_display_value,
 )
@@ -548,6 +549,7 @@ def index():
 
     detection_chain_merged_tree = build_merged_detection_tree(build_detection_chains(alert.root_analysis))
     detection_chain_root_detections = build_root_detections(alert.root_analysis)
+    detection_chain_count = count_merged_detections(detection_chain_merged_tree) + len(detection_chain_root_detections)
     crawl_chains = build_crawl_chains(alert.root_analysis)
 
     # get all observable comments for the analysis tree
@@ -754,6 +756,7 @@ def index():
         observable_types=run_async(get_observable_types()),
         detection_chain_merged_tree=detection_chain_merged_tree,
         detection_chain_root_detections=detection_chain_root_detections,
+        detection_chain_count=detection_chain_count,
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
         crawl_chains=crawl_chains,

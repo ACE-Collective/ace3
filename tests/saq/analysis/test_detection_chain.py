@@ -6,6 +6,7 @@ from saq.analysis.detection_chain import (
     build_detection_chains,
     build_merged_detection_tree,
     build_root_detections,
+    count_merged_detections,
     module_display_name,
     observable_display_value,
 )
@@ -216,6 +217,21 @@ def test_merged_tree_shares_common_prefix():
     assert html_node.observable is html
     assert html_node.extracted_by is email_b
     assert any(c.detection.description == "html detection" for c in html_node.detections)
+
+
+@pytest.mark.unit
+def test_count_merged_detections_counts_every_level():
+    root = RootAnalysis()
+    top = root.add_observable_by_spec(F_TEST, "top")
+    top.add_detection_point("top detection")
+    email = EmailAnalysis()
+    top.add_analysis(email)
+    nested = email.add_observable_by_spec(F_TEST, "nested")
+    nested.add_detection_point("nested one")
+    nested.add_detection_point("nested two")
+
+    assert count_merged_detections(build_merged_detection_tree(build_detection_chains(root))) == 3
+    assert count_merged_detections([]) == 0
 
 
 @pytest.mark.unit
