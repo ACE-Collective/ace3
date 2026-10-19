@@ -177,3 +177,36 @@ class TestStaleRow:
         assert value["order"][0] == "date"
         assert set(value["order"]) == set(MANAGE_COLUMN_IDS)
         assert value["hidden"] == []
+
+
+THEME = f"{BASE}/theme"
+
+
+class TestTheme:
+    @pytest.mark.asyncio
+    async def test_default_is_system(self, client: AsyncClient):
+        response = await client.get(THEME)
+        assert response.status_code == 200
+        assert response.json()["value"] == {"mode": "system"}
+        assert response.json()["is_default"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["system", "light", "dark", "jd"])
+    async def test_every_mode_round_trips(self, client: AsyncClient, mode: str):
+        response = await client.put(THEME, json={"mode": mode})
+        assert response.status_code == 200
+        assert response.json()["value"] == {"mode": mode}
+        response = await client.get(THEME)
+        assert response.json()["value"] == {"mode": mode}
+        assert response.json()["is_default"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [{"mode": "solarized"}, {"mode": "dark", "accent": "red"}, {"mode": None}])
+    async def test_invalid_value_is_422(self, client: AsyncClient, body: dict):
+        assert (await client.put(THEME, json=body)).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_to_system(self, client: AsyncClient):
+        await client.put(THEME, json={"mode": "dark"})
+        assert (await client.delete(THEME)).status_code in (200, 204)
+        assert (await client.get(THEME)).json()["value"] == {"mode": "system"}

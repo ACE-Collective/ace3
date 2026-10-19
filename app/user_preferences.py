@@ -9,7 +9,12 @@ from flask_login import current_user
 
 from aceapi_v2.sync import run_async_with_session
 from aceapi_v2.user_preferences import service as user_preferences_service
-from aceapi_v2.user_preferences.schemas import PREFERENCE_KEY_MANAGE_COLUMNS, ManageColumnsPreference
+from aceapi_v2.user_preferences.schemas import (
+    PREFERENCE_KEY_MANAGE_COLUMNS,
+    PREFERENCE_KEY_THEME,
+    ManageColumnsPreference,
+    ThemePreference,
+)
 from saq.gui.manage_columns import MANAGE_COLUMNS_BY_ID
 
 
@@ -18,6 +23,16 @@ def get_manage_columns_preference() -> ManageColumnsPreference:
     preference = run_async_with_session(
         user_preferences_service.get_preference, current_user.id, PREFERENCE_KEY_MANAGE_COLUMNS)
     return ManageColumnsPreference.model_validate(preference.value)
+
+
+def get_theme_preference() -> ThemePreference:
+    """The current user's GUI theme, "system" for an anonymous visitor or if none is stored."""
+    if not current_user.is_authenticated:
+        return ThemePreference()
+
+    preference = run_async_with_session(
+        user_preferences_service.get_preference, current_user.id, PREFERENCE_KEY_THEME)
+    return ThemePreference.model_validate(preference.value)
 
 
 def manage_column_layout(preference: ManageColumnsPreference) -> list[dict]:

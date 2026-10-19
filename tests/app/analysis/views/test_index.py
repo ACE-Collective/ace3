@@ -546,7 +546,7 @@ def test_index_renders_cache_hit_badge(web_client, root_analysis, test_context):
     # Badge HTML pieces — checked independently so a small markup tweak
     # to one (icon class, label text) doesn't silently mask a regression
     # in the others.
-    assert 'class="badge bg-white border border-dark"' in body
+    assert 'class="badge bg-body border border-strong"' in body
     assert "bi-lightning-fill" in body
     # Tooltip carries the cache_key prefix, the original cache timestamp
     # formatted YYYY-MM-DD HH:MM UTC, and execution_time_ms.

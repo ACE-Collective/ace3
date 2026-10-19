@@ -98,7 +98,7 @@
             {% if alert.disposition_review == 'CORRECT' %}
             <span class="bi bi-hand-thumbs-up"></span> disposition correct
             {% else %}
-            <span class="bi bi-exclamation-triangle" style="color: red; background-color: white;"> disposition incorrect</span>
+            <span class="bi bi-exclamation-triangle text-danger bg-body"> disposition incorrect</span>
             {% endif %}
             by {{alert.review_user.gui_display}} @ {{alert.review_time}} UTC
             {% if alert.incorrect_disposition %}
@@ -112,7 +112,7 @@
         <td class="col-md-2">Event</td>
         <td class="col-md-10">
         {% for em in alert.event_mapping %}
-            <span class="badge text-bg-primary"><span class="bi bi-flash"></span> <b><a style="color: white;" target="_blank" href="{{url_for('events.index', direct=em.event.id)}}">{{em.event.name}}</a></b></span>
+            <span class="badge text-bg-primary"><span class="bi bi-flash"></span> <b><a class="text-white" target="_blank" href="{{url_for('events.index', direct=em.event.id)}}">{{em.event.name}}</a></b></span>
         {% endfor %}
         </td>
     {% endif %}
@@ -405,12 +405,12 @@
 }
 .summary-detail-content table th,
 .summary-detail-content table td {
-    border: 1px solid #dee2e6;
+    border: 1px solid var(--bs-border-color);
     padding: 0.5rem;
 }
 .summary-detail-content table thead th {
     border-bottom-width: 2px;
-    background-color: #f8f9fa;
+    background-color: var(--bs-tertiary-bg);
 }
 </style>
 
@@ -467,7 +467,7 @@
                        is O(1) via the precomputed cache_hit_map from the view. #}
                     {% set _cache_hit = cache_hit_map.get((node.obj.module_path, node.parent.obj.uuid)) if cache_hit_map else none %}
                     {% if _cache_hit %}
-                        <span class="badge bg-white border border-dark"
+                        <span class="badge bg-body border border-strong"
                               data-bs-toggle="tooltip"
                               title="Replayed from cache (key {{ (_cache_hit.cache_key or '')[:12] or 'n/a' }}{% if _cache_hit.cached_at %}, cached {{ _cache_hit.cached_at[:16].replace('T', ' ') }} UTC{% endif %}, {{ _cache_hit.execution_time_ms }}ms)">
                             <i class="bi bi-lightning-fill" style="color: #ffa500;"></i>

@@ -1,6 +1,7 @@
 {% block doc -%}
 <!DOCTYPE html>
-<html{% block html_attribs %}{% endblock html_attribs %}>
+{%- set theme_mode = ui_theme() %}
+<html data-ace-theme="{{ theme_mode }}" data-bs-theme="{{ 'dark' if theme_mode == 'dark' else 'light' }}"{% block html_attribs %}{% endblock html_attribs %}>
 {%- block html %}
     <head>
         {%- block head %}
@@ -9,6 +10,26 @@
         {%- block metas %}
         <meta name="viewport" content="width=device-width, initial-scale=1">
         {%- endblock metas %}
+
+        {#- runs before any stylesheet so a "system" user whose OS is dark never sees a light
+            flash; aceApplyTheme() is also what the theme switchers call (ace.js) #}
+        <script>
+        (function() {
+            var root = document.documentElement;
+            var dark_query = window.matchMedia("(prefers-color-scheme: dark)");
+            function resolve() {
+                var mode = root.getAttribute("data-ace-theme");
+                var dark = mode === "dark" || (mode === "system" && dark_query.matches);
+                root.setAttribute("data-bs-theme", dark ? "dark" : "light");
+            }
+            window.aceApplyTheme = function(mode) {
+                root.setAttribute("data-ace-theme", mode);
+                resolve();
+            };
+            dark_query.addEventListener("change", resolve);
+            resolve();
+        })();
+        </script>
 
         {%- block styles %}
         <!-- Bootstrap -->

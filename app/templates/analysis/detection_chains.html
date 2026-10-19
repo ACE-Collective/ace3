@@ -42,7 +42,7 @@
                             {{ detection_list(node.detections) }}
                         {% endif %}
                         {% if node.children %}
-                        <ul class="list-unstyled ms-4" style="border-left: 2px solid #dee2e6; padding-left: 0.75rem;">
+                        <ul class="list-unstyled ms-4" style="border-left: 2px solid var(--bs-border-color); padding-left: 0.75rem;">
                             {{ loop(node.children.values()) }}
                         </ul>
                         {% endif %}

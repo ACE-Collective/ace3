@@ -1,3 +1,264 @@
+/* Theme tokens. Colors ACE sets itself are --ace-* properties, redefined per theme
+   below; everything else uses Bootstrap's own variables, which follow data-bs-theme.
+   data-ace-theme="jd" is a high-contrast light mode (core.html sets both attributes). */
+:root {
+    --ace-obs-user: #0000ff;
+    --ace-obs-o365-group: #4d4dff;
+    --ace-obs-email: #8888ff;
+    --ace-obs-ipv4: #005050;
+    --ace-obs-ipv4-conversation: #006060;
+    --ace-obs-asset: #008080;
+    --ace-obs-fqdn: #cc8500;
+    --ace-obs-hostname: #805300;
+    --ace-obs-printer: #ff7433;
+    --ace-obs-file: #ff0000;
+    --ace-obs-email-subject: #51a895;
+    --ace-obs-file-path: #b30000;
+    --ace-obs-file-name: #660000;
+    --ace-obs-yara-rule: #008000;
+    --ace-obs-indicator: #337ab7;
+    --ace-obs-url: #808000;
+    --ace-observable-shadow: 1px 1px 1px lightgray;
+    --ace-link-hover-shadow: 1px 1px 1px #555;
+    --ace-interesting-bg: #ffffe6;
+    --ace-flash-bg: #ffeb3b;
+    --ace-json-key: #0d6efd;
+    --ace-json-boolean: #0d6efd;
+    --ace-json-number: #198754;
+    --ace-json-string: #6c757d;
+    --ace-json-muted: #999;
+    --ace-search-hit-uuid: #495057;
+}
+
+[data-bs-theme=dark] {
+    --ace-obs-user: #7a9cff;
+    --ace-obs-o365-group: #9a9aff;
+    --ace-obs-email: #b0b0ff;
+    --ace-obs-ipv4: #4fd1d1;
+    --ace-obs-ipv4-conversation: #5cc8c8;
+    --ace-obs-asset: #40c0c0;
+    --ace-obs-fqdn: #f0a830;
+    --ace-obs-hostname: #d9a24a;
+    --ace-obs-printer: #ff9466;
+    --ace-obs-file: #ff6b6b;
+    --ace-obs-email-subject: #6fc9b5;
+    --ace-obs-file-path: #ff7a7a;
+    --ace-obs-file-name: #e88a8a;
+    --ace-obs-yara-rule: #5cd65c;
+    --ace-obs-indicator: #6aa8e0;
+    --ace-obs-url: #c8c84a;
+    --ace-observable-shadow: 1px 1px 1px rgba(0, 0, 0, 0.6);
+    --ace-link-hover-shadow: none;
+    --ace-interesting-bg: #3d3a1a;
+    --ace-flash-bg: #6b5d00;
+    --ace-json-key: #6ea8fe;
+    --ace-json-boolean: #6ea8fe;
+    --ace-json-number: #75b798;
+    --ace-json-string: #adb5bd;
+    --ace-json-muted: #8a8a8a;
+    --ace-search-hit-uuid: #adb5bd;
+}
+
+/* 👴 JD: black on white, AAA contrast (7:1) for every color, links always underlined, a
+   heavier focus ring and slightly larger text. Builds on Bootstrap's light theme. */
+[data-ace-theme=jd] {
+    font-size: 13px;
+    --bs-body-color: #000;
+    --bs-body-color-rgb: 0, 0, 0;
+    --bs-body-bg: #fff;
+    --bs-body-bg-rgb: 255, 255, 255;
+    --bs-emphasis-color: #000;
+    --bs-emphasis-color-rgb: 0, 0, 0;
+    --bs-secondary-color: #222;
+    --bs-secondary-color-rgb: 34, 34, 34;
+    --bs-tertiary-color: #333;
+    --bs-tertiary-color-rgb: 51, 51, 51;
+    --bs-secondary-bg: #e6e6e6;
+    --bs-tertiary-bg: #f0f0f0;
+    --bs-border-color: #000;
+    --bs-border-color-translucent: rgba(0, 0, 0, 0.6);
+    --bs-primary: #003c99;
+    --bs-primary-rgb: 0, 60, 153;
+    --bs-secondary: #333;
+    --bs-secondary-rgb: 51, 51, 51;
+    --bs-success: #0a5c2e;
+    --bs-success-rgb: 10, 92, 46;
+    --bs-danger: #a00010;
+    --bs-danger-rgb: 160, 0, 16;
+    --bs-info: #00566b;
+    --bs-info-rgb: 0, 86, 107;
+    --bs-link-color: #0000b3;
+    --bs-link-color-rgb: 0, 0, 179;
+    --bs-link-hover-color: #000066;
+    --bs-link-hover-color-rgb: 0, 0, 102;
+    --bs-focus-ring-width: 0.3rem;
+    --bs-focus-ring-color: rgba(0, 0, 0, 0.6);
+    --ace-obs-o365-group: #2626b3;
+    --ace-obs-email: #1a1aa6;
+    --ace-obs-asset: #005c5c;
+    --ace-obs-fqdn: #7a4f00;
+    --ace-obs-printer: #a33a00;
+    --ace-obs-file: #b00000;
+    --ace-obs-email-subject: #1f5c4f;
+    --ace-obs-yara-rule: #005a00;
+    --ace-obs-indicator: #1d4a75;
+    --ace-obs-url: #4d4d00;
+    --ace-observable-shadow: none;
+    --ace-link-hover-shadow: none;
+    --ace-json-key: #003c99;
+    --ace-json-boolean: #003c99;
+    --ace-json-number: #0a5c2e;
+    --ace-json-string: #222;
+    --ace-json-muted: #444;
+    --ace-search-hit-uuid: #000;
+}
+
+[data-ace-theme=jd] a:not(.btn):not(.nav-link):not(.dropdown-item):not(.navbar-brand) {
+    text-decoration: underline;
+}
+
+/* the solid buttons take their colors from component variables, not the theme colors above */
+[data-ace-theme=jd] .btn-primary {
+    --bs-btn-bg: #003c99;
+    --bs-btn-border-color: #003c99;
+    --bs-btn-hover-bg: #002b70;
+    --bs-btn-hover-border-color: #002b70;
+    --bs-btn-active-bg: #001f52;
+}
+
+[data-ace-theme=jd] .btn-outline-primary {
+    --bs-btn-color: #003c99;
+    --bs-btn-border-color: #003c99;
+    --bs-btn-hover-bg: #003c99;
+    --bs-btn-hover-border-color: #003c99;
+}
+
+[data-ace-theme=jd] .btn-outline-secondary {
+    --bs-btn-color: #000;
+    --bs-btn-border-color: #000;
+    --bs-btn-hover-bg: #000;
+    --bs-btn-hover-border-color: #000;
+}
+
+[data-ace-theme=jd] .text-muted,
+[data-ace-theme=jd] .text-body-secondary,
+[data-ace-theme=jd] .form-text {
+    color: #222 !important;
+}
+
+[data-ace-theme=jd] :focus-visible {
+    outline: 3px solid #000;
+    outline-offset: 2px;
+}
+
+/* btn-outline-dark is used all over the templates; on a dark page it would be dark-on-dark,
+   so it follows the emphasis color there instead */
+[data-bs-theme=dark] .btn-outline-dark {
+    --bs-btn-color: var(--bs-emphasis-color);
+    --bs-btn-border-color: var(--bs-border-color);
+    --bs-btn-hover-color: var(--bs-body-bg);
+    --bs-btn-hover-bg: var(--bs-emphasis-color);
+    --bs-btn-hover-border-color: var(--bs-emphasis-color);
+    --bs-btn-active-color: var(--bs-body-bg);
+    --bs-btn-active-bg: var(--bs-emphasis-color);
+    --bs-btn-active-border-color: var(--bs-emphasis-color);
+    --bs-btn-disabled-color: var(--bs-secondary-color);
+    --bs-btn-disabled-border-color: var(--bs-border-color);
+}
+
+/* JSON viewer (renderJsonTree in ace.js) */
+.json-key { font-weight: bold; color: var(--ace-json-key); }
+.json-boolean { color: var(--ace-json-boolean); }
+.json-number { color: var(--ace-json-number); }
+.json-string { color: var(--ace-json-string); }
+.json-muted { color: var(--ace-json-muted); }
+
+/* jQuery UI and the date pickers ship light-only stylesheets; dark overrides go here rather
+   than in the vendor files */
+[data-bs-theme=dark] .ui-widget-content {
+    background: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    border-color: var(--bs-border-color);
+}
+[data-bs-theme=dark] .ui-widget-header {
+    background: var(--bs-tertiary-bg);
+    color: var(--bs-emphasis-color);
+    border-color: var(--bs-border-color);
+}
+[data-bs-theme=dark] .ui-state-default,
+[data-bs-theme=dark] .ui-widget-content .ui-state-default,
+[data-bs-theme=dark] .ui-widget-header .ui-state-default {
+    background: var(--bs-secondary-bg);
+    color: var(--bs-body-color);
+    border-color: var(--bs-border-color);
+}
+[data-bs-theme=dark] .ui-state-hover,
+[data-bs-theme=dark] .ui-widget-content .ui-state-hover,
+[data-bs-theme=dark] .ui-state-focus,
+[data-bs-theme=dark] .ui-widget-content .ui-state-focus {
+    background: var(--bs-tertiary-bg);
+    color: var(--bs-emphasis-color);
+    border-color: var(--bs-border-color);
+}
+[data-bs-theme=dark] .ui-state-highlight,
+[data-bs-theme=dark] .ui-widget-content .ui-state-highlight {
+    background: var(--bs-warning-bg-subtle);
+    color: var(--bs-warning-text-emphasis);
+    border-color: var(--bs-warning-border-subtle);
+}
+[data-bs-theme=dark] .ui-icon {
+    filter: invert(1);
+}
+
+[data-bs-theme=dark] .daterangepicker,
+[data-bs-theme=dark] .daterangepicker .calendar-date {
+    background: var(--bs-body-bg);
+    border-color: var(--bs-border-color);
+    color: var(--bs-body-color);
+}
+[data-bs-theme=dark] .daterangepicker .daterangepicker_start_input label,
+[data-bs-theme=dark] .daterangepicker .daterangepicker_end_input label {
+    color: var(--bs-body-color);
+    text-shadow: none;
+}
+[data-bs-theme=dark] .daterangepicker .ranges .input-mini {
+    background: var(--bs-body-bg);
+    border-color: var(--bs-border-color);
+    color: var(--bs-body-color);
+}
+[data-bs-theme=dark] .daterangepicker .ranges li {
+    background: var(--bs-tertiary-bg);
+    border-color: var(--bs-tertiary-bg);
+    color: var(--bs-link-color);
+}
+[data-bs-theme=dark] .daterangepicker .ranges li.active,
+[data-bs-theme=dark] .daterangepicker .ranges li:hover {
+    background: var(--bs-primary);
+    border-color: var(--bs-primary);
+    color: #fff;
+}
+[data-bs-theme=dark] .daterangepicker td.available:hover,
+[data-bs-theme=dark] .daterangepicker th.available:hover {
+    background: var(--bs-secondary-bg);
+}
+[data-bs-theme=dark] .daterangepicker td.in-range {
+    background: var(--bs-primary-bg-subtle);
+}
+[data-bs-theme=dark] .daterangepicker td.off,
+[data-bs-theme=dark] .daterangepicker td.disabled,
+[data-bs-theme=dark] .daterangepicker td.week,
+[data-bs-theme=dark] .daterangepicker th.week {
+    color: var(--bs-tertiary-color);
+}
+[data-bs-theme=dark] .daterangepicker.opensleft:after,
+[data-bs-theme=dark] .daterangepicker.opensright:after,
+[data-bs-theme=dark] .daterangepicker.openscenter:after {
+    border-bottom-color: var(--bs-body-bg);
+}
+[data-bs-theme=dark] .ui-timepicker-div .ui_tpicker_time .ui_tpicker_time_input {
+    border-bottom-color: var(--bs-border-color);
+}
+
 html {
     font-size: 12px;
     --bs-body-font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -46,7 +307,7 @@ th {
 
 .link:hover {
     text-decoration: underline;
-    text-shadow: 1px 1px 1px #555;
+    text-shadow: var(--ace-link-hover-shadow);
 }
 
 .voffset5 { margin-top : 5px; }
@@ -57,7 +318,7 @@ th {
 .observable_display {
     cursor: pointer;
     font-weight: bold;
-    text-shadow: 1px 1px 1px lightgray;
+    text-shadow: var(--ace-observable-shadow);
 }
 
 .observable_display:hover {
@@ -73,110 +334,110 @@ th {
 
 /* user-related (blue) */
 .user {
-    color: #0000ff; 
+    color: var(--ace-obs-user); 
 }
 
 .o365_group {
-    color: #4d4dff;
+    color: var(--ace-obs-o365-group);
 }
 
 .email_address {
-    color: #8888ff; 
+    color: var(--ace-obs-email); 
 }
 
 .contact {
-    color: #8888ff; 
+    color: var(--ace-obs-email); 
 }
 
 /* ipv4-related (cyan) */
 
 .ipv4 {
-    color: #005050;
+    color: var(--ace-obs-ipv4);
 }
 
 .ipv4_conversation {
-    color: #006060;
+    color: var(--ace-obs-ipv4-conversation);
 }
 
 .asset {
-    color: #008080;
+    color: var(--ace-obs-asset);
 }
 
 /* dns related */
 
 .fqdn {
-    color: #cc8500;
+    color: var(--ace-obs-fqdn);
 }
 
 .hostname {
-    color: #805300;
+    color: var(--ace-obs-hostname);
 }
 
 .falcon_host_id {
-    color: #805300;
+    color: var(--ace-obs-hostname);
 }
 
 .printer {
-    color: #FF7433;
+    color: var(--ace-obs-printer);
 }
 
 /* file related */
 
 .file {
-    color: #ff0000;
+    color: var(--ace-obs-file);
 }
 
 .email_subject {
-    color: #51a895;
+    color: var(--ace-obs-email-subject);
 }
 
 .file_path {
-    color: #b30000;
+    color: var(--ace-obs-file-path);
 }
 
 .file_name {
-    color: #660000;
+    color: var(--ace-obs-file-name);
 }
 
 .sharepoint_file {
-    color: #ff0000;
+    color: var(--ace-obs-file);
 }
 
 .o365_file {
-    color: #ff0000;
+    color: var(--ace-obs-file);
 }
 
 /* others */
 
 .yara_rule {
-    color: #008000;
+    color: var(--ace-obs-yara-rule);
 }
 
 .indicator {
-    color: #337AB7;
+    color: var(--ace-obs-indicator);
 }
 
 
 .url {
-    color: #808000;
+    color: var(--ace-obs-url);
 }
 
 /* non-colored */
 
 .md5, .sha1, .sha256, .snort_sig {
-    color: #000000;
+    color: var(--bs-emphasis-color);
 }
 
 /* custom labels */
 .label-interesting {
-    background-color : #ffffe6;
-    color : black;
+    background-color : var(--ace-interesting-bg);
+    color : var(--bs-emphasis-color);
 }
 
 .label-special {
-    background-color : #ffffff;
-    color : gray;
-    border : 1px solid black;
+    background-color : var(--bs-body-bg);
+    color : var(--bs-secondary-color);
+    border : 1px solid var(--bs-emphasis-color);
 }
 
 /* small dot on a quick-filter badge meaning "there are alerts waiting behind this one" */
@@ -187,7 +448,7 @@ th {
     border-radius: 50%;
     margin-left: 4px;
     vertical-align: middle;
-    background-color: #ffc107;
+    background-color: var(--bs-warning);
 }
 
 .sim-table {
@@ -233,8 +494,8 @@ th {
 }
 
 .label.label-outlined.label-secondary {
-  border-color: #323a45;
-  color: #323a45
+  border-color: var(--bs-secondary-color);
+  color: var(--bs-secondary-color)
 }
 
 .label.label-outlined.label-info {
@@ -278,7 +539,7 @@ ul.tree li {
  margin: 0;
  padding: 0 7px;
  line-height: 20px;
- border-left:1px solid rgb(100,100,100);
+ border-left:1px solid var(--bs-secondary-color);
 
 }
 ul.tree li:last-child {
@@ -290,18 +551,18 @@ ul.tree li:before {
   height:1em;
   width:12px;
   color:white;
-  border-bottom:1px solid rgb(100,100,100);
+  border-bottom:1px solid var(--bs-secondary-color);
   content:"";
   display:inline-block;
   left:-7px;
 }
 ul.tree li:last-child:before {
-  border-left:1px solid rgb(100,100,100);
+  border-left:1px solid var(--bs-secondary-color);
 }
 
 table.cert-table {
   border-collapse: collapse;
-  color: #222222;
+  color: var(--bs-body-color);
   font: 10pt Roboto, sans-serif;
   margin-left: auto;
   margin-right: auto
@@ -311,13 +572,13 @@ table.cert-options {
   margin-left: 10px
 }
 td.cert-td, th.cert-th {
-  border: 1px solid #CCCCCC;
+  border: 1px solid var(--bs-border-color);
   padding: 0px 2px;
   text-align: left;
   vertical-align: top
 }
 td.cert-outer, th.cert-outer {
-  border: 1px solid #CCCCCC;
+  border: 1px solid var(--bs-border-color);
   padding: 2px 20px;
   text-align: left
 }
@@ -328,7 +589,7 @@ td.cert-text {
 th.domain-history-table {
     position: sticky;
     top: 0;
-    background-color: #FFFFFF;
+    background-color: var(--bs-body-bg);
 }
 
 .saq-analysis-li {
@@ -351,7 +612,7 @@ th.domain-history-table {
   position: sticky;
   top: var(--analysis-overview-sticky-top, 0);
   z-index: 99;
-  background-color: #f8f9fa;
+  background-color: var(--bs-tertiary-bg);
 }
 
 #analysis-overview-card.indent-rainbow ul ul[data-indent-depth] {
@@ -417,7 +678,7 @@ ul.provenance-group.provenance-group-multi {
 }
 .provenance-group-other .provenance-group-chip {
   font-weight: 500;
-  color: #6c757d;
+  color: var(--bs-secondary-color);
 }
 .provenance-trace-link {
   font-size: 0.8rem;
@@ -428,12 +689,12 @@ ul.provenance-group.provenance-group-multi {
   text-decoration: underline;
 }
 ul.provenance-group {
-  border-left: 2px solid var(--provenance-color, #dee2e6);
+  border-left: 2px solid var(--provenance-color, var(--bs-border-color));
   margin-left: 2px;
   padding-left: 14px;
 }
 ul.provenance-group.provenance-group-other {
-  border-left-color: #dee2e6;
+  border-left-color: var(--bs-border-color);
 }
 .provenance-step-anchor {
   display: inline-block;
@@ -444,7 +705,7 @@ ul.provenance-group.provenance-group-other {
 /* Correlation Trace "Hunt steps" legend badges — color-matched to the group accents. */
 .ct-provenance-step {
   background-color: var(--provenance-color, #6c757d);
-  color: #212529;
+  color: var(--bs-emphasis-color);
   text-decoration: none;
   font-weight: 600;
   scroll-margin-top: 70px;
@@ -458,9 +719,9 @@ a.ct-provenance-step:hover {
 /* A defined hunt step that did not run in this event: muted/inactive. */
 .ct-provenance-step-skipped {
   background-color: transparent;
-  color: #6c757d;
+  color: var(--bs-secondary-color);
   font-weight: 400;
-  border: 1px dashed #adb5bd;
+  border: 1px dashed var(--bs-border-color);
   opacity: 0.7;
 }
 
@@ -469,10 +730,10 @@ a.ct-provenance-step:hover {
 }
 
 .tl_date {
-    background-color:#dce9f5;
+    background-color: var(--bs-primary-bg-subtle);
     border-style: none none solid none;
     border-width: 1px;
-    border-color: #515151;
+    border-color: var(--bs-secondary-color);
     margin-top: 12px;
     padding: 3px 3px 3px 3px;
     width: 100%;
@@ -484,7 +745,7 @@ a.ct-provenance-step:hover {
 .tl_event {
     border-style: none none solid none;
     border-width: 1px;
-    border-color: #d1d1d1;
+    border-color: var(--bs-border-color);
     display: flex;
     padding: 3px;
     width: 100%;
@@ -512,7 +773,7 @@ a.ct-provenance-step:hover {
     flex: 1;
     border-style: none none none solid;
     border-width: 1px;
-    border-color: #d1d1d1;
+    border-color: var(--bs-border-color);
     padding-left: 5px;
 }
 
@@ -527,7 +788,7 @@ a.ct-provenance-step:hover {
     padding-top: 8px;
     border-style: solid none none none;
     border-width: 1px;
-    border-color: #d1d1d1;
+    border-color: var(--bs-border-color);
 }
 
 span.multiselect-native-select {
@@ -611,12 +872,12 @@ span.multiselect-native-select select {
 	border-top-left-radius: 4px;
     border-width: 1px;
     border-style: none solid none none;
-    border-color: #ddd;
+    border-color: var(--bs-border-color);
     padding: 5px 15px 5px 15px;
     cursor: pointer;
 }
 .tab-header div.tab-selected {
-    background-color : #fff;
+    background-color : var(--bs-body-bg);
     cursor: default;
 }
 
@@ -633,8 +894,8 @@ span.multiselect-native-select select {
     position: sticky;
     top: 0;
     z-index: 100;
-    background-color: #f8f9fa;
-    border-bottom: 1px solid #dee2e6;
+    background-color: var(--bs-tertiary-bg);
+    border-bottom: 1px solid var(--bs-border-color);
     padding: 4px 12px;
     margin-bottom: 8px;
 }
@@ -675,7 +936,7 @@ span.multiselect-native-select select {
 
 /* Jump To Analysis highlight animation */
 @keyframes highlight-flash {
-    0% { background-color: #ffeb3b; }
+    0% { background-color: var(--ace-flash-bg); }
     100% { background-color: transparent; }
 }
 
@@ -728,13 +989,13 @@ span.multiselect-native-select select {
     background-color: transparent;
 }
 
-.search-tier-exact  { color: #198754; font-weight: 700; }
-.search-tier-strong { color: #198754; }
-.search-tier-good   { color: #000000; }
-.search-tier-weak   { color: #adb5bd; }
+.search-tier-exact  { color: var(--bs-success-text-emphasis); font-weight: 700; }
+.search-tier-strong { color: var(--bs-success-text-emphasis); }
+.search-tier-good   { color: var(--bs-emphasis-color); }
+.search-tier-weak   { color: var(--bs-tertiary-color); }
 
 .search-hit {
-    border-left: 3px solid #dee2e6; /* neutral default, also unknown/empty kind */
+    border-left: 3px solid var(--bs-border-color); /* neutral default, also unknown/empty kind */
     padding-left: 0.5rem;
     margin: 0.125rem 0 0.125rem 0.25rem;
 }
@@ -742,7 +1003,7 @@ span.multiselect-native-select select {
 .search-hit-kind {
     display: inline-block;
     min-width: 5.5rem; /* keeps the snippets aligned in a column */
-    color: #6c757d;
+    color: var(--bs-secondary-color);
     font-size: 0.75rem;
 }
 
@@ -754,7 +1015,7 @@ span.multiselect-native-select select {
 .search-hit-context    { border-left-color: #adb5bd; }
 .search-hit-observable { border-left-color: #0f766e; }
 .search-hit-tag        { border-left-color: #997404; }
-.search-hit-uuid       { border-left-color: #495057; }
+.search-hit-uuid       { border-left-color: var(--ace-search-hit-uuid); }
 
 /* list screens built on static/js/filter_list_page.js */
 .filter-list-chip { cursor: pointer; }
@@ -763,3 +1024,12 @@ span.multiselect-native-select select {
 .filter-list-table.filter-list-fit { table-layout: auto; }
 .filter-list-table td, .filter-list-table th { vertical-align: top; }
 .filter-list-table .text-break-all { overflow-wrap: anywhere; }
+
+/* a badge outline that is black on the light themes and a normal border on dark, where a
+   white ring around every badge would be glaring */
+.border-strong {
+    border-color: rgba(var(--bs-emphasis-color-rgb), 1) !important;
+}
+[data-bs-theme=dark] .border-strong {
+    border-color: var(--bs-border-color) !important;
+}

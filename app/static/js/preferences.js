@@ -1,6 +1,6 @@
 // The preferences page. The profile form saves through PATCH /api/v2/users/me (same origin,
 // authenticated by the Flask session cookie); the column chooser is init_column_chooser() from
-// manage_columns.js with nothing to re-render.
+// manage_columns.js with nothing to re-render; the theme radios go through save_theme() (ace.js).
 $(document).ready(function() {
     var form = document.getElementById("profile_form");
     var status = document.getElementById("profile_status");
@@ -36,6 +36,18 @@ $(document).ready(function() {
             if (dropdown) { dropdown.textContent = user.display_name + " (" + user.username + ")"; }
         }).catch(function(error) {
             set_status("Not saved: " + error.message, true);
+        });
+    });
+
+    var theme_status = document.getElementById("theme_status");
+    document.getElementById("theme_form").addEventListener("change", function(event) {
+        theme_status.textContent = "Saving…";
+        theme_status.classList.remove("text-danger");
+        save_theme(event.target.value).then(function() {
+            theme_status.textContent = "Saved";
+        }).catch(function(error) {
+            theme_status.textContent = "Not saved: " + error.message;
+            theme_status.classList.add("text-danger");
         });
     });
 
