@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560" font-family="Inter, Arial, sans-serif" font-size="13" fill="#212529">
+  <title>SVS run states and what moves a run between them</title>
+  <defs>
+    <marker id="a-launcher" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a6fa5"/>
+    </marker>
+    <marker id="a-timer" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a8792a"/>
+    </marker>
+    <marker id="a-person" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f8a5b"/>
+    </marker>
+    <marker id="a-mixed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c757d"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="560" fill="#ffffff"/>
+
+  <!-- states -->
+  <rect x="70" y="235" width="130" height="46" rx="23" fill="#f4f5f7" stroke="#8a9099" stroke-width="1.5"/>
+  <text x="135" y="263" text-anchor="middle" font-weight="600">created</text>
+
+  <rect x="290" y="235" width="130" height="46" rx="23" fill="#e8f0f9" stroke="#6a8db8" stroke-width="1.5"/>
+  <text x="355" y="263" text-anchor="middle" font-weight="600">started</text>
+
+  <rect x="530" y="235" width="130" height="46" rx="23" fill="#fbf3e8" stroke="#c99a5b" stroke-width="1.5"/>
+  <text x="595" y="263" text-anchor="middle" font-weight="600">ended</text>
+
+  <rect x="760" y="235" width="130" height="46" rx="23" fill="#edf5ee" stroke="#7fa886" stroke-width="1.5"/>
+  <text x="825" y="263" text-anchor="middle" font-weight="600">reviewed</text>
+
+  <rect x="290" y="40" width="130" height="46" rx="23" fill="#f9ecec" stroke="#b86a6a" stroke-width="1.5"/>
+  <text x="355" y="68" text-anchor="middle" font-weight="600">error</text>
+
+  <rect x="290" y="440" width="130" height="46" rx="23" fill="#f4f5f7" stroke="#8a9099" stroke-width="1.5"/>
+  <text x="355" y="468" text-anchor="middle" font-weight="600">canceled</text>
+
+  <rect x="760" y="440" width="130" height="46" rx="23" fill="#ececec" stroke="#6c757d" stroke-width="1.5"/>
+  <text x="825" y="468" text-anchor="middle" font-weight="600">closed</text>
+
+  <!-- registration -->
+  <circle cx="22" cy="258" r="7" fill="#4a6fa5"/>
+  <line x1="29" y1="258" x2="68" y2="258" stroke="#4a6fa5" stroke-width="1.5" marker-end="url(#a-launcher)"/>
+  <rect x="6" y="200" width="88" height="22" rx="4" fill="#ffffff"/>
+  <text x="50" y="215" text-anchor="middle" fill="#4a6fa5">POST /runs</text>
+
+  <!-- created -> started -->
+  <line x1="200" y1="258" x2="288" y2="258" stroke="#4a6fa5" stroke-width="1.5" marker-end="url(#a-launcher)"/>
+  <rect x="200" y="285" width="88" height="22" rx="4" fill="#ffffff"/>
+  <text x="244" y="300" text-anchor="middle" fill="#4a6fa5">start</text>
+
+  <!-- started -> ended -->
+  <line x1="420" y1="258" x2="528" y2="258" stroke="#a8792a" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a-timer)"/>
+  <rect x="424" y="285" width="100" height="40" rx="4" fill="#ffffff"/>
+  <text x="474" y="300" text-anchor="middle" fill="#a8792a">observation</text>
+  <text x="474" y="317" text-anchor="middle" fill="#a8792a">window passed</text>
+
+  <!-- ended -> reviewed -->
+  <line x1="660" y1="258" x2="758" y2="258" stroke="#4f8a5b" stroke-width="1.5" marker-end="url(#a-person)"/>
+  <rect x="664" y="285" width="90" height="40" rx="4" fill="#ffffff"/>
+  <text x="709" y="300" text-anchor="middle" fill="#4f8a5b">review</text>
+  <text x="709" y="317" text-anchor="middle" fill="#4f8a5b">(preconditions)</text>
+
+  <!-- reviewed self loop -->
+  <path d="M 800 235 C 790 175, 860 175, 850 233" fill="none" stroke="#4f8a5b" stroke-width="1.5" marker-end="url(#a-person)"/>
+  <rect x="740" y="140" width="170" height="40" rx="4" fill="#ffffff"/>
+  <text x="825" y="155" text-anchor="middle" fill="#4f8a5b">review again after a</text>
+  <text x="825" y="172" text-anchor="middle" fill="#4f8a5b">change since review</text>
+
+  <!-- created -> error -->
+  <path d="M 135 235 C 135 120, 200 63, 288 63" fill="none" stroke="#a8792a" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a-timer)"/>
+  <rect x="40" y="110" width="150" height="40" rx="4" fill="#ffffff"/>
+  <text x="115" y="125" text-anchor="middle" fill="#a8792a">start timeout,</text>
+  <text x="115" y="142" text-anchor="middle" fill="#a8792a">then closed at once</text>
+
+  <!-- started -> error -->
+  <line x1="355" y1="235" x2="355" y2="88" stroke="#4a6fa5" stroke-width="1.5" marker-end="url(#a-launcher)"/>
+  <rect x="362" y="140" width="150" height="40" rx="4" fill="#ffffff"/>
+  <text x="437" y="155" text-anchor="middle" fill="#4a6fa5">executed with a</text>
+  <text x="437" y="172" text-anchor="middle" fill="#4a6fa5">failure (exit code)</text>
+
+  <!-- created -> canceled -->
+  <path d="M 135 281 C 135 400, 200 463, 288 463" fill="none" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a-mixed)"/>
+  <rect x="40" y="366" width="150" height="40" rx="4" fill="#ffffff"/>
+  <text x="115" y="381" text-anchor="middle" fill="#6c757d">cancel before start,</text>
+  <text x="115" y="398" text-anchor="middle" fill="#6c757d">then closed at once</text>
+
+  <!-- started -> canceled -->
+  <line x1="355" y1="281" x2="355" y2="438" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a-mixed)"/>
+  <rect x="362" y="350" width="150" height="40" rx="4" fill="#ffffff"/>
+  <text x="437" y="365" text-anchor="middle" fill="#6c757d">cancel (launcher</text>
+  <text x="437" y="382" text-anchor="middle" fill="#6c757d">or person)</text>
+
+  <!-- ended -> closed -->
+  <path d="M 595 281 C 595 380, 690 445, 758 455" fill="none" stroke="#4f8a5b" stroke-width="1.5" marker-end="url(#a-person)"/>
+  <rect x="530" y="370" width="130" height="40" rx="4" fill="#ffffff"/>
+  <text x="595" y="385" text-anchor="middle" fill="#4f8a5b">close (person,</text>
+  <text x="595" y="402" text-anchor="middle" fill="#4f8a5b">reason required)</text>
+
+  <!-- canceled -> closed -->
+  <line x1="420" y1="472" x2="758" y2="472" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a-mixed)"/>
+  <rect x="440" y="480" width="300" height="40" rx="4" fill="#ffffff"/>
+  <text x="590" y="495" text-anchor="middle" fill="#6c757d">attribution window ended (timer),</text>
+  <text x="590" y="512" text-anchor="middle" fill="#6c757d">or close (person)</text>
+
+  <!-- error -> closed, around the right -->
+  <path d="M 420 63 L 950 63 L 950 463 L 892 463" fill="none" stroke="#6c757d" stroke-width="1.5" marker-end="url(#a-mixed)"/>
+  <rect x="560" y="70" width="300" height="40" rx="4" fill="#ffffff"/>
+  <text x="710" y="85" text-anchor="middle" fill="#6c757d">attribution window ended (timer),</text>
+  <text x="710" y="102" text-anchor="middle" fill="#6c757d">or close (person)</text>
+
+  <!-- legend -->
+  <rect x="20" y="520" width="560" height="32" rx="4" fill="#f8f9fa" stroke="#dee2e6"/>
+  <line x1="34" y1="536" x2="64" y2="536" stroke="#4a6fa5" stroke-width="1.5"/>
+  <text x="72" y="540">launcher call</text>
+  <line x1="170" y1="536" x2="200" y2="536" stroke="#a8792a" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="208" y="540">RunTimer (service_svs)</text>
+  <line x1="364" y1="536" x2="394" y2="536" stroke="#4f8a5b" stroke-width="1.5"/>
+  <text x="402" y="540">person</text>
+  <line x1="460" y1="536" x2="490" y2="536" stroke="#6c757d" stroke-width="1.5"/>
+  <text x="498" y="540">either</text>
+</svg>

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="450" viewBox="0 0 960 450" role="img" aria-labelledby="svs-loop-title svs-loop-desc">
+  <title id="svs-loop-title">The two SVS loops</title>
+  <desc id="svs-loop-desc">Loop 1, YARA regression testing: an analyst dispositions an alert TP or FP, the YARA-matched files are captured as samples, a detection engineer opens a rule pull request, CI asks ACE for a validation report, and the team reads the report and fixes or merges. Loop 2, Atomic Red Team test runs: a launcher registers a run and gets a marker, the atomic runs on a lab test host, ACE attributes the alerts to the run, an analyst reviews the run, expectations are learned, coverage is computed per technique, and the team picks the next test or writes a new signature.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b6b7a"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="450" fill="#ffffff"/>
+  <g font-family="Inter, Arial, sans-serif" font-size="14" fill="#212529">
+
+    <!-- Loop 1: YARA regression testing -->
+    <text x="20" y="30" font-size="15" font-weight="bold">Loop 1: YARA regression testing (Signatures → Samples, Validations)</text>
+    <g stroke="#4a78a8" stroke-width="1.5" fill="#e7f0f8">
+      <rect x="20" y="50" width="160" height="72" rx="8"/>
+      <rect x="210" y="50" width="160" height="72" rx="8"/>
+      <rect x="400" y="50" width="160" height="72" rx="8"/>
+      <rect x="590" y="50" width="160" height="72" rx="8"/>
+      <rect x="780" y="50" width="160" height="72" rx="8"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="100" y="81">Analyst dispositions</text>
+      <text x="100" y="99">an alert TP or FP</text>
+      <text x="290" y="81">YARA-matched files</text>
+      <text x="290" y="99">kept as samples</text>
+      <text x="480" y="81">Detection engineer</text>
+      <text x="480" y="99">opens a rule PR</text>
+      <text x="670" y="81">CI asks ACE for a</text>
+      <text x="670" y="99">validation report</text>
+      <text x="860" y="81">Team reads the report,</text>
+      <text x="860" y="99">fixes or merges</text>
+    </g>
+    <g stroke="#5b6b7a" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+      <line x1="180" y1="86" x2="208" y2="86"/>
+      <line x1="370" y1="86" x2="398" y2="86"/>
+      <line x1="560" y1="86" x2="588" y2="86"/>
+      <line x1="750" y1="86" x2="778" y2="86"/>
+      <path d="M 860 122 L 860 148 L 100 148 L 100 124"/>
+    </g>
+    <text x="480" y="168" text-anchor="middle" fill="#495057">every graded alert adds to the corpus the next rule change is checked against</text>
+
+    <!-- Loop 2: Atomic Red Team test runs -->
+    <text x="20" y="210" font-size="15" font-weight="bold">Loop 2: Atomic Red Team test runs (SVS → Runs, Tests, Coverage, Worklist)</text>
+    <g stroke="#4f8a63" stroke-width="1.5" fill="#e8f3ec">
+      <rect x="20" y="230" width="200" height="72" rx="8"/>
+      <rect x="260" y="230" width="200" height="72" rx="8"/>
+      <rect x="500" y="230" width="200" height="72" rx="8"/>
+      <rect x="740" y="230" width="200" height="72" rx="8"/>
+      <rect x="740" y="345" width="200" height="72" rx="8"/>
+      <rect x="500" y="345" width="200" height="72" rx="8"/>
+      <rect x="260" y="345" width="200" height="72" rx="8"/>
+    </g>
+    <g text-anchor="middle">
+      <text x="120" y="261">Launcher registers</text>
+      <text x="120" y="279">a run, gets a marker</text>
+      <text x="360" y="261">Atomic runs on a</text>
+      <text x="360" y="279">lab test host</text>
+      <text x="600" y="261">ACE attributes the</text>
+      <text x="600" y="279">alerts to the run</text>
+      <text x="840" y="261">Analyst reviews</text>
+      <text x="840" y="279">the run</text>
+      <text x="840" y="376">Expectations learned</text>
+      <text x="840" y="394">(signatures that fire)</text>
+      <text x="600" y="376">Coverage computed</text>
+      <text x="600" y="394">per technique</text>
+      <text x="360" y="376">Team picks the next</text>
+      <text x="360" y="394">test or a new signature</text>
+    </g>
+    <g stroke="#5b6b7a" stroke-width="1.5" fill="none" marker-end="url(#arrow)">
+      <line x1="220" y1="266" x2="258" y2="266"/>
+      <line x1="460" y1="266" x2="498" y2="266"/>
+      <line x1="700" y1="266" x2="738" y2="266"/>
+      <line x1="840" y1="302" x2="840" y2="343"/>
+      <line x1="740" y1="381" x2="702" y2="381"/>
+      <line x1="500" y1="381" x2="462" y2="381"/>
+      <path d="M 260 381 L 120 381 L 120 304"/>
+    </g>
+    <text x="112" y="350" text-anchor="end" fill="#495057">next run</text>
+    <text x="480" y="440" text-anchor="middle" fill="#495057">ACE never runs the tests: the launcher, outside ACE, does</text>
+  </g>
+</svg>

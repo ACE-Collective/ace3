@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="700" viewBox="0 0 1000 700" font-family="Inter, Arial, sans-serif" font-size="13" fill="#212529">
+  <title>SVS architecture: callers, the API, the engine, service_svs, the yara service and storage</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c757d"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="700" fill="#ffffff"/>
+
+  <!-- callers -->
+  <rect x="20" y="20" width="300" height="60" rx="6" fill="#f4f5f7" stroke="#8a9099"/>
+  <text x="170" y="44" text-anchor="middle" font-weight="600">Launcher (outside ACE)</text>
+  <text x="170" y="64" text-anchor="middle">svs:run_register: register, start, executed, cancel</text>
+
+  <rect x="350" y="20" width="300" height="60" rx="6" fill="#f4f5f7" stroke="#8a9099"/>
+  <text x="500" y="44" text-anchor="middle" font-weight="600">Rule repository CI</text>
+  <text x="500" y="64" text-anchor="middle">svs:validate: request a YARA validation</text>
+
+  <rect x="680" y="20" width="300" height="60" rx="6" fill="#f4f5f7" stroke="#8a9099"/>
+  <text x="830" y="44" text-anchor="middle" font-weight="600">Browser: Flask page shells</text>
+  <text x="830" y="64" text-anchor="middle">app/svs, app/signatures, static/js</text>
+
+  <line x1="170" y1="80" x2="170" y2="108" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="500" y1="80" x2="500" y2="108" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="830" y1="80" x2="830" y2="108" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- API -->
+  <rect x="20" y="110" width="960" height="60" rx="6" fill="#e8f0f9" stroke="#6a8db8"/>
+  <text x="500" y="134" text-anchor="middle" font-weight="600">aceapi_v2/svs/* (FastAPI): router.py, service.py, schemas.py per resource</text>
+  <text x="500" y="154" text-anchor="middle">runs, tests, expectations, ignores, test-hosts, samples, yara/validations, coverage, worklist, alerts/{uuid}/svs</text>
+
+  <!-- API to MySQL, down the left lane -->
+  <line x1="38" y1="170" x2="38" y2="588" stroke="#6c757d" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+
+  <!-- engine -->
+  <rect x="60" y="205" width="420" height="250" rx="6" fill="#edf5ee" stroke="#7fa886"/>
+  <text x="270" y="226" text-anchor="middle" font-weight="600">Engine workers: alerts from hunts and collectors</text>
+
+  <rect x="75" y="238" width="390" height="46" rx="4" fill="#ffffff" stroke="#7fa886"/>
+  <text x="270" y="257" text-anchor="middle">executor hook: record_delta_sightings()</text>
+  <text x="270" y="275" text-anchor="middle">markers in module output, saved as svs_sightings</text>
+
+  <rect x="75" y="291" width="390" height="46" rx="4" fill="#ffffff" stroke="#7fa886"/>
+  <text x="270" y="310" text-anchor="middle">svs_marker router (saq/svs/routing.py)</text>
+  <text x="270" y="328" text-anchor="middle">ALERT() PRE_INSERT, orchestrator POST_ANALYSIS</text>
+
+  <rect x="75" y="344" width="390" height="46" rx="4" fill="#ffffff" stroke="#7fa886"/>
+  <text x="270" y="363" text-anchor="middle">svs_alert_tagger (correlation mode)</text>
+  <text x="270" y="381" text-anchor="middle">svs_test and svs:marker_mismatch in the tree</text>
+
+  <rect x="75" y="397" width="390" height="46" rx="4" fill="#ffffff" stroke="#7fa886"/>
+  <text x="270" y="416" text-anchor="middle">svs_yara_sample_capture (dispositioned mode)</text>
+  <text x="270" y="434" text-anchor="middle">files YARA matched on tp/fp alerts</text>
+
+  <!-- service_svs -->
+  <rect x="530" y="205" width="450" height="250" rx="6" fill="#fbf3e8" stroke="#c99a5b"/>
+  <text x="755" y="226" text-anchor="middle" font-weight="600">service_svs (saq/svs/service.py), primary node only</text>
+
+  <rect x="545" y="238" width="420" height="46" rx="4" fill="#ffffff" stroke="#c99a5b"/>
+  <text x="755" y="257" text-anchor="middle">ValidationWorker x max_concurrent_validations</text>
+  <text x="755" y="275" text-anchor="middle">claim, heartbeat, run_replay(), complete</text>
+
+  <rect x="545" y="291" width="420" height="46" rx="4" fill="#ffffff" stroke="#c99a5b"/>
+  <text x="755" y="310" text-anchor="middle">CatalogRefresher</text>
+  <text x="755" y="328" text-anchor="middle">atomics/T*/T*.yaml into svs_catalog_tests</text>
+
+  <rect x="545" y="344" width="420" height="46" rx="4" fill="#ffffff" stroke="#c99a5b"/>
+  <text x="755" y="363" text-anchor="middle">RunTimer</text>
+  <text x="755" y="381" text-anchor="middle">run_timers(): timeouts, ends, closes, stale results</text>
+
+  <rect x="545" y="397" width="420" height="46" rx="4" fill="#ffffff" stroke="#c99a5b"/>
+  <text x="755" y="416" text-anchor="middle">CoverageRefresher</text>
+  <text x="755" y="434" text-anchor="middle">refresh_coverage(): worklist, then svs_coverage</text>
+
+  <!-- engine and service_svs downwards -->
+  <line x1="180" y1="457" x2="180" y2="488" stroke="#6c757d" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <line x1="320" y1="457" x2="320" y2="588" stroke="#6c757d" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <line x1="420" y1="455" x2="420" y2="488" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="580" y1="455" x2="580" y2="488" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="650" y1="455" x2="650" y2="588" stroke="#6c757d" stroke-width="1.5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+  <line x1="830" y1="455" x2="830" y2="488" stroke="#6c757d" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- yara, CAS, sandbox -->
+  <rect x="60" y="490" width="240" height="60" rx="6" fill="#f4f5f7" stroke="#8a9099"/>
+  <text x="180" y="514" text-anchor="middle" font-weight="600">yara service</text>
+  <text x="180" y="534" text-anchor="middle">loads svs_marker/SVS_Marker</text>
+
+  <rect x="340" y="490" width="280" height="60" rx="6" fill="#f2eef7" stroke="#957bb0"/>
+  <text x="480" y="514" text-anchor="middle" font-weight="600">CAS pool svs_samples</text>
+  <text x="480" y="534" text-anchor="middle">bytes, one hold per capture</text>
+
+  <rect x="680" y="490" width="300" height="60" rx="6" fill="#f4f5f7" stroke="#8a9099"/>
+  <text x="830" y="514" text-anchor="middle" font-weight="600">Landlock sandbox: child.py</text>
+  <text x="830" y="534" text-anchor="middle">compile and scan base and head</text>
+
+  <!-- MySQL -->
+  <rect x="20" y="590" width="960" height="90" rx="6" fill="#f2eef7" stroke="#957bb0"/>
+  <text x="500" y="614" text-anchor="middle" font-weight="600">MySQL, main Alembic chain (saq/database/model.py)</text>
+  <text x="500" y="636" text-anchor="middle">svs_runs, svs_run_targets, svs_run_events, svs_attributions, svs_run_results, svs_expectations, svs_ignores,</text>
+  <text x="500" y="656" text-anchor="middle">svs_yara_captures, svs_validations, svs_coverage, svs_technique_worklist, detection_point_verdicts, cas_*</text>
+</svg>
