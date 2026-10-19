@@ -478,7 +478,8 @@
                that produced them instead of one flat list (see build_provenance_groups) #}
             {{ display_provenance_groups(node) }}
         {% else %}
-            <ul{% if is_default_collapsed %} style="display: none;"{% endif %}>
+            {# hidden="until-found" rather than display: none, so find-in-page still searches it (collapseTree in saq_analysis.js) #}
+            <ul{% if is_default_collapsed %} hidden="until-found"{% endif %}>
                 {% for child in node.children %}
                     {{ display_tree_node(child) }}
                 {% endfor %}
