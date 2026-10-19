@@ -45,7 +45,6 @@ When the tests weren't run (lock held, range not checked out), the verdict may n
 - Anything a formatter would fix: whitespace, quote style, import order (there is no formatter configured).
 - Hypothetical problems with no path in this codebase ("if someone later calls this with None..."). Name the caller or input that triggers it, or drop it.
 - Files under `etc/saq.yaml` (dev-only overlay) or `etc/saq.unittest.default.yaml`, judged as if they were production config.
-- "Dark mode" is not a feature request. If a change adds one, that *is* a blocker (CLAUDE.md, Additional Instructions).
 
 ## New vs pre-existing
 

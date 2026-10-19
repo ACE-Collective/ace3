@@ -20,7 +20,7 @@ var aceVerdicts = (function() {
 
     function chip(text, css, title) {
         const element = document.createElement("span");
-        element.className = "badge border border-dark ms-1 " + css;
+        element.className = "badge border border-strong ms-1 " + css;
         element.style.fontSize = "0.75rem";
         element.textContent = text;
         if (title) {

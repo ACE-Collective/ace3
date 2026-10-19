@@ -25,7 +25,7 @@
 
 {% if analysis.details.get("events", []) | length > 0 and 'query' in analysis.details %}
 <div class="card mb-4">
-    <div class="card-header bg-white">
+    <div class="card-header bg-body">
         <div class="d-flex align-items-center">
             <h6 class="mb-0 me-2">Original Query</h6>
             <button class="btn btn-secondary btn-sm me-2" type="button" id="copy_action_splunk_{{ unique_reference }}" title="Copy to Clipboard"><span class="bi bi-copy"></span></button>
@@ -45,12 +45,12 @@
         });
     </script>
 
-    <div class="card-body p-4 bg-light raw-log collapse" id="collapse_original_query_{{ unique_reference }}" style="word-break:break-all; -webkit-text-size-adjust: 110%;">
+    <div class="card-body p-4 bg-body-tertiary raw-log collapse" id="collapse_original_query_{{ unique_reference }}" style="word-break:break-all; -webkit-text-size-adjust: 110%;">
         {% set query_split = analysis.details['query'].split('|') %}
         {{ query_split[0] }}<br>
         {% for line in query_split[1:] %}
             {% set line_tokens = line.strip().split(' ') %}
-            &emsp;&emsp;| <span style="color: #2662FC">{{ line_tokens[0] }} </span>
+            &emsp;&emsp;| <span class="text-primary">{{ line_tokens[0] }} </span>
             {% for tok in line_tokens[1:] %}
                 {{ tok }}
             {% endfor %}<br>
@@ -63,7 +63,7 @@
 {% endblock %}
 
 <div class="card mt-4">
-    <div class="card-header bg-white">
+    <div class="card-header bg-body">
         <h5 class="card-title mb-0">
             Raw Splunk Details
             <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_raw_splunk_details_{{ unique_reference }}" aria-expanded="false" aria-controls="collapse_raw_splunk_details_{{ unique_reference }}" class="text-decoration-none ms-2">
@@ -71,7 +71,7 @@
             </a>
         </h5>
     </div>
-    <div class="card-body p-4 bg-light raw-log collapse" id="collapse_raw_splunk_details_{{ unique_reference }}" style="word-break:break-all; -webkit-text-size-adjust: 110%">
+    <div class="card-body p-4 bg-body-tertiary raw-log collapse" id="collapse_raw_splunk_details_{{ unique_reference }}" style="word-break:break-all; -webkit-text-size-adjust: 110%">
         <div id="json-tree-{{ unique_reference }}"></div>
     </div>
 </div>

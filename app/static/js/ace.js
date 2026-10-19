@@ -386,13 +386,13 @@ function renderJsonTree(data, container, options) {
 
     function renderValue(value) {
         if (value === null) {
-            return '<span style="color: #999;">null</span>';
+            return '<span class="json-muted">null</span>';
         } else if (typeof value === 'boolean') {
-            return '<span style="color: #0d6efd;">' + value + '</span>';
+            return '<span class="json-boolean">' + value + '</span>';
         } else if (typeof value === 'number') {
-            return '<span style="color: #198754;">' + value + '</span>';
+            return '<span class="json-number">' + value + '</span>';
         } else if (typeof value === 'string') {
-            return '<span style="color: #6c757d;">"' + escape_html(value) + '"</span>';
+            return '<span class="json-string">"' + escape_html(value) + '"</span>';
         }
         return escape_html(String(value));
     }
@@ -419,13 +419,12 @@ function renderJsonTree(data, container, options) {
             toggle.style.fontSize = '0.8em';
 
             var keySpan = document.createElement('span');
-            keySpan.style.fontWeight = 'bold';
-            keySpan.style.color = '#0d6efd';
+            keySpan.className = 'json-key';
             keySpan.style.cursor = 'pointer';
             keySpan.textContent = key !== null ? key + ': ' : '';
 
             var preview = document.createElement('span');
-            preview.style.color = '#999';
+            preview.className = 'json-muted';
             preview.textContent = bracket + childCount + ' item' + (childCount !== 1 ? 's' : '') + closeBracket;
 
             var childUl = document.createElement('ul');
@@ -464,11 +463,10 @@ function renderJsonTree(data, container, options) {
             var bullet = document.createElement('span');
             bullet.innerHTML = '&bull; ';
             bullet.style.marginRight = '4px';
-            bullet.style.color = '#999';
+            bullet.className = 'json-muted';
 
             var keySpan = document.createElement('span');
-            keySpan.style.fontWeight = 'bold';
-            keySpan.style.color = '#0d6efd';
+            keySpan.className = 'json-key';
             keySpan.textContent = key !== null ? key + ': ' : '';
 
             var valueSpan = document.createElement('span');
@@ -583,3 +581,55 @@ function setup_assign_ownership_dialog(alerts, on_deselect, done) {
     });
 }
 
+
+// The GUI theme (docs/USER_PREFERENCES.md). The choice is applied at once through
+// aceApplyTheme() (core.html) and then stored; if the store fails the previous theme comes
+// back, so what the analyst sees is always what the next page load will render. Plain fetch
+// rather than aceApi: ace_api.js is not loaded on every page.
+function save_theme(mode) {
+    var previous = document.documentElement.getAttribute("data-ace-theme");
+    window.aceApplyTheme(mode);
+    sync_theme_controls(mode);
+    return fetch("/api/v2/users/me/preferences/theme", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: mode }),
+    }).then(function(response) {
+        if (!response.ok) {
+            return response.text().then(function(text) { throw new Error(text || response.statusText); });
+        }
+    }).catch(function(error) {
+        window.aceApplyTheme(previous);
+        sync_theme_controls(previous);
+        throw error;
+    });
+}
+
+// mark the current theme in the navbar menu and the preferences page radios, if present
+function sync_theme_controls(mode) {
+    document.querySelectorAll("#theme-switcher [data-theme-mode]").forEach(function(item) {
+        var current = item.getAttribute("data-theme-mode") === mode;
+        item.classList.toggle("active", current);
+        item.setAttribute("aria-pressed", current ? "true" : "false");
+    });
+    document.querySelectorAll("input[name=theme_mode]").forEach(function(radio) {
+        radio.checked = radio.value === mode;
+    });
+}
+
+$(document).ready(function() {
+    var menu = document.getElementById("theme-switcher");
+    if (!menu) {
+        return;
+    }
+    menu.addEventListener("click", function(event) {
+        var item = event.target.closest("[data-theme-mode]");
+        if (!item) {
+            return;
+        }
+        save_theme(item.getAttribute("data-theme-mode")).catch(function(error) {
+            alert("Theme not saved: " + error.message);
+        });
+    });
+});

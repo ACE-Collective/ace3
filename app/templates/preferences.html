@@ -47,6 +47,25 @@
                 <a href="{{ url_for('auth.change_password') }}">Change password</a>
             </div>
         </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Appearance</h5>
+            </div>
+            <div class="card-body">
+                {# saved by save_theme() in ace.js as soon as a choice is made #}
+                {% set theme_mode = ui_theme() %}
+                <div id="theme_form">
+                    {% for mode, icon, label, hint in THEME_CHOICES %}
+                    <div class="form-check">
+                        <input class="form-check-input" type="radio" name="theme_mode" id="theme_mode_{{ mode }}" value="{{ mode }}" {% if mode == theme_mode %}checked{% endif %}>
+                        <label class="form-check-label" for="theme_mode_{{ mode }}">{% if icon %}<i class="bi {{ icon }} me-1"></i>{% endif %}{{ label }} <span class="text-body-secondary small">&mdash; {{ hint }}</span></label>
+                    </div>
+                    {% endfor %}
+                </div>
+                <small class="text-muted" id="theme_status" aria-live="polite"></small>
+            </div>
+        </div>
     </div>
 
     <div class="col-md-1"></div>

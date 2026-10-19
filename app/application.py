@@ -12,6 +12,7 @@ import urllib
 from app.blueprints import register_blueprints
 
 from app.integration import register_integration_blueprints
+from app.user_preferences import get_theme_preference
 from saq.configuration.config import get_config
 from flask_config import get_flask_config
 from flask_login import LoginManager
@@ -109,6 +110,15 @@ def initialize_presenters():
         # there isn't anythign to do here yet, but will soon
         pass
 
+# (mode, bootstrap icon, label, tooltip) for the theme switchers in base.html and preferences.html
+THEME_CHOICES = [
+    ("system", "bi-circle-half", "System", "Follow the operating system's light or dark setting"),
+    ("light", "bi-sun", "Light", "Dark text on a light background"),
+    ("dark", "bi-moon-stars", "Dark", "Light text on a dark background"),
+    ("jd", None, "\U0001F474 JD", "High-contrast light"),
+]
+
+
 def create_app(testing: Optional[bool]=False):
 
     flask_app = Flask(__name__)
@@ -161,6 +171,21 @@ def create_app(testing: Optional[bool]=False):
             "ACE_VERSION": os.environ.get("ACE_VERSION", ""),
             "FAVICON_POLL_SECONDS": auto_refresh_seconds if auto_refresh_seconds > 0 else 30,
         }
+
+    @flask_app.context_processor
+    def inject_theme():
+        # a callable rather than a value, so fragments rendered without the page chrome never
+        # pay for the preference lookup; memoized per render because core.html, the navbar
+        # and the preferences page each ask (a top-level set in core.html is not visible
+        # inside the blocks a child template overrides)
+        cache = []
+
+        def ui_theme() -> str:
+            if not cache:
+                cache.append(get_theme_preference().mode)
+            return cache[0]
+
+        return {"ui_theme": ui_theme, "THEME_CHOICES": THEME_CHOICES}
 
     @flask_app.context_processor
     def inject_dispositions():

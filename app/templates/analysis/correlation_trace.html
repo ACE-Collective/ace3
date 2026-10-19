@@ -107,9 +107,9 @@
     <div class="ct-step ct-step-transform">
         <div class="ct-step-header">
             <span class="badge text-bg-info ct-type-badge"><i class="bi bi-arrow-repeat"></i> transform</span>
-            <span class="badge text-bg-light text-dark">{{ trans.transform_type }}</span>
-            <span class="badge text-bg-light text-dark">{{ trans.method }}</span>
-            <span class="badge text-bg-light text-dark">{{ trans.command_type }}</span>
+            <span class="badge bg-body-secondary text-body-emphasis">{{ trans.transform_type }}</span>
+            <span class="badge bg-body-secondary text-body-emphasis">{{ trans.method }}</span>
+            <span class="badge bg-body-secondary text-body-emphasis">{{ trans.command_type }}</span>
             {% if trans.property_name %}
                 <span class="ct-assign">
                     <code class="ct-prop">{{ trans.property_name }}</code>
@@ -180,7 +180,7 @@
             {% if action.error %}
                 <span class="badge text-bg-danger ms-auto"><i class="bi bi-exclamation-triangle-fill"></i> error</span>
             {% elif action.is_interrupt %}
-                <span class="badge text-bg-light text-muted ms-auto" title="this action interrupted event processing"><i class="bi bi-sign-stop"></i> interrupt</span>
+                <span class="badge bg-body-secondary text-body-secondary ms-auto" title="this action interrupted event processing"><i class="bi bi-sign-stop"></i> interrupt</span>
             {% endif %}
         </div>
         {% if action.error %}
@@ -232,7 +232,7 @@
     {% elif outcome == "stream_reset" %}
         <span class="badge text-bg-info ct-pl-outcome" title="this event triggered a stream transform that replaced the event stream and reset processing"><i class="bi bi-broadcast"></i> stream reset</span>
     {% else %}
-        <span class="badge text-bg-light text-dark ct-pl-outcome">{{ outcome }}</span>
+        <span class="badge bg-body-secondary text-body-emphasis ct-pl-outcome">{{ outcome }}</span>
     {% endif %}
 {% endmacro %}
 
@@ -341,7 +341,7 @@
         <i class="bi bi-stop-circle text-warning"></i>
         <span class="ct-pl-label">Stopped processing{% if step_wrapper.description %}: {{ step_wrapper.description }}{% elif action.rendered_log_message %}: {{ action.rendered_log_message }}{% endif %}</span>
     {% elif action.action_type == "discard" %}
-        <i class="bi bi-trash text-dark"></i>
+        <i class="bi bi-trash text-body-emphasis"></i>
         <span class="ct-pl-label">Discarded entire run{% if step_wrapper.description %}: {{ step_wrapper.description }}{% endif %}</span>
     {% elif action.action_type == "alert" %}
         <i class="bi bi-exclamation-octagon text-danger"></i>
@@ -684,7 +684,7 @@
                             <button type="button" class="btn btn-sm btn-outline-info ct-outcome-chip" data-outcome-filter="stream_reset" title="Click to show only the {{ counts.stream_reset }} event{{ '' if counts.stream_reset == 1 else 's' }} that triggered a stream transform reset"><i class="bi bi-broadcast"></i> {{ counts.stream_reset }} stream reset</button>
                         {% endif %}
                         {% if counts.other > 0 %}
-                            <span class="badge text-bg-light text-dark">{{ counts.other }} other</span>
+                            <span class="badge bg-body-secondary text-body-emphasis">{{ counts.other }} other</span>
                         {% endif %}
                     </div>
 
@@ -695,7 +695,7 @@
                             <ul class="mb-0 ps-3">
                                 {% for se in stream_events %}
                                     <li>
-                                        <span class="badge text-bg-light text-dark">{{ se.event_type }}</span>
+                                        <span class="badge bg-body-secondary text-body-emphasis">{{ se.event_type }}</span>
                                         {% if se.at_event_index is not none %}
                                             at <code>event #{{ se.at_event_index }}</code>
                                         {% endif %}
@@ -715,7 +715,7 @@
                                 <li class="list-group-item ct-event-item" data-outcome="{{ et.outcome }}">
                                     <div class="ct-event-header d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#{{ et_id }}" aria-expanded="{{ 'true' if _is_default_open else 'false' }}">
                                         <i class="bi bi-chevron-right ct-event-chevron"></i>
-                                        <span class="badge text-bg-light text-dark">event #{{ et.event_index }}</span>
+                                        <span class="badge bg-body-secondary text-body-emphasis">event #{{ et.event_index }}</span>
                                         {{ pl_outcome_chip(et.outcome) }}
                                         {% if et.summary %}
                                             <span class="ct-event-summary text-body-secondary" title="{{ et.summary }}">{{ et.summary }}</span>
@@ -880,7 +880,7 @@
 .ct-step-header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; }
 .ct-type-badge { min-width: 5.5rem; }
 .ct-expr { display: inline-flex; align-items: center; gap: 0.25rem; flex-wrap: wrap; }
-.ct-expr code, .ct-prop, .ct-val { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 0.2rem; background: rgba(0,0,0,0.05); color: #212529; }
+.ct-expr code, .ct-prop, .ct-val { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 0.2rem; background: rgba(var(--bs-emphasis-color-rgb),0.05); color: var(--bs-emphasis-color); }
 .ct-op { font-weight: bold; }
 .ct-actual { font-size: 0.8rem; }
 .ct-assign { display: inline-flex; align-items: center; gap: 0.25rem; }
@@ -888,9 +888,9 @@
 .ct-rail-primary { border-left: 3px solid var(--bs-primary); }
 .ct-rail-danger { border-left: 3px solid var(--bs-danger); }
 .ct-nested-label { margin: 0.15rem 0; }
-.ct-cmd { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; margin: 0.25rem 0; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; max-height: 20rem; overflow: auto; }
-.ct-raw-json { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem; max-height: 30rem; overflow: auto; font-size: 0.75rem; }
-.ct-log-message { font-family: var(--bs-font-monospace); font-size: 0.85rem; color: #495057; }
+.ct-cmd { background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: 0.25rem; padding: 0.5rem; margin: 0.25rem 0; white-space: pre-wrap; word-break: break-all; font-size: 0.8rem; max-height: 20rem; overflow: auto; }
+.ct-raw-json { background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: 0.25rem; padding: 0.5rem; max-height: 30rem; overflow: auto; font-size: 0.75rem; }
+.ct-log-message { font-family: var(--bs-font-monospace); font-size: 0.85rem; color: var(--bs-secondary-color); }
 .ct-description { margin-bottom: 0.15rem; }
 .ct-error code { background: transparent; color: inherit; }
 .ct-cmd-toggle, .btn-xs { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
@@ -900,7 +900,7 @@
 .ct-pl-row { font-size: 0.95rem; }
 .ct-pl-label { font-weight: 500; }
 .ct-pl-value { max-width: 60ch; overflow: hidden; }
-.ct-pl-details { padding: 0.25rem 0 0.25rem 1.25rem; border-left: 2px solid rgba(0,0,0,0.06); margin-top: 0.25rem; }
+.ct-pl-details { padding: 0.25rem 0 0.25rem 1.25rem; border-left: 2px solid var(--bs-border-color-translucent); margin-top: 0.25rem; }
 .ct-details-toggle { font-size: 0.75rem; padding: 0 0.25rem; }
 .ct-details-toggle[aria-expanded="true"] .ct-details-chevron { transform: rotate(180deg); }
 .ct-details-chevron { transition: transform 0.15s ease; }
@@ -916,18 +916,18 @@
 .ct-event-list[data-active-filter="stream_reset"] .ct-event-item:not([data-outcome="stream_reset"]) { display: none; }
 
 /* Full-value inline JSON tree pane (rendered lazily on first expand) */
-.ct-fullvalue-pane { background: #f6f8fa; border: 1px solid #dee2e6; border-radius: 0.25rem; padding: 0.5rem 0.75rem; max-height: 30rem; overflow: auto; font-size: 0.85rem; width: 100%; }
+.ct-fullvalue-pane { background: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: 0.25rem; padding: 0.5rem 0.75rem; max-height: 30rem; overflow: auto; font-size: 0.85rem; width: 100%; }
 .ct-fullvalue-tree ul { margin-bottom: 0; padding-left: 0; }
 .ct-fullvalue-toggle { font-size: 0.75rem; padding: 0 0.25rem; }
 .ct-fullvalue-toggle[aria-expanded="true"] .bi-arrows-angle-expand { transform: rotate(45deg); }
 
 /* Compare table */
 .ct-compare-table { font-size: 0.85rem; }
-.ct-compare-rowhead { background: #f8f9fa; white-space: nowrap; }
-.ct-compare-eventhead { background: #f8f9fa; text-align: center; min-width: 12rem; }
+.ct-compare-rowhead { background: var(--bs-tertiary-bg); white-space: nowrap; }
+.ct-compare-eventhead { background: var(--bs-tertiary-bg); text-align: center; min-width: 12rem; }
 .ct-compare-outcome { margin-top: 0.25rem; }
 .ct-compare-cell { vertical-align: top; word-break: break-word; max-width: 24rem; }
-.ct-compare-cell-missing { background: rgba(0,0,0,0.02); }
+.ct-compare-cell-missing { background: rgba(var(--bs-emphasis-color-rgb),0.02); }
 /* Distinct, obvious highlight when a cell's value differs from the row mode.
    Override --bs-table-bg directly because Bootstrap's `.table > * > *` rule
    sets background-color from the variable at higher specificity than a plain
@@ -936,10 +936,10 @@
    alone reads clearly enough at this saturation against the otherwise-white
    table.) */
 .ct-cell-diff {
-    --bs-table-bg: #fff3cd;
-    background-color: #fff3cd;
+    --bs-table-bg: var(--bs-warning-bg-subtle);
+    background-color: var(--bs-warning-bg-subtle);
 }
-.ct-compare-cell-summary { font-style: italic; color: #495057; }
+.ct-compare-cell-summary { font-style: italic; color: var(--bs-secondary-color); }
 .ct-compare-cell-text { display: block; }
 .ct-compare-cell-toggle { font-size: 0.75rem; padding: 0 0.25rem; margin-top: 0.25rem; }
 </style>

@@ -74,3 +74,36 @@ means a `ColumnSpec` in the registry and a branch in each macro, and
 (`_manage_column_chooser.html` + `js/manage_columns.js`) is shared by the manage page and
 the preferences page. The filters never change which columns are shown: the disposition
 column stays visible when the list is narrowed to one disposition.
+
+## The theme
+
+The `theme` preference is `{mode: "system" | "light" | "dark" | "jd"}`, `system` by default.
+`system` follows the operating system's light or dark setting, and `jd` (shown as 👴 JD) is
+a high-contrast light mode: black on white, every color at WCAG AAA contrast, underlined
+links and slightly larger text.
+
+`core.html` renders the mode on the root element as `data-ace-theme`, and Bootstrap's own
+`data-bs-theme` as `light` or `dark` (`jd` is `light`). Only the browser knows the OS
+setting, so a small inline script in `<head>`, ahead of every stylesheet, resolves
+`system` from `prefers-color-scheme` before the first paint and follows the OS if it
+changes while the page is open. The same script defines `aceApplyTheme(mode)`, which the
+navbar's theme menu and the preferences page's Appearance card call through
+`save_theme()` (`js/ace.js`) to switch at once before storing the choice. The lookup is
+the `ui_theme()` template callable (`app/application.py`), memoized per render, so a page
+reads the preference once and a fragment never does.
+
+Writing GUI CSS that works in every theme:
+
+- Use Bootstrap's variables (`--bs-body-bg`, `--bs-tertiary-bg`, `--bs-border-color`,
+  `--bs-secondary-color`, `--bs-emphasis-color`, ...) and its theme-aware utilities
+  (`bg-body`, `bg-body-tertiary`, `text-body-emphasis`, `text-bg-warning`), never a
+  literal color.
+- A color ACE chooses itself (the observable type colors, the JSON viewer) is an
+  `--ace-*` token at the top of `static/css/saq.css`, defined for light and redefined
+  under `[data-bs-theme=dark]` and, when the light value is below 7:1, `[data-ace-theme=jd]`.
+- The light-only classes (`bg-light`, `bg-white`, `text-dark`, `text-bg-light`,
+  `border-dark`, `border-black`, `table-light`) are rejected by
+  `tests/app/test_no_light_only_classes.py`; use `border-strong` for the black badge
+  outline. `btn-outline-dark` is remapped for dark in `saq.css` and stays usable.
+- Dark overrides for the vendored jQuery UI and date picker styles live in `saq.css`, not
+  in the vendor files.

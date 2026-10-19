@@ -15,7 +15,7 @@ PREFERENCE_SCHEMAS. Nothing else needs to change.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -52,12 +52,23 @@ class ManageColumnsPreference(BaseModel):
         return [column_id for column_id in self.order if column_id not in self.hidden]
 
 
+class ThemePreference(BaseModel):
+    """The GUI's visual style. "system" follows the browser's prefers-color-scheme, so it is
+    resolved in the browser (core.html), not here; "jd" is a high-contrast light mode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["system", "light", "dark", "jd"] = "system"
+
+
 PREFERENCE_KEY_MANAGE_COLUMNS = "manage_columns"
+PREFERENCE_KEY_THEME = "theme"
 
 # key -> the model that validates its value. The model's defaults are the preference's
 # default, so every key has a value even for a user who never stored one.
 PREFERENCE_SCHEMAS: dict[str, type[BaseModel]] = {
     PREFERENCE_KEY_MANAGE_COLUMNS: ManageColumnsPreference,
+    PREFERENCE_KEY_THEME: ThemePreference,
 }
 
 

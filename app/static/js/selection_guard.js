@@ -110,7 +110,7 @@ var SelectionGuard = (function() {
         groups.forEach(function(group) {
             const text = group.label + " " + group.uuids.length;
             if (!removable) {
-                row.appendChild(element("span", "badge text-bg-light border", text));
+                row.appendChild(element("span", "badge bg-body-secondary text-body-emphasis border", text));
                 return;
             }
 
