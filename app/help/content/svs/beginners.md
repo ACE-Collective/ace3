@@ -66,9 +66,9 @@ A few more terms help here:
 
 ## What SVS does
 
-SVS (Signature Validation System) answers two questions, with one half each.
+SVS (Signature Validation System) answers two questions.
 
-**Half one: YARA regression testing.** "Does this rule change break what it used to catch, or start
+**YARA regression testing.** "Does this rule change break what it used to catch, or start
 catching what it shouldn't?"
 
 - When an analyst dispositions an alert as TP or FP, ACE keeps every file a YARA rule matched on it,
@@ -81,7 +81,7 @@ catching what it shouldn't?"
   the PR with a link to the report in ACE.
 - A validation warns and never blocks. People decide what to merge.
 
-**Half two: Atomic Red Team test runs.** "Which ATT&CK techniques do we actually detect?"
+**Atomic Red Team test runs.** "Which ATT&CK techniques do we actually detect?"
 
 - A **launcher**, a script or job outside ACE, runs atomics on lab **test hosts**. Before each test
   it registers a **run** with ACE and receives a **marker**: a random token it plants in the test's
