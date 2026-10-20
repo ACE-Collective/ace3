@@ -286,8 +286,10 @@ Whenever a rule matches an observable, ACE:
 
 The alert page lists every rule that matched in the alert in an **Observable Modifier Rules** card,
 with the number of observables it matched and the actions it applied. Rules that ignored something
-come first, each with the observables they took out of the tree. The card starts collapsed, and
-its header counts the observables that were ignored. The card reads the copy of the matches the analysis keeps in
+come first, each with the observables they took out of the tree. The card starts collapsed unless
+an analyst pins it open, and its header counts the observables that were ignored. Find-in-page
+still searches it while it is collapsed, so an ignored value can be found on the alert page even
+though the tree no longer shows it. The card reads the copy of the matches the analysis keeps in
 `data.json` (`ObservableModifierAnalysis.matched_rules`), so an alert analyzed before that copy
 existed has no card until it is analyzed again.
 

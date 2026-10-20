@@ -38,10 +38,13 @@ def test_alert_page_shows_ignored_observables(web_client, root_analysis):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
 
     assert result.status_code == 200
-    # collapsed even when something was ignored: the badge in the header says so
-    assert 'class="card-body collapse" id="collapse_observable_modifier_rules"' in result.text
+    # collapsed even when something was ignored: the badge in the header says so. Collapsed as a
+    # section, so find-in-page still searches it (static/js/alert_sections.js)
+    assert '<div class="alert-section-body" id="alert_section_observable_modifier_rules" hidden="until-found">' in result.text
     card = _card(result.text)
-    assert "2 ignored" in card
+    assert 'data-bs-toggle="collapse"' not in card
+    assert "2 ignored" in card.split("</h5>")[0]
+    assert "(3 rules)" in card.split("</h5>")[0]
     assert card.index("Ignore hostile") < card.index("Ignore team") < card.index("Skip FQDN")
     assert "hidden from the analysis tree" in card
     assert "team@example.com" in card
@@ -66,6 +69,7 @@ def test_alert_page_without_ignores_has_no_badge(web_client, root_analysis):
     assert result.status_code == 200
     card = _card(result.text)
     assert "ignored" not in card.split("</h5>")[0]
+    assert "(1 rule)" in card.split("</h5>")[0]
     assert "Crawl" in card
     assert "add_directives" in card
 
@@ -79,4 +83,4 @@ def test_alert_page_without_matches_has_no_card(web_client, root_analysis):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
 
     assert result.status_code == 200
-    assert "collapse_observable_modifier_rules" not in result.text
+    assert 'data-section-id="observable_modifier_rules"' not in result.text
