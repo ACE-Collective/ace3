@@ -5,8 +5,8 @@ from argparse import Namespace
 
 import pytest
 
-from saq.cli.commands.search import cli_query, cli_similar
-from saq.search import query
+from saq.cli.commands.search import cli_download_model, cli_query, cli_similar
+from saq.search import model, query
 from saq.search.types import SearchResponse
 
 pytestmark = pytest.mark.unit
@@ -60,3 +60,10 @@ def test_similar(searched, capsys):
 
     cli_similar(Namespace(uuid="x", limit=10, json=False, include_tests=True))
     assert searched["similar"]["include_test_alerts"] is True
+
+
+def test_download_model(monkeypatch, capsys):
+    monkeypatch.setattr(model, "download_model", lambda: "/data/search/models/all-minilm-l6-v2")
+    monkeypatch.setattr(model, "get_model_name", lambda: "all-MiniLM-L6-v2")
+    assert cli_download_model(Namespace()) == 0
+    assert "all-MiniLM-L6-v2 is at /data/search/models/all-minilm-l6-v2" in capsys.readouterr().out

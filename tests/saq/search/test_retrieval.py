@@ -45,13 +45,14 @@ def model(request):
     if not _qdrant_reachable():
         pytest.skip("qdrant is not reachable")
 
-    from saq.search.model import clear_model_cache, load_model
+    from saq.search.model import clear_model_cache, download_model, load_model
 
     cache_dir = str(request.config.cache.mkdir("search-models"))
     original = get_config().search.model_cache_dir
     get_config().search.model_cache_dir = cache_dir
     try:
         try:
+            download_model()
             yield load_model()
         except Exception as e:
             pytest.skip(f"embedding model unavailable: {e}")

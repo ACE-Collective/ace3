@@ -406,6 +406,7 @@ class TestLogging:
     def test_prepare_logs_the_model_and_collection(self, worker, caplog):
         with (
             caplog.at_level(logging.INFO),
+            patch("saq.search.service.download_model") as download_model,
             patch("saq.search.service.load_model", return_value=Mock()),
             patch("saq.search.service.get_model_name", return_value="all-MiniLM-L6-v2"),
             patch("saq.search.service.index.get_qdrant_client"),
@@ -414,6 +415,12 @@ class TestLogging:
             worker.prepare()
 
         assert len(self.records(caplog, "search_indexer_loading_model")) == 1
+        # the download honors the worker's own stop as well as the process shutdown
+        download_model.assert_called_once()
+        stopping = download_model.call_args.kwargs["stopping"]
+        assert stopping() is False
+        worker.stop()
+        assert stopping() is True
         ready = self.records(caplog, "search_indexer_worker_ready")
         assert len(ready) == 1
         assert ready[0].model == "all-MiniLM-L6-v2"

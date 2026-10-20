@@ -290,7 +290,7 @@ disposition, and `GET /ai/v1/alerts/{uuid}` fetches the full tree for anything w
 `ace search query "<text or field terms>" [--lane semantic|lexical] [--limit N] [--json] [--include-tests]`
 (exits 1 and prints the reason to stderr when the query cannot be parsed),
 `ace search similar <uuid> [--include-tests]` (both print how many test-run alerts they left out
-to stderr), `ace search status`, `ace search reset [--yes]`.
+to stderr), `ace search status`, `ace search reset [--yes]`, `ace search download-model`.
 
 ## 5. Configuration
 
@@ -298,7 +298,7 @@ to stderr), `ace search status`, `ace search reset [--yes]`.
 search:
   embedding_model: all-MiniLM-L6-v2   # changing it changes the collection name -> `ace search index --all`
   query_prefix: ""                    # e.g. bge: "Represent this sentence for searching relevant passages: "
-  model_cache_dir: search/models      # relative to the data dir
+  model_cache_dir: search/models      # relative to the data dir; see "The embedding model" below
   chunk_tokens: 200 / chunk_overlap: 32 / max_chunks_per_document: 16 / max_document_bytes: 262144
   semantic_limit: 100 / semantic_group_size: 3 / lexical_limit: 200
   rrf_k: 60 / semantic_weight: 1.0 / lexical_weight: 2.0 / max_results: 500
@@ -338,6 +338,9 @@ its own `transactionId`, so a single worker's lines can be followed end to end.
 | `search_index_task_invalid` | ERROR | an unparseable queue entry | `payload` |
 | `search_indexer_worker_error` | ERROR | the worker loop itself failed | `ready` — `false` means it never started (qdrant down, model download blocked) |
 | `search_indexer_worker_exiting` | INFO | shutdown | `tasks_completed`, `tasks_failed`, `tasks_deferred` |
+| `search_model_downloading` / `search_model_downloaded` | INFO | the model is actually fetched | `model`, `path`, `elapsed_ms` |
+| `search_model_download_waiting` | INFO | another process holds the download lock | `model`, `lock_path`, `timeout` |
+| `search_model_replacing_incomplete` | WARNING | a model directory without `modules.json` was found | `model`, `path` |
 
 A rising `queue_depth` on `search_index_task_complete` is the backlog signal; `elapsed_ms` on
 the same line is the per-alert cost. `search_index_task_start` is DEBUG only — raise the level
@@ -347,6 +350,14 @@ to attribute a hung worker to a specific alert.
   dead-letter depths. Points appear a few seconds after an alert finishes analysis.
 - A dead-lettered task (`search_index_tasks_failed`) is an alert whose indexing failed three
   times; `ace search index -u <uuid> --sync` shows the error directly.
+- The embedding model lives in `<data_dir>/<search.model_cache_dir>/<model slug>/`, one copy per
+  data volume. Only `download_model()` fetches it: `ace-setup` runs `ace search download-model`,
+  and each indexer worker calls it before loading. A file lock lets one process download while
+  the others wait (up to 10 minutes), the model is saved into a staging directory and renamed into
+  place, and the Hugging Face hub cache is kept in that staging directory, so nothing is left in
+  `~/.cache`. A directory without `modules.json` (an interrupted save from before this) is
+  replaced. `load_model()` never downloads: the web processes and the read-only `http-api-ai`
+  container fail the semantic lane with `FileNotFoundError` until the model is there.
 - Model change: set `search.embedding_model`, restart the indexer, `ace search index --all`, then
   delete the old collection from qdrant. Queries against the new collection return nothing until
   the re-index has run.

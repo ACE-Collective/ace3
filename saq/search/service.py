@@ -29,7 +29,7 @@ from saq.error.reporting import report_exception
 from saq.logging import initialize_transaction_id
 from saq.redis_client import get_redis_connection
 from saq.search import index
-from saq.search.model import get_model_name, load_model
+from saq.search.model import download_model, get_model_name, load_model
 from saq.search.tasks import (
     FAILED_TASK_KEY,
     OP_DELETE,
@@ -39,6 +39,7 @@ from saq.search.tasks import (
     SearchIndexTask,
 )
 from saq.service import ACEServiceInterface
+from saq.shutdown import is_shutting_down
 
 # how many times a task may fail with an error before it is moved to the dead letter list
 MAX_TASK_ATTEMPTS = 3
@@ -117,6 +118,8 @@ class SearchIndexWorker:
         """Loads the model and makes sure the collection exists; runs once per worker process."""
         started = time.monotonic()
         logging.info("search_indexer_loading_model", extra={"worker": self.name, "model": get_model_name()})
+        # the first worker to get here downloads the model; its siblings wait for it
+        download_model(stopping=lambda: self.is_shutdown or is_shutting_down())
         self.model = load_model()
         model_load_ms = int((time.monotonic() - started) * 1000)
 

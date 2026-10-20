@@ -178,6 +178,23 @@ class TestSearchAlerts:
         response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT))
         assert response.alert_uuids == ["a"]
 
+    def test_missing_model_is_reported(self, monkeypatch):
+        monkeypatch.setattr(query, "lexical_search", lambda *a, **k: [("a", [_hit(LANE_LEXICAL)])])
+        error = FileNotFoundError("embedding model all-MiniLM-L6-v2 has not been downloaded")
+
+        def missing(*args, **kwargs):
+            raise error
+
+        reported = []
+        monkeypatch.setattr(query, "semantic_search", missing)
+        monkeypatch.setattr(query, "log_loop_exception", lambda e, context: reported.append((e, context)))
+        response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT))
+
+        assert response.alert_uuids == ["a"]
+        assert len(reported) == 1
+        assert reported[0][0] is error
+        assert "embedding model unavailable" in reported[0][1]
+
     def test_max_results_cap(self, monkeypatch):
         monkeypatch.setattr(get_config().search, "max_results", 2)
         monkeypatch.setattr(query, "semantic_search", lambda *a, **k: SemanticLane(dense=[(str(i), []) for i in range(5)]))
