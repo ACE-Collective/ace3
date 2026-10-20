@@ -58,6 +58,27 @@ def test_alert_page_shows_ignored_observables(web_client, root_analysis):
 
 
 @pytest.mark.integration
+def test_alert_page_counts_an_observable_two_rules_ignored_once(web_client, root_analysis):
+    hidden = root_analysis.add_observable_by_spec(F_URL, "https://tracking.example.com/")
+    _record_matches(hidden, [
+        {"name": "Ignore tracking", "uuid": "rule-1", "actions_applied": {"ignore": True}},
+        {"name": "Ignore example.com", "uuid": "rule-2", "actions_applied": {"ignore": True}},
+    ])
+    hidden.ignored = True
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+
+    assert result.status_code == 200
+    card = _card(result.text)
+    assert "1 ignored" in card.split("</h5>")[0]
+    assert "(2 rules)" in card.split("</h5>")[0]
+    # still listed under each rule that ignored it
+    assert card.count("hidden from the analysis tree") == 2
+
+
+@pytest.mark.integration
 def test_alert_page_without_ignores_has_no_badge(web_client, root_analysis):
     url = root_analysis.add_observable_by_spec(F_URL, "https://example.com/")
     _record_matches(url, [{"name": "Crawl", "uuid": "rule-1", "actions_applied": {"add_directives": ["crawl"]}}])

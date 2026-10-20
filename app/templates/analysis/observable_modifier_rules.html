@@ -1,7 +1,8 @@
 {# the observable modifier rules that matched in this alert, and what their ignore actions took out of the tree (saq/modules/util/observable_modifier.py) #}
 {% from 'analysis/_alert_section.html' import alert_section with context %}
 {% if modifier_rule_matches %}
-{% set ignored_count = modifier_rule_matches | map(attribute='ignored') | map('length') | sum %}
+{# an observable more than one ignore rule matched is listed under each of them, and counted once #}
+{% set ignored_count = modifier_rule_matches | map(attribute='ignored') | sum(start=[]) | map(attribute='uuid') | unique | list | length %}
 {% set ignored_badge %}{% if ignored_count %}<span class="badge text-bg-warning">{{ ignored_count }} ignored</span>{% endif %}{% endset %}
 {# collapsed, but find-in-page still opens it, and an observable the tree no longer shows can be found here #}
 {% call alert_section('observable_modifier_rules', 'Observable Modifier Rules', default_open=false, summary='(' ~ modifier_rule_matches | length ~ ' rule' ~ ('' if modifier_rule_matches | length == 1 else 's') ~ ')', badge=ignored_badge | trim) %}
