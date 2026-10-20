@@ -807,10 +807,13 @@ services:
       - ace
 
   rabbitmq:
-    platform: linux/amd64
+    # No platform pin: the image is multi-arch, and the amd64 Erlang/OTP 28+ JIT dies at
+    # boot under user-space emulation (Rosetta, QEMU), which upstream does not support
+    # (erlang/otp#10355). The minor version is pinned so a rebuild picks up patch releases
+    # only, never a new RabbitMQ release line or Erlang/OTP major unannounced.
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
-    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq
+    image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq:4.4
     ports:
       - "${ACE_BIND_ADDRESS:-127.0.0.1}::5672"
     restart: always
