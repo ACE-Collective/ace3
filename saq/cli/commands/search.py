@@ -38,7 +38,8 @@ def cli_index(args):
     if args.sync:
         # deferred: loads the embedding model
         from saq.search.index import index_alert
-        from saq.search.model import load_model
+        from saq.search.model import download_model, load_model
+        download_model()
         model = load_model()
         for alert_uuid in uuids:
             result = index_alert(alert_uuid, model=model)
@@ -173,6 +174,17 @@ def cli_status(args):
     result["failed_tasks"] = redis_connection.llen(FAILED_TASK_KEY)
     print(json.dumps(result, indent=2, default=str))
     return 0
+
+
+def cli_download_model(args):
+    # deferred: download_model imports sentence_transformers (torch)
+    from saq.search.model import download_model, get_model_name
+    print(f"embedding model {get_model_name()} is at {download_model()}")
+    return 0
+
+
+download_model_parser = search_sp.add_parser("download-model", help="Download the embedding model (search.embedding_model) into the data directory unless it is already there.")
+download_model_parser.set_defaults(func=cli_download_model)
 
 
 status_parser = search_sp.add_parser("status", help="Show the state of the search index and its queues.")
