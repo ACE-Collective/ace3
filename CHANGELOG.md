@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.129] - 2026-10-20
+
+- [Match bounded yara strings next to non-ASCII UTF-16 text](https://github.com/ACE-Collective/ace3/pull/778)
+- [Correct stale facts in the Claude Code instruction files](https://github.com/ACE-Collective/ace3/pull/777)
+- [Route every thread hop in the FastAPI apps through run_db_in_thread](https://github.com/ACE-Collective/ace3/pull/776)
+- [Alert page: collapsed sections and tree nodes stay searchable, and each analyst picks which sections start open](https://github.com/ACE-Collective/ace3/pull/773)
+- [Adds Observable Modifier Rules card at top of alerts](https://github.com/ACE-Collective/ace3/pull/771)
+
 ## [3.0.128] - 2026-10-19
 
 - [Fix test-suite deadlock when a fork handler logs](https://github.com/ACE-Collective/ace3/pull/768)
