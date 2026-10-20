@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-The repo-level `../CLAUDE.md` also applies (log/comment style, double quotes, `%s` interpolation, pytest-only tests). This file covers the phishkit subsystem specifically.
+The repo-level `../CLAUDE.md` also applies. This file covers the phishkit subsystem specifically.
 
 ## What this is
 
