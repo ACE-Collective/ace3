@@ -102,11 +102,11 @@ Writing GUI CSS that works in every theme:
   `--ace-*` token at the top of `static/css/saq.css`, defined for light and redefined
   under `[data-bs-theme=dark]` and, when the light value is below 7:1, `[data-ace-theme=jd]`.
 - Dark mode has its own palette rather than Bootstrap's: warm neutral grays, softer white
-  text, and theme colors (primary, success, warning, danger) light enough that text in them
-  reads at 4.5:1 or better on the page. It redefines Bootstrap's variables under
-  `[data-bs-theme=dark]` at the top of `saq.css`, so anything built on those variables
-  follows it. A fill in one of the theme colors (a primary button, a `text-bg-danger` badge,
-  an active pill) carries dark text.
+  text, and theme colors (primary, secondary, success, warning, danger) light enough that
+  text in them reads at 4.5:1 or better on the page. It redefines Bootstrap's variables
+  under `[data-bs-theme=dark]` at the top of `saq.css`, so anything built on those
+  variables follows it. A fill in one of the theme colors (a primary button, a
+  `text-bg-secondary` tag, an active pill) carries dark text.
 - Bootstrap 5.3 fixes some classes to light-mode colors in every color mode: `bg-white`,
   `bg-light`, `text-bg-light`, `text-dark`, `border-dark`, `border-black`, the contextual
   table colors (`table-success`, `table-secondary`, ...), and the colored buttons, badges and

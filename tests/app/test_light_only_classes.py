@@ -36,6 +36,7 @@ LIGHT_ONLY = [
     "btn-outline-warning",
     "btn-outline-danger",
     "text-bg-primary",
+    "text-bg-secondary",
     "text-bg-success",
     "text-bg-danger",
     "nav-pills",

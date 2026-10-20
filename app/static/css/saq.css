@@ -90,6 +90,8 @@
     --bs-primary-text-emphasis: #7c95f5;
     --bs-primary-bg-subtle: color-mix(in srgb, #7c95f5 15%, #161615);
     --bs-primary-border-subtle: color-mix(in srgb, #7c95f5 35%, #161615);
+    --bs-secondary: #9c9991;
+    --bs-secondary-rgb: 156, 153, 145;
     --bs-success: #69db7c;
     --bs-success-rgb: 105, 219, 124;
     --bs-success-text-emphasis: #69db7c;
@@ -224,7 +226,7 @@
 /* The colored buttons, badges and active states hard-code Bootstrap's light-mode colors with white
    text. On dark they take the palette's lighter theme colors, so a fill carries dark text. */
 [data-bs-theme=dark] :is(.btn-primary, .btn-outline-primary) { --ace-btn-tint: var(--bs-primary); }
-[data-bs-theme=dark] :is(.btn-secondary, .btn-outline-secondary) { --ace-btn-tint: var(--bs-secondary-color); }
+[data-bs-theme=dark] :is(.btn-secondary, .btn-outline-secondary) { --ace-btn-tint: var(--bs-secondary); }
 [data-bs-theme=dark] :is(.btn-success, .btn-outline-success) { --ace-btn-tint: var(--bs-success); }
 [data-bs-theme=dark] :is(.btn-warning, .btn-outline-warning) { --ace-btn-tint: var(--bs-warning); }
 [data-bs-theme=dark] :is(.btn-danger, .btn-outline-danger) { --ace-btn-tint: var(--bs-danger); }
@@ -255,10 +257,10 @@
     --bs-btn-disabled-color: var(--ace-btn-tint);
     --bs-btn-disabled-border-color: var(--ace-btn-tint);
 }
-[data-bs-theme=dark] :is(.text-bg-primary, .text-bg-success, .text-bg-danger) {
+[data-bs-theme=dark] :is(.text-bg-primary, .text-bg-secondary, .text-bg-success, .text-bg-danger) {
     color: var(--bs-body-bg) !important;
 }
-[data-bs-theme=dark] .badge:is(.bg-primary, .bg-success, .bg-danger) {
+[data-bs-theme=dark] .badge:is(.bg-primary, .bg-secondary, .bg-success, .bg-danger) {
     --bs-badge-color: var(--bs-body-bg);
 }
 [data-bs-theme=dark] .nav-pills {
