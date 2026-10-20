@@ -61,7 +61,7 @@ There is no configured linter/formatter in the repo.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+Start only one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
 
 This is enforced. `tests/session_lock.py` creates a marker file at
 `$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
@@ -205,7 +205,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 ### CLI
 
-`./ace` is the entry point (a single large argparse script) with subcommands registered via `get_cli_subparsers()`: `service start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, `start-gui`, `start-api`. `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `api start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 

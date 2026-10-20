@@ -37,4 +37,4 @@ Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/report
 - A silent `except` on a path that matters, or secrets in a log, is a blocker or a fix-first, depending on how often the path runs.
 - A caught exception logged with `logging.error` instead of `log_loop_exception` is fix-first.
 - A missing identifier in a message is fix-first if the failure would be hard to trace without it, otherwise a nit.
-- Pre-existing logging debt in functions the change edits goes under `origin: pre-existing`. The tree has a lot of it: there are 22 bare `except:` blocks and about 34 silent `except: pass` blocks.
+- Pre-existing logging debt in functions the change edits goes under `origin: pre-existing`. The tree has a lot of it, including dozens of bare `except:` and silent `except: pass` blocks.
