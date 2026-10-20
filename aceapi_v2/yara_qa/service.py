@@ -16,9 +16,9 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.common.archive import MANIFEST_NAME, CASArchiveEntry, create_encrypted_cas_zip, safe_file_name
+from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.yara_qa.schemas import (
     QAMatch,
     QAMatchDetail,
@@ -103,7 +103,7 @@ def _signature_summary(signature: QASignature) -> QASignatureSummary:
 async def list_signatures(session: AsyncSession, *, q: Optional[str], status: Optional[QAStatus],
                           has_matches: Optional[bool], sort: QASort, descending: bool,
                           limit: int, offset: int) -> QASignaturePage:
-    inventory = await run_in_threadpool(_load_inventory)
+    inventory = await run_db_in_thread(_load_inventory)
     rows = (await session.execute(version_rows_statement())).scalars().all()
     signatures = filter_and_sort(merge(inventory, rows), q=q, status=status, has_matches=has_matches,
                                  sort=sort, descending=descending)
@@ -114,7 +114,7 @@ async def list_signatures(session: AsyncSession, *, q: Optional[str], status: Op
 
 async def get_signature(session: AsyncSession, signature_uuid: str) -> QASignatureDetail:
     validate_signature_uuid(signature_uuid)
-    inventory = await run_in_threadpool(_load_inventory)
+    inventory = await run_db_in_thread(_load_inventory)
     rows = (await session.execute(version_rows_statement(signature_uuid))).scalars().all()
     signature = next((s for s in merge(inventory, rows) if s.signature_uuid == signature_uuid), None)
     if signature is None:

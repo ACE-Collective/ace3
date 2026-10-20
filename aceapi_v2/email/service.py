@@ -1,9 +1,9 @@
 """Archived email service for ACE API v2."""
 
-import asyncio
 from collections.abc import Iterator
 from typing import Optional
 
+from aceapi_v2.sync import run_db_in_thread
 from saq.email_archive import get_archived_email_path, iter_decrypt_email
 from saq.environment import get_global_runtime_settings
 
@@ -24,7 +24,7 @@ async def open_archived_email(message_id: str) -> Optional[Iterator[bytes]]:
         raise EncryptionKeyMissing()
 
     # the lookup is a query against the email archive database on a sync connection
-    target_path = await asyncio.to_thread(get_archived_email_path, message_id)
+    target_path = await run_db_in_thread(get_archived_email_path, message_id)
     if target_path is None:
         return None
 
