@@ -481,7 +481,7 @@
 
         function pre(text) {
             // wrapped, keeping the command's own line breaks
-            const node = el("pre", "small bg-light border rounded p-2 mb-2 text-break", text);
+            const node = el("pre", "small bg-body-tertiary border rounded p-2 mb-2 text-break", text);
             node.style.whiteSpace = "pre-wrap";
             return node;
         }
