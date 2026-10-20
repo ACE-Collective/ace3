@@ -64,7 +64,7 @@ def format_yara_json_string(value: str) -> str:
 
 # bumped whenever the generated strings change shape, so the next export rewrites every rule file
 # even though the detections themselves did not change (see fingerprint_salt)
-YARA_EXPORT_FORMAT_VERSION = "2"
+YARA_EXPORT_FORMAT_VERSION = "3"
 
 # characters that are special inside a yara /regex/ (the slash ends the regex)
 YARA_REGEX_SPECIAL = frozenset('\\/^$.|?*+()[]{}')
@@ -95,26 +95,59 @@ def format_yara_regex(value: str) -> str:
     return "".join("\\" + c if c in YARA_REGEX_SPECIAL else c for c in value)
 
 
-def format_bounded_yara_regex(value: str, family: str) -> str:
+def format_wide_yara_regex(value: str) -> str:
+    """Escapes an observable value for a yara /regex/ that matches what the `wide` modifier would.
+
+    Like `wide`, every UTF-8 byte of the value is followed by a NUL, so a non-ASCII value matches
+    exactly the data its text string matched before.
+    """
+    value = value.replace("\n", "").replace("\r", "")
+    result = []
+    for byte in value.encode("utf8"):
+        c = chr(byte)
+        if byte < 0x80 and c.isprintable():
+            result.append("\\" + c if c in YARA_REGEX_SPECIAL else c)
+        else:
+            result.append(f"\\x{byte:02x}")
+        result.append("\\x00")
+    return "".join(result)
+
+
+def format_bounded_yara_regex(value: str, family: str, wide: bool = False) -> str:
     """The value as a yara regex that only matches when it is not part of a longer token.
 
     `value` is the literal text to find (already in its raw or JSON-escaped form). A side only gets a
     boundary when the value's edge character is a word character of the family, so a partial url
     ending in "/" or "=" still matches whatever follows it.
+
+    With `wide` the regex matches UTF-16LE data and is used instead of the `wide` modifier. That
+    modifier turns each boundary class into one ASCII byte followed by a NUL, so a value next to a
+    BOM or a CJK character stopped matching. Here a boundary is any whole UTF-16 code unit that is not
+    an ASCII word character.
     """
     spec = BOUNDARY_FAMILIES[family]
-    core = format_yara_regex(value)
+
+    if wide:
+        core = format_wide_yara_regex(value)
+        dot = "\\.\\x00"
+        def not_word(chars: str) -> str:
+            return f"([^{chars}]\\x00|[\\x00-\\xff][^\\x00])"
+    else:
+        core = format_yara_regex(value)
+        dot = "\\."
+        def not_word(chars: str) -> str:
+            return f"[^{chars}]"
 
     left = ""
     if value and re.fullmatch(f"[{spec['left']}]", value[0]):
-        left = f"(^|[^{spec['left']}])"
+        left = f"(^|{not_word(spec['left'])})"
 
     right = ""
     if value and re.fullmatch(f"[{spec['right']}]", value[-1]):
         if spec["dot_aware"]:
-            right = f"([^{spec['right']}.]|\\.[^{spec['right']}]|\\.?$)"
+            right = f"({not_word(spec['right'] + '.')}|{dot}{not_word(spec['right'])}|({dot})?$)"
         else:
-            right = f"([^{spec['right']}]|$)"
+            right = f"({not_word(spec['right'])}|$)"
 
     return f"/{left}{core}{right}/"
 
@@ -269,13 +302,26 @@ class YaraObservableExport(ObservableExport):
             return string_data.getvalue()
 
         # the regex consumes the boundary character, so fullword would test the character beyond it
-        # and reject a plain "a evil.com"
-        modifiers = " ".join(modifier for modifier in modifiers.split() if modifier != "fullword")
+        # and reject a plain "a evil.com". ascii and wide are applied by emitting one string for each,
+        # since the wide form needs its own regex (see format_bounded_yara_regex)
+        modifier_list = modifiers.split()
+        wide = "wide" in modifier_list
+        want_ascii = "ascii" in modifier_list or not wide
+        other_modifiers = " ".join(
+            modifier for modifier in modifier_list if modifier not in ("fullword", "ascii", "wide"))
 
-        string_data.write(f'          $obsd_{entry.id} = {format_bounded_yara_regex(raw, family)} {modifiers}\n')
+        forms = [("", raw)]
         if json_form != raw:
-            string_data.write(
-                f'          $obsd_json_{entry.id} = {format_bounded_yara_regex(json_form, family)} {modifiers}\n')
+            forms.append(("json_", json_form))
+
+        # the scanner resolves a hit by the id at the end of the name, so $obsd_wide_<id> works as is
+        for prefix, value in forms:
+            if want_ascii:
+                string_data.write(f'          $obsd_{prefix}{entry.id} = '
+                                  f'{format_bounded_yara_regex(value, family)} ascii {other_modifiers}\n')
+            if wide:
+                string_data.write(f'          $obsd_{prefix}wide_{entry.id} = '
+                                  f'{format_bounded_yara_regex(value, family, wide=True)} {other_modifiers}\n')
 
         return string_data.getvalue()
 

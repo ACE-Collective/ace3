@@ -63,7 +63,11 @@ value as a whole token: no hostname character may sit right before it or right a
 `evil-example.community`, but still matches in `https://evil-example.com/login` or `block evil-example.com.`
 The same applies to email addresses, IPv4/IPv6 addresses (`1.2.3.4` not inside `5.1.2.3.4`) and hashes.
 A side only gets a boundary when the value's edge character is a word character, so a partial url
-ending in `/` or `=` still matches whatever follows it. `fullword` is dropped from a bounded string,
+ending in `/` or `=` still matches whatever follows it. A bounded value gets one string per encoding
+instead of the `ascii`/`wide` modifiers: `$obsd_<id>` for ascii and `$obsd_wide_<id>` (and
+`$obsd_json_wide_<id>`) for UTF-16. The `wide` modifier would make every boundary an ASCII character,
+so a value right after a BOM or next to CJK text would never match; the wide regex treats any UTF-16
+code unit that is not an ASCII word character as a boundary. `fullword` is dropped from a bounded string,
 and a value longer than 500 characters keeps a text string, because libyara stops matching a regex
 whose match is longer than about 1KB. Setting `yara_export_string_boundaries: {}` turns all of this
 off. A change to the code's output format or to either config block is part of the export
