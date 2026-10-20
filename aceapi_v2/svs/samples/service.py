@@ -1,8 +1,8 @@
 """SVS sample service for ACE API v2: the YARA samples SVS captured and their labels
 (docs/SVS_SAMPLES.md, docs/SVS_API.md).
 
-Synchronous; the router runs each function through run_db_in_thread (or run_in_threadpool for the
-CAS work). The SQL is saq.svs.samples, saq.svs.filters and saq.svs.labels.
+Synchronous; the router runs each function through run_db_in_thread. The SQL is saq.svs.samples,
+saq.svs.filters and saq.svs.labels.
 
 SVS data is global: nothing here is scoped to the alerts this node shows, and nothing exposes an
 alert's own data beyond its uuid and the verdicts on its detections.

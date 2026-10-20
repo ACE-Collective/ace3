@@ -2,11 +2,9 @@
 
 The encrypted-secrets store is reached through the synchronous helpers in
 ``saq.configuration.encryption`` (raw ``get_db_connection`` + the in-memory master key), so these
-async service functions offload that work to a thread with ``asyncio.to_thread`` rather than using
+async service functions offload that work to a thread with ``run_db_in_thread`` rather than using
 an ``AsyncSession``. Nothing here ever returns a decrypted value -- the API is write-only.
 """
-
-import asyncio
 
 from saq.configuration.encryption import (
     delete_password,
@@ -17,6 +15,7 @@ from saq.configuration.encryption import (
 )
 from saq.environment import get_global_runtime_settings
 from aceapi_v2.secrets.schemas import SecretEntry, SecretsPage
+from aceapi_v2.sync import run_db_in_thread
 
 
 class SecretsLockedError(Exception):
@@ -38,7 +37,7 @@ def _collect() -> tuple[list[str], set[str], set[str]]:
 
 async def get_secrets_page() -> SecretsPage:
     """List every known secret name -- stored, config-referenced, or both -- with its status."""
-    stored_keys, referenced, effective = await asyncio.to_thread(_collect)
+    stored_keys, referenced, effective = await run_db_in_thread(_collect)
     stored_set = set(stored_keys)
     entries = []
     for key in sorted(stored_set | referenced):
@@ -62,10 +61,10 @@ async def set_secret(key: str, value: str) -> SecretEntry:
         encrypt_password(key, value)
         return key in find_encrypted_config_references()
 
-    is_referenced = await asyncio.to_thread(_store)
+    is_referenced = await run_db_in_thread(_store)
     return SecretEntry(key=key, is_set=True, is_referenced=is_referenced)
 
 
 async def delete_secret(key: str) -> bool:
     """Delete the stored secret ``key``. Returns True if a row was removed."""
-    return await asyncio.to_thread(delete_password, key)
+    return await run_db_in_thread(delete_password, key)

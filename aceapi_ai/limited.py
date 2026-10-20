@@ -15,8 +15,8 @@ from fastapi import HTTPException, Request
 from aceapi_ai.audit import audit_event
 from aceapi_ai.ratelimit import RateLimitExceeded, RateLimitUnavailable, rate_limiter
 from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.sync import run_db_in_thread
 from saq.configuration.schema import AIQueryBackendLimits
-from saq.database.pool import remove_all_sessions
 
 TIMEOUT_GRACE_SECONDS = 5
 
@@ -38,15 +38,12 @@ async def run_limited(
     work in the error detail. Anything fn raises propagates unchanged."""
 
     def run() -> T:
-        try:
-            with rate_limiter.concurrency_slot(limit_name, limits):
-                rate_limiter.check_request(limit_name, limits)
-                return fn()
-        finally:
-            remove_all_sessions()
+        with rate_limiter.concurrency_slot(limit_name, limits):
+            rate_limiter.check_request(limit_name, limits)
+            return fn()
 
     try:
-        return await asyncio.wait_for(asyncio.to_thread(run), limits.max_query_timeout + TIMEOUT_GRACE_SECONDS)
+        return await asyncio.wait_for(run_db_in_thread(run), limits.max_query_timeout + TIMEOUT_GRACE_SECONDS)
     except TimeoutError:
         audit_event(f"{event}_error", auth, request, **audit_fields, status=504, detail=f"{noun} timed out")
         raise HTTPException(status_code=504, detail=f"{noun} timed out")

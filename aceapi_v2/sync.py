@@ -53,9 +53,15 @@ def shutdown_loop(timeout: float = 5.0):
 
 
 async def run_db_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    """Run a sync get_db()-using function in a worker thread, resetting the
-    thread-local session afterward."""
+    """Run sync code in a worker thread with no get_db() session carried over from earlier work.
+
+    The only way sync code reaches a thread in the FastAPI apps, whether or not it uses the
+    database (tests/aceapi_v2/test_sync.py): a get_db() session belongs to the pool
+    thread and outlives the call unless it is removed, and whether fn reaches get_db() is rarely
+    visible at the call site. It is removed before fn as well as after, so a session that other
+    code left on this thread, possibly holding a dropped connection, never reaches fn."""
     def _wrapped() -> T:
+        remove_all_sessions()
         try:
             return fn(*args, **kwargs)
         finally:

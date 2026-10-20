@@ -14,7 +14,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Security, UploadFile
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
@@ -46,7 +45,7 @@ async def download(
     _: Annotated[ApiAuthResult, Depends(require_permission("engine", "download"))],
 ) -> TarFileResponse:
     """The work target's storage directory as a tar archive, for a node taking the work over."""
-    path = await run_in_threadpool(service.create_download_tar, uuid)
+    path = await run_db_in_thread(service.create_download_tar, uuid)
     logger.info("sending work target %s to %s", uuid, _peer(request))
     # FileResponse ignores the class attribute; without this it guesses from the filename
     return TarFileResponse(path, media_type="application/x-tar", background=BackgroundTask(_safe_unlink, path))
