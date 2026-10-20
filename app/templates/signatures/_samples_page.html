@@ -14,13 +14,13 @@ data-max-bulk-files="{{ max_bulk_download_files }}"
 
 {# the list page also needs the list controller and saved filters #}
 {% macro samples_page_scripts(list_page=False) %}
-<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
 {% if list_page %}
-<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}"></script>
 {% endif %}
-<script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/verdicts.js') }}"></script>
 {% if list_page %}
-<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}"></script>
 {% endif %}
-<script src="{{ url_for('static', filename='js/signatures_samples.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/signatures_samples.js') }}"></script>
 {% endmacro %}

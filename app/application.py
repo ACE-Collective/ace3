@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ from subprocess import PIPE, Popen
 from typing import Optional
 from flask import Flask
 from markupsafe import Markup
+from werkzeug.security import safe_join
 import markdown
 import urllib
 
@@ -125,6 +127,17 @@ THEME_CHOICES = [
 ]
 
 
+def static_file_version(path: str) -> Optional[str]:
+    """A short hash of a static file's contents, or None when it can't be read."""
+    try:
+        with open(path, "rb") as fp:
+            return hashlib.file_digest(fp, "sha256").hexdigest()[:12]
+    except OSError:
+        # a reference to a missing file (a configured pivot link icon, say) just 404s
+        # without the version, which is no worse than it was
+        return None
+
+
 def create_app(testing: Optional[bool]=False):
 
     flask_app = Flask(__name__)
@@ -166,6 +179,42 @@ def create_app(testing: Optional[bool]=False):
 
     register_blueprints(flask_app)
     register_integration_blueprints(flask_app)
+
+    # every url_for() on a static endpoint gets ?v=<hash of the file>, so a release that changes
+    # a file changes its URL and nginx can let browsers keep a versioned URL forever
+    # (etc/nginx/conf.d). ACE_VERSION was not enough: a patch release keeps it, and every
+    # reference had to remember to append it. Files don't change inside a running container,
+    # so each is hashed once per process; the dev GUI (debug) rehashes when the mtime moves.
+    static_versions: dict = {}
+
+    @flask_app.url_defaults
+    def add_static_version(endpoint: str, values: dict):
+        if not (endpoint == "static" or endpoint.endswith(".static")) or "v" in values:
+            return
+
+        if endpoint == "static":
+            folder = flask_app.static_folder
+        else:
+            blueprint = flask_app.blueprints.get(endpoint.rsplit(".", 1)[0])
+            folder = blueprint.static_folder if blueprint else None
+
+        filename = values.get("filename")
+        path = safe_join(folder, filename) if folder and filename else None
+        if path is None:
+            return
+
+        key = path
+        if flask_app.debug:
+            try:
+                key = (path, os.stat(path).st_mtime_ns)
+            except OSError:
+                return  # missing file, see static_file_version
+
+        if key not in static_versions:
+            static_versions[key] = static_file_version(path)
+
+        if static_versions[key]:
+            values["v"] = static_versions[key]
 
     @flask_app.context_processor
     def inject():
