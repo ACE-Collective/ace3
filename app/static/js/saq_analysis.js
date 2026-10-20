@@ -406,20 +406,15 @@ $(document).ready(function() {
     });
 
     // Handle "Jump To Analysis" links with smooth scrolling and highlight
-    // An element inside a collapsed part of the tree has no layout box, so there is
+    // An element inside a collapsed part of the tree is not rendered, so there is
     // nothing to scroll to until every collapsed list above it is expanded.
     function expandCollapsedAncestors(target) {
-        $(target).parents('ul').filter(function() {
-            return this.style.display === 'none';
-        }).each(function() {
-            // the list belongs to the node before it (collapseTree skips the same optional link)
-            var owner = $(this).prev();
-            if (owner.is('a')) owner = owner.prev();
-            var icon = owner.children('.toggle-icon').first();
-            if (icon.length) {
-                collapseTree(icon[0]);
+        $(target).parents('ul[hidden]').each(function() {
+            var icon = treeListToggleIcon(this);
+            if (icon) {
+                collapseTree(icon);
             } else {
-                $(this).show();
+                this.removeAttribute('hidden');
             }
         });
     }
@@ -570,25 +565,6 @@ $(document).ready(function() {
         $bar.show();
     }
 
-    // Expand collapsed parent nodes and scroll to target.
-    function expandAndScrollTo(targetId) {
-        var target = document.getElementById(targetId);
-        if (!target) return;
-
-        // Expand any hidden ancestor <ul> elements
-        $(target).parents('ul').each(function() {
-            if ($(this).css('display') === 'none') {
-                $(this).show();
-                // Update the toggle icon on the preceding <li>
-                $(this).prev('li').find('.toggle-icon.bi-chevron-right')
-                    .removeClass('bi-chevron-right')
-                    .addClass('bi-chevron-down');
-            }
-        });
-
-        scrollToAndHighlight(targetId);
-    }
-
     // Click handler: navigate button on observables
     $(document).on('click', '.saq-breadcrumb-btn', function(e) {
         e.stopPropagation();
@@ -605,7 +581,7 @@ $(document).ready(function() {
         e.preventDefault();
         var targetId = $(this).data('target-id');
         if (targetId) {
-            expandAndScrollTo(targetId);
+            scrollToAndHighlight(targetId);
             // Update breadcrumb to show this node as the active one
             var target = document.getElementById(targetId);
             if (target && $(target).hasClass('saq-observable-node')) {
@@ -912,24 +888,50 @@ function toggleCollapseAll(button) {
     }
 }
 
-// collapses ul that exist under li
-function collapseTree(element) {
+// the ul of child nodes that a tree node's toggle icon opens and closes
+function treeNodeList(element) {
     var nextElement = $(element).parent().next();
-    var nextNextElement = $(element).parent().next().next();
-    
-    if(nextElement.is('a') && nextNextElement.is('ul')) {
-        nextNextElement.toggle();
-    } else if (nextElement.is('ul')) {
-        nextElement.toggle();
+    if (nextElement.is('a')) nextElement = nextElement.next();
+    return nextElement.is('ul') ? nextElement[0] : null;
+}
+
+// the reverse of treeNodeList
+function treeListToggleIcon(list) {
+    var owner = $(list).prev();
+    if (owner.is('a')) owner = owner.prev();
+    return owner.children('.toggle-icon')[0] || null;
+}
+
+// Opens or closes the ul under a tree node. A closed ul is hidden="until-found" rather than
+// display: none, so find-in-page still searches it and opens it on a match (see beforematch below).
+// Which way it goes is read from the icon, not the ul, because find-in-page may already have opened it.
+function collapseTree(element) {
+    var opening = $(element).hasClass('bi-chevron-right');
+    var list = treeNodeList(element);
+    if (list) {
+        if (opening) {
+            list.removeAttribute('hidden');
+        } else {
+            list.setAttribute('hidden', 'until-found');
+        }
     }
 
-    $(element).toggleClass('bi-chevron-down').toggleClass('bi-chevron-right');
+    $(element).toggleClass('bi-chevron-down', opening).toggleClass('bi-chevron-right', !opening);
 
     var last = $(element).siblings().last();
     if (last.attr('name') == 'observable_preview') {
         last.toggle();
     }
 }
+
+// Find-in-page is about to open a closed ul of the tree, so its node's icon follows. Captured, so
+// it is seen whether or not the event bubbles.
+document.addEventListener('beforematch', function(event) {
+    var icon = treeListToggleIcon(event.target);
+    if (icon && $(icon).hasClass('bi-chevron-right')) {
+        collapseTree(icon);
+    }
+}, true);
 
 const INDENT_GUIDE_STORAGE_KEY = 'ace.analysisIndentGuide';
 

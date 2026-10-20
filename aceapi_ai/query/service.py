@@ -23,6 +23,7 @@ from aceapi_ai.query.schemas import (
 from aceapi_ai.ratelimit import RateLimitExceeded, RateLimitUnavailable, rate_limiter
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.auth.utils import API_AUTH_TYPE_USER
+from aceapi_v2.sync import run_db_in_thread
 from saq.ai_query.interface import (
     AIBackendError,
     AIQueryBackend,
@@ -105,7 +106,7 @@ async def execute_query(
             return backend.execute(ai_request)
 
     try:
-        result = await asyncio.wait_for(asyncio.to_thread(run), effective_timeout + TIMEOUT_GRACE_SECONDS)
+        result = await asyncio.wait_for(run_db_in_thread(run), effective_timeout + TIMEOUT_GRACE_SECONDS)
     except TimeoutError:
         audit_event("query_error", auth, request, **_audit_query_fields(backend, body),
                     status=504, detail="query timed out")

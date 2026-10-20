@@ -546,7 +546,7 @@ def test_index_renders_cache_hit_badge(web_client, root_analysis, test_context):
     # Badge HTML pieces — checked independently so a small markup tweak
     # to one (icon class, label text) doesn't silently mask a regression
     # in the others.
-    assert 'class="badge bg-white border border-dark"' in body
+    assert 'class="badge bg-body border border-strong"' in body
     assert "bi-lightning-fill" in body
     # Tooltip carries the cache_key prefix, the original cache timestamp
     # formatted YYYY-MM-DD HH:MM UTC, and execution_time_ms.
@@ -1146,3 +1146,28 @@ def test_index_without_alert_actions(web_client, root_analysis, toolbar_actions)
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
     assert result.status_code == 200
     assert b"alert_action_" not in result.data
+
+
+@pytest.mark.integration
+def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analysis, monkeypatch):
+    """A tree node that starts collapsed hides its children with hidden="until-found", which
+    find-in-page still searches, not display: none, which it skips."""
+    monkeypatch.setattr(TreeNode, "default_collapsed", property(lambda node: node.is_analysis and not node.is_root_analysis))
+    observable = root_analysis.add_observable_by_spec(F_TEST, "parent")
+    analysis = observable.add_analysis(VerdictTestAnalysis())
+    analysis.add_observable_by_spec(F_TEST, "found by searching")
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    with web_client.session_transaction() as sess:
+        sess['prune'] = False
+        sess['prune_volatile'] = False
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    body = result.data.decode()
+
+    # only the analysis starts collapsed; the observable above it stays open
+    assert body.count('<ul hidden="until-found">') == 1
+    assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)
+    assert 'class="toggle-icon bi bi-chevron-right"' in body
+    assert '<ul style="display: none;">' not in body

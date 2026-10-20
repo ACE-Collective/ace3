@@ -60,7 +60,7 @@
 <style>
 .nav-separator {
     width: 1px;
-    background-color: #dee2e6;
+    background-color: var(--bs-border-color);
     margin: 0 0.5rem;
     height: 1.5rem;
     align-self: center;
@@ -118,6 +118,18 @@
             </ul>
             <ul class="navbar-nav">
                 {% if current_user.is_authenticated %}
+                    {# the handler is save_theme() in ace.js #}
+                    {% set theme_mode = ui_theme() %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="theme-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false" title="Theme" aria-label="Theme">
+                            <i class="bi bi-palette"></i>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-dropdown" id="theme-switcher">
+                            {% for mode, icon, label, hint in THEME_CHOICES %}
+                            <li><button type="button" class="dropdown-item{% if mode == theme_mode %} active{% endif %}" data-theme-mode="{{ mode }}" title="{{ hint }}" aria-pressed="{{ 'true' if mode == theme_mode else 'false' }}">{% if icon %}<i class="bi {{ icon }} me-2"></i>{% endif %}{{ label }}</button></li>
+                            {% endfor %}
+                        </ul>
+                    </li>
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="user-dropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                             {{ current_user.display_name }} ({{ current_user.username }})
@@ -302,7 +314,7 @@
                                         {% endif %}
                                     />
                                     <label class="form-check-label label-{{disposition_css(disposition)}}" for="option_{{disposition}}">
-                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-strong"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}
@@ -369,7 +381,7 @@
                                         autocomplete="off"
                                     />
                                     <label class="form-check-label label-{{disposition_css(disposition)}}" for="corrected_option_{{disposition}}">
-                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-black"> {{disposition}} </span>
+                                        <span class="badge text-bg-{{disposition_css(disposition)}} border border-strong"> {{disposition}} </span>
                                     </label>
                                 </div>
                             {% endfor %}

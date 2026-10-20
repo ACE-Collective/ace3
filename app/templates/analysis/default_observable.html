@@ -97,7 +97,7 @@
         <span 
             style="transition: text-decoration 0.1s; cursor: pointer;"
             onmousedown="apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [ ['{{_observable.type}}', decodeURIComponent(atob('{{_observable.value | b64escape}}'))] ]}, {'name': 'Disposition', 'inverted': false, 'values': ['{{disposition}}']}], 'Observable {{_observable.type}} / {{disposition}}', '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}')" 
-            class="badge border border-dark text-bg-{{disposition_css(disposition)}}"
+            class="badge border border-strong text-bg-{{disposition_css(disposition)}}"
             onmouseover="this.style.textDecoration='underline';"
             onmouseleave="this.style.textDecoration='';"
         >
@@ -117,7 +117,7 @@
     {% if directive.startswith('yara_meta:') %}
         {% set meta_pair = directive[10:].split('=', 1) %}
         {% if meta_pair | length == 2 %}
-            <span class="badge" style="background-color: white; color: rgb(134, 74, 0); border: 1px solid rgb(134, 74, 0);">{{ meta_pair[0] }}={{ meta_pair[1] }}</span>
+            <span class="badge" style="background-color: var(--bs-body-bg); color: var(--ace-obs-hostname); border: 1px solid var(--ace-obs-hostname);">{{ meta_pair[0] }}={{ meta_pair[1] }}</span>
         {% endif %}
     {% endif %}
 {% endfor %}
@@ -133,8 +133,8 @@
 
 {# manually-added provenance #}
 {% if _observable.added_by %}
-<div class="observable-added-by" style="margin-left: 4px; margin-top: 2px; font-size: 85%; color: #555;">
-    <span class="bi bi-person-plus" style="color: #888;"></span>
+<div class="observable-added-by" style="margin-left: 4px; margin-top: 2px; font-size: 85%; color: var(--bs-secondary-color);">
+    <span class="bi bi-person-plus" style="color: var(--bs-tertiary-color);"></span>
     {% if _observable.added_time %}<span class="text-muted">{{ _observable.display_added_time }}</span>{% endif %}
     added by <strong>{{ (observable_added_by_display | default({})).get(_observable.added_by, _observable.added_by) }}</strong>
 </div>
@@ -145,8 +145,8 @@
 {% if obs_comments %}
 <div class="observable-comments" style="margin-left: 4px; margin-top: 2px;">
     {% for c in obs_comments %}
-    <div class="observable-comment" style="font-size: 85%; color: #555;">
-        <span class="bi bi-chat-left-text" style="color: #888;"></span>
+    <div class="observable-comment" style="font-size: 85%; color: var(--bs-secondary-color);">
+        <span class="bi bi-chat-left-text" style="color: var(--bs-tertiary-color);"></span>
         <span class="text-muted">{{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</span>
         <strong>{{ c.user.display_name if c.user else 'unknown' }}</strong>:
         <span class="obs-comment-text">{{ c.comment }}</span>

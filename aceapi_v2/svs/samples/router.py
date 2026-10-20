@@ -22,7 +22,6 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Security
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
@@ -180,7 +179,7 @@ async def get_capture_record(
     wrong_node.
     """
     row = await run_db_in_thread(service.resolve_record, capture_id)
-    path = await run_in_threadpool(service.materialize_record, row)
+    path = await run_db_in_thread(service.materialize_record, row)
     return FileResponse(
         path,
         media_type="application/json",
@@ -236,7 +235,7 @@ async def download_samples(
     logger.info("AUDIT: user %s downloading %s svs sample files (filters %s): %s",
                 auth.auth_name, len(download.local), f, download.sha256s)
     label = "svs-samples"
-    zip_path, staging = await run_in_threadpool(service.create_sample_zip, label, download, auth.auth_name)
+    zip_path, staging = await run_db_in_thread(service.create_sample_zip, label, download, auth.auth_name)
     return _zip_response(label, zip_path, staging)
 
 
@@ -262,7 +261,7 @@ async def download_sample(
     download = await run_db_in_thread(service.resolve_sample_download, sha256, rule_uuid)
     logger.info("AUDIT: user %s downloading svs sample %s (rule %s)", auth.auth_name, download.sha256s[0], rule_uuid)
     label = f"svs-sample-{download.sha256s[0]}"
-    zip_path, staging = await run_in_threadpool(service.create_sample_zip, label, download, auth.auth_name)
+    zip_path, staging = await run_db_in_thread(service.create_sample_zip, label, download, auth.auth_name)
     return _zip_response(label, zip_path, staging)
 
 

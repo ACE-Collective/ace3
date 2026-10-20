@@ -1,6 +1,8 @@
+import json
 import os
 
 import pytest
+import yara
 
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import (
@@ -19,11 +21,16 @@ from saq.observables.export.base import select_detections
 from saq.observables.export.state import read_fingerprint, write_fingerprint
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.observables.export.yara import (
+    BOUNDARY_FAMILIES,
+    MAX_BOUNDED_VALUE_LENGTH,
     OBSERVABLE_EXPORT_DIR,
     YaraObservableExport,
+    format_bounded_yara_regex,
     format_yara_json_string,
+    format_yara_regex,
     format_yara_string,
 )
+from saq.modules.file_analysis.yara import _parse_yara_string_key_id
 from tests.saq.helpers import search_log
 
 
@@ -112,6 +119,18 @@ def test_export_list_fingerprint_is_order_independent():
 def test_export_list_fingerprint_changes(entries):
     original = ObservableExportList([ExportEntry(1, "fqdn", "a.com")])
     assert original.fingerprint() != ObservableExportList(entries).fingerprint()
+
+
+@pytest.mark.unit
+def test_export_fingerprint_without_salt_is_the_list_fingerprint():
+    # targets with no salt (redis writes export_list.fingerprint() itself) must see no change
+    class _Target(YaraObservableExport):
+        def fingerprint_salt(self) -> str:
+            return ""
+
+    export_list = ObservableExportList([ExportEntry(1, "fqdn", "a.com")])
+    target = _Target(get_config().get_observable_export_config("yara"))
+    assert target.fingerprint(export_list) == export_list.fingerprint()
 
 
 @pytest.mark.unit
@@ -304,6 +323,323 @@ def test_format_yara_string():
 
 
 #
+# yara: bounded strings
+#
+
+def compile_string_line(line: str) -> yara.Rules:
+    """Compiles one generated string line into a rule that hits when the string does."""
+    return yara.compile(
+        source=f"rule t {{ strings: {line.strip()} condition: any of them }}",
+        error_on_warning=True)
+
+
+def compile_bounded(value: str, family: str) -> yara.Rules:
+    """The ascii and wide strings the exporter emits for an "ascii wide nocase" bounded value."""
+    return compile_string_line(f"$a = {format_bounded_yara_regex(value, family)} ascii nocase\n"
+                               f"$b = {format_bounded_yara_regex(value, family, wide=True)} nocase")
+
+
+def hits(rules: yara.Rules, data: str | bytes) -> bool:
+    if isinstance(data, str):
+        data = data.encode("utf8")
+    return bool(rules.match(data=data))
+
+
+def utf16(text: str) -> bytes:
+    return text.encode("utf-16le")
+
+
+@pytest.fixture
+def boundaries(monkeypatch):
+    """Sets yara_export_string_boundaries for the duration of a test."""
+    def _set(value: dict | None):
+        monkeypatch.setattr(get_config(), "yara_export_string_boundaries", value)
+    return _set
+
+
+@pytest.mark.unit
+def test_format_yara_regex_escapes_specials():
+    assert format_yara_regex("a/b.c?d(e)") == "a\\/b\\.c\\?d\\(e\\)"
+    assert format_yara_regex("a\r\nb") == "ab"
+    assert format_yara_regex("\\^$|*+[]{}") == "\\\\\\^\\$\\|\\*\\+\\[\\]\\{\\}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data,expected", [
+    # the alert that started this: the address in the plain, quoted-printable and html parts
+    ("assistance with connecting. (alice_smith@acme-evil-example.com)\n5. It is", False),
+    ("connecting.##sp##(alice=5Fsmith@acme-evil-example.com)\n5.?=", False),
+    ('(<a href="mailto:alice_smith@acme-evil-example.com"><u><span', False),
+    (utf16("alice_smith@acme-evil-example.com"), False),
+    ("my-evil-example.com xevil-example.com", False),
+    ("evil-example.community", False),
+    ("cdn.evil-example.com-edge.net", False),
+    ("evil-example.com.au", False),
+    ("evil-example.com", True),
+    ("see evil-example.com today", True),
+    ("https://evil-example.com/login.php", True),
+    ('"url":"evil-example.com"', True),
+    ("url=evil-example.com/path refererURL=x", True),
+    ("admin@evil-example.com", True),
+    ("cdn.evil-example.com", True),
+    ("EVIL-EXAMPLE.COM", True),
+    ("Block evil-example.com.", True),
+    ("(evil-example.com)", True),
+    (utf16("evil-example.com"), True),
+    (utf16("see evil-example.com."), True),
+])
+def test_bounded_url_rejects_hyphen_prefix(data, expected):
+    assert hits(compile_bounded("evil-example.com", "hostname"), data) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data,expected", [
+    ("From: bob@evil.com", True),
+    ("<bob@evil.com>", True),
+    ("mailto:bob@evil.com", True),
+    ("jimbob@evil.com", False),
+    ("x.bob@evil.com", False),
+    ("jim+bob@evil.com", False),
+    ("bob@evil.com.au", False),
+    ("bob@evil.company", False),
+])
+def test_bounded_email_address(data, expected):
+    assert hits(compile_bounded("bob@evil.com", "email_address"), data) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data,expected", [
+    ("src=1.2.3.4 dst", True),
+    ("1.2.3.4:443", True),
+    ("seen 1.2.3.4.", True),
+    ("1.2.3.4", True),
+    ("5.1.2.3.4", False),
+    ("11.2.3.4", False),
+    ("1.2.3.45", False),
+    ("1.2.3.4.5", False),
+])
+def test_bounded_ipv4(data, expected, boundaries):
+    boundaries({"ip": "ip"})
+    family = yara_export().get_string_boundary("ip", "1.2.3.4")
+    assert family == "ipv4"
+    assert hits(compile_bounded("1.2.3.4", family), data) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data,expected", [
+    ("addr 2001:db8::1 port", True),
+    ("2001:db8::12", False),
+    ("a2001:db8::1", False),
+])
+def test_bounded_ipv6(data, expected, boundaries):
+    boundaries({"ip": "ip"})
+    family = yara_export().get_string_boundary("ip", "2001:db8::1")
+    assert family == "ipv6"
+    assert hits(compile_bounded("2001:db8::1", family), data) is expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data,expected", [
+    ("md5=d41d8cd98f00b204e9800998ecf8427e;", True),
+    ("ad41d8cd98f00b204e9800998ecf8427e", False),
+    ("d41d8cd98f00b204e9800998ecf8427e00ff", False),
+])
+def test_bounded_hex(data, expected):
+    assert hits(compile_bounded("d41d8cd98f00b204e9800998ecf8427e", "hex"), data) is expected
+
+
+@pytest.mark.unit
+def test_bounded_edges_only_where_word_chars():
+    value = "http://evil.example.com/a?x="
+    # "h" is a word character, "=" is not: a left boundary only
+    assert format_bounded_yara_regex(value, "hostname").startswith("/(^|")
+    assert format_bounded_yara_regex(value, "hostname").endswith("x=/")
+
+    rules = compile_bounded(value, "hostname")
+    assert hits(rules, "http://evil.example.com/a?x=123")
+    assert not hits(rules, "xhttp://evil.example.com/a?x=")
+
+
+@pytest.mark.unit
+def test_bounded_edges_absent_is_a_plain_regex():
+    # neither edge is a word character: nothing to anchor, the value is escaped and nothing more
+    assert format_bounded_yara_regex("/a.b/", "hostname") == "/\\/a\\.b\\//"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,family,data,expected", [
+    # the wide modifier would turn each boundary into one ASCII byte and a NUL, so none of these hit
+    ("evil.com", "hostname", "\ufeffevil.com", True),
+    ("evil.com", "hostname", "\u4e2devil.com ", True),
+    ("evil.com", "hostname", "see evil.com\u306f", True),
+    ("evil.com", "hostname", "\ufeffblock evil.com.\u306f", True),
+    ("1.2.3.4", "ipv4", "\ufeff1.2.3.4\r\n", True),
+    ("d41d8cd98f00b204e9800998ecf8427e", "hex", "\ufeffd41d8cd98f00b204e9800998ecf8427e", True),
+    ("2001:db8::1", "ipv6", "\u4e2d2001:db8::1\u4e2d", True),
+    ("bob@evil.com", "email_address", "\u4e2dbob@evil.com", True),
+    # and a word character in UTF-16 is still not a boundary
+    ("evil.com", "hostname", "\ufeffacme-evil.com", False),
+    ("evil.com", "hostname", "evil.com.au\u4e2d", False),
+    ("1.2.3.4", "ipv4", "\ufeff5.1.2.3.4", False),
+    ("bob@evil.com", "email_address", "jim.bob@evil.com", False),
+])
+def test_bounded_wide_non_ascii_neighbours(value, family, data, expected):
+    assert hits(compile_bounded(value, family), utf16(data)) is expected
+
+
+@pytest.mark.unit
+def test_bounded_wide_non_ascii_value_matches_like_the_wide_modifier():
+    # the wide modifier puts a NUL after each UTF-8 byte; the wide regex has to hit the same data
+    value = "http://evil.example.com/\u00e9t\u00e9"
+    wide_data = b"".join(bytes([b, 0]) for b in f" {value} ".encode("utf8"))
+    text_rules = compile_string_line(f'$a = "{value}" wide')
+    assert hits(text_rules, wide_data)
+    assert hits(compile_bounded(value, "hostname"), wide_data)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("modifiers,expected", [
+    ("ascii wide nocase", [("$obsd_5", "ascii nocase"), ("$obsd_wide_5", "nocase")]),
+    ("ascii nocase", [("$obsd_5", "ascii nocase")]),
+    ("nocase", [("$obsd_5", "ascii nocase")]),
+    ("wide nocase", [("$obsd_wide_5", "nocase")]),
+])
+def test_bounded_modifiers_pick_the_strings(modifiers, expected, boundaries):
+    boundaries({"url": "hostname"})
+    strings = yara_export()._format_strings(ExportEntry(5, "url", "evil.com"), modifiers)
+
+    lines = strings.splitlines()
+    assert [(line.split(" = ")[0].strip(), line.rsplit("/", 1)[1].strip()) for line in lines] == expected
+
+    rules = compile_string_line(strings)
+    assert hits(rules, "see evil.com") is (("$obsd_5", "ascii nocase") in expected)
+    assert hits(rules, utf16("\ufeffEVIL.COM")) is (("$obsd_wide_5", "nocase") in expected)
+
+
+@pytest.mark.unit
+def test_bounded_drops_fullword(boundaries):
+    boundaries({"fqdn": "hostname"})
+    export = yara_export()
+    modifiers = export.get_string_modifiers("fqdn")
+    assert "fullword" in modifiers
+
+    line = export._format_strings(ExportEntry(7, "fqdn", "evil.example.com"), modifiers)
+    assert line.strip().startswith("$obsd_7 = /")
+    assert "fullword" not in line
+    assert "$obsd_wide_7 = /" in line
+
+    rules = compile_string_line(line)
+    assert hits(rules, "a evil.example.com")
+    assert not hits(rules, "a-evil.example.com")
+
+
+@pytest.mark.unit
+def test_unbounded_type_unchanged(boundaries):
+    boundaries({"url": "hostname"})
+    export = yara_export()
+    modifiers = export.get_string_modifiers("email_subject")
+    entry = ExportEntry(9, "email_subject", 'Invoice "overdue"')
+
+    assert export.get_string_boundary("email_subject", entry.value) is None
+    assert export._format_strings(entry, modifiers) == (
+        f'          $obsd_9 = "Invoice \\"overdue\\"" {modifiers}\n')
+
+
+@pytest.mark.unit
+def test_no_boundary_config_keeps_text_strings(boundaries):
+    boundaries(None)
+    export = yara_export()
+    line = export._format_strings(ExportEntry(3, "url", "evil-example.com"), "ascii wide nocase")
+    assert line == '          $obsd_3 = "evil-example.com" ascii wide nocase\n'
+
+
+@pytest.mark.unit
+def test_bounded_json_variant(boundaries):
+    boundaries({"url": "hostname"})
+    export = yara_export()
+    value = 'http://bad.example.com/a"b\\c'
+    strings = export._format_strings(ExportEntry(11, "url", value), "ascii wide nocase")
+
+    lines = strings.splitlines()
+    assert [line.split(" = ")[0].strip() for line in lines] == [
+        "$obsd_11", "$obsd_wide_11", "$obsd_json_11", "$obsd_json_wide_11"]
+
+    raw_rules = compile_string_line(lines[0])
+    assert hits(raw_rules, 'see http://bad.example.com/a"b\\c here')
+    assert not hits(raw_rules, 'see http://bad.example.com/a"b\\cd here')
+    assert hits(compile_string_line(lines[1]), utf16('see http://bad.example.com/a"b\\c here'))
+
+    json_rules = compile_string_line(lines[2])
+    assert hits(json_rules, '{"u":"http://bad.example.com/a\\"b\\\\c"}')
+    assert hits(compile_string_line(lines[3]), utf16('{"u":"http://bad.example.com/a\\"b\\\\c"}'))
+
+
+@pytest.mark.unit
+def test_bounded_long_value_keeps_text_string(boundaries):
+    boundaries({"url": "hostname"})
+    export = yara_export()
+
+    # the longest value that is still bounded matches, in wide too: libyara's regex match length
+    # limit is what MAX_BOUNDED_VALUE_LENGTH has to stay under
+    value = "http://evil.example.com/" + "a" * (MAX_BOUNDED_VALUE_LENGTH - len("http://evil.example.com/"))
+    assert len(value) == MAX_BOUNDED_VALUE_LENGTH
+    line = export._format_strings(ExportEntry(1, "url", value), "ascii wide nocase")
+    assert line.strip().startswith("$obsd_1 = /")
+    rules = compile_string_line(line)
+    assert hits(rules, f"see {value}.")
+    # the longest wide boundary: a dot and then a non-word code unit
+    assert hits(rules, utf16(f"\ufeff{value}.\u4e2d"))
+    assert not hits(rules, f"x{value}")
+    assert not hits(rules, utf16(f"x{value}"))
+
+    too_long = value + "a"
+    line = export._format_strings(ExportEntry(2, "url", too_long), "ascii wide nocase")
+    assert line == f'          $obsd_2 = "{too_long}" ascii wide nocase\n'
+    assert hits(compile_string_line(line), utf16(f"see {too_long}."))
+
+
+@pytest.mark.unit
+def test_unknown_boundary_family_falls_back(boundaries):
+    boundaries({"url": "nonsense"})
+    export = yara_export()
+
+    assert export.get_string_boundary("url", "evil-example.com") is None
+    assert search_log("unknown yara export boundary nonsense")
+    line = export._format_strings(ExportEntry(4, "url", "evil-example.com"), "ascii wide nocase")
+    assert line == '          $obsd_4 = "evil-example.com" ascii wide nocase\n'
+
+
+@pytest.mark.unit
+def test_default_boundaries_name_known_families():
+    configured = get_config().yara_export_string_boundaries
+    assert configured["url"] == "hostname"
+    for family in configured.values():
+        assert family == "ip" or family in BOUNDARY_FAMILIES
+
+
+@pytest.mark.unit
+def test_fingerprint_salt_tracks_the_string_config(boundaries, monkeypatch):
+    export = yara_export()
+    export_list = ObservableExportList([ExportEntry(1, "url", "evil-example.com")])
+
+    boundaries({"url": "hostname"})
+    bounded = export.fingerprint(export_list)
+    assert bounded != export_list.fingerprint()
+    assert export.fingerprint(export_list) == bounded
+
+    boundaries({})
+    unbounded = export.fingerprint(export_list)
+    assert unbounded != bounded
+
+    monkeypatch.setattr(get_config(), "yara_export_string_modifiers", {"default": "ascii"})
+    assert export.fingerprint(export_list) != unbounded
+
+    monkeypatch.setattr("saq.observables.export.yara.YARA_EXPORT_FORMAT_VERSION", "999")
+    assert json.dumps([{}, {"default": "ascii"}], sort_keys=True) in export.fingerprint_salt()
+    assert export.fingerprint_salt().startswith("999")
+
+
+#
 # yara: publishing
 #
 
@@ -317,8 +653,8 @@ def test_export_writes_compilable_rules(export_dir, state_dir, detections):
     assert run_exports() == os.EX_OK
 
     fqdn_rule = read_rule(export_dir, "fqdn")
-    assert f"$obsd_{fqdn_id}" in fqdn_rule
-    assert "evil.example.com" in fqdn_rule
+    assert f"$obsd_{fqdn_id} = /" in fqdn_rule
+    assert "evil\\.example\\.com" in fqdn_rule
     assert "rule detect_fqdn : detect_fqdn" in fqdn_rule
     yara.compile(source=fqdn_rule)
 
@@ -392,29 +728,78 @@ def test_export_prunes_stale_rule_files(export_dir, state_dir, detections):
 def test_export_escapes_quotes_and_backslashes(export_dir, state_dir, detections):
     import yara
 
+    # url is bounded, so this is a regex; a type with no boundary keeps the text string
     detection_id = detections("url", 'http://bad.example.com/a"b\\c')
+    subject_id = detections("email_subject", 'Invoice "a\\b"')
 
     assert run_exports() == os.EX_OK
 
     rule = read_rule(export_dir, "url")
     yara.compile(source=rule)
-    assert f'$obsd_{detection_id} = "http://bad.example.com/a\\"b\\\\c"' in rule
+    assert f'$obsd_{detection_id} = /(^|[^a-zA-Z0-9_\\-])http:\\/\\/bad\\.example\\.com\\/a"b\\\\c(' in rule
     # the json form differs, so it gets its own string
-    assert f"$obsd_json_{detection_id}" in rule
+    assert f"$obsd_json_{detection_id} = /" in rule
+
+    subject_rule = read_rule(export_dir, "email_subject")
+    yara.compile(source=subject_rule)
+    assert f'$obsd_{subject_id} = "Invoice \\"a\\\\b\\""' in subject_rule
+    assert f"$obsd_json_{subject_id}" in subject_rule
+
+
+@pytest.mark.integration
+def test_export_url_rule_does_not_match_inside_longer_host(export_dir, state_dir, detections):
+    detection_id = detections("url", "evil-example.com")
+
+    assert run_exports() == os.EX_OK
+
+    rules = yara.compile(source=read_rule(export_dir, "url"))
+    assert not rules.match(data=b"(alice_smith@acme-evil-example.com)")
+    matches = rules.match(data=b"please block evil-example.com.")
+    assert matches
+    # the string name still carries the detection id the scanner resolves
+    assert any(instance.identifier == f"$obsd_{detection_id}"
+               for match in matches for instance in match.strings)
+
+    # a UTF-16 hit comes from the wide string, which resolves to the same detection
+    matches = rules.match(data="\ufeffevil-example.com".encode("utf-16le"))
+    identifiers = [instance.identifier for match in matches for instance in match.strings]
+    assert identifiers == [f"$obsd_wide_{detection_id}"]
+    assert _parse_yara_string_key_id(identifiers[0]) == detection_id
+
+
+@pytest.mark.integration
+def test_export_republishes_when_the_boundary_config_changes(export_dir, state_dir, detections, boundaries):
+    detections("url", "evil-example.com")
+
+    assert run_exports() == os.EX_OK
+    assert "evil-example\\.com" in read_rule(export_dir, "url")
+
+    # the detections did not change, but the strings did: the change check must not skip it
+    boundaries({})
+    assert run_exports() == os.EX_OK
+    assert '"evil-example.com"' in read_rule(export_dir, "url")
 
 
 @pytest.mark.integration
 def test_export_applies_string_modifiers(export_dir, state_dir, detections):
     detections("fqdn", "evil.example.com")
     detections("ip", "192.168.44.100")
+    detections("email_subject", "evil subject line")
 
     assert run_exports() == os.EX_OK
 
-    assert "fullword" in read_rule(export_dir, "fqdn")
+    # fqdn is bounded, and a bounded string drops fullword (the regex does that job) and gets one
+    # string for ascii and one for wide
+    fqdn_rule = read_rule(export_dir, "fqdn")
+    assert "/ ascii nocase" in fqdn_rule
+    assert "$obsd_wide_" in fqdn_rule
+    assert "fullword" not in fqdn_rule
     # ip has no explicit mapping, so it gets the default set
     ip_rule = read_rule(export_dir, "ip")
-    assert "ascii wide nocase" in ip_rule
+    assert "/ ascii nocase" in ip_rule
+    assert "$obsd_wide_" in ip_rule
     assert "fullword" not in ip_rule
+    assert '"evil subject line" ascii wide nocase' in read_rule(export_dir, "email_subject")
 
 
 @pytest.mark.integration
@@ -453,7 +838,7 @@ def test_export_writes_subtype_detections_into_the_parent_rule_file(
     # email_reply_to is not in the export_list -- email_address is, and it covers it
     rule = read_rule(export_dir, F_EMAIL_ADDRESS)
     assert f"$obsd_{reply_to_id}" in rule
-    assert "reply@example.com" in rule
+    assert "reply@example\\.com" in rule
     assert f"$obsd_{plain_id}" in rule
     yara.compile(source=rule)
 
@@ -468,10 +853,11 @@ def test_export_applies_parent_string_modifiers_to_subtypes(
 
     assert run_exports() == os.EX_OK
 
-    # exported under fqdn, so it picks up the fullword modifier configured for that type
+    # exported under fqdn, so it picks up fqdn's boundary (and, being bounded, drops its fullword)
     rule = read_rule(export_dir, F_FQDN)
-    assert "evil.example.com" in rule
-    assert "fullword" in rule
+    assert "evil\\.example\\.com" in rule
+    assert "fullword" not in rule
+    assert "/(^|[^a-zA-Z0-9_\\-])evil" in rule
     assert not os.path.exists(os.path.join(export_dir, f"{F_EMAIL_DKIM_SIGNING_DOMAIN}.yar"))
 
 

@@ -969,6 +969,7 @@ class ACEConfig(BaseModel):
     svs: SVSConfig = Field(default_factory=SVSConfig, description="the Signature Validation System (docs/SVS.md)")
     yara_export: Optional[YaraExportConfig] = None
     yara_export_string_modifiers: Optional[dict[str, str]] = None
+    yara_export_string_boundaries: Optional[dict[str, str]] = None
     sip_yara_export: Optional[SIPYaraExportConfig] = None
     sip_yara_export_string_modifiers: Optional[dict[str, str]] = None
     sip_indicator_type_mapping: Optional[dict[str, str]] = None

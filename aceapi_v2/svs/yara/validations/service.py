@@ -1,7 +1,7 @@
 """SVS YARA validation service for ACE API v2 (docs/SVS_VALIDATION.md, docs/SVS_API.md).
 
-Synchronous; the router runs each function through run_db_in_thread (or run_in_threadpool for the
-CAS work). saq.svs.validations owns the queue; this reads it.
+Synchronous; the router runs each function through run_db_in_thread. saq.svs.validations owns the
+queue; this reads it.
 
 Two audiences. The signature repository's CI holds svs:validate only: it requests a validation and
 reads its status, which carries counts and rule names and uuids, never a sample's sha256, file name

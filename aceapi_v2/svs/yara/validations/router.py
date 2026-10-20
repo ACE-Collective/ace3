@@ -13,7 +13,6 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, Security
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
@@ -210,7 +209,7 @@ async def download_results(
                 auth.auth_name, len(download.local), selection.validation_uuid, category, rule_uuid,
                 download.sha256s)
     label = f"svs-validation-{selection.validation_uuid}"
-    zip_path, staging = await run_in_threadpool(samples_service.create_sample_zip, label, download, auth.auth_name)
+    zip_path, staging = await run_db_in_thread(samples_service.create_sample_zip, label, download, auth.auth_name)
     return ZipFileResponse(
         zip_path,
         media_type="application/zip",

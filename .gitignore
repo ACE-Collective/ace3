@@ -179,7 +179,8 @@ integrations/*
 
 # claude
 .claude/settings.local.json
-.claude/skills/
+.claude/skills/*
+!.claude/skills/ace-review/
 CLAUDE.local.md
 
 # local area for hosting local development/testing stuff

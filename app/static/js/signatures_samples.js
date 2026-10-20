@@ -738,7 +738,7 @@
 
     function match_summary(capture) {
         const summary = capture.match_summary || {};
-        const container = el("div", "bg-light p-2");
+        const container = el("div", "bg-body-tertiary p-2");
         if (!capture.has_record && Object.keys(summary).length === 0) {
             container.appendChild(el("span", "text-muted", "No match record was kept for this capture."));
             return container;

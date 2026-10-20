@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from saq.analysis.analysis import Analysis
+from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
@@ -34,6 +35,7 @@ from saq.modules.util.observable_modifier import (
     TreeCondition,
     _AnalysisTypeIndex,
     _load_details_for_match,
+    build_modifier_rule_matches,
     get_nested_value,
 )
 from tests.saq.helpers import create_root_analysis
@@ -5790,3 +5792,115 @@ def test_rule_eval_cost_line_contains_phase_split(caplog):
     match = re.search(r"rule_name=(?P<rule_name>.+)$", cost_lines[0])
     assert match is not None
     assert match.group("rule_name") == "cost rule cost-uuid-1"
+
+
+# ============================================================
+# The alert page's Observable Modifier Rules card
+# ============================================================
+
+
+@pytest.mark.unit
+def test_matched_rules_survive_reload_without_loading_details():
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    target = root.add_observable_by_spec(F_URL, "https://example.com/")
+    rules = [{
+        "name": "crawl it",
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "phase": "pre",
+        "conditions": {"observable_types": ["url"]},
+        "actions": {"add_directives": ["crawl"]},
+    }]
+    adapter = _create_analyzer_with_rules(root, rules)
+    adapter.execute_analysis(target)
+    root.save()
+
+    root = load_root(root.storage_dir)
+    analysis = root.get_observable(target.uuid).get_analysis(ObservableModifierAnalysis)
+
+    assert analysis.matched_rules == [{
+        "name": "crawl it",
+        "uuid": "11111111-1111-1111-1111-111111111111",
+        "actions_applied": {"add_directives": ["crawl"]},
+    }]
+    # read from data.json: the details file was never opened
+    assert analysis.details == {"matched_rules": []}
+
+
+@pytest.mark.unit
+def test_build_modifier_rule_matches():
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    class EmailAnalysisStub3(Analysis):
+        pass
+
+    class IOCExtractionStub3(Analysis):
+        pass
+
+    email_analysis = EmailAnalysisStub3()
+    root.add_observable_by_spec(F_FQDN, "email.vendor.com").add_analysis(email_analysis)
+    # still shown under the IOC extraction once the rule takes it from the email
+    team = email_analysis.add_observable_by_spec(F_EMAIL_ADDRESS, "team@example.com")
+    ioc_analysis = IOCExtractionStub3()
+    root.add_observable_by_spec(F_FQDN, "body.example.com").add_analysis(ioc_analysis)
+    ioc_analysis.add_observable_to_tree(team)
+    noise = root.add_observable_by_spec(F_EMAIL_ADDRESS, "noise@example.com")
+    first_url = root.add_observable_by_spec(F_URL, "https://one.example.com/")
+    second_url = root.add_observable_by_spec(F_URL, "https://two.example.com/")
+
+    rules = [
+        {
+            "name": "crawl urls",
+            "phase": "pre",
+            "conditions": {"observable_types": ["url"]},
+            "actions": {"add_directives": ["crawl"], "add_tags": ["crawled"]},
+        },
+        {
+            "name": "Ignore noise",
+            "phase": "pre",
+            "conditions": {"observable_types": ["email_address"], "value_pattern": r"^noise@"},
+            "actions": {"ignore": True},
+        },
+        {
+            "name": "ignore team emails",
+            "phase": "post",
+            "conditions": {
+                "observable_types": ["email_address"],
+                "value_pattern": r"^team@",
+                "tree_conditions": [{
+                    "analysis_type": f"{EmailAnalysisStub3.__module__}:{EmailAnalysisStub3.__name__}",
+                    "scope": "parent",
+                }],
+            },
+            "actions": {"ignore": True},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+    for observable in (team, noise, first_url, second_url):
+        adapter.execute_analysis(observable)
+        adapter.analyze(observable, final_analysis=True)
+
+    matches = build_modifier_rule_matches(root)
+
+    # the rules that ignored something first, by name regardless of case
+    assert [rule.name for rule in matches] == ["Ignore noise", "ignore team emails", "crawl urls"]
+    noise_rule, team_rule, crawl_rule = matches
+    assert noise_rule.ignored == [noise] and noise.ignored
+    assert team_rule.ignored == [team] and not team.ignored
+    assert noise_rule.actions == ["ignore"]
+    assert crawl_rule.ignored == []
+    assert set(crawl_rule.observables) == {first_url, second_url}
+    assert crawl_rule.actions == ["add_directives", "add_tags"]
+
+
+@pytest.mark.unit
+def test_build_modifier_rule_matches_skips_analysis_without_matched_rules():
+    # an alert analyzed before ObservableModifierAnalysis kept its matches in data.json
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    analysis = ObservableModifierAnalysis()
+    analysis.details = {"matched_rules": [{"name": "x", "uuid": "y", "actions_applied": {"ignore": True}}]}
+    root.add_observable_by_spec(F_URL, "https://example.com/").add_analysis(analysis)
+
+    assert build_modifier_rule_matches(root) == []

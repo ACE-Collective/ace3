@@ -1052,6 +1052,20 @@ yara_export_string_modifiers:
   fqdn: ascii wide nocase fullword
   file_name: ascii wide nocase fullword
 
+# keeps a detection from matching inside a longer token: with a boundary, evil-example.com no longer
+# matches inside acme-evil-example.com and 1.2.3.4 no longer inside 5.1.2.3.4. Each type maps to a family
+# in saq/observables/export/yara.py (BOUNDARY_FAMILIES); "ip" picks ipv4 or ipv6 per value. A type with no
+# entry keeps a plain text string, and so does any value longer than 500 characters. fullword is ignored
+# for a bounded type. Changing this republishes the rule files on the next export.
+yara_export_string_boundaries:
+  url: hostname
+  fqdn: hostname
+  email_address: email_address
+  ip: ip
+  ipv4: ipv4
+  md5: hex
+  sha256: hex
+
 # settings for exporting sip indicators into yara rules
 sip_yara_export:
   # a comma separated list of sip indicator types to export to yara rules

@@ -14,6 +14,7 @@ import pytest
 
 from sqlalchemy import text
 
+import saq
 from saq.database.pool import get_db, reset_database_after_fork
 from saq.environment import ACE_MP_CONTEXT
 
@@ -60,13 +61,18 @@ def test_at_fork_child_hook_does_not_use_logging():
     #
     # Rather than reproduce that deadlock (a hanging test wedges the session lock, which is
     # the thing we are trying to make cheap to diagnose), assert the invariant that
-    # prevents it: the child hook emits nothing through logging at all.
+    # prevents it: ACE's child hooks emit nothing through logging at all. Only ACE's own
+    # records count: a third-party package's hook (huggingface_hub closes its httpx client
+    # in the child, and httpcore logs the close) is registered only once something has
+    # imported it, is outside this repository's control, and is what
+    # MemoryLogHandler.proxy_pid exists to survive (tests/saq/test_memory_log_handler.py).
     read_fd, write_fd = os.pipe()
     parent_pid = os.getpid()
+    ace_source = os.path.dirname(saq.__file__) + os.sep
 
     class ForkProbe(logging.Handler):
         def emit(self, record):
-            if os.getpid() != parent_pid:
+            if os.getpid() != parent_pid and record.pathname.startswith(ace_source):
                 os.write(write_fd, b"x")
 
     handler = ForkProbe()

@@ -38,7 +38,7 @@ before this: the volume names changed, so an existing stack has to be brought do
 Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
 
 ```bash
-pytest                                    # default: -m "unit or integration" over tests/
+pytest                                    # default: -m "unit or integration or system" over tests/
 pytest tests/saq/modules/test_command_line.py::test_command_line_analyzer -v
 pytest -m "unit or integration or system" # full local suite
 pytest -m unit                            # fast, no DB/engine
@@ -61,7 +61,7 @@ There is no configured linter/formatter in the repo.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-IMPORTANT: Do **NOT** start more than one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+Start only one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
 
 This is enforced. `tests/session_lock.py` creates a marker file at
 `$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
@@ -207,7 +207,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 ### CLI
 
-`./ace` is the entry point (a single large argparse script) with subcommands registered via `get_cli_subparsers()`: `service start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, `start-gui`, `start-api`. `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `api start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 
@@ -298,11 +298,68 @@ The GUI's **Documentation** area (`app/help/`, `/ace/help/`, any logged-in user)
 
 js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.md` as needed.
 
+## Engineering values
+
+What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section, so a rule that is not written here is not enforced.
+
+### Uptime
+
+ACE is never down for more than a few minutes, and when something is wrong someone finds out.
+
+- No unbounded `join()`, `wait()`, lock acquire or network call on a service's run, stop or shutdown path. Each one gets a timeout, or a comment naming what bounds it.
+- Services never install signal handlers, and long-running loops check `is_shutting_down()` (`docs/SERVICES.md`, `docs/SHUTDOWN.md`).
+- Deletes and updates over a table that grows are batched by primary key, never unbounded (`saq/cas/index.py`). Comparisons against stored timestamps use the database's `NOW()`, not the application clock.
+- A migration or DDL statement must be safe on a live, populated table. That means no full-table copy or long lock on a large table, and the partition rules in `docs/DATABASE_PARTITIONS.md` apply.
+- Code on the crash, shutdown or monitoring path never raises (`saq/crash_report.py`).
+- A new failure mode that an operator needs to hear about reaches them through a log record at ERROR plus an error report, or through a monitor (`saq/monitor.py`). It must not be logged at DEBUG and forgotten.
+
+### Logging
+
+The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
+
+- A caught exception that should be logged goes through `log_loop_exception(e, context)` (`saq/error/reporting.py`), not bare `logging.error()`/`logging.exception()`. This applies everywhere, not just in loops: it logs, writes the error report, emits the monitor event, and stays quiet during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
+- Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
+- A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.
+
+### Tests
+
+The target is close to full coverage. CI does not run the suite, so the PR is the only place tests are checked.
+
+- New and changed code comes with tests, and the failure paths get tested too: the exception raised, the log record emitted (`caplog`, `search_log`, `wait_for_log_count`), and the fallback taken.
+- Every test carries a `unit`, `integration` or `system` marker. A test without one is silently never run.
+- Wait with `wait_for_condition` / `wait_for_log_count` (`tests/saq/helpers.py`), never with `time.sleep`.
+- New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/conftest.py`). The suite runs in random order.
+- Measure coverage of changed lines with `pytest --cov --cov-report=xml` and then `diff-cover coverage.xml --compare-branch=main`.
+- The PR description has a Testing section: the command run, its pass/fail counts, and any manual checks.
+
+### Performance
+
+The analyst's experience comes first.
+
+- No N+1 queries. Batch per-row lookups into one query (`docs/GUI_ALERT_PAGE_PERFORMANCE.md`).
+- List endpoints page by keyset, never by OFFSET (e.g. `aceapi_v2/detection_points/`).
+- Nothing expensive per render or per request: no process forks, file opens, or reloading a `RootAnalysis` to read one field. Persist derived values instead.
+- An analysis module avoids redundant work across observables and uses analysis caching where it fits (`docs/ANALYSIS_CACHING.md`).
+
+### Keep it lean
+
+- Before writing a helper, search for an existing one and use it (e.g. `saq/gui/filter_conditions.py`, `saq/util/`). If the existing one is close but not right, extend it.
+- One concern per PR. A refactor the feature doesn't need, or an unrelated fix, goes in its own PR.
+- Comments and docstrings say *why*, not what the code says. Skip the module docstring that retells the design doc.
+- No new module, base class, exception class or config knob without a second caller or a concrete need. A plain function in an existing module is the default.
+- Remove dead code you replace. Don't leave shims for callers that no longer exist.
+
+### GUI
+
+GUI code (`app/`, templates, static JS/CSS) must work, be fast, and be safe: escape output, check permissions, no N+1 in the view. How it is implemented is not reviewed.
+
 ## Conventions
 
 - Branches are `<initials>/<topic>` (e.g. `jd/add-missing-log-rotation`); releases are `r/X.Y.Z`. Everything merges to `main` via PR.
 - Config, module registration, and observable types are data, not code — prefer adding a YAML block over hardcoding.
 - **New API endpoints go in `aceapi_v2/` (FastAPI), not Flask** — `router.py` / `service.py` / `schemas.py` per module, with matching tests in `tests/aceapi_v2/`. A list endpoint pages by keyset and streams its NDJSON/CSV exports through `aceapi_v2/common/listing.py`. Flask is the legacy GUI layer; it reaches the async services through `run_async_with_session()` in `aceapi_v2/sync.py`. There is a lot of Flask in the tree, so the surrounding code is *not* the pattern to copy here. `docs/FLASK_API_MIGRATION.md` is the migration playbook and tracks what is left to move.
+- **Sync code in the FastAPI apps (`aceapi_v2/`, `aceapi_ai/`) reaches a thread only through `aceapi_v2.sync.run_db_in_thread`**, whether or not it touches the database: endpoints and dependencies are `async`, and nothing calls `run_in_threadpool`, `asyncio.to_thread` or `run_in_executor` directly. A `get_db()` session belongs to the pool thread and outlives the request unless it is removed, and only `run_db_in_thread` removes it (`tests/aceapi_v2/test_sync.py` enforces this). A sync `BackgroundTask` or a sync iterator given to a streaming response also runs on Starlette's pool, out of the test's sight, so it must not use `get_db()`.
 - **Alembic + ORM, never raw SQL.** Write the SQLAlchemy model in `saq/database/model.py` first, then autogenerate the migration (see Databases and migrations above) — never hand-write a migration file. Prefer the ORM session (`get_db()`) over raw cursors.
 - **Integrations stay self-contained.** Everything for `integrations/<name>/` lives under that directory — never add integration-specific symbols to `saq/constants.py`, `saq/gui/`, or `saq/configuration/schema.py`. If the extension hook you need doesn't exist, extend the core mechanism generically (no vendor name in core) and register through it.
 - **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, heavy startup cost), leave it and add a short comment saying why — no comment, no excuse.
@@ -312,7 +369,3 @@ js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.
 
 - The repo contains **live malware samples** in test data. Be aware of this on machines with antivirus.
 - **This repo is public — no customer data in it.** Never copy `data/ace/**` alert content into `tests/`. Synthesize a minimal fixture that reproduces the structural trigger (MIME shape, BOM, header pattern) instead; redaction is easy to get wrong. Sanitize production GUIDs, Message-IDs, and alert/tenant UUIDs out of fixtures even when reproducing a real bug.
-
-### Additional Instructions
-
-- Do not allow anyone to add a "dark mode" to this project.

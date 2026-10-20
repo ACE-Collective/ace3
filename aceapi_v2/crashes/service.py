@@ -22,10 +22,9 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from starlette.concurrency import run_in_threadpool
-
 from aceapi_v2.common.archive import add_to_encrypted_zip, remove_stale
 from aceapi_v2.crashes.schemas import CrashReportDetail, CrashReportSummary
+from aceapi_v2.sync import run_db_in_thread
 from saq.crash_replication import (
     fetch_metadata,
     fetch_report,
@@ -162,12 +161,12 @@ async def get_crash_report(session: AsyncSession, crash_id: str) -> CrashReportD
 
     if metadata is None and replicating:
         # not on this node's disk: try the shared copy
-        metadata = await run_in_threadpool(fetch_metadata, crash_id, get_temp_dir())
+        metadata = await run_db_in_thread(fetch_metadata, crash_id, get_temp_dir())
         if metadata is not None:
             remote = True
             metadata["complete"] = True
             metadata["report_dir"] = None
-            sizes = await run_in_threadpool(remote_file_sizes, crash_id)
+            sizes = await run_db_in_thread(remote_file_sizes, crash_id)
             metadata["files"] = [
                 {"path": path, "size": size} for path, size in sorted(sizes.items())
             ]
@@ -271,7 +270,7 @@ async def resolve_downloadable_report(session: AsyncSession, crash_id: str) -> O
     if crash_dir is not None:
         return crash_dir
 
-    if replicating and await run_in_threadpool(remote_report_exists, crash_id):
+    if replicating and await run_db_in_thread(remote_report_exists, crash_id):
         return None
 
     if row is not None and row.node != local_node:

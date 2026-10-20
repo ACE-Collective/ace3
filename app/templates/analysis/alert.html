@@ -1,3 +1,4 @@
+{% from 'analysis/_alert_section.html' import alert_section with context %}
 <div class="row">
     <div class="col">
 
@@ -99,7 +100,7 @@
             {% if alert.disposition_review == 'CORRECT' %}
             <span class="bi bi-hand-thumbs-up"></span> disposition correct
             {% else %}
-            <span class="bi bi-exclamation-triangle" style="color: red; background-color: white;"> disposition incorrect</span>
+            <span class="bi bi-exclamation-triangle text-danger bg-body"> disposition incorrect</span>
             {% endif %}
             by {{alert.review_user.gui_display}} @ {{alert.review_time}} UTC
             {% if alert.incorrect_disposition %}
@@ -113,7 +114,7 @@
         <td class="col-md-2">Event</td>
         <td class="col-md-10">
         {% for em in alert.event_mapping %}
-            <span class="badge text-bg-primary"><span class="bi bi-flash"></span> <b><a style="color: white;" target="_blank" href="{{url_for('events.index', direct=em.event.id)}}">{{em.event.name}}</a></b></span>
+            <span class="badge text-bg-primary"><span class="bi bi-flash"></span> <b><a class="text-white" target="_blank" href="{{url_for('events.index', direct=em.event.id)}}">{{em.event.name}}</a></b></span>
         {% endfor %}
         </td>
     {% endif %}
@@ -187,15 +188,12 @@
 
 {% include 'analysis/crawl_chains.html' %}
 
+{% include 'analysis/observable_modifier_rules.html' %}
+
 {% if observable_open_event_counts %}
-    <div class="panel panel-default">
-    {% set matching_open_events = observable_open_event_counts|dictsort(false, 'value')  %}
-    <div class="panel-heading">
-        <h3 class="panel-title">Matching Open Events: {{ matching_open_events | length }} Event(s) | {{ matching_open_events[-1][1] }}/{{ num_observables_in_alert }} matching observables | {{ matching_open_events[-1][0].name }} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_matching_open_events" aria-expanded="true" aria-controls="collapse_matching_open_events">(hide/show)</a></h3>
-    </div>
-    <div class="panel-body collapse{% if not ace_config.gui.matching_open_events_collapsed %} show{% endif %}" id="collapse_matching_open_events">
-
-
+{% set matching_open_events = observable_open_event_counts|dictsort(false, 'value') %}
+{% set matching_open_events_summary %}{{ matching_open_events | length }} event(s) | {{ matching_open_events[-1][1] }}/{{ num_observables_in_alert }} matching observables | {{ matching_open_events[-1][0].name }}{% endset %}
+{% call alert_section('matching_open_events', 'Matching Open Events', default_open=not ace_config.gui.matching_open_events_collapsed, summary=matching_open_events_summary) %}
         <table class="table table-bordered table-condensed">
             <tr>
                 <th>Event</th>
@@ -214,24 +212,18 @@
             {% endfor %}
 
         </table>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
 
 {% if remediation_timeline_events or (external_check_footer and external_check_footer.entries) %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                {# the badge is the same email remediation coverage the alert list's Remediation
-                   column shows (saq.remediation.coverage), so the two views always agree #}
-                {# pending rows (still remediating / still being watched) are not events #}
-                {% set timeline_event_count = remediation_timeline_events | rejectattr('pending') | list | length %}
-                {% set timeline_pending_count = remediation_timeline_events | selectattr('pending') | list | length %}
-                <h5>Remediation Timeline <small class="text-muted">({{ timeline_event_count }} event{{ '' if timeline_event_count == 1 else 's' }}{% if timeline_pending_count %}, {{ timeline_pending_count }} pending{% endif %})</small> {% include "analysis/_remediation_badge.html" %} <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_remediation_timeline" aria-expanded="true" aria-controls="collapse_remediation_timeline">(hide/show)</a></h5>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse show" id="collapse_remediation_timeline">
+{# pending rows (still remediating / still being watched) are not events #}
+{% set timeline_event_count = remediation_timeline_events | rejectattr('pending') | list | length %}
+{% set timeline_pending_count = remediation_timeline_events | selectattr('pending') | list | length %}
+{% set remediation_timeline_summary %}({{ timeline_event_count }} event{{ '' if timeline_event_count == 1 else 's' }}{% if timeline_pending_count %}, {{ timeline_pending_count }} pending{% endif %}){% endset %}
+{# the badge is the same email remediation coverage the alert list's Remediation
+   column shows (saq.remediation.coverage), so the two views always agree #}
+{% set remediation_timeline_badge %}{% include "analysis/_remediation_badge.html" %}{% endset %}
+{% call alert_section('remediation_timeline', 'Remediation Timeline', summary=remediation_timeline_summary, badge=remediation_timeline_badge | trim) %}
                     {% if remediation_timeline_events %}
                     <table class="table table-hover table-sm">
                         <thead>
@@ -291,22 +283,12 @@
                         </ul>
                     </div>
                     {% endif %}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
 
 {% if url_clicks_ran %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>URL Clicks <small class="text-muted">{% if url_clicks_events %}({{ url_clicks_events | length }} event{{ '' if url_clicks_events|length == 1 else 's' }}){% else %}(no clicks found){% endif %}</small> <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_url_clicks" aria-expanded="true" aria-controls="collapse_url_clicks">(hide/show)</a></h5>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse show" id="collapse_url_clicks">
+{% set url_clicks_summary %}{% if url_clicks_events %}({{ url_clicks_events | length }} event{{ '' if url_clicks_events|length == 1 else 's' }}){% else %}(no clicks found){% endif %}{% endset %}
+{% call alert_section('url_clicks', 'URL Clicks', summary=url_clicks_summary) %}
                     {% if url_clicks_errors %}
                     <div class="alert alert-warning" role="alert">
                         Some clicker searches did not complete:
@@ -345,29 +327,14 @@
                     {% elif not url_clicks_errors %}
                     <p class="mb-0 text-muted">No URL clicks were found &mdash; the configured searches ran but returned no results.</p>
                     {% endif %}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
 
 {% block alert_details_panel %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>Alert Details <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_alert_details" aria-expanded="true" aria-controls="collapse_alert_details">(hide/show)</a></h5>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse{% if not ace_config.gui.alert_details_collapsed %} show{% endif %}" id="collapse_alert_details">
+{% call alert_section('alert_details', 'Alert Details', default_open=not ace_config.gui.alert_details_collapsed) %}
                     <!-- by default we just pretty-print the json -->
                     {% block alert_details %} <code><pre>{{ analysis.details | pprint }}</pre></code> {% endblock %}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endblock %}
 
 {% include 'analysis/correlation_trace.html' %}
@@ -406,32 +373,21 @@
 }
 .summary-detail-content table th,
 .summary-detail-content table td {
-    border: 1px solid #dee2e6;
+    border: 1px solid var(--bs-border-color);
     padding: 0.5rem;
 }
 .summary-detail-content table thead th {
     border-bottom-width: 2px;
-    background-color: #f8f9fa;
+    background-color: var(--bs-tertiary-bg);
 }
 </style>
 
 {% if alert.root_analysis.summary_details %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>Summary Details <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_alert_summary_details" aria-expanded="true" aria-controls="collapse_alert_summary_details">(hide/show)</a></h5>
-            </div>
-            <div class="card-body collapse show" id="collapse_alert_summary_details">
-                <div class="card-text">
+{% call alert_section('summary_details', 'Summary Details', summary='(' ~ alert.root_analysis.summary_details | length ~ ')') %}
                 {% for summary_detail in alert.root_analysis.summary_details %}
                     {{ display_summary_detail(summary_detail) }}
                 {% endfor %}
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
 
 {% macro display_tree_node(node) %}
@@ -470,7 +426,7 @@
                        is O(1) via the precomputed cache_hit_map from the view. #}
                     {% set _cache_hit = cache_hit_map.get((node.obj.module_path, node.parent.obj.uuid)) if cache_hit_map else none %}
                     {% if _cache_hit %}
-                        <span class="badge bg-white border border-dark"
+                        <span class="badge bg-body border border-strong"
                               data-bs-toggle="tooltip"
                               title="Replayed from cache (key {{ (_cache_hit.cache_key or '')[:12] or 'n/a' }}{% if _cache_hit.cached_at %}, cached {{ _cache_hit.cached_at[:16].replace('T', ' ') }} UTC{% endif %}, {{ _cache_hit.execution_time_ms }}ms)">
                             <i class="bi bi-lightning-fill" style="color: #ffa500;"></i>
@@ -527,7 +483,8 @@
                that produced them instead of one flat list (see build_provenance_groups) #}
             {{ display_provenance_groups(node) }}
         {% else %}
-            <ul{% if is_default_collapsed %} style="display: none;"{% endif %}>
+            {# hidden="until-found" rather than display: none, so find-in-page still searches it (collapseTree in saq_analysis.js) #}
+            <ul{% if is_default_collapsed %} hidden="until-found"{% endif %}>
                 {% for child in node.children %}
                     {{ display_tree_node(child) }}
                 {% endfor %}
@@ -598,30 +555,13 @@
 {% endmacro %}
 
 {% if domain_summary_str %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>URL Domain Summary <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseDomainSummary" aria-expanded="true" aria-controls="collapseDomainSummary">(hide/show)</a></h5>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse show" id="collapseDomainSummary">
+{% call alert_section('url_domain_summary', 'URL Domain Summary', summary='(' ~ domain_list | length ~ ' domain' ~ ('' if domain_list | length == 1 else 's') ~ ')') %}
                     <pre>{{domain_summary_str}}</pre>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
 
-<div class="row" id="interesting_observables_card"{% if not interesting_observable_list %} style="display: none;"{% endif %}>
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>Interesting Observables <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseInterestingObservables" aria-expanded="true" aria-controls="collapseInterestingObservables">(hide/show)</a></h5>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse show" id="collapseInterestingObservables">
+{# interesting_toggle.html shows and hides the whole card as observables are marked #}
+{% call alert_section('interesting_observables', 'Interesting Observables', row_id='interesting_observables_card', row_hidden=not interesting_observable_list) %}
                     <ul class="list-unstyled mb-0" id="interesting_observables_list">
                     {% for obs in interesting_observable_list %}
                         <li id="interesting_item_{{obs.uuid}}">
@@ -632,11 +572,7 @@
                         </li>
                     {% endfor %}
                     </ul>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 
 <div class="row">
     <div class="col">

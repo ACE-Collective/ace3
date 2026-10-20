@@ -8,6 +8,8 @@ Each detection becomes a yara string named ``$obsd_<id>``, where the id is the
 detection fired -- see saq/modules/file_analysis/yara.py.
 
 Settings come from the existing ``yara_export:`` and ``yara_export_string_modifiers:`` config blocks.
+Types listed in ``yara_export_string_boundaries:`` get a regex string instead of a text string, one
+that only matches the value as a whole token (see ``format_bounded_yara_regex``).
 
 Note that ``export_minimum_length`` drops very short values, which for the ``ip`` observable type
 means abbreviated IPv6 addresses like ``::1`` and ``fe80::`` are not exported. That is intended --
@@ -16,6 +18,7 @@ strings that short match everything and are worthless as yara content.
 
 from datetime import date
 import io
+import json
 import logging
 import os
 import re
@@ -59,6 +62,96 @@ def format_yara_json_string(value: str) -> str:
     return value.replace('\\', '\\\\\\\\').replace('"', '\\"').replace("\n", "").replace("\r", "")
 
 
+# bumped whenever the generated strings change shape, so the next export rewrites every rule file
+# even though the detections themselves did not change (see fingerprint_salt)
+YARA_EXPORT_FORMAT_VERSION = "3"
+
+# characters that are special inside a yara /regex/ (the slash ends the regex)
+YARA_REGEX_SPECIAL = frozenset('\\/^$.|?*+()[]{}')
+
+# A boundary family: the characters that make up a "word" on each side. A bounded value may not have a
+# word character directly before or after it. dot_aware: a "." after the value only counts as a boundary
+# when no word character follows it, so evil.com.au is rejected but "block evil.com." at the end of a
+# sentence still hits. The class strings are valid in Python regexes too (get_string_boundary relies on it).
+BOUNDARY_FAMILIES = {
+    "hostname": {"left": r"a-zA-Z0-9_\-", "right": r"a-zA-Z0-9_\-", "dot_aware": True},
+    # "." and "+" are legal in the local part, so neither may precede the address
+    "email_address": {"left": r"a-zA-Z0-9_\-.+", "right": r"a-zA-Z0-9_\-", "dot_aware": True},
+    # 1.2.3.4 must not sit inside 5.1.2.3.4, 11.2.3.4, 1.2.3.45 or 1.2.3.4.5
+    "ipv4": {"left": r"0-9.", "right": r"0-9", "dot_aware": True},
+    "ipv6": {"left": r"0-9a-fA-F:", "right": r"0-9a-fA-F:", "dot_aware": False},
+    "hex": {"left": r"a-fA-F0-9", "right": r"a-fA-F0-9", "dot_aware": False},
+}
+
+# libyara (4.5) stops matching a regex string once the match is about 1KB long -- 1023 characters
+# ascii, 511 wide -- while a text string of any length still matches. A value longer than this keeps
+# its text string, so a long detection can never silently stop firing.
+MAX_BOUNDED_VALUE_LENGTH = 500
+
+
+def format_yara_regex(value: str) -> str:
+    """Escapes an observable value for use inside a yara /regex/."""
+    value = value.replace("\n", "").replace("\r", "")
+    return "".join("\\" + c if c in YARA_REGEX_SPECIAL else c for c in value)
+
+
+def format_wide_yara_regex(value: str) -> str:
+    """Escapes an observable value for a yara /regex/ that matches what the `wide` modifier would.
+
+    Like `wide`, every UTF-8 byte of the value is followed by a NUL, so a non-ASCII value matches
+    exactly the data its text string matched before.
+    """
+    value = value.replace("\n", "").replace("\r", "")
+    result = []
+    for byte in value.encode("utf8"):
+        c = chr(byte)
+        if byte < 0x80 and c.isprintable():
+            result.append("\\" + c if c in YARA_REGEX_SPECIAL else c)
+        else:
+            result.append(f"\\x{byte:02x}")
+        result.append("\\x00")
+    return "".join(result)
+
+
+def format_bounded_yara_regex(value: str, family: str, wide: bool = False) -> str:
+    """The value as a yara regex that only matches when it is not part of a longer token.
+
+    `value` is the literal text to find (already in its raw or JSON-escaped form). A side only gets a
+    boundary when the value's edge character is a word character of the family, so a partial url
+    ending in "/" or "=" still matches whatever follows it.
+
+    With `wide` the regex matches UTF-16LE data and is used instead of the `wide` modifier. That
+    modifier turns each boundary class into one ASCII byte followed by a NUL, so a value next to a
+    BOM or a CJK character stopped matching. Here a boundary is any whole UTF-16 code unit that is not
+    an ASCII word character.
+    """
+    spec = BOUNDARY_FAMILIES[family]
+
+    if wide:
+        core = format_wide_yara_regex(value)
+        dot = "\\.\\x00"
+        def not_word(chars: str) -> str:
+            return f"([^{chars}]\\x00|[\\x00-\\xff][^\\x00])"
+    else:
+        core = format_yara_regex(value)
+        dot = "\\."
+        def not_word(chars: str) -> str:
+            return f"[^{chars}]"
+
+    left = ""
+    if value and re.fullmatch(f"[{spec['left']}]", value[0]):
+        left = f"(^|{not_word(spec['left'])})"
+
+    right = ""
+    if value and re.fullmatch(f"[{spec['right']}]", value[-1]):
+        if spec["dot_aware"]:
+            right = f"({not_word(spec['right'] + '.')}|{dot}{not_word(spec['right'])}|({dot})?$)"
+        else:
+            right = f"({not_word(spec['right'])}|$)"
+
+    return f"/{left}{core}{right}/"
+
+
 class YaraObservableExport(ObservableExport):
 
     @property
@@ -79,6 +172,26 @@ class YaraObservableExport(ObservableExport):
         """
         modifiers = get_config().yara_export_string_modifiers or {}
         return modifiers.get(observable_type.lower(), modifiers.get("default", ""))
+
+    def get_string_boundary(self, observable_type: str, value: str) -> str | None:
+        """The boundary family for a value of this type, or None to keep a plain text string."""
+        boundaries = get_config().yara_export_string_boundaries or {}
+        family = boundaries.get(observable_type.lower())
+        if family == "ip":
+            family = "ipv6" if ":" in value else "ipv4"
+
+        if family is not None and family not in BOUNDARY_FAMILIES:
+            logging.error(f"unknown yara export boundary {family} for {observable_type} - using a text string")
+            return None
+
+        return family
+
+    def fingerprint_salt(self) -> str:
+        # the generated strings depend on the format and on both string config blocks, not only on
+        # the detections, so a change to any of them has to republish
+        return YARA_EXPORT_FORMAT_VERSION + json.dumps(
+            [get_config().yara_export_string_boundaries, get_config().yara_export_string_modifiers],
+            sort_keys=True)
 
     def build_export_list(self, detections: dict[str, list[dict]]) -> ObservableExportList:
         """The detections of a configured type that are long enough to be worth a yara string.
@@ -167,14 +280,48 @@ class YaraObservableExport(ObservableExport):
 
     def _format_strings(self, entry: ExportEntry, modifiers: str) -> str:
         """The yara strings for one detection: the raw value, plus its JSON form if that differs."""
+        family = self.get_string_boundary(entry.type, entry.value)
+
+        raw = entry.value.replace("\n", "").replace("\r", "")
+        json_form = raw.replace("\\", "\\\\").replace('"', '\\"')
+        if family is not None and len(json_form) > MAX_BOUNDED_VALUE_LENGTH:
+            logging.debug(f"observable type {entry.type} id {entry.id} is too long for a bounded "
+                          f"yara string - using a text string")
+            family = None
+
         string_data = io.StringIO()
 
-        yara_value = format_yara_string(entry.value)
-        string_data.write(f'          $obsd_{entry.id} = "{yara_value}" {modifiers}\n')
+        if family is None:
+            yara_value = format_yara_string(entry.value)
+            string_data.write(f'          $obsd_{entry.id} = "{yara_value}" {modifiers}\n')
 
-        yara_json_value = format_yara_json_string(entry.value)
-        if yara_value != yara_json_value:
-            string_data.write(f'          $obsd_json_{entry.id} = "{yara_json_value}" {modifiers}\n')
+            yara_json_value = format_yara_json_string(entry.value)
+            if yara_value != yara_json_value:
+                string_data.write(f'          $obsd_json_{entry.id} = "{yara_json_value}" {modifiers}\n')
+
+            return string_data.getvalue()
+
+        # the regex consumes the boundary character, so fullword would test the character beyond it
+        # and reject a plain "a evil.com". ascii and wide are applied by emitting one string for each,
+        # since the wide form needs its own regex (see format_bounded_yara_regex)
+        modifier_list = modifiers.split()
+        wide = "wide" in modifier_list
+        want_ascii = "ascii" in modifier_list or not wide
+        other_modifiers = " ".join(
+            modifier for modifier in modifier_list if modifier not in ("fullword", "ascii", "wide"))
+
+        forms = [("", raw)]
+        if json_form != raw:
+            forms.append(("json_", json_form))
+
+        # the scanner resolves a hit by the id at the end of the name, so $obsd_wide_<id> works as is
+        for prefix, value in forms:
+            if want_ascii:
+                string_data.write(f'          $obsd_{prefix}{entry.id} = '
+                                  f'{format_bounded_yara_regex(value, family)} ascii {other_modifiers}\n')
+            if wide:
+                string_data.write(f'          $obsd_{prefix}wide_{entry.id} = '
+                                  f'{format_bounded_yara_regex(value, family, wide=True)} {other_modifiers}\n')
 
         return string_data.getvalue()
 

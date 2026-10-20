@@ -104,7 +104,8 @@ def is_yara_detection(detection: DetectionPoint) -> bool:
 def _parse_yara_string_key_id(string_key: str) -> int | None:
     """Extracts the trailing row id from a generated yara string key.
 
-    Handles both `$obsd_12` and `$obsd_json_12` (and their legacy `$obs_` equivalents). Returns None
+    Handles `$obsd_12`, `$obsd_json_12`, `$obsd_wide_12` and `$obsd_json_wide_12` (and the legacy `$obs_`
+    equivalents). Returns None
     if the key does not end in an integer."""
     try:
         return int(string_key.rsplit('_', 1)[1])

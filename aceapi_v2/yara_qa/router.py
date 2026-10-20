@@ -19,12 +19,12 @@ from fastapi import APIRouter, Depends, Query, Security
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, ZipFileResponse
+from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.yara_qa import service
 from aceapi_v2.yara_qa.schemas import QAMatch, QAMatchDetail, QAPage, QASignatureDetail, QASignaturePage
 from saq.yara_qa.listing import QASort, QAStatus
@@ -92,7 +92,7 @@ async def get_match_record(
     match stored on another node's local pool answers 409 wrong_node.
     """
     row = await service.resolve_record(session, match_id)
-    path = await run_in_threadpool(service.materialize_record, row)
+    path = await run_db_in_thread(service.materialize_record, row)
     return FileResponse(
         path,
         media_type="application/json",
@@ -120,7 +120,7 @@ async def download_match(
     logger.info("AUDIT: user %s downloading yara qa match %s (signature %s, sha256 %s)",
                 auth.auth_name, row.id, row.signature_uuid, row.sha256)
     label = f"yara-qa-match-{row.id}"
-    zip_path, staging = await run_in_threadpool(service.create_encrypted_zip, label, [row], [], auth.auth_name)
+    zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, [row], [], auth.auth_name)
     return ZipFileResponse(
         zip_path,
         # FileResponse ignores the class attribute; without this it guesses from the filename
@@ -180,7 +180,7 @@ async def download_signature_matches(
     logger.info("AUDIT: user %s downloading %s yara qa matches of signature %s (version %s): %s",
                 auth.auth_name, len(rows), signature_uuid, version or "all", [row.id for row in rows])
     label = f"yara-qa-{signature_uuid}"
-    zip_path, staging = await run_in_threadpool(service.create_encrypted_zip, label, rows, remote, auth.auth_name)
+    zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, rows, remote, auth.auth_name)
     return ZipFileResponse(
         zip_path,
         media_type="application/zip",

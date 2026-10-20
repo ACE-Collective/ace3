@@ -30,7 +30,7 @@ def _schema_for(key: str) -> type[BaseModel]:
         raise UnknownPreferenceKey(key) from None
 
 
-def _to_read(key: str, row: UserPreference | None) -> PreferenceRead:
+def to_read(key: str, row: UserPreference | None) -> PreferenceRead:
     schema = _schema_for(key)
     if row is None:
         return PreferenceRead(key=key, value=schema().model_dump(), updated_at=None, is_default=True)
@@ -58,14 +58,14 @@ async def get_preferences(session: AsyncSession, user_id: int) -> PreferencesRea
     result = await session.execute(select(UserPreference).where(UserPreference.user_id == user_id))
     rows = {row.key: row for row in result.scalars().all()}
     # a row under a key this release no longer registers is simply not reported
-    return PreferencesRead(data={key: _to_read(key, rows.get(key)) for key in PREFERENCE_SCHEMAS})
+    return PreferencesRead(data={key: to_read(key, rows.get(key)) for key in PREFERENCE_SCHEMAS})
 
 
 async def get_preference(session: AsyncSession, user_id: int, key: str) -> PreferenceRead:
     """One preference for this user, the default if nothing is stored. Raises
     UnknownPreferenceKey for a key that is not registered."""
     _schema_for(key)
-    return _to_read(key, await _get_row(session, user_id, key))
+    return to_read(key, await _get_row(session, user_id, key))
 
 
 async def set_preference(session: AsyncSession, user_id: int, key: str, value: dict) -> PreferenceRead:
@@ -81,7 +81,7 @@ async def set_preference(session: AsyncSession, user_id: int, key: str, value: d
     await session.flush()
     # server_onupdate leaves updated_at expired, and the async session cannot lazy-load it
     await session.refresh(row, attribute_names=["updated_at"])
-    return _to_read(key, row)
+    return to_read(key, row)
 
 
 async def reset_preference(session: AsyncSession, user_id: int, key: str) -> PreferenceRead:
@@ -92,4 +92,4 @@ async def reset_preference(session: AsyncSession, user_id: int, key: str) -> Pre
         delete(UserPreference).where(UserPreference.user_id == user_id, UserPreference.key == key)
     )
     await session.flush()
-    return _to_read(key, None)
+    return to_read(key, None)

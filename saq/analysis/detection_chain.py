@@ -1,4 +1,5 @@
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
@@ -140,6 +141,10 @@ def build_merged_detection_tree(chains: list[DetectionChain]) -> list[MergedTree
 
     return list(roots.values())
 
+
+def count_merged_detections(nodes: Iterable[MergedTreeNode]) -> int:
+    """The number of detections a merged tree (build_merged_detection_tree()) shows."""
+    return sum(len(node.detections) + count_merged_detections(node.children.values()) for node in nodes)
 
 def observable_display_value(observable: Observable, max_len: int = 60) -> str:
     from saq.constants import F_FILE

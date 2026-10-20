@@ -12,12 +12,12 @@ from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Security
 from fastapi.responses import Response
-from starlette.concurrency import run_in_threadpool
 
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.hunt.audit import ValidationOutcome, audit_fields, failure_audit_fields, write_audit_record
 from aceapi_v2.hunt.schemas import HuntValidationRequest, HuntValidationResult
+from aceapi_v2.sync import run_db_in_thread
 from saq.json_encoding import _JSONEncoder
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
@@ -79,8 +79,11 @@ async def validate_hunt(
     # aceapi_v2 back (a circular import at startup)
     from aceapi_v2.hunt.service import validate_hunt as run_validation
 
+    # run_db_in_thread, not run_in_threadpool: loading the hunter queries through get_db(), whose
+    # session belongs to the pool thread and outlives the request unless it is removed. One left
+    # holding a dropped connection fails every later request that thread serves.
     try:
-        await run_in_threadpool(run_validation, outcome, body, auth.auth_user_id)
+        await run_db_in_thread(run_validation, outcome, body, auth.auth_user_id)
     except Exception as e:
         _audit(auth, request, *failure_audit_fields(outcome, e))
         raise

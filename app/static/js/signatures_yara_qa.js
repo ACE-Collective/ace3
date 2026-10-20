@@ -83,9 +83,9 @@ function qa_short_version(version) {
 }
 
 var QA_STATUS_LABELS = {
-    qa: '<span class="badge bg-info text-dark">QA</span>',
+    qa: '<span class="badge text-bg-info">QA</span>',
     not_qa: '<span class="badge bg-secondary">not QA</span>',
-    missing: '<span class="badge bg-warning text-dark">removed</span>',
+    missing: '<span class="badge text-bg-warning">removed</span>',
 };
 
 function qa_filters() {
@@ -335,7 +335,7 @@ function qa_show_match(match_id) {
         });
         strings.append(rows);
 
-        var meta = $('<pre class="small bg-light p-2 mb-0" style="max-height: 16rem; overflow: auto;">')
+        var meta = $('<pre class="small bg-body-tertiary p-2 mb-0" style="max-height: 16rem; overflow: auto;">')
             .text(JSON.stringify(summary.meta || {}, null, 2));
 
         body.empty().append(info).append("<h6>Strings</h6>").append(strings).append("<h6>Meta</h6>").append(meta);

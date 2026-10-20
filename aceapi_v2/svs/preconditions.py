@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from saq.svs.preconditions import InvalidPrecondition, Precondition, StaleWrite, parse_precondition
 
 
-def _precondition(
+async def _precondition(
     if_match: Annotated[Optional[str], Header(description="the row's updated_at as last read: the write applies "
                                                           "only while the row is unchanged since")] = None,
     if_none_match: Annotated[Optional[str], Header(description="*: the write applies only while there is no "
