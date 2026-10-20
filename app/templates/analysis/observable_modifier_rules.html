@@ -1,0 +1,34 @@
+{# the observable modifier rules that matched in this alert, and what their ignore actions took out of the tree (saq/modules/util/observable_modifier.py) #}
+{% from 'analysis/_alert_section.html' import alert_section with context %}
+{% if modifier_rule_matches %}
+{# an observable more than one ignore rule matched is listed under each of them, and counted once #}
+{% set ignored_count = modifier_rule_matches | map(attribute='ignored') | sum(start=[]) | map(attribute='uuid') | unique | list | length %}
+{% set ignored_badge %}{% if ignored_count %}<span class="badge text-bg-warning">{{ ignored_count }} ignored</span>{% endif %}{% endset %}
+{# collapsed, but find-in-page still opens it, and an observable the tree no longer shows can be found here #}
+{% call alert_section('observable_modifier_rules', 'Observable Modifier Rules', default_open=false, summary='(' ~ modifier_rule_matches | length ~ ' rule' ~ ('' if modifier_rule_matches | length == 1 else 's') ~ ')', badge=ignored_badge | trim) %}
+                <table class="table table-sm table-borderless small mb-0" style="width: auto;">
+                    {% for rule in modifier_rule_matches %}
+                        <tr>
+                            <td class="pe-1">{% if rule.ignored %}<span class="bi bi-eye-slash-fill text-warning" title="ignored observables"></span>{% endif %}</td>
+                            <td class="pe-3" title="{{ rule.uuid }}">{{ rule.name }}</td>
+                            <td class="text-muted text-nowrap pe-3">{{ rule.observables | length }} observable{{ 's' if rule.observables | length != 1 }}</td>
+                            <td class="text-muted">{{ rule.actions | join(', ') }}</td>
+                        </tr>
+                        {% for observable in rule.ignored %}
+                            <tr>
+                                <td></td>
+                                <td colspan="3" class="ps-3" style="word-break: break-all;">
+                                    <span class="text-muted">{{ observable.type }}</span>
+                                    <span title="{{ observable.value }}">{{ detection_chain_observable_display_value(observable) }}</span>
+                                    {% if observable.ignored %}
+                                        <span class="text-muted">hidden from the analysis tree</span>
+                                    {% else %}
+                                        <span class="text-muted">removed where the rule matched it, still shown elsewhere</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    {% endfor %}
+                </table>
+{% endcall %}
+{% endif %}
