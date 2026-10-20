@@ -77,13 +77,20 @@ column stays visible when the list is narrowed to one disposition.
 
 ## The theme
 
-The `theme` preference is `{mode: "system" | "light" | "dark" | "jd"}`, `system` by default.
-`system` follows the operating system's light or dark setting, and `jd` (shown as 👴 JD) is
-a high-contrast light mode: black on white, every color at WCAG AAA contrast, underlined
-links and slightly larger text.
+The `theme` preference is `{mode: "system" | "light" | "dark" | "jd" | "halloween"}`,
+`system` by default. `system` follows the operating system's light or dark setting, and `jd`
+(shown as 👴 JD) is a high-contrast light mode: black on white, every color at WCAG AAA
+contrast, underlined links and slightly larger text. `halloween` (🎃 Halloween) is a dark
+mode: pumpkin orange on midnight purple, a moonlit glow, a jack-o'-lantern in place of the
+logo and a cobweb in the navbar's corner.
 
 `core.html` renders the mode on the root element as `data-ace-theme`, and Bootstrap's own
-`data-bs-theme` as `light` or `dark` (`jd` is `light`). Only the browser knows the OS
+`data-bs-theme` as `light` or `dark` (`jd` is `light`, `halloween` is `dark`). A mode that
+builds on light or dark, like these two, redefines only what differs under its
+`[data-ace-theme=...]` block in `saq.css`, after the palette it builds on: the dark
+palette derives its subtle shades from its base colors, so Halloween sets only those. A new
+mode is added to `ThemePreference`, `THEME_CHOICES` and both places in `core.html` that pick
+`data-bs-theme`. Only the browser knows the OS
 setting, so a small inline script in `<head>`, ahead of every stylesheet, resolves
 `system` from `prefers-color-scheme` before the first paint and follows the OS if it
 changes while the page is open. The same script defines `aceApplyTheme(mode)`, which the
@@ -101,9 +108,19 @@ Writing GUI CSS that works in every theme:
 - A color ACE chooses itself (the observable type colors, the JSON viewer) is an
   `--ace-*` token at the top of `static/css/saq.css`, defined for light and redefined
   under `[data-bs-theme=dark]` and, when the light value is below 7:1, `[data-ace-theme=jd]`.
-- The light-only classes (`bg-light`, `bg-white`, `text-dark`, `text-bg-light`,
-  `border-dark`, `border-black`, `table-light`) are rejected by
-  `tests/app/test_no_light_only_classes.py`; use `border-strong` for the black badge
-  outline. `btn-outline-dark` is remapped for dark in `saq.css` and stays usable.
+- Dark mode has its own palette rather than Bootstrap's: warm neutral grays, softer white
+  text, and theme colors (primary, secondary, success, warning, danger) light enough that
+  text in them reads at 4.5:1 or better on the page. It redefines Bootstrap's variables
+  under `[data-bs-theme=dark]` at the top of `saq.css`, so anything built on those
+  variables follows it. A fill in one of the theme colors (a primary button, a
+  `text-bg-secondary` tag, an active pill) carries dark text.
+- Bootstrap 5.3 fixes some classes to light-mode colors in every color mode: `bg-white`,
+  `bg-light`, `text-bg-light`, `text-dark`, `border-dark`, `border-black`, the contextual
+  table colors (`table-success`, `table-secondary`, ...), and the colored buttons, badges and
+  active states, which keep `#0d6efd` or `#dc3545` with white text. They also arrive from
+  integration templates and from class names built in config (a disposition's `css: light`)
+  and Python, so rather than banning them, `saq.css` maps each onto the dark palette, and
+  `tests/app/test_light_only_classes.py` keeps that list covered. A literal color in a
+  `style` attribute has no such fallback.
 - Dark overrides for the vendored jQuery UI and date picker styles live in `saq.css`, not
   in the vendor files.

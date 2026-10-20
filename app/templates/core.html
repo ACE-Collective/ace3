@@ -1,7 +1,7 @@
 {% block doc -%}
 <!DOCTYPE html>
 {%- set theme_mode = ui_theme() %}
-<html data-ace-theme="{{ theme_mode }}" data-bs-theme="{{ 'dark' if theme_mode == 'dark' else 'light' }}"{% block html_attribs %}{% endblock html_attribs %}>
+<html data-ace-theme="{{ theme_mode }}" data-bs-theme="{{ 'dark' if theme_mode in ('dark', 'halloween') else 'light' }}"{% block html_attribs %}{% endblock html_attribs %}>
 {%- block html %}
     <head>
         {%- block head %}
@@ -19,7 +19,7 @@
             var dark_query = window.matchMedia("(prefers-color-scheme: dark)");
             function resolve() {
                 var mode = root.getAttribute("data-ace-theme");
-                var dark = mode === "dark" || (mode === "system" && dark_query.matches);
+                var dark = mode === "dark" || mode === "halloween" || (mode === "system" && dark_query.matches);
                 root.setAttribute("data-bs-theme", dark ? "dark" : "light");
             }
             window.aceApplyTheme = function(mode) {
