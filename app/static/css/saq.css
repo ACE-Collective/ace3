@@ -1,6 +1,7 @@
 /* Theme tokens. Colors ACE sets itself are --ace-* properties, redefined per theme
    below; everything else uses Bootstrap's own variables, which follow data-bs-theme.
-   data-ace-theme="jd" is a high-contrast light mode (core.html sets both attributes). */
+   Dark and data-ace-theme="jd" (a high-contrast light mode) also redefine Bootstrap's
+   variables as their own palette (core.html sets both attributes). */
 :root {
     --ace-obs-user: #0000ff;
     --ace-obs-o365-group: #4d4dff;
@@ -57,6 +58,60 @@
     --ace-json-string: #adb5bd;
     --ace-json-muted: #8a8a8a;
     --ace-search-hit-uuid: #adb5bd;
+}
+
+/* Dark palette: warm neutral grays instead of Bootstrap's blue-gray, softer white text, and theme
+   colors lightened so that text in them reads at 4.5:1 or better (Bootstrap keeps its light-mode
+   #0d6efd and #dc3545, which are about 3.4:1 on a dark page). A fill in one of these colors
+   therefore carries dark text; the component rules further down handle that. */
+[data-bs-theme=dark] {
+    --bs-body-bg: #161615;
+    --bs-body-bg-rgb: 22, 22, 21;
+    --bs-tertiary-bg: #1f1f1d;
+    --bs-tertiary-bg-rgb: 31, 31, 29;
+    --bs-secondary-bg: #282825;
+    --bs-secondary-bg-rgb: 40, 40, 37;
+    --bs-body-color: #ecebe7;
+    --bs-body-color-rgb: 236, 235, 231;
+    --bs-emphasis-color: #f6f5f2;
+    --bs-emphasis-color-rgb: 246, 245, 242;
+    --bs-secondary-color: #9c9991;
+    --bs-secondary-color-rgb: 156, 153, 145;
+    --bs-tertiary-color: rgba(236, 235, 231, 0.5);
+    --bs-tertiary-color-rgb: 236, 235, 231;
+    --bs-border-color: #34332f;
+    --bs-link-color: #7c95f5;
+    --bs-link-color-rgb: 124, 149, 245;
+    --bs-link-hover-color: #9db0f8;
+    --bs-link-hover-color-rgb: 157, 176, 248;
+
+    --bs-primary: #7c95f5;
+    --bs-primary-rgb: 124, 149, 245;
+    --bs-primary-text-emphasis: #7c95f5;
+    --bs-primary-bg-subtle: color-mix(in srgb, #7c95f5 15%, #161615);
+    --bs-primary-border-subtle: color-mix(in srgb, #7c95f5 35%, #161615);
+    --bs-success: #69db7c;
+    --bs-success-rgb: 105, 219, 124;
+    --bs-success-text-emphasis: #69db7c;
+    --bs-success-bg-subtle: color-mix(in srgb, #69db7c 15%, #161615);
+    --bs-success-border-subtle: color-mix(in srgb, #69db7c 35%, #161615);
+    --bs-warning: #ffb84d;
+    --bs-warning-rgb: 255, 184, 77;
+    --bs-warning-text-emphasis: #ffb84d;
+    --bs-warning-bg-subtle: #33270f;
+    --bs-warning-border-subtle: color-mix(in srgb, #ffb84d 35%, #161615);
+    --bs-danger: #ff8787;
+    --bs-danger-rgb: 255, 135, 135;
+    --bs-danger-text-emphasis: #ff8787;
+    --bs-danger-bg-subtle: #3a1c1c;
+    --bs-danger-border-subtle: color-mix(in srgb, #ff8787 35%, #161615);
+    /* Bootstrap's own secondary and light shades for dark sit within a step of the page color */
+    --bs-secondary-text-emphasis: var(--bs-body-color);
+    --bs-secondary-bg-subtle: var(--bs-secondary-bg);
+    --bs-secondary-border-subtle: var(--bs-border-color);
+    --bs-light-text-emphasis: var(--bs-emphasis-color);
+    --bs-light-bg-subtle: var(--bs-secondary-bg);
+    --bs-light-border-subtle: var(--bs-border-color);
 }
 
 /* 👴 JD: black on white, AAA contrast (7:1) for every color, links always underlined, a
@@ -166,6 +221,65 @@
     --bs-btn-disabled-border-color: var(--bs-border-color);
 }
 
+/* The colored buttons, badges and active states hard-code Bootstrap's light-mode colors with white
+   text. On dark they take the palette's lighter theme colors, so a fill carries dark text. */
+[data-bs-theme=dark] :is(.btn-primary, .btn-outline-primary) { --ace-btn-tint: var(--bs-primary); }
+[data-bs-theme=dark] :is(.btn-secondary, .btn-outline-secondary) { --ace-btn-tint: var(--bs-secondary-color); }
+[data-bs-theme=dark] :is(.btn-success, .btn-outline-success) { --ace-btn-tint: var(--bs-success); }
+[data-bs-theme=dark] :is(.btn-warning, .btn-outline-warning) { --ace-btn-tint: var(--bs-warning); }
+[data-bs-theme=dark] :is(.btn-danger, .btn-outline-danger) { --ace-btn-tint: var(--bs-danger); }
+[data-bs-theme=dark] :is(.btn-primary, .btn-secondary, .btn-success, .btn-warning, .btn-danger) {
+    --bs-btn-color: var(--bs-body-bg);
+    --bs-btn-bg: var(--ace-btn-tint);
+    --bs-btn-border-color: var(--ace-btn-tint);
+    --bs-btn-hover-color: var(--bs-body-bg);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--ace-btn-tint) 80%, #fff);
+    --bs-btn-hover-border-color: color-mix(in srgb, var(--ace-btn-tint) 80%, #fff);
+    --bs-btn-active-color: var(--bs-body-bg);
+    --bs-btn-active-bg: color-mix(in srgb, var(--ace-btn-tint) 65%, #fff);
+    --bs-btn-active-border-color: color-mix(in srgb, var(--ace-btn-tint) 65%, #fff);
+    --bs-btn-disabled-color: var(--bs-body-bg);
+    --bs-btn-disabled-bg: var(--ace-btn-tint);
+    --bs-btn-disabled-border-color: var(--ace-btn-tint);
+}
+[data-bs-theme=dark] :is(.btn-outline-primary, .btn-outline-secondary, .btn-outline-success,
+                         .btn-outline-warning, .btn-outline-danger) {
+    --bs-btn-color: var(--ace-btn-tint);
+    --bs-btn-border-color: var(--ace-btn-tint);
+    --bs-btn-hover-color: var(--bs-body-bg);
+    --bs-btn-hover-bg: var(--ace-btn-tint);
+    --bs-btn-hover-border-color: var(--ace-btn-tint);
+    --bs-btn-active-color: var(--bs-body-bg);
+    --bs-btn-active-bg: var(--ace-btn-tint);
+    --bs-btn-active-border-color: var(--ace-btn-tint);
+    --bs-btn-disabled-color: var(--ace-btn-tint);
+    --bs-btn-disabled-border-color: var(--ace-btn-tint);
+}
+[data-bs-theme=dark] :is(.text-bg-primary, .text-bg-success, .text-bg-danger) {
+    color: var(--bs-body-bg) !important;
+}
+[data-bs-theme=dark] .badge:is(.bg-primary, .bg-success, .bg-danger) {
+    --bs-badge-color: var(--bs-body-bg);
+}
+[data-bs-theme=dark] .nav-pills {
+    --bs-nav-pills-link-active-bg: var(--bs-primary);
+    --bs-nav-pills-link-active-color: var(--bs-body-bg);
+}
+[data-bs-theme=dark] .pagination {
+    --bs-pagination-active-bg: var(--bs-primary);
+    --bs-pagination-active-border-color: var(--bs-primary);
+    --bs-pagination-active-color: var(--bs-body-bg);
+}
+[data-bs-theme=dark] .list-group {
+    --bs-list-group-active-bg: var(--bs-primary);
+    --bs-list-group-active-border-color: var(--bs-primary);
+    --bs-list-group-active-color: var(--bs-body-bg);
+}
+[data-bs-theme=dark] .dropdown-menu {
+    --bs-dropdown-link-active-bg: var(--bs-primary);
+    --bs-dropdown-link-active-color: var(--bs-body-bg);
+}
+
 /* Bootstrap 5.3 gives these classes the same light colors in every color mode, and they reach the
    page from places no template check sees: integration templates, class names built from config
    (a disposition's css: light) and from Python (saq/remediation/coverage.py). Dark mode maps each
@@ -189,13 +303,14 @@
 }
 
 /* the contextual table colors are fixed light shades with black text too. Dark mode uses the
-   variant's subtle colors, and the table's own stripe, hover and active overlays in place of the
-   variant's opaque light ones. */
+   variant's subtle colors, with lighter stripe, hover and active overlays than a plain row gets
+   (.table-striped above): a strong white overlay washes a dark tinted cell out to a mid-gray
+   that neither light nor colored text reads on. */
 [data-bs-theme=dark] :is(.table-primary, .table-secondary, .table-success, .table-info,
                          .table-warning, .table-danger, .table-light) {
-    --bs-table-striped-bg: inherit;
-    --bs-table-hover-bg: inherit;
-    --bs-table-active-bg: inherit;
+    --bs-table-striped-bg: rgba(var(--bs-emphasis-color-rgb), 0.06);
+    --bs-table-hover-bg: rgba(var(--bs-emphasis-color-rgb), 0.12);
+    --bs-table-active-bg: rgba(var(--bs-emphasis-color-rgb), 0.12);
     --bs-table-striped-color: var(--bs-table-color);
     --bs-table-hover-color: var(--bs-table-color);
     --bs-table-active-color: var(--bs-table-color);
