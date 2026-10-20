@@ -1,7 +1,8 @@
 /* Theme tokens. Colors ACE sets itself are --ace-* properties, redefined per theme
    below; everything else uses Bootstrap's own variables, which follow data-bs-theme.
-   Dark and data-ace-theme="jd" (a high-contrast light mode) also redefine Bootstrap's
-   variables as their own palette (core.html sets both attributes). */
+   Dark, data-ace-theme="jd" (a high-contrast light mode) and data-ace-theme="halloween"
+   (built on dark) also redefine Bootstrap's variables as their own palette (core.html sets
+   both attributes). */
 :root {
     --ace-obs-user: #0000ff;
     --ace-obs-o365-group: #4d4dff;
@@ -87,26 +88,28 @@
 
     --bs-primary: #7c95f5;
     --bs-primary-rgb: 124, 149, 245;
-    --bs-primary-text-emphasis: #7c95f5;
-    --bs-primary-bg-subtle: color-mix(in srgb, #7c95f5 15%, #161615);
-    --bs-primary-border-subtle: color-mix(in srgb, #7c95f5 35%, #161615);
     --bs-secondary: #9c9991;
     --bs-secondary-rgb: 156, 153, 145;
     --bs-success: #69db7c;
     --bs-success-rgb: 105, 219, 124;
-    --bs-success-text-emphasis: #69db7c;
-    --bs-success-bg-subtle: color-mix(in srgb, #69db7c 15%, #161615);
-    --bs-success-border-subtle: color-mix(in srgb, #69db7c 35%, #161615);
     --bs-warning: #ffb84d;
     --bs-warning-rgb: 255, 184, 77;
-    --bs-warning-text-emphasis: #ffb84d;
     --bs-warning-bg-subtle: #33270f;
-    --bs-warning-border-subtle: color-mix(in srgb, #ffb84d 35%, #161615);
     --bs-danger: #ff8787;
     --bs-danger-rgb: 255, 135, 135;
-    --bs-danger-text-emphasis: #ff8787;
     --bs-danger-bg-subtle: #3a1c1c;
-    --bs-danger-border-subtle: color-mix(in srgb, #ff8787 35%, #161615);
+
+    /* derived from the colors above, so a theme built on this one (Halloween) redefines only those */
+    --bs-primary-text-emphasis: var(--bs-primary);
+    --bs-primary-bg-subtle: color-mix(in srgb, var(--bs-primary) 15%, var(--bs-body-bg));
+    --bs-primary-border-subtle: color-mix(in srgb, var(--bs-primary) 35%, var(--bs-body-bg));
+    --bs-success-text-emphasis: var(--bs-success);
+    --bs-success-bg-subtle: color-mix(in srgb, var(--bs-success) 15%, var(--bs-body-bg));
+    --bs-success-border-subtle: color-mix(in srgb, var(--bs-success) 35%, var(--bs-body-bg));
+    --bs-warning-text-emphasis: var(--bs-warning);
+    --bs-warning-border-subtle: color-mix(in srgb, var(--bs-warning) 35%, var(--bs-body-bg));
+    --bs-danger-text-emphasis: var(--bs-danger);
+    --bs-danger-border-subtle: color-mix(in srgb, var(--bs-danger) 35%, var(--bs-body-bg));
     /* Bootstrap's own secondary and light shades for dark sit within a step of the page color */
     --bs-secondary-text-emphasis: var(--bs-body-color);
     --bs-secondary-bg-subtle: var(--bs-secondary-bg);
@@ -114,6 +117,70 @@
     --bs-light-text-emphasis: var(--bs-emphasis-color);
     --bs-light-bg-subtle: var(--bs-secondary-bg);
     --bs-light-border-subtle: var(--bs-border-color);
+}
+
+/* 🎃 Halloween: a pumpkin-orange accent on a midnight-purple night, bone-white text, slime green for
+   success and witch purple for info. Builds on the dark palette (core.html sets data-bs-theme=dark),
+   which derives its subtle shades from these colors; then a moonlit glow and a jack-o'-lantern for
+   the logo. */
+[data-ace-theme=halloween] {
+    --bs-body-bg: #120d16;
+    --bs-body-bg-rgb: 18, 13, 22;
+    --bs-tertiary-bg: #1c1421;
+    --bs-tertiary-bg-rgb: 28, 20, 33;
+    --bs-secondary-bg: #271c2e;
+    --bs-secondary-bg-rgb: 39, 28, 46;
+    --bs-body-color: #f4ead9;
+    --bs-body-color-rgb: 244, 234, 217;
+    --bs-emphasis-color: #faf5ec;
+    --bs-emphasis-color-rgb: 250, 245, 236;
+    --bs-secondary-color: #a8949e;
+    --bs-secondary-color-rgb: 168, 148, 158;
+    --bs-tertiary-color: rgba(244, 234, 217, 0.5);
+    --bs-tertiary-color-rgb: 244, 234, 217;
+    --bs-border-color: #3a2a42;
+    --bs-link-color: #ff7a1a;
+    --bs-link-color-rgb: 255, 122, 26;
+    --bs-link-hover-color: #ff9548;
+    --bs-link-hover-color-rgb: 255, 149, 72;
+
+    --bs-primary: #ff7a1a;
+    --bs-primary-rgb: 255, 122, 26;
+    --bs-secondary: #a8949e;
+    --bs-secondary-rgb: 168, 148, 158;
+    --bs-success: #9be15d;
+    --bs-success-rgb: 155, 225, 93;
+    --bs-warning: #ffc23d;
+    --bs-warning-rgb: 255, 194, 61;
+    --bs-warning-bg-subtle: #36280b;
+    --bs-danger: #ff5c6c;
+    --bs-danger-rgb: 255, 92, 108;
+    --bs-danger-bg-subtle: #3d131b;
+    --bs-info: #c38bff;
+    --bs-info-rgb: 195, 139, 255;
+    --bs-info-text-emphasis: var(--bs-info);
+    --bs-info-bg-subtle: #2b1940;
+    --bs-info-border-subtle: color-mix(in srgb, var(--bs-info) 35%, var(--bs-body-bg));
+}
+[data-ace-theme=halloween] body {
+    background: radial-gradient(ellipse 80% 50% at 50% 115%, rgba(255, 122, 26, 0.14), transparent 70%) fixed,
+                var(--bs-body-bg);
+}
+/* important: the logo's display is an inline style in base.html */
+[data-ace-theme=halloween] .navbar-brand img {
+    display: none !important;
+}
+[data-ace-theme=halloween] .navbar-brand::before {
+    content: "\1F383";
+    margin-right: 0.5rem;
+    filter: drop-shadow(0 0 6px rgba(255, 122, 26, 0.6));
+}
+/* a cobweb in the navbar's corner: the one surface every page shows that content never covers */
+[data-ace-theme=halloween] .navbar {
+    background-repeat: no-repeat;
+    background-position: right top;
+    background-size: 84px 84px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23a8949e' stroke-opacity='.35' stroke-width='.8'%3E%3Cpath d='M100 0 0 100M100 0 30 100M100 0 60 100M100 0 0 40M100 0 0 70'/%3E%3Cpath d='M86 0q1 12 14 14M70 0q2 26 30 30M52 0q3 42 48 48M34 0q5 60 66 66M18 0q6 76 82 82'/%3E%3C/svg%3E");
 }
 
 /* 👴 JD: black on white, AAA contrast (7:1) for every color, links always underlined, a

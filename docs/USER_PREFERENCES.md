@@ -77,13 +77,20 @@ column stays visible when the list is narrowed to one disposition.
 
 ## The theme
 
-The `theme` preference is `{mode: "system" | "light" | "dark" | "jd"}`, `system` by default.
-`system` follows the operating system's light or dark setting, and `jd` (shown as 👴 JD) is
-a high-contrast light mode: black on white, every color at WCAG AAA contrast, underlined
-links and slightly larger text.
+The `theme` preference is `{mode: "system" | "light" | "dark" | "jd" | "halloween"}`,
+`system` by default. `system` follows the operating system's light or dark setting, and `jd`
+(shown as 👴 JD) is a high-contrast light mode: black on white, every color at WCAG AAA
+contrast, underlined links and slightly larger text. `halloween` (🎃 Halloween) is a dark
+mode: pumpkin orange on midnight purple, a moonlit glow, a jack-o'-lantern in place of the
+logo and a cobweb in the navbar's corner.
 
 `core.html` renders the mode on the root element as `data-ace-theme`, and Bootstrap's own
-`data-bs-theme` as `light` or `dark` (`jd` is `light`). Only the browser knows the OS
+`data-bs-theme` as `light` or `dark` (`jd` is `light`, `halloween` is `dark`). A mode that
+builds on light or dark, like these two, redefines only what differs under its
+`[data-ace-theme=...]` block in `saq.css`, after the palette it builds on: the dark
+palette derives its subtle shades from its base colors, so Halloween sets only those. A new
+mode is added to `ThemePreference`, `THEME_CHOICES` and both places in `core.html` that pick
+`data-bs-theme`. Only the browser knows the OS
 setting, so a small inline script in `<head>`, ahead of every stylesheet, resolves
 `system` from `prefers-color-scheme` before the first paint and follows the OS if it
 changes while the page is open. The same script defines `aceApplyTheme(mode)`, which the

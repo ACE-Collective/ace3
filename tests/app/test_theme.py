@@ -39,6 +39,7 @@ def test_default_is_system(web_client, analyst):
     ("light", "light"),
     ("dark", "dark"),
     ("jd", "light"),
+    ("halloween", "dark"),
 ])
 def test_stored_mode_is_rendered(web_client, analyst, mode, bs_theme):
     _set_theme(analyst, mode)
@@ -84,16 +85,17 @@ def test_login_page_follows_the_system(app):
 def test_navbar_offers_every_theme(web_client, analyst):
     html = web_client.get(url_for("analysis.manage")).data.decode()
     assert 'id="theme-switcher"' in html
-    for mode in ("system", "light", "dark", "jd"):
+    for mode in ("system", "light", "dark", "jd", "halloween"):
         assert f'data-theme-mode="{mode}"' in html
     assert "\U0001F474 JD" in html
+    assert "\U0001F383 Halloween" in html
 
 
 def test_preferences_page_has_appearance_choices(web_client, analyst):
     _set_theme(analyst, "jd")
     html = web_client.get(url_for("main.preferences")).data.decode()
     assert "Appearance" in html
-    for mode in ("system", "light", "dark", "jd"):
+    for mode in ("system", "light", "dark", "jd", "halloween"):
         assert f'id="theme_mode_{mode}"' in html
     assert re.search(r'id="theme_mode_jd" value="jd"\s+checked', html)
 

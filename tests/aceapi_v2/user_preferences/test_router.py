@@ -191,7 +191,7 @@ class TestTheme:
         assert response.json()["is_default"] is True
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("mode", ["system", "light", "dark", "jd"])
+    @pytest.mark.parametrize("mode", ["system", "light", "dark", "jd", "halloween"])
     async def test_every_mode_round_trips(self, client: AsyncClient, mode: str):
         response = await client.put(THEME, json={"mode": mode})
         assert response.status_code == 200

@@ -54,11 +54,12 @@ class ManageColumnsPreference(BaseModel):
 
 class ThemePreference(BaseModel):
     """The GUI's visual style. "system" follows the browser's prefers-color-scheme, so it is
-    resolved in the browser (core.html), not here; "jd" is a high-contrast light mode."""
+    resolved in the browser (core.html), not here; "jd" is a high-contrast light mode and
+    "halloween" a dark one."""
 
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["system", "light", "dark", "jd"] = "system"
+    mode: Literal["system", "light", "dark", "jd", "halloween"] = "system"
 
 
 PREFERENCE_KEY_MANAGE_COLUMNS = "manage_columns"

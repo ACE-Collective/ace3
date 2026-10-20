@@ -116,6 +116,7 @@ THEME_CHOICES = [
     ("light", "bi-sun", "Light", "Dark text on a light background"),
     ("dark", "bi-moon-stars", "Dark", "Light text on a dark background"),
     ("jd", None, "\U0001F474 JD", "High-contrast light"),
+    ("halloween", None, "\U0001F383 Halloween", "Pumpkin orange on midnight purple"),
 ]
 
 
