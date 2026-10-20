@@ -101,9 +101,13 @@ Writing GUI CSS that works in every theme:
 - A color ACE chooses itself (the observable type colors, the JSON viewer) is an
   `--ace-*` token at the top of `static/css/saq.css`, defined for light and redefined
   under `[data-bs-theme=dark]` and, when the light value is below 7:1, `[data-ace-theme=jd]`.
-- The light-only classes (`bg-light`, `bg-white`, `text-dark`, `text-bg-light`,
-  `border-dark`, `border-black`, `table-light`) are rejected by
-  `tests/app/test_no_light_only_classes.py`; use `border-strong` for the black badge
-  outline. `btn-outline-dark` is remapped for dark in `saq.css` and stays usable.
+- Bootstrap 5.3 fixes some classes to light colors in every color mode: `bg-white`,
+  `bg-light`, `text-bg-light`, `text-dark`, `border-dark`, `border-black`,
+  `btn-outline-dark` and the contextual table colors (`table-success`, `table-secondary`,
+  ...). They also arrive from integration templates and from class names built in config
+  (a disposition's `css: light`) and Python, so rather than banning them, `saq.css` maps
+  each to a theme-aware equivalent under `[data-bs-theme=dark]`, and
+  `tests/app/test_light_only_classes.py` keeps that list covered. A literal color in a
+  `style` attribute has no such fallback.
 - Dark overrides for the vendored jQuery UI and date picker styles live in `saq.css`, not
   in the vendor files.
