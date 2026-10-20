@@ -394,7 +394,7 @@
 [data-bs-theme=dark] .daterangepicker .ranges li:hover {
     background: var(--bs-primary);
     border-color: var(--bs-primary);
-    color: #fff;
+    color: var(--bs-body-bg);
 }
 [data-bs-theme=dark] .daterangepicker td.available:hover,
 [data-bs-theme=dark] .daterangepicker th.available:hover {
