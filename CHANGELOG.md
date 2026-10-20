@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.130] - 2026-10-20
+
+- [Download the search embedding model once, under a lock](https://github.com/ACE-Collective/ace3/pull/784)
+- [Version every static URL by content hash and set Cache-Control on static files](https://github.com/ACE-Collective/ace3/pull/783)
+- [Run RabbitMQ natively and pin it to 4.4](https://github.com/ACE-Collective/ace3/pull/782)
+- [SVS phases 4 and 5: test runs, ATT&CK coverage, and training guides](https://github.com/ACE-Collective/ace3/pull/781)
+- [Dark theme readability, and a Halloween theme](https://github.com/ACE-Collective/ace3/pull/780)
+
 ## [3.0.129] - 2026-10-20
 
 - [Match bounded yara strings next to non-ASCII UTF-16 text](https://github.com/ACE-Collective/ace3/pull/778)
