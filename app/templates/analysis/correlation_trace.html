@@ -459,6 +459,7 @@
 {#-- =========================================================================
      Outer panel: only render if this alert has a correlation_trace
      ========================================================================= --#}
+{% from 'analysis/_alert_section.html' import alert_section with context %}
 {% if analysis.details and analysis.details.get('correlation_trace') %}
     {% set ct = analysis.details.get('correlation_trace') %}
     {% set hm = analysis.details.get('hunt_metadata') or {} %}
@@ -567,15 +568,8 @@
         {% endfor %}
     {% endfor %}
 
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header d-flex flex-wrap align-items-center gap-2">
-                <h5 class="mb-0 me-auto">
-                    <i class="bi bi-diagram-3-fill"></i>
-                    Correlation Trace
-                    <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_correlation_trace" aria-expanded="true" aria-controls="collapse_correlation_trace">(hide/show)</a>
-                </h5>
+{% set ct_title %}<i class="bi bi-diagram-3-fill"></i> Correlation Trace{% endset %}
+{% set ct_controls %}
                 <div class="btn-group btn-group-sm ct-event-controls" role="group" aria-label="Expand controls">
                     <button type="button" class="btn btn-outline-secondary ct-expand-all" title="Expand all events"><i class="bi bi-arrows-expand"></i> Expand all</button>
                     <button type="button" class="btn btn-outline-secondary ct-collapse-all" title="Collapse all events"><i class="bi bi-arrows-collapse"></i> Collapse all</button>
@@ -584,9 +578,9 @@
                     <button type="button" class="btn btn-outline-primary active ct-view-toggle" data-view="per-event"><i class="bi bi-list-ul"></i> Per event</button>
                     <button type="button" class="btn btn-outline-primary ct-view-toggle" data-view="compare" {% if (_display_events | length) < 2 or (_compare.order | length) == 0 %}disabled title="Compare needs 2+ events with property transforms"{% endif %}><i class="bi bi-table"></i> Compare</button>
                 </div>
-            </div>
-            <div class="card-body">
-                <div class="card-text collapse show ct-root" id="collapse_correlation_trace">
+{% endset %}
+{% call alert_section('correlation_trace', ct_title, controls=ct_controls) %}
+                <div class="card-text ct-root">
 
                     {#-- Hunt context strip --#}
                     {% if hm %}
@@ -849,10 +843,7 @@
                     {% endif %}
 
                 </div>
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 
 <style>
 .ct-summary .badge { font-size: 0.85rem; }

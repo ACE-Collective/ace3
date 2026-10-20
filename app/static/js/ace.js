@@ -430,7 +430,11 @@ function renderJsonTree(data, container, options) {
             var childUl = document.createElement('ul');
             childUl.style.marginLeft = '20px';
             childUl.style.paddingLeft = '0';
-            childUl.style.display = collapsed ? 'none' : 'block';
+            // hidden="until-found" rather than display: none, so find-in-page still searches a
+            // collapsed node and opens it on a match
+            if (collapsed) {
+                childUl.setAttribute('hidden', 'until-found');
+            }
 
             if (isArray) {
                 value.forEach(function(item, index) {
@@ -443,17 +447,24 @@ function renderJsonTree(data, container, options) {
             }
 
             function toggleNode() {
-                if (childUl.style.display === 'none') {
-                    childUl.style.display = 'block';
+                if (childUl.hasAttribute('hidden')) {
+                    childUl.removeAttribute('hidden');
                     toggle.className = 'bi bi-chevron-down';
                 } else {
-                    childUl.style.display = 'none';
+                    childUl.setAttribute('hidden', 'until-found');
                     toggle.className = 'bi bi-chevron-right';
                 }
             }
 
             toggle.addEventListener('click', toggleNode);
             keySpan.addEventListener('click', toggleNode);
+            // find-in-page opens the node itself; only the chevron has to follow. The event
+            // bubbles, so one from a node nested inside this one is not for this one.
+            childUl.addEventListener('beforematch', function(event) {
+                if (event.target === childUl) {
+                    toggle.className = 'bi bi-chevron-down';
+                }
+            });
 
             li.appendChild(toggle);
             li.appendChild(keySpan);

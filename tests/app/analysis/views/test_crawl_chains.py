@@ -42,7 +42,7 @@ def test_alert_page_shows_crawl_chain(web_client, root_analysis, tmp_path):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
 
     assert result.status_code == 200
-    start = result.text.index('id="collapse_crawl_chains"')
+    start = result.text.index('id="alert_section_crawl_chains"')
     card = result.text[start:result.text.index("final page:", start) + 100]
     assert f'href="#{target.uuid}"' in card
     assert f'href="#{landing.uuid}"' in card
@@ -65,4 +65,4 @@ def test_alert_page_without_crawls_has_no_card(web_client, root_analysis):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
 
     assert result.status_code == 200
-    assert "collapse_crawl_chains" not in result.text
+    assert "alert_section_crawl_chains" not in result.text

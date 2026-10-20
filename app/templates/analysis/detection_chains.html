@@ -1,11 +1,6 @@
+{% from 'analysis/_alert_section.html' import alert_section with context %}
 {% if detection_chain_merged_tree or detection_chain_root_detections %}
-<div class="row">
-    <div class="col">
-        <div class="card mb-3">
-            <div class="card-header">
-                <h5>Detection Chains <a role="button" data-bs-toggle="collapse" data-bs-target="#collapse_detection_chains" aria-expanded="true" aria-controls="collapse_detection_chains">(hide/show)</a></h5>
-            </div>
-            <div class="card-body collapse show" id="collapse_detection_chains">
+{% call alert_section('detection_chains', 'Detection Chains', summary='(' ~ detection_chain_count ~ ' detection' ~ ('' if detection_chain_count == 1 else 's') ~ ')') %}
 
                 {% macro observable_label(observable) %}
                     <span class="text-muted small">{{ observable.type }}</span> <a href="#{{ observable.uuid }}">{{ detection_chain_observable_display_value(observable) }}</a>
@@ -49,9 +44,5 @@
                     </li>
                 {% endfor %}
                 </ul>
-
-            </div>
-        </div>
-    </div>
-</div>
+{% endcall %}
 {% endif %}
