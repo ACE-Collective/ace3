@@ -12,6 +12,7 @@ from saq.constants import SERVICE_YARA_SCANNER
 from saq.environment import get_data_dir
 from saq.git import get_commit_hash
 from saq.service import ACEServiceInterface
+from saq.svs.marker_rule import install_marker_rule
 from saq.util import abs_path
 from saq.yara_scanning.server import ScannerSettings, YaraScannerServer
 
@@ -102,6 +103,8 @@ class YaraScannerService(ACEServiceInterface):
         self.server = YaraScannerServer(get_scanner_settings())
 
     def start(self):
+        # before the server starts: its manager lists the rule directories once, when it starts
+        install_marker_rule(self.server.settings.signature_dir)
         self.server.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
@@ -109,6 +112,7 @@ class YaraScannerService(ACEServiceInterface):
 
     def start_single_threaded(self):
         # the scanners are processes either way: this just runs the service in the foreground
+        install_marker_rule(self.server.settings.signature_dir)
         self.server.start()
         self.server.wait()
 

@@ -19,6 +19,7 @@ POST_ONLY_ENDPOINTS = [
     "analysis.toggle_prune",
     "analysis.toggle_prune_volatile",
     "analysis.search",
+    "analysis.search_include_tests",
     "analysis.set_page_offset",
     "analysis.set_page_size",
     "auth.logout",

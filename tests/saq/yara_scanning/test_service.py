@@ -12,7 +12,9 @@ import pytest
 
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
-from saq.yara_scanning.service import get_validated_git_repo_dirs
+from saq.svs.marker_rule import marker_rule_path
+from saq.yara_scanning.server import YaraScannerServer
+from saq.yara_scanning.service import YaraScannerService, get_validated_git_repo_dirs
 
 
 def _init_repo_with_commit(path: str):
@@ -126,3 +128,18 @@ def test_a_file_is_dropped(signature_dir, monkeypatch, caplog):
         assert get_validated_git_repo_dirs() == []
 
     assert any("loose.yar" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("start", ["start", "start_single_threaded"])
+def test_the_marker_rule_is_written_before_the_server_starts(plain_signature_dir, monkeypatch, start):
+    """The server's manager lists the rule directories once, when it starts: a directory created
+    after that is never watched."""
+    seen = []
+    monkeypatch.setattr(YaraScannerServer, "start",
+                        lambda self: seen.append(os.path.exists(marker_rule_path(plain_signature_dir))))
+    monkeypatch.setattr(YaraScannerServer, "wait", lambda self: None)
+
+    getattr(YaraScannerService(), start)()
+
+    assert seen == [True]

@@ -5,11 +5,11 @@ from unittest.mock import patch, MagicMock
 from saq.configuration.config import get_config
 from saq.configuration.schema import DispositionConfig
 from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE
-from saq.disposition import get_dispositions
+from saq.disposition import get_selectable_dispositions
 from saq.database.model import Alert, Comment, Workload
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, make_simulated
 
 
 @pytest.mark.integration
@@ -323,8 +323,8 @@ def test_set_disposition_empty_uuid_list(web_client):
 
 @pytest.mark.integration 
 def test_set_disposition_all_valid_dispositions(web_client):
-    """Test setting each valid disposition type."""
-    dispositions = list(get_dispositions())
+    """Test setting each disposition an analyst may set (SIMULATED is set only by ACE)."""
+    dispositions = list(get_selectable_dispositions())
     alerts = [insert_alert() for _ in dispositions]
 
     for i, disposition in enumerate(dispositions):
@@ -435,6 +435,28 @@ def test_set_disposition_leaves_alert_owned_by_another_alone(web_client, other_a
     assert db.get(Alert, owned.id).owner_id == other_analyst.id
     assert db.get(Alert, unowned.id).disposition == DISPOSITION_FALSE_POSITIVE
     assert _flashes(web_client) == ["disposition set for 1 alerts; left 1 alert owned by Jane alone"]
+
+
+@pytest.mark.integration
+def test_set_disposition_leaves_a_simulated_alert_alone(web_client):
+    """A SIMULATED alert's disposition can't be changed by hand, from the manage page or the
+    alert page (docs/SVS_RUNS.md)."""
+    simulated = insert_alert()
+    make_simulated(simulated)
+    other = insert_alert()
+
+    response = web_client.post(url_for("analysis.set_disposition"), data={
+        "disposition": DISPOSITION_FALSE_POSITIVE,
+        "alert_uuids": f"{simulated.uuid},{other.uuid}",
+    })
+
+    assert response.status_code == 302
+    db = get_db()
+    db.expire_all()
+    assert db.get(Alert, simulated.id).disposition == "SIMULATED"
+    assert db.get(Alert, other.id).disposition == DISPOSITION_FALSE_POSITIVE
+    assert _flashes(web_client) == [
+        "disposition set for 1 alerts; left 1 SIMULATED alert alone (only ACE sets that disposition)"]
 
 
 @pytest.mark.integration

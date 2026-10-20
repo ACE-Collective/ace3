@@ -6,6 +6,8 @@ events = Blueprint('events', __name__, url_prefix='/events')
 auth = Blueprint('auth', __name__)
 admin = Blueprint('admin', __name__, url_prefix='/admin')
 signatures = Blueprint('signatures', __name__, url_prefix='/signatures')
+svs = Blueprint('svs', __name__, url_prefix='/svs')
+help_pages = Blueprint('help', __name__, url_prefix='/help')
 remediation = Blueprint('remediation', __name__)
 file_collection = Blueprint('file_collection', __name__)
 
@@ -14,6 +16,8 @@ def register_blueprints(flask_app: Flask):
     import app.auth
     import app.admin
     import app.signatures
+    import app.svs
+    import app.help
     import app.analysis
     import app.events
     import app.remediation
@@ -23,6 +27,8 @@ def register_blueprints(flask_app: Flask):
     flask_app.register_blueprint(auth)
     flask_app.register_blueprint(admin)
     flask_app.register_blueprint(signatures)
+    flask_app.register_blueprint(svs)
+    flask_app.register_blueprint(help_pages)
     flask_app.register_blueprint(analysis)
     flask_app.register_blueprint(events)
     flask_app.register_blueprint(remediation)

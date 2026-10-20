@@ -104,9 +104,11 @@ class Mirror:
             finally:
                 fcntl.flock(fp, fcntl.LOCK_UN)
 
-    def ensure(self, branches: list[str]) -> None:
+    def ensure(self, branches: list[str], optional: list[str] = ()) -> None:
         """Create the mirror if it does not exist, point it at the configured URL and fetch the
-        branches."""
+        branches, then each of the optional branches on its own: one that is not on the remote (a
+        pull request's branch deleted on merge, or one that lives only in a fork) is logged and
+        skipped, and its commits are fetched by id instead (fetch_commit)."""
         if not os.path.isdir(os.path.join(self.path, "objects")):
             os.makedirs(self.path, exist_ok=True)
             self._git("init", "--bare", "--quiet", timeout=_LOCAL_COMMAND_TIMEOUT, error="unable to create the mirror")
@@ -119,6 +121,15 @@ class Mirror:
         refspecs = [f"+refs/heads/{branch}:refs/heads/{branch}" for branch in dict.fromkeys(branches) if branch]
         self._git("fetch", "--quiet", "--no-tags", "origin", *refspecs, timeout=self.fetch_timeout,
                   error=f"unable to fetch {', '.join(dict.fromkeys(branches))} of repository {self.name}")
+
+        for branch in dict.fromkeys(optional):
+            if not branch or branch in branches:
+                continue
+            try:
+                self._git("fetch", "--quiet", "--no-tags", "origin", f"+refs/heads/{branch}:refs/heads/{branch}",
+                          timeout=self.fetch_timeout, error=f"unable to fetch {branch} of repository {self.name}")
+            except RepositoryError as e:
+                logging.info("%s; its commits are fetched by id", e)
 
     def fetch_commit(self, sha: str) -> None:
         """Fetch one commit by id, for a commit no fetched branch contains any more. Most servers

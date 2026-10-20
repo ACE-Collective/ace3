@@ -10,6 +10,7 @@ from saq.gui.filter_entry import (
     FilterEntry,
     FilterEntryBase,
     RemediationFilterEntry,
+    RunFilterEntry,
     SampleFilterEntry,
     ValidationFilterEntry,
 )
@@ -20,8 +21,12 @@ from saq.gui.filter_screens import (
     FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
     REMEDIATIONS_SCREEN,
+    SVS_COVERAGE_HISTORY_SCREEN,
+    SVS_COVERAGE_SCREEN,
+    SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN,
+    SVS_WORKLIST_SCREEN,
     FilterScreen,
     UnknownFilterScreen,
     get_filter_screen,
@@ -231,6 +236,75 @@ def test_svs_validations_rejects_bad_entries(name, values):
         SVS_VALIDATIONS_SCREEN.validate_entries([{"name": name, "values": values}])
 
 
+def test_the_svs_runs_screen():
+    assert get_filter_screen("svs_runs") is SVS_RUNS_SCREEN
+    assert SVS_RUNS_SCREEN.entry_model is RunFilterEntry
+    assert SVS_RUNS_SCREEN.permission == ("svs", "run_read")
+    assert {f.name for f in SVS_RUNS_SCREEN.fields} == SVS_RUNS_SCREEN.filter_names
+
+
+def test_the_svs_run_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_RUNS_SCREEN.slugs) == {
+        "Batch": "batch",
+        "Changed Since Review": "changed_since_review",
+        "Created": "created",
+        "Ended": "ended",
+        "Has Candidates": "has_candidates",
+        "Has Context Only": "has_context_only",
+        "Has Late": "has_late",
+        "Has Missing": "has_missing",
+        "Has Open Alerts": "has_open_alerts",
+        "Has Possibly Suppressed": "has_possibly_suppressed",
+        "Launcher": "launcher",
+        "Needs Attention": "needs_attention",
+        "Owner": "owner",
+        "Platform": "platform",
+        "Reason": "reason",
+        "Reviewed": "reviewed",
+        "Reviewer": "reviewer",
+        "Started": "started",
+        "State": "state",
+        "Target": "target",
+        "Technique": "technique",
+        "Test": "test",
+        "Test Name": "test_name",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("State", ["Ended", "error"], ["ended", "error"]),
+    ("Technique", [" t1059.001"], ["T1059.001"]),
+    ("Test", ["AAAAAAAA-1111-4111-8111-111111111111"], ["aaaaaaaa-1111-4111-8111-111111111111"]),
+    ("Target", [" WIN10-01.Lab.Example"], ["win10-01.lab.example"]),
+    ("Owner", [" Alice "], ["Alice"]),
+    ("Needs Attention", ["True"], ["true"]),
+    ("Started", ["-7d"], ["-7d"]),
+    ("Reviewed", ["-30d"], ["-30d"]),
+    ("Launcher", ["ART"], ["ART"]),
+    ("Platform", [" Linux", "iaas:aws", "azure-ad"], ["linux", "iaas", "identity-provider"]),
+])
+def test_svs_run_values_are_normalized(name, values, expected):
+    (entry,) = SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("State", ["done"]),
+    ("Technique", ["1059"]),
+    ("Test", ["not-a-guid"]),
+    ("Needs Attention", ["yes"]),
+    ("Changed Since Review", ["1"]),
+    ("Ended", ["not a date"]),
+    ("Reviewed", ["not a date"]),
+    ("Batch", [["pair", "value"]]),
+    ("Label", ["tp"]),
+])
+def test_svs_runs_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_RUNS_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
 @pytest.mark.parametrize("screen, entry_model, permission", [
     (REMEDIATIONS_SCREEN, RemediationFilterEntry, ("remediation", "read")),
     (FILE_COLLECTIONS_SCREEN, FileCollectionFilterEntry, ("file_collection", "read")),
@@ -312,3 +386,122 @@ def test_fields_must_name_the_screens_filters():
     with pytest.raises(ValueError, match="Shape"):
         FilterScreen(name="bad", entry_model=FilterEntryBase, slugs={"Color": "color"},
                      fields=(FilterField("Shape", FilterFieldKind.TEXT),))
+
+
+def test_the_svs_coverage_screens():
+    assert get_filter_screen("svs_coverage") is SVS_COVERAGE_SCREEN
+    assert get_filter_screen("svs_coverage_history") is SVS_COVERAGE_HISTORY_SCREEN
+    for screen in (SVS_COVERAGE_SCREEN, SVS_COVERAGE_HISTORY_SCREEN):
+        assert screen.permission == ("svs", "run_read")
+        assert {f.name for f in screen.fields} == screen.filter_names
+
+
+def test_the_svs_coverage_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_COVERAGE_SCREEN.slugs) == {
+        "ATT&CK Platform": "attack_platform",
+        "Catalog Status": "catalog_status",
+        "Has Manual": "has_manual",
+        "Level": "level",
+        "Name": "name",
+        "Own State": "own_state",
+        "Platform": "platform",
+        "Retired": "retired",
+        "State": "state",
+        "State Changed": "state_changed",
+        "Tactic": "tactic",
+        "Technique": "technique",
+    }
+    assert dict(SVS_COVERAGE_HISTORY_SCREEN.slugs) == {
+        "Date": "date",
+        "Level": "level",
+        "Own State": "own_state",
+        "Platform": "platform",
+        "State": "state",
+        "Technique": "technique",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Technique", [" t1059.001"], ["T1059.001"]),
+    ("Tactic", ["execution", "ta0003"], ["TA0002", "TA0003"]),
+    ("Platform", ["Windows", "iaas:aws", "azure-ad"], ["windows", "iaas", "identity-provider"]),
+    ("State", ["Failing"], ["failing"]),
+    ("Level", ["Sub-Technique"], ["sub-technique"]),
+    ("Catalog Status", ["deprecated"], ["deprecated"]),
+    ("Has Manual", ["True"], ["true"]),
+    ("State Changed", ["-7d"], ["-7d"]),
+])
+def test_svs_coverage_values_are_normalized(name, values, expected):
+    (entry,) = SVS_COVERAGE_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Technique", ["TA0002"]),
+    ("Tactic", ["T1059"]),
+    ("State", ["great"]),
+    ("Level", ["tactic"]),
+    ("Retired", ["yes"]),
+    ("State Changed", ["not a date"]),
+    ("Date", ["-7d"]),
+])
+def test_svs_coverage_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_COVERAGE_SCREEN.validate_entries([{"name": name, "values": values}])
+
+
+def test_svs_coverage_history_takes_a_date():
+    (entry,) = SVS_COVERAGE_HISTORY_SCREEN.validate_entries([{"name": "Date", "values": ["-30d"]}])
+    assert entry.values == ["-30d"]
+    with pytest.raises(ValidationError):
+        SVS_COVERAGE_HISTORY_SCREEN.validate_entries([{"name": "Tactic", "values": ["execution"]}])
+
+
+def test_the_svs_worklist_screen():
+    assert get_filter_screen("svs_worklist") is SVS_WORKLIST_SCREEN
+    assert SVS_WORKLIST_SCREEN.permission == ("svs", "run_read")
+    assert {f.name for f in SVS_WORKLIST_SCREEN.fields} == SVS_WORKLIST_SCREEN.filter_names
+
+
+def test_the_svs_worklist_slugs_are_a_permanent_contract():
+    # share links and saved filters carry these; never rename or remove one
+    assert dict(SVS_WORKLIST_SCREEN.slugs) == {
+        "Family": "family",
+        "Kind": "kind",
+        "Resolution": "resolution",
+        "Resolved": "resolved",
+        "Resolved By": "resolved_by",
+        "Signature": "signature",
+        "Status": "status",
+        "Technique": "technique",
+    }
+
+
+@pytest.mark.parametrize("name, values, expected", [
+    ("Technique", [" t1059"], ["T1059"]),
+    ("Status", ["Remove_Pending"], ["remove_pending"]),
+    ("Kind", ["Undeclared"], ["undeclared"]),
+    ("Resolution", ["Keep", "none"], ["keep", "none"]),
+    ("Family", ["YARA"], ["yara"]),
+    ("Signature", [" powershell "], ["powershell"]),
+    ("Resolved By", ["analyst"], ["analyst"]),
+    ("Resolved", ["-7d"], ["-7d"]),
+])
+def test_svs_worklist_values_are_normalized(name, values, expected):
+    (entry,) = SVS_WORKLIST_SCREEN.validate_entries([{"name": name, "values": values}])
+    assert entry.values == expected
+
+
+@pytest.mark.parametrize("name, values", [
+    ("Technique", ["TA0002"]),
+    ("Status", ["closed"]),
+    ("Kind", ["manual"]),
+    ("Resolution", ["maybe"]),
+    ("Family", ["sigma"]),
+    ("Resolved", ["not a date"]),
+    ("Platform", ["windows"]),
+])
+def test_svs_worklist_rejects_bad_entries(name, values):
+    with pytest.raises(ValidationError):
+        SVS_WORKLIST_SCREEN.validate_entries([{"name": name, "values": values}])

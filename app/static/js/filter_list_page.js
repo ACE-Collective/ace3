@@ -36,16 +36,40 @@
 //         download: {path, hint},        // optional: a bulk download at {api}{path}?f=...
 //         select: {                      // optional: a checkbox per row, for actions on the selection
 //             key(row),                  //   what identifies a row, such as its id
-//             onChange(rows),            //   the selected rows, after every change
+//             onChange(rows),            //   optional: the selected rows, after every change
+//             noun: "run",               //   optional, with actions: "3 runs selected"
+//             actions: [{label, title, run(keys, rows)}],    // optional: an Actions menu, see below
 //         },
+//         group: {                       // optional: a header row over each run of rows that share a key
+//             key(row),                  //   what the rows of a group share, such as their signature
+//             render(rows),              //   the header's content (a Node or text), from the group's
+//         },                             //   rows on the page shown
 //         emptyText: "...",
+//         defaultF: ["needs_attention:true"],    // optional, see below
+//         onLoad(params),                // optional: called with {f, sort, desc, tz} each time the
+//                                        //   list loads from its first page, so a page can keep
+//                                        //   something of its own (a summary) on the same filters
 //     });
 //
 // The selection is the ticked rows that are still shown: a row that leaves the list (on another
-// page, filtered out, or gone when refresh() reloads the page that is shown) leaves it.
+// page, filtered out, or gone when refresh() reloads the page that is shown) leaves it. A page
+// either builds its own controls over it (onChange, selected()) or names select.actions, which
+// adds an Actions menu over the table. action.run(keys, rows) returns a promise: the page shown
+// reloads when it resolves to anything but false, and shows the error when it rejects.
+//
+// A group is consecutive rows, so the API's order has to keep a group's rows together; a group that
+// continues on the next page gets its header there too. A header row is not a row of the list: it
+// has no checkbox, and the selection is only ever rows. A grouped list isn't striped.
 //
 // It creates the page's SAVED_FILTERS instance (saved_filters.js), which the macro's markup
 // calls. Every value shown comes from analyzed data, so it is placed as text, never markup.
+//
+// defaultF is the view a URL without f= and saved= opens (the f= values). The URL is rewritten to
+// name it, so a share link opens the same; no filters at all is then written as a bare "?f=". A
+// quick filter whose filters are the ones shown is marked as open.
+//
+// The page object create() returns has reload(), refresh() (the page shown), selected(),
+// setFilters(filters), shareUrl(f) and filters(), a copy of the filters shown.
 
 var FilterListPage = (function() {
     "use strict";
@@ -106,6 +130,7 @@ var FilterListPage = (function() {
             cursors: [null],         // cursors[i] fetches page i
             page: 0,
             generation: 0,           // drops responses to requests a newer one replaced
+            defaulted: false,        // the URL named no view, so defaultF is shown
             rows: [],                // the rows shown
             selected: new Map(),     // select.key(row) -> row, for the ticked rows
         };
@@ -119,11 +144,18 @@ var FilterListPage = (function() {
         const warning = el("div", "alert alert-warning d-none");
         warning.setAttribute("role", "alert");
         const bar = el("div", "filter-list-bar mb-2");
-        const table = el("table", "table table-sm table-hover table-striped filter-list-table" + (options.fitColumns ? " filter-list-fit" : ""));
+        const selection_bar = el("div", "d-flex flex-wrap align-items-center gap-2 mb-2 filter-list-selection");
+        // a grouped list isn't striped: the stripes would run across its group headers
+        const table = el("table", "table table-sm table-hover filter-list-table" + (options.group ? "" : " table-striped") +
+                         (options.fitColumns ? " filter-list-fit" : ""));
         const thead = table.createTHead();
         const tbody = table.createTBody();
         const pager = el("div", "d-flex flex-wrap align-items-center gap-2");
-        root.append(error, warning, bar, table, pager);
+        root.append(error, warning, bar);
+        if (select && select.actions) {
+            root.appendChild(selection_bar);
+        }
+        root.append(table, pager);
 
         function show_error(message) {
             error.textContent = message || "";
@@ -141,7 +173,12 @@ var FilterListPage = (function() {
 
         function read_url() {
             const params = new URLSearchParams(window.location.search);
-            state.f = params.getAll("f");
+            // a bare "?f=" is no filters at all, where a defaultF would otherwise apply
+            state.f = params.getAll("f").filter(Boolean);
+            state.defaulted = !!options.defaultF && !params.has("f") && !params.get("saved");
+            if (state.defaulted) {
+                state.f = options.defaultF.slice();
+            }
             state.sort = params.get("sort") || options.defaultSort;
             state.desc = params.has("desc") ? params.get("desc") === "true" : options.defaultDesc;
             const limit = parseInt(params.get("limit"), 10);
@@ -154,8 +191,13 @@ var FilterListPage = (function() {
             return window.location.pathname + text;
         }
 
+        // the f= values of a URL: with a defaultF, no filters at all has to be said
+        function url_f(f) {
+            return f.length === 0 && options.defaultF ? [""] : f;
+        }
+
         function url_state() {
-            const params = {f: state.f};
+            const params = {f: url_f(state.f)};
             if (state.sort !== options.defaultSort) {
                 params.sort = state.sort;
             }
@@ -185,7 +227,7 @@ var FilterListPage = (function() {
 
         // a link that opens this page with these filters and nothing else
         function share_url(f) {
-            return window.location.origin + page_url({f: f});
+            return window.location.origin + page_url({f: url_f(f)});
         }
 
         //
@@ -367,7 +409,9 @@ var FilterListPage = (function() {
             if (quick.length) {
                 controls.appendChild(el("span", "text-muted mx-1", "|"));
                 quick.forEach(function(item) {
-                    const css = item.uuid === state.saved ? "btn-outline-primary active" : "btn-outline-primary";
+                    const open = item.uuid === state.saved ||
+                        (!state.saved && canonical(item.filters) === canonical(state.filters));
+                    const css = open ? "btn-outline-primary active" : "btn-outline-primary";
                     controls.appendChild(button(css, item.name, item.description, function() {
                         set_filters(item.filters, item.uuid).catch(report);
                     }));
@@ -617,9 +661,67 @@ var FilterListPage = (function() {
         });
 
         function selection_changed() {
-            select_all.checked = state.rows.length > 0 && state.selected.size === state.rows.length;
-            select_all.indeterminate = state.selected.size > 0 && state.selected.size < state.rows.length;
-            select.onChange(Array.from(state.selected.values()));
+            const count = state.selected.size;
+            select_all.checked = state.rows.length > 0 && count === state.rows.length;
+            select_all.indeterminate = count > 0 && count < state.rows.length;
+            if (select.actions) {
+                const noun = select.noun || "row";
+                selection_count.textContent = count ? count + " " + noun + (count === 1 ? "" : "s") + " selected" : "";
+                actions_toggle.disabled = count === 0;
+            }
+            if (select.onChange) {
+                select.onChange(Array.from(state.selected.values()));
+            }
+        }
+
+        // the Actions menu over the table, when select.actions names any
+        const selection_count = el("span", "text-muted small");
+        const actions_toggle = button("btn-outline-dark dropdown-toggle", "Actions");
+        actions_toggle.setAttribute("data-bs-toggle", "dropdown");
+        actions_toggle.setAttribute("aria-expanded", "false");
+        actions_toggle.disabled = true;
+        const actions_menu = el("ul", "dropdown-menu");
+        if (select && select.actions) {
+            select.actions.forEach(function(action) {
+                const link = el("a", "dropdown-item", action.label);
+                link.href = "#";
+                if (action.title) {
+                    link.title = action.title;
+                }
+                link.addEventListener("click", function(event) {
+                    event.preventDefault();
+                    // the action's own modal keeps the menu from closing by itself
+                    bootstrap.Dropdown.getOrCreateInstance(actions_toggle).hide();
+                    run_action(action);
+                });
+                actions_menu.appendChild(el("li")).appendChild(link);
+            });
+            const actions = el("div", "dropdown");
+            actions.append(actions_toggle, actions_menu);
+            selection_bar.append(actions, selection_count);
+        }
+
+        function run_action(action) {
+            const keys = Array.from(state.selected.keys());
+            const rows = Array.from(state.selected.values());
+            if (keys.length === 0) {
+                return;
+            }
+            show_error("");
+            actions_toggle.disabled = true;
+            Promise.resolve()
+                .then(function() { return action.run(keys, rows); })
+                .then(function(changed) {
+                    if (changed === false) {
+                        selection_changed();
+                        return;
+                    }
+                    return load_page();
+                })
+                .catch(function(err) {
+                    selection_changed();
+                    report(err);
+                });
         }
 
         // keeps the ticked rows that are in rows, which replace the shown ones
@@ -705,6 +807,26 @@ var FilterListPage = (function() {
             tbody.replaceChildren(row);
         }
 
+        // the header of the group whose first row on the page is rows[start]
+        function group_row(rows, start) {
+            const key = options.group.key(rows[start]);
+            let end = start + 1;
+            while (end < rows.length && options.group.key(rows[end]) === key) {
+                end += 1;
+            }
+            const row = el("tr", "filter-list-group");
+            const cell = el("td");
+            cell.colSpan = columns.length + (select ? 1 : 0);
+            const content = options.group.render(rows.slice(start, end));
+            if (content instanceof Node) {
+                cell.appendChild(content);
+            } else if (content !== null && content !== undefined) {
+                cell.textContent = String(content);
+            }
+            row.appendChild(cell);
+            return row;
+        }
+
         function render_rows(rows) {
             if (select) {
                 keep_selected(rows);
@@ -715,7 +837,10 @@ var FilterListPage = (function() {
                 return;
             }
             tbody.replaceChildren();
-            rows.forEach(function(data) {
+            rows.forEach(function(data, index) {
+                if (options.group && (index === 0 || options.group.key(rows[index - 1]) !== options.group.key(data))) {
+                    tbody.appendChild(group_row(rows, index));
+                }
                 const row = el("tr");
                 if (select) {
                     row.appendChild(select_cell(data));
@@ -768,6 +893,9 @@ var FilterListPage = (function() {
         function load_first_page() {
             state.cursors = [null];
             state.page = 0;
+            if (options.onLoad) {
+                options.onLoad(list_params());
+            }
             return load_page();
         }
 
@@ -857,6 +985,9 @@ var FilterListPage = (function() {
             render_head();
             return decode_url_filters()
                 .then(function() {
+                    if (state.defaulted) {
+                        write_url(true);
+                    }
                     render_bar();
                     return load_first_page();
                 })
@@ -884,6 +1015,7 @@ var FilterListPage = (function() {
             selected: function() { return Array.from(state.selected.values()); },
             setFilters: function(filters) { return set_filters(filters, null); },
             shareUrl: share_url,
+            filters: function() { return JSON.parse(JSON.stringify(state.filters)); },
         };
     }
 

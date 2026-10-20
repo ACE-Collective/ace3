@@ -31,8 +31,12 @@ from saq.gui.filter_screens import (
     FILE_COLLECTIONS_SCREEN,
     FILTER_SCREENS,
     REMEDIATIONS_SCREEN,
+    SVS_COVERAGE_SCREEN,
+    SVS_RUNS_SCREEN,
     SVS_SAMPLES_SCREEN,
+    SVS_TESTS_SCREEN,
     SVS_VALIDATIONS_SCREEN,
+    SVS_WORKLIST_SCREEN,
     FilterScreen,
     get_filter_screen,
 )
@@ -101,6 +105,25 @@ DEFAULT_SVS_VALIDATION_SAVED_FILTERS = (
     },
 )
 
+# What a user starts with on the SVS runs screen: Needs attention is the screen's default view
+# (docs/SVS_RUNS.md, *Following runs*)
+DEFAULT_SVS_RUN_SAVED_FILTERS = (
+    {
+        "name": "Needs attention",
+        "description": "Runs that ended and wait for review, failed, or changed since they were reviewed",
+        "filters": [
+            {"name": "Needs Attention", "inverted": False, "values": ["true"]},
+        ],
+    },
+    {
+        "name": "Started",
+        "description": "Runs in flight: their observation window is open",
+        "filters": [
+            {"name": "State", "inverted": False, "values": ["started"]},
+        ],
+    },
+)
+
 # What a user starts with on the Remediations screen: the remediations still being worked on, and
 # the ones that failed
 DEFAULT_REMEDIATION_SAVED_FILTERS = (
@@ -117,6 +140,67 @@ DEFAULT_REMEDIATION_SAVED_FILTERS = (
         "filters": [
             {"name": "Result", "inverted": False, "values": ["ERROR", "FAILED"]},
         ],
+    },
+)
+
+# What a user starts with on the SVS tests screen: the tests still in their repository, which the
+# Tests tab opens on (docs/SVS_RUNS.md, *Following runs*). A removed test keeps its runs, so it is
+# one filter away rather than gone.
+DEFAULT_SVS_TEST_SAVED_FILTERS = (
+    {
+        "name": "In the catalog",
+        "description": "Tests still in their repository",
+        "filters": [
+            {"name": "Removed", "inverted": False, "values": ["false"]},
+        ],
+    },
+)
+
+# What a user starts with on the SVS coverage screen: the endpoint platforms, which the Coverage
+# tab opens on (docs/SVS_COVERAGE.md); every other ATT&CK platform keeps its rows, one filter away.
+# None of them shows a retired row.
+_SVS_ENDPOINT_PLATFORMS = {"name": "Platform", "inverted": False, "values": ["windows", "linux", "macos"]}
+_SVS_COVERAGE_LIVE = {"name": "Retired", "inverted": False, "values": ["false"]}
+DEFAULT_SVS_COVERAGE_SAVED_FILTERS = (
+    {
+        "name": "Endpoint platforms",
+        "description": "Techniques on windows, linux and macos",
+        "filters": [_SVS_ENDPOINT_PLATFORMS, _SVS_COVERAGE_LIVE],
+    },
+    {
+        "name": "Gaps and failures",
+        "description": "Techniques on the endpoint platforms that are failing, stale, untested or not covered at all",
+        "filters": [
+            _SVS_ENDPOINT_PLATFORMS,
+            {"name": "State", "inverted": False, "values": ["failing", "stale", "untested", "none"]},
+            _SVS_COVERAGE_LIVE,
+        ],
+    },
+    {
+        "name": "All",
+        "description": "Techniques on every platform",
+        "filters": [_SVS_COVERAGE_LIVE],
+    },
+)
+
+# What a user starts with on the SVS worklist (docs/SVS_COVERAGE.md, *The worklist*): the tags
+# that need a decision, which the Worklist tab opens on, the removals waiting for their pull
+# request, and the techniques signatures are measured on that no tag names.
+DEFAULT_SVS_WORKLIST_SAVED_FILTERS = (
+    {
+        "name": "Needs decision",
+        "description": "Tags no test confirms that nobody has resolved",
+        "filters": [{"name": "Status", "inverted": False, "values": ["open"]}],
+    },
+    {
+        "name": "Remove pending",
+        "description": "Tags resolved remove that the signature still has",
+        "filters": [{"name": "Status", "inverted": False, "values": ["remove_pending"]}],
+    },
+    {
+        "name": "Undeclared",
+        "description": "Techniques signatures are measured on that none of their tags names",
+        "filters": [{"name": "Status", "inverted": False, "values": ["undeclared"]}],
     },
 )
 
@@ -143,6 +227,10 @@ DEFAULT_SAVED_FILTERS = {
     ALERTS_SCREEN.name: DEFAULT_ALERT_SAVED_FILTERS,
     SVS_SAMPLES_SCREEN.name: DEFAULT_SVS_SAMPLE_SAVED_FILTERS,
     SVS_VALIDATIONS_SCREEN.name: DEFAULT_SVS_VALIDATION_SAVED_FILTERS,
+    SVS_RUNS_SCREEN.name: DEFAULT_SVS_RUN_SAVED_FILTERS,
+    SVS_COVERAGE_SCREEN.name: DEFAULT_SVS_COVERAGE_SAVED_FILTERS,
+    SVS_WORKLIST_SCREEN.name: DEFAULT_SVS_WORKLIST_SAVED_FILTERS,
+    SVS_TESTS_SCREEN.name: DEFAULT_SVS_TEST_SAVED_FILTERS,
     REMEDIATIONS_SCREEN.name: DEFAULT_REMEDIATION_SAVED_FILTERS,
     FILE_COLLECTIONS_SCREEN.name: DEFAULT_FILE_COLLECTION_SAVED_FILTERS,
 }

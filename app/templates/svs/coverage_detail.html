@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+{# A technique's coverage (docs/SVS_COVERAGE.md, *In the GUI*): a shell whose script,
+   static/js/svs_coverage.js, reads everything from the API named here. It is read-only. #}
+<div id="svs_technique_page"
+     data-api="/api/v2/svs"
+     data-technique="{{ technique }}"
+     data-attack='{{ attack | tojson }}'
+     data-tests-f='{{ tests_f | tojson }}'
+     data-runs-f='{{ runs_f | tojson }}'
+     data-history-f='{{ history_f | tojson }}'
+     data-tests-url="{{ url_for('svs.tests') }}"
+     data-runs-url="{{ url_for('svs.runs') }}"
+     data-technique-url="{{ technique_url }}"
+     data-test-url="{{ test_url }}"
+     data-run-url="{{ run_url }}"
+     data-signature-url="{{ signature_url }}"
+     data-tz="{{ current_user.timezone or 'UTC' }}">
+    <p class="mb-2"><a href="{{ url_for('svs.coverage') }}"><span class="bi bi-arrow-left"></span> Coverage</a></p>
+    <div id="svs_technique_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="svs_technique_loading" class="text-muted">Loading…</div>
+
+    <div id="svs_technique_body" class="d-none">
+        <div class="mb-2">
+            <h3 class="mb-0" id="svs_technique_title"></h3>
+            <div class="text-muted small" id="svs_technique_subtitle"></div>
+        </div>
+
+        <section class="mb-4" aria-labelledby="svs_technique_facts_title">
+            <h4 class="visually-hidden" id="svs_technique_facts_title">The technique</h4>
+            <dl class="row mb-0 small" id="svs_technique_facts"></dl>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_rows_title">
+            <h4 id="svs_technique_rows_title">By platform</h4>
+            <div id="svs_technique_rows"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_subs_title">
+            <h4 id="svs_technique_subs_title">Sub-techniques</h4>
+            <div id="svs_technique_subs"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_tests_title">
+            <h4 id="svs_technique_tests_title">Tests</h4>
+            <div id="svs_technique_tests"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_measured_title">
+            <h4 id="svs_technique_measured_title">Measured signatures</h4>
+            <div id="svs_technique_measured"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_manual_title">
+            <h4 id="svs_technique_manual_title">Manual signatures</h4>
+            <div id="svs_technique_manual"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_removed_title">
+            <h4 id="svs_technique_removed_title">Removed tests</h4>
+            <div id="svs_technique_removed"></div>
+        </section>
+
+        <section class="mb-4" aria-labelledby="svs_technique_history_title">
+            <h4 id="svs_technique_history_title">History</h4>
+            <div id="svs_technique_history"></div>
+        </section>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_coverage.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

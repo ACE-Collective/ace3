@@ -8,6 +8,7 @@
    its filter -- the trailing `true` to apply_temp_filter() overlays it on the filter in
    effect (overlay_temporary_filter() in app/analysis/views/session/filters.py). #}
 {% from "analysis/_table_macros.html" import sortable_th %}
+{% from "analysis/_svs_status.html" import svs_status_text with context %}
 
 {% macro column_header(column) -%}
 {%- if column.id == 'date' -%}
@@ -26,6 +27,8 @@
 <td data-col-id="description" class="alert-description-cell">
     <img src="{{alert.icon}}" width="24" height="24">
     <a href="{{ url_for('analysis.index', direct=alert.uuid) }}">({{alert.detection_count}}) {{alert.description}}</a>
+    {% set svs = svs_statuses.get(alert.uuid) if svs_statuses else none %}
+    {% if svs %}{{ svs_status_text(svs.status.value, svs.runs[-1] if svs.runs else none) }}{% endif %}
     {% if alert.event_mapping %}
         {% for em in alert.event_mapping %}
         <a class="btn btn-outline-primary btn-xs" target="_blank" href="{{ url_for('events.index', direct=em.event.id) }}">

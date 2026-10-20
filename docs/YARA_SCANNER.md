@@ -98,7 +98,7 @@ an `OSError`:
 
 | Key | Meaning |
 |---|---|
-| `signature_dir`, `git_repo_dirs` | Where the rules are (see [YARA_RULES.md](YARA_RULES.md)) |
+| `signature_dir`, `git_repo_dirs` | Where the rules are (see [YARA_RULES.md](YARA_RULES.md)). The service writes the SVS marker rule into `signature_dir/svs_marker/` before it starts, and only when the rule changed ([SVS_RUNS.md](SVS_RUNS.md)) |
 | `socket_dir` | Where the socket is, relative to `DATA_DIR` |
 | `worker_count` | Number of workers; defaults to the CPUs this process may use |
 | `update_frequency` | Seconds between checks for rule changes |

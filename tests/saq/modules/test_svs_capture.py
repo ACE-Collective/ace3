@@ -2,7 +2,6 @@
 when the alert is dispositioned tp or fp and analyzed in dispositioned mode (docs/SVS_SAMPLES.md)."""
 
 import pytest
-from sqlalchemy import true
 
 from saq.cas import get_cas
 from saq.constants import (
@@ -17,10 +16,16 @@ from saq.database import ALERT, DelayedAnalysis, User, get_db, set_dispositions
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
-from saq.modules import svs as svs_module
 from saq.svs.capture import CaptureState, capture_hold
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import OTHER_RULE_UUID, RULE_UUID, add_file, add_yara_match, capture_rows
+from tests.saq.svs.conftest import (
+    OTHER_RULE_UUID,
+    RULE_UUID,
+    add_file,
+    add_yara_match,
+    attribute_to_run,
+    capture_rows,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -87,14 +92,25 @@ def test_a_disposition_change_does_not_capture_twice():
     assert [r.id for r in capture_rows(root.uuid)] == [r.id for r in first]
 
 
-def test_an_alert_of_an_unreviewed_run_is_not_captured(monkeypatch):
+@pytest.mark.parametrize("state", ["started", "ended", "canceled", "error", "closed"])
+def test_an_alert_of_an_unreviewed_run_is_not_captured(state):
     root, _ = _alert_with_yara_matches()
-    monkeypatch.setattr(svs_module, "unreviewed_run_condition", lambda alert: true())
+    attribute_to_run(root.uuid, state)
 
     _disposition(root, DISPOSITION_FALSE_POSITIVE)
     _run_dispositioned()
 
     assert capture_rows(root.uuid) == []
+
+
+def test_an_alert_of_a_reviewed_run_is_captured():
+    root, _ = _alert_with_yara_matches()
+    attribute_to_run(root.uuid, "reviewed")
+
+    _disposition(root, DISPOSITION_FALSE_POSITIVE)
+    _run_dispositioned()
+
+    assert capture_rows(root.uuid) != []
 
 
 def test_an_alert_dispositioned_during_delayed_analysis_is_captured_when_it_finishes():

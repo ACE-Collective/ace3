@@ -6,17 +6,23 @@ with an svs:validate key, which reads counts and rule names and uuids only. The 
 samples they name are read with signature:read; the files need signature:download.
 """
 
-import json
 import logging
 import shutil
 from datetime import datetime
 from typing import Annotated
 
-import pytz
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, Security
+from fastapi import APIRouter, Depends, Query, Response, Security
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.common.listing import (
+    LISTING_MAX_PAGE_SIZE,
+    csv_response,
+    ndjson_response,
+    parse_timezone,
+    run_listing,
+    start_export,
+)
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, CsvStreamResponse, NdjsonStreamResponse, ZipFileResponse
 from aceapi_v2.svs.samples import service as samples_service
@@ -46,17 +52,6 @@ TimezoneParam = Annotated[str, Query(description="the timezone relative date fil
 CategoryParam = Annotated[list[str], Query(
     default_factory=list, description="only rows of these categories (repeat for more)")]
 RuleParam = Annotated[list[str], Query(default_factory=list, description="only rows of these rule uuids (repeat for more)")]
-
-
-def _timezone(name: str):
-    try:
-        return pytz.timezone(name)
-    except pytz.UnknownTimeZoneError:
-        raise HTTPException(status_code=422, detail=f"unknown timezone {name!r}")
-
-
-def _attachment(filename: str) -> dict:
-    return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
 #
@@ -97,60 +92,7 @@ async def get_validation_status(
 #
 
 async def _prepare_listing(f: list[str], changed_since: datetime | None, tz: str) -> service.ValidationListing:
-    try:
-        return await run_db_in_thread(service.prepare_listing, f, changed_since=changed_since, tz=_timezone(tz))
-    except samples_service.InvalidListingRequest as e:
-        raise HTTPException(status_code=422, detail=e.detail)
-
-
-async def _fetch(fetch, *args):
-    try:
-        return await run_db_in_thread(fetch, *args)
-    except samples_service.InvalidCursor as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-class _ExportFailed(Exception):
-    """A page after the first could not be fetched, after the response started."""
-
-
-async def _export_pages(fetch, selection, first_page):
-    """Yields the rows of every page in turn; raises _ExportFailed (after logging) when a later
-    page fails."""
-    rows, next_cursor = first_page
-    yield rows
-    while next_cursor is not None:
-        try:
-            rows, next_cursor = await run_db_in_thread(fetch, selection, next_cursor, service.LISTING_EXPORT_PAGE_SIZE)
-        except Exception as e:
-            logger.error("svs validation export failed part-way: %s", e, exc_info=True)
-            raise _ExportFailed() from e
-        yield rows
-
-
-def _ndjson(pages, filename: str) -> NdjsonStreamResponse:
-    async def _stream():
-        try:
-            async for rows in pages:
-                yield "".join(row.model_dump_json() + "\n" for row in rows)
-        except _ExportFailed:
-            yield json.dumps({"error": "the export failed part-way; the lines above are incomplete"}) + "\n"
-
-    return NdjsonStreamResponse(_stream(), headers=_attachment(filename))
-
-
-def _csv(pages, to_csv, filename: str) -> CsvStreamResponse:
-    async def _stream():
-        header = True
-        try:
-            async for rows in pages:
-                yield to_csv(rows, header=header)
-                header = False
-        except _ExportFailed:
-            # CSV has no way to say so in-band; the truncation and the log are the signal
-            return
-
-    return CsvStreamResponse(_stream(), headers=_attachment(filename))
+    return await run_listing(service.prepare_listing, f, changed_since=changed_since, tz=parse_timezone(tz))
 
 
 @router.get("/", response_model=ValidationListPage)
@@ -159,12 +101,12 @@ async def list_validations(
     f: FilterParam,
     changed_since: ChangedSinceParam = None,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
-    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
     tz: TimezoneParam = "UTC",
 ) -> ValidationListPage:
     """List validations, newest first. Follow next_cursor, with the same filters, until it is null."""
     listing = await _prepare_listing(f, changed_since, tz)
-    rows, next_cursor = await _fetch(service.fetch_page, listing, cursor, limit)
+    rows, next_cursor = await run_listing(service.fetch_page, listing, cursor, limit)
     return ValidationListPage(data=rows, next_cursor=next_cursor)
 
 
@@ -178,8 +120,8 @@ async def export_validations_ndjson(
     """Stream every validation the listing matches as NDJSON, one ValidationRow per line; a failure
     part-way ends the stream with an {"error": ...} line."""
     listing = await _prepare_listing(f, changed_since, tz)
-    first_page = await _fetch(service.fetch_page, listing, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return _ndjson(_export_pages(service.fetch_page, listing, first_page), "svs-validations.ndjson")
+    export = await start_export(service.fetch_page, listing, what="svs validation")
+    return ndjson_response(export, "svs-validations.ndjson")
 
 
 @router.get("/export/csv", response_class=CsvStreamResponse)
@@ -192,8 +134,8 @@ async def export_validations_csv(
     """Stream every validation the listing matches as CSV (without the per-category counts); a
     failure part-way truncates it."""
     listing = await _prepare_listing(f, changed_since, tz)
-    first_page = await _fetch(service.fetch_page, listing, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return _csv(_export_pages(service.fetch_page, listing, first_page), service.rows_to_csv, "svs-validations.csv")
+    export = await start_export(service.fetch_page, listing, what="svs validation")
+    return csv_response(export, service.validation_rows_to_csv, "svs-validations.csv")
 
 
 #
@@ -216,12 +158,12 @@ async def list_results(
     category: CategoryParam,
     rule_uuid: RuleParam,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
-    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
 ) -> ValidationResultPage:
     """The (sample, rule uuid) pairs the report lists, with each sample's label when the validation
     ran, in a stable order."""
     selection = await run_db_in_thread(service.select_results, validation_uuid, category, rule_uuid)
-    rows, next_cursor = await _fetch(service.fetch_results_page, selection, cursor, limit)
+    rows, next_cursor = await run_listing(service.fetch_results_page, selection, cursor, limit)
     return ValidationResultPage(data=rows, next_cursor=next_cursor)
 
 
@@ -234,9 +176,8 @@ async def export_results_ndjson(
 ) -> NdjsonStreamResponse:
     """Stream the selected rows as NDJSON."""
     selection = await run_db_in_thread(service.select_results, validation_uuid, category, rule_uuid)
-    first_page = await _fetch(service.fetch_results_page, selection, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return _ndjson(_export_pages(service.fetch_results_page, selection, first_page),
-                   f"svs-validation-{selection.validation_uuid}.ndjson")
+    export = await start_export(service.fetch_results_page, selection, what="svs validation result")
+    return ndjson_response(export, f"svs-validation-{selection.validation_uuid}.ndjson")
 
 
 @router.get("/{validation_uuid}/results/export/csv", response_class=CsvStreamResponse)
@@ -248,9 +189,8 @@ async def export_results_csv(
 ) -> CsvStreamResponse:
     """Stream the selected rows as CSV."""
     selection = await run_db_in_thread(service.select_results, validation_uuid, category, rule_uuid)
-    first_page = await _fetch(service.fetch_results_page, selection, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return _csv(_export_pages(service.fetch_results_page, selection, first_page), service.results_to_csv,
-                f"svs-validation-{selection.validation_uuid}.csv")
+    export = await start_export(service.fetch_results_page, selection, what="svs validation result")
+    return csv_response(export, service.results_to_csv, f"svs-validation-{selection.validation_uuid}.csv")
 
 
 @router.get("/{validation_uuid}/download", response_class=ZipFileResponse, responses=ZIP_DOWNLOAD_RESPONSES)

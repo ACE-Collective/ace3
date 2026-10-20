@@ -1,15 +1,19 @@
 import logging
 from collections import Counter
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from saq.alert_routing import RouteDecision, RouteStage, route_alert
 from saq.analysis.root import RootAnalysis
 from saq.constants import (
     ANALYSIS_MODE_DISPOSITIONED,
     DISPOSITION_IGNORE,
+    DISPOSITION_OPEN,
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
     REVIEW_COMMENT_PREFIX,
@@ -17,13 +21,15 @@ from saq.constants import (
 from saq.database.model import Alert, AlertQueueChange, new_alert_version
 from saq.configuration.config import get_config
 from saq.database.pool import get_db, get_db_connection
+from saq.disposition import is_frozen_disposition
 from saq.environment import get_global_runtime_settings
 from saq.search.tasks import submit_index_task, submit_payload_task
 
 
-def _fetch_disposition_context(c, alert_uuids: list) -> dict:
+def _fetch_disposition_context(c, alert_uuids: list, lock: bool = False) -> dict:
     """Read the alert metadata worth recording alongside a disposition change,
-    keyed by alert uuid.
+    keyed by alert uuid. With lock, the alert rows stay locked until the
+    transaction ends.
 
     Must be called BEFORE the UPDATE: it captures the outgoing disposition,
     which the UPDATE overwrites in place, and the pre-existing owner, which
@@ -45,7 +51,7 @@ def _fetch_disposition_context(c, alert_uuids: list) -> dict:
               FROM alerts a
                   LEFT JOIN company c ON a.company_id = c.id
                   LEFT JOIN users o ON a.owner_id = o.id
-              WHERE a.uuid IN ( {uuid_placeholders} )""", tuple(alert_uuids))
+              WHERE a.uuid IN ( {uuid_placeholders} ){" FOR UPDATE OF a" if lock else ""}""", tuple(alert_uuids))
 
     return {
         row[0]: {
@@ -86,6 +92,14 @@ class OwnershipCheck:
     reassigned: list[str] = field(default_factory=list)
     # alert uuid -> display name of the analyst who owns it, for the alerts left alone
     skipped: dict[str, str] = field(default_factory=dict)
+    # alert uuid -> its disposition, for the alerts left alone because only ACE sets that
+    # disposition (see is_frozen_disposition)
+    frozen: dict[str, str] = field(default_factory=dict)
+    # alert uuid -> its disposition, for the alerts left alone because their disposition was not
+    # one the caller expected (set_dispositions' expected_dispositions)
+    unexpected: dict[str, str] = field(default_factory=dict)
+    # the alerts left alone because the caller's eligible check no longer held for them
+    ineligible: list[str] = field(default_factory=list)
 
 
 def check_alert_ownership(
@@ -123,20 +137,43 @@ def check_alert_ownership(
     return result
 
 
-def describe_skipped(ownership: OwnershipCheck) -> str | None:
-    """'left 3 alerts owned by jsmith alone', or None when nothing was skipped."""
-    if not ownership.skipped:
+def describe_frozen(frozen: dict[str, str]) -> str | None:
+    """'left 2 SIMULATED alerts alone (only ACE sets that disposition)', or None when no alert
+    was left alone for its disposition (see OwnershipCheck.frozen)."""
+    if not frozen:
         return None
 
-    by_owner = Counter(ownership.skipped.values())
-    total = len(ownership.skipped)
+    by_disposition = Counter(frozen.values())
+    total = len(frozen)
     plural = "" if total == 1 else "s"
-    if len(by_owner) == 1:
-        owner = next(iter(by_owner))
-        return f"left {total} alert{plural} owned by {owner} alone"
+    if len(by_disposition) == 1:
+        disposition = next(iter(by_disposition))
+        return f"left {total} {disposition} alert{plural} alone (only ACE sets that disposition)"
 
-    owners = ", ".join(f"{owner} {count}" for owner, count in by_owner.most_common())
-    return f"left {total} alert{plural} owned by other analysts alone ({owners})"
+    dispositions = ", ".join(f"{disposition} {count}" for disposition, count in by_disposition.most_common())
+    return f"left {total} alert{plural} alone whose disposition only ACE sets ({dispositions})"
+
+
+def describe_skipped(ownership: OwnershipCheck) -> str | None:
+    """'left 3 alerts owned by jsmith alone', and the alerts left alone for their disposition
+    (describe_frozen), or None when nothing was skipped."""
+    parts = []
+    if ownership.skipped:
+        by_owner = Counter(ownership.skipped.values())
+        total = len(ownership.skipped)
+        plural = "" if total == 1 else "s"
+        if len(by_owner) == 1:
+            owner = next(iter(by_owner))
+            parts.append(f"left {total} alert{plural} owned by {owner} alone")
+        else:
+            owners = ", ".join(f"{owner} {count}" for owner, count in by_owner.most_common())
+            parts.append(f"left {total} alert{plural} owned by other analysts alone ({owners})")
+
+    frozen = describe_frozen(ownership.frozen)
+    if frozen:
+        parts.append(frozen)
+
+    return "; ".join(parts) or None
 
 
 def _fetch_alert_owners(c, alert_uuids: list) -> dict[str, AlertOwner]:
@@ -233,8 +270,12 @@ def move_alert_to_queue(
     *,
     router: str | None = None,
     root: RootAnalysis | None = None,
+    open_unless_owned_by_others: Collection[int] | None = None,
 ) -> bool:
-    """Moves an existing alert to another queue. Returns False when it is already there.
+    """Moves an existing alert to another queue. Returns False when it is already there, or when
+    open_unless_owned_by_others is given and the alert is no longer OPEN, or is owned by someone
+    not in it: judged by the row as it is updated, so an analyst who takes or dispositions the
+    alert at the same moment keeps it where they took it.
 
     Updates the passed Alert in its own session (so a caller holding it, like the engine, never
     writes the old queue back), rotates its version, records the move in alert_queue_changes
@@ -252,15 +293,25 @@ def move_alert_to_queue(
 
     from_queue = alert.queue
     session = Session.object_session(alert) or get_db()
-    alert.queue = queue
-    alert.version = new_alert_version()
+    version = new_alert_version()
+    conditions = [Alert.id == alert.id, Alert.queue == from_queue]
+    if open_unless_owned_by_others is not None:
+        conditions += [Alert.disposition == DISPOSITION_OPEN,
+                       or_(Alert.owner_id.is_(None), Alert.owner_id.in_(list(open_unless_owned_by_others)))]
+    moved = session.execute(update(Alert).where(*conditions).values(queue=queue, version=version)
+                            .execution_options(synchronize_session=False)).rowcount == 1
+    if not moved:
+        return False
+
+    # what the row now holds, so the caller's Alert never writes the old queue back
+    set_committed_value(alert, "queue", queue)
+    set_committed_value(alert, "version", version)
     if root is not None:
         root.queue = queue
 
     session.add(AlertQueueChange(
         alert_id=alert.id, from_queue=from_queue, to_queue=queue, reason=reason,
         router=router, actor_user_id=actor_user_id))
-    session.add(alert)
     session.commit()
 
     submit_payload_task(alert.uuid)
@@ -281,6 +332,33 @@ def get_last_queue_change(alert_id: int) -> AlertQueueChange | None:
 def get_alert_by_uuid(uuid: str) -> Alert | None:
     """Given a UUID, this function will return the Alert object from the database, or None if it does not exist."""
     return get_db().query(Alert).filter(Alert.uuid == uuid).one_or_none()
+
+
+class AlertFrozen(Exception):
+    """The alert's disposition is one only ACE sets (SIMULATED, a test-run alert): it is never
+    reset or re-analyzed, so the detections its run review froze stay as they are."""
+
+    def __init__(self, alert_uuid: str, disposition: str):
+        super().__init__(
+            f"alert {alert_uuid} is {disposition}, a disposition only ACE sets: it can't be reset, "
+            "re-analyzed or given new observables")
+        self.alert_uuid = alert_uuid
+        self.disposition = disposition
+
+
+def ensure_not_frozen(alert: Alert) -> None:
+    """Raises AlertFrozen for an alert with a frozen disposition (see is_frozen_disposition).
+    Called by everything that resets an existing alert or queues it for analysis again."""
+    if is_frozen_disposition(alert.disposition):
+        raise AlertFrozen(alert.uuid, alert.disposition)
+
+
+def ensure_uuid_not_frozen(alert_uuid: str) -> None:
+    """ensure_not_frozen() for a caller that has only the uuid. Nothing to check for a root that
+    is not an alert."""
+    disposition = get_db().query(Alert.disposition).filter(Alert.uuid == alert_uuid).scalar()
+    if is_frozen_disposition(disposition):
+        raise AlertFrozen(alert_uuid, disposition)
 
 def touch_alerts(alert_uuids: list[str], cursor=None) -> None:
     """Rotates alerts.version for the given alerts so that API clients polling them see a change.
@@ -334,30 +412,64 @@ def _reassign_owner(c, alert_uuids: list, user_id: int | None) -> None:
                   WHERE uuid IN ( {uuid_placeholders} )""",
               [user_id, new_alert_version(), *alert_uuids])
 
-def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None) -> OwnershipCheck:
+def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None,
+                     system: bool = False, expected_dispositions: Collection[str] | None = None,
+                     eligible: Callable[[list[str]], Collection[str]] | None = None) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
 
     An alert owned by another analyst is left alone unless the user confirmed taking it, in
-    which case the user becomes its owner (see check_alert_ownership).
+    which case the user becomes its owner (see check_alert_ownership). An alert whose current
+    disposition only ACE sets (SIMULATED) is left alone too, unless ACE itself is the caller.
 
        :param alert_uuids: A list of UUIDs of Alert objects to set.
        :param disposition: The disposition to set the Alerts.
        :param user_id: The id of the User that is setting the disposition.
        :param user_comment: Optional comment the User is providing as part of the disposition.
        :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
+       :param system: True when ACE sets the disposition rather than an analyst (SVS setting
+           SIMULATED): alerts with a frozen disposition are changed too.
+       :param expected_dispositions: when given, an alert whose disposition is not one of these
+           (read under the row lock) is left alone: an analyst dispositioned it after the caller
+           chose it.
+       :param eligible: when given, called with the alerts that would change, once their rows are
+           locked, and returns those that still may: the caller's own condition, re-checked where
+           nothing that takes the alert's row lock can change it. It reads on a connection of its
+           own, which sees whatever was committed before the lock was granted.
        :returns: which alerts were dispositioned and which were left alone."""
 
     with get_db_connection() as db:
         c = db.cursor()
 
-        ownership = check_alert_ownership(alert_uuids, _fetch_alert_owners(c, alert_uuids), user_id, confirmed_takes)
+        # locks the rows, so neither the owners nor the dispositions read here change before the UPDATE
+        owners = _fetch_alert_owners(c, alert_uuids)
+
+        # capture what the alerts look like before the UPDATE overwrites the
+        # outgoing disposition (and before the owner changes below)
+        context = _fetch_disposition_context(c, list(owners))
+
+        # a frozen alert is left alone whoever owns it; ACE itself (system) changes it. This comes
+        # before the ownership check: SIMULATED was set by the automation user, who now owns it
+        frozen = {} if system else {
+            alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+            if is_frozen_disposition(row["old_disposition"])}
+        unexpected = {} if expected_dispositions is None else {
+            alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+            if alert_uuid not in frozen and row["old_disposition"] not in expected_dispositions}
+        ownership = check_alert_ownership(
+            [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen and alert_uuid not in unexpected],
+            owners, user_id, confirmed_takes)
+        ownership.frozen = frozen
+        ownership.unexpected = unexpected
+        if eligible is not None and ownership.permitted:
+            still = set(eligible(list(ownership.permitted)))
+            ownership.ineligible = [alert_uuid for alert_uuid in ownership.permitted if alert_uuid not in still]
+            ownership.permitted = [alert_uuid for alert_uuid in ownership.permitted if alert_uuid in still]
+            ownership.reassigned = [alert_uuid for alert_uuid in ownership.reassigned if alert_uuid in still]
         alert_uuids = ownership.permitted
         if not alert_uuids:
             return ownership
 
-        # capture what the alerts look like before the UPDATE overwrites the
-        # outgoing disposition (and before the owner changes below)
-        context = _fetch_disposition_context(c, alert_uuids)
+        context = {alert_uuid: context[alert_uuid] for alert_uuid in alert_uuids}
         acting_username = _fetch_username(c, user_id)
 
         _reassign_owner(c, ownership.reassigned, user_id)
@@ -451,14 +563,19 @@ def change_alert_owner(alert_uuids, owner_id: int | None, acting_user_id: int, c
     _log_ownership_taken(context, ownership.reassigned, new_owner, acting_username)
     return ownership
 
-def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None, review_comment=None):
+def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None,
+                            review_comment=None) -> dict[str, str]:
     """Utility function to record a senior analyst's review of the disposition of many Alerts at once.
+
+    A correction never changes an alert whose current disposition only ACE sets (SIMULATED); a
+    review that the disposition was correct changes nothing about it and is recorded.
        :param alert_uuids: A list of UUIDs of Alert objects to review.
        :param review_result: Either DISPOSITION_REVIEW_CORRECT or DISPOSITION_REVIEW_INCORRECT.
        :param reviewer_id: The id of the User performing the review.
        :param corrected_disposition: When the review result is INCORRECT, the disposition to correct the alerts to.
        :param review_comment: Optional comment describing the review; stored as an alert comment prefixed with
-                              REVIEW_COMMENT_PREFIX. Required by the caller when the result is INCORRECT."""
+                              REVIEW_COMMENT_PREFIX. Required by the caller when the result is INCORRECT.
+       :returns: alert uuid -> disposition of the alerts left alone because their disposition is frozen."""
 
     # build the prefixed review comment if one was provided
     prefixed_comment = None
@@ -476,8 +593,16 @@ def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_d
             c = db.cursor()
 
             # capture the outgoing (incorrect) disposition before it moves to
-            # incorrect_disposition and the correction takes its place
-            context = _fetch_disposition_context(c, alert_uuids)
+            # incorrect_disposition and the correction takes its place. locked, so a frozen
+            # disposition can't be set between this read and the UPDATE
+            context = _fetch_disposition_context(c, alert_uuids, lock=True)
+            frozen = {alert_uuid: row["old_disposition"] for alert_uuid, row in context.items()
+                      if is_frozen_disposition(row["old_disposition"])}
+            alert_uuids = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
+            context = {alert_uuid: row for alert_uuid, row in context.items() if alert_uuid not in frozen}
+            if not alert_uuids:
+                return frozen
+
             acting_username = _fetch_username(c, reviewer_id)
 
             uuid_placeholders = ','.join(['%s' for _ in alert_uuids])
@@ -541,6 +666,7 @@ WHERE
             disposition_user=acting_username,
             disposition_comment=review_comment,
         )
+        return frozen
     else:
         # the disposition was correct; just record the review (and optional comment)
         with get_db_connection() as db:
@@ -581,3 +707,4 @@ WHERE
             disposition_user=acting_username,
             disposition_comment=review_comment,
         )
+        return {}

@@ -32,6 +32,7 @@ from aceapi_ai.export.schemas import (
 from aceapi_ai.limited import run_limited
 from aceapi_v2.alerts import service as alerts_service
 from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.common.listing import InvalidCursor
 from saq.configuration.config import get_config
 from saq.database.model import Alert, DetectionPoint, EventMapping, Observable, ObservableMapping
 from saq.database.pool import get_db
@@ -144,7 +145,7 @@ async def export_alerts(
         rows, next_cursor = await run_limited(
             EXPORT_LIMIT_NAME, limits, "export", "export_alerts", auth, request,
             lambda: export_alert_page(changed_since, cursor, limit), **fields)
-    except alerts_service.InvalidCursor as e:
+    except InvalidCursor as e:
         audit_event("export_alerts_error", auth, request, **fields, status=400, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 

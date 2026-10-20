@@ -7,6 +7,7 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.constants import VALID_DIRECTIVES
 from saq.database.pool import get_db
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.gui.alert import GUIAlert
@@ -68,6 +69,12 @@ def add_observable():
     except Exception as e:
         logging.error("unable to load alert {0} from database: {1}".format(uuid, str(e)))
         flash("internal error")
+        return redirection
+
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        flash(str(e))
         return redirection
 
     lock_uuid = str(uuidlib.uuid4())

@@ -47,6 +47,13 @@ class AlertRow(BaseModel):
     archived: bool
     tags: list[str] = Field(default_factory=list)
     detection_count: int = 0
+    svs_status: str | None = Field(
+        default=None,
+        description="the alert's SVS status: test, test? (attributed by context only), partial or mismatch; "
+                    "null for an alert no test run touched (docs/SVS_RUNS.md, *Attribution*)")
+    svs_runs: list[str] = Field(
+        default_factory=list,
+        description="the uuids of the SVS test runs the alert is attributed to (GET /api/v2/svs/runs/{run_id})")
 
 
 class AlertListRow(AlertRow):
@@ -62,7 +69,7 @@ class AlertListPage(BaseModel):
         description="pass as ?cursor= with the same filters for the next page; null on the last page")
 
 
-# the CSV export's columns, in order; tags are joined with ",", comments with a newline
+# the CSV export's columns, in order; tags and svs_runs are joined with ",", comments with a newline
 ALERT_ROW_CSV_FIELDS = tuple(AlertListRow.model_fields)
 
 

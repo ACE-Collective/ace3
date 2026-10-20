@@ -1,8 +1,5 @@
 """Alert service for ACE API v2."""
 
-import base64
-import csv
-import io
 import json
 import logging
 import os
@@ -16,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, func, or_, select, text
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import aliased
 
 from saq.analysis.root import load_file_observable
@@ -47,7 +44,14 @@ from saq.database.model import (
     User,
 )
 from saq.database.pool import get_db
-from saq.database.util.alert import change_alert_owner, describe_skipped, node_scope_locations, touch_alerts
+from saq.database.util.alert import (
+    AlertFrozen,
+    change_alert_owner,
+    describe_skipped,
+    ensure_not_frozen,
+    node_scope_locations,
+    touch_alerts,
+)
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.environment import get_base_dir, get_temp_dir
@@ -59,6 +63,7 @@ from saq.json_encoding import _JSONEncoder
 from saq.search.query import build_listing_query
 from saq.search.tasks import submit_index_task
 from saq.search.types import SearchFilters
+from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
 from saq.util.uuid import is_uuid
 
@@ -72,6 +77,15 @@ from aceapi_v2.alerts.schemas import (
     SetOwnerResult,
 )
 from aceapi_v2.common.archive import ZIP_PASSWORD, add_to_encrypted_zip, safe_file_name
+from aceapi_v2.common.listing import (
+    CHANGED_SINCE_SETTLE_SECONDS,
+    InvalidCursor,
+    InvalidListingRequest,
+    decode_cursor,
+    encode_cursor,
+    rows_to_csv,
+    settled,
+)
 from aceapi_v2.sync import run_db_in_thread
 
 if TYPE_CHECKING:
@@ -499,8 +513,14 @@ def request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_typ
     request_analyst_analysis() puts the alert back in correlation mode and past the stop on a
     dispositioned alert, so the requested analysis runs on an alert the analyst already worked.
     404 for an unknown alert or observable, 422 for an observable of another type, and 409 while
-    the engine, or anything else, holds the alert's lock."""
+    the engine, or anything else, holds the alert's lock, or for a SIMULATED alert, which is never
+    re-analyzed (ensure_not_frozen)."""
     alert = _resolve_alert(alert_uuid)
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
     lock_uuid = str(uuidlib.uuid4())
     if not acquire_lock(str(alert.uuid), lock_uuid):
         raise HTTPException(status_code=409, detail="the alert is being analyzed; try again in a moment")
@@ -617,6 +637,11 @@ def _add_observable_to_alert(
         logger.error("alert %s not found in database", alert_uuid)
         return "alert not found"
 
+    try:
+        ensure_not_frozen(alert)
+    except AlertFrozen as e:
+        return str(e)
+
     lock_uuid = str(uuidlib.uuid4())
     try:
         if not acquire_lock(uuid=str(alert.uuid), lock_uuid=lock_uuid):
@@ -719,30 +744,6 @@ async def bulk_add_observable(
 LISTING_ORDER_ID = "id"
 LISTING_ORDER_UPDATED = "updated_at"
 
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
-# A changed_since pull only returns rows whose updated_at is at least this old. updated_at is
-# stamped when the UPDATE runs, not when it commits, so a row can appear with a timestamp
-# older than a cursor that was already handed out; waiting until no transaction can still be
-# writing a value that old is what makes the (updated_at, id) keyset safe. Delivery is
-# at-least-once: a client that resumes from changed_since may see a row twice, never miss one.
-CHANGED_SINCE_SETTLE_SECONDS = 5
-
-_CURSOR_VERSION = 1
-
-
-class InvalidListingRequest(ValueError):
-    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
-
-    def __init__(self, detail):
-        super().__init__(str(detail))
-        self.detail = detail
-
-
-class InvalidCursor(ValueError):
-    """The cursor is malformed, or belongs to a listing in another order."""
-
 
 @dataclass(frozen=True)
 class AlertListing:
@@ -806,17 +807,12 @@ def prepare_alert_listing(
 
 def encode_listing_cursor(order: str, alert_id: int, updated_at: datetime) -> str:
     key = [alert_id] if order == LISTING_ORDER_ID else [updated_at.isoformat(), alert_id]
-    payload = json.dumps({"v": _CURSOR_VERSION, "o": order, "k": key}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(o=order, k=key)
 
 
 def decode_listing_cursor(cursor: str, order: str) -> list:
     """The keyset values a cursor carries. Raises InvalidCursor."""
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> list:
         if payload["o"] != order:
             raise InvalidCursor(
                 f"this cursor pages a listing ordered by {payload['o']}, not {order}: "
@@ -827,10 +823,8 @@ def decode_listing_cursor(cursor: str, order: str) -> list:
             return [int(alert_id)]
         updated_at, alert_id = key
         return [datetime.fromisoformat(updated_at), int(alert_id)]
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def fetch_alert_page(
@@ -850,8 +844,8 @@ def fetch_alert_page_ids(
     InvalidCursor."""
     statement = listing.statement
     if listing.order == LISTING_ORDER_UPDATED:
-        settled = func.timestampadd(text("MICROSECOND"), -CHANGED_SINCE_SETTLE_SECONDS * 1000000, func.now(6))
-        statement = statement.where(Alert.updated_at < settled)
+        # only rows no open transaction can still be writing (aceapi_v2.common.listing)
+        statement = statement.where(settled(Alert.updated_at, CHANGED_SINCE_SETTLE_SECONDS))
         if cursor is not None:
             updated_at, alert_id = decode_listing_cursor(cursor, listing.order)
             # written out rather than as a row comparison so mysql serves it from the index
@@ -881,7 +875,8 @@ def count_alert_listing(listing: AlertListing) -> int:
 
 
 def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
-    """The rows for these alert ids, in the order given: three queries, whatever the page size."""
+    """The rows for these alert ids, in the order given: a fixed number of queries, whatever the
+    page size."""
     if not alert_ids:
         return []
 
@@ -915,6 +910,8 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
         .group_by(DetectionPoint.alert_id)
     ).all())
 
+    svs = alert_svs_statuses({row[0]: row[1] for row in result})
+
     rows = {}
     for (alert_id, alert_uuid, insert_date, event_time, disposition_time, owner_time, updated_at,
          tool, tool_instance, alert_type, description, priority, queue, disposition,
@@ -940,6 +937,8 @@ def load_alert_rows(alert_ids: list[int]) -> list[AlertRow]:
             archived=bool(archived),
             tags=sorted(tags.get(alert_id, [])),
             detection_count=detection_counts.get(alert_id, 0),
+            svs_status=svs[alert_id].status.value if alert_id in svs else None,
+            svs_runs=list(svs[alert_id].runs) if alert_id in svs else [],
         )
 
     # an alert deleted between the key query and this one is simply absent
@@ -966,14 +965,10 @@ def load_alert_list_rows(alert_ids: list[int]) -> list[AlertListRow]:
 
 def alert_rows_to_csv(rows: list[AlertListRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(ALERT_ROW_CSV_FIELDS)
-    for row in rows:
-        values = row.model_dump(mode="json")
-        values["tags"] = ",".join(row.tags)
+    def flatten(values: dict) -> None:
+        values["tags"] = ",".join(values["tags"])
+        values["svs_runs"] = ",".join(values["svs_runs"])
         # a comment can hold commas; the csv module quotes the newlines
-        values["comments"] = "\n".join(row.comments)
-        writer.writerow([values[name] if values[name] is not None else "" for name in ALERT_ROW_CSV_FIELDS])
-    return buffer.getvalue()
+        values["comments"] = "\n".join(values["comments"])
+
+    return rows_to_csv(rows, ALERT_ROW_CSV_FIELDS, header=header, flatten=flatten)

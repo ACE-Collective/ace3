@@ -1,11 +1,13 @@
 import logging
 import re
+import string
 import sys
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
+from saq.svs.attack_files import release_path
 
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
@@ -771,11 +773,98 @@ class SVSYaraConfig(BaseModel):
     prune_batch_size: int = Field(default=100, ge=1, le=1000, description="how many validations one prune transaction removes (their results go with them)")
 
 
+class SVSCatalogConfig(BaseModel):
+    """The Atomic Red Team test catalog (docs/SVS_RUNS.md, *The Atomic Red Team catalog*): the tests
+    runs may be registered for, read from git repositories in the ART layout."""
+    model_config = ConfigDict(extra="forbid")
+    repositories: list[str] = Field(default_factory=list, description="the names (the name field) of the git_repo_* sections whose atomics/T*/T*.yaml make up the catalog. Each is read from the checkout at its local_path, which service_git keeps up to date")
+    refresh_interval_seconds: int = Field(default=300, gt=0, description="how often service_svs looks for a new commit of each catalog repository; the tests are read again only when the commit changed")
+
+
+class SVSCoverageConfig(BaseModel):
+    """ATT&CK coverage (docs/SVS_COVERAGE.md): the svs_coverage table service_svs keeps current."""
+    model_config = ConfigDict(extra="forbid")
+    refresh_interval_seconds: int = Field(default=120, gt=0, description="how often service_svs recomputes coverage; a refresh writes only the rows that changed")
+
+
+class SVSObservationWindowConfig(BaseModel):
+    """How long a started run waits for its alerts before it ends (docs/SVS_RUNS.md, *Windows*): the
+    worst-case latency of the signatures it expects, plus slack, within a floor and a ceiling."""
+    model_config = ConfigDict(extra="forbid")
+    slack_minutes: int = Field(default=30, ge=0, description="added to the worst-case latency of the slowest expected signature")
+    floor_minutes: int = Field(default=60, ge=1, description="the shortest observation window")
+    ceiling_hours: int = Field(default=72, ge=1, description="the longest observation window")
+
+    @model_validator(mode="after")
+    def _floor_below_ceiling(self) -> "SVSObservationWindowConfig":
+        if self.floor_minutes > self.ceiling_hours * 60:
+            raise ValueError(f"floor_minutes ({self.floor_minutes}) must not exceed ceiling_hours ({self.ceiling_hours}) in minutes")
+        return self
+
+
+class SVSRunsConfig(BaseModel):
+    """Test runs (docs/SVS_RUNS.md): what a launcher may register and how long a run's windows last."""
+    model_config = ConfigDict(extra="forbid")
+    start_timeout_minutes: int = Field(default=30, ge=1, description="a run whose launcher has not called start this long after registering it goes to Error and is closed")
+    observation_window: SVSObservationWindowConfig = Field(default_factory=SVSObservationWindowConfig, description="how long a started run waits for its alerts before it ends")
+    attribution_extra_hours: int = Field(default=24, ge=0, description="how much longer than the observation window alerts are still attributed to the run (as late)")
+    max_extra_bytes: int = Field(default=16384, ge=0, description="the largest launcher extra a registration may carry, as serialized JSON; it is stored and shown on the run page")
+    max_targets: int = Field(default=16, ge=1, description="the most targets one run may have")
+    timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
+
+
+class SVSAttributionConfig(BaseModel):
+    """Attributing alerts to test runs (docs/SVS_RUNS.md, *Attribution*)."""
+    model_config = ConfigDict(extra="forbid")
+    gate_cache_seconds: int = Field(default=5, ge=0, description="how long each process trusts its answer to 'is any run registered or inside its attribution window?'. While no run is, nothing looks for markers")
+    marker_cache_size: int = Field(default=1024, ge=0, description="how many markers of started runs each process keeps resolved. A marker it doesn't have is always looked up in the database")
+    max_sightings: int = Field(default=200, ge=1, description="the most markers found in analysis details an alert keeps (the svs_sightings root extension)")
+
+
+# the names svs.log_search_url may use (saq.svs.log_search)
+SVS_LOG_SEARCH_FIELDS = ("run_uuid", "marker", "test_guid", "earliest", "latest")
+
+
 class SVSConfig(BaseModel):
     """The Signature Validation System (docs/SVS.md)."""
     model_config = ConfigDict(extra="forbid")
     samples: SVSSamplesConfig = Field(default_factory=SVSSamplesConfig, description="the captured YARA samples")
     yara: SVSYaraConfig = Field(default_factory=SVSYaraConfig, description="YARA rule validation")
+    catalog: SVSCatalogConfig = Field(default_factory=SVSCatalogConfig, description="the Atomic Red Team test catalog")
+    coverage: SVSCoverageConfig = Field(default_factory=SVSCoverageConfig, description="ATT&CK coverage")
+    runs: SVSRunsConfig = Field(default_factory=SVSRunsConfig, description="test runs")
+    attribution: SVSAttributionConfig = Field(default_factory=SVSAttributionConfig, description="attributing alerts to test runs")
+    queue: str = Field(default="svs", min_length=1, max_length=64, description="the queue test-run alerts are routed to (docs/SVS_RUNS.md). Alert search and similar alerts leave it out unless the request names a queue or asks for test alerts")
+    simulated_days: int = Field(default=30, ge=1, description="SIMULATED alerts (test-run alerts, docs/SVS_RUNS.md) older than this are archived by ace alert cleanup, the way FALSE_POSITIVE alerts are after global.fp_days. They are never deleted")
+    log_search_url: Optional[str] = Field(default=None, description="a link to the site's log search for one run, shown in the Logs section of the run page; ACE never queries it. {run_uuid}, {marker}, {test_guid}, {earliest} and {latest} (epoch seconds: the run's start, and the end of its attribution window or now) are replaced, URL-encoded (docs/SVS_RUNS.md, *Logs*)")
+    attack_release: str = Field(default="v20.0", description="the ATT&CK release coverage uses for technique and tactic names, sub-technique parents, platforms and revoked techniques. It names etc/attack/<release>.json, an extract vendored with ACE and built by bin/update-attack-catalog (docs/SVS_COVERAGE.md)")
+
+    @field_validator("attack_release")
+    @classmethod
+    def _check_attack_release(cls, value: str) -> str:
+        path = release_path(value)
+        if not path.is_file():
+            raise ValueError(f"svs.attack_release {value}: {path} is missing; bin/update-attack-catalog {value} builds it")
+        return value
+
+    @field_validator("log_search_url")
+    @classmethod
+    def _check_log_search_url(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        # it becomes a link on the run page
+        if not value.lower().startswith(("https://", "http://")):
+            raise ValueError("svs.log_search_url must be an http or https URL")
+        try:
+            fields = [(name, spec, conversion) for _, name, spec, conversion in string.Formatter().parse(value)
+                      if name is not None]
+        except ValueError as e:
+            raise ValueError(f"svs.log_search_url is not a valid template: {e}")
+        for name, spec, conversion in fields:
+            if name not in SVS_LOG_SEARCH_FIELDS or spec or conversion:
+                raise ValueError(f"svs.log_search_url may only use {{{'}, {'.join(SVS_LOG_SEARCH_FIELDS)}}} "
+                                 f"(braces themselves are written {{{{ and }}}}), not {{{name}}}")
+        return value
 
 
 class NRDConfig(BaseModel):
@@ -910,6 +999,21 @@ class ACEConfig(BaseModel):
                     f"{', '.join(removed)}: replaced by the dispositions: block (one entry per "
                     f"disposition with rank, css, show_save_to_event, analyst_selectable) and "
                     f"disposition_classification:; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _check_svs_service(cls, data):
+        """service_svs is checked as the configuration is read, not only when the service starts
+        (service configs are otherwise resolved lazily): a lease its heartbeat can't keep would
+        have every validation taken over, then failed."""
+        if isinstance(data, dict) and isinstance(data.get("service_svs"), dict):
+            # saq.svs.service_config imports this module
+            from saq.svs.service_config import SVSServiceConfig
+            try:
+                SVSServiceConfig.model_validate(data["service_svs"])
+            except ValidationError as e:
+                raise ValueError(f"service_svs: {'; '.join(error['msg'] for error in e.errors())}") from None
         return data
 
     @model_validator(mode="after")

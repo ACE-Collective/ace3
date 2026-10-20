@@ -3,9 +3,6 @@
 Synchronous; the router runs each function through run_db_in_thread.
 """
 
-import base64
-import csv
-import io
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +12,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, exists, or_, select
 
+from aceapi_v2.common.listing import InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.detection_points.schemas import (
     DETECTION_POINT_ROW_CSV_FIELDS,
     ConfirmResult,
@@ -128,24 +126,6 @@ def confirm_detection_verdicts(alert_uuid: str, user_id: int | None) -> ConfirmR
 # (relative dates resolve then) and each page runs in its own thread.
 #
 
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
-_CURSOR_VERSION = 1
-
-
-class InvalidListingRequest(ValueError):
-    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
-
-    def __init__(self, detail):
-        super().__init__(str(detail))
-        self.detail = detail
-
-
-class InvalidCursor(ValueError):
-    """The cursor is malformed."""
-
-
 @dataclass(frozen=True)
 class DetectionPointListing:
     """A prepared listing: the filtered, scoped statement, with no order or limit."""
@@ -206,22 +186,12 @@ def prepare_detection_point_listing(
 
 
 def encode_listing_cursor(detection_point_id: int) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "k": detection_point_id}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(k=detection_point_id)
 
 
 def decode_listing_cursor(cursor: str) -> int:
     """The detection_points.id a cursor carries. Raises InvalidCursor."""
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
-        return int(payload["k"])
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+    return decode_cursor(cursor, lambda payload: int(payload["k"]))
 
 
 def fetch_detection_point_page(
@@ -245,13 +215,8 @@ def fetch_detection_point_page(
 
 def detection_point_rows_to_csv(rows: list[DetectionPointRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(DETECTION_POINT_ROW_CSV_FIELDS)
-    for row in rows:
-        values = row.model_dump(mode="json")
+    def flatten(values: dict) -> None:
         if values["details"] is not None:
             values["details"] = json.dumps(values["details"], sort_keys=True)
-        writer.writerow([values[name] if values[name] is not None else "" for name in DETECTION_POINT_ROW_CSV_FIELDS])
-    return buffer.getvalue()
+
+    return rows_to_csv(rows, DETECTION_POINT_ROW_CSV_FIELDS, header=header, flatten=flatten)

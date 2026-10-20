@@ -31,7 +31,7 @@ HUNT_TEMPLATE_FILE_NAME = "template.yaml"
 HUNT_INCLUDE_FILE_SUFFIX = ".include.yaml"
 
 
-def _is_hunt_file(file_name: str) -> bool:
+def is_hunt_file(file_name: str) -> bool:
     if not file_name.endswith(".yaml"):
         return False
 
@@ -85,7 +85,7 @@ def load_hunt_signatures(rule_dir: str, git_dirs: list[str] | None = None) -> li
 
     result: list[Signature] = []
     for entry in sorted(os.scandir(rule_dir), key=lambda e: e.name):
-        if not entry.is_file() or not _is_hunt_file(entry.name):
+        if not entry.is_file() or not is_hunt_file(entry.name):
             continue
 
         try:

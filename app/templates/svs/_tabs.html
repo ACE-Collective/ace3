@@ -1,0 +1,13 @@
+{# The SVS area's tabs (app/svs/views/tabs.py); only those the user may open are listed. The SVS
+   guides (app/help) sit at the end of the row, as a link rather than a tab. #}
+<h2 class="mb-2">SVS</h2>
+<ul class="nav nav-tabs mb-3">
+    {% for tab in svs_tabs %}
+    <li class="nav-item">
+        <a class="nav-link{{ ' active' if request.endpoint in tab.active }}"{{ ' aria-current="page"' | safe if request.endpoint in tab.active }} href="{{ url_for(tab.endpoint) }}">{{ tab.title }}</a>
+    </li>
+    {% endfor %}
+    <li class="nav-item ms-auto">
+        <a class="nav-link border-0" href="{{ url_for('help.guide_set', set_slug='svs') }}"><i class="bi bi-book"></i> Guides</a>
+    </li>
+</ul>

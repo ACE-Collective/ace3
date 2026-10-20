@@ -2,9 +2,10 @@
 
 ACE doesn't ship fixed reports (`docs/SVS.md`, Part 6). Every fact SVS keeps can be pulled through
 `aceapi_v2`, with the same filters the screens use, and reports are built outside ACE. This document
-is the data dictionary for those endpoints, the joins between them, and worked examples. It grows
-with each SVS phase; today it covers alerts and detections (phases 0 and 1), the YARA samples
-(phase 2) and the YARA validations (phase 3).
+is the data dictionary for those endpoints, the joins between them, and worked examples. It covers
+alerts and detections (phases 0 and 1), the YARA samples (phase 2), the YARA validations (phase 3),
+the test hosts, the Atomic Red Team test catalog and the runs with their event logs (phase 4), and
+ATT&CK coverage with its daily snapshots and the declared-vs-measured worklist (phase 5).
 
 ## Conventions
 
@@ -24,9 +25,33 @@ with each SVS phase; today it covers alerts and detections (phases 0 and 1), the
   at-least-once: a row can come again, never be missed.
 - **Timestamps** are UTC. Relative date filters (`-7d`, `@d`) resolve in the `tz` parameter's zone.
 - **Scope.** Alert data is scoped to the alerts this node shows, as the GUI is. SVS data (samples,
-  validations) is global.
+  validations, tests, runs) is global.
 - **Stable identifiers:** alert UUID, signature UUID, detection `content_hash`, sample `sha256`,
-  validation UUID.
+  validation UUID, test GUID, run UUID, ATT&CK technique id.
+
+### Conflicting writes
+
+A write that two people can make from the same page may say what it was made from, as an HTTP
+precondition, so that the second of two writes from one read is refused instead of silently
+replacing the first (`saq/svs/preconditions.py`):
+
+- `If-Match: <updated_at>`: the row's `updated_at` exactly as it was read. The write applies only
+  while the row is unchanged since.
+- `If-None-Match: *`: the client saw no row. The write applies only while there still is none.
+
+A precondition that no longer holds answers **412** with `{"detail": {"message", "current"}}`, where
+`current` is the row as it is now (null when it was removed), and changes nothing. A malformed one,
+or both headers at once, is a 400. Without either header a write applies as before, which is what a
+script that owns its data wants. The GUI always sends one.
+
+| Write | Precondition the GUI sends |
+|---|---|
+| `PUT /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution`, and its `DELETE` | `If-Match` of the row on the page |
+| `PUT /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `If-None-Match: *` (a candidate has no decision) |
+| `PUT /api/v2/svs/tests/{guid}/ignores/{signature_uuid}`, `PUT /api/v2/svs/ignores/global/{signature_uuid}` | `If-None-Match: *` |
+| `PUT /api/v2/svs/test-hosts/{host_id}` | `If-Match` of the host the form loaded |
+
+The bulk worklist resolution takes no precondition: it resolves the rows as they are.
 
 ## Alerts
 
@@ -34,6 +59,45 @@ with each SVS phase; today it covers alerts and detections (phases 0 and 1), the
 manage page's filters (`docs/ALERT_FILTER_URLS.md`). `detection_count` is the number of
 `detection_points` rows of the alert: one per detection *per node it sits on*, so a description
 that fired on three URLs counts three.
+
+`svs_status` is the alert's SVS status (`docs/SVS_RUNS.md`, *What happens to the alert*), and null
+for an alert no test run touched:
+
+| `svs_status` | Meaning |
+|---|---|
+| `test` | Every detection is attributed to a run, at least one by a marker |
+| `test?` | Every detection is attributed, by context only |
+| `partial` | Some detections are attributed |
+| `mismatch` | A marker in the alert doesn't agree with its run (the alert carries the `svs:marker_mismatch` tag) |
+
+`svs_runs` lists the uuids of the runs the alert is attributed to (`GET /api/v2/svs/runs/{run_id}`),
+empty for a mismatch. Both are derived from the attributions when the row is read, so an alert
+disassociated from its run loses them, and in CSV `svs_runs` is joined with `,` as `tags` is. Test
+alerts are listed like any other; `f=!queue:<svs.queue>` leaves out the ones routed to the test queue.
+
+### An alert's SVS status
+
+One alert's side of SVS, as its page shows it (`docs/SVS_RUNS.md`, *Test alerts in the alert list
+and on the alert page*):
+
+| Endpoint | Permission | Does |
+|---|---|---|
+| `GET /api/v2/alerts/{uuid}/svs` | `alert:read` | `{"alert_uuid", "svs_status", "runs", "detections", "mismatches"}`; 404 for an unknown alert, and a null status with empty lists for one no run touched |
+| `POST /api/v2/alerts/{uuid}/svs/disassociate` `{"reason"?}` | `alert:write` | Disassociate the alert from every run that holds it (409 when none does) |
+| `POST /api/v2/alerts/{uuid}/svs/not-a-test` `{"reason"?}` | `alert:write` | The same for a `TEST?` alert, recorded as *not a test* (409 unless it is `TEST?`) |
+
+- `runs` are the runs whose attributions hold, oldest first, each `{"run_id", "state", "test_guid",
+  "test_name"}`.
+- `detections` are the attributed detections, `{"content_hash", "run_ids"}`, keyed like `GET
+  /api/v2/alerts/{uuid}/detection-points`.
+- `mismatches` are the markers that disagree with their run, `{"marker", "result", "run"}`; `run` is
+  null when no run has the marker.
+- The two actions need a user's key (a config key gets 422). Each answers `{"alert_uuid", "run_ids",
+  "svs_status", "queue", "moved", "reopened"}`: the runs it was disassociated from, and the alert's
+  status and queue afterwards.
+- They are the run-scoped `disassociate` and `not-a-test` (*Attributions*, below), applied to each
+  run in turn. They need `alert:write` rather than `svs:run_manage`: they are an analyst's correction
+  of an alert they triage.
 
 ## Detections
 
@@ -147,7 +211,10 @@ changes can be tested against it (`docs/SVS.md`, Part 2; `docs/SVS_SAMPLES.md`).
 
 The listing takes `sort` (`last_captured`, the default, `first_captured`, `capture_count`, `rule`,
 `label` or `sha256`) and `desc` (default `true`). A cursor belongs to its sort and direction; using
-it with another is a 400.
+it with another is a 400. A listing, and an export, count the captures that existed when its first
+page was read: the cursor carries the newest one, so a sample captured again mid-walk keeps its place
+(and its count as of then) instead of moving past the cursor and being skipped; a new listing counts
+the new captures. A `label` sort can still move a sample relabeled mid-walk.
 
 **Downloads** are zips encrypted with the password `infected`, as for YARA QA results. Each file is
 in a zip once, under `<sha256>/`, next to a `match-<capture id>.json` per capture; `manifest.json`
@@ -245,7 +312,10 @@ so it needs a user's API key or session; a config key gets 422.
   - `label` and `label_source` are the sample's label afterwards.
 
   They answer 409 when no contributing detection can take the verdict, and 404 for an unknown
-  sample.
+  sample. A sample's detail (`GET …/{sha256}/{rule_uuid}`) carries `relabel_refusal`: the reason a
+  relabel would answer 409 (every contributing detection is on an FP or `SIMULATED` alert, say), or
+  null when it would write a verdict. The Samples page offers *Relabel* only when it is null, and
+  shows the reason otherwise.
 - **`PUT …/retirement`** `{"reason": …}` and **`DELETE …/retirement`** answer the retirement:
   `retired`, `reason`, `retired_by`, `retired_at`, `unretired_by`, `unretired_at`. Retiring a
   retired sample changes nothing. Unretiring one that is not retired is a 404.
@@ -371,6 +441,701 @@ disappears; deleting a sample removes its rows from every report.
   `f=sha256:…`).
 - **Result → detections:** as for a sample.
 
+## Test hosts
+
+The hosts SVS test runs may target (`docs/SVS_RUNS.md`, *Test hosts*). Read with `svs:run_read`;
+added, changed and removed with `svs:admin`, each change an AUDIT line.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `GET /api/v2/svs/test-hosts` | `svs:run_read` | Test hosts by host name, paged |
+| `GET /api/v2/svs/test-hosts/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `usernames` and `ips` with `,`) |
+| `GET /api/v2/svs/test-hosts/{id}` | `svs:run_read` | One test host |
+| `POST /api/v2/svs/test-hosts` `{hostname, fqdn?, usernames?, ips?, platform?, notes?}` | `svs:admin` | 201 and the new host; 409 when its short name is already a test host, 422 for a field that can't be used |
+| `PUT /api/v2/svs/test-hosts/{id}` (the same body) | `svs:admin` | The host with its fields replaced |
+| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `id` | The host. |
+| `hostname` | The short name, lower case. It is unique: one test host per short name. |
+| `fqdn` | The fully qualified name, lower case, or null. A target named by a fully qualified name matches only this one; with no `fqdn`, a target in any domain matches. |
+| `usernames` | The bare user names runs may use, lower case (`CORP\Alice` and `alice@corp.example` are stored as `alice`); empty means any user. |
+| `ips` | The host's addresses. |
+| `platform` | `windows`, `linux` or `macos` when known: a test whose `supported_platforms` doesn't include it can't target the host. Null isn't checked. |
+| `notes`, `created_by`, `created_at` | Free text, and who added it when. |
+| `updated_at` | The row's last change. |
+
+### Incremental pulls
+
+With `changed_since`, a host is returned when it was added or changed at or after that time. A
+removed host just disappears; its removal is an AUDIT line in ACE's log.
+
+## Tests
+
+The Atomic Red Team tests runs may be registered for, as `service_svs` reads them from the
+repositories in `svs.catalog.repositories` (`docs/SVS_RUNS.md`, *The Atomic Red Team catalog*).
+Read with `svs:run_read`, each with its state and run history. What is decided about a test's
+signatures, and its settings, are changed under it with `svs:run_manage` (*Expectations*,
+*Ignores* and *Test settings*, below).
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
+| `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
+| `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test's runs on the platform, or remove the decision |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs on every platform, or stop |
+| `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
+| `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings` | `svs:run_manage` | Set them, or go back to the computed window |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `guid` | The test's `auto_generated_guid`, lower case: the stable identifier runs are registered with. |
+| `repository` | The name of the `git_repo_*` section it is read from. |
+| `technique`, `technique_name` | The ATT&CK technique of its atomic file (`attack_technique`, `display_name`). |
+| `name`, `platforms`, `executor` | The test's `name`, `supported_platforms` (lower case) and `executor.name`. |
+| `path` | Its atomic file, relative to the repository. |
+| `commit` | The repository commit this version of the test was first read from: a new commit that doesn't change the test doesn't change it. |
+| `content_hash` | sha256 of the test's entry; it changes exactly when the test does. |
+| `first_seen_at` | When the catalog first read it. |
+| `removed_at` | When it disappeared from its repository, or null. A removed test keeps its row and its runs. |
+| `updated_at` | The row's last change. A change to the test's runs, results or state doesn't change it. |
+| `test_state` | Below: `never_run`, or the worst of its platforms' states. |
+| `run_count` | Every run registered for it, in any state. |
+| `last_run_id`, `last_run_at` | Its latest run and when it was registered. |
+| `last_reviewed_run_id`, `last_reviewed_at` | Its latest reviewed run, on any platform, and when it was reviewed. |
+| `expected_signatures` | The signatures expected of it on any platform that no ignore applies to (one expected on two platforms counts once). |
+| `recent_runs`, `recent_runs_missing` | Its latest ended or reviewed runs, at most 5, and how many of them missed an expected signature (missing or possibly suppressed in their live result). |
+
+**Test state.** A test is judged on each platform on its own, on its latest *reviewed* run there,
+as signed off, against what is expected of it there (*Expectations*, below):
+
+| State on a platform | Meaning |
+|---|---|
+| `never_run` | It has no run and no decision there (only in `platform_states`). |
+| `awaiting_review` | None of its runs there is reviewed, or something was expected of it there only after its latest reviewed run there, so no review has judged it. |
+| `no_expectations` | It has a reviewed run there, and nothing is expected of it there. |
+| `failing` | Its latest reviewed run there missed an expected signature (possibly suppressed counts). |
+| `stale` | It would be validated, but the test (its `content_hash`) or the rule of an expected signature changed since that run was reviewed. A rule ACE can't read now doesn't count as changed. |
+| `validated` | Its latest reviewed run there hit every expected signature. |
+
+`test_state` is `never_run` when no run was ever registered for the test, else the worst state of
+the platforms it has a run or a decision on: `failing`, `stale`, `awaiting_review`, `validated`,
+`no_expectations`, in that order.
+
+The state and history are derived when read, so they aren't filters: the rule hashes behind
+`stale` come from the rule inventory, not the database. Its run history is
+`GET /api/v2/svs/runs?f=test:{guid}`, its decisions `GET /api/v2/svs/expectations?test={guid}` and
+`GET /api/v2/svs/ignores?test={guid}`.
+
+`GET …/{guid}` adds `description` and `test`, the test's whole entry in its atomic file: `executor`
+(`command`, `cleanup_command`, `elevation_required`), `input_arguments`, `dependencies`. It also adds
+`platform_states`, one entry per platform the test supports or has a run or a decision on, by
+platform: `{"platform", "test_state", "last_reviewed_run_id", "last_reviewed_at",
+"expected_signatures"}`.
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `name` | Name | text the test name contains |
+| `platform` | Platform | a platform in `supported_platforms` |
+| `executor` | Executor | `command_prompt`, `powershell`, `sh`, `bash`, `manual` |
+| `repository` | Repository | text the repository name contains |
+| `removed` | Removed | `true`, `false` |
+
+### Incremental pulls
+
+With `changed_since`, a test is returned when it was added, changed, removed or came back at or
+after that time.
+
+## Runs
+
+A run is one Atomic Red Team test a launcher outside ACE runs against test hosts, from
+registration through review or close (`docs/SVS_RUNS.md`). The launcher drives it with the
+lifecycle calls, which need `svs:run_register`. Everything else reads it with `svs:run_read`. A
+launcher that also reads its runs needs both.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
+| `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
+| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
+| `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
+| `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
+| `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
+| `GET /api/v2/svs/runs/count` | `svs:run_read` | `{"count"}`: how many runs the filters match |
+| `GET /api/v2/svs/runs/suppression-share` | `svs:run_read` | How many missing expected signatures were possibly suppressed, over the reviewed runs (*Suppression share*, below) |
+| `GET /api/v2/svs/runs/batches` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | One row per batch over the runs the filters match (*Batches*, below) |
+| `GET /api/v2/svs/runs/{run_id}` | `svs:run_read` | One run, with what the launcher sent, what stands in the way of its review and its log search link |
+| `GET /api/v2/svs/runs/{run_id}/alerts` (and `/export/ndjson`) | `svs:run_read` | The alerts the run holds or held (*Run alerts*, below) |
+| `GET /api/v2/svs/runs/{run_id}/history?runs=` | `svs:run_read` | How the signatures of its result did in the test's earlier runs (*Run history*, below) |
+| `GET /api/v2/svs/runs/{run_id}/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The run's event log, oldest first |
+| `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
+
+The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `state`, `test_guid`,
+`platform`, `targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
+`close_reason`. Their errors:
+
+| Status | When |
+|---|---|
+| 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
+| 404 | No run has that `run_id`. |
+| 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
+| 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
+
+The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `run_id` | The run's UUID: the stable identifier of a run, and the `svs_run` field of every log record about it. |
+| `state` | `created`, `started`, `ended`, `reviewed`, `canceled`, `error` or `closed` (`docs/SVS_RUNS.md`, *Run states and timers*). |
+| `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
+| `test_name`, `technique`, `technique_name` | From the catalog, as it is now. |
+| `platform` | The platform the run is on, an ATT&CK platform slug (`windows`, `linux`, `macos`, `iaas`, …), decided at registration: its targets' test hosts' platform, else the test's only supported platform (`docs/SVS_RUNS.md`, *Registering a run*). |
+| `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. It is `svs_marker` in ACE's log. |
+| `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
+| `launcher`, `batch_id` | As registered. A batch is a label shared by the runs a launcher registered together, not a resource. |
+| `created_at`, `started_at` | When it was registered and started. |
+| `executed_at`, `exit_code` | What the launcher reported through `executed`. |
+| `ended_at`, `canceled_at`, `closed_at` | When it moved to those states. |
+| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. *Time left* on a started run is `observation_ends_at` minus now. |
+| `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
+| `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
+| `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was last reviewed (*Run actions*, below). |
+| `changed_since_review` | An attribution of an alert to it was added or removed after its review: a late alert, a later analysis pass, or a manual association. |
+| `needs_attention` | Whether it is in the *Needs attention* view (below). |
+| `result_hit`, `result_expected` | Its result's hits out of the expected signatures it judged (*expected hits n/m*): `result_expected` counts hit, missing and possibly suppressed (*Results*, below). |
+| `result_missing`, `result_possibly_suppressed` | Expected signatures it missed (possibly suppressed ones included), and of those the possibly suppressed. |
+| `result_candidate`, `result_rejected`, `result_ignored` | Signatures that fired and nobody decided, were rejected, or are ignored. |
+| `result_stale` | Its result is about to be recomputed. |
+| `reviewed_hit`, `reviewed_expected`, `reviewed_missing`, `reviewed_possibly_suppressed` | The same counts of the result as signed off at its latest review (`reviewed_status`); 0 until it is reviewed. |
+| `alerts`, `marker_alerts`, `context_alerts`, `late_alerts` | The alerts attributed to it; of those, by a marker, by context alone (`TEST?`), and late. |
+| `updated_at` | The row's last change; the `changed_since` key. A change to its result or its alerts doesn't change it: pull the result feed for those. |
+
+`GET …/{run_id}` adds:
+- `extra`, the object the launcher sent;
+- `launcher_error`, the error `executed` reported;
+- `test_content_hash` and `catalog_commit`, the test as it was registered (a later catalog change
+  doesn't change them);
+- `observation_seconds` and `attribution_seconds`, the window lengths fixed at registration
+  (`docs/SVS_RUNS.md`, *Windows*);
+- `registered_by`, the username of the key that registered it (null for a config key);
+- `review_blockers`, for an `ended` or `reviewed` run (null otherwise): `{"stale", "candidates",
+  "context_alerts"}`, what a review would answer 409 with right now (*Run actions*, below), empty
+  lists and `false` when nothing is in the way;
+- `log_search_url`, the run's search in the site's log tooling, built from `svs.log_search_url`
+  (`docs/SVS_RUNS.md`, *Logs*); null when that isn't set.
+
+### Filters
+
+The runs, the event feed and the GUI's Runs screen share these filters (screen `svs_runs`).
+
+| Slug | Filter | Values |
+|---|---|---|
+| `needs_attention` | Needs Attention | `true`, `false` |
+| `state` | State | the states above |
+| `test` | Test | a test GUID |
+| `test_name` | Test Name | text the catalog name contains |
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `target` | Target | a host, by its short or fully qualified name |
+| `platform` | Platform | a platform slug; Atomic Red Team's names find the platform they count as (`iaas:aws` finds `iaas`) |
+| `launcher` | Launcher | text the launcher's name contains |
+| `batch` | Batch | a `batch_id` |
+| `created`, `started`, `ended`, `reviewed` | Created, Started, Ended, Reviewed | date ranges; `reviewed` is the latest review |
+| `owner`, `reviewer` | Owner, Reviewer | usernames |
+| `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
+| `changed_since_review` | Changed Since Review | `true`, `false` |
+| `has_open_alerts` | Has Open Alerts | `true`, `false`: an alert attributed to the run is still `OPEN` |
+| `has_missing` | Has Missing | `true`, `false`: its result misses an expected signature (possibly suppressed included) |
+| `has_possibly_suppressed` | Has Possibly Suppressed | `true`, `false` |
+| `has_candidates` | Has Candidates | `true`, `false`: a signature fired that nobody has decided about |
+| `has_late` | Has Late | `true`, `false`: an alert was attributed to it late |
+| `has_context_only` | Has Context Only | `true`, `false`: an alert was attributed to it by context alone (`TEST?`) |
+
+**Needs attention** is the Runs screen's default view and the count on its navigation entry. It
+matches runs that:
+- ended and wait for review;
+- are in `error`;
+- were reviewed and have changed since;
+- are `reviewed` or `closed` and still hold an open alert (`has_open_alerts`): one an analyst
+  took before the run closed, a `partial` alert whose other detections wait for triage, or one
+  closing couldn't reach yet.
+
+It is one filter, not a combination of the others, because it is an OR. A saved filter on it
+follows any change to that definition.
+
+### Incremental pulls
+
+With `changed_since`, a run is returned when it was registered or its row changed at or after that
+time. The pages are then in `(updated_at, id)` order instead of newest first, and a cursor only
+works with the order it came from (otherwise 400). A row shows up a few seconds after it is
+written, once no open transaction can still write an older `updated_at`. Resume from the last
+row's `updated_at` and you never miss a run.
+
+### Suppression share
+
+Keeping the hunter from suppressing test targets is deferred, with a revisit trigger (`docs/SVS.md`,
+Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
+result as signed off, and the Runs tab shows it above the list:
+
+| Field | Meaning |
+|---|---|
+| `missing` | The expected signatures missing from the signed-off results, possibly suppressed ones included. |
+| `possibly_suppressed` | Of those, the possibly suppressed. |
+| `share` | `possibly_suppressed / missing`; null while nothing is missing. |
+| `reviewed_runs` | The runs with a signed-off result. |
+| `first_reviewed_at` | When the first run was reviewed (the event log's first `reviewed` event). |
+| `trigger_reached` | 50 runs are reviewed, or 90 days passed since the first review. |
+| `reconsider` | The trigger is reached and the share is above 10%. |
+
+It takes no filters: the trigger is about the test program as a whole.
+
+### Batches
+
+A run's `batch_id` is a label the launcher gives it, not a table. `GET /api/v2/svs/runs/batches`
+groups the runs by it, one row per batch:
+
+| Field | Meaning |
+|---|---|
+| `batch_id` | The batch. Batch ids compare without case, as the `batch` filter does; runs without one are left out. |
+| `runs`, `states` | How many runs, and how many in each state (every state is named, with 0 when there are none). |
+| `needs_attention` | How many are in the *Needs attention* view. |
+| `first_created_at`, `last_created_at` | When its first and its latest run were registered. |
+| `result_hit`, `result_expected`, `result_missing`, `result_candidate` | The runs' result counts (*Fields*, above), summed. |
+
+**The `f=` filters pick the runs, and a row counts only those.** A batch with no matching run has
+no row, and `f=batch:<id>` on `GET /api/v2/svs/runs` lists exactly the runs a row counted. The
+batch with the latest run comes first, ties by batch id; a batch moves up when a run joins it. There
+is no `changed_since`: a batch is a summary, not a change feed. The CSV has a `state_<state>`
+column per state in place of `states`.
+
+`GET /api/v2/svs/runs/count` takes the same filters. `f=needs_attention:true` is the count the
+GUI shows on its *SVS* entry.
+
+### Run events
+
+Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Each event has:
+- `id` (a run's events are in `id` order) and `run_id`;
+- `kind`, `from_state` and `to_state`;
+- `actor` (the caller's name, or `svs` for a timer) and `actor_user` (its username, when it is a
+  user);
+- `details`, whose shape depends on `kind`;
+- `created_at` and `updated_at`.
+
+| `kind` | States | `details` |
+|---|---|---|
+| `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra`, the `platform` it decided, and `observation_source` (`override`, `expected` or `all_hunts`: where its observation window came from, `docs/SVS_RUNS.md`, *Windows*) |
+| `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
+| `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
+| `attributed` | none | `{"alert_uuid", "detections"}`: detections of one alert attributed to the run, each `{"detection", "confidence", "late", "scan_point"}` (`detection` is its `content_hash`; `scan_point` is null for context). Written when an attribution is added or comes back, not on every analysis pass. `actor` is `svs` |
+| `attribution_removed` | none | `{"alert_uuid", "detections", "reason"}`: the `content_hash`es of the alert's detections whose attribution no longer holds (a later analysis pass found the marker disagrees, say) |
+| `alerts_closed` | none | `{"alerts", "disposition", "late"}`: the alerts given `SIMULATED` when the run closed, or (`late: true`) by the timers afterwards (`docs/SVS_RUNS.md`, *Test alerts and `SIMULATED`*) |
+| `result_computed` | none | `{"counts", "previous"}`: the run's result changed; the number of signatures per status, now and before. `actor` is `svs` |
+| `candidate_decision` | none | `{"signature_uuid", "state", "reason"}`: a signature decided for the run's test from this run's result |
+| `associated` | none | `{"alert_uuid", "detections", "late", "reason"}`: a person associated the alert with the run (`detections` are `content_hash`es) |
+| `disassociated` | none | `{"alert_uuid", "detections", "reason", "not_a_test"}`: a person disassociated it, or marked it not a test |
+| `context_kept` | none | `{"alert_uuid"}`: a person kept the alert's context attributions |
+| `ownership_taken` | none | `{"from"}`: a person took the run, from that owner's username (null when nobody owned it) |
+| `reviewed` | `from_state: ended` or `reviewed`, `to_state: reviewed` | `{"counts", "re_review"}`: a person signed the result off; the counts are per status, as signed off |
+
+`alerts_closed` also carries `"reviewed": true` when a review closed them. A reader skips kinds it
+doesn't know. In CSV, `details` is a JSON string.
+
+### The event feed
+
+`GET /api/v2/svs/runs/events` is the runs' change feed: every event of every run the `f=` filters
+match, in `(updated_at, id)` order, with `changed_since`. As with the run list, an event shows up a
+few seconds after it is written, so a pull resumed from the last event's `updated_at` never misses
+one. It may repeat one. This is where a report sees what happened to a run between two pulls, and
+later in phase 4 what was disassociated from it.
+
+### Run actions
+
+A person's actions on runs, all `svs:run_manage` and from a user's key (a config key gets 422);
+`docs/SVS_RUNS.md`, *Reviewing runs*:
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/v2/svs/runs/bulk/take-ownership` | Take the runs |
+| `POST /api/v2/svs/runs/bulk/cancel` | Cancel them (created or started) |
+| `POST /api/v2/svs/runs/bulk/close` | Close them (ended, canceled or error); an ended run needs `reason` |
+| `POST /api/v2/svs/runs/{run_id}/review` `{"confirmed_take_from"?}` | Review the run (ended, or reviewed again) |
+| `GET`, `POST /api/v2/svs/runs/{run_id}/comments`; `PATCH`, `DELETE …/comments/{comment_id}` | Its comments (reading needs only `svs:run_read`; only the author changes or deletes one) |
+
+- **The bulk actions** take `{"run_ids", "confirmed_takes"?, "reason"?}`. `confirmed_takes` maps a
+  run id to the username of the person the caller agreed to take it from. They answer
+  `{"done", "left_alone", "conflicts", "unknown"}`: the runs acted on; the ones someone else owns
+  (run id → their username, which can be sent back as `confirmed_takes` as it is); the ones the
+  action doesn't apply to (run id → why); and the ids that don't exist.
+- **A review** answers `{"run", "re_review", "counts", "alerts_closed", "fp_verdicts"}`, or 409
+  whose `detail` says what stands in the way, any of:
+  - `owner`: the username of whoever else owns it, when `confirmed_take_from` didn't name them;
+  - `state`;
+  - `stale`: the result is being recomputed;
+  - `candidates`: the undecided signature uuids;
+  - `context_alerts`: the context-only alerts neither kept nor marked not a test.
+
+### Results
+
+A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read with `svs:run_read`:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/runs/{run_id}/results` (and `/export/ndjson`, `/export/csv`) | One run's rows in id order, with `stale` and `computed_at` |
+| `GET /api/v2/svs/runs/results` (and `/export/ndjson`, `/export/csv`) | The rows of every run the `f=` filters match, in `(updated_at, id)` order, with `changed_since`; a row shows up a few seconds after it is written, as in the event feed |
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `signature_uuid` | The run and the signature; together they are unique. |
+| `signature_family`, `signature_name` | `yara`, `hunt`, `builtin`, ...; and its name, from the rule inventory, or as last known when the rule is gone. |
+| `status` | `hit`, `missing`, `possibly_suppressed`, `candidate`, `rejected` or `ignored`; null once the signature left the live result and the row holds only the reviewed one. |
+| `alert_count` | The run's attributed alerts that carry the signature (0 when missing). |
+| `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
+| `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
+| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
+| `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
+| `updated_at` | The row's last change; the feed's `changed_since` key. |
+
+`stale` (one run only) is true while something changed since the result was computed: the timers
+recompute it within `svs.runs.timer_interval_seconds`. A run that hasn't ended has no result.
+
+### Attributions
+
+Which detections of which alerts a run holds (`docs/SVS_RUNS.md`, *Attribution* and *Associating
+alerts by hand*), one row per (alert, detection), removed ones included, read with `svs:run_read`:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/runs/{run_id}/attributions` (and `/export/ndjson`, `/export/csv`) | One run's rows in id order |
+| `GET /api/v2/svs/runs/attributions` (and exports) | The rows of every run the `f=` filters match, in `(updated_at, id)` order, with `changed_since`; a row shows up a few seconds after it is written. A disassociation is a row whose `removed_at` changed, so this is where reports see one |
+
+| Field | Meaning |
+|---|---|
+| `run_id`, `alert_uuid`, `detection` | The run, the alert, and the detection's `content_hash`; together they are unique. |
+| `signature_uuid`, `signature_family` | The detection's signature. |
+| `confidence`, `late` | `marker` or `context` (a person's association is `marker`), and whether the alert's event came after the observation window. |
+| `source` | `router` (the `svs_marker` router) or `manual` (a person associated the alert). |
+| `scan_point` | Where the agreeing marker was found; null for context and for a person's association. |
+| `actor`, `actor_user`, `created_at` | Who attributed it (`svs` for the router) and when. |
+| `removed_at`, `removed_by`, `removed_by_user`, `removal_reason` | Set once it no longer holds: by the router (`svs`, it no longer applies) or by a person (disassociated, or *not a test*). |
+| `kept_at`, `kept_by_user` | A person kept this context attribution. |
+| `updated_at` | The row's last change; the feed's `changed_since` key. |
+
+A person changes them with `svs:run_manage`, from a user's key (a config key gets 422):
+
+| Endpoint | Does |
+|---|---|
+| `POST /api/v2/svs/runs/{run_id}/alerts/{alert_uuid}/associate` `{"reason"?}` | Associate the alert with the run (409 for a run that never started, 422 for an alert without detections) |
+| `POST …/disassociate` `{"reason"?}` | Disassociate it (409 when the run doesn't hold it) |
+| `POST …/not-a-test` `{"reason"?}` | Disassociate a `TEST?` alert (409 unless the run holds it by context alone) |
+| `POST …/keep` | Keep its context attributions (409 when it has none) |
+
+Each answers `{"alert_uuid", "svs_status", "queue", "moved", "reopened"}`: the alert's SVS status
+and queue afterwards, whether it moved, and whether it went from `SIMULATED` back to `OPEN`.
+
+### Run alerts
+
+`GET /api/v2/svs/runs/{run_id}/alerts` is what the run page shows of the run's alerts: one row per
+alert with an attribution to the run, held or removed, in the order they were first attributed,
+paged with `cursor`. Its NDJSON export streams every row. The rows nest, so there is no CSV:
+`…/attributions/export/csv` is the flat form.
+
+| Field | Meaning |
+|---|---|
+| `alert_uuid` | The alert. |
+| `alert` | Its row as `GET /api/v2/alerts` lists it, `svs_status` included; null when the alert is gone. |
+| `holds` | An attribution of it to this run holds. A row whose attributions were all removed (disassociated, *not a test*, or the router found they no longer apply) has `false`. |
+| `confidence` | Of the attributions that hold: `marker` when any is (a person's association counts as one), else `context`; null when none holds. |
+| `late`, `manual` | An attribution that holds is late, or was made by a person. |
+| `kept` | A person kept its context attributions. |
+| `undecided_context` | It has a context attribution that holds and that nobody kept: a review waits for *keep* or *not a test* (`review_blockers.context_alerts`). |
+| `detections` | Every detection of the alert, then any attributed one it no longer has: `{"detection", "description", "signature_uuid", "signature_family", "attribution"}`, where `detection` is the `content_hash`, `description` is null for one it no longer has, and `attribution` is its attribution to this run (as in *Attributions*), or null when it never had one. |
+
+### Run history
+
+`GET /api/v2/svs/runs/{run_id}/history?runs=10` (1 to 50) answers how each signature of the run's
+result did before: `{"runs", "signatures"}`.
+- `runs` are the test's `ended` and `reviewed` runs on this run's platform (the only runs it is
+  compared with) registered before this one, latest first, each
+  `{"run_id", "state", "created_at", "reviewed_at"}`.
+- `signatures` has one entry per signature of this run's result, in its order, `{"signature_uuid",
+  "statuses"}`. `statuses` lines up with `runs`: the signature's status in that run, as signed off
+  for a reviewed run and live for an ended one, or null when it isn't in that run's result (it
+  didn't fire, and nothing expected it then).
+
+### Joins
+
+- **Run → test:** `test_guid` = the test's `guid` in `GET /api/v2/svs/tests`.
+- **Event → run:** `run_id` = the run's `run_id`.
+- **Attribution → alert, detection:** `alert_uuid` = an alert's `uuid` in `GET /api/v2/alerts`,
+  `detection` = a detection's `content_hash` in `GET /api/v2/alerts/{uuid}/detection-points`.
+- **Result → run:** `run_id` = the run's `run_id`; **result → signature:** `signature_uuid` = a
+  detection's `signature_uuid` in `GET /api/v2/detection-points`, and a sample's `rule_uuid`.
+- **Run → logs:** `run_id` and `marker` are the `svs_run` and `svs_marker` fields in ACE's log.
+
+## Expectations
+
+What is decided about each test's signatures on each platform (`docs/SVS_RUNS.md`, *Expectations
+and ignores*). `GET /api/v2/svs/expectations` (and `/export/ndjson`, `/export/csv`), `svs:run_read`,
+filtered by `test`, `platform`, `signature` and `state`. A decision is made with
+`PUT /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` `{"state":
+"expected"|"rejected", "reason"?, "run_id"?}` and removed with `DELETE`, both `svs:run_manage` and
+from a user's key (a config key gets 422: a decision records who made it). The platform has to be
+one the test supports, and a `run_id` a run of the test on that platform; otherwise the answer is
+422.
+
+| Field | Meaning |
+|---|---|
+| `test_guid`, `platform`, `signature_uuid` | The test, the platform its runs are judged on with it, and the signature; together they are unique. |
+| `state` | `expected` or `rejected`. A candidate is a status in a run's result, never a row here. |
+| `signature_family`, `signature_name` | As last known when the decision was made. |
+| `reason` | Why, as the person wrote it. |
+| `decided_from_run_id` | The run whose result it was decided from, when it was. |
+| `decided_by`, `decided_at` | Who (username) and when. |
+| `updated_at` | The row's last change; with `changed_since` the rows come in `(updated_at, id)` order. A removed decision is gone; the run results it changes show the difference. |
+
+## Ignores
+
+Signatures whose detections during runs are noise. `GET /api/v2/svs/ignores` (and exports),
+`svs:run_read`, filtered by `scope` (`global`, `test`), `test` (that test's own and the global ones,
+which apply to it) and `signature`. A test's ignore is set with `PUT /api/v2/svs/tests/{guid}/
+ignores/{signature_uuid}` (`svs:run_manage`); a global one with `PUT /api/v2/svs/ignores/global/
+{signature_uuid}` (`svs:admin`). Both take `{"reason"?}` and are removed with `DELETE`.
+
+| Field | Meaning |
+|---|---|
+| `scope`, `test_guid` | `global`, or `test` with its guid. |
+| `signature_uuid`, `signature_family`, `signature_name` | The signature, as last known when it was ignored. |
+| `reason`, `created_by`, `created_at` | Why, who (username), when. |
+| `updated_at` | The row's last change (a new reason); the `changed_since` key. |
+
+## Test settings
+
+`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes"}`, the observation
+window of the test's runs registered from then on, used as it is (no slack, no floor) from 1 minute
+up to `svs.runs.observation_window.ceiling_hours` (`docs/SVS_RUNS.md`, *Windows*). The response adds
+`set_by` (username) and `updated_at`. Reading needs `svs:run_read`, changing `svs:run_manage`.
+
+## Coverage
+
+ATT&CK coverage per technique and platform, as `service_svs` last refreshed it
+(`docs/SVS_COVERAGE.md`): at most `svs.coverage.refresh_interval_seconds` (default 120) behind a
+review. Read with `svs:run_read`; nothing here writes.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/coverage` | Rows by technique, then platform, filtered and paged |
+| `GET /api/v2/svs/coverage/export/ndjson`, `/export/csv` | The same, streamed (the CSV joins `tactics` with `,`) |
+| `GET /api/v2/svs/coverage/summary` | The rows the filters match, counted, and the last refresh |
+| `GET /api/v2/svs/coverage/{technique}` | One technique's drill-down |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `technique`, `platform` | The ATT&CK technique id and a platform slug (`windows`, `linux`, `macos`, `esxi`, `iaas`, `containers`, `saas`, `office-suite`, `identity-provider`, `network-devices`, `pre`, or one only a test names); together they are unique. |
+| `parent`, `is_subtechnique` | The parent of a sub-technique, and whether the row is one. |
+| `technique_name`, `tactics` | From the pinned release (`tactics` are ids, `TA0002`); for a technique it doesn't have, the name a test gives it and no tactics. |
+| `catalog_status` | `active`, `deprecated`, or `unknown` (not in the pinned release; only a test names it). A revoked id never has a row: it counts as its successor. |
+| `attack_platform` | ATT&CK lists the platform for the technique; `false` when only a test brought the row. |
+| `state` | `failing`, `stale`, `validated`, `manual`, `untested` or `none`: the worst of what counts toward the technique and its sub-techniques on the platform (`docs/SVS_COVERAGE.md`, *States*). |
+| `own_state` | The same, leaving the sub-techniques out. |
+| `tests_total`, `tests_validated`, `tests_failing`, `tests_stale` | The tests counted toward `state`, the sub-techniques' included. A test whose expectations no reviewed run judged yet is `stale`. |
+| `manual_signatures` | Signatures whose `mitre:` tag counts toward `state`. |
+| `measured_signatures` | Signatures expected of the counted tests on the platform, ignores applied. |
+| `last_reviewed_at` | The latest review of a run that counts. |
+| `state_changed_at`, `first_seen_at` | When `state` last changed, and when the row appeared. |
+| `retired_at` | When the computation stopped producing the row (its test was removed, an ATT&CK upgrade revoked it), or null. Rows are never deleted, and a row that comes back is live again. |
+| `updated_at` | The row's last change: a refresh writes only what changed. The `changed_since` key. |
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `name` | Name | text the technique name contains |
+| `tactic` | Tactic | a tactic id (`TA0002`) or shortname (`execution`) of the pinned release |
+| `platform` | Platform | a platform slug; Atomic Red Team's names find the slug they count as (`iaas:aws` finds `iaas`) |
+| `state`, `own_state` | State, Own State | `failing`, `stale`, `validated`, `manual`, `untested`, `none` |
+| `level` | Level | `technique`, `sub-technique` |
+| `attack_platform` | ATT&CK Platform | `true`, `false` |
+| `catalog_status` | Catalog Status | `active`, `deprecated`, `unknown` |
+| `has_manual` | Has Manual | `true`, `false` |
+| `state_changed` | State Changed | a date range |
+| `retired` | Retired | `true`, `false` |
+
+The GUI's default saved filters are *Endpoint platforms* (`platform:windows,linux,macos` and
+`retired:false`), *Gaps and failures* (the same, plus `state:failing,stale,untested,none`) and *All*
+(`retired:false`).
+
+### Incremental pulls
+
+With `changed_since`, a row is returned when it was added, changed, retired or came back at or
+after that time, in `(updated_at, id)` order. A cursor from one order doesn't page the other: 400.
+
+### Summary
+
+`GET …/summary` takes the same filters and counts the rows they match: `rows`, `states` and
+`own_states` (every state named, zeros included), and the same per platform in `platforms`, in the
+release's platform order. It also carries the last refresh from `svs_coverage_state`:
+`attack_release`, `refreshed_at` (null before the first), `duration_ms`, `unknown_tags` and
+`ignored_tags` (`mitre:` tags naming an id the release doesn't have, and ones that aren't technique
+ids), and `error`, why the latest refresh failed, null once one completes.
+
+### Drill-down
+
+`GET …/{technique}` answers what a technique's coverage rests on. A revoked id answers for its
+successor (`requested` is the id asked for, `technique` the one answered for); something that isn't
+a technique id is a 400, and a technique without rows that the release doesn't have a 404.
+
+| Field | Meaning |
+|---|---|
+| `name`, `parent`, `is_subtechnique`, `catalog_status`, `tactics`, `attack_release` | The technique in the pinned release. |
+| `refreshed_at` | When `rows` were refreshed. Everything below them is read now, so the two can disagree for up to one refresh interval. |
+| `rows`, `sub_technique_rows` | Its rows and its sub-techniques' rows, retired ones included, as in the list. |
+| `tests` | One entry per (test, platform) counting toward the technique or a sub-technique: `guid`, `name`, `test_technique` (as its atomic file names it), `technique` (what it counts toward), `platform`, `test_state` (as on the Tests screen; `never_run` when it has no run or decision there), `contribution` (what it counts as), `last_reviewed_run_id`, `last_reviewed_at` and `expected_signatures`. |
+| `measured_signatures` | Each signature expected of those tests: `signature_uuid`, its `name` and `family` when ACE knows the signature, and the `tests` (`guid`, `platform`) expecting it. |
+| `manual_signatures` | Each `mitre:` tag naming the technique or a sub-technique: `signature_uuid`, `name`, `family` (`hunt`, `yara`), `declared` (the id in the tag), `technique`, `counts`, and `reason` when it doesn't count: `not_counting` (the signature is disabled, or a YARA rule in QA mode), `unknown_technique`, or `removed` (resolved *remove* on the worklist). |
+| `manual_signatures_error` | Why the tags couldn't be read (a YARA rule location that can't be loaded); `manual_signatures` is then empty and the rest is unaffected. |
+| `removed_tests` | The technique's tests removed from their repository (`guid`, `name`, `technique`, `removed_at`); they don't count. |
+
+### Joins
+
+- **Coverage → tests:** `GET /api/v2/svs/tests?f=technique:{technique}&f=platform:{platform}`; the
+  drill-down's `guid` is a test's `guid`.
+- **Coverage → runs:** the drill-down's `last_reviewed_run_id` is a run's `run_id`;
+  `GET /api/v2/svs/runs?f=technique:{technique}&f=platform:{platform}` lists them all.
+- **Coverage → signatures:** `signature_uuid` is a detection's `signature_uuid` in
+  `GET /api/v2/detection-points`, and `GET /api/v2/svs/expectations?signature={uuid}` lists where it
+  is expected. `GET /api/v2/svs/worklist?f=technique:{technique}` lists the tags on the technique
+  and what was decided about them.
+
+## Coverage history
+
+One row per technique × platform per day, filed by the daily snapshot (`docs/SVS_COVERAGE.md`,
+*Snapshots*): the live coverage rows of that UTC day. Read with `svs:run_read`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/coverage/history` | Snapshot rows by day, then technique and platform, oldest first |
+| `GET /api/v2/svs/coverage/history/export/ndjson`, `/export/csv` | The same, streamed |
+| `GET /api/v2/svs/coverage/history/counts?group=day\|month` | Rows per state and own state, per period |
+
+Fields: `snapshot_date` (the UTC day), `technique`, `platform`, `attack_release`, `parent`,
+`is_subtechnique`, `state`, `own_state`, `tests_total`, `tests_validated`, `tests_failing`,
+`tests_stale`, `manual_signatures`, `measured_signatures`, all as in *Coverage* on that day, and
+`updated_at`, when the row was written (a second snapshot the same day rewrites what changed). With
+`changed_since` the rows come in `(updated_at, id)` order.
+
+Filters: `date` (a date range; a snapshot counts when its day is in it), `technique` (with its
+sub-techniques), `platform`, `state`, `own_state`, `level`, with the values of *Coverage*.
+
+`…/counts` takes the same filters and answers `{"group", "data": [{"period", "snapshot_date",
+"rows", "states", "own_states"}]}`, oldest first. A day's period is the day (`2026-10-16`); a month's
+(`2026-10`) counts that month's **last** snapshot, which `snapshot_date` names, because adding up
+daily snapshots would count each row once a day. The days come from the `date` filter alone, so a
+day the other filters leave empty is still there, with zeros.
+
+## Worklist
+
+The declared-vs-measured worklist (`docs/SVS_COVERAGE.md`, *The worklist*): one row per (signature,
+ATT&CK technique) for each signature that is expected of a catalog test, comparing the techniques
+its `mitre:` tags claim with the ones its tests measure. Everything but the resolution is derived on
+each coverage refresh; read with `svs:run_read`, resolved with `svs:run_manage`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v2/svs/worklist` | Rows by signature, then technique, filtered and paged |
+| `GET /api/v2/svs/worklist/export/ndjson`, `/export/csv` | The same, streamed (the CSV joins `declared_as` and `measured_techniques` with `,`) |
+| `GET /api/v2/svs/worklist/{signature_uuid}` | A signature's rows, retired ones included, and what it is measured on now; 404 when it has none |
+| `PUT /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution` | Resolve a row (below); answers the row |
+| `DELETE /api/v2/svs/worklist/{signature_uuid}/{technique}/resolution` | Clear a row's resolution; 404 when it has none |
+| `POST /api/v2/svs/worklist/bulk/resolve` | Resolve many rows alike |
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `signature_uuid`, `technique` | The signature and the ATT&CK technique, as the pinned release has it (a revoked tag id counts as its successor); together they are unique. |
+| `technique_name` | From the pinned release; null for an id it doesn't have. |
+| `kind` | `declared` (a tag of the signature), `undeclared` (a technique it is measured on that no tag names) or `unknown` (a tag naming an id the release doesn't have). |
+| `status` | `confirmed`, `open`, `kept`, `remove_pending`, `removed`, `undeclared`, `unknown` or `retired` (`docs/SVS_COVERAGE.md`, *The worklist*). |
+| `declared_as` | The tag ids, as the signature writes them, that count as `technique`: usually one; two when a revoked id and its successor are both tagged. |
+| `tag_present` | The signature has a tag that counts as `technique` now. |
+| `signature_counts` | The signature is enabled, and isn't a YARA rule in QA mode. |
+| `counts` | The tag counts toward coverage as a manual mapping. After a resolution this is already the new value; coverage follows at the next refresh. |
+| `measured`, `measured_techniques` | The signature is expected of a catalog test, and the techniques it is measured on. |
+| `signature_family`, `signature_name` | `hunt`, `yara`, ... and the name, as of the last refresh. |
+| `resolution`, `reason`, `reference` | `keep` or `remove`, why, and a link (the pull request removing the tag); null when nobody resolved the row. A resolution is kept whatever the status becomes. |
+| `resolved_by`, `resolved_at` | Who (username) and when. |
+| `first_seen_at`, `status_changed_at` | When the row appeared, and when `status` last changed. |
+| `updated_at` | The row's last change: a refresh writes only what changed. The `changed_since` key. |
+
+### Filters
+
+| Slug | Filter | Values |
+|---|---|---|
+| `signature` | Signature | a signature uuid, or text in its name |
+| `family` | Family | `hunt`, `yara`, `builtin`, `observable_modifier` |
+| `technique` | Technique | an ATT&CK id; `T1059` also finds `T1059.001` |
+| `status` | Status | the statuses above |
+| `kind` | Kind | `declared`, `undeclared`, `unknown` |
+| `resolution` | Resolution | `keep`, `remove`, `none` (nobody resolved it) |
+| `resolved_by` | Resolved By | a username |
+| `resolved` | Resolved | a date range |
+
+The GUI's default saved filters are *Needs decision* (`status:open`), *Remove pending*
+(`status:remove_pending`) and *Undeclared* (`status:undeclared`).
+
+### Incremental pulls
+
+With `changed_since`, a row is returned when it was added, its status or anything derived changed,
+or someone resolved it, at or after that time, in `(updated_at, id)` order. A cursor from one order
+doesn't page the other: 400.
+
+### A signature
+
+`GET …/{signature_uuid}` answers `signature_family`, `signature_name`, `rows` (every row of the
+signature, as in the list) and `measured`: each technique it is measured on now, with
+`technique_name` and the `tests` (`guid`, `name`, `platform`) that expect it, ignores applied and
+removed tests left out. `measured` is computed at the request, `rows` at the last refresh.
+
+### Resolving
+
+`PUT …/{signature_uuid}/{technique}/resolution` takes `{"resolution": "keep"|"remove", "reason",
+"reference"?}`:
+- `keep`: the tag covers something no test reaches; it keeps counting.
+- `remove`: the signature repository will drop the tag; `reference` is the pull request. The tag
+  stops counting from the next coverage refresh, while it is still there.
+
+A reason is required, and `reference` must be an http(s) URL. Only `open`, `kept` and
+`remove_pending` rows can be resolved; resolving again replaces the resolution. A `confirmed`,
+`undeclared`, `unknown`, `retired` or `removed` row answers 409, an unknown row 404, and a bad body
+or a config key (a resolution records who made it) 422. `DELETE` clears the resolution of any row
+that has one: the tag counts again from the next refresh.
+
+`POST …/bulk/resolve` takes the same body plus `rows: [{"signature_uuid", "technique"}]` (1 to 500)
+and resolves them in one transaction. It answers `{"done": [...], "conflicts": [{"signature_uuid",
+"technique", "status"}], "unknown": [...]}`; conflicting and unknown rows are left alone.
+
+### Joins
+
+- **Worklist → coverage:** `GET /api/v2/svs/coverage?f=technique:{technique}`; the drill-down
+  `GET /api/v2/svs/coverage/{technique}` shows each tag with `counts` and its `reason`.
+- **Worklist → expectations:** `GET /api/v2/svs/expectations?signature={signature_uuid}` lists the
+  tests and platforms the signature is expected on, which is what *measured* means.
+- **Worklist → detections:** `signature_uuid` is a detection's `signature_uuid` in
+  `GET /api/v2/detection-points`.
+
 ## Worked examples
 
 ### Per-signature FP rate over 90 days
@@ -428,3 +1193,62 @@ while True:
 for rule_name, count in conflicted.most_common():
     print(rule_name, count)
 ```
+
+### Test pass rate per month
+
+Of the runs reviewed in the last year, count per month how many hit every expected signature. A run
+with nothing expected (`reviewed_expected` is 0) isn't judged. Missing includes possibly suppressed.
+`tests/aceapi_v2/svs/test_run_reads.py::test_worked_example_pass_rate_per_month` runs the same code
+against the API.
+
+```python
+import collections
+import requests
+
+ACE = "https://ace.example.com/api/v2"
+HEADERS = {"x-ace-auth": "<api key>"}
+
+months = collections.defaultdict(lambda: [0, 0])    # month -> [judged, passed]
+params = {"f": ["state:reviewed", "reviewed:-365d"], "limit": 1000}
+while True:
+    page = requests.get(f"{ACE}/svs/runs/", params=params, headers=HEADERS).json()
+    for run in page["data"]:
+        if run["reviewed_expected"]:
+            month = run["reviewed_at"][:7]
+            months[month][0] += 1
+            months[month][1] += run["reviewed_missing"] == 0
+    if page["next_cursor"] is None:
+        break
+    params["cursor"] = page["next_cursor"]
+
+for month, (judged, passed) in sorted(months.items()):
+    print(month, f"{passed}/{judged}", round(passed / judged, 3))
+```
+
+`reviewed_at` is a run's latest review, so a run reviewed again counts in the month of that review.
+Add `f=platform:linux` or `f=technique:T1059` to narrow it.
+
+### Technique coverage over time
+
+The share of techniques (sub-techniques left out) on the endpoint platforms that are validated, and
+failing, at the end of each month, from the daily snapshots.
+`tests/aceapi_v2/svs/test_coverage.py::test_worked_example_coverage_over_time` runs the same code
+against the API.
+
+```python
+import requests
+
+ACE = "https://ace.example.com/api/v2"
+HEADERS = {"x-ace-auth": "<api key>"}
+
+params = {"group": "month", "f": ["platform:windows,linux,macos", "level:technique"]}
+counts = requests.get(f"{ACE}/svs/coverage/history/counts", params=params, headers=HEADERS).json()
+for period in counts["data"]:
+    if period["rows"]:
+        states = period["states"]
+        print(period["period"], f"{states['validated'] / period['rows']:.0%} validated",
+              f"{states['failing'] / period['rows']:.0%} failing")
+```
+
+A month counts its last snapshot (*Coverage history*). Use `group=day` for a finer line, and add
+`f=date:-365d` to limit it to the last year.

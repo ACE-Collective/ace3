@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 
 from saq.analysis.root import RootAnalysis
 from saq.cas import CASPool, get_cas
-from saq.database.model import Alert, SVSYaraCapture, load_alert
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSYaraCapture, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import get_global_runtime_settings
@@ -17,8 +17,23 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
 from saq.database.private_session import private_transaction
+from saq.svs import attribution, windows
+from saq.svs.attack import AttackCatalog, load_attack_catalog
+from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
+from saq.svs.hosts import build_spec, create_host
+from saq.svs.markers import new_marker
+from saq.svs.refusals import Caller
+from saq.svs.runs import Registration, TargetSpec, register, start
 from tests.saq.helpers import create_root_analysis
+
+@pytest.fixture(autouse=True)
+def clear_attribution_caches():
+    """Each test starts with no cached gate answer or resolved marker (saq.svs.attribution)."""
+    attribution.clear_caches()
+    yield
+    attribution.clear_caches()
+
 
 RULE_UUID = "7d1c2a4e-5b6f-4c3d-9e8f-0a1b2c3d4e5f"
 OTHER_RULE_UUID = "1e2d3c4b-5a69-4788-9a0b-1c2d3e4f5a6b"
@@ -142,3 +157,107 @@ def graded_alert(disposition: Optional[str], files: dict[str, list[str]], *, cap
                     insert_capture(root.uuid, key[0], rule_uuid, file_path=name)
 
     return load_alert(root.uuid), observables
+
+
+#
+# ATT&CK
+#
+
+# a miniature ATT&CK release extract (bin/update-attack-catalog's format)
+ATTACK_EXTRACT = {
+    "format": 1,
+    "release": "v99.0",
+    "domain": "enterprise-attack",
+    "source": {"url": "https://example.invalid/", "sha256": "0" * 64},
+    "platforms": [{"slug": "windows", "name": "Windows"}, {"slug": "macos", "name": "macOS"}],
+    "tactics": [{"id": "TA0003", "shortname": "persistence", "name": "Persistence"},
+                {"id": "TA0002", "shortname": "execution", "name": "Execution"}],
+    "techniques": {
+        "T1059": {"name": "Command and Scripting Interpreter", "parent": None, "tactics": ["TA0002"],
+                  "platforms": ["windows", "macos"], "deprecated": False},
+        "T1059.001": {"name": "PowerShell", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["windows"],
+                      "deprecated": False},
+        "T1059.002": {"name": "AppleScript", "parent": "T1059", "tactics": ["TA0002"], "platforms": ["macos"],
+                      "deprecated": False},
+        "T1547": {"name": "Boot or Logon Autostart Execution", "parent": None, "tactics": ["TA0003", "TA0002"],
+                  "platforms": ["windows"], "deprecated": False},
+        "T1099": {"name": "Timestomp", "parent": None, "tactics": [], "platforms": ["windows"], "deprecated": True},
+    },
+    "revoked": {"T1086": "T1059.001", "T1150": "T1099"},
+    "renamed": {"T1059": {"from": "Scripting", "previous_release": "v98.0"}},
+}
+
+
+@pytest.fixture
+def attack_catalog(tmp_path) -> AttackCatalog:
+    """The ATTACK_EXTRACT release."""
+    path = tmp_path / "v99.0.json"
+    path.write_text(json.dumps(ATTACK_EXTRACT))
+    return load_attack_catalog(path)
+
+
+#
+# test runs
+#
+
+def add_catalog_test(guid: str, *, platforms=("windows",), removed: bool = False, technique: str = "T1059.001",
+                     name: str = "PowerShell download") -> SVSCatalogTest:
+    """A test in the Atomic Red Team catalog, as saq.svs.catalog stores one."""
+    entry = {"name": name, "auto_generated_guid": guid, "supported_platforms": list(platforms),
+             "executor": {"name": "powershell", "command": "whoami"}}
+    test = SVSCatalogTest(
+        guid=guid, repository="atomic-red-team", technique=technique, technique_name=f"{technique} name", name=name,
+        description=f"{name} does a thing", platforms=json.dumps(list(platforms)), executor="powershell",
+        test=json.dumps(entry), content_hash=catalog_content_hash(entry), commit="a" * 40,
+        path=f"atomics/{technique}/{technique}.yaml", first_seen_at=datetime.now(),
+        removed_at=datetime.now() if removed else None)
+    db = get_db()
+    db.add(test)
+    db.commit()
+    return test
+
+
+@pytest.fixture
+def no_hunts(monkeypatch):
+    """No enabled hunts: a run's observation window is the floor (60 minutes by default)."""
+    monkeypatch.setattr(windows, "hunt_info", lambda: {})
+
+
+LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+
+# the signature of the detections attribute_to_run attributes
+SIGNATURE_UUID = "5c1a9e57-0000-4000-8000-00000000a7a7"
+
+
+def add_test_host(hostname: str = "win10-01", **values):
+    return create_host(build_spec(hostname, **values), None)
+
+
+def started_run(test_guid: str, hostname: str = "win10-01", *, now: Optional[datetime] = None):
+    """A run of test_guid against one test host, registered and started at now (default: now).
+    Its windows are the floor and the default extra hours unless hunts say otherwise."""
+    run = register(Registration(test_guid=test_guid, targets=[TargetSpec(hostname)], launcher="art"), LAUNCHER,
+                   now=now)
+    run = start(run.uuid, LAUNCHER, now=now)
+    attribution.clear_caches()
+    return run
+
+
+def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str = "0" * 64,
+                     signature_uuid: str = SIGNATURE_UUID) -> SVSRun:
+    """Attributes a detection of the alert to a new run in the given state, as the marker router
+    would have (saq.svs.attribution). The run's test is added to the catalog if it isn't there."""
+    test_guid = "dddddddd-4444-4444-8444-444444444444"
+    with private_transaction() as session:
+        if session.execute(select(SVSCatalogTest.id).where(SVSCatalogTest.guid == test_guid)).first() is None:
+            add_catalog_test(test_guid)
+    run = SVSRun(uuid=str(uuid.uuid4()), test_guid=test_guid, test_content_hash="0" * 64, catalog_commit="a" * 40,
+                 platform="windows", state=state, marker=new_marker(), launcher="art", extra="{}", created_at=datetime.now(),
+                 observation_seconds=3600, attribution_seconds=3600 * 25)
+    with private_transaction() as session:
+        session.add(run)
+        session.flush()
+        session.add(SVSAttribution(run_id=run.id, alert_uuid=alert_uuid, content_hash=content_hash,
+                                   signature_uuid=signature_uuid, confidence="marker", source="router", actor="svs", created_at=datetime.now()))
+        session.expunge(run)
+    return run

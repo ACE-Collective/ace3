@@ -64,6 +64,17 @@
     <div class="row">
         <div class="col">
             <small class="text-muted">{{ total_alerts }} matching alert{{ '' if total_alerts == 1 else 's' }}, sorted by relevance (terms like tag: and ipv4: match exactly and come first, newest first); the active filters still apply.</small>
+            {% if search_include_tests %}
+            <small class="text-muted" id="alert-search-tests">Test-run alerts are included.
+                <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="alert-search-tests-toggle"
+                        data-url="{{ url_for('analysis.search_include_tests') }}" data-include="0">Leave them out</button>
+            </small>
+            {% elif search_excluded_test_alerts %}
+            <small class="text-muted" id="alert-search-tests">{{ search_excluded_test_alerts }} test-run alert{{ '' if search_excluded_test_alerts == 1 else 's' }} left out.
+                <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="alert-search-tests-toggle"
+                        data-url="{{ url_for('analysis.search_include_tests') }}" data-include="1">Include them</button>
+            </small>
+            {% endif %}
         </div>
     </div>
     {% endif %}

@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.configuration.schema import SVSConfig
+from saq.configuration.schema import ACEConfig, SVSConfig
 from saq.svs.yara.replay import ReplayError, _check_work_root
 
 
@@ -33,6 +33,21 @@ def test_unknown_svs_keys_are_rejected():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("timings", [
+    {"lease_seconds": 10, "heartbeat_interval_seconds": 30},    # the lease ends before the heartbeat
+    {"lease_seconds": 60, "heartbeat_interval_seconds": 30},    # one late heartbeat loses it
+])
+def test_a_lease_its_heartbeat_cannot_keep_is_refused_when_the_configuration_is_read(timings):
+    """Not only when service_svs starts: every process refuses the configuration."""
+    raw = get_config().raw._data
+    with pytest.raises(ValidationError, match="service_svs: .*must not exceed lease_seconds"):
+        ACEConfig.model_validate({**raw, "service_svs": {**raw["service_svs"], **timings}})
+
+    assert ACEConfig.model_validate({**raw, "service_svs": {**raw["service_svs"], "lease_seconds": 90,
+                                                            "heartbeat_interval_seconds": 30}})
+
+
+@pytest.mark.unit
 def test_yara_validation_defaults():
     config = get_config().svs.yara
     assert config.repositories == []
@@ -57,3 +72,12 @@ def test_a_work_dir_with_a_dot_is_refused(tmp_path):
     _check_work_root(str(tmp_path / "svs" / "work"))
     with pytest.raises(ReplayError, match="has a '.' in its path"):
         _check_work_root(str(tmp_path / "svs.d" / "work"))
+
+
+@pytest.mark.unit
+def test_coverage_defaults():
+    assert get_config().svs.coverage.refresh_interval_seconds == 120
+    with pytest.raises(ValidationError):
+        SVSConfig.model_validate({"coverage": {"refresh_interval_seconds": 0}})
+    with pytest.raises(ValidationError):
+        SVSConfig.model_validate({"coverage": {"nope": 1}})

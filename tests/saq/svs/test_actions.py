@@ -101,10 +101,8 @@ def test_relabel_with_nothing_writable_is_refused(user_id):
     assert _label(_sha256(files)) == ("fp", SOURCE_INHERITED_SINGLE)
 
 
-def test_relabel_skips_alerts_whose_disposition_only_ace_sets(user_id, monkeypatch):
-    # SIMULATED is the real case (phase 4); any analyst_selectable: false disposition behaves alike
-    monkeypatch.setattr(get_config().dispositions["DELIVERY"], "analyst_selectable", False)
-    _, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID]})
+def test_relabel_skips_alerts_whose_disposition_only_ace_sets(user_id):
+    _, files = graded_alert("SIMULATED", {"a.bin": [RULE_UUID]})
     with pytest.raises(VerdictNotAllowed, match="set by ACE"):
         actions.relabel(_sha256(files), RULE_UUID, "fp", user_id)
 

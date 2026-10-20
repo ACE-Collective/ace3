@@ -33,7 +33,10 @@ YARA scanning is performed by the `YaraScanner_v3_4` analysis module
 - **Rules live in namespaced directories.** Rules are loaded from
   `signatures/yara/<namespace>/*.yar`, where each subdirectory is a separate YARA
   namespace. The location is set by `signature_dir` in the `service_yara` section
-  of `etc/saq.default.yaml` (default `signatures/yara`).
+  of `etc/saq.default.yaml` (default `signatures/yara`). ACE writes two namespaces there
+  itself: `observable_export/` (observable detections, `docs/OBSERVABLE_DETECTIONS.md`) and
+  `svs_marker/` (the SVS marker rule, `docs/SVS_RUNS.md`). Don't put rules in either. ACE
+  rewrites them.
 - **Rules auto-reload.** The scanner watches the rule directories and recompiles
   when files change (every `update_frequency` seconds, default 60). You do not
   need to restart anything to deploy a new or edited rule.

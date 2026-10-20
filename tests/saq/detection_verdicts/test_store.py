@@ -3,7 +3,6 @@
 import pytest
 from sqlalchemy import select, update
 
-from saq.configuration.config import get_config
 from saq.database.model import (
     Alert,
     DetectionPoint,
@@ -105,10 +104,8 @@ def test_only_a_tp_alert_takes_verdicts(user_id, disposition):
     assert _stored(alert) == {} and _history(alert) == []
 
 
-def test_a_disposition_only_ace_sets_is_not_for_analysts(user_id, monkeypatch):
-    # SIMULATED is the real case (phase 4); any analyst_selectable: false disposition behaves alike
-    monkeypatch.setattr(get_config().dispositions["DELIVERY"], "analyst_selectable", False)
-    alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
+def test_a_disposition_only_ace_sets_is_not_for_analysts(user_id):
+    alert = insert_alert_with_detections(MULTI, disposition="SIMULATED")
     content_hash = _hashes(alert)[0]
 
     with pytest.raises(VerdictNotAllowed):

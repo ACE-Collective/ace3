@@ -1250,6 +1250,39 @@ span.multiselect-native-select select {
 .filter-list-table.filter-list-fit { table-layout: auto; }
 .filter-list-table td, .filter-list-table th { vertical-align: top; }
 .filter-list-table .text-break-all { overflow-wrap: anywhere; }
+/* a grouped list (filter_list_page.js, group) isn't striped: its group header rows set it apart */
+.filter-list-table tr.filter-list-group > td { --bs-table-bg-type: var(--bs-secondary-bg); border-top: 2px solid var(--bs-border-color); }
+
+/* training guides (app/help) */
+.help-sidebar-inner { position: sticky; top: 0.5rem; max-height: calc(100vh - 1rem); overflow-y: auto; font-size: 0.9rem; padding-bottom: 1rem; }
+.help-guide-list li { margin-bottom: 0.25rem; }
+.help-toc ul { margin-bottom: 0.25rem; }
+.help-toc ul ul { padding-left: 0.85rem; font-size: 0.85rem; }
+.help-toc li { margin-bottom: 0.2rem; }
+.help-guide { max-width: 64rem; line-height: 1.6; }
+.help-guide h1 { margin-bottom: 1rem; }
+.help-guide h2 { margin-top: 2.25rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--bs-border-color); }
+.help-guide h3 { margin-top: 1.75rem; }
+.help-guide h4 { margin-top: 1.25rem; }
+.help-guide .help-anchor { margin-left: 0.4rem; font-size: 0.8em; color: #adb5bd; text-decoration: none; visibility: hidden; }
+.help-guide :is(h2, h3, h4):hover .help-anchor { visibility: visible; }
+.help-guide a.help-image { display: block; margin: 0.75rem 0 1.25rem; }
+.help-guide img { max-width: 100%; height: auto; border: 1px solid var(--bs-border-color); border-radius: 0.25rem; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
+.help-guide table { width: auto; max-width: 100%; margin-bottom: 1rem; border-collapse: collapse; }
+.help-guide th, .help-guide td { padding: 0.35rem 0.6rem; border: 1px solid var(--bs-border-color); vertical-align: top; }
+.help-guide th { background-color: var(--bs-tertiary-bg); }
+.help-guide pre { padding: 0.75rem 1rem; background-color: var(--bs-tertiary-bg); border: 1px solid var(--bs-border-color); border-radius: 0.25rem; }
+.help-guide :not(pre) > code { padding: 0.1rem 0.25rem; background-color: var(--bs-tertiary-bg); border-radius: 0.2rem; color: #a3195b; }
+.help-guide blockquote { padding-left: 1rem; border-left: 3px solid var(--bs-border-color); color: #495057; }
+/* GitHub-style alerts (> [!TIP]); plain bordered blocks, not badges */
+.help-callout { margin: 1rem 0; padding: 0.6rem 1rem; border: 1px solid var(--bs-border-color); border-left-width: 4px; border-radius: 0.25rem; background-color: #f8f9fa; }
+.help-callout > :last-child { margin-bottom: 0; }
+.help-callout-title { margin-bottom: 0.25rem; font-weight: 600; }
+.help-callout-note      { border-left-color: #3d6fb4; }
+.help-callout-tip       { border-left-color: #198754; }
+.help-callout-important { border-left-color: #6f42c1; }
+.help-callout-warning   { border-left-color: #997404; }
+.help-callout-caution   { border-left-color: #b02a37; }
 
 /* a badge outline that is black on the light themes and a normal border on dark, where a
    white ring around every badge would be glaring */

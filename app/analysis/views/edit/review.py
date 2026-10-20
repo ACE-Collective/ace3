@@ -7,7 +7,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
 )
-from saq.database.util.alert import set_disposition_reviews
+from saq.database.util.alert import describe_frozen, set_disposition_reviews
 from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
 
@@ -55,14 +55,17 @@ def review_disposition():
     # update the database
     logging.debug("user %s reviewing %s alerts as %s", current_user.username, len(alert_uuids), review_result)
     try:
-        set_disposition_reviews(
+        frozen = set_disposition_reviews(
             alert_uuids, review_result, current_user.id,
             corrected_disposition=corrected_disposition, review_comment=review_comment)
+        reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
         logging.info(
             "AUDIT: user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",
-            current_user, ','.join(alert_uuids), review_result, corrected_disposition, comment_clause)
-        flash("disposition review recorded for {} alerts".format(len(alert_uuids)))
+            current_user, ','.join(reviewed), review_result, corrected_disposition, comment_clause)
+        message = "disposition review recorded for {} alerts".format(len(reviewed))
+        skipped = describe_frozen(frozen)
+        flash(f"{message}; {skipped}" if skipped else message)
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
         logging.error("unable to review disposition for %s alerts: %s", len(alert_uuids), e)

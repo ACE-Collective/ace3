@@ -13,19 +13,25 @@ the sample's detections, so they need alert:write as well as signature:read; ret
 svs:admin. Each records who took it, so a config API key (no user) gets 422.
 """
 
-import json
 import logging
 import os
 import shutil
 from datetime import datetime
 from typing import Annotated
 
-import pytz
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, Query, Security
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.common.listing import (
+    LISTING_MAX_PAGE_SIZE,
+    csv_response,
+    ndjson_response,
+    parse_timezone,
+    run_listing,
+    start_export,
+)
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, CsvStreamResponse, NdjsonStreamResponse, ZipFileResponse
 from aceapi_v2.svs.samples import service
@@ -39,7 +45,6 @@ from aceapi_v2.svs.samples.schemas import (
     SampleDeletionPage,
     SampleDetail,
     SampleListPage,
-    SampleRow,
 )
 from aceapi_v2.sync import run_db_in_thread
 from saq.svs.samples import SampleSort
@@ -65,13 +70,6 @@ ChangedSinceParam = Annotated[datetime | None, Query(
 TimezoneParam = Annotated[str, Query(description="the timezone relative date filters (`-7d`, `@d`) resolve in")]
 
 
-def _timezone(name: str):
-    try:
-        return pytz.timezone(name)
-    except pytz.UnknownTimeZoneError:
-        raise HTTPException(status_code=422, detail=f"unknown timezone {name!r}")
-
-
 def _safe_unlink(path: str) -> None:
     try:
         os.remove(path)
@@ -83,25 +81,11 @@ def _safe_rmtree(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _attachment(filename: str) -> dict:
-    return {"Content-Disposition": f'attachment; filename="{filename}"'}
-
-
 async def _prepare_listing(f: list[str], sort: SampleSort, desc: bool, changed_since: datetime | None,
-                           tz: str) -> service.SampleListing:
-    try:
-        return await run_db_in_thread(
-            service.prepare_sample_listing, f, sort=sort, descending=desc, changed_since=changed_since,
-            tz=_timezone(tz))
-    except service.InvalidListingRequest as e:
-        raise HTTPException(status_code=422, detail=e.detail)
-
-
-async def _fetch_page(listing: service.SampleListing, cursor: str | None, limit: int):
-    try:
-        return await run_db_in_thread(service.fetch_sample_page, listing, cursor, limit)
-    except service.InvalidCursor as e:
-        raise HTTPException(status_code=400, detail=str(e))
+                           tz: str, cursor: str | None = None) -> service.SampleListing:
+    return await run_listing(
+        service.prepare_sample_listing, f, sort=sort, descending=desc, changed_since=changed_since,
+        tz=parse_timezone(tz), cursor=cursor)
 
 
 @router.get("/", response_model=SampleListPage)
@@ -112,7 +96,7 @@ async def list_samples(
     desc: DescendingParam = True,
     changed_since: ChangedSinceParam = None,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
-    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
     tz: TimezoneParam = "UTC",
 ) -> SampleListPage:
     """List samples, one per (sha256, rule uuid), with their capture counts and label.
@@ -120,8 +104,8 @@ async def list_samples(
     Pages are keyset pages in the requested order: follow next_cursor, with the same filters and
     sort, until it is null.
     """
-    listing = await _prepare_listing(f, sort, desc, changed_since, tz)
-    rows, next_cursor = await _fetch_page(listing, cursor, limit)
+    listing = await _prepare_listing(f, sort, desc, changed_since, tz, cursor)
+    rows, next_cursor = await run_listing(service.fetch_sample_page, listing, cursor, limit)
     return SampleListPage(data=rows, next_cursor=next_cursor)
 
 
@@ -129,33 +113,6 @@ async def list_samples(
 # exports: every sample the listing matches, streamed in one response with the same filters and
 # order as GET /svs/samples and no paging. One route per format.
 #
-
-
-class _ExportFailed(Exception):
-    """A page after the first could not be fetched, after the response started."""
-
-
-async def _prepare_export(f: list[str], sort: SampleSort, desc: bool, changed_since: datetime | None, tz: str):
-    """The listing and its first page. Everything that can be a 4xx happens here, before the
-    response starts: once the first byte is sent the status code cannot change."""
-    listing = await _prepare_listing(f, sort, desc, changed_since, tz)
-    first_page = await _fetch_page(listing, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return listing, first_page
-
-
-async def _export_pages(listing: service.SampleListing, first_page: tuple[list[SampleRow], str | None]):
-    """Yields the rows of every page in turn. Raises _ExportFailed (after logging) when a later
-    page fails, so each format can end its stream the way that format can say so."""
-    rows, next_cursor = first_page
-    yield rows
-    while next_cursor is not None:
-        try:
-            rows, next_cursor = await run_db_in_thread(
-                service.fetch_sample_page, listing, next_cursor, service.LISTING_EXPORT_PAGE_SIZE)
-        except Exception as e:
-            logger.error("svs sample export failed part-way: %s", e, exc_info=True)
-            raise _ExportFailed() from e
-        yield rows
 
 
 @router.get("/export/ndjson", response_class=NdjsonStreamResponse)
@@ -172,16 +129,9 @@ async def export_samples_ndjson(
     A failure part-way through cannot change the status code that was already sent: the stream
     then ends with an {"error": ...} line, and the failure is logged.
     """
-    listing, first_page = await _prepare_export(f, sort, desc, changed_since, tz)
-
-    async def _stream():
-        try:
-            async for rows in _export_pages(listing, first_page):
-                yield "".join(row.model_dump_json() + "\n" for row in rows)
-        except _ExportFailed:
-            yield json.dumps({"error": "the export failed part-way; the lines above are incomplete"}) + "\n"
-
-    return NdjsonStreamResponse(_stream(), headers=_attachment("svs-samples.ndjson"))
+    listing = await _prepare_listing(f, sort, desc, changed_since, tz)
+    export = await start_export(service.fetch_sample_page, listing, what="svs sample")
+    return ndjson_response(export, "svs-samples.ndjson")
 
 
 @router.get("/export/csv", response_class=CsvStreamResponse)
@@ -199,19 +149,9 @@ async def export_samples_csv(
     A failure part-way through cannot change the status code that was already sent: the CSV is
     then truncated, and the failure is logged.
     """
-    listing, first_page = await _prepare_export(f, sort, desc, changed_since, tz)
-
-    async def _stream():
-        header = True
-        try:
-            async for rows in _export_pages(listing, first_page):
-                yield service.sample_rows_to_csv(rows, header=header)
-                header = False
-        except _ExportFailed:
-            # CSV has no way to say so in-band; the truncation and the log are the signal
-            return
-
-    return CsvStreamResponse(_stream(), headers=_attachment("svs-samples.csv"))
+    listing = await _prepare_listing(f, sort, desc, changed_since, tz)
+    export = await start_export(service.fetch_sample_page, listing, what="svs sample")
+    return csv_response(export, service.sample_rows_to_csv, "svs-samples.csv")
 
 
 # the static routes come before the /{sha256}/{rule_uuid} ones, so "captures" or "download" is
@@ -259,14 +199,11 @@ async def list_deletions(
         description="only deletions recorded or changed (their purge finished) at or after this time (UTC if no "
                     "offset is given)")] = None,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
-    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
 ) -> SampleDeletionPage:
     """The audit of sample files deleted from SVS, oldest change first: who deleted each, why, which
     rules it had captures for, and whether its bytes are purged yet."""
-    try:
-        return await run_db_in_thread(service.list_deletions, changed_since, cursor, limit)
-    except service.InvalidCursor as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await run_listing(service.list_deletions, changed_since, cursor, limit)
 
 
 def _zip_response(label: str, zip_path: str, staging: str) -> ZipFileResponse:
@@ -293,10 +230,7 @@ async def download_samples(
     past either). Files stored on another node's local pool are listed in the manifest under
     skipped.
     """
-    try:
-        download = await run_db_in_thread(service.resolve_bulk_download, f, tz=_timezone(tz))
-    except service.InvalidListingRequest as e:
-        raise HTTPException(status_code=422, detail=e.detail)
+    download = await run_listing(service.resolve_bulk_download, f, tz=parse_timezone(tz))
 
     logger.info("AUDIT: user %s downloading %s svs sample files (filters %s): %s",
                 auth.auth_name, len(download.local), f, download.sha256s)

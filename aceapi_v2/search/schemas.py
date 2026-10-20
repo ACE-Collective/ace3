@@ -88,6 +88,7 @@ class AlertSearchRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     include_hits: bool = Field(default=True, description="include the matching snippets for each alert")
     lanes: list[Lane] = Field(default_factory=lambda: ["semantic", "lexical"], min_length=1)
+    include_test_alerts: bool = Field(default=False, description="include test-run alerts (the svs.queue queue, docs/SVS_RUNS.md). They are left out by default unless the filters or the query name a queue; excluded_test_alerts in the response says how many were")
 
     @model_validator(mode="after")
     def require_query_or_filters(self) -> "AlertSearchRequest":
@@ -104,6 +105,7 @@ class SimilarAlertsRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=MAX_SIMILAR_PAGE_SIZE)
     offset: int = Field(default=0, ge=0)
     include_hits: bool = True
+    include_test_alerts: bool = Field(default=False, description="include test-run alerts (the svs.queue queue, docs/SVS_RUNS.md). They are left out by default unless the filters or the query name a queue; excluded_test_alerts in the response says how many were")
 
 
 class SearchHitOut(BaseModel):
@@ -146,4 +148,5 @@ class AlertSearchResponse(BaseModel):
     results: list[AlertSearchResultOut]
     lanes_used: list[Lane]
     timings_ms: dict[str, int]
+    excluded_test_alerts: Optional[int] = Field(default=None, description="how many test-run alerts (svs.queue) matched and were left out; null when none were left out because the request named a queue or set include_test_alerts")
     errors: list[str] = Field(default_factory=list, description="query language problems. When this is non-empty nothing was searched: a term that cannot be honored is reported rather than dropped, because dropping it would return MORE alerts than were asked for")

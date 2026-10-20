@@ -15,10 +15,19 @@ from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_ANALYSIS, DISPOSITION_FALSE_POSITIVE, F_FILE, F_FILE_NAME, F_FQDN, F_HOSTNAME, F_URL
-from saq.database.model import Alert, load_alert
+from saq.constants import (
+    ANALYSIS_MODE_ANALYSIS,
+    DISPOSITION_FALSE_POSITIVE,
+    DISPOSITION_SIMULATED,
+    F_FILE,
+    F_FILE_NAME,
+    F_FQDN,
+    F_HOSTNAME,
+    F_URL,
+)
+from saq.database.model import Alert, Workload, load_alert
 from saq.database.pool import get_db
-from saq.database.util.alert import ALERT
+from saq.database.util.alert import ALERT, set_dispositions
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from tests import unittest_session
 from saq.modules.email import EmailAnalysis
@@ -706,6 +715,25 @@ def insert_alert():
     alert = load_alert(root.uuid)
     assert alert.id is not None
     return alert
+
+def make_simulated(alert: Alert) -> None:
+    """Gives the alert the disposition SVS sets on a test-run alert (SIMULATED), through the
+    system path, and drops the workload entry that queued, so a test sees only what the code
+    under test schedules."""
+    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
+                     system=True)
+    db = get_db()
+    db.query(Workload).filter(Workload.uuid == alert.uuid).delete()
+    db.commit()
+    db.expire_all()
+
+
+def workload_count(alert_uuid: str) -> int:
+    """How many workload entries queue the alert for analysis."""
+    db = get_db()
+    db.expire_all()
+    return db.query(Workload).filter(Workload.uuid == alert_uuid).count()
+
 
 def insert_alert_with_detections(detections: list[dict], disposition: Union[str, None] = None):
     """Creates and syncs an alert carrying the given detections, then sets its disposition.

@@ -18,12 +18,27 @@ from saq.gui.filter_names import (
     FILE_COLLECTION_FILTER_SLUGS,
     FILTER_NAMES,
     REMEDIATION_FILTER_SLUGS,
+    SVS_COVERAGE_FILTER_SLUGS,
+    SVS_COVERAGE_HISTORY_FILTER_SLUGS,
+    SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
+    SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
+    SVS_WORKLIST_FILTER_SLUGS,
 )
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, SignatureType
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
+from saq.svs.attack import TechniqueStatus, get_attack_catalog, normalize_platform
+from saq.svs.constants import (
+    LABEL_FILTER_NONE,
+    LABELS,
+    RUN_STATES,
+    VALIDATION_STATES,
+    CoverageState,
+    WorklistKind,
+    WorklistResolution,
+    WorklistStatus,
+)
 from saq.util.uuid import UUID_REGEX
 from saq.util.relative_time import parse_date_range
 
@@ -283,6 +298,293 @@ class ValidationFilterEntry(FilterEntryBase):
             if value not in allowed:
                 raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
 
+        return values
+
+
+# an ATT&CK technique or sub-technique id, e.g. T1059 or T1059.001
+_TECHNIQUE = re.compile(r"^T\d{4}(\.\d{3})?$")
+
+
+class CatalogTestFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS tests screen (GET /api/v2/svs/tests)."""
+
+    name: str = Field(description="a filter name of the SVS tests screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_TEST_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_TEST_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            values = [value.strip().upper() for value in values]
+            for value in values:
+                if not _TECHNIQUE.match(value):
+                    raise ValueError(f"invalid technique {value!r} (expected an ATT&CK id such as T1059 or T1059.001)")
+            return values
+
+        if name in ("Platform", "Executor"):
+            return [value.strip().lower() for value in values]
+
+        if name == "Removed":
+            values = [value.lower() for value in values]
+            for value in values:
+                if value not in SAMPLE_BOOL_OPTIONS:
+                    raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(SAMPLE_BOOL_OPTIONS)})")
+            return values
+
+        return values
+
+
+# the date range filters of the SVS runs screen
+RUN_DATE_RANGE_FILTER_NAMES = ("Created", "Started", "Ended", "Reviewed")
+
+
+class RunFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS runs screen (GET /api/v2/svs/runs)."""
+
+    name: str = Field(description="a filter name of the SVS runs screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_RUN_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_RUN_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            values = [value.strip().upper() for value in values]
+            for value in values:
+                if not _TECHNIQUE.match(value):
+                    raise ValueError(f"invalid technique {value!r} (expected an ATT&CK id such as T1059 or T1059.001)")
+            return values
+
+        if name == "Test":
+            values = [value.strip().lower() for value in values]
+            for value in values:
+                if not UUID_REGEX.fullmatch(value):
+                    raise ValueError(f"invalid test guid {value!r}")
+            return values
+
+        if name == "Target":
+            return [value.strip().lower() for value in values]
+
+        if name == "Platform":
+            # Atomic Red Team's names find the platform they count as: iaas:aws finds iaas
+            return [normalize_platform(value) for value in values]
+
+        if name in ("Owner", "Reviewer"):
+            return [value.strip() for value in values]
+
+        if name in RUN_DATE_RANGE_FILTER_NAMES:
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "State": list(RUN_STATES),
+            "Changed Since Review": list(SAMPLE_BOOL_OPTIONS),
+            "Has Open Alerts": list(SAMPLE_BOOL_OPTIONS),
+            "Has Missing": list(SAMPLE_BOOL_OPTIONS),
+            "Has Possibly Suppressed": list(SAMPLE_BOOL_OPTIONS),
+            "Has Candidates": list(SAMPLE_BOOL_OPTIONS),
+            "Has Late": list(SAMPLE_BOOL_OPTIONS),
+            "Has Context Only": list(SAMPLE_BOOL_OPTIONS),
+            "Needs Attention": list(SAMPLE_BOOL_OPTIONS),
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.strip().lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+
+        return values
+
+
+# the options of the SVS coverage screens' multiple-choice filters
+COVERAGE_STATES = tuple(state.value for state in CoverageState)
+COVERAGE_LEVELS = ("technique", "sub-technique")
+CATALOG_STATUSES = tuple(status.value for status in TechniqueStatus)
+
+
+def _coverage_values(name: str, values: list) -> list:
+    """The values of a filter of the SVS coverage screen or its history, validated and normalized."""
+    if not all(isinstance(value, str) for value in values):
+        raise ValueError(f"values must be strings, got {values!r}")
+
+    if name == "Technique":
+        values = [value.strip().upper() for value in values]
+        for value in values:
+            if not _TECHNIQUE.match(value):
+                raise ValueError(f"invalid technique {value!r} (expected an ATT&CK id such as T1059 or T1059.001)")
+        return values
+
+    if name == "Tactic":
+        # an id (TA0002) or a shortname (execution) of the pinned release, kept as the id
+        tactics = []
+        for value in values:
+            tactic = get_attack_catalog().tactic(value)
+            if tactic is None:
+                raise ValueError(f"invalid tactic {value!r} (expected an ATT&CK tactic id such as TA0002 or a "
+                                 "shortname such as execution)")
+            tactics.append(tactic.id)
+        return tactics
+
+    if name == "Platform":
+        # Atomic Red Team's names find the platform they count as: iaas:aws finds iaas
+        return [normalize_platform(value) for value in values]
+
+    if name in ("State Changed", "Date"):
+        now = datetime.now(pytz.utc)
+        for value in values:
+            try:
+                parse_date_range(value, now=now, tz=pytz.utc)
+            except ValueError as e:
+                raise ValueError(f"invalid date range {value!r}: {e}") from None
+        return values
+
+    allowed = {
+        "State": COVERAGE_STATES,
+        "Own State": COVERAGE_STATES,
+        "Level": COVERAGE_LEVELS,
+        "Catalog Status": CATALOG_STATUSES,
+        "ATT&CK Platform": SAMPLE_BOOL_OPTIONS,
+        "Has Manual": SAMPLE_BOOL_OPTIONS,
+        "Retired": SAMPLE_BOOL_OPTIONS,
+    }.get(name)
+    if allowed is None:
+        return values
+
+    values = [value.strip().lower() for value in values]
+    for value in values:
+        if value not in allowed:
+            raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
+    return values
+
+
+class CoverageFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS coverage screen (GET /api/v2/svs/coverage)."""
+
+    name: str = Field(description="a filter name of the SVS coverage screen")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_COVERAGE_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_COVERAGE_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        return _coverage_values(info.data.get("name"), values)
+
+
+class CoverageHistoryFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS coverage history (GET /api/v2/svs/coverage/history)."""
+
+    name: str = Field(description="a filter name of the SVS coverage history")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_COVERAGE_HISTORY_FILTER_SLUGS:
+            raise ValueError(f"unknown filter name {value!r} (expected one of "
+                             f"{', '.join(sorted(SVS_COVERAGE_HISTORY_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        return _coverage_values(info.data.get("name"), values)
+
+
+WORKLIST_STATUSES = tuple(status.value for status in WorklistStatus)
+WORKLIST_KINDS = tuple(kind.value for kind in WorklistKind)
+SIGNATURE_FAMILIES = tuple(signature_type.value for signature_type in SignatureType)
+# a row nobody resolved
+WORKLIST_RESOLUTION_NONE = "none"
+WORKLIST_RESOLUTIONS = (*(resolution.value for resolution in WorklistResolution), WORKLIST_RESOLUTION_NONE)
+
+
+class WorklistFilterEntry(FilterEntryBase):
+    """A filter entry of the SVS worklist (GET /api/v2/svs/worklist)."""
+
+    name: str = Field(description="a filter name of the SVS worklist")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value not in SVS_WORKLIST_FILTER_SLUGS:
+            raise ValueError(
+                f"unknown filter name {value!r} (expected one of {', '.join(sorted(SVS_WORKLIST_FILTER_SLUGS))})")
+
+        return value
+
+    @field_validator("values")
+    @classmethod
+    def validate_values(cls, values: list, info) -> list:
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"values must be strings, got {values!r}")
+
+        name = info.data.get("name")
+        if name == "Technique":
+            return _coverage_values(name, values)
+
+        if name in ("Signature", "Resolved By"):
+            # a signature uuid, or text its name contains; a username
+            return [value.strip() for value in values]
+
+        if name == "Resolved":
+            now = datetime.now(pytz.utc)
+            for value in values:
+                try:
+                    parse_date_range(value, now=now, tz=pytz.utc)
+                except ValueError as e:
+                    raise ValueError(f"invalid date range {value!r}: {e}") from None
+            return values
+
+        allowed = {
+            "Family": SIGNATURE_FAMILIES,
+            "Status": WORKLIST_STATUSES,
+            "Kind": WORKLIST_KINDS,
+            "Resolution": WORKLIST_RESOLUTIONS,
+        }.get(name)
+        if allowed is None:
+            return values
+
+        values = [value.strip().lower() for value in values]
+        for value in values:
+            if value not in allowed:
+                raise ValueError(f"invalid {name} value {value!r} (expected one of {', '.join(allowed)})")
         return values
 
 

@@ -21,6 +21,7 @@ from saq.database.model import (
     ObservableMapping,
     User,
 )
+from tests.saq.helpers import insert_alert, make_simulated, workload_count
 
 pytestmark = pytest.mark.integration
 
@@ -125,6 +126,26 @@ class TestBulkAddObservable:
         })
         assert response.status_code == 400
         assert "not a valid observable type" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_simulated_alert_is_reported_as_a_failure(self, client: AsyncClient):
+        """A SIMULATED alert gets no new observables and is not analyzed again (docs/SVS_RUNS.md)."""
+        simulated, other = insert_alert(), insert_alert()
+        make_simulated(simulated)
+
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": [simulated.uuid, other.uuid],
+            "observable_type": "fqdn",
+            "observable_value": "evil.example.com",
+        })
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["failed_uuids"] == [simulated.uuid]
+        assert data["failed_details"][simulated.uuid].startswith(
+            f"alert {simulated.uuid} is SIMULATED, a disposition only ACE sets")
+        assert data["success_count"] == 1
+        assert workload_count(simulated.uuid) == 0
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.add_workload")

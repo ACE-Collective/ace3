@@ -10,7 +10,8 @@
                 {% macro detection_list(chains) %}
                     <ul class="list-unstyled ms-3 mb-0">
                     {% for chain in chains %}
-                        <li>
+                        {# on a PARTIAL TEST alert, the detections from the test run are greyed out #}
+                        <li{% if (svs_test_detections or {}).get(chain.content_hash) %} class="opacity-50" title="from an SVS test run"{% endif %}>
                             <span class="bi bi-exclamation-triangle-fill text-danger"></span>
                             <a href="#detection_{{ chain.content_hash }}" class="link-danger">{{ chain.detection.description }}</a>
                             <span class="detection-verdict" data-content-hash="{{ chain.content_hash }}"></span>

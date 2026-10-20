@@ -31,6 +31,19 @@ def _rows(result) -> dict:
 
 
 @pytest.mark.integration
+def test_a_branch_gone_from_the_remote_still_validates(svs_repository):
+    """CI re-running a merged pull request, whose branch was deleted, or one from a fork."""
+    a = stored_sample("DELIVERY", b"alpha evil", [R1])
+    base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
+    head = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "nothing here"')})
+
+    result = run_replay(REPOSITORY, base, head, branch="feature-deleted-on-merge")
+
+    assert result.diffed
+    assert _rows(result)[(a, R1)].category == Category.REGRESSION
+
+
+@pytest.mark.integration
 def test_a_validation_reports_what_the_change_does(svs_repository):
     a = stored_sample("DELIVERY", b"alpha evil", [R1])
     b = stored_sample("FALSE_POSITIVE", b"beta bad", [R2])

@@ -59,6 +59,7 @@ from saq.remediation.coverage import get_remediation_coverage
 from saq.search.query import search_alerts, similar_alerts
 from saq.search.syntax import parse_search_query
 from saq.search.types import AlertSearchResult, SearchRequest
+from saq.svs.alert_status import alert_svs_statuses
 
 
 def _ensure_manage_session_defaults(seed_saved_filters: bool = False):
@@ -120,6 +121,10 @@ def build_manage_list_context() -> dict:
     search_mode = None
     search_notices: list[str] = []
     search_result_mapping: dict[str, AlertSearchResult] = {}
+    # how many test-run alerts the search left out (None: none were left out), and whether the
+    # analyst asked for them (docs/SVS_RUNS.md)
+    search_excluded_test_alerts = None
+    search_include_tests = False
 
     if search_spec:
         search_mode = search_spec["mode"]
@@ -136,12 +141,16 @@ def build_manage_list_context() -> dict:
         else:
             search_query = search_spec["query"]
 
+        search_include_tests = bool(search_spec.get("include_tests"))
+
         def run_search(offset: int):
             if search_mode == SEARCH_MODE_SIMILAR:
-                return similar_alerts(search_spec["alert_uuid"], search_filters, limit=session['page_size'], offset=offset, post_filter=post_filter)
+                return similar_alerts(search_spec["alert_uuid"], search_filters, limit=session['page_size'], offset=offset,
+                                      include_test_alerts=search_include_tests, post_filter=post_filter)
 
             return search_alerts(
-                SearchRequest(query=search_query, filters=search_filters, limit=session['page_size'], offset=offset),
+                SearchRequest(query=search_query, filters=search_filters, limit=session['page_size'], offset=offset,
+                              include_test_alerts=search_include_tests),
                 post_filter=post_filter,
             )
 
@@ -165,6 +174,7 @@ def build_manage_list_context() -> dict:
                 response = run_search(page_offset)
 
         page_uuids = response.alert_uuids
+        search_excluded_test_alerts = response.excluded_test_alerts
         search_result_mapping = {result.alert_uuid: result for result in response.results}
         if page_uuids:
             query = query.filter(GUIAlert.uuid.in_(page_uuids)).group_by(GUIAlert.id)
@@ -235,6 +245,11 @@ def build_manage_list_context() -> dict:
     # per-alert email remediation coverage for the badge next to the description
     remediation_coverage = get_remediation_coverage(alerts)
 
+    # each alert's SVS status (docs/SVS.md, Part 3, *What analysts see*), shown as text next to
+    # the description and linking to its run: three queries for the page
+    statuses_by_id = alert_svs_statuses({alert.id: alert.uuid for alert in alerts})
+    svs_statuses = {alert.uuid: statuses_by_id[alert.id] for alert in alerts if alert.id in statuses_by_id}
+
     # alert display timezone
     display_timezone = pytz.utc
     if current_user.timezone and pytz.timezone(current_user.timezone) != pytz.utc:
@@ -271,6 +286,8 @@ def build_manage_list_context() -> dict:
         'search_query': search_query,
         'search_mode': search_mode,
         'search_notices': search_notices,
+        'search_excluded_test_alerts': search_excluded_test_alerts,
+        'search_include_tests': search_include_tests,
         'saved_filters': saved_filters,
         'quick_filters': get_quick_filter_display_data(saved_filters),
         'current_filter': get_current_filter(),
@@ -288,6 +305,7 @@ def build_manage_list_context() -> dict:
         'remediation_coverage': remediation_coverage,
         'display_timezone_label': display_timezone_label,
         'alert_tags': alert_tags,
+        'svs_statuses': svs_statuses,
         'manage_columns': manage_columns,
         # the column chooser's model: every column, in order, with its visibility
         'manage_column_layout': manage_column_layout(column_preference),

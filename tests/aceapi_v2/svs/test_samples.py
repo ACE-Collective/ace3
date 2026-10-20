@@ -15,6 +15,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
+from aceapi_v2.common import listing
 from aceapi_v2.svs.samples import service
 from saq.cas import Hold, get_cas
 from saq.configuration.config import get_config
@@ -194,6 +195,27 @@ class TestKeysetPaging:
         assert len(seen) == len(set(seen)) == 7
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("sort", ["capture_count", "last_captured"])
+    async def test_a_sample_captured_again_between_pages_is_neither_skipped_nor_repeated(
+            self, client: AsyncClient, corpus, sort):
+        """Its sort value grows past the cursor; the listing counts the captures as they were when
+        its first page was read, as does an export, which pages the same way."""
+        params = {"sort": sort, "desc": "true"}
+        everything = await _get(client, **params, limit=100)
+        first = (await client.get("/svs/samples/", params={**params, "limit": 2})).json()
+        last = everything[-1]
+        for _ in range(3):
+            insert_capture(str(uuid.uuid4()), last["sha256"], last["rule_uuid"],
+                           created_at=datetime.now().replace(microsecond=0))
+
+        rest = await _all_pages(client, {**params, "cursor": first["next_cursor"]}, 2)
+        seen = first["data"] + rest
+        assert _keys(seen) == _keys(everything)
+        assert [row["capture_count"] for row in seen] == [row["capture_count"] for row in everything]
+        # a new listing counts them
+        assert max(row["capture_count"] for row in await _get(client, **params, limit=100)) >= 4
+
+    @pytest.mark.asyncio
     async def test_a_cursor_belongs_to_its_order(self, client: AsyncClient, corpus):
         cursor = (await client.get("/svs/samples/", params={"limit": 2, "sort": "rule"})).json()["next_cursor"]
         assert (await client.get("/svs/samples/", params={"cursor": cursor, "sort": "rule"})).status_code == 200
@@ -320,7 +342,7 @@ async def test_changed_since(client: AsyncClient):
 class TestExport:
     @pytest.mark.asyncio
     async def test_ndjson(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         for _ in range(3):
             _sample("FALSE_POSITIVE", [RULE_UUID])
 
@@ -332,7 +354,7 @@ class TestExport:
 
     @pytest.mark.asyncio
     async def test_csv(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "LISTING_EXPORT_PAGE_SIZE", 2)
+        monkeypatch.setattr(listing, "LISTING_EXPORT_PAGE_SIZE", 2)
         for _ in range(3):
             _sample("REVIEWED", [RULE_UUID])
 
@@ -629,6 +651,25 @@ class TestActionAccess:
 
 
 class TestLabelActions:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("disposition, refusal", [
+        ("DELIVERY", None),
+        ("FALSE_POSITIVE", "every detection on a false positive alert is FP"),
+        ("SIMULATED", "are set by ACE, not by analysts"),
+    ])
+    async def test_the_detail_says_when_relabel_cannot_apply(self, client: AsyncClient, disposition, refusal):
+        """The GUI offers Relabel only when it would write a verdict; a refusal is the reason a
+        relabel answers 409 with."""
+        _, sha256, _ = _sample(disposition, [RULE_UUID])
+        detail = (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).json()
+        relabel = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "fp"})
+        if refusal is None:
+            assert detail["relabel_refusal"] is None
+            assert relabel.status_code == 200, relabel.text
+        else:
+            assert refusal in detail["relabel_refusal"]
+            assert relabel.status_code == 409 and refusal in relabel.json()["detail"]
+
     @pytest.mark.asyncio
     async def test_relabel_reset_and_confirm(self, client: AsyncClient):
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])

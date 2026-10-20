@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
+{% from "svs/_runs_page.html" import runs_page_attributes, runs_page_scripts with context %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+<div id="svs_runs_page" {{ runs_page_attributes() }}>
+    <div class="d-flex flex-wrap align-items-center gap-3 mb-2">
+        <div class="btn-group btn-group-sm" role="group" aria-label="list runs or batches">
+            <a class="btn btn-outline-dark{{ ' active' if view == 'runs' }}" id="svs_view_runs" href="{{ url_for('svs.runs') }}">Runs</a>
+            <a class="btn btn-outline-dark{{ ' active' if view == 'batches' }}" id="svs_view_batches" href="{{ url_for('svs.batches') }}">Batches</a>
+        </div>
+        <span class="text-muted small">
+            {% if view == 'runs' %}
+            Atomic Red Team test runs registered by the launcher, newest first. Times are UTC.
+            {% else %}
+            One row per batch, summing the runs these filters match. Open a batch to see its runs. Times are UTC.
+            {% endif %}
+        </span>
+    </div>
+    {% if view == 'runs' %}
+    <div id="svs_runs_share" class="d-none" title="the revisit trigger of preventing hunt suppression for test targets"></div>
+    {% endif %}
+    <div id="svs_runs_message" class="alert alert-info d-none" role="status"></div>
+    <div id="svs_runs_list"></div>
+</div>
+
+{{ saved_filter_modals() }}
+
+{% if view == 'runs' and has_permission('svs', 'run_manage') %}
+{# Cancel and Close ask first; svs_runs.js fills in the title, the runs and the button #}
+<div class="modal fade" id="svs_runs_action_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <form id="svs_runs_action_form">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="svs_runs_action_title"></h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="svs_runs_action_text" class="mb-2"></div>
+                <ul id="svs_runs_action_runs" class="small mb-2"></ul>
+                <div id="svs_runs_action_reason_group" class="d-none">
+                    <label class="form-label" for="svs_runs_action_reason">Reason</label>
+                    <textarea class="form-control" id="svs_runs_action_reason" name="reason" rows="3" maxlength="4096"></textarea>
+                    <div id="svs_runs_action_reason_hint" class="form-text"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary" id="svs_runs_action_submit"></button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
+{# a bulk action left runs alone that someone else owns: take them from their owners? #}
+<div class="modal fade" id="svs_runs_take_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Runs someone else owns</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>These runs belong to someone else. Take them from their owners and continue?</p>
+                <ul id="svs_runs_take_runs" class="small mb-0"></ul>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Leave them</button>
+                <button type="button" class="btn btn-outline-primary" id="svs_runs_take_submit">Take them</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+{{ runs_page_scripts() }}
+{% endblock %}

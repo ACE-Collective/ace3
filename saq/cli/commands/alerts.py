@@ -22,6 +22,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
 from saq.configuration import get_config
 from saq.database.model import Alert
 from saq.database.pool import get_db
+from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.index import chunked
 from saq.gui.icon import KEY_ICON_CONFIGURATION, IconConfiguration
 from saq.environment import get_base_dir, get_global_runtime_settings
@@ -243,6 +244,11 @@ def reset_alerts(args):
         alert = get_db().query(Alert).filter(Alert.storage_dir.in_([storage_dir, relative_dir])).one_or_none()
         if alert:
             logging.info("loaded {} from database".format(storage_dir))
+            try:
+                ensure_not_frozen(alert)
+            except AlertFrozen as e:
+                logging.error("not resetting %s: %s", storage_dir, e)
+                continue
 
         try:
             root = RootAnalysis(storage_dir=storage_dir)
@@ -345,6 +351,12 @@ def reload_alerts(args):
             logging.error("unknown alert {}".format(uuid))
             continue
 
+        try:
+            ensure_not_frozen(alert)
+        except AlertFrozen as e:
+            logging.error("not analyzing %s: %s", uuid, e)
+            continue
+
         # the engine analyzes in the mode of the workload entry, whatever mode the root was saved with
         alert.root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
         alert.root_analysis.schedule()
@@ -360,17 +372,22 @@ def cleanup_alerts(args):
     from saq.util.maintenance import cleanup_alerts
     cleanup_alerts(fp_days_old=args.fp_days_old, 
                    ignore_days_old=args.ignore_days_old,
+                   simulated_days_old=args.simulated_days_old,
                    dry_run=args.dry_run)
     sys.exit(0)
 
 cleanup_alerts_parsers = alert_sp.add_parser('cleanup',
-    help="Removes alerts dispositioned as ignore or false positive and older than some amount of time.")
+    help="Deletes alerts dispositioned as ignore and archives false positive and simulated (test-run) alerts "
+         "older than some amount of time.")
 cleanup_alerts_parsers.add_argument('--dry-run', required=False, dest='dry_run', default=False, action='store_true',
     help="Just report how many would be deleted and archived.")
 cleanup_alerts_parsers.add_argument('--fp-days-old', type=int, required=False, dest='fp_days_old', default=None, action='store',
     help='Specify how many days old an alert dispositioned as FALSE_POSITIVE should be for it to be archived.')
 cleanup_alerts_parsers.add_argument('--ignore-days-old', type=int, required=False, dest='ignore_days_old', default=None, action='store',
     help='Specify how many days old an alert dispositioned as IGNORE should be for it to be deleted.')
+cleanup_alerts_parsers.add_argument('--simulated-days-old', type=int, required=False, dest='simulated_days_old', default=None, action='store',
+    help='Specify how many days old an alert dispositioned as SIMULATED should be for it to be archived (default svs.simulated_days). '
+         'SIMULATED alerts are never deleted.')
 #cleanup_alerts_parsers.add_argument('--force-delete', required=False, dest='force_delete', default=None, action='store_true',
     #help='force delete fp alerts instead of archiving them')
 cleanup_alerts_parsers.set_defaults(func=cleanup_alerts)

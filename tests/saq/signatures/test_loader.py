@@ -167,7 +167,8 @@ def _populate(root: str):
     """Writes the layout each loader has to traverse.
 
     yara/         the signature_dir: one subdirectory per rule set, plus a loose
-                  rule file and a generated export directory that must be ignored
+                  rule file and the generated export and marker directories that
+                  must be ignored
     hunts/        a hunt rule directory with an includes/ subdirectory
     rules/        the observable modifier ruleset, a single file
     """
@@ -178,6 +179,10 @@ def _populate(root: str):
            _other_rule("loose_rule", "33333333-3333-3333-3333-333333333333"))
     _write(os.path.join(root, "yara", "observable_export", "url.yar"),
            _other_rule("generated_rule", "44444444-4444-4444-4444-444444444444"))
+    # the real marker rule has no uuid, which would drop it anyway: this one has one, so only the
+    # directory exclusion keeps it out
+    _write(os.path.join(root, "yara", "svs_marker", "svs_marker.yar"),
+           _other_rule("marker_dir_rule", "55555555-5555-5555-5555-555555555555"))
 
     _write(os.path.join(root, "hunts", "includes", "common.include.yaml"), HUNT_INCLUDE)
     _write(os.path.join(root, "hunts", "test_hunt.yaml"), HUNT_RULE)
@@ -251,8 +256,9 @@ def test_yara_traversal_matches_the_scanner(signature_repo):
     assert "loose_rule" not in names
     # the scanner does not recurse into a rule directory
     assert "nested_rule" not in names
-    # generated observable export rules are not authored signatures
+    # generated observable export rules and the svs marker rule are not authored signatures
     assert "generated_rule" not in names
+    assert "marker_dir_rule" not in names
 
 
 @pytest.mark.unit

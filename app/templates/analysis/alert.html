@@ -3,6 +3,7 @@
     <div class="col">
 
 {% block alert_summary %}
+{% include "analysis/_svs_alert_banner.html" %}
 <table class="table table-bordered table-condensed">
     {% if alert.archived %}
     <tr>
@@ -410,7 +411,9 @@
                 {# add detection points, each with its verdict chip (static/js/detection_verdicts.js) #}
                 {% for dp in node.obj.detections %}
                     {% set dp_hash = detection_content_hash(node.obj, dp) %}
-                    <button type="button" id="detection_{{ dp_hash }}" class="btn btn-danger btn-xs" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}">
+                    {# on a PARTIAL TEST alert, the detections from the test run are greyed out #}
+                    {% set svs_test_run = (svs_test_detections or {}).get(dp_hash) %}
+                    <button type="button" id="detection_{{ dp_hash }}" class="btn btn-danger btn-xs{{ ' opacity-50' if svs_test_run }}" data-bs-toggle="tooltip" data-placement="right" title="{{dp.display_description | e}}{{ ' (from an SVS test run)' if svs_test_run }}">
                         <span class="bi bi-fire" aria-hidden="true"></span>
                     </button>
                     <span class="detection-verdict" data-content-hash="{{ dp_hash }}"></span>

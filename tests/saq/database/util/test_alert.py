@@ -12,6 +12,7 @@ from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
     DISPOSITION_REVIEW_INCORRECT,
     DISPOSITION_REVIEW_UNREVIEWED,
+    DISPOSITION_SIMULATED,
     DISPOSITION_WEAPONIZATION,
     REVIEW_COMMENT_PREFIX,
 )
@@ -19,11 +20,15 @@ from saq.database.model import Alert, Comment, Observable, ObservableMapping, Us
 from saq.database.pool import get_db
 from saq.database.util.alert import (
     ALERT,
+    AlertFrozen,
     AlertOwner,
     OwnershipCheck,
     change_alert_owner,
     check_alert_ownership,
+    describe_frozen,
     describe_skipped,
+    ensure_not_frozen,
+    ensure_uuid_not_frozen,
     get_alert_by_uuid,
     set_disposition_reviews,
     set_dispositions,
@@ -32,7 +37,7 @@ from saq.database.util.alert import (
 from saq.database.util.user_management import add_user, delete_user
 from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, get_dispositions
 from saq.permissions.user import add_user_permission
-from tests.saq.helpers import create_root_analysis, insert_alert
+from tests.saq.helpers import create_root_analysis, insert_alert, make_simulated, workload_count
 
 
 @pytest.mark.integration
@@ -374,6 +379,25 @@ def test_describe_skipped(skipped, expected):
     assert describe_skipped(OwnershipCheck(skipped=skipped)) == expected
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("frozen,expected", [
+    ({}, None),
+    ({"a": "SIMULATED"}, "left 1 SIMULATED alert alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED"}, "left 2 SIMULATED alerts alone (only ACE sets that disposition)"),
+    ({"a": "SIMULATED", "b": "SIMULATED", "c": "OTHER"},
+     "left 3 alerts alone whose disposition only ACE sets (SIMULATED 2, OTHER 1)"),
+])
+def test_describe_frozen(frozen, expected):
+    assert describe_frozen(frozen) == expected
+
+
+@pytest.mark.unit
+def test_describe_skipped_names_owned_and_frozen_alerts():
+    ownership = OwnershipCheck(skipped={"a": "Jane"}, frozen={"b": "SIMULATED"})
+    assert describe_skipped(ownership) == (
+        "left 1 alert owned by Jane alone; left 1 SIMULATED alert alone (only ACE sets that disposition)")
+
+
 @pytest.mark.integration
 def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
     """An alert someone else owns is not changed unless it was taken from them."""
@@ -398,6 +422,29 @@ def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
     unowned_row = _reload(unowned)
     assert unowned_row.disposition == DISPOSITION_FALSE_POSITIVE
     assert unowned_row.owner_id == other.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_leaves_ineligible_alerts_alone(two_analysts):
+    """The caller's eligible check runs once the rows are locked, with the alerts that would change;
+    those it drops are left alone."""
+    _, other = two_analysts
+    kept, dropped = insert_alert(), insert_alert()
+    asked = []
+
+    def eligible(alert_uuids):
+        asked.append(alert_uuids)
+        return {kept.uuid}
+
+    result = set_dispositions([kept.uuid, dropped.uuid], DISPOSITION_FALSE_POSITIVE, other.id, "sweeping",
+                              eligible=eligible)
+
+    assert asked == [[kept.uuid, dropped.uuid]]
+    assert result.permitted == [kept.uuid]
+    assert result.ineligible == [dropped.uuid]
+    assert _reload(kept).disposition == DISPOSITION_FALSE_POSITIVE
+    assert _reload(dropped).disposition != DISPOSITION_FALSE_POSITIVE
+    assert get_db().query(Comment).filter(Comment.uuid == dropped.uuid).count() == 0
 
 
 @pytest.mark.integration
@@ -1014,3 +1061,126 @@ def test_set_disposition_reviews_rotates_version():
         assert _db_version(alert.uuid) != after_correct
     finally:
         delete_user("testuser_review_version")
+
+
+#
+# frozen alerts: a disposition only ACE sets (SIMULATED) is never changed by an analyst
+#
+
+@pytest.mark.integration
+def test_set_dispositions_leaves_a_frozen_alert_alone(two_analysts):
+    _, analyst = two_analysts
+    frozen, normal = insert_alert(), insert_alert()
+    make_simulated(frozen)
+
+    ownership = set_dispositions([frozen.uuid, normal.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id,
+                                 user_comment="not a test")
+
+    assert ownership.permitted == [normal.uuid]
+    assert ownership.frozen == {frozen.uuid: DISPOSITION_SIMULATED}
+    assert _reload(frozen).disposition == DISPOSITION_SIMULATED
+    assert _reload(normal).disposition == DISPOSITION_FALSE_POSITIVE
+    # nothing else happened to the frozen alert: no comment, no requeue
+    assert get_db().query(Comment).filter(Comment.uuid == frozen.uuid).count() == 0
+    assert workload_count(frozen.uuid) == 0
+
+
+@pytest.mark.integration
+def test_set_dispositions_does_not_take_a_frozen_alert(two_analysts):
+    """A confirmed take of a frozen alert from another analyst takes nothing."""
+    owner, analyst = two_analysts
+    alert = insert_alert()
+    make_simulated(alert)
+    _set_owner(alert, owner.id)
+
+    ownership = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id,
+                                 confirmed_takes={alert.uuid: owner.id})
+
+    assert ownership.permitted == [] and ownership.reassigned == []
+    assert ownership.frozen == {alert.uuid: DISPOSITION_SIMULATED}
+    assert _reload(alert).owner_id == owner.id
+
+
+@pytest.mark.integration
+def test_set_dispositions_logs_no_change_for_a_frozen_alert(two_analysts, caplog):
+    _, analyst = two_analysts
+    alert = insert_alert()
+    make_simulated(alert)
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO):
+        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+
+    assert _audit_records(caplog, "AUDIT: alert dispositioned") == []
+
+
+@pytest.mark.integration
+def test_the_system_path_changes_a_frozen_alert():
+    alert = insert_alert()
+    make_simulated(alert)
+    automation_user_id = get_config().global_settings.automation_user_id
+
+    ownership = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, automation_user_id, system=True)
+
+    assert ownership.permitted == [alert.uuid] and ownership.frozen == {}
+    assert _reload(alert).disposition == DISPOSITION_FALSE_POSITIVE
+
+
+@pytest.mark.integration
+def test_simulated_requeues_into_dispositioned_mode():
+    """SVS sets SIMULATED through the disposition writer analysts use, so capture runs on it."""
+    alert = insert_alert()
+    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
+                     system=True)
+
+    assert get_db().query(Workload).filter(
+        Workload.uuid == alert.uuid, Workload.analysis_mode == ANALYSIS_MODE_DISPOSITIONED).count() == 1
+
+
+@pytest.mark.integration
+def test_an_incorrect_review_leaves_a_frozen_alert_alone(two_analysts):
+    _, reviewer = two_analysts
+    frozen, normal = insert_alert(), insert_alert()
+    make_simulated(frozen)
+    set_dispositions([normal.uuid], DISPOSITION_FALSE_POSITIVE, reviewer.id)
+
+    skipped = set_disposition_reviews(
+        [frozen.uuid, normal.uuid], DISPOSITION_REVIEW_INCORRECT, reviewer.id,
+        corrected_disposition=DISPOSITION_WEAPONIZATION, review_comment="wrong call")
+
+    assert skipped == {frozen.uuid: DISPOSITION_SIMULATED}
+    frozen = _reload(frozen)
+    assert frozen.disposition == DISPOSITION_SIMULATED
+    assert frozen.incorrect_disposition is None
+    assert frozen.disposition_review != DISPOSITION_REVIEW_INCORRECT
+    assert get_db().query(Comment).filter(Comment.uuid == frozen.uuid).count() == 0
+    assert _reload(normal).disposition == DISPOSITION_WEAPONIZATION
+
+
+@pytest.mark.integration
+def test_a_correct_review_of_a_frozen_alert_is_recorded(two_analysts):
+    _, reviewer = two_analysts
+    alert = insert_alert()
+    make_simulated(alert)
+
+    assert set_disposition_reviews([alert.uuid], DISPOSITION_REVIEW_CORRECT, reviewer.id) == {}
+    alert = _reload(alert)
+    assert alert.disposition_review == DISPOSITION_REVIEW_CORRECT
+    assert alert.disposition == DISPOSITION_SIMULATED
+
+
+@pytest.mark.integration
+def test_ensure_not_frozen():
+    alert = insert_alert()
+    ensure_not_frozen(alert)
+    ensure_uuid_not_frozen(alert.uuid)
+    # a root that is not an alert has nothing to check
+    ensure_uuid_not_frozen(str(uuid.uuid4()))
+
+    make_simulated(alert)
+    alert = _reload(alert)
+    with pytest.raises(AlertFrozen, match=f"alert {alert.uuid} is SIMULATED"):
+        ensure_not_frozen(alert)
+    with pytest.raises(AlertFrozen) as e:
+        ensure_uuid_not_frozen(alert.uuid)
+    assert (e.value.alert_uuid, e.value.disposition) == (alert.uuid, DISPOSITION_SIMULATED)

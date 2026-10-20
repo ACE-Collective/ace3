@@ -1,6 +1,5 @@
 """Alert router for ACE API v2."""
 
-import json
 import logging
 import os
 from datetime import datetime
@@ -11,6 +10,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Resp
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.common.listing import (
+    LISTING_MAX_PAGE_SIZE,
+    csv_response,
+    ndjson_response,
+    parse_timezone,
+    run_listing,
+    start_export,
+)
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import (
     ZIP_DOWNLOAD_RESPONSES,
@@ -29,7 +36,6 @@ from aceapi_v2.alerts.schemas import (
     AlertCount,
     AlertListPage,
     AlertMeta,
-    AlertListRow,
     BulkAddObservableRequest,
     BulkAddObservableResult,
     ClickerSearch,
@@ -110,29 +116,12 @@ TimezoneParam = Annotated[str, Query(
     description="the timezone relative date filters (`-7d`, `@d`) resolve in")]
 
 
-def _timezone(name: str):
-    try:
-        return pytz.timezone(name)
-    except pytz.UnknownTimeZoneError:
-        raise HTTPException(status_code=422, detail=f"unknown timezone {name!r}")
-
-
 async def _prepare_listing(
     auth: ApiAuthResult, f: list[str], changed_since: datetime | None, tz: str
 ) -> service.AlertListing:
-    try:
-        return await run_db_in_thread(
-            service.prepare_alert_listing, f, changed_since=changed_since, tz=_timezone(tz),
-            viewer_user_id=auth.auth_user_id)
-    except service.InvalidListingRequest as e:
-        raise HTTPException(status_code=422, detail=e.detail)
-
-
-async def _fetch_page(listing: service.AlertListing, cursor: str | None, limit: int):
-    try:
-        return await run_db_in_thread(service.fetch_alert_page, listing, cursor, limit)
-    except service.InvalidCursor as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    return await run_listing(
+        service.prepare_alert_listing, f, changed_since=changed_since, tz=parse_timezone(tz),
+        viewer_user_id=auth.auth_user_id)
 
 
 @router.put("/owner", response_model=SetOwnerResult)
@@ -160,7 +149,7 @@ async def list_alerts(
     f: FilterParam,
     changed_since: ChangedSinceParam = None,
     cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
-    limit: Annotated[int, Query(ge=1, le=service.LISTING_MAX_PAGE_SIZE)] = 100,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
     tz: TimezoneParam = "UTC",
 ) -> AlertListPage:
     """List alerts as flat database rows, for export and reporting.
@@ -171,7 +160,7 @@ async def list_alerts(
     leave them out.
     """
     listing = await _prepare_listing(auth, f, changed_since, tz)
-    rows, next_cursor = await _fetch_page(listing, cursor, limit)
+    rows, next_cursor = await run_listing(service.fetch_alert_page, listing, cursor, limit)
     return AlertListPage(data=rows, next_cursor=next_cursor)
 
 
@@ -179,39 +168,6 @@ async def list_alerts(
 # exports: every alert the listing matches, streamed in one response with the same filters,
 # scoping and order as GET /alerts and no paging. One route per format.
 #
-
-
-class _ExportFailed(Exception):
-    """A page after the first could not be fetched, after the response started."""
-
-
-async def _prepare_export(
-    auth: ApiAuthResult, f: list[str], changed_since: datetime | None, tz: str
-) -> tuple[service.AlertListing, tuple[list[AlertListRow], str | None]]:
-    """The listing and its first page. Everything that can be a 4xx happens here, before the
-    response starts: once the first byte is sent the status code cannot change."""
-    listing = await _prepare_listing(auth, f, changed_since, tz)
-    first_page = await _fetch_page(listing, None, service.LISTING_EXPORT_PAGE_SIZE)
-    return listing, first_page
-
-
-async def _export_pages(listing: service.AlertListing, first_page: tuple[list[AlertListRow], str | None]):
-    """Yields the rows of every page in turn. Raises _ExportFailed (after logging) when a later
-    page fails, so each format can end its stream the way that format can say so."""
-    rows, next_cursor = first_page
-    yield rows
-    while next_cursor is not None:
-        try:
-            rows, next_cursor = await run_db_in_thread(
-                service.fetch_alert_page, listing, next_cursor, service.LISTING_EXPORT_PAGE_SIZE)
-        except Exception as e:
-            logger.error("alert export failed part-way: %s", e, exc_info=True)
-            raise _ExportFailed() from e
-        yield rows
-
-
-def _attachment(filename: str) -> dict:
-    return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
 @router.get("/export/ndjson", response_class=NdjsonStreamResponse)
@@ -226,16 +182,9 @@ async def export_alerts_ndjson(
     A failure part-way through cannot change the status code that was already sent: the
     stream then ends with an {"error": ...} line, and the failure is logged.
     """
-    listing, first_page = await _prepare_export(auth, f, changed_since, tz)
-
-    async def _stream():
-        try:
-            async for rows in _export_pages(listing, first_page):
-                yield "".join(row.model_dump_json() + "\n" for row in rows)
-        except _ExportFailed:
-            yield json.dumps({"error": "the export failed part-way; the lines above are incomplete"}) + "\n"
-
-    return NdjsonStreamResponse(_stream(), headers=_attachment("alerts.ndjson"))
+    listing = await _prepare_listing(auth, f, changed_since, tz)
+    export = await start_export(service.fetch_alert_page, listing, what="alert")
+    return ndjson_response(export, "alerts.ndjson")
 
 
 @router.get("/export/csv", response_class=CsvStreamResponse)
@@ -251,19 +200,9 @@ async def export_alerts_csv(
     A failure part-way through cannot change the status code that was already sent: the CSV
     is then truncated, and the failure is logged.
     """
-    listing, first_page = await _prepare_export(auth, f, changed_since, tz)
-
-    async def _stream():
-        header = True
-        try:
-            async for rows in _export_pages(listing, first_page):
-                yield service.alert_rows_to_csv(rows, header=header)
-                header = False
-        except _ExportFailed:
-            # CSV has no way to say so in-band; the truncation and the log are the signal
-            return
-
-    return CsvStreamResponse(_stream(), headers=_attachment("alerts.csv"))
+    listing = await _prepare_listing(auth, f, changed_since, tz)
+    export = await start_export(service.fetch_alert_page, listing, what="alert")
+    return csv_response(export, service.alert_rows_to_csv, "alerts.csv")
 
 
 @router.get("/count", response_model=AlertCount)
@@ -294,7 +233,7 @@ async def resolve_date_range(
 
     The manage page shows it under the relative date input, so that `-24h` is never opaque.
     """
-    zone = _timezone(tz)
+    zone = parse_timezone(tz)
     try:
         start, end = parse_date_range(value, now=datetime.now(pytz.utc), tz=zone)
     except (RelativeTimeError, ValueError) as e:

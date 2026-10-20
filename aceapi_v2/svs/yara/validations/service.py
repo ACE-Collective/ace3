@@ -9,9 +9,6 @@ or content. Everyone with signature:read reads the listing, the reports and thei
 the samples; their files need signature:download.
 """
 
-import base64
-import csv
-import io
 import json
 import logging
 from dataclasses import dataclass
@@ -22,7 +19,8 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, or_, select
 
-from aceapi_v2.svs.samples.service import InvalidCursor, InvalidListingRequest, SampleDownload, bulk_download
+from aceapi_v2.common.listing import InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
+from aceapi_v2.svs.samples.service import SampleDownload, bulk_download
 from aceapi_v2.svs.yara.validations.schemas import (
     VALIDATION_RESULT_CSV_FIELDS,
     VALIDATION_ROW_CSV_FIELDS,
@@ -48,11 +46,6 @@ from saq.svs.yara.layout import LayoutError
 from saq.util.uuid import UUID_REGEX
 
 logger = logging.getLogger(__name__)
-
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
-_CURSOR_VERSION = 1
 
 # the categories a report lists rows for, in the order of the report's bands
 LISTED_CATEGORIES = tuple(category.value for category in Category if category not in COUNTED_ONLY)
@@ -179,24 +172,6 @@ def prepare_listing(filter_params: list[str], *, changed_since: datetime | None,
     return ValidationListing(statement=statement)
 
 
-def _encode_cursor(key: list) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "k": key}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
-
-
-def _decode_cursor(cursor: str) -> list:
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
-        return payload["k"]
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
-
-
 def _row(validation: SVSValidation, username: Optional[str]) -> ValidationRow:
     return ValidationRow(
         uuid=validation.uuid, repository=validation.repository, base_sha=validation.base_sha,
@@ -208,19 +183,17 @@ def _row(validation: SVSValidation, username: Optional[str]) -> ValidationRow:
         updated_at=validation.updated_at)
 
 
+def _parse_listing_key(payload: dict) -> tuple[datetime, int]:
+    created_at, row_id = payload["k"]
+    return datetime.fromisoformat(created_at), int(row_id)
+
+
 def fetch_page(listing: ValidationListing, cursor: str | None, limit: int) -> tuple[list[ValidationRow], str | None]:
     """One page of the listing after `cursor`, and the next page's cursor (None on the last).
     Raises InvalidCursor."""
     statement = listing.statement
     if cursor is not None:
-        try:
-            created_at, row_id = _decode_cursor(cursor)
-            created_at, row_id = datetime.fromisoformat(created_at), int(row_id)
-        except InvalidCursor:
-            raise
-        except Exception as e:
-            raise InvalidCursor(f"malformed cursor: {e}") from None
-
+        created_at, row_id = decode_cursor(cursor, _parse_listing_key)
         statement = statement.where(or_(
             SVSValidation.created_at < created_at,
             and_(SVSValidation.created_at == created_at, SVSValidation.id < row_id)))
@@ -231,24 +204,13 @@ def fetch_page(listing: ValidationListing, cursor: str | None, limit: int) -> tu
     if len(rows) > limit:
         rows = rows[:limit]
         last = rows[-1][0]
-        next_cursor = _encode_cursor([last.created_at.isoformat(), last.id])
+        next_cursor = encode_cursor(k=[last.created_at.isoformat(), last.id])
 
     return [_row(validation, username) for validation, username in rows], next_cursor
 
 
-def _to_csv(rows: list, fields: tuple[str, ...], *, header: bool) -> str:
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(fields)
-    for row in rows:
-        values = row.model_dump(mode="json")
-        writer.writerow([values[name] if values[name] is not None else "" for name in fields])
-    return buffer.getvalue()
-
-
-def rows_to_csv(rows: list[ValidationRow], *, header: bool) -> str:
-    return _to_csv(rows, VALIDATION_ROW_CSV_FIELDS, header=header)
+def validation_rows_to_csv(rows: list[ValidationRow], *, header: bool) -> str:
+    return rows_to_csv(rows, VALIDATION_ROW_CSV_FIELDS, header=header)
 
 
 #
@@ -299,25 +261,24 @@ def select_results(validation_uuid: str, categories: list[str], rule_uuids: list
     return ResultSelection(validation.id, validation.uuid, tuple(categories), tuple(rule_uuids))
 
 
+def _parse_results_key(payload: dict) -> int:
+    (after,) = payload["k"]
+    return int(after)
+
+
 def fetch_results_page(selection: ResultSelection, cursor: str | None, limit: int) -> tuple[list[ValidationResultRow], str | None]:
     """One page of the selected rows after `cursor`, in id order, and the next page's cursor.
     Raises InvalidCursor."""
     statement = select(SVSValidationResult).where(*selection.conditions())
     if cursor is not None:
-        try:
-            (after,) = _decode_cursor(cursor)
-            after = int(after)
-        except InvalidCursor:
-            raise
-        except Exception as e:
-            raise InvalidCursor(f"malformed cursor: {e}") from None
+        after = decode_cursor(cursor, _parse_results_key)
         statement = statement.where(SVSValidationResult.id > after)
 
     rows = get_db().execute(statement.order_by(SVSValidationResult.id).limit(limit + 1)).scalars().all()
     next_cursor = None
     if len(rows) > limit:
         rows = rows[:limit]
-        next_cursor = _encode_cursor([rows[-1].id])
+        next_cursor = encode_cursor(k=[rows[-1].id])
 
     return [ValidationResultRow(
         id=row.id, sha256=row.sha256, rule_uuid=row.rule_uuid, rule_name=row.rule_name, namespace=row.namespace,
@@ -326,7 +287,7 @@ def fetch_results_page(selection: ResultSelection, cursor: str | None, limit: in
 
 
 def results_to_csv(rows: list[ValidationResultRow], *, header: bool) -> str:
-    return _to_csv(rows, VALIDATION_RESULT_CSV_FIELDS, header=header)
+    return rows_to_csv(rows, VALIDATION_RESULT_CSV_FIELDS, header=header)
 
 
 def resolve_results_download(selection: ResultSelection) -> SampleDownload:

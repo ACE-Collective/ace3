@@ -44,6 +44,14 @@ def is_selectable_disposition(disposition: Optional[str]) -> bool:
     return config is not None and config.analyst_selectable
 
 
+def is_frozen_disposition(disposition: Optional[str]) -> bool:
+    """True if an alert with this disposition is frozen: only ACE sets the disposition (it is not
+    analyst_selectable), so no analyst changes it, and the alert is never reset or re-analyzed.
+    SIMULATED is the one such disposition (docs/SVS_RUNS.md)."""
+    config = get_config().dispositions.get(disposition)
+    return config is not None and not config.analyst_selectable
+
+
 def get_disposition_rank(disposition: Optional[str]) -> Optional[int]:
     """The rank used to roll an event's alerts up to one disposition, or None for a value that
     is not configured."""

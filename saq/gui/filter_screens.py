@@ -19,26 +19,43 @@ from pydantic import BaseModel
 
 from saq.detection_verdicts.constants import SOURCES
 from saq.gui.filter_entry import (
+    CATALOG_STATUSES,
+    COVERAGE_LEVELS,
+    COVERAGE_STATES,
     FILE_COLLECTION_FILTER_OPTIONS,
     REMEDIATION_FILTER_OPTIONS,
     SAMPLE_BOOL_OPTIONS,
+    SIGNATURE_FAMILIES,
+    WORKLIST_KINDS,
+    WORKLIST_RESOLUTIONS,
+    WORKLIST_STATUSES,
     DetectionPointFilterEntry,
     FileCollectionFilterEntry,
     FilterEntry,
     FilterEntryBase,
     RemediationFilterEntry,
     SampleFilterEntry,
+    CatalogTestFilterEntry,
+    CoverageFilterEntry,
+    CoverageHistoryFilterEntry,
+    RunFilterEntry,
     ValidationFilterEntry,
+    WorklistFilterEntry,
 )
 from saq.gui.filter_names import (
     DETECTION_POINT_FILTER_SLUGS,
     FILE_COLLECTION_FILTER_SLUGS,
     FILTER_SLUGS,
     REMEDIATION_FILTER_SLUGS,
+    SVS_COVERAGE_FILTER_SLUGS,
+    SVS_COVERAGE_HISTORY_FILTER_SLUGS,
+    SVS_RUN_FILTER_SLUGS,
     SVS_SAMPLE_FILTER_SLUGS,
+    SVS_TEST_FILTER_SLUGS,
     SVS_VALIDATION_FILTER_SLUGS,
+    SVS_WORKLIST_FILTER_SLUGS,
 )
-from saq.svs.constants import LABEL_FILTER_NONE, LABELS, VALIDATION_STATES
+from saq.svs.constants import LABEL_FILTER_NONE, LABELS, RUN_STATES, VALIDATION_STATES
 
 
 class UnknownFilterScreen(LookupError):
@@ -155,6 +172,117 @@ SVS_VALIDATIONS_SCREEN = FilterScreen(
     ),
 )
 
+# the Atomic Red Team test catalog, each row with its test's state and run history (GET
+# /api/v2/svs/tests, docs/SVS_API.md); read with svs:run_read
+SVS_TESTS_SCREEN = FilterScreen(
+    name="svs_tests",
+    entry_model=CatalogTestFilterEntry,
+    slugs=SVS_TEST_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Name", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("Executor", FilterFieldKind.TEXT),
+        FilterField("Repository", FilterFieldKind.TEXT),
+        FilterField("Removed", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
+# the test runs (GET /api/v2/svs/runs, docs/SVS_API.md); read with svs:run_read. Needs Attention is
+# one filter rather than a list of them because it is an OR (saq.svs.run_filters)
+SVS_RUNS_SCREEN = FilterScreen(
+    name="svs_runs",
+    entry_model=RunFilterEntry,
+    slugs=SVS_RUN_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Needs Attention", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("State", FilterFieldKind.MULTI, RUN_STATES),
+        FilterField("Test", FilterFieldKind.TEXT),
+        FilterField("Test Name", FilterFieldKind.TEXT),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Target", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("Launcher", FilterFieldKind.TEXT),
+        FilterField("Batch", FilterFieldKind.TEXT),
+        FilterField("Created", FilterFieldKind.DATE_RANGE),
+        FilterField("Started", FilterFieldKind.DATE_RANGE),
+        FilterField("Ended", FilterFieldKind.DATE_RANGE),
+        FilterField("Reviewed", FilterFieldKind.DATE_RANGE),
+        FilterField("Owner", FilterFieldKind.TEXT),
+        FilterField("Reviewer", FilterFieldKind.TEXT),
+        FilterField("Reason", FilterFieldKind.TEXT),
+        FilterField("Changed Since Review", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Open Alerts", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Missing", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Possibly Suppressed", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Candidates", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Late", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Has Context Only", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
+# ATT&CK coverage per technique and platform (GET /api/v2/svs/coverage, docs/SVS_API.md); read
+# with svs:run_read. Technique finds a technique's sub-techniques too; Tactic takes an id or a
+# shortname of the pinned release
+SVS_COVERAGE_SCREEN = FilterScreen(
+    name="svs_coverage",
+    entry_model=CoverageFilterEntry,
+    slugs=SVS_COVERAGE_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Name", FilterFieldKind.TEXT),
+        FilterField("Tactic", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Own State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Level", FilterFieldKind.MULTI, COVERAGE_LEVELS),
+        FilterField("ATT&CK Platform", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("Catalog Status", FilterFieldKind.MULTI, CATALOG_STATUSES),
+        FilterField("Has Manual", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+        FilterField("State Changed", FilterFieldKind.DATE_RANGE),
+        FilterField("Retired", FilterFieldKind.BOOL, SAMPLE_BOOL_OPTIONS),
+    ),
+)
+
+# the daily coverage snapshots (GET /api/v2/svs/coverage/history, docs/SVS_API.md); read with
+# svs:run_read
+SVS_COVERAGE_HISTORY_SCREEN = FilterScreen(
+    name="svs_coverage_history",
+    entry_model=CoverageHistoryFilterEntry,
+    slugs=SVS_COVERAGE_HISTORY_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Date", FilterFieldKind.DATE_RANGE),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Platform", FilterFieldKind.TEXT),
+        FilterField("State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Own State", FilterFieldKind.MULTI, COVERAGE_STATES),
+        FilterField("Level", FilterFieldKind.MULTI, COVERAGE_LEVELS),
+    ),
+)
+
+# the declared-vs-measured worklist (GET /api/v2/svs/worklist, docs/SVS_API.md); read with
+# svs:run_read
+SVS_WORKLIST_SCREEN = FilterScreen(
+    name="svs_worklist",
+    entry_model=WorklistFilterEntry,
+    slugs=SVS_WORKLIST_FILTER_SLUGS,
+    permission=("svs", "run_read"),
+    fields=(
+        FilterField("Status", FilterFieldKind.MULTI, WORKLIST_STATUSES),
+        FilterField("Signature", FilterFieldKind.TEXT),
+        FilterField("Family", FilterFieldKind.MULTI, SIGNATURE_FAMILIES),
+        FilterField("Technique", FilterFieldKind.TEXT),
+        FilterField("Kind", FilterFieldKind.MULTI, WORKLIST_KINDS),
+        FilterField("Resolution", FilterFieldKind.MULTI, WORKLIST_RESOLUTIONS),
+        FilterField("Resolved By", FilterFieldKind.TEXT),
+        FilterField("Resolved", FilterFieldKind.DATE_RANGE),
+    ),
+)
+
 # the remediations the remediation service works through, and their history (GET
 # /api/v2/remediation/remediations, the Remediations page)
 REMEDIATIONS_SCREEN = FilterScreen(
@@ -199,6 +327,11 @@ FILTER_SCREENS: dict[str, FilterScreen] = {
     DETECTION_POINTS_SCREEN.name: DETECTION_POINTS_SCREEN,
     SVS_SAMPLES_SCREEN.name: SVS_SAMPLES_SCREEN,
     SVS_VALIDATIONS_SCREEN.name: SVS_VALIDATIONS_SCREEN,
+    SVS_TESTS_SCREEN.name: SVS_TESTS_SCREEN,
+    SVS_RUNS_SCREEN.name: SVS_RUNS_SCREEN,
+    SVS_COVERAGE_SCREEN.name: SVS_COVERAGE_SCREEN,
+    SVS_COVERAGE_HISTORY_SCREEN.name: SVS_COVERAGE_HISTORY_SCREEN,
+    SVS_WORKLIST_SCREEN.name: SVS_WORKLIST_SCREEN,
     REMEDIATIONS_SCREEN.name: REMEDIATIONS_SCREEN,
     FILE_COLLECTIONS_SCREEN.name: FILE_COLLECTIONS_SCREEN,
 }

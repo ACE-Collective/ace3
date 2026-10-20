@@ -4,7 +4,9 @@ The traversal mirrors YaraScanner.__init__: a signature_dir holds one
 subdirectory per set of rules, and each of those is read for the .yar/.yara
 files sitting directly inside it. Files loose in the signature_dir and files
 nested deeper than one level are not loaded, because the scanner does not load
-them either.
+them either. The one departure is GENERATED_RULE_DIR_NAMES: directories ACE
+writes rules into itself are scanned but are not signatures anyone authored, so
+the inventory leaves them out by name.
 
 This is an inventory reader, not a validator: rules are parsed from source with
 plyara and never compiled. a single .yar file usually holds several rules, each
@@ -33,9 +35,10 @@ from saq.signatures.yara_meta import meta_enabled, meta_modifiers
 
 YARA_FILE_EXTENSIONS = (".yar", ".yara")
 
-# rule files ACE generates into the signature_dir from observable detections
-# (saq/observables/export/yara.py) - exported observables, not authored signatures
-GENERATED_RULE_DIR_NAMES = {"observable_export"}
+# rule directories ACE writes into the signature_dir itself, which the scanner loads like any
+# other but which hold no authored signatures: observable_export, the observable detections
+# (saq/observables/export/yara.py), and svs_marker, the SVS marker rule (saq/svs/marker_rule.py)
+GENERATED_RULE_DIR_NAMES = {"observable_export", "svs_marker"}
 
 # meta key holding the comma separated ATT&CK techniques a rule detects
 MITRE_ATTACK_META = "mitre_attack"

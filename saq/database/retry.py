@@ -166,7 +166,11 @@ def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
        In the case where targets are executables, session cannot be omitted. The executables are passed to the
        ``execute`` function of the Session object as if you had called ``session.execute(target)``.
 
-       :return This function returns the last operation in the list of targets."""
+       :return This function returns the last operation in the list of targets.
+
+       This rolls back the thread-shared get_db() session, and with it anything else the caller had
+       in progress there. A transaction of its own (saq.database.private_session) is run again with
+       run_private_transaction instead."""
 
     if not isinstance(targets, list):
         targets = [ targets ]

@@ -2,9 +2,10 @@
 
 > **Status: agreed design; phase 0 landed in v3.0.122, phase 1 landed (PRs #651–#656), phase 2
 > landed (PRs #658–#664 and the Samples card, 2026-10-07), phase 3 landed (PRs #668–#674 and the
-> Validations card, 2026-10-13). Parts 5 and 6 were added in review
-> rounds 8–10, the pre-implementation review folded in and the design reconciled with the v3.0.121
-> release on 2026-10-02.**
+> Validations card, 2026-10-13), and phases 4 and 5 were built on the `jd/svs` integration branch
+> (phase 4: PRs #683–#721, 2026-10-15; phase 5: PRs #725–#741, 2026-10-17) for release to `main`.
+> Parts 5 and 6 were added in review rounds 8–10, the pre-implementation review folded in and the
+> design reconciled with the v3.0.121 release on 2026-10-02.**
 > This is the design of record.
 > `docs/SVS_INITIAL.md` is the original brief. `docs/SVS_REVIEW.md` is the decision record: every
 > bracketed ID in this document (`[DP-2]`, `[D-6]`) points at the item there that records the
@@ -100,9 +101,9 @@ effective(dp) =
   canceled, error and discarded runs too (Part 3), and `SIMULATED` is tp, so without this rule every
   detection on those alerts would count as TP in per-signature counts and in the detection-points
   API, although nothing was learned from the run. The check is one join from `svs_attributions` to
-  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review or close
-  writes for ignored detections are stored either way and take effect only once the run is
-  Reviewed. An alert with no attribution is unaffected.
+  `svs_runs.state`, the same one capture makes (Part 2). The FP overrides that review
+  writes for ignored detections take effect once the run is Reviewed; close writes none, since a
+  closed run's alerts never have verdicts. An alert with no attribution is unaffected.
 - **Overrides survive disposition changes.** A TP→FP→TP correction restores them.
 - **On a TP alert every detection inherits TP.** `inherited_multi` marks inheritance on an alert
   where several signatures fired: 37% of TP alerts with a YARA hit, in production data from
@@ -398,11 +399,19 @@ broken on base* until it is retired or relabeled.
 
 ### Test hosts and registration
 
-**Test hosts** are rows in `svs_test_hosts` (`hostname, fqdn?, usernames?, ips?`), managed on an
-SVS admin tab and through `/api/v2/svs/test-hosts`, both under `svs:admin`. They are a table
-rather than config because a site may build test VMs dynamically, and adding one must not need a
-restart of every process that evaluates routers. Matching normalizes case, short name vs FQDN,
-and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15]
+**Test hosts** are rows in `svs_test_hosts` (`hostname, fqdn?, usernames?, ips?, platform?`),
+managed on an SVS admin tab and through `/api/v2/svs/test-hosts`, both under `svs:admin`. They are
+a table rather than config because a site may build test VMs dynamically, and adding one must not
+need a restart of every process that evaluates routers. Matching normalizes case, short name vs
+FQDN, and `DOMAIN\user` / `user@domain` / `user`. [ART-9, FR-15] A host's optional `platform`
+(`windows`, `linux`, `macos`) is what a test's `supported_platforms` is checked against at
+registration; a host without one isn't checked.
+
+**Every run is on exactly one platform**, the grain coverage is judged on (Part 4). It is the
+platform of its targets' test hosts, which have to agree (a host without one is taken to be on
+theirs); when no target's host has one, it is the test's only supported platform, as ATT&CK names
+it (`iaas:aws` is `iaas`). Otherwise registration is refused with 422 and no alert, like a
+platform the test doesn't support.
 
 The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Every call requires
 `svs:run_register`. [ART-2]
@@ -422,7 +431,8 @@ The launcher (outside ACE) drives the run lifecycle through `aceapi_v2/svs/`. Ev
 **Cancel stops the run, not attribution.** The test may have run anyway, so a canceled run keeps
 attributing inside its attribution window. Otherwise its markers would surface as
 `MARKER MISMATCH`. An *Error* before `start` has no windows and no alerts, so it is Closed at the
-transition, with the reason in its event log, and never waits in *Needs attention*. [MGT-3]
+transition, with the reason in its event log, and never waits in *Needs attention*. A run *Canceled*
+before `start` is the same case and is Closed in the same call. [MGT-3]
 
 **Timers run in one place.** `service_svs` runs as a single instance on the primary node, like the
 CAS cron tasks, and owns the run timers, the validation queue and the catalog refresh. Every timer
@@ -431,7 +441,8 @@ duplicate firing is harmless anyway. [FR-13]
 
 **A reviewed run can change.** A late alert or a manual association after sign-off flags the run
 *changed since review*, and it returns to the operator's *Needs attention* list. The result as
-signed off is kept (Part 6). [MGT-2, RPT-4]
+signed off is kept (Part 6) until the run is reviewed again, which replaces it; the event log keeps
+each review's counts. A late alert waits for that re-review to become `SIMULATED`. [MGT-2, RPT-4]
 
 **Runs have an owner**, with the same model as alerts, including the confirmation for taking one
 from another person. Reviewing a run takes it if nobody owns it. [MGT-3]
@@ -443,7 +454,8 @@ collapsed to one per `(caller, host)` per hour; further refusals in that hour ar
 WARNING, so a misconfigured launcher retrying in a loop does not flood the queue. The launcher's
 `extra` is stored and rendered, so its size is capped. [FR-15]
 
-**Windows.** The *observation window* comes from the test's config if it sets one. Otherwise it is
+**Windows.** The *observation window* comes from the test's settings (`svs_test_settings`) if they
+set one, used as it is. Otherwise it is
 computed as the maximum, over the test's expected signatures, of their worst-case latency (for
 hunts, `frequency + time_range + offset`), plus slack, within a floor and a ceiling. A test with no
 expectations yet (its first run, where expectations are discovered) gets the maximum worst-case
@@ -458,7 +470,15 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
 - **Not secret.** Once a test runs, the marker is in telemetry. It is valid only in context.
 - **A marker attributes only when it agrees with its run:** it matches a registered run, *and* the
   alert involves one of that run's targets, *and* the event falls inside the run's attribution
-  window. [ART-4]
+  window. [ART-4] The alert *involves* a target when it has a `hostname` or `fqdn` observable (or a
+  subtype) naming the target host, matched as registration matches it, or an `ipv4` observable
+  listed in the test host's `ips`. The target's user is not checked: process telemetry often lacks
+  it.
+- **A marker attributes the detections on its branch of the tree** [ART-7]: the node it was found
+  on, every node above it and every node beneath it. A marker in `root.details` is on the root, so
+  it attributes every detection, and a detection on the root is reached by every marker. A marker
+  found only in one attachment leaves a detection on an unrelated branch unattributed, and the
+  alert is `PARTIAL TEST`.
 - **A marker that doesn't agree never routes the alert.** That covers unknown markers, well-formed
   markers not in the database, markers from another host, and markers outside the window. The
   alert stays in its normal queue, is tagged `svs:marker_mismatch`, and gets a detection from a
@@ -523,9 +543,10 @@ ACE itself, not only to SVS. [D-13, ART-15]
     evidence than a queue set by hunt config, a `queue` detection meta or a submission, so the SVS
     router may route such an alert. (There is no "explicitly set" flag to honor: `root.queue`
     always has a value, and every hunt submits with one.) The only queue it never overrides is one
-    that `move_alert_to_queue` itself set earlier and recorded as SVS-set, so a manual
-    *disassociate* is not undone by re-analysis. When the SVS router makes no decision, the
-    configured route applies as it does today. [FR-2]
+    that `move_alert_to_queue` itself set earlier and recorded as SVS-set (router `svs_manual`): the
+    SVS router then returns a decision for the alert's current queue, which also keeps any later
+    router from moving it, so a manual *disassociate* is not undone by re-analysis. When the SVS
+    router makes no decision, the configured route applies as it does today. [FR-2]
   - **A router never breaks an insert.** The registry runs each router inside a `try`; a router
     that raises is logged with `report_exception()` and skipped, and `ALERT()` continues. ART-15
     says this for loading a router; it holds at runtime too, because the registry sits inside
@@ -539,8 +560,8 @@ ACE itself, not only to SVS. [D-13, ART-15]
   before `Alert.create_from_root_analysis` copies `root.queue`.
   - Engine-converted alerts arrive here fully analyzed, so they never appear in the wrong queue.
   - **`PRE_INSERT` routers are pure.** They return a decision and may write their own rows (the
-    SVS router writes `svs_attributions`) in the caller's transaction, but they never touch the
-    tree. The tree belongs to the caller, and the routed queue is the only change `ALERT()`
+    SVS router writes `svs_attributions`, in a transaction of its own so a failed write can never
+    fail the insert), but they never touch the tree. The tree belongs to the caller, and the routed queue is the only change `ALERT()`
     makes on a router's behalf (it saves the caller's root again when a router changed the
     queue). The mismatch
     tag and detection therefore belong to `POST_ANALYSIS`, below. This rule is part of the
@@ -558,7 +579,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     actor)`. That new core primitive updates the column and `root.queue`, touches the alert,
     refreshes the search payload, writes an audit line, and records the previous queue and that
     the move was SVS's.
-- **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS badge
+- **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS status
   instead. The automation user (`ace`, `global.automation_user_id`) counts as nobody here: setting
   `SIMULATED` backfills `owner_id` with the dispositioning user, so without this exception a
   re-review could never move a test alert. [FR-15]
@@ -570,9 +591,9 @@ ACE itself, not only to SVS. [D-13, ART-15]
 
 | Scan point | Covers |
 |---|---|
-| Observable values and file names, and `root.details` (at both stages) | Hunt raw events, API details, command lines, URLs |
-| Each module's `ModuleExecutionDelta` (new observables and added detections, plus the new analysis's `details`), scanned in the executor right after the module returns. The cache path produces the same delta, so cache replays are scanned too. [FR-19] | Decoded or deobfuscated output |
-| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`, so the rule ships in the repo as its own namespace there, listed with the other rule locations (`saq/signatures/locations.py`); a test asserts that both the service and the module's fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
+| Observable values and file names, detections' descriptions and details, and `root.details` (at both stages, from the tree) | Hunt raw events, API details, command lines, URLs |
+| The new analysis's `details` in each module's `ModuleExecutionDelta`, scanned in the executor right after the module returns; the cache path produces the same delta, so cache replays are scanned too. The details are stored outside the tree, so the markers found are kept on the root (the `svs_sightings` extension) for the router. The delta's new observables and detections are in the tree and are scanned there. [FR-19] | Decoded or deobfuscated output |
+| File contents, through a built-in `no_alert` YARA rule for the marker format, whose match strings land in `YaraScanResults.details`. Scanning happens in the `yara` service, which compiles only what is under `service_yara.signature_dir` and `git_repo_dirs`. So the rule ships in the repo (`saq/svs/marker_rule.py`), and the service writes it into `signature_dir/svs_marker/` as its own namespace, as observable export writes `observable_export/`. It does that before it starts its server, because the scanner lists rule directories only when it starts, and it writes only when the content changed, because rule changes are detected by mtime. The fallback scanner does the same before it compiles. The Signatures inventory leaves the directory out, and the phase-3 validation never sees it, because it compiles commits of the rule repositories. Tests assert that both the service and the fallback scanner load it. [FR-20, FR-25] | Markers inside dropped scripts and documents |
 
 **The scan is gated and the cache is one-sided.** [FR-8]
 - The whole scan (a regex over every observable value and `root.details`, on every alert insert)
@@ -602,8 +623,9 @@ Every alert has at most one SVS status, and alerts SVS never touched show nothin
 | `PARTIAL TEST` | Some detections are from run *R* | normal | Triage the rest as usual. Test detections are greyed out. |
 | `MARKER MISMATCH` | A marker that doesn't fit its context | normal | Treat as suspicious and investigate. |
 
-The status is one badge in the manage list and one banner on the alert page, and it always links
-to the run. Confidence, per-detection attribution, suppression notes and late arrivals live in the
+The status is one line of text in the manage list, with a target icon (not a badge: badges mean tags
+and dispositions), and one banner on the alert page, and it links to the run. A `MARKER MISMATCH` has
+no run of its own; its banner names the marker and the run the marker belongs to, when one does. Confidence, per-detection attribution, suppression notes and late arrivals live in the
 **run review**, which is the SVS operator's screen.
 
 ### Test alerts downstream
@@ -612,7 +634,9 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   a run is *Reviewed* or *Closed*, on the run's fully attributed alerts, through the same
   disposition writer analysts use. That writer requeues the alert into
   `analysis_mode_dispositioned`, so capture (Part 2) runs on a reviewed run's alerts the way it
-  runs on any other. [D-16, MGT-3]
+  runs on any other. An alert attributed after its run was closed (a late hunt) is closed the same
+  way by `service_svs`'s timers; one an analyst owns, or a `PARTIAL TEST` one, stays open and keeps
+  the run in *Needs attention*. [D-16, MGT-3]
   - It is `analyst_selectable: false`: not in any modal, and rejected server-side.
   - A `SIMULATED` alert's disposition can't be changed by hand. The modals show *"Part of test run
     R. To treat this as a real alert, use Disassociate from run"*. Bulk actions skip such alerts
@@ -634,7 +658,7 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
   `RootAnalysis.reset()` clears the disposition and the derived observables, which is the same
   loss. [FR-7]
 - **Ignored detections are benign.** A run's ignored detections (launcher noise) get FP overrides
-  when the run is reviewed or closed.
+  from the reviewer when the run is reviewed, unless someone already gave them a verdict.
 - **YARA TP samples come from Reviewed runs only.** Because `SIMULATED` is tp, YARA hits in a
   reviewed run become TP samples through the normal capture. Capture skips alerts attributed to a
   run in any other state (Part 2), and the verdict formula returns no verdict for them (Part 1),
@@ -647,10 +671,16 @@ to the run. Confidence, per-detection attribution, suppression notes and late ar
 ### Expectations
 
 Expectations are **learned from reviewed runs**, not derived from declared techniques. [D-9, ART-11]
+They are learned **per platform**: an expectation (or a rejection) is about a test on one platform,
+and a run is judged by its own platform's only, because a test runs different commands, and fires
+different signatures, on each platform it supports. Ignores are per test (on every platform) or
+global.
 
-1. **Discovery.** The first Reviewed run of a test proposes every attributed signature, minus the
-   ignore lists, as a *candidate*. The analyst accepts (*expected*) or rejects each one. A rejected
-   candidate is remembered and not proposed again.
+1. **Discovery.** The first Reviewed run of a test on a platform proposes every attributed
+   signature, minus the ignore lists, as a *candidate*. The analyst accepts (*expected*) or rejects
+   each one. A rejected candidate is remembered and not proposed again. A candidate is a status of
+   a run's result, not a stored decision: only *expected* and *rejected* are rows, so nothing goes
+   stale when a run is reconsidered.
 2. **Steady state.** Later runs compare against the expected set:
    - an expected signature that doesn't fire is *missing*;
    - a signature that fires and isn't expected becomes a new candidate.
@@ -662,13 +692,17 @@ targets during any run) and per test. [ART-13]
 
 **Manual (re)association.** An analyst can associate any alert with any run, or disassociate one.
 It uses `move_alert_to_queue`, records who, when and why, recomputes the run's result, and is
-reversible. Disassociating restores the previous queue. [ART-13]
+reversible. Disassociating restores the previous queue, gives a `SIMULATED` alert back as `OPEN`,
+and keeps the router from attributing the alert to that run again. Every move it makes is recorded
+with the router name `svs_manual`, and while that is an alert's latest move the SVS router holds
+the alert where it is. [ART-13]
 
 **Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
 `suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
 imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
 deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
-results are *possibly suppressed*, reconsider. The SVS page shows that share. [D-19, ART-8]
+results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
+results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
 
 ### The Atomic Red Team catalog
 
@@ -680,11 +714,15 @@ test's technique. [ART-12]
 - Custom repositories follow the ART schema and must carry `auto_generated_guid`. A test without
   one is skipped with a warning.
 - A GUID that disappears from the catalog keeps its run history.
+- A repository taken out of the configuration has its tests removed the same way, since nothing
+  reads it any more.
 
 ## Part 4 — Coverage
 
-**Grain:** technique × environment, rolled up to parent techniques. Coverage is **global**, not per
-company. [COV-1]
+**Grain:** technique × platform, rolled up to parent techniques. The environment is the ATT&CK
+platform a run is on (`windows`, `linux`, `macos`, ...): every run has exactly one, and expectations
+are kept per platform (Part 3). Every ATT&CK platform keeps its rows; the screens open on windows,
+linux and macos. Coverage is **global**, not per company. [COV-1]
 
 **Where technique facts come from:** [D-17, ART-11, ART-16]
 
@@ -695,7 +733,8 @@ company. [COV-1]
 | signature → technique, **manual** | The existing `mitre_attack` YARA meta and `mitre:` hunt tags |
 
 - **Manual mappings count until resolved.** A signature's techniques are the union of measured and
-  manual. A manual mapping keeps counting until someone resolves it.
+  manual. A manual mapping keeps counting until someone resolves it *remove*. Tags on a disabled
+  signature or a YARA rule in QA mode don't count.
 - **When a tagged signature is measured**, it goes on a single **declared-vs-measured worklist**
   (once per signature) with three resolutions:
   - *tag confirmed*: automatic when measured and declared agree;
@@ -704,21 +743,30 @@ company. [COV-1]
 - **On day one every tagged signature is manual.** That is an honest starting picture: claimed,
   not measured.
 
-**States per technique:**
+**States per technique and platform:**
 
 | State | Meaning |
 |---|---|
-| **validated** | A test for it has expectations, and its latest Reviewed run hit all of them. |
+| **validated** | A test for it has expectations on the platform, and its latest Reviewed run there hit all of them. |
 | **failing** | The latest Reviewed run of a test for it had a *missing* expected signature. |
-| **stale** | Validated, but an expected signature's per-rule `content_hash`, or the test, has changed since. |
+| **stale** | Validated, but an expected signature's per-rule `content_hash`, or the test, has changed since; or something is expected that no Reviewed run has judged yet. |
 | **untested** | Atomics exist, but none has a Reviewed run with accepted expectations. |
 | **manual** | Covered only through manual mappings. |
 | **none** | No atomics and no mappings. |
+
+A row's state is the **worst** of what counts toward it, in this order: failing, stale, validated,
+manual, untested, none. A parent's state includes its sub-techniques' on the same platform; its *own
+state* leaves them out.
 
 *Failing* means a test of the technique missed an expected signature. It does not mean the
 technique is undetected; the drill-down shows which tests and signatures cover it. The ATT&CK
 release used for names and roll-up is pinned in config. Revoked or renamed techniques are mapped on
 upgrade.
+
+**Coverage is materialized.** `service_svs` recomputes the worklist, then coverage, into tables
+(`svs_technique_worklist`, `svs_coverage`) every `svs.coverage.refresh_interval_seconds`, writes only
+what changed, and files a daily snapshot, so the screens filter and page them like every other SVS
+list and reports read their history (`docs/SVS_COVERAGE.md`).
 
 **The ATT&CK catalog ships in the image.** [FR-14] Production ACE never fetches it from the
 internet. A compact extract per supported release is vendored in this repo at
@@ -803,10 +851,40 @@ every context-only (`TEST?`) attribution has been kept or marked *not a test*, b
 - **Columns:** technique; name; platforms; repository; test state; last run; last reviewed run;
   number of runs; expected signatures; missing in the last *n* runs.
 - **Test state:** *never run*, *awaiting review*, *no expectations*, *validated*, *failing*, *stale*
-  (with the same meanings as in Part 4).
+  (with the same meanings as in Part 4). A test is judged on each platform on its own, and its
+  state is the worst of its platforms': *failing*, *stale*, *awaiting review*, *validated*, *no
+  expectations*. The detail page shows each platform's state.
 - **Sort and filters:** the default sort is technique, then name. There is no suggested order.
 - **The detail page:** the test's description, commands and input arguments from the catalog, its
-  expectations and ignores, and its run history.
+  expectations and ignores, and its run history. It is also where an operator sets the test's
+  observation window and removes a decision or an ignore; nothing else on the Tests tab changes
+  anything.
+
+### Coverage
+
+`/ace/svs/coverage` is a **read-only** view of Part 4, one row per technique × platform
+(`docs/SVS_COVERAGE.md`, *In the GUI*).
+- **Columns:** technique; name; tactics; platform; state and own state; tests counted (validated,
+  failing, stale); measured and manual signatures; last reviewed; state changed.
+- **Default view, *Endpoint platforms*:** windows, linux and macos. Every other ATT&CK platform keeps
+  its rows, one filter away. A summary above the list counts the matching rows per platform and
+  state.
+- **The detail page**, per technique: its rows and its sub-techniques', the tests behind them with
+  their latest reviewed runs, the measured and manual signatures, removed tests, and the days its
+  state changed in the daily snapshots.
+
+### Worklist
+
+`/ace/svs/worklist` is Part 4's declared-vs-measured worklist, one row per signature × technique,
+grouped per signature (`docs/SVS_COVERAGE.md`, *In the GUI*).
+- **Columns:** technique; kind (*declared*, *undeclared*, *unknown*); status; whether the tag counts;
+  the resolution, with its reason, link, who and when.
+- **Default view, *Needs decision*:** tags no test confirms that nobody has resolved. *Remove pending*
+  and *Undeclared* are the other saved filters.
+- **Actions** (`svs:run_manage`): keep or remove a tag, with a reason and, for a removal, the pull
+  request; reopen a resolution; keep or remove the selected rows in bulk.
+- **The signature page:** every row of the signature, retired ones included, and the tests that
+  measure it on each technique.
 
 ### Debugging a run
 
@@ -842,20 +920,26 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Event | Level | Fields beyond the run's own |
 |---|---|---|
 | Lifecycle transition, including timers | INFO | `from_state`, `to_state`, `actor` |
-| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome (and the caller on refusal; after the first refusal per `(caller, host)` in an hour this record is all that is written, no alert) [FR-15] |
+| Launcher call | INFO; a refused registration at WARNING | `launcher`, the call, its outcome, the run's `platform` on a registration (and the caller on refusal; after the first refusal per `(caller, host)` in an hour this record is all that is written, no alert) [FR-15] |
 | Router decision on an alert, at both stages | INFO | `alert_uuid`, `stage`, `decision` (routed / partial / none / not moved because owned or closed), `queue`, `confidence` |
 | Marker sighting, agreeing or not | INFO; a mismatch at WARNING | `alert_uuid`, `scan_point`, `result` (attributed / unknown / other host / outside window) |
 | Context attribution refused: more than one candidate run | WARNING | `alert_uuid`, `candidate_runs` (every run UUID; no single `svs_run`) [FR-9] |
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
+| A reviewed run changed since review | INFO | `alert_uuid` |
+| A run's alerts closed as `SIMULATED` | INFO | `alert_uuids`, `left_alone`, `late`, `actor` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
-Two SVS records are not about a run and carry no `svs_run`: [FR-15]
+These SVS records are not about a run and carry no `svs_run`: [FR-15]
 
 | Event | Level | Fields |
 |---|---|---|
-| The `disposition_classification` map, once at startup | WARNING | the map. A changed map relabels the whole corpus at read time, so every start says what it is. Unknown keys still fail validation. |
 | A capture whose `signature_version` is `"unknown"` | ERROR | `alert_uuid`, `sha256`, `rule_uuid` |
+| Coverage refreshed | INFO | `attack_release`, `rows`, `changed`, `retired`, `duration_ms`, `worklist_rows`, `worklist_changed`, `actor` |
+| A coverage row changed state in a refresh | INFO | `technique`, `platform`, `from_state`, `to_state` |
+| Coverage snapshot written | INFO | `snapshot_date`, `rows`, `attack_release`, `actor` |
+| Worklist resolution set or cleared: by a person (AUDIT), or by a refresh when a tag comes back or an ATT&CK upgrade moves it (plus `from_technique`) | INFO | `signature_uuid`, `technique`, `resolution`, `actor` |
+| A worklist row changed status in a refresh | INFO | `signature_uuid`, `technique`, `from_status`, `to_status` |
 
 **The hunt completion record** (core). The hunter's per-execution line (`base_hunter.py`,
 *completed hunt …*) is how an operator checks whether an expected hunt ran over a run's window. It
@@ -940,7 +1024,7 @@ query` and `ace search similar` brings them back. This is the same split as prev
 These can't be rebuilt later, so they are recorded from day one. [RPT-4]
 1. **A run's result as signed off**, kept alongside the live result.
 2. **Daily coverage snapshots.** `etc/cron/daily/svs-coverage-snapshot` writes one row per
-   technique × state per day.
+   technique × platform per day, with its state.
 3. **Verdict history.** `detection_point_verdict_history` is append-only:
    `(alert_id, content_hash, signature_uuid, old_verdict, new_verdict, user_id, changed_at)`. It is
    written in the same transaction as each change, including *Confirm*. The verdicts are the stored
@@ -1002,16 +1086,18 @@ tables are on the main chain.
 | `svs_sample_retirements` | Retire actions: `(sha256, rule uuid, who, why, when)`; unretiring is soft |
 | `svs_sample_deletions` | The sample deletion audit: `(sha256, who, why, when, rules, captures, purged when)` |
 | `svs_validations`, `svs_validation_results` | A validation request and its per-`(sample, rule)` outcome and category; a request is served from an earlier validation with the same `(repository, base_sha, head_sha, corpus version)` [FR-13] |
-| `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips` (Part 3) [FR-15] |
-| `svs_catalog_tests` | The ART catalog: guid, repository, technique, name, platforms, commit |
+| `svs_test_hosts` | Test hosts: `hostname, fqdn, usernames, ips, platform` (Part 3) [FR-15] |
+| `svs_catalog_tests`, `svs_catalog_repositories` | The ART catalog: guid, repository, technique, name, platforms, commit, content hash; and the commit each repository was last read at |
 | `svs_runs`, `svs_run_targets` | Runs, their lifecycle timestamps, marker, windows, and targets |
-| `svs_attributions` | `(run, alert uuid, detection content_hash, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23] |
-| `svs_expectations` | `(test guid, signature uuid, state: candidate/expected/rejected, who, when)` |
+| `svs_attributions` | `(run, alert uuid, detection content_hash, the detection's signature, confidence, late, source, actor)`; keyed on the alert uuid because the row is written at `PRE_INSERT`, before the alert has an id [FR-23], and carrying the signature because its `detection_points` row doesn't exist yet either |
+| `svs_expectations` | `(test guid, platform, signature uuid, state: expected/rejected, who, when, the run it was decided from)`; a candidate is derived, never stored |
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
-| `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / unexpected / ignored |
-| `svs_technique_worklist` | Declared-vs-measured flags and their resolution |
+| `svs_test_settings` | Per test: an observation window that replaces the computed one |
+| `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
+| `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
+| `svs_technique_worklist` | The declared-vs-measured worklist: one row per signature × technique; the resolution is stored, the status derived on each coverage refresh |
 | `svs_run_events` | Append-only run event log (Part 5) |
-| `svs_coverage_snapshots` | Daily technique × state rows (Part 6) |
+| `svs_coverage_snapshots` | One row per technique × platform per day: its state and counts (Part 6) |
 | `detection_point_verdict_history` | Append-only verdict changes (Part 6; core) |
 
 `svs_runs` also carries an owner and a reviewer, and `svs_run_results` carries the result as
@@ -1025,6 +1111,7 @@ reviewed next to the live one. Every SVS table has `updated_at`.
 | `svs:validate` | Requesting a YARA validation (the CI key) |
 | `svs:run_read` | Runs and Tests screens, run pages, coverage, and their read APIs [MGT-6] |
 | `svs:run_manage` | Ownership, cancel, close, review, candidates, ignores, manual association [MGT-6] |
+| `alert:write` (existing) | From an alert's page: *Disassociate from run* and *Not a test*, which give a test alert back to analysts |
 | `signature:read` (existing) | The Validations and Samples cards, validation reports, sample metadata and their APIs [FR-28] |
 | `signature:download` (existing) | Sample bytes [FR-28] |
 | `svs:admin` | Retiring and deleting samples, global ignores, the test-host table, configuration |
@@ -1034,10 +1121,15 @@ Plus `cas:purge` and `cas:hold` from the CAS. Each new `svs:*` permission is add
 gates the Signatures area. A reporting key gets the `*_read` permissions, `alert:read` and
 `signature:read`.
 
+Give run reviewers `signature:read` too. Without it the run page works, but a missing YARA
+signature's link to the files captured from the run's alerts (*Debugging a run*) is not shown: it
+leads to the Samples page, which needs `signature:read`, and that link is how a reviewer tells "the
+rule didn't fire" from "the file never reached ACE".
+
 ## Configuration (sketch)
 
 ```yaml
-disposition_classification:         # logged at WARNING on every start [FR-15]
+disposition_classification:
   FALSE_POSITIVE: fp
   GRAYWARE: tp
   # ... (Part 1 table)
@@ -1066,7 +1158,9 @@ svs:
     repositories: [signatures]      # names of the git_repo_* sections SVS may validate
     scan_timeout_seconds: 1800
     max_concurrent_validations: 1   # [FR-13]
-  attack_release: "v17"             # names etc/attack/v17.json [FR-14]
+  attack_release: "v20.0"           # names etc/attack/v20.0.json [FR-14]
+  coverage:
+    refresh_interval_seconds: 120   # service_svs recomputes svs_coverage (docs/SVS_COVERAGE.md)
 
 service_svs:                        # one instance, on the primary node [FR-13]
   enabled: true
@@ -1089,8 +1183,8 @@ Every value here is illustrative. The schema rejects unknown keys. Test hosts ar
 | **1: labels**. **Landed** (PRs #651–#656) | Detection identity (**must land before any verdict is written**); YARA detections on the file; verdict table, effective verdicts and sources, verdict history; the GUI; the detection-points API |
 | **2: YARA capture**. **Landed** (PRs #658–#664 and the Samples card) | The capture module, with the `transfer_work_target` mode fix [FR-5]; the Samples card in the Signatures hub and its API [FR-28]. Capture is on by default; a multi-node site gives `svs_samples` its shared backend or disables capture [FR-1] |
 | **3: YARA validation**. **Landed** (PRs #668–#674 and the Validations card); CI is wired into a signature repository by its operators (`docs/SVS_VALIDATION.md`) | API, mirror clones, isolated scanning that compiles the way the production loader does [FR-26], the validation queue and result cache, the report and its actions; the Validations card in the Signatures hub [FR-28]; CI in one signature repo |
-| **4: runs** | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
-| **5: coverage** | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
+| **4: runs**. **Built** on the `jd/svs` integration branch (PRs #683–#721), released to `main` with `jd/svs` | Registration, the test-host table and admin tab, markers, the SVS marker router, the built-in marker rule shipped as a namespace the yara service loads [FR-25], `SIMULATED` and its retention, SVS statuses, the ART catalog; the Runs and Tests tabs, the run page with learned expectations, ownership, *Close*, event log; the SVS logging contract; the run APIs and the reviewed-result snapshot |
+| **5: coverage**. **Built** on the `jd/svs` integration branch (PRs #725–#741), released to `main` with `jd/svs` | Coverage states, the declared-vs-measured worklist, the ATT&CK release pin with the vendored extract and `bin/update-attack-catalog` [FR-14]; the Coverage and Worklist tabs, daily snapshots and their APIs; `docs/SVS_API.md` complete |
 
 Each phase's PR description quotes the entries below that it makes true, and they go in
 `CHANGELOG.md`.
@@ -1149,15 +1243,16 @@ and the YARA results under it are always shown.
 already does (ACE 3.0.116); prevalence will too. Observables seen mostly in other queues, including
 test alerts, show smaller numbers.
 
-**Alerts from red-team test runs get their own queue and badge** (analysts; phase 4).
+**Alerts from red-team test runs get their own queue and status** (analysts; phase 4).
 - They go to the test queue with the disposition `SIMULATED`. Only ACE sets it, and it can't be
   changed by hand; bulk actions skip those alerts. They can't be reset or re-analyzed either. After
   about 30 days they are archived like false positives: the analysis details go, the alert stays.
-- Badges: `TEST` (nothing to do), `TEST?` (nothing unless it looks wrong; one click marks it *not a
-  test*), `PARTIAL TEST` (triage the non-test detections as usual), and `MARKER MISMATCH`
+- Statuses, shown next to the alert in the list and as a banner on its page: `TEST` (nothing to
+  do), `TEST?` (nothing unless it looks wrong; one click marks it *not a test*), `PARTIAL TEST`
+  (triage the non-test detections as usual; the test ones are greyed out), and `MARKER MISMATCH`
   (**treat as suspicious and investigate**).
 - An alert you own is never moved. If something was wrongly treated as a test, use *Disassociate
-  from run*.
+  from run* on the alert's page; it needs only the permission to change alerts.
 
 **Test runs have their own screens** (detection engineers and whoever runs the test program;
 phase 4).
@@ -1192,8 +1287,9 @@ that came with the alert are kept. The GUI already couldn't open extracted files
 
 **★ ATT&CK coverage is measured first, declared second** (detection engineers, SOC leads; phase 5).
 - Coverage comes from test runs wherever a test exists.
-- Existing `mitre_attack` / `mitre:` tags count as manual mappings until a test measures the
-  signature. Then they go on a worklist: confirm, keep, or remove.
+- Existing `mitre_attack` / `mitre:` tags count as manual mappings, alongside whatever tests measure.
+  Once a test measures the signature, the tags no test confirms go on a worklist: keep, or remove. A
+  removed tag stops counting.
 - For signatures no test can exercise, the tag *is* the mapping, so keep those accurate.
 
 **SVS only knows about alerts created after it is deployed** (SOC leads, detection engineers).
@@ -1205,8 +1301,13 @@ probably suppressed.
 
 ## Related
 
-- **Operating documents.** `docs/SVS_SAMPLES.md` covers the captured samples and
-  `docs/SVS_VALIDATION.md` the YARA validation; `docs/SVS_API.md` is the API's data dictionary.
+- **Operating documents.** `docs/SVS_SAMPLES.md` covers the captured samples,
+  `docs/SVS_VALIDATION.md` the YARA validation, `docs/SVS_RUNS.md` the test runs and their
+  alerts, and `docs/SVS_COVERAGE.md` coverage and its ATT&CK release; `docs/SVS_API.md` is the
+  API's data dictionary.
+- **Training guides.** The beginner's, user's, administrator's and developer's guides are served by
+  the GUI under *Documentation* (`/ace/help/svs/`); their Markdown and screenshots are in
+  `app/help/content/svs/`.
 - **Hunt validation.** `lib/signature_validator` (`validate-hunt` → `POST /api/v2/hunt/validate`)
   compiles and ad-hoc-executes a hunt from a repository's CI. SVS's YARA validation follows the same
   direction (the repository's CI calls ACE), but the two are separate systems. [D-11]

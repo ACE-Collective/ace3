@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+<div id="svs_test_hosts_page" data-api="/api/v2/svs/test-hosts">
+    <p class="text-muted mb-2">
+        The hosts test runs may target. A run registered against any other host, or as a user a host doesn't list, is
+        refused and alerts. A host's platform, when set, is checked against the test's supported platforms.
+    </p>
+    <div class="mb-2">
+        <button type="button" class="btn btn-xs btn-outline-primary" id="svs_test_host_add"><span class="bi bi-plus-lg"></span> Add a test host</button>
+    </div>
+    <div id="svs_test_hosts_error" class="alert alert-danger d-none" role="alert"></div>
+    <table class="table table-sm table-hover filter-list-table">
+        <thead>
+            <tr>
+                <th>Host</th>
+                <th>FQDN</th>
+                <th>Platform</th>
+                <th title="empty: any user">Users</th>
+                <th>IP addresses</th>
+                <th>Notes</th>
+                <th title="UTC">Updated</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody id="svs_test_hosts_rows"><tr><td colspan="8" class="text-muted">Loading…</td></tr></tbody>
+    </table>
+    <div class="d-flex align-items-center gap-2" id="svs_test_hosts_pager">
+        <button type="button" class="btn btn-xs btn-outline-secondary" id="svs_test_hosts_previous" disabled>« Previous</button>
+        <button type="button" class="btn btn-xs btn-outline-secondary" id="svs_test_hosts_next" disabled>Next »</button>
+    </div>
+</div>
+
+<div class="modal fade" id="svs_test_host_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <form id="svs_test_host_form">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="svs_test_host_title"></h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="svs_test_host_error" class="alert alert-danger d-none" role="alert"></div>
+                <div class="row g-2">
+                    <div class="col-md-6">
+                        <label class="form-label" for="svs_test_host_hostname">Host name</label>
+                        <input class="form-control form-control-sm" id="svs_test_host_hostname" name="hostname" required maxlength="255">
+                        <div class="form-text">The short name; a fully qualified name is split into both.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="svs_test_host_fqdn">FQDN</label>
+                        <input class="form-control form-control-sm" id="svs_test_host_fqdn" name="fqdn" maxlength="255">
+                        <div class="form-text">Empty: a target in any domain matches.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="svs_test_host_platform">Platform</label>
+                        <select class="form-select form-select-sm" id="svs_test_host_platform" name="platform">
+                            <option value="">not set (not checked)</option>
+                            {% for platform in platforms %}
+                            <option value="{{ platform }}">{{ platform }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6"></div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="svs_test_host_usernames">Users</label>
+                        <textarea class="form-control form-control-sm" id="svs_test_host_usernames" name="usernames" rows="4"></textarea>
+                        <div class="form-text">One per line. Empty: any user.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label" for="svs_test_host_ips">IP addresses</label>
+                        <textarea class="form-control form-control-sm" id="svs_test_host_ips" name="ips" rows="4"></textarea>
+                        <div class="form-text">One per line. Used to attribute alerts by context.</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label" for="svs_test_host_notes">Notes</label>
+                        <textarea class="form-control form-control-sm" id="svs_test_host_notes" name="notes" rows="2"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-outline-primary">Save</button>
+            </div>
+        </div>
+    </div>
+    </form>
+</div>
+
+<div class="modal fade" id="svs_test_host_delete_modal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5">Delete a test host</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p id="svs_test_host_delete_text"></p>
+                <div id="svs_test_host_delete_error" class="alert alert-danger d-none" role="alert"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-danger" id="svs_test_host_delete_submit">Delete</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_test_hosts.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

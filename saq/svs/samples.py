@@ -42,8 +42,9 @@ def _count_where(condition) -> ColumnElement:
     return func.coalesce(func.sum(case((condition, 1), else_=0)), 0)
 
 
-def samples_subquery():
-    """Every sample, one row per (sha256, rule_uuid):
+def samples_subquery(through_capture_id: Optional[int] = None):
+    """Every sample, one row per (sha256, rule_uuid), over its captures up to through_capture_id
+    when given (a listing that pages over the samples as they were when its first page was read):
 
     - capture_count, stored, missing: how many captures it has, and how many are stored or missing;
     - missing_data: how many captures lack something (a missing_reason: no file, or no match record);
@@ -70,6 +71,7 @@ def samples_subquery():
             func.max(capture.updated_at).label("updated_at"),
             func.max(capture.id).label("latest_capture_id"),
         )
+        .where(*([capture.id <= through_capture_id] if through_capture_id is not None else []))
         .group_by(capture.sha256, capture.rule_uuid)
         .subquery("sample_captures"))
 
@@ -101,6 +103,11 @@ def samples_subquery():
             retirement.unretired_at.is_(None)))
         .outerjoin(retired_by, retired_by.id == retirement.retired_by)
         .subquery("samples"))
+
+
+def latest_capture_id() -> Optional[int]:
+    """The newest capture's id: what a listing's first page pages through (samples_subquery)."""
+    return get_db().execute(select(func.max(SVSYaraCapture.id))).scalar()
 
 
 def captures_of(samples) -> ColumnElement[bool]:

@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="650" viewBox="0 0 960 650" font-family="Inter, Arial, sans-serif" font-size="14" fill="#212529">
+  <title>The parts of ACE that SVS runs on, and how data moves between them</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#495057"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="960" height="650" fill="#ffffff"/>
+
+  <!-- outside ACE -->
+  <g>
+    <rect x="20" y="20" width="200" height="64" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+    <text x="120" y="45" text-anchor="middle" font-weight="600">Launcher (outside ACE)</text>
+    <text x="120" y="66" text-anchor="middle" font-size="12" fill="#495057">API key: svs:run_register</text>
+
+    <rect x="240" y="20" width="200" height="64" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+    <text x="340" y="45" text-anchor="middle" font-weight="600">Rule repository CI</text>
+    <text x="340" y="66" text-anchor="middle" font-size="12" fill="#495057">validate-yara (svs:validate)</text>
+
+    <rect x="500" y="20" width="200" height="64" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+    <text x="600" y="45" text-anchor="middle" font-weight="600">Git servers</text>
+    <text x="600" y="66" text-anchor="middle" font-size="12" fill="#495057">ART catalog, YARA rules</text>
+
+    <rect x="740" y="20" width="200" height="64" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+    <text x="840" y="45" text-anchor="middle" font-weight="600">Test hosts' telemetry</text>
+    <text x="840" y="66" text-anchor="middle" font-size="12" fill="#495057">hunts and other collectors</text>
+  </g>
+
+  <!-- the ACE frame -->
+  <rect x="10" y="110" width="940" height="525" rx="8" fill="none" stroke="#adb5bd" stroke-dasharray="6 4"/>
+  <text x="24" y="134" font-size="12" font-weight="600" fill="#495057">ACE</text>
+
+  <!-- row A -->
+  <rect x="30" y="150" width="260" height="80" rx="6" fill="#e9f1fb" stroke="#5b8bc9"/>
+  <text x="160" y="174" text-anchor="middle" font-weight="600">http-api-v2</text>
+  <text x="160" y="195" text-anchor="middle" font-size="12" fill="#495057">/api/v2/svs/: runs, validations,</text>
+  <text x="160" y="212" text-anchor="middle" font-size="12" fill="#495057">test hosts, coverage, samples</text>
+
+  <rect x="310" y="150" width="190" height="80" rx="6" fill="#e9f1fb" stroke="#5b8bc9"/>
+  <text x="405" y="174" text-anchor="middle" font-weight="600">http-app (GUI)</text>
+  <text x="405" y="195" text-anchor="middle" font-size="12" fill="#495057">SVS area, Signatures hub:</text>
+  <text x="405" y="212" text-anchor="middle" font-size="12" fill="#495057">shells over the API</text>
+
+  <rect x="520" y="150" width="180" height="80" rx="6" fill="#eef6ef" stroke="#6a9f72"/>
+  <text x="610" y="174" text-anchor="middle" font-weight="600">git (service_git)</text>
+  <text x="610" y="195" text-anchor="middle" font-size="12" fill="#495057">keeps each git_repo_*</text>
+  <text x="610" y="212" text-anchor="middle" font-size="12" fill="#495057">section checked out</text>
+
+  <rect x="720" y="150" width="210" height="110" rx="6" fill="#f3eefa" stroke="#8a72b5"/>
+  <text x="825" y="174" text-anchor="middle" font-weight="600">engine (ace container)</text>
+  <text x="825" y="196" text-anchor="middle" font-size="12" fill="#495057">svs_marker alert router</text>
+  <text x="825" y="215" text-anchor="middle" font-size="12" fill="#495057">svs_alert_tagger</text>
+  <text x="825" y="234" text-anchor="middle" font-size="12" fill="#495057">svs_yara_sample_capture</text>
+
+  <!-- row B -->
+  <rect x="30" y="285" width="260" height="125" rx="6" fill="#fdf5e6" stroke="#c9a04f"/>
+  <text x="160" y="309" text-anchor="middle" font-weight="600">svs (service_svs), primary node</text>
+  <text x="160" y="331" text-anchor="middle" font-size="12" fill="#495057">validation workers (own git mirror)</text>
+  <text x="160" y="350" text-anchor="middle" font-size="12" fill="#495057">catalog refresher</text>
+  <text x="160" y="369" text-anchor="middle" font-size="12" fill="#495057">run timers</text>
+  <text x="160" y="388" text-anchor="middle" font-size="12" fill="#495057">coverage refresher</text>
+
+  <rect x="330" y="295" width="160" height="90" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+  <text x="410" y="319" text-anchor="middle" font-weight="600">ace-db</text>
+  <text x="410" y="340" text-anchor="middle" font-size="12" fill="#495057">svs_* tables: runs,</text>
+  <text x="410" y="357" text-anchor="middle" font-size="12" fill="#495057">attributions, coverage,</text>
+  <text x="410" y="374" text-anchor="middle" font-size="12" fill="#495057">validations</text>
+
+  <rect x="520" y="290" width="180" height="64" rx="6" fill="#eef6ef" stroke="#6a9f72"/>
+  <text x="610" y="314" text-anchor="middle" font-weight="600">Checkouts</text>
+  <text x="610" y="335" text-anchor="middle" font-size="12" fill="#495057">ART catalog, rule repository</text>
+
+  <rect x="720" y="290" width="210" height="90" rx="6" fill="#f3eefa" stroke="#8a72b5"/>
+  <text x="825" y="314" text-anchor="middle" font-weight="600">yara service</text>
+  <text x="825" y="335" text-anchor="middle" font-size="12" fill="#495057">writes the SVS_Marker rule</text>
+  <text x="825" y="352" text-anchor="middle" font-size="12" fill="#495057">loads the rule checkout</text>
+  <text x="825" y="369" text-anchor="middle" font-size="12" fill="#495057">QA recorder</text>
+
+  <!-- row C -->
+  <rect x="30" y="460" width="260" height="80" rx="6" fill="#fdf5e6" stroke="#c9a04f"/>
+  <text x="160" y="484" text-anchor="middle" font-weight="600">Landlock sandbox</text>
+  <text x="160" y="505" text-anchor="middle" font-size="12" fill="#495057">compiles and scans both commits</text>
+  <text x="160" y="522" text-anchor="middle" font-size="12" fill="#495057">no network, in svs.yara.work_dir</text>
+
+  <rect x="330" y="460" width="250" height="100" rx="6" fill="#f1f3f5" stroke="#868e96"/>
+  <text x="455" y="484" text-anchor="middle" font-weight="600">cron</text>
+  <text x="455" y="505" text-anchor="middle" font-size="12" fill="#495057">daily: coverage snapshot,</text>
+  <text x="455" y="522" text-anchor="middle" font-size="12" fill="#495057">validations prune, alert cleanup,</text>
+  <text x="455" y="539" text-anchor="middle" font-size="12" fill="#495057">yara-qa prune; hourly: cas gc</text>
+
+  <rect x="610" y="460" width="320" height="100" rx="6" fill="#e9f1fb" stroke="#5b8bc9"/>
+  <text x="770" y="484" text-anchor="middle" font-weight="600">CAS (content-addressed storage)</text>
+  <text x="770" y="505" text-anchor="middle" font-size="12" fill="#495057">svs_samples: captured YARA samples</text>
+  <text x="770" y="522" text-anchor="middle" font-size="12" fill="#495057">yara_qa: QA-mode matches</text>
+  <text x="770" y="539" text-anchor="middle" font-size="12" fill="#495057">encrypted; local backend by default</text>
+
+  <!-- flows -->
+  <g fill="none" stroke="#495057" stroke-width="1.5">
+    <line x1="120" y1="84" x2="120" y2="148" marker-end="url(#arrow)"/>
+    <line x1="330" y1="84" x2="264" y2="148" marker-end="url(#arrow)"/>
+    <line x1="600" y1="84" x2="608" y2="148" marker-end="url(#arrow)"/>
+    <line x1="840" y1="84" x2="832" y2="148" marker-end="url(#arrow)"/>
+    <line x1="310" y1="190" x2="292" y2="190" marker-end="url(#arrow)"/>
+    <line x1="610" y1="230" x2="610" y2="288" marker-end="url(#arrow)"/>
+    <line x1="250" y1="230" x2="378" y2="293" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <line x1="292" y1="340" x2="328" y2="340" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <polyline points="720,247 460,247 460,293" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <line x1="825" y1="262" x2="825" y2="288" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <line x1="700" y1="322" x2="718" y2="322" marker-end="url(#arrow)"/>
+    <polyline points="580,354 580,432 200,432 200,412" marker-end="url(#arrow)"/>
+    <line x1="120" y1="410" x2="120" y2="458" marker-end="url(#arrow)"/>
+    <polyline points="930,200 943,200 943,510 932,510" marker-end="url(#arrow)"/>
+    <line x1="825" y1="380" x2="825" y2="458" marker-end="url(#arrow)"/>
+    <polyline points="700,560 700,605 160,605 160,542" marker-end="url(#arrow)"/>
+  </g>
+
+  <!-- flow labels -->
+  <g font-size="11" fill="#495057">
+    <text x="468" y="266">attributions, captures</text>
+    <text x="833" y="280">unix socket</text>
+    <text x="330" y="426">reads atomics/T*/T*.yaml</text>
+    <text x="128" y="446">validations</text>
+    <text x="833" y="428">QA matches</text>
+    <text x="330" y="599">plaintext copies of the samples</text>
+  </g>
+</svg>

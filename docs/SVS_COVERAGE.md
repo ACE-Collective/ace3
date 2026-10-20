@@ -1,0 +1,358 @@
+# SVS coverage
+
+SVS coverage answers "which ATT&CK techniques do we actually detect?" from the Atomic Red Team test
+runs that analysts review (`docs/SVS_RUNS.md`), together with the technique tags signatures already
+carry (`docs/SVS.md`, Part 4).
+
+This document covers how coverage works in ACE and how to operate it: how coverage is computed,
+refreshed and snapshotted, the declared-vs-measured worklist, the Coverage and Worklist tabs, and the
+ATT&CK release it is computed against. The design and its reasoning are in `docs/SVS.md`.
+Coverage is read through `/api/v2/svs/coverage` and the worklist through `/api/v2/svs/worklist`
+(`svs:run_read`), whose data dictionary is `docs/SVS_API.md`, *Coverage*, *Coverage history* and
+*Worklist*.
+
+## Rows
+
+Coverage is one row per **(technique, platform)**, in the `svs_coverage` table. Coverage is global,
+not per company.
+
+A technique has rows on:
+- every platform ATT&CK lists for it;
+- every platform of its tests;
+- for a parent technique, every platform of its sub-techniques' rows.
+
+`attack_platform` says whether ATT&CK itself lists the platform for the technique. A test can run
+somewhere ATT&CK doesn't list; for example, some IaaS atomics run from linux.
+
+Which techniques have rows:
+- every active technique of the pinned release;
+- a deprecated or unknown technique, only while a test or a counting tag names it;
+- the parent of each of those.
+
+A row is never deleted. When nothing produces it any more (a test was removed from its repository,
+an ATT&CK upgrade revoked the technique), it gets `retired_at`. It comes back, with `retired_at`
+cleared, if something produces it again.
+
+## Platforms
+
+A test counts on each of its supported platforms. It also counts on any platform it has a run or
+an expectation on (`docs/SVS_RUNS.md`). A run's platform is the platform of its targets, and
+expectations are kept per platform, so each platform of a multi-platform test is judged on its own.
+
+## States
+
+A test contributes one state to the row of its technique on each of its platforms. That state is
+the test's state on that platform, which is the same judgment the Tests tab shows: the latest
+reviewed run there, against what is expected of the test there, minus ignores
+(`saq/svs/test_state.py`).
+
+| The test on the platform | Counts as |
+|---|---|
+| *validated* | **validated** |
+| *failing* | **failing** |
+| *stale* | **stale** |
+| Something is expected that its latest reviewed run there didn't judge (the Tests tab shows *awaiting review*) | **stale** |
+| Never run there, no reviewed run there, or nothing expected there | **untested** |
+
+A signature's tag adds **manual** (below). A row's state is the worst of everything counting
+toward it:
+
+**failing** > **stale** > **validated** > **manual** > **untested** > **none**
+
+A row nothing counts toward is **none**. *Failing* means that a test of the technique missed an
+expected signature. It doesn't mean that the technique goes undetected.
+
+A row also carries counts over the same tests and signatures as its state:
+- `tests_total`, `tests_validated`, `tests_failing`, `tests_stale`;
+- `manual_signatures`, the signatures whose tags count toward it;
+- `measured_signatures`, the signatures expected of its tests on the platform;
+- `last_reviewed_at`.
+
+Catalog tests removed from their repository don't count.
+
+## Roll-up
+
+A parent technique's row counts its sub-techniques' rows on the same platform, so T1059 on
+windows is *failing* when a T1059.001 test failed there. `state` is rolled up. `own_state` covers
+only what names the technique itself, and `parent` and `is_subtechnique` say where a row sits.
+
+## Manual mappings
+
+A signature's `mitre:` tags claim techniques without a test: a hunt's `tags`, and a YARA rule's tags,
+which include its `mitre_attack` meta.
+- A tag counts only when the signature is enabled, and, for a YARA rule, not in QA mode
+  (`docs/YARA_QA.md`).
+- A tag resolved *remove* on the worklist (below) doesn't count, unless the signature's tests
+  confirm it.
+- A tag on technique t makes every row of t **manual**. It doesn't reach t's sub-techniques, but it
+  rolls up to t's parent like anything else.
+- Tags are matched case-insensitively against `T1234` or `T1234.567`. A revoked id counts as its
+  successor.
+- A tag naming an id the release doesn't have doesn't count. Neither does a tag that isn't a
+  technique id at all, such as a tactic (`mitre:TA0002`) or a template (`mitre:{{ technique }}`).
+  Both are counted (`unknown_tags`, `ignored_tags`) in `ace svs coverage status`.
+
+## The worklist
+
+A tag claims a technique; a test measures one. Once a signature is *measured* (expected of a catalog
+test on some platform, ignores applied, removed tests left out), the **declared-vs-measured
+worklist** compares the two, so that every tag ends up either confirmed by a test or decided about
+by a person. It is the `svs_technique_worklist` table, one row per (signature, technique), recomputed
+by every coverage refresh (`saq/svs/worklist.py`).
+
+A measured signature has a row:
+- for each technique its tags claim (`declared`). Tag ids that resolve to one technique, such as a
+  revoked id and its successor, share that technique's row; `declared_as` lists them;
+- for each technique it is measured on that none of its tags covers (`undeclared`, information
+  only: a tag to add);
+- for each tag naming an id the release doesn't have (`unknown`, information only), unless a test
+  measures that id (a custom atomic's technique), which makes it a declaration.
+
+A signature that no test measures has no rows; its tags simply count as manual mappings.
+
+**Matching.** A declared technique is *confirmed* when the signature is measured on it, or on one of
+its sub-techniques:
+
+| The tag claims | The signature is measured on | The tag is |
+|---|---|---|
+| T1059 | T1059.001 | confirmed |
+| T1059.001 | T1059.001 | confirmed |
+| T1059.001 | T1059 | not confirmed, and T1059 gets an `undeclared` row |
+| T1059.001 | T1059.003 | not confirmed, and T1059.003 gets an `undeclared` row |
+
+**Status.** Only the resolution is stored; the status is derived from the facts on every refresh,
+and at once when someone resolves a row.
+
+| Status | When |
+|---|---|
+| `confirmed` | Measurement confirms the tag. A resolution recorded earlier is kept, but has no effect. |
+| `open` | Not confirmed, and nobody resolved it. The *Needs decision* list. |
+| `kept` | Resolved *keep*: the tag covers something no test reaches. |
+| `remove_pending` | Resolved *remove*, and the signature still has the tag. |
+| `removed` | Resolved *remove*, and the tag is gone. |
+| `undeclared`, `unknown` | Information only; they can't be resolved. |
+| `retired` | The signature isn't measured any more, or the tag went away without a *remove*. The resolution is kept. |
+
+**Resolutions** take `svs:run_manage` and a reason (`docs/SVS_API.md`, *Worklist*):
+- *keep*: the tag keeps counting.
+- *remove*: a pull request to the signature repository will drop the tag (its link goes in
+  `reference`). The tag stops counting from the next refresh, while it is still there. A *remove*
+  keeps excluding the tag if the row later retires because the signature stopped being measured.
+
+A resolution is cleared by hand, or in two cases by a refresh, which logs it:
+- **the tag comes back** on a `removed` row: what was decided about it no longer stands, so the
+  resolution is cleared and the row is `open` again;
+- **an ATT&CK upgrade revokes** the row's technique. A tag `mitre:T1086`, say, now counts as
+  T1059.001, so a new row appears for T1059.001, and the old T1086 row retires. When the new row has
+  no resolution yet, the old row's resolution (with its reason, reference, who and when) moves to
+  it.
+
+**Timing.** A refresh computes the worklist first, then coverage from it, in one transaction under
+the refresh lock. A resolution takes the same lock, so it never lands in the middle of a refresh; it
+can wait behind one. The row's `status` and `counts` change at once; coverage follows at the next
+refresh, at most `svs.coverage.refresh_interval_seconds` later.
+
+`ace svs coverage status` prints the rows per status. Each status a refresh changes logs *svs
+worklist row of signature … on T…* with `signature_uuid`, `technique`, `from_status` and
+`to_status`. A person's resolution is an AUDIT record (*svs worklist resolution set* or *cleared*),
+and a refresh's own clear or move is logged too (*svs worklist resolution … cleared* or *moved*),
+all with `signature_uuid`, `technique`, `resolution` and `actor` (`docs/SVS.md`, *Logging
+contract*).
+
+## Refresh
+
+`service_svs` recomputes coverage every `svs.coverage.refresh_interval_seconds` (default 120), on the
+primary node only (`saq/svs/coverage.py`). Coverage therefore trails a review or a new expectation
+by at most that interval.
+
+A refresh:
+1. reads the signatures' tags from the hunts and the YARA rule inventory;
+2. locks the single row of `svs_coverage_state`, so two refreshes never interleave;
+3. reads the catalog tests, their runs, expectations and ignores, refreshes the worklist (above),
+   and computes every row;
+4. writes only the columns that changed, so a row's `updated_at` moves only on a real change. It
+   inserts new rows and retires missing ones;
+5. records what it did on `svs_coverage_state`, and commits once.
+
+If anything fails, nothing is written. For example, a YARA rule location might not be readable; a
+partial inventory would make every YARA manual mapping vanish for one refresh. The error is
+recorded on `svs_coverage_state` and logged, and the next refresh tries again.
+
+```
+ace svs coverage refresh [--force]   # refresh now; --force off the primary node
+ace svs coverage status              # the last refresh, its error, and rows per state on each platform
+```
+
+Each refresh logs *svs coverage refreshed* with `attack_release`, `rows`, `changed`, `retired`,
+`duration_ms`, `worklist_rows`, `worklist_changed` and `actor`. Each row whose state changed logs *svs coverage of T… on …* with
+`technique`, `platform`, `from_state` and `to_state` (`docs/SVS.md`, *Logging contract*).
+
+## Snapshots
+
+Coverage is the current state only; a report of coverage over time needs history, which can't be
+rebuilt later (`docs/SVS.md`, Part 6, *History kept for reports*). So once a day the primary node
+files a copy of it in `svs_coverage_snapshots`:
+
+```
+ace svs coverage snapshot [--force]   # refresh, then file today's (UTC) snapshot; --force off the primary node
+```
+
+`etc/cron/daily/svs-coverage-snapshot` runs it (`docs/CRON.md`). The command:
+1. refreshes coverage, exactly as `ace svs coverage refresh` does. If the refresh fails, no
+   snapshot is written and the command exits 1, so the cron job reports it;
+2. locks `svs_coverage_state`, like a refresh, and copies every row that isn't retired under
+   today's UTC date: its state, own state, test counts, manual and measured signature counts, and
+   the ATT&CK release.
+
+A second snapshot on the same day replaces the day: its rows are rewritten (a row that didn't change
+keeps its `updated_at`), and the day's rows that are no longer in coverage are removed. A day the
+job didn't run has no snapshot; there is no way to file one afterwards, because it would be today's
+coverage under another date. Snapshots are kept forever: about 1,900 rows a day with the vendored
+release and the Atomic Red Team catalog.
+
+Each snapshot logs *svs coverage snapshot of … written* with `snapshot_date`, `rows`,
+`attack_release` and `actor`.
+
+`GET /api/v2/svs/coverage/history` lists the snapshot rows, and `…/history/counts?group=day|month`
+counts them per state: per day, or per month from each month's last snapshot.
+
+## In the GUI
+
+**SVS → Coverage** (`/ace/svs/coverage`, `svs:run_read`) lists the coverage rows, one per technique
+and platform, in technique then platform order, a parent before its sub-techniques. Like every SVS
+list it is a shell over the API (`/api/v2/svs/coverage`), with the coverage screen's filters, saved
+filters, share links and CSV/NDJSON export. It is read-only.
+
+- **Columns:** technique (deprecated, unknown and retired rows say so), name, tactics, platform (and
+  whether ATT&CK lists it for the technique), state (and the own state when the sub-techniques make it
+  differ), the tests counted with how many are validated, failing and stale, the measured and manual
+  signature counts, the latest review that counts, and when the state last changed. States are plain
+  text.
+- **Saved filters**, created for each user the first time they open the tab: *Endpoint platforms*
+  (windows, linux and macos; the default), *Gaps and failures* (failing, stale, untested and none on
+  those platforms) and *All*. None of them shows retired rows.
+- **The summary** above the list counts the rows the filters match per platform and state
+  (`/summary`). Each count opens the list on that platform and state. Under it: when coverage was last
+  computed and against which ATT&CK release, the tags that name a technique the release doesn't have
+  or aren't technique ids, and the error of a failed refresh.
+
+Each technique links to its page, `/ace/svs/coverage/<technique>` (`/{technique}` in the API). A
+revoked id opens its successor's page and says so. The page shows:
+- the technique: its parent, tactics, status in the release, and when its rows were computed; links to
+  its tests on the Tests tab and its runs on the Runs tab;
+- **By platform**: its rows, as in the list, retired ones included;
+- **Sub-techniques**: their rows, each linking to its own page;
+- **Tests**: each test of the technique and its sub-techniques on each of its platforms, with its
+  state there (as the Tests tab judges it), what it counts as, and its latest reviewed run;
+- **Measured signatures**: the signatures expected of those tests, and which (test, platform) pairs
+  expect each;
+- **Manual signatures**: the signatures whose tags name the technique or a sub-technique, and whether
+  each counts (a disabled signature, a YARA rule in QA mode, or a tag resolved *remove* doesn't);
+- **Removed tests**: the technique's tests that left their repositories;
+- **History**: from the daily snapshots of the last year (*Snapshots*), each platform's first state
+  and every day it changed, with CSV and NDJSON exports of those snapshot rows.
+
+The rows are as of the last refresh; the tests and signatures are read when the page loads, so right
+after a review the page can be ahead of its rows by up to one refresh interval.
+
+Each signature, measured or manual, links to its worklist page (below).
+
+**SVS → Worklist** (`/ace/svs/worklist`, `svs:run_read`) lists the worklist rows (*The worklist*),
+grouped per signature: a header row per signature names it, its family and uuid, and the techniques it
+is measured on, and says when its tags don't count because it is disabled or a YARA rule in QA mode.
+It is a shell over `/api/v2/svs/worklist`, with the worklist screen's filters, saved filters, share
+links and CSV/NDJSON export.
+
+- **Columns:** technique (with the tag ids that count as it, when they differ, such as a revoked id),
+  kind, status and since when, whether the tag counts and why not, and the resolution (keep or remove,
+  the reason, the reference link, who and when). Statuses are plain text.
+- **Saved filters**, created for each user the first time they open the tab: *Needs decision* (`open`,
+  the default), *Remove pending* and *Undeclared*.
+- **Resolving** needs `svs:run_manage`. An `open` row can be kept or removed; a `kept` row removed or
+  reopened; a `remove_pending` row kept or reopened. Keep and Remove ask for a reason, and for a link
+  (for a removal, the pull request dropping the tag). Reopen clears the resolution. Other rows can't be
+  resolved; a resolution they still hold is shown. The selected rows can be kept or removed in bulk;
+  rows that can't be resolved are left alone and listed.
+
+A row's status and whether it counts change at once; coverage follows at the next refresh.
+
+Each signature links to its page, `/ace/svs/worklist/<signature_uuid>` (`/{signature_uuid}` in the
+API): every row of the signature, retired ones included, with the same actions, and each technique it
+is measured on now with the tests (and platforms) that expect it. A signature no test measures has no
+rows, and the page says so: its tags count as manual mappings.
+
+## The ATT&CK release
+
+Coverage needs ATT&CK itself for technique and tactic names, to roll sub-techniques up to their
+parents, for each technique's platforms, and to know where a revoked technique went. Atomic Red
+Team supplies only the technique id of each test.
+
+**Production ACE never fetches ATT&CK.** Each supported release is vendored in this repository as a
+compact extract, `etc/attack/<release>.json`. `etc/` is copied into the image. The setting
+`svs.attack_release` (default `v20.0`) names the extract in use. Startup fails config validation
+when that file is missing:
+
+```
+svs.attack_release v21.0: /opt/ace/etc/attack/v21.0.json is missing; bin/update-attack-catalog v21.0 builds it
+```
+
+### What the extract holds
+
+The extract is built from MITRE's enterprise STIX bundle for the release. It holds only what SVS
+uses:
+
+| Key | Contents |
+|---|---|
+| `release`, `domain`, `source` | The release (`v20.0`), `enterprise-attack`, and the URL and sha256 of the bundle it was built from |
+| `platforms` | The platform slugs coverage uses, in display order, with ATT&CK's name for each |
+| `tactics` | Every tactic in the matrix's order: id (`TA0002`), shortname (`execution`), name |
+| `techniques` | Per technique id (`T1059`, `T1059.001`): name, parent (sub-techniques only), tactic ids, platform slugs, and `deprecated` |
+| `revoked` | Revoked id → the current technique that replaces it |
+| `renamed` | Informational: techniques whose name changed since a previous extract |
+
+**Platforms** get stable slugs: `windows`, `linux`, `macos`, `esxi`, `iaas`, `containers`, `saas`,
+`office-suite`, `identity-provider`, `network-devices`, `pre`. Older ATT&CK names map onto them
+("Office 365" and "Google Workspace" → `office-suite`, "Azure AD" → `identity-provider`,
+"Network" → `network-devices`). A test's `supported_platforms` uses Atomic Red Team's names, which
+map the same way: `iaas:aws`, `iaas:azure` and `iaas:gcp` → `iaas`, `azure-ad` →
+`identity-provider`, `office-365` and `google-workspace` → `office-suite`.
+
+**Revoked, deprecated and renamed** mean different things:
+- **Revoked.** ATT&CK replaced the technique with another one, often when it became a
+  sub-technique (T1086 PowerShell → T1059.001). Wherever SVS reads a technique id, from an atomic
+  or a signature's tag, a revoked id counts as its successor. Revocations of revocations are
+  followed to the end (T1150 → T1547.011 → T1647).
+- **Deprecated.** ATT&CK retired the technique without a replacement. It keeps its id, name and
+  platforms in the extract, marked `deprecated`, so a test or tag that still names it isn't lost.
+- **Renamed.** A rename keeps the technique's id, and ids are the key everywhere in SVS, so a
+  rename needs no remapping: names always come from the pinned release. One STIX bundle can't show
+  that a rename happened, so `renamed` is filled only when the extract is built with `--previous`,
+  for the upgrade notes.
+
+An id that isn't in the release at all, such as a custom atomic's technique or a typo, is kept as it
+is and shown as *unknown*.
+
+### Adding or upgrading a release
+
+`bin/update-attack-catalog` builds an extract. It is a developer tool and needs network access to
+GitHub. It downloads `enterprise-attack/enterprise-attack-<version>.json` from MITRE's
+[attack-stix-data](https://github.com/mitre-attack/attack-stix-data) repository:
+
+```bash
+bin/update-attack-catalog v21.0 --previous etc/attack/v20.0.json
+```
+
+- `--input FILE` builds from a bundle already on disk instead of downloading it.
+- `--output-dir DIR` writes somewhere other than `etc/attack/`.
+- The output is deterministic, so rebuilding a release writes the same bytes, and a new release
+  reviews as a readable diff against the previous one.
+- The build stops on anything it can't place, rather than dropping it:
+  - a platform name it has no slug for (add it to `PLATFORMS` or `PLATFORM_NAMES` in the script);
+  - a tactic the bundle doesn't define;
+  - a cycle of revocations;
+  - a bundle that says it is a different release.
+- A revoked technique whose successor is missing from the bundle is left out of `revoked`, with a
+  warning.
+
+To move a site to the new release, commit the extract and change `attack_release`. Keep the
+previous extract in the repository until no site uses it.

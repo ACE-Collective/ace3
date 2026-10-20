@@ -13,10 +13,6 @@ sample stored elsewhere; a multi-node site gives the pool a shared backend (shar
 sees that.
 """
 
-import base64
-import csv
-import io
-import json
 import logging
 import os
 import re
@@ -31,6 +27,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, select, tuple_
 
 from aceapi_v2.common.archive import MANIFEST_NAME, CASArchiveEntry, create_encrypted_cas_zip, safe_file_name
+from aceapi_v2.common.listing import InvalidCursor, InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.svs.samples.schemas import (
     SAMPLE_ROW_CSV_FIELDS,
     LabelActionResult,
@@ -68,6 +65,7 @@ from saq.svs.samples import (
     get_sample,
     is_local,
     keyset_condition,
+    latest_capture_id,
     missing_by_rule,
     order_by,
     parse_json_column,
@@ -79,23 +77,7 @@ from saq.svs.samples import (
 
 logger = logging.getLogger(__name__)
 
-LISTING_MAX_PAGE_SIZE = 1000
-LISTING_EXPORT_PAGE_SIZE = 1000
-
-_CURSOR_VERSION = 1
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
-
-class InvalidListingRequest(ValueError):
-    """The filters of a listing request cannot be used; detail is a message or pydantic errors."""
-
-    def __init__(self, detail):
-        super().__init__(str(detail))
-        self.detail = detail
-
-
-class InvalidCursor(ValueError):
-    """The cursor is malformed, or belongs to a listing in another order."""
 
 
 #
@@ -149,7 +131,9 @@ def validate_sample_key(sha256: str, rule_uuid: str) -> str:
 #
 # GET /svs/samples: the listing, paged by keyset on (sort value, sha256, rule_uuid), never by
 # offset. The statement is built once per request (relative dates resolve then) and each page runs
-# in its own thread.
+# in its own thread. The sort values (a capture count, the last capture) change as captures arrive,
+# so a listing counts only the captures that existed when its first page was read: their newest id
+# travels in the cursor, and a sample whose count grows mid-walk is neither skipped nor repeated.
 #
 
 @dataclass(frozen=True)
@@ -161,6 +145,8 @@ class SampleListing:
     statement: Select
     sort: SampleSort
     descending: bool
+    # the newest capture the listing counts (None: there were none)
+    through_capture_id: Optional[int] = None
 
 
 def _filter_entries(filter_params: list[str]) -> list[dict]:
@@ -175,13 +161,22 @@ def _filter_entries(filter_params: list[str]) -> list[dict]:
         raise InvalidListingRequest(e.errors(include_url=False, include_context=False))
 
 
+def _cursor_snapshot(payload: dict) -> Optional[int]:
+    """The newest capture a cursor's listing counts; None for a cursor from before there was one."""
+    value = payload.get("h")
+    return int(value) if value is not None else None
+
+
 def prepare_sample_listing(
-    filter_params: list[str], *, sort: SampleSort, descending: bool, changed_since: datetime | None, tz
+    filter_params: list[str], *, sort: SampleSort, descending: bool, changed_since: datetime | None, tz,
+    cursor: str | None = None,
 ) -> SampleListing:
-    """Builds the listing statement from share-link filters (`f=`) of the samples screen. Raises
-    InvalidListingRequest."""
+    """Builds the listing statement from share-link filters (`f=`) of the samples screen, over the
+    captures the cursor's listing counted, or those that exist now for a first page (or an export).
+    Raises InvalidListingRequest, InvalidCursor."""
     entries = _filter_entries(filter_params)
-    samples = samples_subquery()
+    through = decode_cursor(cursor, _cursor_snapshot) if cursor is not None else latest_capture_id()
+    samples = samples_subquery(through)
     statement = select(samples)
     for condition in sample_filter_conditions(samples, entries, tz):
         statement = statement.where(condition)
@@ -189,31 +184,24 @@ def prepare_sample_listing(
     if changed_since is not None:
         statement = statement.where(changed_since_condition(samples, changed_since))
 
-    return SampleListing(samples=samples, statement=statement, sort=sort, descending=descending)
+    return SampleListing(samples=samples, statement=statement, sort=sort, descending=descending,
+                         through_capture_id=through)
 
 
 def encode_listing_cursor(listing: SampleListing, key: list) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "o": listing.sort.value, "d": listing.descending, "k": key},
-                         separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(o=listing.sort.value, d=listing.descending, k=key, h=listing.through_capture_id)
 
 
 def decode_listing_cursor(cursor: str, listing: SampleListing) -> list:
     """The keyset values a cursor carries. Raises InvalidCursor."""
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> list:
         if payload["o"] != listing.sort.value or bool(payload["d"]) != listing.descending:
             raise InvalidCursor(
                 f"this cursor pages a listing sorted by {payload['o']} ({'desc' if payload['d'] else 'asc'}): "
                 "pass the same sort and desc as the request that returned it")
         return parse_sort_key(payload["k"], listing.sort)
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def _to_rows(records: list[dict]) -> list[SampleRow]:
@@ -241,15 +229,10 @@ def fetch_sample_page(listing: SampleListing, cursor: str | None, limit: int) ->
 
 def sample_rows_to_csv(rows: list[SampleRow], *, header: bool) -> str:
     """CSV text for rows of the export, with the header line when asked; the votes are flattened."""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    if header:
-        writer.writerow(SAMPLE_ROW_CSV_FIELDS)
-    for row in rows:
-        values = row.model_dump(mode="json")
+    def flatten(values: dict) -> None:
         values.update(values.pop("votes"))
-        writer.writerow([values[name] if values[name] is not None else "" for name in SAMPLE_ROW_CSV_FIELDS])
-    return buffer.getvalue()
+
+    return rows_to_csv(rows, SAMPLE_ROW_CSV_FIELDS, header=header, flatten=flatten)
 
 
 #
@@ -286,7 +269,8 @@ def get_sample_detail(sha256: str, rule_uuid: str) -> SampleDetail:
     node = bytes_nodes([sha256]).get(sha256)
     return SampleDetail(
         **record, local=is_local(node),
-        captures=[_capture(row, detections.get(row.id, [])) for row in captures])
+        captures=[_capture(row, detections.get(row.id, [])) for row in captures],
+        relabel_refusal=actions.relabel_refusal(sha256, rule_uuid, detections))
 
 
 def missing_summary() -> list[MissingCount]:
@@ -597,22 +581,15 @@ def delete_sample_file(sha256: str, reason: str, user_id: int | None, actor: Opt
 
 
 def _encode_deletion_cursor(row: SVSSampleDeletion) -> str:
-    payload = json.dumps({"v": _CURSOR_VERSION, "k": [row.updated_at.isoformat(), row.id]}, separators=(",", ":"))
-    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+    return encode_cursor(k=[row.updated_at.isoformat(), row.id])
 
 
 def _decode_deletion_cursor(cursor: str) -> tuple[datetime, int]:
-    try:
-        padded = cursor + "=" * (-len(cursor) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        if payload["v"] != _CURSOR_VERSION:
-            raise InvalidCursor(f"unsupported cursor version {payload['v']!r}")
+    def parse(payload: dict) -> tuple[datetime, int]:
         updated_at, row_id = payload["k"]
         return datetime.fromisoformat(updated_at), int(row_id)
-    except InvalidCursor:
-        raise
-    except Exception as e:
-        raise InvalidCursor(f"malformed cursor: {e}") from None
+
+    return decode_cursor(cursor, parse)
 
 
 def list_deletions(changed_since: datetime | None, cursor: str | None, limit: int) -> SampleDeletionPage:

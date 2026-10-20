@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "saved_filters/_modals.html" import saved_filter_modals %}
+
+{% block page_content %}
+{% include "svs/_tabs.html" %}
+{# The Tests tab (docs/SVS.md, Part 5, *Tests*): a shell whose script, static/js/svs_tests.js, lists
+   the catalog from the API named here. It is read-only. #}
+<div id="svs_tests_page"
+     data-api="/api/v2/svs/tests"
+     data-screen="{{ tests_screen }}"
+     data-default-f='{{ svs_tests_default_f() | tojson }}'
+     data-test-url="{{ test_url }}"
+     data-run-url="{{ run_url }}"
+     data-tz="{{ current_user.timezone or 'UTC' }}">
+    <p class="text-muted small mb-2">
+        The Atomic Red Team tests in the catalog, by technique, each with its state on its latest reviewed
+        run. Nothing here suggests what to run next. Times are UTC.
+    </p>
+    <div id="svs_tests_message" class="alert alert-info d-none" role="status"></div>
+    <div id="svs_tests_list"></div>
+</div>
+
+{{ saved_filter_modals() }}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/svs_tests.js') }}?version={{ ACE_VERSION }}"></script>
+{% endblock %}

@@ -4,7 +4,11 @@
 what changed, synchronously and without storing anything (docs/SVS_VALIDATION.md); the queued
 validations CI requests are run by service_svs instead. ``yara layout`` prints which directories of
 each repository in svs.yara.repositories the yara service loads. ``yara prune`` removes the
-validations older than svs.yara.retention_days (daily cron).
+validations older than svs.yara.retention_days (daily cron). ``catalog refresh`` reads the Atomic
+Red Team catalog repositories (service_svs does it on its own) and ``catalog status`` prints them
+(docs/SVS_RUNS.md). ``coverage refresh`` recomputes ATT&CK coverage (service_svs does it on its own),
+``coverage snapshot`` refreshes it and files the day's copy (daily from cron), and ``coverage status``
+prints the last refresh and the rows per state (docs/SVS_COVERAGE.md).
 """
 
 import json
@@ -191,3 +195,164 @@ prune_parser = svs_yara_sp.add_parser("prune", help="Remove the validations olde
 prune_parser.add_argument("--dry-run", action="store_true", default=False, help="Count them without removing anything.")
 prune_parser.add_argument("--force", action="store_true", default=False, help="Prune even when this is not the primary node.")
 prune_parser.set_defaults(func=cli_prune)
+
+
+svs_catalog_parser = svs_sp.add_parser("catalog", help="The Atomic Red Team test catalog.")
+svs_catalog_sp = svs_catalog_parser.add_subparsers(dest="svs_catalog_cmd")
+
+
+def cli_catalog_refresh(args):
+    """Read each catalog repository's tests whose checkout has a new commit."""
+    from saq.svs.catalog import refresh_catalog, refresh_repository
+
+    results = [refresh_repository(args.repository, force=args.force)] if args.repository else refresh_catalog(force=args.force)
+    if not results:
+        print("svs.catalog.repositories is empty")
+        return 0
+
+    status = 0
+    for result in results:
+        if result.error:
+            print(f"{result.repository}: {result.error}")
+            status = 1
+        elif result.retired:
+            print(f"{result.repository}: no longer in svs.catalog.repositories, {result.removed} tests removed")
+        elif result.refreshed:
+            print(f"{result.repository} @ {_short(result.commit)}: {result.tests} tests ({result.added} added, "
+                  f"{result.changed} changed, {result.removed} removed, {len(result.skipped)} skipped)")
+            for path, name, reason in result.skipped:
+                print(f"  skipped {path}{f' ({name})' if name else ''}: {reason}")
+        else:
+            print(f"{result.repository} @ {_short(result.commit or '?')}: already read (--force to read it again)")
+
+    return status
+
+
+catalog_refresh_parser = svs_catalog_sp.add_parser(
+    "refresh", help="Read the tests of each catalog repository whose commit changed (service_svs does this on its own).")
+catalog_refresh_parser.add_argument("--repository", help="Only this repository (one of svs.catalog.repositories).")
+catalog_refresh_parser.add_argument("--force", action="store_true", default=False, help="Read the tests even if the commit did not change.")
+catalog_refresh_parser.set_defaults(func=cli_catalog_refresh)
+
+
+def cli_catalog_status(args):
+    """Print each catalog repository's commit, test count and last error."""
+    from sqlalchemy import func
+
+    from saq.configuration.config import get_config
+    from saq.database.model import SVSCatalogRepository, SVSCatalogTest
+    from saq.database.pool import get_db
+    from saq.svs.catalog import RETIRED_ERROR
+
+    configured = get_config().svs.catalog.repositories
+    rows = {row.name: row for row in get_db().query(SVSCatalogRepository)}
+    removed = dict(get_db().query(SVSCatalogTest.repository, func.count(SVSCatalogTest.id))
+                   .filter(SVSCatalogTest.removed_at.isnot(None)).group_by(SVSCatalogTest.repository))
+    for name in sorted(set(configured) | set(rows)):
+        row = rows.get(name)
+        state = "" if name in configured else " (no longer in svs.catalog.repositories)"
+        error = row.error if row is not None else None
+        if error == RETIRED_ERROR:
+            state, error = f" ({RETIRED_ERROR})", None
+        if row is None or row.refreshed_at is None:
+            print(f"{name}{state}: never read" + (f"; last error: {error}" if error else ""))
+            continue
+
+        print(f"{name}{state}: {row.test_count} tests at {_short(row.commit)}, read {row.refreshed_at}, "
+              f"{row.skipped_count} skipped, {removed.get(name, 0)} removed since"
+              + (f"; last error: {error}" if error else ""))
+    return 0
+
+
+catalog_status_parser = svs_catalog_sp.add_parser("status", help="Print each catalog repository's commit and test count.")
+catalog_status_parser.set_defaults(func=cli_catalog_status)
+
+
+svs_coverage_parser = svs_sp.add_parser("coverage", help="ATT&CK coverage per technique and platform.")
+svs_coverage_sp = svs_coverage_parser.add_subparsers(dest="svs_coverage_cmd")
+
+
+def cli_coverage_refresh(args):
+    """Recompute ATT&CK coverage."""
+    from saq.database.util.node import is_primary_node
+    from saq.svs.coverage import refresh_coverage
+
+    # coverage is shared state: the primary node's service_svs keeps it current
+    if not (is_primary_node() or args.force):
+        print("skipping: not the primary node (use --force to refresh anyway)")
+        return 0
+
+    try:
+        result = refresh_coverage("cli")
+    except Exception as e:
+        print(f"coverage refresh failed: {e}")
+        return 1
+
+    print(f"{result.rows} rows: {result.changed} changed ({result.inserted} new, {result.retired} retired) "
+          f"in {result.duration_ms}ms")
+    return 0
+
+
+coverage_refresh_parser = svs_coverage_sp.add_parser(
+    "refresh", help="Recompute ATT&CK coverage (service_svs does this on its own).")
+coverage_refresh_parser.add_argument("--force", action="store_true", default=False, help="Refresh even when this is not the primary node.")
+coverage_refresh_parser.set_defaults(func=cli_coverage_refresh)
+
+
+def cli_coverage_status(args):
+    """Print the last coverage refresh and the rows per state on each platform."""
+    from saq.database.model import SVSCoverageState
+    from saq.database.pool import get_db
+    from saq.svs.constants import CoverageState, WorklistStatus
+    from saq.svs.coverage import STATE_ID, coverage_counts
+    from saq.svs.worklist import worklist_counts
+
+    state = get_db().get(SVSCoverageState, STATE_ID)
+    if state is None or state.refreshed_at is None:
+        print("coverage has never been refreshed")
+    else:
+        print(f"refreshed {state.refreshed_at} against ATT&CK {state.attack_release} in {state.duration_ms}ms: "
+              f"{state.rows} rows, {state.changed} changed, {state.retired} retired; "
+              f"{state.unknown_tags} unknown and {state.ignored_tags} ignored mitre: tags")
+    if state is not None and state.error:
+        print(f"the latest refresh failed: {state.error}")
+
+    for platform, counts in sorted(coverage_counts(get_db()).items()):
+        print(f"  {platform}: " + ", ".join(f"{counts[value]} {value}" for value in (s.value for s in CoverageState)
+                                           if value in counts))
+
+    worklist = worklist_counts(get_db())
+    print("worklist: " + (", ".join(f"{worklist[value]} {value}" for value in (s.value for s in WorklistStatus)
+                                     if value in worklist) or "empty"))
+    return 0
+
+
+coverage_status_parser = svs_coverage_sp.add_parser("status", help="Print the last coverage refresh and the rows per state.")
+coverage_status_parser.set_defaults(func=cli_coverage_status)
+
+
+def cli_coverage_snapshot(args):
+    """Refresh ATT&CK coverage and file today's snapshot of it."""
+    from saq.database.util.node import is_primary_node
+    from saq.svs.coverage import write_snapshot
+
+    # the snapshots are shared state, written once a day by the primary node's cron
+    if not (is_primary_node() or args.force):
+        print("skipping: not the primary node (use --force to snapshot anyway)")
+        return 0
+
+    try:
+        result = write_snapshot("cli")
+    except Exception as e:
+        print(f"coverage snapshot failed: {e}")
+        return 1
+
+    print(f"snapshot of {result.snapshot_date} against ATT&CK {result.attack_release}: {result.rows} rows"
+          + (f", {result.deleted} earlier rows of the day removed" if result.deleted else ""))
+    return 0
+
+
+coverage_snapshot_parser = svs_coverage_sp.add_parser(
+    "snapshot", help="Refresh ATT&CK coverage and file today's (UTC) snapshot; a rerun replaces the day.")
+coverage_snapshot_parser.add_argument("--force", action="store_true", default=False, help="Snapshot even when this is not the primary node.")
+coverage_snapshot_parser.set_defaults(func=cli_coverage_snapshot)

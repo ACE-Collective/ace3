@@ -17,6 +17,7 @@ from saq.constants import (
     DIRECTIVE_COLLECT_FILE,
     DIRECTIVE_CRAWL,
     DIRECTIVE_RENDER,
+    DISPOSITION_SIMULATED,
     F_FILE_LOCATION,
     F_FQDN,
     F_URL,
@@ -143,6 +144,28 @@ class TestRequests:
         assert response.status_code == 409
         assert "being analyzed" in response.json()["detail"]
         assert not load_root(alert.storage_dir).get_observable(alert.observables.url.uuid).has_directive(DIRECTIVE_CRAWL)
+        assert not _queued(alert)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action, observable, directive", [
+        ("collect-file", "file_location", DIRECTIVE_COLLECT_FILE),
+        ("render", "file", DIRECTIVE_RENDER),
+        ("crawl", "url", DIRECTIVE_CRAWL),
+        ("check-for-clickers", "url", DIRECTIVE_CLICKER_DETECTION),
+    ])
+    async def test_a_simulated_alert_is_never_reanalyzed(self, client: AsyncClient, alert, action, observable,
+                                                         directive):
+        """A SIMULATED (test-run) alert's tree stays as its run review froze it (docs/SVS_RUNS.md)."""
+        db = get_db()
+        db.query(Alert).filter(Alert.uuid == alert.uuid).update({"disposition": DISPOSITION_SIMULATED})
+        db.commit()
+        target = getattr(alert.observables, observable)
+
+        response = await client.post(_path(alert.uuid, target.uuid, action))
+
+        assert response.status_code == 409
+        assert response.json()["detail"].startswith(f"alert {alert.uuid} is SIMULATED")
+        assert not load_root(alert.storage_dir).get_observable(target.uuid).has_directive(directive)
         assert not _queued(alert)
 
     @pytest.mark.asyncio

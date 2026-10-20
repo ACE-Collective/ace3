@@ -3,7 +3,9 @@
 The active search lives in the session as a small spec, either
     {"mode": "query", "query": "<text>"}
 or  {"mode": "similar", "alert_uuid": "<uuid>", "description": "<alert description>"}
-and build_manage_list_context() (manage.py) runs it. An empty query clears the search.
+and build_manage_list_context() (manage.py) runs it. An empty query clears the search. Either may
+carry "include_tests": true, which brings back the test-run alerts a search leaves out
+(docs/SVS_RUNS.md); a new search starts without it.
 """
 
 from flask import flash, redirect, request, session, url_for
@@ -45,6 +47,24 @@ def search():
     query = (request.form.get("search") or "").strip()
     set_search_spec({"mode": SEARCH_MODE_QUERY, "query": query} if query else None)
     # return empty page
+    return ('', 204)
+
+
+@analysis.route('/search/include_tests', methods=['POST'])
+@require_permission('alert', 'read')
+def search_include_tests():
+    """Includes the test-run alerts in the active search (include=1), or leaves them out again."""
+    spec = get_search_spec()
+    if spec is None:
+        return ('', 204)
+
+    spec = dict(spec)
+    if request.form.get("include") == "1":
+        spec["include_tests"] = True
+    else:
+        spec.pop("include_tests", None)
+
+    set_search_spec(spec)
     return ('', 204)
 
 

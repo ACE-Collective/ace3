@@ -4,19 +4,26 @@ import pytest
 import yara
 import yara_scanner
 
+from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config, get_service_config
 from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
+    DIRECTIVE_SANDBOX,
     F_SIGNATURE_ID,
     F_YARA_RULE,
     SERVICE_YARA_SCANNER,
     AnalysisExecutionResult,
 )
+from saq.engine.core import Engine
+from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
 from saq.signatures.builtin import YARA_RULE_MATCH
+from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
+from saq.svs.markers import find_markers_in_match, new_marker
 from saq.util.filesystem import abs_path
+from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
 from tests.saq.test_util import create_test_context
@@ -780,3 +787,48 @@ class TestYaraQAMatches:
         assert observable.get_and_load_analysis(YaraScanResults_v3_4) is not None
         assert not root_analysis.has_detections()
         assert any("with the local yara scanner: the match is not recorded" in record.message for record in caplog.records)
+
+
+class TestYaraMarkerRule:
+    """The svs marker rule (saq/svs/marker_rule.py) reaches the module's fallback scanner too, and
+    its matches are kept in the file's YaraScanResults, strings included, without a detection
+    (docs/SVS.md, Part 3, FR-20 and FR-25)."""
+
+    @pytest.mark.integration
+    def test_fallback_scanner_records_markers(self, monkeypatch, tmp_path, root_analysis):
+        signature_dir = tmp_path / "yara"
+        signature_dir.mkdir()
+        monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(signature_dir))
+
+        def unavailable(path, meta_tags=None, qa=None):
+            raise YaraServiceUnavailable("connection refused")
+
+        monkeypatch.setattr(yara_client, "scan_file", unavailable)
+
+        marker = new_marker()
+        file_path = root_analysis.create_file_path("dropped.ps1")
+        with open(file_path, "wb") as fp:
+            fp.write(f"Write-Host 'hello' <# {marker} #>".encode("utf-16-le"))
+
+        root_analysis.analysis_mode = "test_groups"
+        observable = root_analysis.add_file_observable(file_path)
+        root_analysis.save()
+        root_analysis.schedule()
+
+        engine = Engine()
+        engine.configuration_manager.enable_module(ANALYSIS_MODULE_YARA_SCANNER_V3_4, "test_groups")
+        engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+        assert os.path.exists(marker_rule_path(str(signature_dir)))
+
+        root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+        observable = root_analysis.get_observable(observable.uuid)
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+
+        (result,) = analysis.scan_results
+        assert result["rule"] == MARKER_RULE_NAME
+        assert [m for (_, _, data) in result["strings"] for m in find_markers_in_match(data)] == [marker]
+
+        assert not observable.detections
+        assert not observable.has_directive(DIRECTIVE_SANDBOX)

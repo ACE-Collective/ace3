@@ -166,3 +166,29 @@ class TestDetectionPointTerm:
     def test_bad_value_searches_nothing(self, detections):
         response = search_alerts(SearchRequest(query="detection_point:nope", limit=10))
         assert response.errors and response.results == []
+
+
+def test_a_listing_leaves_out_test_alerts_and_counts_them(corpus):
+    """docs/SVS_RUNS.md: a listing that doesn't filter on queues leaves out svs.queue and says
+    how many it left out; naming a queue, or asking for test alerts, brings them back."""
+    db = get_db()
+    test_alert = insert_alert()
+    _attach(test_alert, "signature_id", SIGNATURE_UUID)
+    db.execute(Alert.__table__.update().where(Alert.id == test_alert.id).values(queue="svs"))
+    db.commit()
+
+    response = search_alerts(SearchRequest(query="", filters=_signature_filters()))
+    assert test_alert.uuid not in response.alert_uuids
+    assert response.excluded_test_alerts == 1
+
+    included = search_alerts(SearchRequest(query="", filters=_signature_filters(), include_test_alerts=True))
+    assert test_alert.uuid in included.alert_uuids
+    assert included.total == response.total + 1 and included.excluded_test_alerts is None
+
+    named = search_alerts(SearchRequest(query="queue:svs", filters=_signature_filters()))
+    assert named.alert_uuids == [test_alert.uuid] and named.excluded_test_alerts is None
+
+
+def test_without_test_alerts_nothing_is_left_out(corpus):
+    response = search_alerts(SearchRequest(query="", filters=_signature_filters()))
+    assert response.excluded_test_alerts == 0

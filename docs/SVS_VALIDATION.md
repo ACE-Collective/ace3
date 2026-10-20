@@ -123,14 +123,17 @@ calling ACE, but they are separate systems.
 
 `service_svs` (`saq/svs/service.py`, its own `svs` container) runs the queue
 (`saq/svs/validations.py`). It runs `svs.yara.max_concurrent_validations` workers (one by default)
-on the primary node only; on any other node it stays idle.
+on the primary node only; on any other node it stays idle. It also keeps the Atomic Red Team test
+catalog current (`docs/SVS_RUNS.md`).
 
 - **The queue.** A request is a row in `svs_validations`, `queued`. A worker claims the oldest one
   with a conditional UPDATE that repeats the condition, so two workers never both take it, and
   holds a **lease** on it: it renews a heartbeat every `heartbeat_interval_seconds` while it runs.
   A validation whose worker stopped heartbeating for `lease_seconds` (the node died, say) is taken
   over by another worker; after `max_attempts` claims it is `failed` instead. The lease times come
-  from the database clock.
+  from the database clock. `heartbeat_interval_seconds` must be at most a third of `lease_seconds`,
+  so one late heartbeat never loses the lease: a configuration that breaks this is refused when it
+  is read, by every `ace` process, not only when `service_svs` starts.
 - **Running.** The worker runs the replay (below) with the samples retired at that moment, and
   stores the report: its counts, the commits' compile results, the rules added, removed and changed,
   the skipped samples and timings in `svs_validations`, and each listed pair, with the sample's label
@@ -158,9 +161,11 @@ on the primary node only; on any other node it stays idle.
 
 1. **Fetch.** SVS keeps its own bare mirror of the repository under `svs.yara.mirror_dir`
    (`saq/svs/yara/repository.py`). It is never the checkout the yara service loads, so a validation
-   cannot change what production scans. The mirror fetches the head commit's branch and the
-   repository's configured branch. A commit no fetched branch contains any more (a rebased PR) is
-   fetched by id, which most servers allow for a reachable commit. Only one validation fetches a
+   cannot change what production scans. The mirror fetches the repository's configured branch,
+   which must exist, and then the head commit's branch on its own: a branch the remote doesn't have
+   (a pull request's branch deleted on merge, or one that exists only in a fork) is logged and
+   skipped. A commit no fetched branch contains (a rebased PR, or such a branch) is fetched by id,
+   which most servers allow for a reachable commit. Only one validation fetches a
    given mirror at a time.
 2. **Export.** Each commit's tree is unpacked with `git archive` into a private working directory
    under `svs.yara.work_dir`. Unpacking refuses absolute paths, paths that leave the directory,

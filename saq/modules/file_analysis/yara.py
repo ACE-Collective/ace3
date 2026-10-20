@@ -25,6 +25,7 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
+from saq.svs.marker_rule import install_marker_rule
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
@@ -229,6 +230,9 @@ class YaraScanner_v3_4(AnalysisModule):
 
     def initialize_local_scanner(self):
         logging.info("initializing local yara scanner")
+        # the yara service normally wrote it already; the scanner lists the rule directories only here
+        install_marker_rule(self.signature_dir)
+
         # initialize the scanner and compile the rules
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,

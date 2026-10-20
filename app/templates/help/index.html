@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+<h2 class="mb-1">Documentation</h2>
+<p class="text-muted mb-4">Training guides for ACE.</p>
+
+{% for set in guide_sets %}
+<section class="mb-4">
+    <h4>{{ set.title }}</h4>
+    <p class="text-muted">{{ set.description }}</p>
+    <div class="row row-cols-1 row-cols-md-2 row-cols-xl-4 g-3">
+        {% for g in set.guides %}
+        <div class="col">
+            <a href="{{ url_for('help.guide', set_slug=set.slug, guide_slug=g.slug) }}" class="text-decoration-none">
+                <div class="card h-100 shadow-sm">
+                    <div class="card-body">
+                        <h5 class="card-title">{{ g.title }}</h5>
+                        <p class="card-text text-muted">{{ g.audience }}</p>
+                    </div>
+                </div>
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+{% endfor %}
+{% endblock %}

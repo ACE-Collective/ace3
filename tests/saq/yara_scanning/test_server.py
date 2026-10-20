@@ -13,11 +13,15 @@ import psutil
 import pytest
 
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.svs.marker_rule import MARKER_RULE_DIR, MARKER_RULE_NAME
+from saq.svs.markers import find_markers_in_match, new_marker
 from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
+from saq.yara_scanning import service as service_module
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
 from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork
+from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
 
@@ -115,11 +119,9 @@ def qa_spool(tmp_path) -> str:
 
 
 @pytest.fixture
-def make_server(socket_dir, signature_dir):
-    servers = []
-
-    def _make(**overrides) -> YaraScannerServer:
-        settings = ScannerSettings(**{
+def scanner_settings(socket_dir, signature_dir):
+    def _settings(**overrides) -> ScannerSettings:
+        return ScannerSettings(**{
             "socket_dir": socket_dir,
             "signature_dir": signature_dir,
             "git_repo_dirs": (),
@@ -133,7 +135,15 @@ def make_server(socket_dir, signature_dir):
             "backlog": 50,
             **overrides})
 
-        server = YaraScannerServer(settings)
+    return _settings
+
+
+@pytest.fixture
+def make_server(scanner_settings):
+    servers = []
+
+    def _make(**overrides) -> YaraScannerServer:
+        server = YaraScannerServer(scanner_settings(**overrides))
         servers.append(server)
         server.start()
         return server
@@ -211,6 +221,30 @@ def test_scan_file(make_server, rules_dir, target):
     assert match["namespace"] == rules_dir
     assert match["commit"] is None
     assert match["strings"] == [(10, "$a", b"MATCH_A")]
+
+
+@pytest.mark.integration
+def test_the_service_loads_the_marker_rule(scanner_settings, signature_dir, tmp_path, monkeypatch):
+    """The service writes the svs marker rule before its server starts, so the first generation
+    compiles it and the manager watches its directory (docs/SVS.md, FR-25)."""
+    monkeypatch.setattr(service_module, "get_scanner_settings", lambda: scanner_settings())
+    marker = new_marker()
+    dropped = str(tmp_path / "dropped.ps1")
+    with open(dropped, "wb") as fp:
+        fp.write(f"Write-Host 'hello' <# {marker} #>".encode("utf-16-le"))
+
+    service = YaraScannerService()
+    try:
+        service.start()
+        assert service.wait_for_start(30)
+        matches = _scan(service.server, dropped)
+    finally:
+        service.stop()
+
+    assert _rules(matches) == {MARKER_RULE_NAME}
+    assert matches[0]["namespace"] == os.path.join(signature_dir, MARKER_RULE_DIR)
+    assert matches[0]["meta"]["modifiers"] == "no_alert"
+    assert [m for (_, _, data) in matches[0]["strings"] for m in find_markers_in_match(data)] == [marker]
 
 
 @pytest.mark.integration

@@ -13,7 +13,13 @@ from saq.constants import (
 )
 from saq.database.model import Comment
 from saq.database.pool import get_db
-from saq.database.util.alert import describe_skipped, set_disposition_reviews, set_dispositions, touch_alerts
+from saq.database.util.alert import (
+    describe_frozen,
+    describe_skipped,
+    set_disposition_reviews,
+    set_dispositions,
+    touch_alerts,
+)
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.disposition import is_selectable_disposition
 from saq.error.reporting import report_exception
@@ -207,14 +213,17 @@ def bulk_review_disposition():
             return redirection
 
     try:
-        set_disposition_reviews(
+        frozen = set_disposition_reviews(
             alert_uuids, review_result, current_user.id,
             corrected_disposition=corrected_disposition, review_comment=review_comment)
+        reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
         logging.info(
-            f"AUDIT: user {current_user} reviewed disposition of alerts {','.join(alert_uuids)} "
+            f"AUDIT: user {current_user} reviewed disposition of alerts {','.join(reviewed)} "
             f"as {review_result} (corrected disposition {corrected_disposition}) {comment_clause}")
-        flash("disposition review recorded for {} alerts".format(len(alert_uuids)))
+        message = "disposition review recorded for {} alerts".format(len(reviewed))
+        skipped = describe_frozen(frozen)
+        flash(f"{message}; {skipped}" if skipped else message)
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
         logging.error("unable to review disposition for {} alerts: {}".format(len(alert_uuids), e))
