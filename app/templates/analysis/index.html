@@ -369,10 +369,10 @@
     var current_user_can_write_alerts = {{ has_permission('alert', 'write') | tojson }};
     var current_user_can_review_alerts = {{ has_permission('alert', 'review') | tojson }};
 </script>
-<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/saq_analysis.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/verdicts.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/detection_verdicts.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/svs_alert.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/alert_sections.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/saq_analysis.js') }}"></script>
+<script src="{{ url_for('static', filename='js/verdicts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/detection_verdicts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/svs_alert.js') }}"></script>
+<script src="{{ url_for('static', filename='js/alert_sections.js') }}"></script>
 {% endblock %}

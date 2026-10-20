@@ -174,10 +174,10 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/manage_alerts.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/manage_columns.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/manage_alerts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/manage_columns.js') }}"></script>
 <script>
     // the scripts block renders in <head>, so wait for the chooser markup to exist. A saved
     // column change re-renders the list through the refresh path.

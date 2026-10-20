@@ -26,8 +26,8 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/ace_api.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/saved_filters.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/filter_list_page.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/svs_coverage.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/ace_api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/saved_filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/filter_list_page.js') }}"></script>
+<script src="{{ url_for('static', filename='js/svs_coverage.js') }}"></script>
 {% endblock %}

@@ -423,5 +423,5 @@
 {{ super() }}
 {# the authoritative permission catalog, consumed by manage_users.js to build permission dropdowns #}
 <script id="permission_catalog_json" type="application/json">{{ permission_catalog | tojson }}</script>
-<script src="{{ url_for('static', filename='js/manage_users.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/manage_users.js') }}"></script>
 {% endblock %}

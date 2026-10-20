@@ -42,16 +42,16 @@
 <!--<script type="text/javascript" src="{{ url_for('static', filename='js/bootstrap-multiselect.js') }}"></script>-->
 
 <!-- global ACE javascript code -->
-<script src="{{ url_for('static', filename='js/ace.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/selection_guard.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/remediation.js') }}?version={{ ACE_VERSION }}"></script>
-<script src="{{ url_for('static', filename='js/shortcuts.js') }}?version={{ ACE_VERSION }}"></script>
+<script src="{{ url_for('static', filename='js/ace.js') }}"></script>
+<script src="{{ url_for('static', filename='js/selection_guard.js') }}"></script>
+<script src="{{ url_for('static', filename='js/remediation.js') }}"></script>
+<script src="{{ url_for('static', filename='js/shortcuts.js') }}"></script>
 {% if current_user.is_authenticated and has_permission('svs', 'run_read') %}
-<script defer src="{{ url_for('static', filename='js/svs_nav.js') }}?version={{ ACE_VERSION }}"></script>
+<script defer src="{{ url_for('static', filename='js/svs_nav.js') }}"></script>
 {% endif %}
 
 <!-- Datastar (https://data-star.dev) -- declarative reactive attributes, incrementally replacing custom jQuery; see docs/GUI_DATASTAR.md -->
-<script type="module" src="{{ url_for('static', filename='js/datastar-1.0.4.js') }}?version={{ ACE_VERSION }}"></script>
+<script type="module" src="{{ url_for('static', filename='js/datastar-1.0.4.js') }}"></script>
 
 <!-- core css -->
 <!-- this needs to come last so we can do our CSS overrides -->
