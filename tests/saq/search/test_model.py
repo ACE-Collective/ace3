@@ -180,6 +180,28 @@ def test_lock_wait_times_out(cache_dir, monkeypatch):
     assert FakeSentenceTransformer.instances == []
 
 
+def test_lock_wait_retries_until_the_holder_lets_go(cache_dir, monkeypatch):
+    lock_file = _hold_lock(cache_dir)
+    sleeps = []
+
+    def sleep(seconds):
+        # the first retry still finds the lock held; the holder finishes before the second
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    monkeypatch.setattr(search_model.time, "sleep", sleep)
+    try:
+        path = download_model(timeout=30)
+    finally:
+        lock_file.close()
+
+    assert len(sleeps) == 2
+    assert path == get_model_cache_path()
+    assert is_model_downloaded()
+    assert len(FakeSentenceTransformer.instances) == 1
+
+
 def test_lock_wait_stops_on_shutdown(cache_dir):
     lock_file = _hold_lock(cache_dir)
     try:

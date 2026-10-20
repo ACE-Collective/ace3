@@ -56,10 +56,11 @@ else
     echo "encryption password verified"
 fi
 
-# fetch the search embedding model once, before the indexer and the web processes need it. the
-# search indexer downloads it too if this fails (an offline site, say), so startup goes on
+# fetch the search embedding model once, before the indexer and the web processes need it. every
+# other container waits for this script, so the download is bounded; the search indexer downloads
+# it too if this fails or times out (an offline site, say), so startup goes on
 echo "downloading the search embedding model..."
-ace search download-model || echo "WARNING: could not download the search embedding model -- the search indexer will retry"
+timeout 300 ace search download-model || echo "WARNING: could not download the search embedding model -- the search indexer will retry"
 
 # provision the partitions of the date-partitioned tables while a new install's tables are still
 # empty, and again on every start (docs/DATABASE_PARTITIONS.md). a table that needs a rebuild is

@@ -45,6 +45,7 @@ from saq.configuration.config import get_config
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.index import tag_key
+from saq.error.reporting import log_loop_exception
 from saq.gui.filter_query import build_alert_query, filter_alert_uuids
 from saq.qdrant_client import get_qdrant_client
 from saq.search import index
@@ -581,6 +582,10 @@ def _run_search(query: str, parsed: ParsedQuery, filters: SearchFilters, request
         start = time.time()
         try:
             semantic = semantic_search(parsed.text, filters, limit=config.semantic_limit, group_size=config.semantic_group_size, client=client, model=model)
+        except FileNotFoundError as e:
+            # the model was never downloaded on this node: every search degrades until an operator acts
+            log_loop_exception(e, f"semantic search for {query!r}: embedding model unavailable")
+            semantic = SemanticLane()
         except Exception as e:
             logging.error(f"semantic search failed for {query!r}: {e}")
             semantic = SemanticLane()
