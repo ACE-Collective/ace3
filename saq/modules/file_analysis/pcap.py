@@ -24,12 +24,15 @@ import logging
 import os
 import re
 import shutil
+import struct
 from dataclasses import dataclass
 from typing import Literal, Optional, override
 from urllib.parse import urlsplit
 
+from cryptography.x509.oid import NameOID
 from pydantic import Field
 
+from saq import x509 as x509_util
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
@@ -62,6 +65,8 @@ from saq.sandbox.runner import (
 )
 
 TAG_TLS_KEYLOG = "tls_keylog"
+# on a pcapng that carries its own decryption secrets
+TAG_EMBEDDED_SECRETS = "embedded_decryption_keys"
 
 CATEGORY_HOSTS = "hosts"
 CATEGORY_DNS = "dns"
@@ -190,25 +195,87 @@ def is_keylog_file(path: str) -> bool:
     return checked > 0
 
 
-def read_keylog(path: str) -> KeylogContents:
-    """Every valid key log line of the file. Anything else in it is dropped, so what reaches tshark
-    is only key material."""
+def parse_keylog_lines(text_lines) -> KeylogContents:
+    """Every valid key log line. Anything else is dropped, so what reaches tshark is only key material."""
     label_counts: dict[str, int] = {}
     client_randoms: set[str] = set()
     lines: list[str] = []
-    with open(path, "r", encoding="ascii", errors="ignore") as fp:
-        for line in fp:
-            m = RE_KEYLOG_LINE.match(line.strip())
-            if m is None:
-                continue
-            label = m.group(1)
-            label_counts[label] = label_counts.get(label, 0) + 1
-            # an RSA line is keyed by the encrypted pre-master secret, not the client random
-            if label != "RSA":
-                client_randoms.add(m.group(2).lower())
-            lines.append(line.strip())
+    for line in text_lines:
+        m = RE_KEYLOG_LINE.match(line.strip())
+        if m is None:
+            continue
+        label = m.group(1)
+        label_counts[label] = label_counts.get(label, 0) + 1
+        # an RSA line is keyed by the encrypted pre-master secret, not the client random
+        if label != "RSA":
+            client_randoms.add(m.group(2).lower())
+        lines.append(line.strip())
 
     return KeylogContents(label_counts, client_randoms, lines)
+
+
+def read_keylog(path: str) -> KeylogContents:
+    with open(path, "r", encoding="ascii", errors="ignore") as fp:
+        return parse_keylog_lines(fp)
+
+
+# pcapng blocks (https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)
+PCAPNG_SECTION_HEADER = b"\x0a\x0d\x0d\x0a"
+PCAPNG_DECRYPTION_SECRETS_BLOCK = 0x0000000A
+PCAPNG_SECRETS_TYPES = {
+    0x544C534B: "TLS",
+    0x5353484B: "SSH",
+    0x57474B4C: "WireGuard",
+    0x5A4E574B: "ZigBee NWK",
+    0x5A415053: "ZigBee APS",
+    0x55414B4C: "OPC UA",
+}
+
+
+def read_embedded_secrets(path: str, max_tls_bytes: int) -> Optional[dict]:
+    """The Decryption Secrets Blocks of a pcapng, which tshark decrypts with on its own. Returns
+    {"types": {name: blocks}, "label_counts": {...}, "client_randoms": set} or None when there are
+    none. Only block headers are read (the rest is skipped by seeking), and only up to max_tls_bytes
+    of TLS secrets are parsed. The secrets themselves are not returned."""
+    types: dict[str, int] = {}
+    tls_lines: list[str] = []
+    tls_bytes = 0
+    with open(path, "rb") as fp:
+        if fp.read(4) != PCAPNG_SECTION_HEADER:
+            return None
+        fp.seek(0)
+        endian = "<"
+        while True:
+            block_start = fp.tell()
+            header = fp.read(12)
+            if len(header) < 12:
+                break
+            if header[:4] == PCAPNG_SECTION_HEADER:
+                # every section declares its own byte order
+                if header[8:12] == b"\x4d\x3c\x2b\x1a":
+                    endian = "<"
+                elif header[8:12] == b"\x1a\x2b\x3c\x4d":
+                    endian = ">"
+                else:
+                    break
+            block_type, length, first_word = struct.unpack(endian + "III", header)
+            # a damaged block ends the scan: tshark has already read what it could of the file
+            if length < 12 or length % 4:
+                break
+            if block_type == PCAPNG_DECRYPTION_SECRETS_BLOCK and length >= 20:
+                secrets_length = struct.unpack(endian + "I", fp.read(4))[0]
+                name = PCAPNG_SECRETS_TYPES.get(first_word, f"0x{first_word:08x}")
+                types[name] = types.get(name, 0) + 1
+                if name == "TLS" and secrets_length <= length - 20 and tls_bytes + secrets_length <= max_tls_bytes:
+                    tls_lines.extend(fp.read(secrets_length).decode("ascii", errors="ignore").splitlines())
+                    tls_bytes += secrets_length
+            fp.seek(block_start + length)
+
+    if not types:
+        return None
+
+    contents = parse_keylog_lines(tls_lines)
+    return {"types": types, "label_counts": contents.label_counts, "client_randoms": contents.client_randoms}
 
 
 def find_keylog_observables(root, max_size: int) -> list[FileObservable]:
@@ -460,13 +527,56 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
         CATEGORY_HTTP: list(http.values()),
         "hostnames": list(hostnames.values()),
         "objects": objects,
-        "certificates": [{"sha256": c["sha256"], "path": c["path"]} for c in certificates],
+        "certificates": [{k: v for k, v in c.items() if k != "der_hex"} for c in certificates],
     }
-    for key in (CATEGORY_DNS, CATEGORY_TLS, CATEGORY_HTTP, "hostnames"):
+    for key in (CATEGORY_DNS, CATEGORY_TLS, CATEGORY_HTTP, "hostnames", "certificates"):
         index[f"{key}_total"] = len(index[key])
         index[key] = index[key][:max_rows]
 
     return index
+
+
+MAX_CERTIFICATE_SANS = 10
+
+
+def _name_text(name) -> Optional[str]:
+    for oid in (NameOID.COMMON_NAME, NameOID.ORGANIZATION_NAME):
+        attributes = name.get_attributes_for_oid(oid)
+        if attributes:
+            return str(attributes[0].value)
+    return name.rfc4514_string() or None
+
+
+def certificate_names(der: bytes) -> dict:
+    """Subject, other SAN DNS names (the first MAX_CERTIFICATE_SANS) and issuer of a DER certificate,
+    for the analyst; empty when it does not parse."""
+    try:
+        cert = x509_util.load_cert_der(der)
+        if cert is None:
+            return {}
+        subject = _name_text(cert.subject)
+        sans = [name for name in x509_util.san_dns_names(cert) if name != subject]
+        return {"subject": subject, "sans": sans[:MAX_CERTIFICATE_SANS], "san_total": len(sans),
+                "issuer": _name_text(cert.issuer)}
+    except Exception:
+        # a certificate in a capture is whatever the peer sent; one that does not parse is shown by its hash
+        return {}
+
+
+def describe_certificate(entry: dict) -> str:
+    """One line for a certificate: subject (SAN: a, b, c, +N more) - issued by X."""
+    if not entry.get("subject"):
+        return f"certificate {entry['sha256'][:16]}"
+    text = entry["subject"]
+    sans = entry.get("sans", [])[:3]
+    if sans:
+        more = entry.get("san_total", len(sans)) - len(sans)
+        text += f" (SAN: {', '.join(sans)}{f', +{more} more' if more > 0 else ''})"
+    if entry.get("issuer") and entry["issuer"] != entry["subject"]:
+        text += f" \u2014 issued by {entry['issuer']}"
+    elif entry.get("issuer"):
+        text += " \u2014 self-signed"
+    return text
 
 
 def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], max_files: int,
@@ -492,7 +602,7 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
             except ValueError:
                 continue
             sha256 = hashlib.sha256(der).hexdigest()
-            entry = {"sha256": sha256, "der_hex": der_hex, "path": None}
+            entry = {"sha256": sha256, "der_hex": der_hex, "path": None, **certificate_names(der)}
             if sha256 not in known_sha256 and remaining > 0:
                 path = os.path.join(target_dir, "certificates", f"{sha256}.der")
                 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -754,6 +864,16 @@ def _get_pcap_analysis(observable: FileObservable) -> Optional["PcapAnalysis"]:
 # core analysis
 # ----------------------------------------------------------------------------------------------
 
+def _describe_embedded(embedded: dict) -> str:
+    parts = []
+    for name in sorted(embedded["types"]):
+        if name == "TLS":
+            parts.append(f"TLS keys for {len(embedded.get('keyed_client_randoms', []))} sessions")
+        else:
+            parts.append(name)
+    return ", ".join(parts)
+
+
 class PcapAnalysis(Analysis):
     """The capture index, the flows and the hosts of a pcap."""
 
@@ -789,6 +909,9 @@ class PcapAnalysis(Analysis):
         statistics = self.index.get("statistics", {})
         summary = (f"PCAP Analysis: {statistics.get('packets', 0)} packets, {statistics.get('flows_total', 0)} flows, "
                    f"{len(self.index.get(CATEGORY_TLS, []))} TLS sessions")
+        embedded = self.index.get("embedded_secrets")
+        if embedded:
+            summary += f", decryption keys embedded ({_describe_embedded(embedded)})"
         if self.details.get(KEY_ADDED):
             summary += f" ({_format_counts(self.details[KEY_ADDED])})"
         return summary
@@ -824,10 +947,20 @@ class PcapAnalyzer(AnalysisModule):
 
         try:
             index = dissect(self.config, path, f"{path}.pcap_objects")
+            embedded = read_embedded_secrets(path, self.config.max_keylog_size)
         except Exception as e:
             analysis.error = str(e)
             log_loop_exception(e, f"unable to dissect pcap {path} (sha256 {_file.sha256_hash}) in {self.get_root().uuid}")
             return AnalysisExecutionResult.COMPLETED
+
+        if embedded:
+            session_randoms = {s["client_random"] for s in index[CATEGORY_TLS] if s.get("client_random")}
+            # client randoms are sent in the clear; only the secrets keyed by them are sensitive
+            embedded["keyed_client_randoms"] = sorted(session_randoms & embedded.pop("client_randoms"))
+            index["embedded_secrets"] = embedded
+            _file.add_tag(TAG_EMBEDDED_SECRETS)
+            logging.info("pcap %s carries embedded decryption secrets: %s", path, _describe_embedded(embedded),
+                         extra={"pcap_sha256": _file.sha256_hash})
 
         analysis.details[KEY_INDEX] = index
         hosts = [o for o in collect_observables(index, self.config.excluded_fqdn_suffixes) if o.category == CATEGORY_HOSTS]
@@ -952,10 +1085,15 @@ class PcapTlsDecryptionAnalysis(Analysis):
         sessions = self.details.get("sessions", 0)
         if self.details.get(KEY_ERROR):
             return f"PCAP TLS Decryption: failed: {self.details[KEY_ERROR]}"
-        if not self.details.get("keylogs"):
+        sources = []
+        if self.details.get("sessions_with_embedded_keys"):
+            sources.append("embedded in the capture")
+        if self.details.get("keylogs"):
+            sources.append(f"{len(self.details['keylogs'])} key logs")
+        if not sources:
             return f"PCAP TLS Decryption: no TLS key log found ({sessions} TLS sessions)"
         summary = (f"PCAP TLS Decryption: keys for {self.details.get('sessions_with_keys', 0)} of {sessions} TLS sessions "
-                   f"({len(self.details['keylogs'])} key logs)")
+                   f"({' and '.join(sources)})")
         if self.details.get(KEY_ADDED):
             summary += f", new: {_format_counts(self.details[KEY_ADDED])}"
         return summary
@@ -979,10 +1117,13 @@ def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_anal
     plaintext_index = pcap_analysis.index
     analysis.details["keylogs"] = keylogs
     session_randoms = {s.get("client_random") for s in plaintext_index.get(CATEGORY_TLS, []) if s.get("client_random")}
+    # sessions the capture's own secrets already decrypted in the plaintext pass
+    embedded_randoms = set((plaintext_index.get("embedded_secrets") or {}).get("keyed_client_randoms", []))
     analysis.details["sessions"] = len(session_randoms)
-    analysis.details["sessions_with_keys"] = len(session_randoms & client_randoms)
+    analysis.details["sessions_with_embedded_keys"] = len(embedded_randoms)
+    analysis.details["sessions_with_keys"] = len(session_randoms & (client_randoms | embedded_randoms))
     has_rsa_keys = any("RSA" in k["label_counts"] for k in keylogs)
-    if not lines or not (session_randoms & client_randoms or has_rsa_keys):
+    if not lines or not ((session_randoms & client_randoms) - embedded_randoms or has_rsa_keys):
         return
 
     known_sha256 = {o["sha256"] for o in plaintext_index.get("objects", [])}
@@ -1127,8 +1268,13 @@ class TlsKeylogAnalyzer(AnalysisModule):
 # presentation
 # ----------------------------------------------------------------------------------------------
 
+# columns whose values (addresses, fingerprints) must never be split across lines
+NOWRAP_COLUMNS = {"Server", "JA4", "A", "B", "Address"}
+
+
 def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None) -> dict:
-    return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows)}
+    return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows),
+            "nowrap": [column in NOWRAP_COLUMNS for column in columns]}
 
 
 def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[dict]:
@@ -1142,8 +1288,10 @@ def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[
                              [[r["name"], ", ".join(r["answers"]), r["count"]] for r in index[CATEGORY_DNS]],
                              index.get(f"{CATEGORY_DNS}_total")))
     if category in (None, CATEGORY_TLS) and index.get(CATEGORY_TLS):
-        tables.append(_table("TLS Sessions", ["Client", "Server", "SNI", "JA4", "Certificates"],
-                             [[r.get("client"), r.get("server"), r.get("sni"), r.get("ja4"), ", ".join(r.get("certificates", []))]
+        certificates = {c["sha256"]: c for c in index.get("certificates", [])}
+        tables.append(_table("TLS Sessions", ["Server", "SNI", "JA4", "Certificates"],
+                             [[r.get("server"), r.get("sni"), r.get("ja4"),
+                               [describe_certificate(certificates.get(h, {"sha256": h})) for h in r.get("certificates", [])]]
                               for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total")))
     if category in (None, CATEGORY_HTTP) and index.get(CATEGORY_HTTP):
         tables.append(_table("HTTP Requests", ["Method", "URL", "Status", "Content Type", "User Agent"],
@@ -1169,6 +1317,12 @@ class PcapAnalysisPresenter(AnalysisPresenter):
             index = details.get(KEY_INDEX) or {}
             statistics = index.get("statistics", {})
             tables = []
+            embedded = index.get("embedded_secrets")
+            if embedded:
+                rows = [[f"{name} secrets blocks", count] for name, count in sorted(embedded["types"].items())]
+                rows += [[f"TLS {label}", count] for label, count in sorted(embedded.get("label_counts", {}).items())]
+                rows.append(["TLS sessions with keys", len(embedded.get("keyed_client_randoms", []))])
+                tables.append(_table("Embedded Decryption Secrets", ["Secret", "Count"], rows))
             if index.get("hostnames"):
                 tables.append(_table("Hostnames", ["Name", "Source", "MAC"],
                                      [[r["name"], r["source"], r.get("mac")] for r in index["hostnames"]]))
@@ -1186,13 +1340,15 @@ class PcapAnalysisPresenter(AnalysisPresenter):
         if isinstance(analysis, PcapCategoryAnalysis):
             category = details.get("category")
             rows_key = "objects" if category == CATEGORY_FILES else category
-            index = {rows_key: details.get("rows", []), f"{category}_total": details.get("total")}
+            index = {rows_key: details.get("rows", []), f"{category}_total": details.get("total"),
+                     "certificates": details.get("certificates", [])}
             return index_tables(index, category)
         if isinstance(analysis, PcapTlsDecryptionAnalysis):
-            tables = []
-            if details.get("keylogs"):
-                tables.append(_table("Key Logs", ["File", "SHA256", "Secrets"],
-                                     [[k["file_name"], k["sha256"], _format_counts(k["label_counts"])] for k in details["keylogs"]]))
+            rows = []
+            if details.get("sessions_with_embedded_keys"):
+                rows.append(["(embedded in the capture)", "", f"keys for {details['sessions_with_embedded_keys']} TLS sessions"])
+            rows += [[k["file_name"], k["sha256"], _format_counts(k["label_counts"])] for k in details.get("keylogs", [])]
+            tables = [_table("Key Sources", ["Source", "SHA256", "Secrets"], rows)] if rows else []
             return tables + index_tables(details.get(KEY_INDEX))
         if isinstance(analysis, TlsKeylogAnalysis):
             return [_table("Secrets", ["Label", "Count"], [[k, v] for k, v in sorted(details.get("label_counts", {}).items())])]

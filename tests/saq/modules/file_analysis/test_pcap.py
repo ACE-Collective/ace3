@@ -549,8 +549,13 @@ def test_pcap_tree(root_analysis):
     assert core.observables == []
     assert len(core.index[CATEGORY_TLS]) == 2
 
+    assert not http_tls.has_tag(pcap.TAG_EMBEDDED_SECRETS)
     tls = _category(http_tls, CATEGORY_TLS)
     assert _values(tls, F_FQDN) == {"pcap-tls12.example", "pcap-tls13.example"}
+    (table,) = PcapAnalysisPresenter(tls).tables
+    assert table["columns"] == ["Server", "SNI", "JA4", "Certificates"]
+    certificates = sorted(row[3] for row in table["rows"])
+    assert certificates == [[], ["pcap-tls.example (SAN: pcap-tls12.example, pcap-tls13.example) \u2014 self-signed"]]
     assert len(_values(tls, F_JA4)) == 2
     # only the TLS 1.2 certificate travels in the clear
     (certificate,) = tls.get_observables_by_type(F_FILE)
@@ -668,6 +673,15 @@ def test_pcapng_with_embedded_secrets(root_analysis):
     root = _run_engine(root_analysis)
     capture = root.get_observable(capture.uuid)
 
+    # called out for the analyst
+    assert capture.has_tag(pcap.TAG_EMBEDDED_SECRETS)
+    core = capture.get_and_load_analysis(PcapAnalysis)
+    assert "decryption keys embedded (TLS keys for 2 sessions)" in core.summary
+    assert "Embedded Decryption Secrets" in [t["title"] for t in PcapAnalysisPresenter(core).tables]
+    decryption = capture.get_and_load_analysis(PcapTlsDecryptionAnalysis)
+    assert decryption.summary == "PCAP TLS Decryption: keys for 2 of 2 TLS sessions (embedded in the capture)"
+    assert decryption.observables == []
+
     # tshark uses the decryption secrets block on its own: the plaintext pass already sees inside TLS
     http = _category(capture, CATEGORY_HTTP)
     assert "https://pcap-tls13.example:18444/secret13.txt" in _values(http, F_URL)
@@ -743,7 +757,7 @@ def test_modules_in_process():
     assert decryption.applied_keylogs == {keylog.sha256_hash}
     assert "new: 2 file, 2 url" in decryption.generate_summary()
     titles = [t["title"] for t in PcapAnalysisPresenter(decryption).tables]
-    assert titles[0] == "Key Logs" and "HTTP Requests" in titles and "Carved Files" in titles
+    assert titles[0] == "Key Sources" and "HTTP Requests" in titles and "Carved Files" in titles
 
     keylog_analysis = keylog.get_analysis(TlsKeylogAnalysis)
     assert keylog_analysis.display_name == "TLS Key Log"
@@ -892,7 +906,8 @@ def test_summaries():
     keylog = TlsKeylogAnalysis()
     keylog.details = {}
     assert keylog.generate_summary() is None
-    assert PcapAnalysisPresenter(keylog).tables == [{"title": "Secrets", "columns": ["Label", "Count"], "rows": [], "total": 0}]
+    assert PcapAnalysisPresenter(keylog).tables == [{"title": "Secrets", "columns": ["Label", "Count"], "rows": [], "total": 0,
+                                                     "nowrap": [False, False]}]
 
 
 @pytest.mark.unit
@@ -932,3 +947,171 @@ def test_archive_leaves_captures_to_the_pcap_modules(root_analysis):
     assert not capture.get_and_load_analysis(ArchiveAnalysis)
     (payload,) = _category(capture, CATEGORY_FILES).get_observables_by_type(F_FILE)
     assert payload.file_path.endswith("http_tls.pcapng.pcap_objects/http/payload.txt")
+
+
+
+def _certificate_der(subject: str, issuer: str, sans: list[str]) -> bytes:
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    builder = (x509.CertificateBuilder()
+               .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, subject)]))
+               .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, issuer)]))
+               .public_key(key.public_key()).serial_number(1)
+               .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1)))
+    if sans:
+        builder = builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in sans]), critical=False)
+    return builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+
+
+@pytest.mark.unit
+def test_certificate_names_and_description():
+    sans = ["*.leaf.example"] + [f"alt{i}.leaf.example" for i in range(14)]
+    names = pcap.certificate_names(_certificate_der("*.leaf.example", "Example Issuing CA", sans))
+    assert names["subject"] == "*.leaf.example"
+    # the subject is not repeated among the SANs, and only the first few are kept
+    assert names["sans"] == [f"alt{i}.leaf.example" for i in range(pcap.MAX_CERTIFICATE_SANS)]
+    assert names["san_total"] == 14
+    assert pcap.describe_certificate({"sha256": "ab" * 32, **names}) == (
+        "*.leaf.example (SAN: alt0.leaf.example, alt1.leaf.example, alt2.leaf.example, +11 more)"
+        " \u2014 issued by Example Issuing CA")
+
+    root = pcap.certificate_names(_certificate_der("Example Root", "Example Root", []))
+    assert pcap.describe_certificate({"sha256": "cd" * 32, **root}) == "Example Root \u2014 self-signed"
+
+    # what a peer sends need not parse
+    assert pcap.certificate_names(b"\x30\x82\x01") == {}
+    assert pcap.describe_certificate({"sha256": "ef" * 32}) == f"certificate {'ef' * 8}"
+
+
+@pytest.mark.unit
+def test_tls_table_layout():
+    index = {
+        CATEGORY_TLS: [{"client": "10.0.0.1:50000", "server": "198.51.100.7:443", "sni": "a.example",
+                        "ja4": "t13d0312h1_aaa_bbb", "certificates": ["11" * 32, "22" * 32]}],
+        "certificates": [{"sha256": "11" * 32, "subject": "a.example", "sans": [], "san_total": 0, "issuer": "CA"}],
+    }
+    (table,) = pcap.index_tables(index, CATEGORY_TLS)
+    assert table["columns"] == ["Server", "SNI", "JA4", "Certificates"]
+    assert table["nowrap"] == [True, False, True, False]
+    assert table["rows"] == [["198.51.100.7:443", "a.example", "t13d0312h1_aaa_bbb",
+                              ["a.example \u2014 issued by CA", f"certificate {'22' * 8}"]]]
+
+
+@pytest.mark.unit
+def test_read_embedded_secrets_from_fixtures():
+    embedded = pcap.read_embedded_secrets(HTTP_TLS_DSB_PCAPNG, max_tls_bytes=1024 * 1024)
+    assert embedded["types"] == {"TLS": 1}
+    assert embedded["label_counts"] == read_keylog(SSLKEYLOG).label_counts
+    assert CLIENT_RANDOM_12 in embedded["client_randoms"]
+    assert len(embedded["client_randoms"]) == 2
+
+    assert pcap.read_embedded_secrets(HTTP_TLS_PCAPNG, max_tls_bytes=1024 * 1024) is None
+    # a libpcap file has no blocks at all
+    assert pcap.read_embedded_secrets(NETWORK_PCAP, max_tls_bytes=1024 * 1024) is None
+
+
+def _block(endian: str, block_type: int, body: bytes) -> bytes:
+    import struct
+    body += b"\x00" * (-len(body) % 4)
+    length = 12 + len(body)
+    return struct.pack(endian + "II", block_type, length) + body + struct.pack(endian + "I", length)
+
+
+def _pcapng(endian: str, *blocks: bytes) -> bytes:
+    import struct
+    shb = _block(endian, 0x0A0D0D0A, struct.pack(endian + "IHHq", 0x1A2B3C4D, 1, 0, -1))
+    return shb + b"".join(blocks)
+
+
+def _dsb(endian: str, secrets_type: int, data: bytes) -> bytes:
+    import struct
+    return _block(endian, 0x0000000A, struct.pack(endian + "II", secrets_type, len(data)) + data)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("endian", ["<", ">"])
+def test_read_embedded_secrets_byte_orders(tmp_path, endian):
+    keylog = f"CLIENT_RANDOM {CLIENT_RANDOM_12} {'1' * 96}\n".encode()
+    path = tmp_path / "capture.pcapng"
+    path.write_bytes(_pcapng(endian,
+                             _block(endian, 0x00000001, b"\x01\x00\x00\x00\xff\xff\x00\x00"),
+                             _dsb(endian, 0x57474B4C, b"wireguard keys"),
+                             _dsb(endian, 0x544C534B, keylog),
+                             _dsb(endian, 0x12345678, b"x")))
+    embedded = pcap.read_embedded_secrets(str(path), max_tls_bytes=1024)
+    assert embedded["types"] == {"WireGuard": 1, "TLS": 1, "0x12345678": 1}
+    assert embedded["label_counts"] == {"CLIENT_RANDOM": 1}
+    assert embedded["client_randoms"] == {CLIENT_RANDOM_12}
+
+    # past the TLS byte budget the block is still counted, but not parsed
+    embedded = pcap.read_embedded_secrets(str(path), max_tls_bytes=10)
+    assert embedded["types"]["TLS"] == 1
+    assert embedded["client_randoms"] == set()
+
+
+@pytest.mark.unit
+def test_read_embedded_secrets_stops_at_a_damaged_block(tmp_path):
+    import struct
+    path = tmp_path / "damaged.pcapng"
+    path.write_bytes(_pcapng("<", struct.pack("<II", 0x0000000A, 7) + b"\x00" * 16,
+                             _dsb("<", 0x544C534B, b"never reached")))
+    assert pcap.read_embedded_secrets(str(path), max_tls_bytes=1024) is None
+
+    # a section header with an unknown byte order
+    path.write_bytes(b"\x0a\x0d\x0d\x0a" + b"\x1c\x00\x00\x00" + b"\xde\xad\xbe\xef" + b"\x00" * 16)
+    assert pcap.read_embedded_secrets(str(path), max_tls_bytes=1024) is None
+
+
+@pytest.mark.unit
+def test_apply_keylogs_skips_sessions_the_capture_already_decrypted(monkeypatch):
+    monkeypatch.setattr(pcap, "dissect", lambda *args, **kwargs: pytest.fail("tshark must not run"))
+    root = _new_root()
+    capture = root.add_file_observable(HTTP_TLS_DSB_PCAPNG)
+    keylog = root.add_file_observable(SSLKEYLOG)
+    core = PcapAnalysis()
+    core.details[pcap.KEY_INDEX] = {
+        CATEGORY_TLS: [{"client_random": r} for r in read_keylog(SSLKEYLOG).client_randoms],
+        "embedded_secrets": {"types": {"TLS": 1}, "keyed_client_randoms": sorted(read_keylog(SSLKEYLOG).client_randoms)},
+    }
+    decryption = PcapTlsDecryptionAnalysis()
+    capture.add_analysis(decryption)
+
+    pcap.apply_keylogs(_config(ANALYSIS_MODULE_PCAP_TLS_DECRYPTION), capture, core, decryption, [keylog])
+    assert decryption.details["sessions_with_keys"] == 2
+    assert decryption.generate_summary() == (
+        "PCAP TLS Decryption: keys for 2 of 2 TLS sessions (embedded in the capture and 1 key logs)")
+    rows = PcapAnalysisPresenter(decryption).tables[0]["rows"]
+    assert rows[0] == ["(embedded in the capture)", "", "keys for 2 TLS sessions"]
+
+
+@pytest.mark.unit
+def test_certificate_names_fallbacks(monkeypatch):
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    # neither a CN nor an O: the whole name is shown
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Only Unit")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    der = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+           .serial_number(1).not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+           .sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER))
+    assert pcap.certificate_names(der)["subject"] == "OU=Only Unit"
+
+    # a certificate whose extensions do not parse is shown by its hash
+    def _broken(cert):
+        raise x509.DuplicateExtension("duplicate", x509.oid.ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+
+    monkeypatch.setattr(pcap.x509_util, "san_dns_names", _broken)
+    assert pcap.certificate_names(der) == {}

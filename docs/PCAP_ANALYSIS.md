@@ -18,7 +18,7 @@ Each kind of result has its own analysis node under the pcap, every node is coll
 capture.pcapng
  ├─ PCAP Analysis          pcap_analyzer        packets, flows and endpoint tables; IPs, MACs, hostnames
  ├─ PCAP DNS               pcap_dns             names queried and answered; FQDNs and answer IPs
- ├─ PCAP TLS               pcap_tls             sessions (SNI, JA4, certificates); FQDNs, JA4, certificate files
+ ├─ PCAP TLS               pcap_tls             sessions (server, SNI, JA4, certificate subject/SAN/issuer); FQDNs, JA4, certificate files
  ├─ PCAP HTTP              pcap_http            requests; URLs, Host FQDNs, User-Agents
  ├─ PCAP Files             pcap_files           files carved from HTTP, SMB, FTP-data, TFTP and IMF
  └─ PCAP TLS Decryption    pcap_tls_decryption  only what the decrypted traffic adds beyond the above
@@ -88,8 +88,15 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   already completed, `tls_keylog` sees a completed `PcapTlsDecryptionAnalysis` that has not used
   it and decrypts that capture again with every key log in the tree, adding to the existing node.
   Applying the same key logs twice adds nothing.
-- **Embedded secrets.** A pcapng with a Decryption Secrets Block (`editcap --inject-secrets`) is
-  decrypted by tshark on its own, so its first pass already sees inside TLS.
+- **Embedded secrets.** A pcapng can carry its own keys in Decryption Secrets Blocks (Wireshark
+  writes them when saving a capture taken with a key log, or `editcap --inject-secrets` adds them).
+  tshark decrypts with them on its own, so the plaintext pass already sees inside TLS: the HTTPS
+  URLs and files appear under PCAP HTTP and PCAP Files, not under PCAP TLS Decryption.
+  `read_embedded_secrets()` finds the blocks by reading only block headers, and the capture is
+  called out for the analyst: the pcap gets the `embedded_decryption_keys` tag, PCAP Analysis says
+  "decryption keys embedded (TLS keys for N sessions)" and lists the secret types, and PCAP TLS
+  Decryption counts those sessions as "embedded in the capture". A separate key log then only
+  triggers another tshark run if it has keys for sessions the embedded ones did not cover.
 
 ## Limits
 

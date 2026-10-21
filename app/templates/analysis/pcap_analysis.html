@@ -20,7 +20,13 @@
         </thead>
         <tbody>
             {% for row in table.rows %}
-            <tr>{% for cell in row %}<td style="word-break: break-all">{{ cell if cell is not none else '' }}</td>{% endfor %}</tr>
+            <tr>{% for cell in row %}<td style="{{ 'white-space: nowrap' if table.nowrap[loop.index0] else 'overflow-wrap: anywhere' }}">
+                {%- if cell is iterable and cell is not string -%}
+                    {%- for item in cell %}<div>{{ item }}</div>{% endfor -%}
+                {%- else -%}
+                    {{ cell if cell is not none else '' }}
+                {%- endif -%}
+            </td>{% endfor %}</tr>
             {% endfor %}
         </tbody>
     </table>
