@@ -1693,7 +1693,6 @@ class EmailAnalyzer(AnalysisModule):
                 logging.error("recursive parsing failed on %s (part content-type=%s): %s",
                               _file, target.get_content_type() if target is not None else None, e,
                               exc_info=True)
-                report_exception()
 
                 # record the failure on the analysis so the analyst can see that
                 # part of the email was not fully extracted

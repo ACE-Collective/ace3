@@ -109,7 +109,10 @@ class TestUniversalActionLogging:
     def test_log_message_render_error(self, caplog):
         """A render error in log_message should not prevent the action from returning."""
         action = ActionConfig(type="filter", log_message="{{ invalid | bad_filter }}")
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.WARNING):
             result = execute_action(action, {}, [])
         assert result.action_type == "filter"
-        assert "failed to render log message template" in caplog.text
+        records = [r for r in caplog.records if "failed to render log message template" in r.getMessage()]
+        assert len(records) == 1
+        # a broken template is the hunt author's to fix, not an ACE error to report
+        assert records[0].levelno == logging.WARNING

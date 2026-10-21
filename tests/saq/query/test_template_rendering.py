@@ -11,6 +11,7 @@ from saq.query.template_rendering import (
     _set_path,
     render_event_template,
     render_event_template_multi,
+    render_event_templates_multi,
 )
 
 
@@ -306,3 +307,14 @@ def test_render_event_template_multi_does_not_iterate_scalar_axis():
         "{{ host }}@{{ apps }}", {"host": "h1", "apps": ["a", "b"]}
     )
     assert results == ["h1@a", "h1@b"]
+
+
+@pytest.mark.unit
+def test_render_event_templates_multi_syntax_error_is_a_warning(caplog):
+    """A malformed template renders nothing and is the hunt author's to fix."""
+    with caplog.at_level(logging.WARNING):
+        assert render_event_templates_multi(["{{ host }}", "{{ unclosed"], {"host": "h1"}) == []
+
+    records = [r for r in caplog.records if "jinja template syntax error" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING

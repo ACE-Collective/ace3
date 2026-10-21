@@ -2,15 +2,16 @@
 
 The maintainer debugs production from logs, without a shell on the node. You check that every failure the change can produce is visible, reported and traceable to the thing that failed. Don't review message formatting at all: f-string, `%s` and `.format()` are all fine.
 
-Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/reporting.py`, in particular `log_loop_exception`, `log_peer_unavailable` and `report_exception`.
+Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/reporting.py`, in particular `ErrorReportHandler`, `log_loop_exception`, `log_peer_unavailable` and `report_exception`.
 
 ## Look for
 
-**Caught exceptions not routed through `log_loop_exception()`.** Look at every `except` the change adds or modifies.
-- If it logs, it must call `log_loop_exception(e, "<context>")`. That writes the error report and the monitor event, and it is quiet during shutdown.
-- Flag `logging.error(...)`, `logging.exception(...)`, `logging.warning(str(e))` and `print(...)` used instead.
+**Caught exceptions logged without their traceback.** Look at every `except` the change adds or modifies.
+- If it logs, it must log at ERROR with the traceback: `logging.exception(...)`, `exc_info=` at ERROR, or `log_loop_exception(e, "<context>")`. The root logger's `ErrorReportHandler` turns any of those into the error report and the monitor event.
+- Flag `logging.error(...)` without `exc_info`, `logging.warning(str(e))` and `print(...)` used instead.
+- Flag `report_exception()` next to a record that already carries the traceback: that writes two reports.
+- A long-running loop's catch-all uses `log_loop_exception()`, which is quiet during shutdown. `logging.exception()` there logs an ERROR line per iteration while the peers go away.
 - A connection failure to a peer (redis, qdrant, a remote node) is allowed to use `log_peer_unavailable(e, context)` and fall through.
-- The rule applies everywhere an exception is caught and should be logged, not only in loops. The function's name and docstring talk about loops, but the maintainer's rule is broader. Don't soften a finding because the code "isn't a loop".
 
 **Silenced failures.**
 - `except: pass`, `except Exception: pass`, or `except ...: return None`/`continue` with no log and no comment saying why silence is right.
@@ -20,7 +21,7 @@ Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/report
 - Deliberate silence on a never-raise path (crash reporting, shutdown) is fine with a comment.
 
 **Context strings and identifiers.** Would someone grepping the logs be able to find the alert, observable, file, row or crash that failed?
-- The `context` argument to `log_loop_exception` should carry the uuid or id.
+- The message, or the `context` argument to `log_loop_exception`, should carry the uuid or id.
 - New log records should carry identifiers, preferably in `extra={}` (`saq/logging.py` turns those into Splunk fields; see the "analysis module crash recorded" record in `saq/crash_report.py`).
 - Flag "failed to process item" when the item isn't identified.
 
@@ -35,6 +36,6 @@ Read first: `CLAUDE.md` § Engineering values → Logging, and `saq/error/report
 ## Calibration
 
 - A silent `except` on a path that matters, or secrets in a log, is a blocker or a fix-first, depending on how often the path runs.
-- A caught exception logged with `logging.error` instead of `log_loop_exception` is fix-first.
+- A caught exception logged without its traceback, or with a second `report_exception()`, is fix-first.
 - A missing identifier in a message is fix-first if the failure would be hard to trace without it, otherwise a nit.
 - Pre-existing logging debt in functions the change edits goes under `origin: pre-existing`. The tree has a lot of it, including dozens of bare `except:` and silent `except: pass` blocks.

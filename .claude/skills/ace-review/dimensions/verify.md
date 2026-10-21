@@ -14,7 +14,7 @@ You are the last filter before the maintainer reads the review. False positives 
 5. Recalibrate severity against rubric.md. Downgrade inflated findings: a nit dressed as a blocker. Upgrade only with evidence.
 6. Check every `fix` that names an existing helper: does that helper exist, and does it do the job?
 
-The rules in `CLAUDE.md` § Engineering values are the maintainer's decisions. Don't reject or weaken a finding because a rule seems stricter than the code it cites. For example, `log_loop_exception()` is required for every caught-and-logged exception, even though its name says "loop".
+The rules in `CLAUDE.md` § Engineering values are the maintainer's decisions. Don't reject or weaken a finding because a rule seems stricter than the code it cites. For example, every caught-and-logged exception must be logged with its traceback, even on a path that seems too minor for an error report.
 
 ## Output
 
