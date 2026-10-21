@@ -304,8 +304,7 @@ def setup(_args):
 
 def ensure_personas():
     # after ace_environment(), see there
-    from aceapi.auth import create_api_key
-    from saq.database.util.user_management import add_user
+    from saq.database.util.user_management import add_user, create_api_key
     from saq.permissions.logic import parse_permission_pattern
     from saq.permissions.user import add_user_permission
 

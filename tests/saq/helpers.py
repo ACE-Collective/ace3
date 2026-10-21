@@ -470,26 +470,15 @@ def start_api_server(remote_host=None, ssl_verification=None, listen_address=Non
     return api_server_process
 
 def execute_api_server(listen_address=None, listen_port=None, ssl_cert=None, ssl_key=None):
-    # Serve the legacy Flask app at /api and the FastAPI v2 app at /api/v2 through a single
-    # uvicorn (ASGI) process. Flask is exposed as ASGI via Starlette's WSGIMiddleware so both
-    # routers share one port — `ace_api` clients always hit https://host/api/... regardless
-    # of which app ultimately handles the request.
+    # Serve the v2 app at /api/v2, where nginx puts it on a node: `ace_api` builds every URL
+    # as https://host/api/v2/...
 
-    import aceapi
     import aceapi_v2
     import uvicorn
     from fastapi import FastAPI
-    from starlette.middleware.wsgi import WSGIMiddleware
-
-    flask_app = aceapi.create_app(testing=True)
-    flask_app.config['DEBUG'] = True
-    flask_app.config['APPLICATION_ROOT'] = '/api'
-
-    fastapi_v2_app = aceapi_v2.create_app()
 
     root = FastAPI()
-    root.mount('/api/v2', fastapi_v2_app)
-    root.mount('/api', WSGIMiddleware(flask_app))
+    root.mount('/api/v2', aceapi_v2.create_app())
 
     if listen_address is None:
         listen_address = get_config().api.listen_address
