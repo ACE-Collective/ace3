@@ -692,15 +692,20 @@ def test_extract_observables_templated_type_resolving_to_file_rejected(caplog):
 
 @pytest.mark.unit
 def test_extract_observables_templated_type_syntax_error_skips(caplog):
-    """A malformed type template skips the mapping; the rendering layer logs the error."""
+    """A malformed type template skips the mapping; the rendering layer logs a warning,
+    since the hunt author has to fix it, not ACE."""
     mappings = [ObservableMapping(field="src", type="{{ unclosed")]
     event = {"src": "1.2.3.4", "unclosed": "ipv4"}
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         extracted, _, _ = extract_observables_from_event(event, mappings)
 
     assert extracted == []
-    assert len(_error_records(caplog)) >= 1
+    assert _error_records(caplog) == []
+    assert any(
+        r.levelno == logging.WARNING and "jinja template syntax error" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 @pytest.mark.unit

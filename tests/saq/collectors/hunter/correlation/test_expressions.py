@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from saq.collectors.hunter.correlation.expressions import (
@@ -45,6 +47,16 @@ class TestEvaluateExpression:
     def test_jinja_missing_field(self):
         expr = ExpressionConfig(type="jinja", value="{{ _event.missing }}")
         assert evaluate_expression(expr, {}, []) is False
+
+    def test_jinja_render_error_is_false_and_a_warning(self, caplog):
+        expr = ExpressionConfig(type="jinja", value="{{ 1 / 0 }}")
+        with caplog.at_level(logging.WARNING):
+            assert evaluate_expression(expr, {}, []) is False
+
+        records = [r for r in caplog.records if "error evaluating jinja expression" in r.getMessage()]
+        assert len(records) == 1
+        # the hunt author's to fix, so it must not write an error report
+        assert records[0].levelno == logging.WARNING
 
     def test_jinja_string_shorthand(self):
         expr = ExpressionConfig.model_validate("{{ _event.x }}")

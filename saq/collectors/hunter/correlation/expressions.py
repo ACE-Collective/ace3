@@ -61,7 +61,7 @@ def _evaluate_jinja(
         result = template.render(**context)
         return bool(result and result.strip() and result.strip().lower() not in ("false", "0", "none", ""))
     except Exception:
-        logging.error("error evaluating jinja expression: %s", expr.value, exc_info=True)
+        logging.warning("error evaluating jinja expression: %s", expr.value, exc_info=True)
         return False
 
 
@@ -186,7 +186,7 @@ def _evaluate_jinja_traced(
             rendered_value=rendered,
         )
     except Exception as e:
-        logging.error("error evaluating jinja expression: %s", expr.value, exc_info=True)
+        logging.warning("error evaluating jinja expression: %s", expr.value, exc_info=True)
         return False, ExpressionTrace(
             expression_type="jinja",
             result=False,
