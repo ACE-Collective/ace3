@@ -9,10 +9,17 @@
     {% for o_type, count in details.omitted | dictsort %}{{ count }} {{ o_type }}{% if not loop.last %}, {% endif %}{% endfor %}
 </div>
 {% endif %}
+{% if analysis_presenter.capture_summary %}
+<div class="alert alert-light border py-1 px-2 small mb-2">
+    <span class="bi bi-file-earmark-binary"></span> From capture
+    {% for part in analysis_presenter.capture_summary %}{% if loop.first %}<b>{{ part }}</b>{% else %} &middot; {{ part }}{% endif %}{% endfor %}
+</div>
+{% endif %}
 {% for table in analysis_presenter.tables %}
-<h6 class="mt-3">{{ table.title }}
+<h6 class="mt-3 mb-0">{{ table.title }}
     {% if table.total > table.rows | length %}<small class="text-muted">(first {{ table.rows | length }} of {{ table.total }})</small>{% endif %}
 </h6>
+{% if table.order %}<div class="small text-muted mb-1"><span class="bi bi-sort-down"></span> {{ table.order }}</div>{% endif %}
 <div style="overflow-x: auto">
     <table class="table table-sm table-striped">
         <thead>

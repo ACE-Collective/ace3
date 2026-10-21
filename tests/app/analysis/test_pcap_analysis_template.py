@@ -37,3 +37,25 @@ def test_file_pivots_render(app):
 
     assert f'data-pivot-type="file" data-pivot-value="{"ab" * 32}">payload.bin</a>' in html
     assert f'data-pivot-type="sha256" data-pivot-value="{"ab" * 32}">{"ab" * 32}</a>' in html
+
+
+@pytest.mark.integration
+def test_capture_header_and_order_note_render(app):
+    analysis = PcapCategoryAnalysis()
+    analysis.details.update({"category": CATEGORY_HTTP, "total": 1,
+                             "rows": [{"method": "GET", "url": "http://a.example/"}],
+                             "capture": {"file_name": "<b>x</b>.pcapng", "format": "pcapng", "packets": 3,
+                                         "strict_time_order": True}})
+    html = _render(app, analysis)
+
+    assert "From capture" in html
+    # the file name is escaped like anything else from the alert
+    assert "<b>&lt;b&gt;x&lt;/b&gt;.pcapng</b> &middot; pcapng &middot; 3 packets" in html
+    assert "Requests in the order they were sent, which is chronological." in html
+
+
+@pytest.mark.integration
+def test_no_capture_header_without_metadata(app):
+    analysis = PcapCategoryAnalysis()
+    analysis.details.update({"category": CATEGORY_HTTP, "total": 1, "rows": [{"method": "GET", "url": "http://a.example/"}]})
+    assert "From capture" not in _render(app, analysis)

@@ -58,6 +58,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_pcap_file
 from saq.observables.file import FileObservable
+from saq.util.ui import human_readable_size
 from saq.sandbox.runner import (
     build_sandbox_argv,
     create_workdir,
@@ -67,8 +68,8 @@ from saq.sandbox.runner import (
 )
 
 TAG_TLS_KEYLOG = "tls_keylog"
-# on a pcapng that carries its own decryption secrets
-TAG_EMBEDDED_SECRETS = "embedded_decryption_keys"
+# on a pcapng that carries its own decryption secrets, one per kind: pcap_embedded_tls_keys, ...
+TAG_EMBEDDED_SECRETS = "pcap_embedded_{}_keys"
 
 CATEGORY_HOSTS = "hosts"
 CATEGORY_DNS = "dns"
@@ -319,26 +320,72 @@ class PcapCategoryConfig(PcapModuleConfig):
 
 def _run_tshark(config: PcapModuleConfig, workdir: str, args: list[str]) -> str:
     """Runs tshark on <workdir>/input in the sandbox and returns its stdout."""
+    return _run_tool(config, workdir, [config.tshark_path, "-n", "-r", "input", *args])
+
+
+def _run_tool(config: PcapModuleConfig, workdir: str, command: list[str]) -> str:
+    """Runs a Wireshark tool in the sandbox and returns its stdout."""
     if not landlock_available():
         raise PcapError("the Landlock sandbox is not available on this node; tshark is never run unsandboxed")
 
+    tool = os.path.basename(command[0])
     timeout = datetime.timedelta(seconds=config.tshark_timeout)
-    argv = build_sandbox_argv([config.tshark_path, "-n", "-r", "input", *args], workdir, config.sandbox, timeout)
+    argv = build_sandbox_argv(command, workdir, config.sandbox, timeout)
     # never os.environ: Landlock does not filter the environment and ACE's carries secrets
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": workdir}
     try:
         result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes)
     except RuntimeError as e:
-        raise PcapError(f"tshark failed: {e}") from e
+        raise PcapError(f"{tool} failed: {e}") from e
 
     # a capture cut short mid-packet exits non-zero after printing everything before the cut
     if result.returncode != 0 and not result.stdout.strip():
-        raise PcapError(f"tshark exited with {result.returncode}: {result.stderr.strip()[-500:]}")
+        raise PcapError(f"{tool} exited with {result.returncode}: {result.stderr.strip()[-500:]}")
 
     if result.returncode != 0:
-        logging.info("tshark exited with %s but produced output: %s", result.returncode, result.stderr.strip()[-500:])
+        logging.info("%s exited with %s but produced output: %s", tool, result.returncode, result.stderr.strip()[-500:])
 
     return result.stdout
+
+
+RE_CAPINFOS_FIELD = re.compile(r"^([A-Za-z][A-Za-z ]+):\s+(.*?)\s*$")
+RE_CAPINFOS_ENCAPSULATION = re.compile(r"^\s+Encapsulation = (.+?) \(")
+
+
+def parse_capinfos(output: str) -> dict:
+    """The capture's metadata from `capinfos -M -S` (times as epoch seconds)."""
+    fields: dict[str, str] = {}
+    encapsulations: list[str] = []
+    for line in output.splitlines():
+        m = RE_CAPINFOS_ENCAPSULATION.match(line)
+        if m:
+            if m.group(1) not in encapsulations:
+                encapsulations.append(m.group(1))
+            continue
+        m = RE_CAPINFOS_FIELD.match(line)
+        if m:
+            fields.setdefault(m.group(1).strip(), m.group(2))
+
+    def _number(key: str, kind=int):
+        try:
+            return kind(fields[key].split()[0])
+        except (KeyError, IndexError, ValueError):
+            return None
+
+    order = fields.get("Strict time order")
+    return {
+        "format": fields.get("File type"),
+        "size": _number("File size"),
+        "packets": _number("Number of packets"),
+        "first": _number("Earliest packet time", float),
+        "last": _number("Latest packet time", float),
+        "duration": _number("Capture duration", float),
+        "application": fields.get("Capture application"),
+        "interfaces": _number("Number of interfaces in file"),
+        "encapsulations": encapsulations,
+        # True when packets are in time order, so capture order is chronological
+        "strict_time_order": {"True": True, "False": False}.get(order),
+    }
 
 
 def _sha256_file(path: str) -> str:
@@ -672,7 +719,14 @@ def dissect(config: PcapModuleConfig, pcap_path: str, target_dir: str, keylog_li
         os.mkdir(os.path.join(workdir, "objects"))
 
         index_stats = {}
+        capture = None
         if statistics:
+            capinfos = os.path.join(os.path.dirname(config.tshark_path), "capinfos")
+            try:
+                capture = parse_capinfos(_run_tool(config, workdir, [capinfos, "-M", "-S", "input"]))
+            except PcapError as e:
+                # only the page header needs it; the dissection does not
+                logging.info("no capture metadata for pcap %s: %s", pcap_path, e)
             output = _run_tshark(config, workdir, ["-q", "-z", "io,stat,0", "-z", "endpoints,eth", "-z", "endpoints,ip",
                                                    "-z", "endpoints,ipv6", "-z", "conv,tcp", "-z", "conv,udp"])
             index_stats = _parse_statistics(output, config.max_table_rows)
@@ -695,6 +749,7 @@ def dissect(config: PcapModuleConfig, pcap_path: str, target_dir: str, keylog_li
     _link_http_objects(index)
     if statistics:
         index["statistics"] = index_stats
+        index["capture"] = capture
     return index
 
 
@@ -713,6 +768,8 @@ class PcapObservable:
     downloaded_from: Optional[str] = None
     # a certificate ACE only observed on the wire: x509_analyzer should not crawl its names
     no_crawl: bool = False
+    # shown in the alert tree; one per observable, so it is only set when no module has set one
+    display_type: Optional[str] = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -737,26 +794,57 @@ def _is_interesting_mac(value: str) -> bool:
     return not (first_octet & 1) and value != "00:00:00:00:00:00"
 
 
-def _host_observable(category: str, host: str, excluded_suffixes: list[str]) -> Optional[PcapObservable]:
+def _host_observable(category: str, host: str, excluded_suffixes: list[str], fqdn_display_type: Optional[str] = None,
+                     ip_display_type: Optional[str] = None) -> Optional[PcapObservable]:
     host = _host_without_port(host).rstrip(".").lower()
     if not host:
         return None
     try:
         ipaddress.ip_address(host)
-        return PcapObservable(category, F_IP, host, volatile=True) if _is_interesting_ip(host) else None
+        if not _is_interesting_ip(host):
+            return None
+        return PcapObservable(category, F_IP, host, volatile=True, display_type=ip_display_type)
     except ValueError:
         pass
     if any(host.endswith(suffix) for suffix in excluded_suffixes):
         return None
-    return PcapObservable(category, F_FQDN, host)
+    return PcapObservable(category, F_FQDN, host, display_type=fqdn_display_type)
+
+
+MAX_JA4_DESTINATIONS = 3
+
+
+def ja4_display_types(sessions: list[dict]) -> dict[str, str]:
+    """For each JA4, where its sessions went: the SNI, or the server address when there is none."""
+    destinations: dict[str, list[str]] = {}
+    for session in sessions:
+        if not session.get("ja4"):
+            continue
+        target = session.get("sni") or _host_without_port(session.get("server") or "") or None
+        targets = destinations.setdefault(session["ja4"], [])
+        if target and target not in targets:
+            targets.append(target)
+
+    result = {}
+    for ja4, targets in destinations.items():
+        if not targets:
+            result[ja4] = "JA4"
+            continue
+        shown = ", ".join(targets[:MAX_JA4_DESTINATIONS])
+        more = len(targets) - MAX_JA4_DESTINATIONS
+        result[ja4] = f"JA4 to {shown}{f', +{more} more' if more > 0 else ''}"
+    return result
 
 
 def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[PcapObservable]:
     """Every observable the index holds, each in the category whose analysis adds it."""
     result: list[PcapObservable] = []
+    seen: set[tuple] = set()
 
     def _add(item: Optional[PcapObservable]):
-        if item is not None and item not in result:
+        # the first one wins: it carries the most specific display type
+        if item is not None and (item.category, *item.key) not in seen:
+            seen.add((item.category, *item.key))
             result.append(item)
 
     statistics = index.get("statistics", {})
@@ -769,16 +857,21 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
     for row in index.get("hostnames", []):
         _add(PcapObservable(CATEGORY_HOSTS, F_HOSTNAME, row["name"], volatile=True))
 
+    # every name has a row: a name nobody looked up only appeared as a CNAME target
     for row in index.get(CATEGORY_DNS, []):
-        _add(_host_observable(CATEGORY_DNS, row["name"], excluded_fqdn_suffixes))
+        looked_up = row.get("queries") or row.get("responses")
+        _add(_host_observable(CATEGORY_DNS, row["name"], excluded_fqdn_suffixes,
+                              fqdn_display_type="DNS Query Name" if looked_up else "DNS CNAME Target"))
+    for row in index.get(CATEGORY_DNS, []):
         for answer in row["answers"]:
-            _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes))
+            _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes, ip_display_type="DNS Answer IP"))
 
+    ja4_labels = ja4_display_types(index.get(CATEGORY_TLS, []))
     for row in index.get(CATEGORY_TLS, []):
         if row.get("sni"):
             _add(_host_observable(CATEGORY_TLS, row["sni"], excluded_fqdn_suffixes))
         if row.get("ja4"):
-            _add(PcapObservable(CATEGORY_TLS, F_JA4, row["ja4"]))
+            _add(PcapObservable(CATEGORY_TLS, F_JA4, row["ja4"], display_type=ja4_labels[row["ja4"]]))
     for row in index.get("certificates", []):
         if row.get("path"):
             _add(PcapObservable(CATEGORY_TLS, F_FILE, row["sha256"], path=row["path"], no_crawl=True))
@@ -844,6 +937,9 @@ def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: l
 
         # set here: Observable.__init__ does not pass its sort_order argument on
         observable.sort_order = SORT_ORDER.get(item.o_type, 100)
+        # an observable has one display type wherever it appears: never replace another module's
+        if item.display_type and observable._display_type is None:
+            observable.display_type = item.display_type
 
         present.add(item.key)
         per_type[item.o_type] = per_type.get(item.o_type, 0) + 1
@@ -872,6 +968,15 @@ def _get_pcap_analysis(observable: FileObservable) -> Optional["PcapAnalysis"]:
 # ----------------------------------------------------------------------------------------------
 # core analysis
 # ----------------------------------------------------------------------------------------------
+
+def embedded_secrets_tags(types: dict[str, int]) -> list[str]:
+    """pcap_embedded_tls_keys, pcap_embedded_ssh_keys, ... for the kinds of secrets a capture carries."""
+    tags = []
+    for name in types:
+        slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") if name in PCAPNG_SECRETS_TYPES.values() else "unknown"
+        tags.append(TAG_EMBEDDED_SECRETS.format(slug))
+    return sorted(set(tags))
+
 
 def _describe_embedded(embedded: dict) -> str:
     parts = []
@@ -967,10 +1072,13 @@ class PcapAnalyzer(AnalysisModule):
             # client randoms are sent in the clear; only the secrets keyed by them are sensitive
             embedded["keyed_client_randoms"] = sorted(session_randoms & embedded.pop("client_randoms"))
             index["embedded_secrets"] = embedded
-            _file.add_tag(TAG_EMBEDDED_SECRETS)
+            for tag in embedded_secrets_tags(embedded["types"]):
+                _file.add_tag(tag)
             logging.info("pcap %s carries embedded decryption secrets: %s", path, _describe_embedded(embedded),
                          extra={"pcap_sha256": _file.sha256_hash})
 
+        if index.get("capture"):
+            index["capture"]["file_name"] = _file.file_name
         analysis.details[KEY_INDEX] = index
         hosts = [o for o in collect_observables(index, self.config.excluded_fqdn_suffixes) if o.category == CATEGORY_HOSTS]
         added, omitted = add_pcap_observables(analysis, _file, hosts, self.config.max_observables_per_type)
@@ -1045,6 +1153,7 @@ class PcapCategoryAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, PcapCategoryAnalysis)
         analysis.details["category"] = category
+        analysis.details["capture"] = index.get("capture")
         analysis.details["rows"] = rows
         analysis.details["total"] = len(rows) if category == CATEGORY_FILES else index.get(f"{category}_total", len(rows))
         if category == CATEGORY_TLS:
@@ -1125,6 +1234,7 @@ def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_anal
 
     plaintext_index = pcap_analysis.index
     analysis.details["keylogs"] = keylogs
+    analysis.details["capture"] = plaintext_index.get("capture")
     session_randoms = {s.get("client_random") for s in plaintext_index.get(CATEGORY_TLS, []) if s.get("client_random")}
     # sessions the capture's own secrets already decrypted in the plaintext pass
     embedded_randoms = set((plaintext_index.get("embedded_secrets") or {}).get("keyed_client_randoms", []))
@@ -1289,12 +1399,59 @@ def _pivot(o_type: str, value: Optional[str], text: Optional[str] = None) -> Opt
     return {"text": text or value, "pivot_type": o_type, "pivot_value": value}
 
 
-def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None) -> dict:
+def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None,
+           order: Optional[str] = None) -> dict:
     return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows),
-            "nowrap": [column in NOWRAP_COLUMNS for column in columns]}
+            "nowrap": [column in NOWRAP_COLUMNS for column in columns], "order": order}
 
 
-def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[dict]:
+def _capture_order(what: str, capture: Optional[dict]) -> str:
+    """How a table kept in the order things appear in the capture reads in time."""
+    time_order = (capture or {}).get("strict_time_order")
+    if time_order is True:
+        return f"{what}, which is chronological."
+    if time_order is False:
+        return (f"{what}. The packets in this capture are not in time order, so this is not strictly "
+                "chronological.")
+    return f"{what}."
+
+
+def _format_time_range(capture: dict) -> Optional[str]:
+    if capture.get("first") is None or capture.get("last") is None:
+        return None
+    first = datetime.datetime.fromtimestamp(capture["first"], datetime.timezone.utc)
+    last = datetime.datetime.fromtimestamp(capture["last"], datetime.timezone.utc)
+    end = last.strftime("%H:%M:%S") if last.date() == first.date() else last.strftime("%Y-%m-%d %H:%M:%S")
+    duration = capture.get("duration")
+    if duration is None:
+        length = ""
+    elif duration < 60:
+        length = f" ({duration:.1f} s)"
+    else:
+        length = f" ({datetime.timedelta(seconds=round(duration))})"
+    return f"{first.strftime('%Y-%m-%d %H:%M:%S')} to {end} UTC{length}"
+
+
+def capture_summary(capture: Optional[dict]) -> list[str]:
+    """The parts of the line that says which capture a table page came from."""
+    if not capture:
+        return []
+    parts = [capture.get("file_name"), capture.get("format")]
+    if capture.get("size") is not None:
+        parts.append(human_readable_size(capture["size"]))
+    if capture.get("encapsulations"):
+        interfaces = capture.get("interfaces") or 0
+        parts.append(f"{', '.join(capture['encapsulations'])}, {interfaces} interface{'' if interfaces == 1 else 's'}")
+    if capture.get("packets") is not None:
+        parts.append(f"{capture['packets']:,} packets")
+    parts.append(_format_time_range(capture))
+    if capture.get("application"):
+        # "Dumpcap (Wireshark) 4.4.19 (Git v4.4.19 packaged as ...)": the build details add nothing
+        parts.append(f"written by {re.sub(r' [(]Git [^)]*[)]$', '', capture['application'])}")
+    return [part for part in parts if part]
+
+
+def index_tables(index: Optional[dict], category: Optional[str] = None, capture: Optional[dict] = None) -> list[dict]:
     """The tables shown for one category of an index (or all of them when category is None)."""
     if not index:
         return []
@@ -1304,23 +1461,28 @@ def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[
         tables.append(_table("DNS", ["Name", "Answers", "Queries", "Responses"],
                              [[r["name"], ", ".join(r["answers"]), r.get("queries"), r.get("responses")]
                               for r in index[CATEGORY_DNS]],
-                             index.get(f"{CATEGORY_DNS}_total")))
+                             index.get(f"{CATEGORY_DNS}_total"),
+                             _capture_order("Names in the order they first appear in the capture", capture)))
     if category in (None, CATEGORY_TLS) and index.get(CATEGORY_TLS):
         certificates = {c["sha256"]: c for c in index.get("certificates", [])}
         tables.append(_table("TLS Sessions", ["Server", "SNI", "JA4", "Certificates"],
                              [[r.get("server"), r.get("sni"), _pivot(F_JA4, r.get("ja4")),
                                [describe_certificate(certificates.get(h, {"sha256": h})) for h in r.get("certificates", [])]]
-                              for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total")))
+                              for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total"),
+                             _capture_order("Sessions in the order their handshakes start", capture)))
     if category in (None, CATEGORY_HTTP) and index.get(CATEGORY_HTTP):
         tables.append(_table("HTTP Requests", ["Method", "URL", "Status", "Content Type", "User Agent"],
                              [[r.get("method"), _pivot(F_URL, r.get("url")), r.get("status"), r.get("content_type"),
                                r.get("user_agent")]
-                              for r in index[CATEGORY_HTTP]], index.get(f"{CATEGORY_HTTP}_total")))
+                              for r in index[CATEGORY_HTTP]], index.get(f"{CATEGORY_HTTP}_total"),
+                             _capture_order("Requests in the order they were sent", capture)))
     if category in (None, CATEGORY_FILES) and index.get("objects"):
         tables.append(_table("Carved Files", ["Protocol", "File Name", "Size", "SHA256", "URL"],
                              # a file observable's value is its sha256, so the file name pivots on the content
                              [[r["protocol"], _pivot(F_FILE, r["sha256"], text=r["file_name"]), r["size"],
-                               _pivot(F_SHA256, r["sha256"]), r.get("url")] for r in index["objects"]]))
+                               _pivot(F_SHA256, r["sha256"]), r.get("url")] for r in index["objects"]],
+                             # tshark's object export does not say when each object crossed the wire
+                             order="By protocol, then file name. Not chronological."))
     return tables
 
 
@@ -1331,9 +1493,21 @@ class PcapAnalysisPresenter(AnalysisPresenter):
         return "analysis/pcap_analysis.html"
 
     @property
+    def capture(self) -> Optional[dict]:
+        details = self._analysis.details or {}
+        if isinstance(self._analysis, PcapAnalysis):
+            return (details.get(KEY_INDEX) or {}).get("capture")
+        return details.get("capture")
+
+    @property
+    def capture_summary(self) -> list[str]:
+        return capture_summary(self.capture)
+
+    @property
     def tables(self) -> list[dict]:
         details = self._analysis.details or {}
         analysis = self._analysis
+        capture = self.capture
         if isinstance(analysis, PcapAnalysis):
             index = details.get(KEY_INDEX) or {}
             statistics = index.get("statistics", {})
@@ -1346,31 +1520,35 @@ class PcapAnalysisPresenter(AnalysisPresenter):
                 tables.append(_table("Embedded Decryption Secrets", ["Secret", "Count"], rows))
             if index.get("hostnames"):
                 tables.append(_table("Hostnames", ["Name", "Source", "MAC"],
-                                     [[r["name"], r["source"], r.get("mac")] for r in index["hostnames"]]))
+                                     [[r["name"], r["source"], r.get("mac")] for r in index["hostnames"]],
+                                     order=_capture_order("In the order they first appear in the capture", capture)))
             if statistics.get("ip"):
                 tables.append(_table("IP Endpoints", ["Address", "Packets", "Bytes"],
-                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["ip"]], statistics.get("ip_total")))
+                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["ip"]], statistics.get("ip_total"),
+                                     order="Most packets first."))
             if statistics.get("mac"):
                 tables.append(_table("Ethernet Endpoints", ["Address", "Packets", "Bytes"],
-                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["mac"]], statistics.get("mac_total")))
+                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["mac"]], statistics.get("mac_total"),
+                                     order="Most packets first."))
             if statistics.get("flows"):
                 tables.append(_table("Flows", ["Protocol", "A", "B", "Frames", "Bytes", "Start", "Duration"],
                                      [[r["protocol"], r["a"], r["b"], r["frames"], r["bytes"], r["start"], r["duration"]]
-                                      for r in statistics["flows"]], statistics.get("flows_total")))
+                                      for r in statistics["flows"]], statistics.get("flows_total"),
+                                     order="Most frames first. Start is seconds after the first packet."))
             return tables
         if isinstance(analysis, PcapCategoryAnalysis):
             category = details.get("category")
             rows_key = "objects" if category == CATEGORY_FILES else category
             index = {rows_key: details.get("rows", []), f"{category}_total": details.get("total"),
                      "certificates": details.get("certificates", [])}
-            return index_tables(index, category)
+            return index_tables(index, category, capture)
         if isinstance(analysis, PcapTlsDecryptionAnalysis):
             rows = []
             if details.get("sessions_with_embedded_keys"):
                 rows.append(["(embedded in the capture)", "", f"keys for {details['sessions_with_embedded_keys']} TLS sessions"])
             rows += [[k["file_name"], k["sha256"], _format_counts(k["label_counts"])] for k in details.get("keylogs", [])]
             tables = [_table("Key Sources", ["Source", "SHA256", "Secrets"], rows)] if rows else []
-            return tables + index_tables(details.get(KEY_INDEX))
+            return tables + index_tables(details.get(KEY_INDEX), capture=capture)
         if isinstance(analysis, TlsKeylogAnalysis):
             return [_table("Secrets", ["Label", "Count"], [[k, v] for k, v in sorted(details.get("label_counts", {}).items())])]
         return []

@@ -546,6 +546,15 @@ def test_pcap_tree(root_analysis):
     counts = {row[0]: (row[2], row[3]) for row in PcapAnalysisPresenter(dns).tables[0]["rows"]}
     assert counts == {"www.pcap-dns.example": (1, 1), "cdn.pcap-dns.example": (0, 0),
                       "7.100.51.198.in-addr.arpa": (1, 0)}
+    labels = {o.value: o.display_type for o in dns.observables}
+    assert labels == {"www.pcap-dns.example": "DNS Query Name (fqdn)", "cdn.pcap-dns.example": "DNS CNAME Target (fqdn)",
+                      "198.51.100.7": "DNS Answer IP (ip)"}
+    # the page says which capture it came from, and that capture order is chronological here
+    assert PcapAnalysisPresenter(dns).capture_summary == [
+        "network.pcap", "pcap", "859 B", "Ethernet, 1 interface", "5 packets",
+        "2026-01-01 00:00:00 to 00:00:04 UTC (4.0 s)"]
+    assert PcapAnalysisPresenter(dns).tables[0]["order"] == (
+        "Names in the order they first appear in the capture, which is chronological.")
     assert _values(dns, F_IP) == {"198.51.100.7"}
     assert "PCAP DNS" in dns.summary
     # nothing of these categories in the synthesized frames: no node in the tree
@@ -557,14 +566,15 @@ def test_pcap_tree(root_analysis):
     assert core.observables == []
     assert len(core.index[CATEGORY_TLS]) == 2
 
-    assert not http_tls.has_tag(pcap.TAG_EMBEDDED_SECRETS)
+    assert not [tag for tag in http_tls.tags if str(tag).startswith("pcap_embedded_")]
     tls = _category(http_tls, CATEGORY_TLS)
     assert _values(tls, F_FQDN) == {"pcap-tls12.example", "pcap-tls13.example"}
     (table,) = PcapAnalysisPresenter(tls).tables
     assert table["columns"] == ["Server", "SNI", "JA4", "Certificates"]
     certificates = sorted(row[3] for row in table["rows"])
     assert certificates == [[], ["pcap-tls.example (SAN: pcap-tls12.example, pcap-tls13.example) \u2014 self-signed"]]
-    assert len(_values(tls, F_JA4)) == 2
+    assert sorted(o.display_type for o in tls.get_observables_by_type(F_JA4)) == [
+        "JA4 to pcap-tls12.example (ja4)", "JA4 to pcap-tls13.example (ja4)"]
     # only the TLS 1.2 certificate travels in the clear
     (certificate,) = tls.get_observables_by_type(F_FILE)
     assert certificate.has_relationship(R_EXTRACTED_FROM)
@@ -682,7 +692,8 @@ def test_pcapng_with_embedded_secrets(root_analysis):
     capture = root.get_observable(capture.uuid)
 
     # called out for the analyst
-    assert capture.has_tag(pcap.TAG_EMBEDDED_SECRETS)
+    assert capture.has_tag("pcap_embedded_tls_keys")
+    assert not capture.has_tag("pcap_embedded_ssh_keys")
     core = capture.get_and_load_analysis(PcapAnalysis)
     assert "decryption keys embedded (TLS keys for 2 sessions)" in core.summary
     assert "Embedded Decryption Secrets" in [t["title"] for t in PcapAnalysisPresenter(core).tables]
@@ -915,7 +926,7 @@ def test_summaries():
     keylog.details = {}
     assert keylog.generate_summary() is None
     assert PcapAnalysisPresenter(keylog).tables == [{"title": "Secrets", "columns": ["Label", "Count"], "rows": [], "total": 0,
-                                                     "nowrap": [False, False]}]
+                                                     "nowrap": [False, False], "order": None}]
 
 
 @pytest.mark.unit
@@ -924,14 +935,18 @@ def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
     shutil.copy(NETWORK_PCAP, evidence)
     inodes = []
 
-    def _fake_tshark(config, workdir, args):
+    def _fake_tool(config, workdir, command):
         inodes.append(os.stat(os.path.join(workdir, "input")).st_ino)
-        return "" if "-T" in args else STATISTICS_OUTPUT
+        if os.path.basename(command[0]) == "capinfos":
+            return CAPINFOS_OUTPUT
+        return "" if "-T" in command else STATISTICS_OUTPUT
 
-    monkeypatch.setattr(pcap, "_run_tshark", _fake_tshark)
+    monkeypatch.setattr(pcap, "_run_tool", _fake_tool)
     index = pcap.dissect(_config(), str(evidence), str(tmp_path / "capture.pcap.pcap_objects"))
 
-    assert inodes and all(inode != os.stat(evidence).st_ino for inode in inodes)
+    # capinfos and both tshark runs
+    assert len(inodes) == 3 and all(inode != os.stat(evidence).st_ino for inode in inodes)
+    assert index["capture"]["packets"] == 1234
     assert index["statistics"]["packets"] == 5
     assert index[CATEGORY_TLS] == []
 
@@ -1205,3 +1220,125 @@ def test_x509_analyzer_honors_no_crawl(root_analysis, tmp_path, suppress):
     assert "alt.example.com" in _values(analysis, F_FQDN)
     crawl_urls = [o for o in analysis.get_observables_by_type(F_URL) if o.has_directive(DIRECTIVE_CRAWL)]
     assert (crawl_urls == []) is suppress
+
+
+CAPINFOS_OUTPUT = """File name:           input
+File type:           pcapng
+File encapsulation:  ether
+Number of packets:   1234
+File size:           567890 bytes
+Capture duration:    45.5 seconds
+Earliest packet time: 1767225600.25
+Latest packet time:   1767225645.75
+Strict time order:   False
+Capture application: Dumpcap (Wireshark) 4.4.19 (Git v4.4.19 packaged as 4.4.19-1)
+Number of interfaces in file: 2
+Interface #0 info:
+                     Encapsulation = Ethernet (1 - ether)
+                     Capture length = 65536
+Interface #1 info:
+                     Encapsulation = Raw IP (7 - rawip)
+Number of decryption secrets in file: 1
+"""
+
+
+@pytest.mark.unit
+def test_parse_capinfos():
+    capture = pcap.parse_capinfos(CAPINFOS_OUTPUT)
+    assert capture == {"format": "pcapng", "size": 567890, "packets": 1234, "first": 1767225600.25,
+                       "last": 1767225645.75, "duration": 45.5,
+                       "application": "Dumpcap (Wireshark) 4.4.19 (Git v4.4.19 packaged as 4.4.19-1)",
+                       "interfaces": 2, "encapsulations": ["Ethernet", "Raw IP"], "strict_time_order": False}
+    # whatever capinfos leaves out is simply unknown
+    assert pcap.parse_capinfos("garbage") == {"format": None, "size": None, "packets": None, "first": None,
+                                              "last": None, "duration": None, "application": None,
+                                              "interfaces": None, "encapsulations": [], "strict_time_order": None}
+
+
+@pytest.mark.unit
+def test_capture_summary():
+    capture = {**pcap.parse_capinfos(CAPINFOS_OUTPUT), "file_name": "capture.pcapng"}
+    assert pcap.capture_summary(capture) == [
+        "capture.pcapng", "pcapng", "554.6 KB", "Ethernet, Raw IP, 2 interfaces", "1,234 packets",
+        "2026-01-01 00:00:00 to 00:00:45 UTC (45.5 s)", "written by Dumpcap (Wireshark) 4.4.19"]
+
+    # across midnight, and longer than a minute
+    capture.update({"first": 1767311990.0, "last": 1767312190.0, "duration": 200.0})
+    assert pcap.capture_summary(capture)[5] == "2026-01-01 23:59:50 to 2026-01-02 00:03:10 UTC (0:03:20)"
+
+    capture["duration"] = None
+    assert pcap.capture_summary(capture)[5] == "2026-01-01 23:59:50 to 2026-01-02 00:03:10 UTC"
+
+    assert pcap.capture_summary(None) == []
+    assert pcap.capture_summary({"file_name": "x.pcap", "first": None}) == ["x.pcap"]
+
+
+@pytest.mark.unit
+def test_order_notes_follow_the_capture_time_order():
+    index = {CATEGORY_HTTP: [{"method": "GET", "url": "http://a.example/"}],
+             "objects": [{"protocol": "http", "file_name": "a", "size": 1, "sha256": "ab" * 32}]}
+    http, files = pcap.index_tables(index, capture={"strict_time_order": True})
+    assert http["order"] == "Requests in the order they were sent, which is chronological."
+    assert files["order"] == "By protocol, then file name. Not chronological."
+
+    (http,) = pcap.index_tables(index, CATEGORY_HTTP, capture={"strict_time_order": False})
+    assert http["order"].endswith("not in time order, so this is not strictly chronological.")
+    (http,) = pcap.index_tables(index, CATEGORY_HTTP)
+    assert http["order"] == "Requests in the order they were sent."
+
+
+@pytest.mark.unit
+def test_ja4_display_types():
+    sessions = [
+        {"ja4": "t13_a", "sni": "one.example", "server": "198.51.100.1:443"},
+        {"ja4": "t13_a", "sni": "one.example", "server": "198.51.100.1:443"},
+        {"ja4": "t13_a", "sni": None, "server": "198.51.100.2:443"},
+        {"ja4": "t13_a", "sni": "two.example"},
+        {"ja4": "t13_a", "sni": "three.example"},
+        {"ja4": "q13_b", "sni": None, "server": "[2001:db8::1]:443"},
+        {"ja4": "t12_c"},
+        {"ja4": None, "sni": "ignored.example"},
+    ]
+    assert pcap.ja4_display_types(sessions) == {
+        "t13_a": "JA4 to one.example, 198.51.100.2, two.example, +1 more",
+        "q13_b": "JA4 to 2001:db8::1",
+        "t12_c": "JA4",
+    }
+
+
+@pytest.mark.unit
+def test_embedded_secrets_tags():
+    assert pcap.embedded_secrets_tags({"TLS": 2, "WireGuard": 1, "OPC UA": 1, "0x12345678": 1}) == [
+        "pcap_embedded_opc_ua_keys", "pcap_embedded_tls_keys", "pcap_embedded_unknown_keys",
+        "pcap_embedded_wireguard_keys"]
+
+
+@pytest.mark.unit
+def test_display_type_never_replaces_another_modules():
+    root = _new_root()
+    pcap_file = root.add_file_observable(NETWORK_PCAP)
+    analysis = PcapCategoryAnalysis()
+    pcap_file.add_analysis(analysis)
+    existing = root.add_observable_by_spec(F_FQDN, "shared.example")
+    existing.display_type = "Certificate SAN DNS Name"
+
+    add_pcap_observables(analysis, pcap_file, [
+        PcapObservable(CATEGORY_DNS, F_FQDN, "shared.example", display_type="DNS Query Name"),
+        PcapObservable(CATEGORY_DNS, F_FQDN, "own.example", display_type="DNS Query Name")], max_per_type=10)
+    labels = {o.value: o.display_type for o in analysis.observables}
+    assert labels == {"shared.example": "Certificate SAN DNS Name (fqdn)", "own.example": "DNS Query Name (fqdn)"}
+
+
+@pytest.mark.unit
+def test_capture_metadata_is_optional(monkeypatch, tmp_path, caplog):
+    def _no_capinfos(config, workdir, command):
+        if os.path.basename(command[0]) == "capinfos":
+            raise PcapError("capinfos exited with 2: damaged")
+        return "" if "-T" in command else STATISTICS_OUTPUT
+
+    monkeypatch.setattr(pcap, "_run_tool", _no_capinfos)
+    with caplog.at_level(logging.INFO):
+        index = pcap.dissect(_config(), NETWORK_PCAP, str(tmp_path / "out"))
+    assert index["capture"] is None
+    assert index["statistics"]["packets"] == 5
+    assert "no capture metadata for pcap" in caplog.text

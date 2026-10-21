@@ -32,6 +32,18 @@ sslkeylog.txt
   pivot to every alert containing that observable, exactly like clicking it in the alert tree. A
   file name pivots on the file's content: a file observable's value is its sha256.
 - Within a node, observables sort by type (files, URLs, FQDNs, JA4, User-Agents, hostnames, IPs, MACs).
+- Display types say where an observable came from: `DNS Query Name` (a name looked up), `DNS CNAME
+  Target` (a name only seen as an answer), `DNS Answer IP`, and for JA4 the sessions' destinations,
+  e.g. `JA4 to www.example.com, cdn.example.net, login.example.org, +9 more` (the SNI, or the
+  server address when there is none). An observable has one display type wherever it appears in the
+  alert, so the pcap modules never replace one another module set: a name that is also a certificate
+  SAN shows `Certificate SAN DNS Name` under PCAP DNS too.
+- Every table page starts with the capture it came from (`capinfos`, run in the sandbox: file name,
+  format, size, link types and interfaces, packet count, first to last packet time in UTC, and the
+  application that wrote it), and every table says how its rows are ordered. DNS, TLS, HTTP and
+  hostname rows are in capture order, called chronological only when `capinfos` reports the packets
+  in strict time order; carved files are by protocol and name (tshark's object export does not
+  record when an object crossed the wire); endpoints and flows are by volume.
 - Not added: multicast, broadcast, unspecified, link-local, loopback and reserved IPs; group
   (broadcast/multicast) and all-zero MACs; names ending in `excluded_fqdn_suffixes` (`.arpa`,
   `.local` by default).
@@ -96,7 +108,8 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   tshark decrypts with them on its own, so the plaintext pass already sees inside TLS: the HTTPS
   URLs and files appear under PCAP HTTP and PCAP Files, not under PCAP TLS Decryption.
   `read_embedded_secrets()` finds the blocks by reading only block headers, and the capture is
-  called out for the analyst: the pcap gets the `embedded_decryption_keys` tag, PCAP Analysis says
+  called out for the analyst: the pcap gets a tag per kind of secret (`pcap_embedded_tls_keys`,
+  `pcap_embedded_ssh_keys`, `pcap_embedded_wireguard_keys`, ...), PCAP Analysis says
   "decryption keys embedded (TLS keys for N sessions)" and lists the secret types, and PCAP TLS
   Decryption counts those sessions as "embedded in the capture". A separate key log then only
   triggers another tshark run if it has keys for sessions the embedded ones did not cover.
