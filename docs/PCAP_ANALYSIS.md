@@ -104,6 +104,11 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   4.4 cannot export HTTP/2 bodies, so no files are carved from it.
 - JA4 is the only fingerprint added (tshark computes it). JA3/JA3S are not added; the rest of the
   JA4+ family is under the FoxIO license and not implemented.
+- No auto-crawl of certificate names: a certificate in a capture was only observed, not fetched, so
+  the carved certificate files carry `DIRECTIVE_NO_CRAWL`. `x509_analyzer` still extracts their
+  CN/SAN FQDNs, SAN IPs, sha256 and the X509 detail tree, but does not add the `crawl` URLs that
+  would otherwise send every certificate name (every SAN, and CA certificates) to phishkit. The HTTP
+  URLs actually seen in the capture are added normally; an analyst can still crawl any URL by hand.
 - `archive` does not extract pcaps from archives (`excluded_mime_types` lists
   `application/vnd.tcpdump.pcap`); a capture inside a zip is not dissected.
 - No analysis caching (`cache_ttl` unset): `tls_keylog` changes another observable's analysis,

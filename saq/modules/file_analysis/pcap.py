@@ -46,6 +46,7 @@ from saq.constants import (
     F_MAC_ADDRESS,
     F_URL,
     F_USER_AGENT,
+    DIRECTIVE_NO_CRAWL,
     R_DOWNLOADED_FROM,
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
@@ -706,6 +707,8 @@ class PcapObservable:
     volatile: bool = False
     path: Optional[str] = None
     downloaded_from: Optional[str] = None
+    # a certificate ACE only observed on the wire: x509_analyzer should not crawl its names
+    no_crawl: bool = False
 
     @property
     def key(self) -> tuple[str, str]:
@@ -774,7 +777,7 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
             _add(PcapObservable(CATEGORY_TLS, F_JA4, row["ja4"]))
     for row in index.get("certificates", []):
         if row.get("path"):
-            _add(PcapObservable(CATEGORY_TLS, F_FILE, row["sha256"], path=row["path"]))
+            _add(PcapObservable(CATEGORY_TLS, F_FILE, row["sha256"], path=row["path"], no_crawl=True))
 
     for row in index.get(CATEGORY_HTTP, []):
         if row.get("url") and urlsplit(row["url"]).scheme in ("http", "https"):
@@ -820,6 +823,8 @@ def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: l
             observable = analysis.add_file_observable(os.path.join(os.path.dirname(pcap_file.full_path), item.path))
             if observable is not None:
                 observable.add_relationship(R_EXTRACTED_FROM, pcap_file)
+                if item.no_crawl:
+                    observable.add_directive(DIRECTIVE_NO_CRAWL)
                 if item.downloaded_from:
                     url = analysis.add_observable_by_spec(F_URL, item.downloaded_from)
                     if url is not None:

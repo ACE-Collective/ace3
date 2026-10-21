@@ -1115,3 +1115,63 @@ def test_certificate_names_fallbacks(monkeypatch):
 
     monkeypatch.setattr(pcap.x509_util, "san_dns_names", _broken)
     assert pcap.certificate_names(der) == {}
+
+
+@pytest.mark.unit
+def test_carved_certificates_are_marked_no_crawl():
+    from saq.constants import DIRECTIVE_NO_CRAWL
+
+    root = _new_root()
+    pcap_file = root.add_file_observable(HTTP_TLS_PCAPNG)
+    analysis = PcapCategoryAnalysis()
+    pcap_file.add_analysis(analysis)
+
+    with open(os.path.join(root.file_dir, "c.der"), "wb") as fp:
+        fp.write(_certificate_der("leaf.example", "CA", []))
+    with open(os.path.join(root.file_dir, "a.bin"), "wb") as fp:
+        fp.write(b"payload")
+    cert = PcapObservable(CATEGORY_TLS, F_FILE, "ab" * 32, path="c.der", no_crawl=True)
+    carved = PcapObservable(CATEGORY_FILES, F_FILE, "cd" * 32, path="a.bin")
+    monkey_dir = os.path.dirname(pcap_file.full_path)
+
+    def _rel(item):
+        return PcapObservable(item.category, item.o_type, item.value,
+                              path=os.path.relpath(os.path.join(root.file_dir, item.path), monkey_dir),
+                              no_crawl=item.no_crawl)
+
+    add_pcap_observables(analysis, pcap_file, [_rel(cert), _rel(carved)], max_per_type=10)
+    cert_obs = next(o for o in analysis.get_observables_by_type(F_FILE) if o.file_name == "c.der")
+    carved_obs = next(o for o in analysis.get_observables_by_type(F_FILE) if o.file_name == "a.bin")
+    assert cert_obs.has_directive(DIRECTIVE_NO_CRAWL)
+    assert not carved_obs.has_directive(DIRECTIVE_NO_CRAWL)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("suppress", [False, True])
+def test_x509_analyzer_honors_no_crawl(root_analysis, tmp_path, suppress):
+    from saq.constants import ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_X509_ANALYZER, DIRECTIVE_CRAWL, DIRECTIVE_NO_CRAWL
+    from saq.modules.x509 import X509Analysis
+
+    cert_path = tmp_path / "leaf.der"
+    cert_path.write_bytes(_certificate_der("leaf.example.com", "Example CA", ["alt.example.com"]))
+
+    root_analysis.analysis_mode = "test_groups"
+    cert = root_analysis.add_file_observable(str(cert_path))
+    if suppress:
+        cert.add_directive(DIRECTIVE_NO_CRAWL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_FILE_TYPE, "test_groups")
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_X509_ANALYZER, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root.get_observable(cert.uuid).get_and_load_analysis(X509Analysis)
+    assert analysis is not None
+    # the names are always extracted
+    assert "leaf.example.com" in _values(analysis, F_FQDN)
+    assert "alt.example.com" in _values(analysis, F_FQDN)
+    crawl_urls = [o for o in analysis.get_observables_by_type(F_URL) if o.has_directive(DIRECTIVE_CRAWL)]
+    assert (crawl_urls == []) is suppress

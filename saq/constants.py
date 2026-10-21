@@ -369,6 +369,7 @@ DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL = 'extract_urls_domain_as_url'
 DIRECTIVE_FORCE_DOWNLOAD = 'force_download'
 DIRECTIVE_IGNORE_AUTOMATION_LIMITS = 'ignore_automation_limits'
 DIRECTIVE_NO_CACHE = 'no_cache'
+DIRECTIVE_NO_CRAWL = 'no_crawl'
 DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
 DIRECTIVE_OCR = 'ocr'
@@ -406,6 +407,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_FORCE_DOWNLOAD: 'download the content of the URL no matter what',
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS: 'ignores any automation limits when analyzing this observable',
     DIRECTIVE_NO_CACHE: 'do not use local cache',
+    DIRECTIVE_NO_CRAWL: 'do not add crawl URLs for names extracted from this observable (e.g. a passively observed certificate)',
     DIRECTIVE_NO_SANDBOX: 'do not run the observable through any sandboxes',
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
     DIRECTIVE_OCR: 'run OCR text extraction on this image file',
