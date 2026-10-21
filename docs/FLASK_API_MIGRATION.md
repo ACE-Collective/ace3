@@ -252,7 +252,7 @@ The `app/auth/` user-management routes moved to `aceapi_v2/users/`; the pages th
 | `POST /auth/permission/add`    | `POST /api/v2/users/permissions`      |
 | `POST /auth/permission/delete` | `POST /api/v2/users/permissions/delete` |
 
-Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET /users/me/apikeys`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`.
+Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET`/`POST /users/me/apikeys`, `PUT`/`DELETE /users/me/apikeys/{key_id}`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`; the ones that change the caller's own keys also need `user:self` and a GUI session (`docs/USER_PREFERENCES.md`).
 
 Module: `aceapi_v2/users/{router,service,schemas}.py`. Tests: `tests/aceapi_v2/users/{test_router,test_service}.py`.
 

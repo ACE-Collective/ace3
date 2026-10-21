@@ -40,6 +40,24 @@ Without that check a self-service route would be reachable by every authenticate
 whatever its scope; `tests/saq/test_permission_catalog.py::TestRouteCoverage` pins the
 whole self-service surface so a new `/users/me` route cannot land ungated.
 
+### Your own API keys
+
+A user holding `user:self` creates, edits and revokes their own keys on the preferences
+page, without `user:write`:
+
+| Method | Path | |
+|---|---|---|
+| `POST` | `/api/v2/users/me/apikeys` | mint a key (*201*, `Cache-Control: no-store`); the plaintext is returned once |
+| `PUT` | `/api/v2/users/me/apikeys/{key_id}` | rename a key and replace its scope; another user's key is a 404 |
+| `DELETE` | `/api/v2/users/me/apikeys/{key_id}` | revoke a key; `revoked` is false for a missing key and for another user's |
+
+- **Gates.** These routes need `user:self` and a GUI session (`require_self_service(session_only=True)`). No API key is accepted, not even one minted with `inherit`, so a leaked key cannot leave new credentials behind that outlive its revocation.
+- **Scoped keys only.** There is no `inherit` field (`ApiKeySelfWrite`); only an admin mints a key with full account access.
+- **Only what you hold.** Each pattern in the scope must cover at least one permission in the catalog, and every permission it covers must be one the user holds (`_check_scope_within_grants` in `aceapi_v2/users/service.py`). `signature:*` is accepted for a user who holds every `signature` permission. `*:*` is refused for a user denied anything, since it covers what they are denied. An edit is held to the same rule over the whole scope, so a pattern the user no longer holds, or one an admin put there, has to be removed before the key can be saved.
+- **Request time still decides.** A key's scope is intersected with its owner's live grants on every request. A permission the user loses stops working for every key that names it at once; the entry stays on the key but allows nothing, and works again if the permission is granted back.
+
+Any group granted `*:*` holds `user:self` too. Its members can mint keys for any API permission they hold, `ai:*` and `engine:*` included, which before only an admin could put on a key. Deny `user:self`, or the permissions that should not be reachable with a key, where that is not wanted. A user without `user:read` sees no other user on Admin > Users, but still manages their own keys here.
+
 ## Adding a preference
 
 Every key is registered in `PREFERENCE_SCHEMAS` in `aceapi_v2/user_preferences/schemas.py`

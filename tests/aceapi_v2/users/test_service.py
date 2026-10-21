@@ -1,12 +1,21 @@
 """Tests for the aceapi_v2 users/roles management service."""
 
+import logging
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import AuthGroupUser, AuthUserPermission, User
+from saq.database.model import (
+    AuthApiKeyPermission,
+    AuthGroup,
+    AuthGroupPermission,
+    AuthGroupUser,
+    AuthUserPermission,
+    User,
+)
 from aceapi_v2.users import service
-from aceapi_v2.users.schemas import PermissionInput, UserUpdate
+from aceapi_v2.users.schemas import ApiKeyScope, PermissionInput, UserUpdate
 
 pytestmark = pytest.mark.integration
 
@@ -436,3 +445,213 @@ class TestManagementViewAndCatalog:
         assert d.username == "svc_detail_user"
         assert {(p.major, p.minor) for p in d.permissions} == {("alert", "read")}
         assert group.id in {g.id for g in d.groups}
+
+
+# The analyst group from the user:self design: everything except the CLI, secrets and user admin.
+ANALYST_GRANTS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
+
+
+async def _make_analyst(session: AsyncSession, username: str) -> User:
+    """A user whose only grants come from an analyst group."""
+    user = await _make_user(session, username)
+    group = AuthGroup(name=f"{username}_grp")
+    session.add(group)
+    await session.flush()
+    session.add(AuthGroupUser(group_id=group.id, user_id=user.id))
+    for major, minor, effect in ANALYST_GRANTS:
+        session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
+    await session.flush()
+    return user
+
+
+def _scope(*patterns: str) -> list[ApiKeyScope]:
+    return [ApiKeyScope(major=p.split(":")[0], minor=p.split(":")[1]) for p in patterns]
+
+
+async def _stored_scope(session: AsyncSession, key_id: int) -> list[tuple[str, str]]:
+    rows = (await session.execute(
+        select(AuthApiKeyPermission).where(AuthApiKeyPermission.api_key_id == key_id)
+    )).scalars().all()
+    return sorted((row.major, row.minor) for row in rows)
+
+
+class TestSelfServiceApiKeys:
+    """A user with user:self managing their own keys: scoped only, and only to what they hold."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", ["signature:*", "signature:read", "ai:fake"])
+    async def test_create_within_grants(self, session: AsyncSession, pattern):
+        # ai:fake is derived from the unittest config's ai_query_backend_fake, not the static catalog
+        user = await _make_analyst(session, "svc_self_ok")
+        key, plaintext = await service.create_user_api_key(
+            session, user.id, name="mine", inherit=False, scope=_scope(pattern),
+            created_by=user.id, self_service=True,
+        )
+        assert plaintext
+        assert key.created_by == user.id and key.inherit_user_scope is False
+        assert await _stored_scope(session, key.id) == [tuple(pattern.split(":"))]
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_inherit(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_inherit")
+        with pytest.raises(service.InvalidPermissionError, match="administrator"):
+            await service.create_user_api_key(
+                session, user.id, name="mine", inherit=True, scope=[], self_service=True)
+        assert await service.list_user_api_keys(session, user.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern, unheld", [
+        ("*:*", "user:write"),
+        ("user:*", "user:write"),
+        ("*:read", "secret:read"),
+        ("cli:execute", "cli:execute"),
+    ])
+    async def test_create_refuses_a_pattern_covering_what_the_user_lacks(
+        self, session: AsyncSession, caplog, pattern, unheld
+    ):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_unheld")
+        with pytest.raises(service.InvalidPermissionError) as error:
+            await service.create_user_api_key(
+                session, user.id, name="too wide", inherit=False, scope=_scope("signature:read", pattern),
+                self_service=True,
+            )
+        assert f"{pattern} covers" in str(error.value) and unheld in str(error.value)
+        assert "signature:read" not in str(error.value)  # only the offending pattern is reported
+        assert await service.list_user_api_keys(session, user.id) == []
+
+        refusals = [r for r in caplog.records if r.levelno == logging.WARNING and "cannot give api key" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].user_id == user.id and refusals[0].api_key_name == "too wide"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", ["signature:write", "Signature:read", "nosuch:*"])
+    async def test_create_refuses_a_pattern_matching_no_permission(self, session: AsyncSession, pattern):
+        user = await _make_analyst(session, "svc_self_nothing")
+        with pytest.raises(service.InvalidPermissionError, match="matches no permission ACE enforces"):
+            await service.create_user_api_key(
+                session, user.id, name="typo", inherit=False, scope=_scope(pattern), self_service=True)
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_grants_can_mint_nothing(self, session: AsyncSession):
+        user = await _make_user(session, "svc_self_nogrants")
+        with pytest.raises(service.InvalidPermissionError, match="which you do not hold"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=_scope("alert:read"), self_service=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
+    async def test_a_repeated_pattern_is_stored_once(self, session: AsyncSession, self_service):
+        user = await _make_analyst(session, "svc_self_dupe")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="k", inherit=False, scope=_scope("signature:read", "signature:read"),
+            self_service=self_service,
+        )
+        assert await _stored_scope(session, key.id) == [("signature", "read")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
+    async def test_patterns_differing_only_in_case_are_refused(self, session: AsyncSession, self_service):
+        """The unique index is case-insensitive, so storing both would fail the INSERT (a 500)."""
+        user = await _make_analyst(session, "svc_self_case")
+        with pytest.raises(service.InvalidPermissionError, match="differ only in case"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=_scope("signature:read", "Signature:Read"),
+                self_service=self_service,
+            )
+
+    @pytest.mark.asyncio
+    async def test_self_update_holds_the_whole_scope_to_the_rules(self, session: AsyncSession):
+        """An admin may have put a pattern on the key that the user could not; the user's own edit
+        must leave a scope they could have minted, and a refused edit changes nothing."""
+        user = await _make_analyst(session, "svc_self_update")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="from admin", inherit=False, scope=_scope("*:*"))
+
+        with pytest.raises(service.InvalidPermissionError, match=r"\*:\* covers"):
+            await service.update_user_api_key(
+                session, key.id, name="renamed", inherit=False, scope=_scope("*:*", "alert:read"),
+                owner_id=user.id, actor_id=user.id,
+            )
+        await session.refresh(key)
+        assert key.name == "from admin"
+        assert await _stored_scope(session, key.id) == [("*", "*")]
+
+        updated = await service.update_user_api_key(
+            session, key.id, name="renamed", inherit=False, scope=_scope("signature:*"),
+            owner_id=user.id, actor_id=user.id,
+        )
+        assert updated is not None and updated.name == "renamed"
+        assert await _stored_scope(session, key.id) == [("signature", "*")]
+
+    @pytest.mark.asyncio
+    async def test_self_update_turns_an_inherit_key_into_a_scoped_one(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_convert")
+        key, _ = await service.create_user_api_key(session, user.id, name="full", inherit=True, scope=[])
+
+        with pytest.raises(service.InvalidPermissionError, match="administrator"):
+            await service.update_user_api_key(
+                session, key.id, name="full", inherit=True, scope=[], owner_id=user.id)
+
+        updated = await service.update_user_api_key(
+            session, key.id, name="narrow", inherit=False, scope=_scope("alert:read"), owner_id=user.id)
+        assert updated.inherit_user_scope is False
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+
+    @pytest.mark.asyncio
+    async def test_self_update_of_another_users_key_is_not_found(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_update_me")
+        other = await _make_analyst(session, "svc_self_update_other")
+        key, _ = await service.create_user_api_key(
+            session, other.id, name="theirs", inherit=False, scope=_scope("alert:read"))
+
+        assert await service.update_user_api_key(
+            session, key.id, name="mine now", inherit=False, scope=_scope("signature:read"), owner_id=user.id,
+        ) is None
+        await session.refresh(key)
+        assert key.name == "theirs"
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+
+    @pytest.mark.asyncio
+    async def test_self_revoke_only_reaches_the_users_own_keys(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_revoke_me")
+        other = await _make_analyst(session, "svc_self_revoke_other")
+        mine, _ = await service.create_user_api_key(session, user.id, name="mine", inherit=False, scope=_scope("alert:read"))
+        theirs, _ = await service.create_user_api_key(session, other.id, name="theirs", inherit=False, scope=_scope("alert:read"))
+
+        assert await service.revoke_user_api_key(session, theirs.id, owner_id=user.id) is False
+        assert [k.id for k in await service.list_user_api_keys(session, other.id)] == [theirs.id]
+
+        assert await service.revoke_user_api_key(session, mine.id, owner_id=user.id) is True
+        assert await service.list_user_api_keys(session, user.id) == []
+
+    @pytest.mark.asyncio
+    async def test_key_changes_are_audited_without_the_secret(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.INFO)
+        user = await _make_analyst(session, "svc_self_audit")
+        key, plaintext = await service.create_user_api_key(
+            session, user.id, name="audited", inherit=False, scope=_scope("alert:read"),
+            created_by=user.id, self_service=True,
+        )
+        await service.update_user_api_key(
+            session, key.id, name="audited", inherit=False, scope=_scope("signature:read"),
+            owner_id=user.id, actor_id=user.id,
+        )
+        await service.revoke_user_api_key(session, key.id, owner_id=user.id, actor_id=user.id)
+
+        audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key.id]
+        assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
+        assert all(r.levelno == logging.INFO and r.actor_id == user.id and r.user_id == user.id for r in audits)
+        assert "alert:read" in audits[0].getMessage() and "signature:read" in audits[1].getMessage()
+        assert plaintext not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_held_catalog_lists_only_what_the_user_holds(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_catalog")
+        held = await service.list_held_catalog(session, user.id)
+        pairs = [(e.major, e.minor) for e in held]
+
+        assert pairs == sorted(pairs)
+        assert {("signature", "read"), ("user", "self"), ("ai", "fake")} <= set(pairs)
+        assert not {("user", "write"), ("cli", "execute"), ("secret", "read")} & set(pairs)
+        assert all(e.description for e in held)

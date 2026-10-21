@@ -1,7 +1,9 @@
+import hashlib
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 from aceapi_v2.application import app
 from aceapi_v2.database import build_database_url, get_async_session
 from aceapi_v2.users.service import create_user_api_key
+from saq.configuration import get_config
 from saq.database.model import User
 
 
@@ -32,6 +35,16 @@ async def make_api_key(session: AsyncSession, user_id: int, *, inherit: bool = T
     )
     await session.flush()
     return plaintext
+
+
+def make_flask_session_cookie(user_id) -> str:
+    """A Flask GUI session cookie for the given user id: what the browser sends to aceapi_v2."""
+    s = URLSafeTimedSerializer(
+        get_config().gui.secret_key,
+        salt="cookie-session",
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
+    )
+    return s.dumps({"_user_id": str(user_id)})
 
 
 def api_key_client(api_key: str) -> AsyncClient:

@@ -72,6 +72,25 @@ class ApiKeyUpdate(BaseModel):
     scope: list[ApiKeyScope] = []
 
 
+class ApiKeySelfWrite(BaseModel):
+    """A user's request to create or change one of their OWN keys. Self-service keys are always
+    scoped -- only an admin mints a key that inherits its owner's full permissions -- so there is
+    no inherit field, and this is deliberately not ApiKeyCreate with one removed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=255)
+    scope: list[ApiKeyScope] = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 class GroupRead(BaseModel):
     id: int
     name: str

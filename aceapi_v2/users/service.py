@@ -24,6 +24,8 @@ from saq.database.model import (
     AuthUserPermission,
     User,
 )
+from saq.permissions.catalog import get_catalog_pairs, get_permission_catalog
+from saq.permissions.logic import get_permission_rows_async, held_catalog_pairs, key_scope_allows
 from saq.util import sha256_str
 from aceapi_v2.users.schemas import (
     ApiKeyRead,
@@ -501,14 +503,75 @@ def _validate_api_key_scope(
 
     rows: list[AuthApiKeyPermission] = []
     if not inherit:
+        # u_api_key_perm is case-insensitive (ascii_general_ci), so a repeated pattern -- exactly or
+        # in another case -- would fail the INSERT. Enforcement matches case-sensitively, so a
+        # case variant is a different pattern that cannot be stored next to the first: refuse it.
+        seen: dict[tuple[str, str], tuple[str, str]] = {}
         for perm in scope:
             major = (perm.major or "").strip()
             minor = (perm.minor or "").strip()
             if not major or not minor:
                 raise InvalidPermissionError("both a major and a minor are required for each scope entry")
+            folded = (major.lower(), minor.lower())
+            if folded in seen:
+                if seen[folded] == (major, minor):
+                    continue
+                first_major, first_minor = seen[folded]
+                raise InvalidPermissionError(
+                    f"{first_major}:{first_minor} and {major}:{minor} differ only in case; keep one")
+            seen[folded] = (major, minor)
             rows.append(AuthApiKeyPermission(major=major, minor=minor, effect="ALLOW"))
 
     return name, rows
+
+
+def _describe_scope(inherit: bool, rows: list[AuthApiKeyPermission]) -> str:
+    if inherit:
+        return "inherit"
+    return ", ".join(f"{row.major}:{row.minor}" for row in rows)
+
+
+def _reject_self_service_inherit(inherit: bool) -> None:
+    if inherit:
+        raise InvalidPermissionError(
+            "a key you manage yourself must list the permissions it needs; only an administrator "
+            "can create a key with full account access")
+
+
+async def _check_scope_within_grants(
+    session: AsyncSession, user_id: int, key_name: str, rows: list[AuthApiKeyPermission]
+) -> None:
+    """Raise InvalidPermissionError unless every pattern in a self-service key's scope covers at
+    least one permission ACE enforces, and every permission it covers is one the owner holds.
+
+    This is not what keeps a key inside its owner's permissions: check_permission intersects the
+    scope with the owner's live grants on every request, so a key never outlives a grant its
+    owner loses. It keeps a self-minted key from claiming more than it can do (a `*:*` key for an
+    owner denied user:write) and turns a typo, which would otherwise allow nothing, into an error.
+    """
+    catalog_pairs = get_catalog_pairs()
+    user_perms, group_perms = await get_permission_rows_async(session, user_id)
+    held = held_catalog_pairs(user_perms, group_perms, catalog_pairs)
+
+    problems: list[str] = []
+    for row in rows:
+        pattern = f"{row.major}:{row.minor}"
+        covered = {pair for pair in catalog_pairs if key_scope_allows([(row.major, row.minor)], *pair)}
+        if not covered:
+            problems.append(f"{pattern} matches no permission ACE enforces")
+            continue
+        unheld = sorted(covered - held)
+        if unheld:
+            problems.append(
+                f"{pattern} covers {', '.join(f'{major}:{minor}' for major, minor in unheld)}, "
+                "which you do not hold")
+
+    if problems:
+        detail = "; ".join(problems)
+        logging.warning(
+            "user %s cannot give api key %r that scope: %s", user_id, key_name, detail,
+            extra={"user_id": user_id, "api_key_name": key_name})
+        raise InvalidPermissionError(detail)
 
 
 async def create_user_api_key(
@@ -519,6 +582,7 @@ async def create_user_api_key(
     inherit: bool,
     scope: list[ApiKeyScope],
     created_by: int | None = None,
+    self_service: bool = False,
 ) -> tuple[AuthApiKey, str]:
     """Create a new API key for a user; return ``(key, plaintext)``. The plaintext is available
     only here and is never recoverable afterward.
@@ -526,12 +590,20 @@ async def create_user_api_key(
     Exactly one of `inherit` (the key gets the owner's full permissions) or a non-empty `scope`
     (ALLOW-only (major, minor) patterns) must be given -- there is no silent full-scope default.
     Only the sha256 is stored.
+
+    `self_service` is the owner minting their own key (POST /users/me/apikeys): it must be
+    scoped, and only to permissions the owner holds (_check_scope_within_grants).
     """
+    if self_service:
+        _reject_self_service_inherit(inherit)
     name, rows = _validate_api_key_scope(name=name, inherit=inherit, scope=scope)
 
     user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise UserNotFoundForApiKeyError(user_id)
+
+    if self_service:
+        await _check_scope_within_grants(session, user_id, name, rows)
 
     api_key = str(uuid.uuid4())
     key = AuthApiKey(
@@ -545,6 +617,10 @@ async def create_user_api_key(
 
     session.add(key)
     await session.flush()
+    logging.info(
+        "AUDIT: user %s created api key %s (%r) for user %s with scope %s",
+        created_by, key.id, name, user_id, _describe_scope(inherit, rows),
+        extra={"api_key_id": key.id, "user_id": user_id, "actor_id": created_by})
     return key, api_key
 
 
@@ -555,19 +631,32 @@ async def update_user_api_key(
     name: str,
     inherit: bool,
     scope: list[ApiKeyScope],
+    owner_id: int | None = None,
+    actor_id: int | None = None,
 ) -> AuthApiKey | None:
     """Rename a key and replace its scope in place. Returns None if no such key exists.
 
     The stored hash is untouched, so a credential already handed out keeps working with its new
     permissions on the next request (scope is read from the database per request, never cached).
+
+    `owner_id` is a user editing their own key (PUT /users/me/apikeys/{key_id}): a key they do not
+    own is reported as missing, and the new scope is held to the self-service rules of
+    create_user_api_key -- the whole scope, so a pattern the owner no longer holds, or one an
+    administrator put there, has to go before anything else about the key can change.
     """
+    if owner_id is not None:
+        _reject_self_service_inherit(inherit)
     name, rows = _validate_api_key_scope(name=name, inherit=inherit, scope=scope)
 
-    key = (await session.execute(
-        select(AuthApiKey).options(selectinload(AuthApiKey.scope)).where(AuthApiKey.id == key_id)
-    )).scalar_one_or_none()
+    stmt = select(AuthApiKey).options(selectinload(AuthApiKey.scope)).where(AuthApiKey.id == key_id)
+    if owner_id is not None:
+        stmt = stmt.where(AuthApiKey.user_id == owner_id)
+    key = (await session.execute(stmt)).scalar_one_or_none()
     if key is None:
         return None
+
+    if owner_id is not None:
+        await _check_scope_within_grants(session, owner_id, name, rows)
 
     key.name = name
     key.inherit_user_scope = inherit
@@ -578,6 +667,10 @@ async def update_user_api_key(
     await session.flush()
     key.scope.extend(rows)
     await session.flush()
+    logging.info(
+        "AUDIT: user %s updated api key %s (%r) of user %s to scope %s",
+        actor_id, key.id, name, key.user_id, _describe_scope(inherit, rows),
+        extra={"api_key_id": key.id, "user_id": key.user_id, "actor_id": actor_id})
     return key
 
 
@@ -592,12 +685,33 @@ def _api_key_read(key: AuthApiKey) -> ApiKeyRead:
     )
 
 
-async def revoke_user_api_key(session: AsyncSession, key_id: int) -> bool:
-    """Delete an API key by id. Returns False if no such key existed. This is not reversible."""
+async def revoke_user_api_key(
+    session: AsyncSession, key_id: int, owner_id: int | None = None, actor_id: int | None = None
+) -> bool:
+    """Delete an API key by id. Returns False if no such key existed -- or, with `owner_id` (a
+    user revoking their own key), if the key belongs to someone else. This is not reversible."""
     key = await session.get(AuthApiKey, key_id)
-    if key is None:
+    if key is None or (owner_id is not None and key.user_id != owner_id):
         return False
 
+    name, user_id = key.name, key.user_id
     await session.delete(key)
     await session.flush()
+    logging.info(
+        "AUDIT: user %s revoked api key %s (%r) of user %s", actor_id, key_id, name, user_id,
+        extra={"api_key_id": key_id, "user_id": user_id, "actor_id": actor_id})
     return True
+
+
+async def list_held_catalog(session: AsyncSession, user_id: int) -> list[CatalogEntryRead]:
+    """The catalog entries a user holds, for the scope picker on their own keys. Read from the
+    in-memory catalog, which includes the config-derived ai:<backend> entries, so it offers exactly
+    what _check_scope_within_grants accepts."""
+    user_perms, group_perms = await get_permission_rows_async(session, user_id)
+    catalog = sorted(get_permission_catalog(), key=lambda entry: (entry.major, entry.minor))
+    held = held_catalog_pairs(user_perms, group_perms, {(entry.major, entry.minor) for entry in catalog})
+    return [
+        CatalogEntryRead(major=entry.major, minor=entry.minor, description=entry.description)
+        for entry in catalog
+        if (entry.major, entry.minor) in held
+    ]

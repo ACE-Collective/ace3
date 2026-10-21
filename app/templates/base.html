@@ -136,8 +136,8 @@
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="user-dropdown">
                             {# API keys are display-once and never recoverable, so there is no
-                               "copy my key" action. Keys are minted and revoked by an admin on the
-                               user management page (Admin > Users). #}
+                               "copy my key" action. A user manages their own keys on Preferences
+                               (with user:self); an admin manages anyone's on Admin > Users. #}
                             <li><a class="dropdown-item" href="{{ url_for('main.preferences') }}">Preferences</a></li>
                             <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">Change Password</a></li>
                             <li><hr class="dropdown-divider"></li>

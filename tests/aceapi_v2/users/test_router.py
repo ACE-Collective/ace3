@@ -1,14 +1,20 @@
 """Tests for the aceapi_v2 users/roles management router."""
 
+import logging
+
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
-from aceapi_v2.users.service import create_user_api_key
-from saq.database.model import AuthGroup, AuthUserPermission, User
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from aceapi_v2.users.schemas import ApiKeyScope
+from aceapi_v2.users.service import create_user_api_key, list_user_api_keys
+from saq.configuration import get_config
+from saq.configuration.schema import ConfigApiKey
+from saq.database.model import AuthApiKey, AuthGroup, AuthGroupPermission, AuthGroupUser, AuthUserPermission, User
+from saq.util import sha256_str
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, make_flask_session_cookie
 
 pytestmark = pytest.mark.integration
 
@@ -523,3 +529,258 @@ class TestSelfService:
         assert (await noperm_client.patch("/users/me", json={"timezone": "Mars/Olympus"})).status_code == 422
         assert (await noperm_client.patch("/users/me", json={"display_name": "   "})).status_code == 422
         assert (await noperm_client.patch("/users/me", json={"queue": ""})).status_code == 422
+
+
+# The analyst group from the user:self design: everything except the CLI, secrets and user admin.
+ANALYST_GRANTS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
+
+# a signature:read route that needs no data behind it: 404 once past the gate, 403 at it
+SIGNATURE_READ_PATH = "/signatures/yara-qa/matches/999999"
+
+CONFIG_KEY = "7d0c6a52-3f7e-4f5e-9a51-6c1f0f3b2e11"
+
+
+def _scope(*patterns: str) -> list[ApiKeyScope]:
+    return [ApiKeyScope(major=p.split(":")[0], minor=p.split(":")[1]) for p in patterns]
+
+
+def _warned(caplog, text: str) -> bool:
+    return any(r.levelno == logging.WARNING and text in r.getMessage() for r in caplog.records)
+
+
+async def _make_analyst(session: AsyncSession, username: str) -> tuple[User, AuthGroup]:
+    """A user whose only grants come from an analyst group (and so who holds user:self)."""
+    user = await _make_user(session, username, perms=[])
+    group = AuthGroup(name=f"{username}_grp")
+    session.add(group)
+    await session.flush()
+    session.add(AuthGroupUser(group_id=group.id, user_id=user.id))
+    for major, minor, effect in ANALYST_GRANTS:
+        session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
+    await session.flush()
+    return user, group
+
+
+def _browser_for(user: User, fetch_site: str = "same-origin") -> AsyncClient:
+    """The GUI's credential: the Flask session cookie, sent by the browser's same-origin fetch."""
+    client = AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"sec-fetch-site": fetch_site})
+    client.cookies.set("session", make_flask_session_cookie(user.id))
+    return client
+
+
+def _key_body(name: str, *patterns: str) -> dict:
+    return {"name": name, "scope": [{"major": p.split(":")[0], "minor": p.split(":")[1]} for p in patterns]}
+
+
+async def _mint(c: AsyncClient, *patterns: str) -> dict:
+    r = await c.post("/users/me/apikeys", json=_key_body("mine", *patterns))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+class TestSelfServiceApiKeyRoutes:
+    """POST/PUT/DELETE /users/me/apikeys: a user with user:self manages their own keys from the GUI."""
+
+    @pytest.mark.asyncio
+    async def test_mint_returns_the_key_once_and_it_works(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_mint")
+        async with _browser_for(user) as c:
+            r = await c.post("/users/me/apikeys", json=_key_body("splunk app", "signature:read"))
+            assert r.status_code == 201, r.text
+            assert r.headers["cache-control"] == "no-store"
+            created = r.json()
+            assert created["user_id"] == user.id
+
+            listed = (await c.get("/users/me/apikeys")).json()
+            mine = next(k for k in listed if k["id"] == created["key_id"])
+            assert mine["name"] == "splunk app" and mine["created_by"] == user.id
+            assert mine["scope"] == [{"major": "signature", "minor": "read"}]
+            assert "api_key" not in mine
+
+        async with api_key_client(created["api_key"]) as key:
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404
+            # a scoped key reaches nothing outside its scope, the self-service routes included
+            assert (await key.get("/users/me")).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_without_user_self_nothing_changes(self, _override_db_session, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user, _ = await _make_analyst(session, "rtr_self_denied")
+        session.add(AuthUserPermission(user_id=user.id, major="user", minor="self", effect="DENY"))
+        await session.flush()
+        key, _ = await create_user_api_key(session, user.id, name="admin made", inherit=False, scope=_scope("alert:read"))
+        await session.flush()
+
+        async with _browser_for(user) as c:
+            assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+            assert (await c.put(f"/users/me/apikeys/{key.id}", json=_key_body("k", "alert:read"))).status_code == 403
+            assert (await c.delete(f"/users/me/apikeys/{key.id}")).status_code == 403
+            # listing needs no permission, and the key is untouched
+            listed = {k["id"]: k for k in (await c.get("/users/me/apikeys")).json()}
+            assert listed[key.id]["name"] == "admin made"
+            assert listed[key.id]["scope"] == [{"major": "alert", "minor": "read"}]
+
+        assert _warned(caplog, f"user {user.id} does not have permission user.self")
+
+    @pytest.mark.asyncio
+    async def test_no_api_key_can_manage_keys(self, _override_db_session, session: AsyncSession, caplog):
+        """Not a scoped key (even one scoped to user:self), and not an inheriting key either: a
+        leaked key must not be able to leave new credentials behind."""
+        caplog.set_level(logging.WARNING)
+        user, _ = await _make_analyst(session, "rtr_self_keys")
+        scoped = await make_api_key(session, user.id, inherit=False, scope=[("user", "self"), ("alert", "read")])
+        own, _ = await create_user_api_key(session, user.id, name="target", inherit=False, scope=_scope("alert:read"))
+        await session.flush()
+
+        for credential in (scoped, user.test_api_key):
+            async with api_key_client(credential) as c:
+                assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+                assert (await c.put(f"/users/me/apikeys/{own.id}", json=_key_body("k", "signature:read"))).status_code == 403
+                assert (await c.delete(f"/users/me/apikeys/{own.id}")).status_code == 403
+
+        assert _warned(caplog, "this route needs a GUI session")
+        assert [k.id for k in await list_user_api_keys(session, user.id) if k.name == "target"] == [own.id]
+
+    @pytest.mark.asyncio
+    async def test_a_config_key_is_refused(self, _override_db_session, monkeypatch):
+        monkeypatch.setattr(get_config(), "apikeys", {
+            "ops": ConfigApiKey(key=sha256_str(CONFIG_KEY), scope=["*:*"]),
+        })
+        async with api_key_client(CONFIG_KEY) as c:
+            assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_a_cross_site_request_cannot_mint(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_csrf")
+        async with _browser_for(user, fetch_site="cross-site") as c:
+            assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+        # nothing was minted: the only key is the inherit key _make_user gave the user
+        assert [k.inherit_user_scope for k in await list_user_api_keys(session, user.id)] == [True]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [
+        {"name": "k", "inherit": True, "scope": []},
+        {"name": "k", "inherit": False, "scope": [{"major": "alert", "minor": "read"}]},
+        {"name": "  ", "scope": [{"major": "alert", "minor": "read"}]},
+        {"name": "k", "scope": []},
+        {"name": "x" * 256, "scope": [{"major": "alert", "minor": "read"}]},
+    ])
+    async def test_the_request_body_is_validated(self, _override_db_session, session: AsyncSession, body):
+        """There is no inherit field to set; a name and at least one permission are required."""
+        user, _ = await _make_analyst(session, "rtr_self_body")
+        async with _browser_for(user) as c:
+            assert (await c.post("/users/me/apikeys", json=body)).status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_a_scope_beyond_the_users_grants_is_refused(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_wide")
+        async with _browser_for(user) as c:
+            r = await c.post("/users/me/apikeys", json=_key_body("k", "*:*"))
+            assert r.status_code == 400
+            assert "user:write" in r.json()["detail"]
+
+            r = await c.post("/users/me/apikeys", json=_key_body("k", "signature:wrte"))
+            assert r.status_code == 400
+            assert "matches no permission" in r.json()["detail"]
+
+            # an edit is held to the same rule, and a refused edit leaves the key as it was
+            created = await _mint(c, "alert:read")
+            r = await c.put(f"/users/me/apikeys/{created['key_id']}", json=_key_body("k", "user:*"))
+            assert r.status_code == 400
+            assert "user:write" in r.json()["detail"]
+            listed = {k["id"]: k for k in (await c.get("/users/me/apikeys")).json()}
+            assert listed[created["key_id"]]["scope"] == [{"major": "alert", "minor": "read"}]
+
+    @pytest.mark.asyncio
+    async def test_edit_own_key_keeps_the_secret(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_edit")
+        async with _browser_for(user) as c:
+            created = await _mint(c, "alert:read")
+            hash_before = (await session.execute(
+                select(AuthApiKey.key_hash).where(AuthApiKey.id == created["key_id"]))).scalar_one()
+
+            r = await c.put(f"/users/me/apikeys/{created['key_id']}", json=_key_body("renamed", "signature:*"))
+            assert r.status_code == 200, r.text
+            assert r.json()["name"] == "renamed"
+            assert r.json()["scope"] == [{"major": "signature", "minor": "*"}]
+
+        hash_after = (await session.execute(
+            select(AuthApiKey.key_hash).where(AuthApiKey.id == created["key_id"]))).scalar_one()
+        assert hash_after == hash_before
+        async with api_key_client(created["api_key"]) as key:
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_another_users_key_cannot_be_edited_or_revoked(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_me")
+        other, _ = await _make_analyst(session, "rtr_self_other")
+        async with _browser_for(other) as c:
+            theirs = await _mint(c, "alert:read")
+
+        async with _browser_for(user) as c:
+            r = await c.put(f"/users/me/apikeys/{theirs['key_id']}", json=_key_body("mine", "signature:read"))
+            assert r.status_code == 404
+            r = await c.delete(f"/users/me/apikeys/{theirs['key_id']}")
+            assert r.status_code == 200 and r.json() == {"revoked": False}
+
+        # 403, not 401: the key still authenticates, and its scope is still only alert:read
+        async with api_key_client(theirs["api_key"]) as key:
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_revoke_own_key(self, _override_db_session, session: AsyncSession):
+        user, _ = await _make_analyst(session, "rtr_self_revoke")
+        async with _browser_for(user) as c:
+            created = await _mint(c, "signature:read")
+            r = await c.delete(f"/users/me/apikeys/{created['key_id']}")
+            assert r.status_code == 200 and r.json() == {"revoked": True}
+
+        async with api_key_client(created["api_key"]) as key:
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 401
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("removal", ["revoke_grant", "leave_group", "deny"])
+    async def test_a_key_loses_what_its_owner_loses(
+        self, _override_db_session, session: AsyncSession, caplog, removal
+    ):
+        """A self-minted key never outlives its owner's grants: the scope is intersected with the
+        owner's live grants on every request, so taking the permission away from the user -- by
+        any route -- takes it away from the key at once, and granting it back restores it."""
+        caplog.set_level(logging.WARNING)
+        if removal == "revoke_grant":
+            # signature:read comes from one direct grant and nothing else, so deleting it is what
+            # takes it away
+            user = await _make_user(session, "rtr_self_lose", perms=[("user", "self"), ("signature", "read")])
+            grant = (await session.execute(select(AuthUserPermission).where(
+                AuthUserPermission.user_id == user.id, AuthUserPermission.major == "signature"))).scalar_one()
+        else:
+            user, group = await _make_analyst(session, "rtr_self_lose")
+
+        async with _browser_for(user) as c:
+            created = await _mint(c, "signature:read")
+
+        async with api_key_client(created["api_key"]) as key:
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404
+
+            if removal == "revoke_grant":
+                await session.delete(grant)
+            elif removal == "leave_group":
+                await session.execute(delete(AuthGroupUser).where(AuthGroupUser.user_id == user.id))
+            else:
+                deny = AuthUserPermission(user_id=user.id, major="signature", minor="read", effect="DENY")
+                session.add(deny)
+            await session.flush()
+
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 403
+            assert _warned(caplog, f"user {user.id} does not have permission signature.read")
+
+            if removal == "revoke_grant":
+                session.add(AuthUserPermission(user_id=user.id, major="signature", minor="read", effect="ALLOW"))
+            elif removal == "leave_group":
+                session.add(AuthGroupUser(group_id=group.id, user_id=user.id))
+            else:
+                await session.delete(deny)
+            await session.flush()
+
+            assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404

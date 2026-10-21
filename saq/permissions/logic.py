@@ -123,6 +123,14 @@ def user_has_permission(
     return _evaluate_permission(user_perms, group_perms, major, minor)
 
 
+def held_catalog_pairs(user_perms, group_perms, catalog_pairs) -> frozenset[tuple[str, str]]:
+    """The catalog pairs the fetched rows allow: what the user actually holds, as concrete pairs
+    rather than the wildcard patterns they were granted as."""
+    return frozenset(
+        pair for pair in catalog_pairs if _evaluate_permission(user_perms, group_perms, *pair)
+    )
+
+
 async def user_has_permission_async(
     session: AsyncSession,
     user_id: int,
@@ -130,6 +138,13 @@ async def user_has_permission_async(
     minor: str,
 ) -> bool:
     """Async equivalent of user_has_permission() using an AsyncSession."""
+    user_perms, group_perms = await get_permission_rows_async(session, user_id)
+    return _evaluate_permission(user_perms, group_perms, major, minor)
+
+
+async def get_permission_rows_async(session: AsyncSession, user_id: int) -> tuple[list, list]:
+    """A user's own and group (major, minor, effect) grant rows, fetched once so that many
+    permissions can be evaluated against them without another query each."""
     # Fetch all user permissions and filter via fnmatch (pattern in DB, value is requested)
     user_perms = (
         await session.execute(
@@ -163,4 +178,4 @@ async def user_has_permission_async(
             )
         ).all()
 
-    return _evaluate_permission(user_perms, group_perms, major, minor)
+    return list(user_perms), list(group_perms)

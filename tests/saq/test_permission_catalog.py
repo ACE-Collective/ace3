@@ -153,6 +153,9 @@ _SELF_SERVICE_ROUTES = {
     ("GET", "/users/me"),
     ("PATCH", "/users/me"),
     ("GET", "/users/me/apikeys"),
+    ("POST", "/users/me/apikeys"),
+    ("PUT", "/users/me/apikeys/{key_id}"),
+    ("DELETE", "/users/me/apikeys/{key_id}"),
     ("GET", "/users/me/preferences"),
     ("GET", "/users/me/preferences/{key}"),
     ("PUT", "/users/me/preferences/{key}"),
@@ -275,6 +278,20 @@ class TestRouteCoverage:
             and _dependant_has_gate(dependant, {"self_service_dependency"})
         }
         assert gated == _SELF_SERVICE_ROUTES
+
+    def test_changing_your_own_keys_requires_user_self(self):
+        """The self-service gate checks no grant, so on the routes that create or change the
+        caller's own keys it is user:self that keeps a user an admin denied it from doing so."""
+        from aceapi_v2.application import app as v2_app
+
+        key_routes = {("POST", "/users/me/apikeys"), ("PUT", "/users/me/apikeys/{key_id}"), ("DELETE", "/users/me/apikeys/{key_id}")}
+        pairs = {
+            (method, path): _dependant_permission_pairs(dependant)
+            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for method in methods
+            if (method, path) in key_routes
+        }
+        assert pairs == {route: {("user", "self")} for route in key_routes}
 
     def test_ai_query_routes_gate_exactly_their_backend(self):
         """POST /query/<name> must require exactly ai:<name> -- for every enabled backend."""

@@ -83,6 +83,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("svs", "validate", "Request SVS YARA validations of a rule repository's commits and read their status (counts, rule names and uuids only; the CI key's permission)."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
+    CatalogEntry("user", "self", "Create, edit and revoke your own scoped API keys, limited to permissions you already hold."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),
 )
 

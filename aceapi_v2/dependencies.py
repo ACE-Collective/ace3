@@ -227,7 +227,7 @@ async def screen_from_path(screen: str) -> Optional[str]:
     return screen
 
 
-def require_self_service(auth_dependency: Callable | None = None) -> Callable:
+def require_self_service(auth_dependency: Callable | None = None, session_only: bool = False) -> Callable:
     """Factory for the gate on routes that act ONLY on the caller's own account or GUI state.
 
     Self-service routes are authorized by *being* the user (docs/USER_PREFERENCES.md): the user id
@@ -245,6 +245,10 @@ def require_self_service(auth_dependency: Callable | None = None) -> Callable:
     Without this gate a self-service route is reachable by every authenticated credential whatever
     its scope, which is the hole the route-coverage test in tests/saq/test_permission_catalog.py
     exists to close.
+
+    `session_only` also refuses the inheriting key, leaving only a logged-in GUI session. The
+    routes that create or change the user's own API keys use it: were a key allowed to mint keys,
+    a leaked one could leave behind new credentials that outlive its own revocation.
     """
     if auth_dependency is None:
         auth_dependency = get_current_auth
@@ -261,6 +265,12 @@ def require_self_service(auth_dependency: Callable | None = None) -> Callable:
         if auth.key_scope is not None:
             logging.warning(
                 f"api key '{auth.auth_name}' is scoped; self-service routes are outside any scope"
+            )
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        if session_only and auth.key_id is not None:
+            logging.warning(
+                f"api key {auth.key_id} of '{auth.auth_name}' refused; this route needs a GUI session"
             )
             raise HTTPException(status_code=403, detail="Permission denied")
 

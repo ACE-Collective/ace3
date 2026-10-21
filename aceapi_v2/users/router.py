@@ -13,6 +13,7 @@ from aceapi_v2.users.schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyRead,
+    ApiKeySelfWrite,
     ApiKeyUpdate,
     CatalogEntryRead,
     GroupCreate,
@@ -34,6 +35,11 @@ router = APIRouter(dependencies=[Security(get_current_auth)])
 # Gate for the /me routes below: no permission grant, but the credential must be a user
 # credential that carries no narrowing scope. See require_self_service().
 _require_self = require_self_service()
+
+# The routes that create or change the caller's own API keys also need user:self, and a GUI
+# session: no API key, not even an inheriting one, can mint or widen keys.
+_require_self_session = require_self_service(session_only=True)
+_require_own_keys = require_permission("user", "self")
 
 
 @router.get("/management-view", response_model=ManagementView)
@@ -182,13 +188,81 @@ async def list_my_api_keys(
     auth: Annotated[ApiAuthResult, Depends(_require_self)],
 ) -> list[ApiKeyRead]:
     """List the *caller's own* API keys (metadata + scope only; no secret). The user id comes from
-    the auth result, not the request, so there is no id to tamper with. Read-only: minting and
-    revoking keys require ``user:write`` and go through the admin endpoints below."""
+    the auth result, not the request, so there is no id to tamper with. Needs no permission:
+    changing keys does (``user:self`` for the caller's own, below; ``user:write`` for anyone's)."""
     if auth.auth_user_id is None:
         raise HTTPException(status_code=404, detail="not authenticated as a user")
 
     keys = await service.list_user_api_keys(session, auth.auth_user_id)
     return [service._api_key_read(k) for k in keys]
+
+
+@router.post("/me/apikeys", response_model=ApiKeyCreated, status_code=201)
+async def create_my_api_key(
+    body: ApiKeySelfWrite,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self_session)],
+    _: Annotated[ApiAuthResult, Depends(_require_own_keys)],
+) -> ApiKeyCreated:
+    """Mint a scoped API key for the caller. Every pattern in the scope must cover only
+    permissions the caller holds; the plaintext is returned exactly once."""
+    user_id = _require_user(auth)
+    try:
+        key, api_key = await service.create_user_api_key(
+            session,
+            user_id,
+            name=body.name,
+            inherit=False,
+            scope=body.scope,
+            created_by=user_id,
+            self_service=True,
+        )
+    except service.UserNotFoundForApiKeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except service.InvalidPermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # a credential must not be cached by the browser or any intermediary
+    response.headers["Cache-Control"] = "no-store"
+    return ApiKeyCreated(key_id=key.id, user_id=user_id, api_key=api_key)
+
+
+@router.put("/me/apikeys/{key_id}", response_model=ApiKeyRead)
+async def update_my_api_key(
+    key_id: int,
+    body: ApiKeySelfWrite,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self_session)],
+    _: Annotated[ApiAuthResult, Depends(_require_own_keys)],
+) -> ApiKeyRead:
+    """Rename one of the caller's keys and replace its scope, under the same rules as minting.
+    Another user's key is reported as not found."""
+    user_id = _require_user(auth)
+    try:
+        key = await service.update_user_api_key(
+            session, key_id, name=body.name, inherit=False, scope=body.scope,
+            owner_id=user_id, actor_id=user_id,
+        )
+    except service.InvalidPermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if key is None:
+        raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
+    return service._api_key_read(key)
+
+
+@router.delete("/me/apikeys/{key_id}", status_code=200)
+async def revoke_my_api_key(
+    key_id: int,
+    session: Annotated[AsyncSession, Depends(get_async_session)],
+    auth: Annotated[ApiAuthResult, Depends(_require_self_session)],
+    _: Annotated[ApiAuthResult, Depends(_require_own_keys)],
+) -> dict:
+    """Revoke one of the caller's keys. ``revoked`` is false for a key that does not exist or is
+    another user's, so the answer does not reveal which."""
+    user_id = _require_user(auth)
+    revoked = await service.revoke_user_api_key(session, key_id, owner_id=user_id, actor_id=user_id)
+    return {"revoked": revoked}
 
 
 @router.get("/{user_id}/apikeys", response_model=list[ApiKeyRead])
@@ -235,13 +309,14 @@ async def update_api_key(
     key_id: int,
     body: ApiKeyUpdate,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> ApiKeyRead:
     """Rename a key and replace its scope. The secret is unchanged, so a key already in use picks
     up the new permissions without being reissued. Same exactly-one-of rule as creation."""
     try:
         key = await service.update_user_api_key(
-            session, key_id, name=body.name, inherit=body.inherit, scope=body.scope
+            session, key_id, name=body.name, inherit=body.inherit, scope=body.scope,
+            actor_id=auth.auth_user_id,
         )
     except service.InvalidPermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -254,9 +329,9 @@ async def update_api_key(
 async def revoke_api_key(
     key_id: int,
     session: Annotated[AsyncSession, Depends(get_async_session)],
-    _: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
+    auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> dict:
-    revoked = await service.revoke_user_api_key(session, key_id)
+    revoked = await service.revoke_user_api_key(session, key_id, actor_id=auth.auth_user_id)
     return {"revoked": revoked}
 
 
