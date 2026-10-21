@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block page_content %}
+<style>
+#cli-command { font-family: var(--bs-font-monospace); }
+.cli-output { max-height: 32rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+              font-size: 0.8rem; margin-bottom: 0; }
+#cli-history td.cli-history-command { font-family: var(--bs-font-monospace); overflow-wrap: anywhere; }
+#cli-history tbody tr { cursor: pointer; }
+</style>
+
+<div class="container-fluid">
+    <h3 class="mb-2">CLI</h3>
+    <p class="text-muted small">
+        Runs an ACE CLI command exactly as <code>ace &lt;command&gt;</code> would from a shell on each
+        selected node, with no terminal: a command that prompts for input fails. Every run is
+        recorded with who ran it and its output, and is visible to everyone who can use this page.
+    </p>
+
+    <form id="cli-form" autocomplete="off">
+        <div class="input-group mb-2">
+            <span class="input-group-text font-monospace">ace</span>
+            <input type="text" class="form-control" id="cli-command" spellcheck="false"
+                   placeholder="node list    (or --help for every command)">
+            <button type="submit" class="btn btn-primary" id="cli-run">Run</button>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-8">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span class="form-label mb-0">Nodes</span>
+                    <button type="button" class="btn btn-xs btn-outline-secondary" id="cli-select-all">all</button>
+                    <button type="button" class="btn btn-xs btn-outline-secondary" id="cli-select-primary">primary</button>
+                </div>
+                <div id="cli-nodes">
+                    {% for node in nodes %}
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input cli-node" type="checkbox" id="cli-node-{{ node.id }}"
+                               value="{{ node.id }}" data-primary="{{ 'true' if node.is_primary else 'false' }}"
+                               {% if node.is_primary %}checked{% endif %}>
+                        <label class="form-check-label" for="cli-node-{{ node.id }}">
+                            {{ node.name }}
+                            {% if node.is_primary %}<span class="badge text-bg-primary">primary</span>{% endif %}
+                            <span class="badge text-bg-{{ 'success' if node.status == 'running' else 'secondary' }}">{{ node.status }}</span>
+                        </label>
+                    </div>
+                    {% else %}
+                    <span class="text-muted">No nodes are registered.</span>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label mb-0" for="cli-timeout">Timeout (seconds)</label>
+                <input type="number" class="form-control form-control-sm" id="cli-timeout"
+                       min="1" max="{{ max_timeout }}" value="{{ default_timeout }}">
+            </div>
+        </div>
+    </form>
+
+    <div id="cli-results" class="mb-4"></div>
+
+    <h5>History</h5>
+    <table id="cli-history" class="table table-hover table-sm">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Requested</th>
+                <th>User</th>
+                <th>Node</th>
+                <th>Command</th>
+                <th>Status</th>
+                <th>Exit</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+    <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="cli-history-more">Load more</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/admin_cli.js') }}"></script>
+{% endblock %}

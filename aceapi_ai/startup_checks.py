@@ -98,7 +98,6 @@ def check_local_overlay_skipped(failures: list[str]) -> None:
 def check_infra_secrets_neutralized(failures: list[str]) -> None:
     config = get_config()
     for path, value in (
-        ("api.secret_key", config.api.secret_key if config.api else None),
         ("api.api_key", config.api.api_key if config.api else None),
         ("gui.secret_key", config.gui.secret_key if config.gui else None),
     ):

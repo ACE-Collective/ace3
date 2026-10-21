@@ -258,7 +258,6 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                 
         except Exception as e:
             logging.warning("olevba execution error on {}: {}".format(local_file_path, e))
-            #report_exception()
 
             # if the file ends with a microsoft office extension then we tag it
             if is_office_ext(local_file_path):

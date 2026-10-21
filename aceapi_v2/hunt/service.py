@@ -1,13 +1,12 @@
-"""Hunt validation service (ACE API v2), shared with the legacy POST /api/hunt/validate.
+"""Hunt validation service (ACE API v2).
 
 A hunt's author (the validate-hunt CLI) sends a compiled hunt package; it is checked the way the
 hunter would load it and, with execution_arguments, run against its data source, its results
 optionally analyzed or turned into alerts. The response carries what the run produced and every
 log line it wrote, which are kept off the production log handlers.
 
-validate_hunt() is framework-free and synchronous: both the v2 route and the legacy Flask route
-call it and answer with exactly its body and status, so the CLI can move to the v2 URL without any
-other change. Every request leaves one HUNT_AUDIT record (aceapi_v2/hunt/audit.py).
+validate_hunt() is synchronous, and the route answers with exactly its body and status. Every
+request leaves one HUNT_AUDIT record (aceapi_v2/hunt/audit.py).
 """
 
 import hashlib

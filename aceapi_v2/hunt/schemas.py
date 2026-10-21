@@ -1,5 +1,5 @@
 """Schemas for the hunt validation API (ACE API v2), for the published schema: the route reads
-the body itself and answers in the legacy route's shape (see router.py)."""
+the body itself and answers in the shape the validate-hunt CLI reads (see router.py)."""
 
 from typing import Any, Optional
 
