@@ -24,7 +24,7 @@ from saq.database.model import (
     AuthUserPermission,
     User,
 )
-from saq.permissions.catalog import get_catalog_pairs, get_permission_catalog
+from saq.permissions.catalog import SESSION_ONLY_PAIRS, get_catalog_pairs, get_permission_catalog
 from saq.permissions.logic import get_permission_rows_async, held_catalog_pairs, key_scope_allows
 from saq.util import sha256_str
 from aceapi_v2.auth.schemas import ApiAuthResult
@@ -515,6 +515,9 @@ def _validate_api_key_scope(
             if not major or not minor:
                 raise InvalidPermissionError("both a major and a minor are required for each scope entry")
             folded = (major.lower(), minor.lower())
+            if folded in SESSION_ONLY_PAIRS:
+                # it would allow nothing (check_permission), so storing it only misleads
+                raise InvalidPermissionError(f"{major}:{minor} is never given to an API key, only to a GUI session")
             if folded in seen:
                 if seen[folded] == (major, minor):
                     continue

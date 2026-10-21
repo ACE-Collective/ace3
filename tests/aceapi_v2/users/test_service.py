@@ -545,6 +545,26 @@ class TestSelfServiceApiKeys:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("self_service", [True, False])
+    @pytest.mark.parametrize("pattern", ["user:self", "User:Self"])
+    async def test_user_self_is_never_put_on_a_key(self, session: AsyncSession, self_service, pattern):
+        """No API key can use it (check_permission refuses), so an entry naming it would only mislead."""
+        user = await _make_analyst(session, "svc_self_on_key")
+        with pytest.raises(service.InvalidPermissionError, match="never given to an API key"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=key_scope("alert:read", pattern),
+                self_service=self_service,
+            )
+
+        key, _ = await service.create_user_api_key(session, user.id, name="k", inherit=False, scope=key_scope("alert:read"))
+        with pytest.raises(service.InvalidPermissionError, match="never given to an API key"):
+            await service.update_user_api_key(
+                session, key.id, name="k", inherit=False, scope=key_scope(pattern),
+                owner_id=user.id if self_service else None,
+            )
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
     async def test_patterns_differing_only_in_case_are_refused(self, session: AsyncSession, self_service):
         """The unique index is case-insensitive, so storing both would fail the INSERT (a 500)."""
         user = await _make_analyst(session, "svc_self_case")

@@ -24,6 +24,7 @@ from aceapi_v2.auth import (
 )
 from aceapi_v2.database import get_async_session
 from saq.gui.filter_screens import ALERTS_SCREEN, FILTER_SCREENS
+from saq.permissions.catalog import SESSION_ONLY_PAIRS
 from saq.permissions.logic import key_scope_allows, user_has_permission_async
 
 # Security scheme - appears in the Swagger UI "Authorize" dialog
@@ -156,6 +157,13 @@ def require_permission(major: str, minor: str, auth_dependency: Callable | None 
 async def check_permission(session: AsyncSession, auth: ApiAuthResult, major: str, minor: str) -> None:
     """Raise 403 unless the caller holds the permission. require_permission() for a route whose
     permission is only known once the request is read (a saved filter's screen, for instance)."""
+
+    if (major, minor) in SESSION_ONLY_PAIRS and (auth.auth_type == API_AUTH_TYPE_CONFIG or auth.key_id is not None):
+        logging.warning(
+            f"api key '{auth.auth_name}' ({auth.auth_type}, key {auth.key_id}) can never hold "
+            f"{major}.{minor}; only a GUI session can"
+        )
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     # Effective permission is the intersection of the user's permissions and the key's scope.
     # user_has_permission_async is unchanged, so group/user DENY is fully preserved; the key

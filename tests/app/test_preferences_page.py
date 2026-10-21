@@ -59,7 +59,7 @@ def test_api_keys_card_lets_a_user_with_user_self_manage_their_keys(web_client, 
     offered = _key_catalog(html)
     # the config-derived ai:<backend> entries are offered too
     assert {("signature", "read"), ("signature", "download"), ("ai", "fake")} <= offered
-    # user:self as a scope would grant a key nothing: no API key can reach those routes
+    # no API key ever holds user:self (SESSION_ONLY_PAIRS)
     assert ("user", "self") not in offered
 
 

@@ -3,11 +3,14 @@
 import logging
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
+from aceapi_v2.auth import API_AUTH_TYPE_CONFIG, API_AUTH_TYPE_USER, ApiAuthResult
+from aceapi_v2.dependencies import check_permission
 from aceapi_v2.users.service import create_user_api_key, list_user_api_keys
 from saq.configuration import get_config
 from saq.configuration.schema import ConfigApiKey
@@ -645,11 +648,11 @@ class TestSelfServiceApiKeyRoutes:
 
     @pytest.mark.asyncio
     async def test_no_api_key_can_manage_keys(self, _override_db_session, session: AsyncSession, caplog):
-        """Not a scoped key (even one scoped to user:self), and not an inheriting key either: a
-        leaked key must not be able to leave new credentials behind."""
+        """Not a scoped key (even one whose scope covers user:self), and not an inheriting key
+        either: a leaked key must not be able to leave new credentials behind."""
         caplog.set_level(logging.WARNING)
         user, _ = await _make_analyst(session, "rtr_self_keys")
-        scoped = await make_api_key(session, user.id, inherit=False, scope=[("user", "self"), ("alert", "read")])
+        scoped = await make_api_key(session, user.id, inherit=False, scope=[("user", "*"), ("alert", "read")])
         own, _ = await create_user_api_key(session, user.id, name="target", inherit=False, scope=key_scope("alert:read"))
         await session.flush()
 
@@ -661,6 +664,30 @@ class TestSelfServiceApiKeyRoutes:
 
         assert _warned(caplog, "this route needs a GUI session")
         assert [k.id for k in await list_user_api_keys(session, user.id) if k.name == "target"] == [own.id]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("credential", ["inheriting key", "*:* key", "user:* key", "config key"])
+    async def test_no_api_key_ever_holds_user_self(self, session: AsyncSession, caplog, credential):
+        """Whatever the key's scope says, so it holds even on a route that asks for user:self but
+        forgets to ask for a GUI session too. Nothing else the key may do changes."""
+        caplog.set_level(logging.WARNING)
+        user, _ = await _make_analyst(session, "rtr_self_never")
+        as_user = {"auth_type": API_AUTH_TYPE_USER, "auth_name": user.username, "auth_user_id": user.id}
+        key = {
+            "inheriting key": ApiAuthResult(**as_user, key_id=1, key_name="k"),
+            "*:* key": ApiAuthResult(**as_user, key_id=1, key_name="k", key_scope=[("*", "*")]),
+            "user:* key": ApiAuthResult(**as_user, key_id=1, key_name="k", key_scope=[("user", "*"), ("alert", "read")]),
+            "config key": ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="ops", key_name="ops", key_scope=[("*", "*")]),
+        }[credential]
+
+        with pytest.raises(HTTPException) as denied:
+            await check_permission(session, key, "user", "self")
+        assert denied.value.status_code == 403
+        assert _warned(caplog, "can never hold user.self")
+
+        await check_permission(session, key, "alert", "read")
+        # the same user's GUI session does hold it
+        await check_permission(session, ApiAuthResult(**as_user), "user", "self")
 
     @pytest.mark.asyncio
     async def test_a_config_key_is_refused(self, _override_db_session, monkeypatch):

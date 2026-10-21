@@ -4,6 +4,7 @@ from flask_login import current_user, login_required
 
 from aceapi_v2.sync import run_async_with_session
 from aceapi_v2.users import service as users_service
+from saq.permissions.catalog import SESSION_ONLY_PAIRS
 from app.user_preferences import get_manage_columns_preference, manage_column_layout
 
 @main.route('/', methods=['GET'])
@@ -30,8 +31,7 @@ def preferences():
     preferences and their API keys. Flask only renders the page; every save is a call from the
     browser to aceapi_v2 (/users/me, /users/me/preferences and /users/me/apikeys)."""
     user, held_catalog = run_async_with_session(_user_and_held_catalog, current_user.id)
-    # user:self is what lets the user change their keys; as a scope entry it would grant a key
-    # nothing, since those routes refuse every API key
+    # user:self is what lets the user change their keys; no API key ever holds it
     can_manage_keys = any((e.major, e.minor) == ("user", "self") for e in held_catalog)
     return render_template(
         'preferences.html',
@@ -39,5 +39,5 @@ def preferences():
         timezones=users_service.all_timezones(),
         manage_column_layout=manage_column_layout(get_manage_columns_preference()),
         can_manage_keys=can_manage_keys,
-        key_catalog=[e.model_dump() for e in held_catalog if (e.major, e.minor) != ("user", "self")],
+        key_catalog=[e.model_dump() for e in held_catalog if (e.major, e.minor) not in SESSION_ONLY_PAIRS],
     )

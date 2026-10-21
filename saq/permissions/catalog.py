@@ -90,6 +90,13 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
 # Convenience lookups for validation and guard tests. These cover the STATIC entries only; use
 # get_catalog_pairs() where the config-derived ai:<backend> entries must be included.
 CATALOG_PAIRS: frozenset[tuple[str, str]] = frozenset((e.major, e.minor) for e in PERMISSION_CATALOG)
+
+# Permissions no API key ever holds, whatever its scope says and whether or not it inherits its
+# owner's: only a GUI session does. user:self changes the user's own API keys, so a key holding it
+# could widen its own scope up to everything its owner holds, or mint keys that outlive its
+# revocation. The routes that need it also refuse every API key (require_self_service(
+# session_only=True)); this holds even where a route forgets to.
+SESSION_ONLY_PAIRS: frozenset[tuple[str, str]] = frozenset({("user", "self")})
 CATALOG_MAJORS: frozenset[str] = frozenset(e.major for e in PERMISSION_CATALOG)
 
 

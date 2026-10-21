@@ -11,7 +11,9 @@ from saq.configuration.config import get_config
 from saq.database.model import AuthGroupPermission, AuthPermissionCatalog, AuthUserPermission
 from saq.database.pool import get_db
 from saq.permissions.catalog import (
+    CATALOG_PAIRS,
     PERMISSION_CATALOG,
+    SESSION_ONLY_PAIRS,
     get_catalog_pairs,
     get_permission_catalog,
     is_grantable,
@@ -68,6 +70,9 @@ class TestCatalogGuard:
         assert not missing, (
             f"these enforced permissions are missing from the permission catalog: {sorted(missing)}"
         )
+
+    def test_session_only_permissions_are_in_the_catalog(self):
+        assert SESSION_ONLY_PAIRS and SESSION_ONLY_PAIRS <= CATALOG_PAIRS
 
     def test_user_edit_is_not_enforced_anymore(self):
         # The normalization dropped user:edit; nothing should still enforce it.
