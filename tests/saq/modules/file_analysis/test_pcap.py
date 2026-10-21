@@ -1000,8 +1000,25 @@ def test_tls_table_layout():
     (table,) = pcap.index_tables(index, CATEGORY_TLS)
     assert table["columns"] == ["Server", "SNI", "JA4", "Certificates"]
     assert table["nowrap"] == [True, False, True, False]
-    assert table["rows"] == [["198.51.100.7:443", "a.example", "t13d0312h1_aaa_bbb",
+    assert table["rows"] == [["198.51.100.7:443", "a.example",
+                              {"text": "t13d0312h1_aaa_bbb", "pivot_type": F_JA4, "pivot_value": "t13d0312h1_aaa_bbb"},
                               ["a.example \u2014 issued by CA", f"certificate {'22' * 8}"]]]
+
+
+@pytest.mark.unit
+def test_pivot_cells():
+    index = {
+        CATEGORY_HTTP: [{"method": "GET", "url": "http://a.example/x", "status": "200"},
+                        {"method": "CONNECT", "url": None}],
+        "objects": [{"protocol": "http", "file_name": "x", "size": 3, "sha256": "ab" * 32, "url": None}],
+    }
+    http, files = pcap.index_tables(index)
+    assert http["rows"][0][1] == {"text": "http://a.example/x", "pivot_type": F_URL, "pivot_value": "http://a.example/x"}
+    # nothing to pivot on: a plain empty cell
+    assert http["rows"][1][1] is None
+    # a file observable's value is its sha256: the name is shown, the content is what it pivots on
+    assert files["rows"][0][1] == {"text": "x", "pivot_type": F_FILE, "pivot_value": "ab" * 32}
+    assert files["rows"][0][3] == {"text": "ab" * 32, "pivot_type": "sha256", "pivot_value": "ab" * 32}
 
 
 @pytest.mark.unit

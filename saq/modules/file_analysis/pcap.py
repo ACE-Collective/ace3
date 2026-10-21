@@ -44,6 +44,7 @@ from saq.constants import (
     F_IP,
     F_JA4,
     F_MAC_ADDRESS,
+    F_SHA256,
     F_URL,
     F_USER_AGENT,
     DIRECTIVE_NO_CRAWL,
@@ -1277,6 +1278,14 @@ class TlsKeylogAnalyzer(AnalysisModule):
 NOWRAP_COLUMNS = {"Server", "JA4", "A", "B", "Address"}
 
 
+def _pivot(o_type: str, value: Optional[str], text: Optional[str] = None) -> Optional[dict]:
+    """A cell the GUI renders as a link to the alerts that have this observable, like a click on an
+    observable in the alert tree."""
+    if not value:
+        return None
+    return {"text": text or value, "pivot_type": o_type, "pivot_value": value}
+
+
 def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None) -> dict:
     return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows),
             "nowrap": [column in NOWRAP_COLUMNS for column in columns]}
@@ -1295,16 +1304,19 @@ def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[
     if category in (None, CATEGORY_TLS) and index.get(CATEGORY_TLS):
         certificates = {c["sha256"]: c for c in index.get("certificates", [])}
         tables.append(_table("TLS Sessions", ["Server", "SNI", "JA4", "Certificates"],
-                             [[r.get("server"), r.get("sni"), r.get("ja4"),
+                             [[r.get("server"), r.get("sni"), _pivot(F_JA4, r.get("ja4")),
                                [describe_certificate(certificates.get(h, {"sha256": h})) for h in r.get("certificates", [])]]
                               for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total")))
     if category in (None, CATEGORY_HTTP) and index.get(CATEGORY_HTTP):
         tables.append(_table("HTTP Requests", ["Method", "URL", "Status", "Content Type", "User Agent"],
-                             [[r.get("method"), r.get("url"), r.get("status"), r.get("content_type"), r.get("user_agent")]
+                             [[r.get("method"), _pivot(F_URL, r.get("url")), r.get("status"), r.get("content_type"),
+                               r.get("user_agent")]
                               for r in index[CATEGORY_HTTP]], index.get(f"{CATEGORY_HTTP}_total")))
     if category in (None, CATEGORY_FILES) and index.get("objects"):
         tables.append(_table("Carved Files", ["Protocol", "File Name", "Size", "SHA256", "URL"],
-                             [[r["protocol"], r["file_name"], r["size"], r["sha256"], r.get("url")] for r in index["objects"]]))
+                             # a file observable's value is its sha256, so the file name pivots on the content
+                             [[r["protocol"], _pivot(F_FILE, r["sha256"], text=r["file_name"]), r["size"],
+                               _pivot(F_SHA256, r["sha256"]), r.get("url")] for r in index["objects"]]))
     return tables
 
 

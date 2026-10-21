@@ -21,7 +21,10 @@
         <tbody>
             {% for row in table.rows %}
             <tr>{% for cell in row %}<td style="{{ 'white-space: nowrap' if table.nowrap[loop.index0] else 'overflow-wrap: anywhere' }}">
-                {%- if cell is iterable and cell is not string -%}
+                {%- if cell is mapping and cell.pivot_type -%}
+                    <a href="#" class="pcap-pivot" title="alerts with {{ cell.pivot_type }} {{ cell.pivot_value }}"
+                       data-pivot-type="{{ cell.pivot_type }}" data-pivot-value="{{ cell.pivot_value }}">{{ cell.text }}</a>
+                {%- elif cell is iterable and cell is not string -%}
                     {%- for item in cell %}<div>{{ item }}</div>{% endfor -%}
                 {%- else -%}
                     {{ cell if cell is not none else '' }}
@@ -32,3 +35,12 @@
     </table>
 </div>
 {% endfor %}
+<script type="text/javascript">
+    // the values come from the capture, so they travel in data attributes rather than in the script
+    $(document).off('click.pcapPivot').on('click.pcapPivot', 'a.pcap-pivot', function(e) {
+        e.preventDefault();
+        var o_type = this.dataset.pivotType;
+        apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [[o_type, this.dataset.pivotValue]]}],
+                          'Observable ' + o_type, '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}');
+    });
+</script>
