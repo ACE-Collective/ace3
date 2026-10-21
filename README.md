@@ -35,22 +35,19 @@ ACE instance on the same machine, see [docs/MULTI_INSTANCE.md](docs/MULTI_INSTAN
 
 - ☑ switch to YAML for configuration
 - ☐ runtime configuration settings + gui interface (looking at Hydra + OmegaConf)
-- ☐ async for I/O
-- ☐ FastAPI
+- ☑ FastAPI
 - ☐ easily scalable deployment
-- ☐ distributed file storage
 - ☑ ace3 search feature using VectorDB
     - ☑ improve summary of all analysis
 - ☑ user permissions
 - ☐ user password reset and initial password flow
 - ☐ SSO support
-- ☐ monitoring API
-- ☐ kubernetes
 - ☑ credential management
-- ☐ direct support for regression testing
-- ☐ direct support for signatures
-- ☐ support ARM
-- ☐ intense refactoring
+- ☑ direct support for regression testing
+- ☑ direct support for signatures
+- ☑ support ARM
+- ☑ intense refactoring
+- ☐ neural link
 
 ## beyond 3.0
 
