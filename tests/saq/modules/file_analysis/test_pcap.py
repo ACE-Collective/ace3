@@ -32,6 +32,7 @@ from saq.constants import (
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
+from saq.modules.file_analysis.archive import ArchiveAnalysis
 from saq.modules.file_analysis import pcap
 from saq.modules.file_analysis.is_file_type import is_pcap_file
 from saq.modules.file_analysis.pcap import (
@@ -280,7 +281,7 @@ def _packets() -> list[dict]:
 
 
 def _certificates() -> list[dict]:
-    return [{"sha256": "11" * 32, "der_hex": "308201", "path": "c.pcap.extracted/certificates/1.der"},
+    return [{"sha256": "11" * 32, "der_hex": "308201", "path": "c.pcap.pcap_objects/certificates/1.der"},
             {"sha256": "22" * 32, "der_hex": "308202", "path": None}]
 
 
@@ -308,7 +309,7 @@ def test_build_index():
     assert requests["https://h2.example.com/y"]["method"] == "POST"
 
     assert {h["name"] for h in index["hostnames"]} == {"Workstation-1", "NBHOST"}
-    assert index["certificates"] == [{"sha256": "11" * 32, "path": "c.pcap.extracted/certificates/1.der"},
+    assert index["certificates"] == [{"sha256": "11" * 32, "path": "c.pcap.pcap_objects/certificates/1.der"},
                                      {"sha256": "22" * 32, "path": None}]
 
 
@@ -851,7 +852,7 @@ def test_collect_carved_files(tmp_path):
     (workdir / "objects" / "http" / "subdir").mkdir()
     (workdir / "objects" / "smb").mkdir()
     (workdir / "objects" / "smb" / "a.bin").write_bytes(b"second")
-    target = tmp_path / "capture.pcap.extracted"
+    target = tmp_path / "capture.pcap.pcap_objects"
     # an earlier run left a file of the same name
     (target / "http").mkdir(parents=True)
     (target / "http" / "a.bin").write_bytes(b"older")
@@ -861,10 +862,10 @@ def test_collect_carved_files(tmp_path):
     objects, certificates = pcap._collect_carved_files(str(workdir), str(target), packets, max_files=3, known_sha256=known)
 
     assert len(certificates) == 1
-    assert certificates[0]["path"] == f"capture.pcap.extracted/certificates/{certificates[0]['sha256']}.der"
+    assert certificates[0]["path"] == f"capture.pcap.pcap_objects/certificates/{certificates[0]['sha256']}.der"
     assert [(o["protocol"], o["file_name"], o["path"]) for o in objects] == [
-        ("http", "a.bin", "capture.pcap.extracted/http/a_1.bin"),
-        ("http", "late.bin", "capture.pcap.extracted/http/late.bin"),
+        ("http", "a.bin", "capture.pcap.pcap_objects/http/a_1.bin"),
+        ("http", "late.bin", "capture.pcap.pcap_objects/http/late.bin"),
         ("smb", "a.bin", None),
     ]
     assert (target / "http" / "a_1.bin").read_bytes() == b"first"
@@ -905,8 +906,29 @@ def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
         return "" if "-T" in args else STATISTICS_OUTPUT
 
     monkeypatch.setattr(pcap, "_run_tshark", _fake_tshark)
-    index = pcap.dissect(_config(), str(evidence), str(tmp_path / "capture.pcap.extracted"))
+    index = pcap.dissect(_config(), str(evidence), str(tmp_path / "capture.pcap.pcap_objects"))
 
     assert inodes and all(inode != os.stat(evidence).st_ino for inode in inodes)
     assert index["statistics"]["packets"] == 5
     assert index[CATEGORY_TLS] == []
+
+
+@pytest.mark.integration
+def test_archive_leaves_captures_to_the_pcap_modules(root_analysis):
+    # libmagic calls a pcapng application/octet-stream; 7z would "extract" junk from it into a
+    # directory the archive module then reports in full
+    root_analysis.analysis_mode = "test_groups"
+    capture = root_analysis.add_file_observable(HTTP_TLS_PCAPNG)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    for module in PCAP_MODULES + (ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_ARCHIVE):
+        engine.configuration_manager.enable_module(module, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    capture = root.get_observable(capture.uuid)
+    assert not capture.get_and_load_analysis(ArchiveAnalysis)
+    (payload,) = _category(capture, CATEGORY_FILES).get_observables_by_type(F_FILE)
+    assert payload.file_path.endswith("http_tls.pcapng.pcap_objects/http/payload.txt")

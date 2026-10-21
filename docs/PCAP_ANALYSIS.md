@@ -50,6 +50,11 @@ and runs tshark twice in the Landlock sandbox:
 2. `-T json -Y <filter> -e <fields> --export-objects ...` for DNS, TLS handshakes, HTTP(/2) headers,
    DHCP and NBNS, plus the exported objects. Certificates are taken from the handshake bytes.
 
+Carved files and certificates are written beside the capture in the alert's storage, in
+`<capture>.pcap_objects/` (and `<capture>.pcap_decrypted/` for decryption), never `<capture>.extracted/`,
+which belongs to `archive`. `archive` skips anything `is_pcap_file()` recognizes: libmagic calls a pcapng
+`application/octet-stream`, which its mime exclusions cannot catch, and 7z "extracts" junk from one.
+
 The result is the capture *index*, kept in `PcapAnalysis.details`. The category instances
 (`pcap_dns`, `pcap_tls`, `pcap_http`, `pcap_files`: one class, `PcapCategoryAnalyzer`, configured
 once per `category`) wait for it and read it; they never run tshark.

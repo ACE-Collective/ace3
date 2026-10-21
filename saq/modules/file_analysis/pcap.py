@@ -823,7 +823,7 @@ class PcapAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         try:
-            index = dissect(self.config, path, f"{path}.extracted")
+            index = dissect(self.config, path, f"{path}.pcap_objects")
         except Exception as e:
             analysis.error = str(e)
             log_loop_exception(e, f"unable to dissect pcap {path} (sha256 {_file.sha256_hash}) in {self.get_root().uuid}")
@@ -989,7 +989,7 @@ def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_anal
     known_sha256 |= {c["sha256"] for c in plaintext_index.get("certificates", [])}
     known_sha256 |= {o.sha256_hash for o in analysis.observables if isinstance(o, FileObservable)}
     try:
-        index = dissect(config, pcap_file.full_path, f"{pcap_file.full_path}.decrypted", keylog_lines=list(lines),
+        index = dissect(config, pcap_file.full_path, f"{pcap_file.full_path}.pcap_decrypted", keylog_lines=list(lines),
                         known_sha256=known_sha256, statistics=False)
     except Exception as e:
         analysis.details[KEY_ERROR] = str(e)
