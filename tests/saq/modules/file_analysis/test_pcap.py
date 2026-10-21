@@ -599,7 +599,11 @@ def test_pcap_tree(root_analysis):
     certificates = sorted(row[3] for row in table["rows"])
     assert certificates == [[], ["pcap-tls.example (SAN: pcap-tls12.example, pcap-tls13.example) \u2014 self-signed"]]
     assert sorted(o.display_type for o in tls.get_observables_by_type(F_JA4)) == [
-        "JA4 to pcap-tls12.example (ja4)", "JA4 to pcap-tls13.example (ja4)"]
+        "JA4 client fingerprint (TLS ClientHello), seen to pcap-tls12.example (ja4)",
+        "JA4 client fingerprint (TLS ClientHello), seen to pcap-tls13.example (ja4)"]
+    # nothing in this capture resolved them, so they are labelled as TLS server names
+    assert {o.display_type for o in tls.get_observables_by_type(F_FQDN)} == {"TLS SNI (fqdn)"}
+    assert PcapAnalysisPresenter(tls).tables[0]["note"] == pcap.JA4_NOTE
     # only the TLS 1.2 certificate travels in the clear
     (certificate,) = tls.get_observables_by_type(F_FILE)
     assert certificate.has_relationship(R_EXTRACTED_FROM)
@@ -951,7 +955,7 @@ def test_summaries():
     keylog.details = {}
     assert keylog.generate_summary() is None
     assert PcapAnalysisPresenter(keylog).tables == [{"title": "Secrets", "columns": ["Label", "Count"], "rows": [], "total": 0,
-                                                     "nowrap": [False, False], "order": None}]
+                                                     "nowrap": [False, False], "order": None, "note": None}]
 
 
 @pytest.mark.unit
@@ -1329,9 +1333,9 @@ def test_ja4_display_types():
         {"ja4": None, "sni": "ignored.example"},
     ]
     assert pcap.ja4_display_types(sessions) == {
-        "t13_a": "JA4 to one.example, 198.51.100.2, two.example, +1 more",
-        "q13_b": "JA4 to 2001:db8::1",
-        "t12_c": "JA4",
+        "t13_a": "JA4 client fingerprint (TLS ClientHello), seen to one.example, 198.51.100.2, two.example, +1 more",
+        "q13_b": "JA4 client fingerprint (TLS ClientHello), seen to 2001:db8::1",
+        "t12_c": "JA4 client fingerprint (TLS ClientHello)",
     }
 
 
@@ -1371,3 +1375,17 @@ def test_capture_metadata_is_optional(monkeypatch, tmp_path, caplog):
     assert index["capture"] is None
     assert index["statistics"]["packets"] == 5
     assert "no capture metadata for pcap" in caplog.text
+
+
+
+@pytest.mark.unit
+def test_sni_label_only_for_names_dns_did_not_see():
+    index = {
+        CATEGORY_DNS: [{"name": "seen.example", "answers": [], "queries": 1, "responses": 1, "seen_as": []}],
+        CATEGORY_TLS: [{"sni": "Seen.Example.", "ja4": None}, {"sni": "unresolved.example", "ja4": None}],
+    }
+    labels = {(i.category, i.value): i.display_type for i in collect_observables(index, [])}
+    assert labels[(CATEGORY_DNS, "seen.example")] == "DNS Query Name"
+    # the same name under TLS adds no label of its own, whichever category module runs first
+    assert labels[(CATEGORY_TLS, "seen.example")] is None
+    assert labels[(CATEGORY_TLS, "unresolved.example")] == "TLS SNI"

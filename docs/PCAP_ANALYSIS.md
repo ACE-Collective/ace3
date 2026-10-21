@@ -34,9 +34,10 @@ sslkeylog.txt
 - Within a node, observables sort by type (files, URLs, FQDNs, JA4, User-Agents, hostnames, IPs, MACs).
 - Display types say where an observable came from: `DNS Query Name` (a name looked up), `DNS CNAME
   Target`, `DNS Zone (SOA/NS)` (the owner of an SOA or NS record, usually from the authority section
-  of a reply with no answer), `DNS Record Name` (any other record owner), `DNS Answer IP`, and for
-  JA4 the sessions' destinations,
-  e.g. `JA4 to www.example.com, cdn.example.net, login.example.org, +9 more` (the SNI, or the
+  of a reply with no answer), `DNS Record Name` (any other record owner), `DNS Answer IP`, `TLS SNI`
+  (a server name only seen in a TLS hello, never in DNS), and for JA4 the sessions' destinations,
+  e.g. `JA4 client fingerprint (TLS ClientHello), seen to www.example.com, cdn.example.net,
+  login.example.org, +9 more` (the SNI, or the
   server address when there is none). An observable has one display type wherever it appears in the
   alert, so the pcap modules never replace one another module set: a name that is also a certificate
   SAN shows `Certificate SAN DNS Name` under PCAP DNS too.
@@ -120,6 +121,9 @@ Decryption needs the session secrets in the NSS key log format that browsers and
 
 - HTTP/2 (most decrypted HTTPS): request URLs come from the `:authority`/`:path` headers, but tshark
   4.4 cannot export HTTP/2 bodies, so no files are carved from it.
+- JA4 fingerprints the client (its TLS ClientHello), not the server: every session from the same
+  browser has the same JA4 whatever site it went to, so a phishing page and a legitimate site
+  visited by one browser share it. The TLS page says so above its table.
 - JA4 is the only fingerprint added (tshark computes it). JA3/JA3S are not added; the rest of the
   JA4+ family is under the FoxIO license and not implemented.
 - No auto-crawl of certificate names: a certificate in a capture was only observed, not fetched, so

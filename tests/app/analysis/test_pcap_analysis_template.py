@@ -62,3 +62,13 @@ def test_no_capture_header_without_metadata(app):
     analysis = PcapCategoryAnalysis()
     analysis.details.update({"category": CATEGORY_HTTP, "total": 1, "rows": [{"method": "GET", "url": "http://a.example/"}]})
     assert "From capture" not in _render(app, analysis)
+
+
+@pytest.mark.integration
+def test_tls_note_renders(app):
+    from saq.modules.file_analysis.pcap import CATEGORY_TLS, JA4_NOTE
+
+    analysis = PcapCategoryAnalysis()
+    analysis.details.update({"category": CATEGORY_TLS, "total": 1,
+                             "rows": [{"server": "198.51.100.7:443", "sni": "a.example", "ja4": "t13_a", "certificates": []}]})
+    assert JA4_NOTE in _render(app, analysis)

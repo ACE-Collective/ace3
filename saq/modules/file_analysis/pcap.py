@@ -837,14 +837,15 @@ def ja4_display_types(sessions: list[dict]) -> dict[str, str]:
         if target and target not in targets:
             targets.append(target)
 
+    # JA4 describes the client that sent the hello, not the server: one per client application is normal
     result = {}
     for ja4, targets in destinations.items():
         if not targets:
-            result[ja4] = "JA4"
+            result[ja4] = "JA4 client fingerprint (TLS ClientHello)"
             continue
         shown = ", ".join(targets[:MAX_JA4_DESTINATIONS])
         more = len(targets) - MAX_JA4_DESTINATIONS
-        result[ja4] = f"JA4 to {shown}{f', +{more} more' if more > 0 else ''}"
+        result[ja4] = f"JA4 client fingerprint (TLS ClientHello), seen to {shown}{f', +{more} more' if more > 0 else ''}"
     return result
 
 
@@ -888,9 +889,12 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
             _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes, ip_display_type="DNS Answer IP"))
 
     ja4_labels = ja4_display_types(index.get(CATEGORY_TLS, []))
+    # a name DNS also saw keeps its DNS label, so the label never depends on which category ran first
+    dns_names = {row["name"] for row in index.get(CATEGORY_DNS, [])}
     for row in index.get(CATEGORY_TLS, []):
         if row.get("sni"):
-            _add(_host_observable(CATEGORY_TLS, row["sni"], excluded_fqdn_suffixes))
+            sni_label = None if row["sni"].rstrip(".").lower() in dns_names else "TLS SNI"
+            _add(_host_observable(CATEGORY_TLS, row["sni"], excluded_fqdn_suffixes, fqdn_display_type=sni_label))
         if row.get("ja4"):
             _add(PcapObservable(CATEGORY_TLS, F_JA4, row["ja4"], display_type=ja4_labels[row["ja4"]]))
     for row in index.get("certificates", []):
@@ -1421,9 +1425,14 @@ def _pivot(o_type: str, value: Optional[str], text: Optional[str] = None) -> Opt
 
 
 def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None,
-           order: Optional[str] = None) -> dict:
+           order: Optional[str] = None, note: Optional[str] = None) -> dict:
     return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows),
-            "nowrap": [column in NOWRAP_COLUMNS for column in columns], "order": order}
+            "nowrap": [column in NOWRAP_COLUMNS for column in columns], "order": order, "note": note}
+
+
+JA4_NOTE = ("JA4 fingerprints the client that started the session (its TLS ClientHello), not the server. "
+            "Every session from the same browser or application has the same JA4, whatever site it went to, "
+            "so one JA4 across many sites is normal. An unexpected JA4 points at an unusual client.")
 
 
 def _capture_order(what: str, capture: Optional[dict]) -> str:
@@ -1490,7 +1499,7 @@ def index_tables(index: Optional[dict], category: Optional[str] = None, capture:
                              [[r.get("server"), r.get("sni"), _pivot(F_JA4, r.get("ja4")),
                                [describe_certificate(certificates.get(h, {"sha256": h})) for h in r.get("certificates", [])]]
                               for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total"),
-                             _capture_order("Sessions in the order their handshakes start", capture)))
+                             _capture_order("Sessions in the order their handshakes start", capture), note=JA4_NOTE))
     if category in (None, CATEGORY_HTTP) and index.get(CATEGORY_HTTP):
         tables.append(_table("HTTP Requests", ["Method", "URL", "Status", "Content Type", "User Agent"],
                              [[r.get("method"), _pivot(F_URL, r.get("url")), r.get("status"), r.get("content_type"),

@@ -20,6 +20,7 @@
     {% if table.total > table.rows | length %}<small class="text-muted">(first {{ table.rows | length }} of {{ table.total }})</small>{% endif %}
 </h6>
 {% if table.order %}<div class="small text-muted mb-1"><span class="bi bi-sort-down"></span> {{ table.order }}</div>{% endif %}
+{% if table.note %}<div class="small text-muted mb-1"><span class="bi bi-info-circle"></span> {{ table.note }}</div>{% endif %}
 <div style="overflow-x: auto">
     <table class="table table-sm table-striped">
         <thead>
