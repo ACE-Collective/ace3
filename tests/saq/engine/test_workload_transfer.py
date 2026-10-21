@@ -145,8 +145,8 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
         raise requests.exceptions.HTTPError("400 Client Error: BAD REQUEST")
 
     monkeypatch.setattr(ace_api, "clear", fake_clear)
-    report_exception_mock = Mock()
-    monkeypatch.setattr("saq.error.reporting.write_error_report", report_exception_mock)
+    write_error_report_mock = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report_mock)
 
     manager = make_manager(DistributedLockManager())
     result = manager.transfer_work_target(uuid, workload_node_id(uuid))
@@ -157,7 +157,7 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
     # the downloaded local copy is retained (the database points at it)
     assert os.path.isdir(abs_target(uuid))
     # a benign clear failure must not be reported as an exception
-    report_exception_mock.assert_not_called()
+    write_error_report_mock.assert_not_called()
     # the workload row has moved to the local node
     assert workload_node_id(uuid) == local_node_id()
     # on success we keep the lock so the engine can process the item

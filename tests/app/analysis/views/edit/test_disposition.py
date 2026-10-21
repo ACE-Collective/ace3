@@ -343,7 +343,7 @@ def test_set_disposition_all_valid_dispositions(web_client):
 
 
 @patch('saq.error.reporting.write_error_report')
-def test_set_disposition_exception_reporting(mock_report_exception, web_client):
+def test_set_disposition_exception_reporting(mock_write_error_report, web_client):
     """Test that exceptions are properly reported."""
     # Mock set_dispositions to raise an exception
     with patch('app.analysis.views.edit.disposition.set_dispositions') as mock_set_dispositions:
@@ -356,7 +356,7 @@ def test_set_disposition_exception_reporting(mock_report_exception, web_client):
         })
         
         assert response.status_code == 302
-        mock_report_exception.assert_called_once()
+        mock_write_error_report.assert_called_once()
 
 
 @pytest.mark.integration
