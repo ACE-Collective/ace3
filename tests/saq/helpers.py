@@ -29,6 +29,11 @@ from saq.constants import (
 from saq.database.model import Alert, Workload, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, set_dispositions
+from saq.engine.analysis_orchestrator import AnalysisOrchestrator
+from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.node_manager.node_manager_factory import create_node_manager
+from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from tests import unittest_session
 from saq.modules.email import EmailAnalysis
@@ -860,3 +865,14 @@ def count_queries():
         yield statements
     finally:
         event.remove(Engine, "before_cursor_execute", _record)
+
+
+def create_test_worker(name: str = "test") -> Worker:
+    """A real Worker, built the way a single threaded engine builds it."""
+    configuration_manager = ConfigurationManager(EngineConfiguration(single_threaded_mode=True))
+    return Worker(name, configuration_manager, create_node_manager(configuration_manager))
+
+
+def create_test_orchestrator() -> AnalysisOrchestrator:
+    """A real AnalysisOrchestrator, built the way a single threaded engine worker builds it."""
+    return create_test_worker().analysis_orchestrator

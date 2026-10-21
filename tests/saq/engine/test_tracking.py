@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from saq.analysis.root import RootAnalysis
+from saq.configuration.config import get_analysis_module_config
 from saq.constants import F_TEST
 from saq.database.util.locking import acquire_lock, get_lock_uuid, release_lock
 from saq.engine.configuration_manager import ConfigurationManager
@@ -25,6 +26,7 @@ from saq.engine.lock_manager.adapter import LockManagerAdapter
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
+from saq.modules.test import BasicTestAnalyzer
 from saq.engine.tracking import (
     NullTrackingWriter,
     TrackingReader,
@@ -63,6 +65,10 @@ def _observable(uuid="obs-1", type="test", value="test_1"):
     observable.type = type
     observable.value = value
     return observable
+
+
+def _basic_test_module() -> BasicTestAnalyzer:
+    return BasicTestAnalyzer(get_analysis_module_config("basic_test"))
 
 
 def _track(writer, module_path=MODULE_PATH, maximum_analysis_time=60):
@@ -433,10 +439,7 @@ def test_startup_dispatch_survives_a_shrunken_pool():
     is exactly what happens when analysis_pools or pool_size_limit shrinks between runs.
     The record is self describing (root_uuid + storage_dir), so any worker can apply it.
     """
-    from saq.constants import LockManagerType, WorkloadManagerType
-    from saq.engine.configuration_manager import ConfigurationManager
-    from saq.engine.enums import EngineExecutionMode
-    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+    from saq.engine.enums import EngineExecutionMode, EngineType
     from saq.engine.worker_manager import WorkerManager
     from tests.saq.engine.test_worker_restart_execution_mode import FakeWorker
 
@@ -445,15 +448,12 @@ def test_startup_dispatch_survives_a_shrunken_pool():
     previous.track_current_work_target(_target())
     _track(previous)
 
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.single_threaded_mode = False
-    configuration_manager.config.analysis_pools = {"correlation": 2}
-    configuration_manager.config.pool_size_limit = None
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.auto_refresh_frequency = 0
+    configuration_manager = ConfigurationManager(EngineConfiguration(
+        engine_type=EngineType.LOCAL,
+        analysis_pools={"correlation": 2},
+        pool_size_limit=2,
+        single_threaded_mode=False,
+    ))
 
     with patch("saq.engine.worker_manager.Worker", FakeWorker):
         manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
@@ -478,10 +478,6 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
     failure, the next manager reads it off disk, and the module that killed the worker is
     recorded against the root it was actually analyzing."""
     from saq.constants import F_TEST
-    from saq.engine.configuration_manager import ConfigurationManager
-    from saq.engine.engine_configuration import EngineConfiguration
-    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
-    from saq.engine.worker import Worker
     from saq.modules.test import BasicTestAnalysis
     from saq.util.uuid import get_storage_dir
 
@@ -492,23 +488,14 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
     # a worker was analyzing this root with this module when everything died
     dying = TrackingWriter("correlation-0")
     dying.track_current_work_target(root_analysis)
-    with patch("saq.engine.tracking.MODULE_PATH", return_value="saq.modules.test:BasicTestAnalysis"):
-        dying.track_current_analysis_module(_module(), observable)
+    dying.track_current_analysis_module(_basic_test_module(), observable)
 
     # a fresh manager comes up and reads what the old one left behind
     pending = TrackingReader().recover_pending_failures()
     assert len(pending) == 1
     assert pending[0].root_uuid == root_analysis.uuid
 
-    configuration_manager = ConfigurationManager(EngineConfiguration())
-    worker = Worker(
-        name="correlation-0",
-        configuration_manager=configuration_manager,
-        node_manager=Mock(spec=NodeManagerInterface),
-    )
-    worker.lock_manager = MagicMock()
-
-    worker._handle_failed_analysis(pending[0])
+    assert _recovering_worker()._handle_failed_analysis(pending[0])
 
     reloaded = RootAnalysis(storage_dir=get_storage_dir(root_analysis.uuid))
     reloaded.load()
@@ -518,6 +505,7 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
 
     # and the worker acknowledged it, so the next restart will not replay it
     assert TrackingReader().recover_pending_failures() == []
+    assert get_lock_uuid(root_analysis.uuid) is None, "recovery did not release its own lock"
 
 
 @pytest.mark.integration
@@ -532,10 +520,6 @@ def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
         get_hang_stacks_path,
         read_crash_report,
     )
-    from saq.engine.configuration_manager import ConfigurationManager
-    from saq.engine.engine_configuration import EngineConfiguration
-    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
-    from saq.engine.worker import Worker
 
     root_analysis.analysis_mode = "test_groups"
     observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
@@ -543,8 +527,7 @@ def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
 
     dying = TrackingWriter("correlation-0")
     dying.track_current_work_target(root_analysis)
-    with patch("saq.engine.tracking.MODULE_PATH", return_value=MODULE_PATH):
-        dying.track_current_analysis_module(_module(), observable)
+    dying.track_current_analysis_module(_basic_test_module(), observable)
 
     pending = TrackingReader().recover_pending_failures()
     assert len(pending) == 1
@@ -561,13 +544,7 @@ def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
     with open(hang_path, "w") as fp:
         fp.write(stacks)
 
-    worker = Worker(
-        name="correlation-0",
-        configuration_manager=ConfigurationManager(EngineConfiguration()),
-        node_manager=Mock(spec=NodeManagerInterface),
-    )
-    worker.lock_manager = MagicMock()
-    worker._handle_failed_analysis(pending[0])
+    assert _recovering_worker()._handle_failed_analysis(pending[0])
 
     # the killed report's id rides in the failure message: "process died unexpectedly (crash_id <id>)"
     reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
@@ -584,16 +561,13 @@ def test_killed_report_collects_the_dead_workers_hang_dump(root_analysis):
         assert fp.read() == stacks
 
     assert not os.path.exists(hang_path)
+    assert get_lock_uuid(root_analysis.uuid) is None, "recovery did not release its own lock"
 
 
 @pytest.mark.integration
 def test_a_failure_for_a_deleted_root_is_resolved_not_replayed(root_analysis):
     """A root that no longer exists can never be attributed, so the record must not be
     immortal -- otherwise it is handed to a worker again at every engine start, forever."""
-    from saq.engine.configuration_manager import ConfigurationManager
-    from saq.engine.engine_configuration import EngineConfiguration
-    from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
-    from saq.engine.worker import Worker
 
     dying = TrackingWriter("correlation-0")
     dying.track_current_work_target(_target(uuid=root_analysis.uuid, storage_dir="/does/not/exist"))
@@ -602,13 +576,7 @@ def test_a_failure_for_a_deleted_root_is_resolved_not_replayed(root_analysis):
     pending = TrackingReader().recover_pending_failures()
     assert len(pending) == 1
 
-    worker = Worker(
-        name="correlation-0",
-        configuration_manager=ConfigurationManager(EngineConfiguration()),
-        node_manager=Mock(spec=NodeManagerInterface),
-    )
-    worker.lock_manager = MagicMock()
-    worker._handle_failed_analysis(pending[0])
+    assert _recovering_worker()._handle_failed_analysis(pending[0])
 
     assert TrackingReader().recover_pending_failures() == []
 
@@ -641,8 +609,7 @@ def _pending_failure_for(root_analysis, lock_uuid) -> tuple[TrackingRecord, obje
 
     dying = TrackingWriter("correlation-0")
     dying.track_current_work_target(root_analysis, lock_uuid=lock_uuid)
-    with patch("saq.engine.tracking.MODULE_PATH", return_value=MODULE_PATH):
-        dying.track_current_analysis_module(_module(), observable)
+    dying.track_current_analysis_module(_basic_test_module(), observable)
 
     pending = TrackingReader().recover_pending_failures()
     assert len(pending) == 1

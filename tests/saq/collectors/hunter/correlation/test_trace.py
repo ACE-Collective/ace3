@@ -1,6 +1,6 @@
 import datetime
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -15,6 +15,7 @@ from saq.collectors.hunter.correlation.trace import (
     TransformTrace,
     sanitize_value,
 )
+from saq.configuration.encryption import delete_password, encrypt_password
 
 
 PYTHON = sys.executable
@@ -27,13 +28,17 @@ def _make_config(logic_data, timeout="15m"):
     })
 
 
-@pytest.fixture(autouse=True)
-def _mock_secrets_and_config():
-    mock_raw = MagicMock()
-    mock_raw._data = {}
-    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
-         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-        yield
+@pytest.fixture
+def store_secret():
+    stored = []
+
+    def _store(key, value):
+        encrypt_password(key, value)
+        stored.append(key)
+
+    yield _store
+    for key in stored:
+        delete_password(key)
 
 
 @pytest.mark.unit
@@ -153,7 +158,7 @@ class TestExpressionTraced:
         assert trace.error is not None
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestEngineTrace:
 
     def test_no_logic_produces_trace(self):
@@ -658,7 +663,7 @@ class TestEngineTrace:
         assert cond.expression.rendered_value == "True"
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestSecretSanitizationInTrace:
 
     # No correlation template can read the credential store (see build_jinja_context). A secret
@@ -666,98 +671,86 @@ class TestSecretSanitizationInTrace:
     # queried log line that happens to carry a credential -- or by a helper script that reads one
     # on its own and echoes it. These cover both routes.
 
-    def test_secrets_stripped_from_expression_trace(self):
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"api_key": "supersecret"}), \
-             patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-            config = _make_config([
-                {
-                    "when": "{{ _event.token }}",
-                    "execute": [{"action": "filter"}],
-                },
-            ])
-            engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1, "token": "supersecret"}])
+    def test_secrets_stripped_from_expression_trace(self, store_secret):
+        store_secret("api_key", "supersecret")
+        config = _make_config([
+            {
+                "when": "{{ _event.token }}",
+                "execute": [{"action": "filter"}],
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1, "token": "supersecret"}])
 
-            cond = result.trace.event_traces[0].steps[0].step
-            assert "supersecret" not in (cond.expression.rendered_value or "")
-            assert "***" in (cond.expression.rendered_value or "")
+        cond = result.trace.event_traces[0].steps[0].step
+        assert "supersecret" not in (cond.expression.rendered_value or "")
+        assert "***" in (cond.expression.rendered_value or "")
 
-    def test_secrets_stripped_from_action_log_message(self):
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"api_key": "supersecret"}), \
-             patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-            config = _make_config([
-                {"action": {"type": "log", "log_message": "key={{ _event.token }}"}},
-            ])
-            engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1, "token": "supersecret"}])
+    def test_secrets_stripped_from_action_log_message(self, store_secret):
+        store_secret("api_key", "supersecret")
+        config = _make_config([
+            {"action": {"type": "log", "log_message": "key={{ _event.token }}"}},
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1, "token": "supersecret"}])
 
-            action = result.trace.event_traces[0].steps[0].step
-            assert isinstance(action, ActionTrace)
-            assert "supersecret" not in (action.rendered_log_message or "")
-            assert "***" in (action.rendered_log_message or "")
+        action = result.trace.event_traces[0].steps[0].step
+        assert isinstance(action, ActionTrace)
+        assert "supersecret" not in (action.rendered_log_message or "")
+        assert "***" in (action.rendered_log_message or "")
 
-    def test_env_value_absent_from_rendered_command_trace(self, caplog):
+    def test_env_value_absent_from_rendered_command_trace(self, caplog, store_secret):
         """The trace summary renders path + args, never env, so an env value stays out of it."""
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"vendor.api_key": "supersecret"}), \
-             patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-            config = _make_config([
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "result",
-                        "command": {
-                            "type": "executable",
-                            "path": PYTHON,
-                            "args": ["-c", "import os; print(os.environ['API_KEY'][:2])"],
-                            "env": {"API_KEY": "{{ _event.token }}"},
-                        },
+        store_secret("vendor.api_key", "supersecret")
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "result",
+                    "command": {
+                        "type": "executable",
+                        "path": PYTHON,
+                        "args": ["-c", "import os; print(os.environ['API_KEY'][:2])"],
+                        "env": {"API_KEY": "{{ _event.token }}"},
                     },
                 },
-            ])
-            engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1, "token": "supersecret"}])
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1, "token": "supersecret"}])
 
-            # the command really did receive the value
-            assert result.events[0]["result"] == "su"
-            transform = result.trace.event_traces[0].steps[0].step
-            assert isinstance(transform, TransformTrace)
-            assert "supersecret" not in (transform.rendered_command or "")
-            assert "supersecret" not in caplog.text
+        # the command really did receive the value
+        assert result.events[0]["result"] == "su"
+        transform = result.trace.event_traces[0].steps[0].step
+        assert isinstance(transform, TransformTrace)
+        assert "supersecret" not in (transform.rendered_command or "")
+        assert "supersecret" not in caplog.text
 
-    def test_transform_error_is_sanitized(self, caplog):
+    def test_transform_error_is_sanitized(self, caplog, store_secret):
         """A helper script that echoes a credential to stderr must not write it into the trace --
         TransformTrace.error is persisted into alert details."""
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={"vendor.api_key": "supersecret"}), \
-             patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-            config = _make_config([
-                {
-                    "transform": {
-                        "type": "event",
-                        "method": "property",
-                        "property_name": "result",
-                        "command": {
-                            "type": "executable",
-                            "path": PYTHON,
-                            "args": ["-c", "import os, sys; sys.stderr.write(os.environ['API_KEY']); sys.exit(1)"],
-                            "env": {"API_KEY": "{{ _event.token }}"},
-                        },
+        store_secret("vendor.api_key", "supersecret")
+        config = _make_config([
+            {
+                "transform": {
+                    "type": "event",
+                    "method": "property",
+                    "property_name": "result",
+                    "command": {
+                        "type": "executable",
+                        "path": PYTHON,
+                        "args": ["-c", "import os, sys; sys.stderr.write(os.environ['API_KEY']); sys.exit(1)"],
+                        "env": {"API_KEY": "{{ _event.token }}"},
                     },
                 },
-            ])
-            engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-            result = engine.execute([{"id": 1, "token": "supersecret"}])
+            },
+        ])
+        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
+        result = engine.execute([{"id": 1, "token": "supersecret"}])
 
-            transform = result.trace.event_traces[0].steps[0].step
-            assert isinstance(transform, TransformTrace)
-            assert "supersecret" not in (transform.error or "")
-            assert "***" in (transform.error or "")
-            assert "supersecret" not in caplog.text
+        transform = result.trace.event_traces[0].steps[0].step
+        assert isinstance(transform, TransformTrace)
+        assert "supersecret" not in (transform.error or "")
+        assert "***" in (transform.error or "")
+        assert "supersecret" not in caplog.text

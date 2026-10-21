@@ -5,7 +5,6 @@ saq.svs.attribution)."""
 import json
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import select, update
@@ -36,16 +35,12 @@ from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT, set_dispositions
 from saq.database.util.user_management import add_user
-from saq.engine.analysis_orchestrator import AnalysisOrchestrator
-from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.execution_context import EngineExecutionContext
-from saq.engine.executor import AnalysisExecutor
 from saq.svs import association, attribution, runs
 from saq.svs.association import AssociationConflict, InvalidAssociation, UnknownAlert
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import SVS_MANUAL_ROUTER, RunEventKind, RunState
 from tests.saq.helpers import create_root_analysis, insert_alert
-from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run, sync_alert
 
 pytestmark = pytest.mark.integration
 
@@ -54,10 +49,8 @@ ACTOR = "unittest"
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
+def setup(no_hunts):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield
@@ -114,20 +107,6 @@ def _events(run: SVSRun, kind: RunEventKind) -> list[dict]:
     db.expire_all()
     return [json.loads(e.details) for e in db.execute(select(SVSRunEvent).where(
         SVSRunEvent.run_id == run.id, SVSRunEvent.kind == kind.value).order_by(SVSRunEvent.id)).scalars()]
-
-
-def _sync(root: RootAnalysis):
-    """The engine's POST_ANALYSIS stage for an existing alert."""
-    config_manager = Mock(spec=ConfigurationManager)
-    config_manager.config = Mock()
-    orchestrator = AnalysisOrchestrator(configuration_manager=config_manager,
-                                        analysis_executor=Mock(spec=AnalysisExecutor),
-                                        workload_manager=Mock(), lock_manager=Mock())
-    context = Mock(spec=EngineExecutionContext)
-    context.root = root
-    context.analysis_skipped = False
-    context.analysis_aborted = False
-    orchestrator._sync_alert_to_database(context)
 
 
 class TestAssociate:
@@ -361,7 +340,7 @@ class TestTheRouterRespectsAPerson:
 
         # a later pass finds another detection on the marker's branch
         root.add_observable_by_spec(F_TEST, f"ran {marker}").add_detection_point("test detection")
-        _sync(root)
+        sync_alert(root)
         assert all(r.removed_at is not None for r in _attributions(root.uuid, run_id))
         assert _row(root.uuid).queue == QUEUE_DEFAULT
 
@@ -372,7 +351,7 @@ class TestTheRouterRespectsAPerson:
         other = started_run(GUID, now=datetime.now() - timedelta(minutes=1))
         other_id = other.id
         root.details = {"events": [{"command_line": f"whoami & REM {other.marker}"}]}
-        _sync(root)
+        sync_alert(root)
         assert [r.source for r in _attributions(root.uuid, other_id)] == ["router"]
         assert _row(root.uuid).queue == QUEUE_DEFAULT
 
@@ -382,7 +361,7 @@ class TestTheRouterRespectsAPerson:
 
         # a later pass finds a detection the association doesn't cover: the alert is partial
         root.add_observable_by_spec(F_TEST, "unrelated").add_detection_point("real detection")
-        _sync(root)
+        sync_alert(root)
         assert _row(root.uuid).queue == get_config().svs.queue
         assert _last_change(root.uuid)[2] == SVS_MANUAL_ROUTER
 

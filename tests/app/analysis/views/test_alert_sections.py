@@ -1,6 +1,5 @@
 import logging
 import re
-from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -9,13 +8,16 @@ from sqlalchemy.exc import OperationalError
 
 from aceapi_v2.sync import run_async_with_session
 from aceapi_v2.user_preferences import service
-from aceapi_v2.user_preferences.schemas import PREFERENCE_KEY_ALERT_SECTIONS, AlertSectionsPreference
+from aceapi_v2.user_preferences.schemas import PREFERENCE_KEY_ALERT_SECTIONS
+from app.user_preferences import get_alert_sections_preference
 from saq.configuration.config import get_config
-from saq.constants import F_URL
-from saq.database.model import Alert
+from saq.constants import F_EMAIL_DELIVERY, F_URL
+from saq.database.model import Alert, Remediation, RemediationHistory
+from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user, delete_user
 from saq.gui.alert import KEY_ALERT_TEMPLATE
+from saq.remediation.types import RemediationAction, RemediationStatus, RemediatorStatus
 
 pytestmark = pytest.mark.integration
 
@@ -115,7 +117,7 @@ def test_preference_is_read_once_per_page(web_client, root_analysis, analyst, mo
 
     def _counting_read():
         reads.append(1)
-        return AlertSectionsPreference()
+        return get_alert_sections_preference()
 
     monkeypatch.setattr("app.application.get_alert_sections_preference", _counting_read)
     html = _alert_page(web_client, root_analysis)
@@ -128,12 +130,19 @@ def test_every_card_is_a_section(web_client, root_analysis, analyst, monkeypatch
     """The cards that need data a plain alert does not have, rendered from stand-ins."""
     # a dict key, as an Event is
     event = type("Event", (), {"id": 1, "name": "Campaign X", "malware_names": [], "sorted_tags": []})()
+    # the real property currently always returns {} (saq/database/model.py), so this only tests the template
     monkeypatch.setattr(Alert, "observable_open_event_counts", property(lambda self: {event: 1}))
-    monkeypatch.setattr("app.analysis.views.index.gather_remediation_events", lambda *args, **kwargs: [
-        SimpleNamespace(pending=False, event_time=None, timestamp=datetime(2026, 10, 19, 12, 0, 0),
-                        target="user@example.com", duration_display="", source="graph",
-                        description="moved to deleted items", portal_url=None, metadata={}),
-    ])
+    # an email ACE removed, which the remediation timeline reads from remediation_history
+    delivery = root_analysis.add_observable_by_spec(F_EMAIL_DELIVERY, "<message-id@example.com>|user@example.com")
+    remediation = Remediation(name="email", type=F_EMAIL_DELIVERY, key=delivery.value,
+                              action=RemediationAction.REMOVE.value,
+                              user_id=get_config().global_settings.automation_user_id,
+                              status=RemediationStatus.COMPLETED.value)
+    get_db().add(remediation)
+    get_db().flush()
+    get_db().add(RemediationHistory(remediation_id=remediation.id, result=RemediatorStatus.SUCCESS.value,
+                                    message="removed", status=RemediationStatus.COMPLETED.value))
+    get_db().commit()
     monkeypatch.setattr("app.analysis.views.index.gather_clicker_results",
                         lambda root: SimpleNamespace(events=[], ran=True, errors=[]))
     root_analysis.details = {"correlation_trace": {"event_traces": []}}
@@ -149,7 +158,7 @@ def test_every_card_is_a_section(web_client, root_analysis, analyst, monkeypatch
     assert "ct-expand-all" in _section(html, "correlation_trace")
     for section_id in choices:
         assert not _is_open(_section(html, section_id)), section_id
-    assert "moved to deleted items" in html
+    assert "Remove (Success)" in html
 
 
 @pytest.mark.parametrize("template, details, section_ids", [

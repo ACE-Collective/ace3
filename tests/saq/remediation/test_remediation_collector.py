@@ -313,15 +313,34 @@ def test_notify_remediation_listeners_same_listener_multiple_times():
     assert listener.remediations[0] is work_item_1
     assert listener.remediations[1] is work_item_2
 
-@pytest.mark.unit
+def _queue(name: str, key: str, action: RemediationAction = RemediationAction.REMOVE, restore_key=None) -> int:
+    target = RemediationTarget(name, F_TEST, key)
+    return target.queue_remediation(action, get_config().global_settings.automation_user_id, restore_key)
+
+def _counting_collect(collector: RemediationCollector, on_call=None) -> list[int]:
+    """Wraps the real collect_work_items to count how often the loop calls it."""
+    calls = [0]
+    real_collect = collector.collect_work_items
+
+    def collect_work_items():
+        calls[0] += 1
+        if on_call:
+            on_call(calls[0])
+        return real_collect()
+
+    collector.collect_work_items = collect_work_items
+    return calls
+
+class RaisingRemediationListener(RemediationListener):
+    def handle_remediation_request(self, remediation: RemediationWorkItem):
+        raise RuntimeError("test error in handle_remediation_request")
+
+@pytest.mark.integration
 def test_collection_loop_signals_startup():
     collector = RemediationCollector()
 
     # startup event should not be set initially
     assert not collector.collector_startup_event.is_set()
-
-    # mock collect_work_items to return empty list
-    collector.collect_work_items = lambda: []
 
     # set shutdown event so loop exits immediately
     collector.shutdown_event.set()
@@ -332,41 +351,16 @@ def test_collection_loop_signals_startup():
     # verify startup event was set
     assert collector.collector_startup_event.is_set()
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_processes_work_items():
     collector = RemediationCollector()
     listener = TestRemediationListener()
     collector.register_remediation_listener("test_name", listener)
 
-    # create work items to be collected
-    work_items = [
-        RemediationWorkItem(
-            id=1,
-            action=RemediationAction.REMOVE,
-            name="test_name",
-            type=F_TEST,
-            key="test_key_1",
-            restore_key=None
-        ),
-        RemediationWorkItem(
-            id=2,
-            action=RemediationAction.RESTORE,
-            name="test_name",
-            type=F_TEST,
-            key="test_key_2",
-            restore_key="restore_key_2"
-        )
-    ]
-
-    # mock collect_work_items to return work items once, then empty list
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return work_items
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
+    remove_id = _queue("test_name", "test_key_1")
+    restore_id = _queue("test_name", "test_key_2", RemediationAction.RESTORE, "restore_key_2")
+    # a remediation for a name nobody listens to is left alone
+    other_id = _queue("other_name", "test_key_3")
 
     # set shutdown event so loop exits after processing
     collector.shutdown_event.set()
@@ -375,9 +369,20 @@ def test_collection_loop_processes_work_items():
     collector.collection_loop()
 
     # verify all work items were processed
-    assert len(listener.remediations) == 2
-    assert listener.remediations[0] is work_items[0]
-    assert listener.remediations[1] is work_items[1]
+    by_id = {item.id: item for item in listener.remediations}
+    assert set(by_id) == {remove_id, restore_id}
+    assert by_id[remove_id].action == RemediationAction.REMOVE
+    assert by_id[remove_id].key == "test_key_1"
+    assert by_id[restore_id].action == RemediationAction.RESTORE
+    assert by_id[restore_id].restore_key == "restore_key_2"
+
+    # the collected rows are locked and in progress, the other one is untouched
+    rows = {r.id: r for r in get_db().query(Remediation).filter(Remediation.id.in_([remove_id, restore_id, other_id]))}
+    for id in (remove_id, restore_id):
+        assert rows[id].status == RemediationStatus.IN_PROGRESS.value
+        assert rows[id].lock is not None
+    assert rows[other_id].status == RemediationStatus.NEW.value
+    assert rows[other_id].lock is None
 
 @pytest.mark.unit
 def test_collection_loop_handles_exceptions_in_collect():
@@ -402,31 +407,11 @@ def test_collection_loop_handles_exceptions_in_collect():
     # verify collect_work_items was called
     assert call_count[0] >= 1
 
-@pytest.mark.unit
-def test_collection_loop_handles_exceptions_in_notify():
+@pytest.mark.integration
+def test_collection_loop_handles_exceptions_in_notify(caplog):
     collector = RemediationCollector()
-    listener = TestRemediationListener()
-    collector.register_remediation_listener("test_name", listener)
-
-    # create work item with wrong name to trigger exception in notify
-    work_item = RemediationWorkItem(
-        id=1,
-        action=RemediationAction.REMOVE,
-        name="unregistered_name",
-        type=F_TEST,
-        key="test_key",
-        restore_key=None
-    )
-
-    # mock collect_work_items to return bad work item once, then empty list
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return [work_item]
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
+    collector.register_remediation_listener("test_name", RaisingRemediationListener())
+    _queue("test_name", "test_key")
 
     # set shutdown event so loop exits after processing
     collector.shutdown_event.set()
@@ -434,35 +419,31 @@ def test_collection_loop_handles_exceptions_in_notify():
     # run the collection loop - should not raise exception
     collector.collection_loop()
 
-    # verify collect_work_items was called
-    assert call_count[0] >= 1
+    errors = [r for r in caplog.records if r.levelname == "ERROR" and "error collecting remediations from database" in r.getMessage()]
+    assert len(errors) == 1
+    assert errors[0].exc_info is not None
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_removes_database_connection():
     from unittest.mock import patch
+    from saq.database.pool import remove_all_sessions
 
     collector = RemediationCollector()
-
-    # mock collect_work_items to return empty list
-    collector.collect_work_items = lambda: []
 
     # set shutdown event so loop exits
     collector.shutdown_event.set()
 
-    with patch("saq.remediation.collector.remove_all_sessions") as mock_remove:
+    with patch("saq.remediation.collector.remove_all_sessions", wraps=remove_all_sessions) as mock_remove:
         collector.collection_loop()
 
     # verify database sessions were removed
     mock_remove.assert_called_once()
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_handles_db_remove_exception():
     from unittest.mock import patch
 
     collector = RemediationCollector()
-
-    # mock collect_work_items to return empty list
-    collector.collect_work_items = lambda: []
 
     # set shutdown event so loop exits
     collector.shutdown_event.set()
@@ -474,17 +455,10 @@ def test_collection_loop_handles_db_remove_exception():
     # verify remove was attempted
     mock_remove.assert_called_once()
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_exits_on_shutdown_event():
     collector = RemediationCollector()
-
-    # mock collect_work_items to track calls
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
+    call_count = _counting_collect(collector)
 
     # set shutdown event immediately
     collector.shutdown_event.set()
@@ -495,20 +469,16 @@ def test_collection_loop_exits_on_shutdown_event():
     # verify collect_work_items was called only once
     assert call_count[0] == 1
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_waits_between_iterations():
     collector = RemediationCollector()
 
-    # mock collect_work_items to track calls
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
+    def _on_call(count: int):
         # set shutdown after second call
-        if call_count[0] >= 2:
+        if count >= 2:
             collector.shutdown_event.set()
-        return []
 
-    collector.collect_work_items = mock_collect_work_items
+    call_count = _counting_collect(collector, _on_call)
 
     # mock shutdown_event.wait to track calls and set shutdown
     original_wait = collector.shutdown_event.wait
@@ -524,8 +494,9 @@ def test_collection_loop_waits_between_iterations():
 
     # verify wait was called with 1 second timeout
     assert wait_calls[0] >= 1
+    assert call_count[0] == 2
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_collection_loop_processes_multiple_listeners():
     collector = RemediationCollector()
     listener1 = TestRemediationListener()
@@ -533,43 +504,9 @@ def test_collection_loop_processes_multiple_listeners():
     collector.register_remediation_listener("listener_1", listener1)
     collector.register_remediation_listener("listener_2", listener2)
 
-    # create work items for different listeners
-    work_items = [
-        RemediationWorkItem(
-            id=1,
-            action=RemediationAction.REMOVE,
-            name="listener_1",
-            type=F_TEST,
-            key="test_key_1",
-            restore_key=None
-        ),
-        RemediationWorkItem(
-            id=2,
-            action=RemediationAction.RESTORE,
-            name="listener_2",
-            type=F_TEST,
-            key="test_key_2",
-            restore_key="restore_key_2"
-        ),
-        RemediationWorkItem(
-            id=3,
-            action=RemediationAction.REMOVE,
-            name="listener_1",
-            type=F_TEST,
-            key="test_key_3",
-            restore_key=None
-        )
-    ]
-
-    # mock collect_work_items to return work items once, then empty list
-    call_count = [0]
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return work_items
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
+    id_1 = _queue("listener_1", "test_key_1")
+    id_2 = _queue("listener_2", "test_key_2", RemediationAction.RESTORE, "restore_key_2")
+    id_3 = _queue("listener_1", "test_key_3")
 
     # set shutdown event so loop exits after processing
     collector.shutdown_event.set()
@@ -578,9 +515,5 @@ def test_collection_loop_processes_multiple_listeners():
     collector.collection_loop()
 
     # verify each listener received their work items
-    assert len(listener1.remediations) == 2
-    assert listener1.remediations[0] is work_items[0]
-    assert listener1.remediations[1] is work_items[2]
-
-    assert len(listener2.remediations) == 1
-    assert listener2.remediations[0] is work_items[1]
+    assert {item.id for item in listener1.remediations} == {id_1, id_3}
+    assert [item.id for item in listener2.remediations] == [id_2]

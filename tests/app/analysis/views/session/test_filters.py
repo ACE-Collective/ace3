@@ -5,8 +5,6 @@ The config-driven quick-filter subsystem this module used to test is gone: quick
 are per-user saved filters now, covered by tests/aceapi_v2/saved_filters/.
 """
 
-from unittest.mock import MagicMock
-
 import pytest
 
 import app.analysis.views.session.filters as filters_mod
@@ -16,6 +14,7 @@ from app.analysis.views.session.filters import (
     resolve_filter_sentinels,
     resolve_saved_filter,
 )
+from saq.database.model import User
 from saq.gui.filter_names import FILTER_NAMES
 
 
@@ -61,9 +60,7 @@ def test_date_range_filter_names_are_actually_date_range_filters():
 
 @pytest.fixture
 def fake_user(monkeypatch):
-    user = MagicMock()
-    user.queue = "their_queue"
-    user.display_name = "Their Name"
+    user = User(queue="their_queue", display_name="Their Name")
     monkeypatch.setattr(filters_mod, "current_user", user)
     return user
 

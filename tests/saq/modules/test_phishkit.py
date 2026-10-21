@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 from unittest.mock import MagicMock
 
+import msgpack
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
@@ -32,7 +33,10 @@ from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobSto
 from saq.analysis.cache import apply_delta, generate_cache_key, get_cached_delta, put_cached_delta
 from saq.analysis.module_execution_delta import merge_module_execution_deltas
 from saq.analysis.snapshot import ModuleExecutionSnapshot
-from tests.saq.helpers import create_root_analysis
+from saq.database.model import DelayedAnalysis
+from saq.database.pool import get_db
+from saq.engine.delayed_analysis_adapter import DelayedAnalysisAdapter
+from tests.saq.helpers import create_root_analysis, create_test_worker
 from tests.saq.test_util import create_test_context
 
 
@@ -42,6 +46,19 @@ def _reset_scanner_version_cache():
     saq.phishkit._reset_scanner_version_cache_for_tests()
     yield
     saq.phishkit._reset_scanner_version_cache_for_tests()
+
+
+def _create_delaying_context(root):
+    """A module context whose delay_analysis goes through a real Worker into the delayed_analysis table."""
+    worker = create_test_worker("test_phishkit")
+    return create_test_context(
+        root=root,
+        configuration_manager=worker.configuration_manager,
+        delayed_analysis_interface=DelayedAnalysisAdapter(worker))
+
+
+def _delayed_analysis_requests(root) -> list[DelayedAnalysis]:
+    return get_db().query(DelayedAnalysis).filter(DelayedAnalysis.uuid == root.uuid).all()
 
 
 @pytest.mark.unit
@@ -321,23 +338,9 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
     
-    # Mock delay_analysis to mimic the real contract (flag delayed, return
-    # INCOMPLETE) without registering an actual delayed request.
-    def mock_delay_analysis(self, observable, analysis, **kwargs):
-        analysis.delayed = True
-        return AnalysisExecutionResult.INCOMPLETE
-
-    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
-    
-    # Mock create_temporary_directory
-    def mock_create_temporary_directory():
-        return "/tmp/test-output"
-    
-    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
-    
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
+        context=_create_delaying_context(root))
     result = analyzer.execute_analysis(url_observable)
 
     # F_URL returns the delay result (INCOMPLETE) — the scan completes on resume.
@@ -347,7 +350,14 @@ def test_phishkit_analyzer_execute_analysis_url_success(monkeypatch, test_contex
     assert analysis is not None
     assert analysis.job_id == "test-job-123"
     assert analysis.scan_type == SCAN_TYPE_URL
-    # Don't check exact output_dir since it uses temp directory
+    assert os.path.isdir(analysis.output_dir)
+    assert analysis.delayed
+    assert not analysis.completed
+
+    requests = _delayed_analysis_requests(root)
+    assert len(requests) == 1
+    assert requests[0].observable_uuid == url_observable.uuid
+    assert requests[0].analysis_module == analyzer.name
 
 
 @pytest.mark.integration
@@ -513,23 +523,9 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
     
-    # Mock delay_analysis to mimic the real contract (flag delayed, return
-    # INCOMPLETE) without registering an actual delayed request.
-    def mock_delay_analysis(self, observable, analysis, **kwargs):
-        analysis.delayed = True
-        return AnalysisExecutionResult.INCOMPLETE
-
-    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
-    
-    # Mock create_temporary_directory
-    def mock_create_temporary_directory():
-        return "/tmp/test-output-2"
-    
-    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
-    
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
+        context=_create_delaying_context(root))
     result = analyzer.execute_analysis(url_observable)
 
     assert result == AnalysisExecutionResult.INCOMPLETE
@@ -538,6 +534,8 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
     assert analysis is not None
     assert analysis.job_id == "test-job-456"
     assert analysis.scan_type == SCAN_TYPE_URL
+    assert analysis.delayed
+    assert len(_delayed_analysis_requests(root)) == 1
 
 
 @pytest.mark.integration
@@ -555,12 +553,6 @@ def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context)
         raise Exception("Network error")
     
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
-    
-    # Mock create_temporary_directory
-    def mock_create_temporary_directory():
-        return "/tmp/test-output"
-    
-    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
     
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
@@ -599,7 +591,7 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
         # Configure analyzer to accept html files
         analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
+        context=_create_delaying_context(root))
         
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
@@ -609,18 +601,6 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
             return "file-job-123"
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
-        
-        # Mock delay_analysis to return the expected result
-        def mock_delay_analysis(*args, **kwargs):
-            return AnalysisExecutionResult.INCOMPLETE
-        
-        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
-        
-        # Mock create_temporary_directory
-        def mock_create_temporary_directory():
-            return "/tmp/test-file-output"
-        
-        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
                 
         result = analyzer.execute_analysis(file_observable)
         
@@ -631,7 +611,10 @@ def test_phishkit_analyzer_execute_analysis_file_success(monkeypatch, test_conte
         assert analysis is not None
         assert analysis.job_id == "file-job-123"
         assert analysis.scan_type == SCAN_TYPE_FILE
-        # Don't check exact output_dir since it uses temp directory
+        assert os.path.isdir(analysis.output_dir)
+        assert analysis.delayed
+        assert not analysis.completed
+        assert len(_delayed_analysis_requests(root)) == 1
 
     finally:
         # Clean up
@@ -663,14 +646,12 @@ def test_phishkit_analyzer_accepts_html_body_misdetected_as_text_plain(monkeypat
 
         analyzer = PhishkitAnalyzer(
             get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-            context=create_test_context(root=root))
+            context=_create_delaying_context(root))
 
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
 
         monkeypatch.setattr("saq.modules.phishkit.scan_file", lambda *a, **k: "file-job-html")
-        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **k: AnalysisExecutionResult.INCOMPLETE)
-        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/test-html-output")
 
         result = analyzer.execute_analysis(file_observable)
 
@@ -800,12 +781,6 @@ def test_phishkit_analyzer_execute_analysis_file_error(monkeypatch, test_context
             raise Exception("File processing error")
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
-        
-        # Mock create_temporary_directory
-        def mock_create_temporary_directory():
-            return "/tmp/test-file-output"
-        
-        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
                 
         result = analyzer.execute_analysis(file_observable)
         
@@ -861,20 +836,17 @@ def test_phishkit_analyzer_continue_analysis_not_ready(monkeypatch, test_context
     
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
-    analyzer.config.scanner_timeout = 100
-
-    # Mock delay_analysis to return the expected result
-    def mock_delay_analysis(*args, **kwargs):
-        return AnalysisExecutionResult.INCOMPLETE
-
-    analyzer.delay_analysis = MagicMock(side_effect=mock_delay_analysis)
+        context=_create_delaying_context(root))
+    monkeypatch.setattr(analyzer.config, "scanner_timeout", 100)
+    analyzer.delay_analysis = MagicMock(wraps=analyzer.delay_analysis)
 
     result = analyzer.continue_analysis(url_observable, analysis)
 
     # Should call delay_analysis and return its result
     analyzer.delay_analysis.assert_called_once_with(url_observable, analysis, seconds=3, timeout_seconds=230)
     assert result == AnalysisExecutionResult.INCOMPLETE
+    assert analysis.delayed
+    assert len(_delayed_analysis_requests(root)) == 1
 
 
 @pytest.mark.integration
@@ -1635,7 +1607,7 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
         # Configure analyzer to accept html files
         analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
+        context=_create_delaying_context(root))
         
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_file_extensions', ['.html'])
         monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER), 'valid_mime_types', ['text/html'])
@@ -1655,18 +1627,6 @@ def test_phishkit_analyzer_file_analyzed_after_mode_switch_to_correlation(monkey
             return "file-job-after-switch"
         
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
-        
-        # Mock delay_analysis to return the expected result
-        def mock_delay_analysis(*args, **kwargs):
-            return AnalysisExecutionResult.INCOMPLETE
-        
-        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", mock_delay_analysis)
-        
-        # Mock create_temporary_directory
-        def mock_create_temporary_directory():
-            return "/tmp/test-file-output-after-switch"
-        
-        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", mock_create_temporary_directory)
         
         # Now execute analysis - it should create analysis
         result = analyzer.execute_analysis(file_observable)
@@ -1712,13 +1672,11 @@ def test_phishkit_analyzer_url_scan_passes_proxy(monkeypatch, test_context):
         return "proxy-job-123"
 
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
-    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: None)
-    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/proxy-test")
 
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
-    analyzer.execute_analysis(url_observable)
+        context=_create_delaying_context(root))
+    assert analyzer.execute_analysis(url_observable) == AnalysisExecutionResult.INCOMPLETE
 
     assert captured_kwargs.get("proxy") == "u:p@proxy.test:9090"
 
@@ -1742,13 +1700,11 @@ def test_phishkit_analyzer_url_scan_no_proxy(monkeypatch, test_context):
         return "no-proxy-job"
 
     monkeypatch.setattr("saq.modules.phishkit.scan_url", mock_scan_url)
-    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: None)
-    monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/no-proxy-test")
 
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
-    analyzer.execute_analysis(url_observable)
+        context=_create_delaying_context(root))
+    assert analyzer.execute_analysis(url_observable) == AnalysisExecutionResult.INCOMPLETE
 
     assert captured_kwargs.get("proxy") is None
 
@@ -1845,14 +1801,12 @@ def test_phishkit_analyzer_file_scan_passes_proxy(monkeypatch, test_context):
             return "proxy-file-job"
 
         monkeypatch.setattr("saq.modules.phishkit.scan_file", mock_scan_file)
-        monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis", lambda *a, **kw: AnalysisExecutionResult.INCOMPLETE)
-        monkeypatch.setattr("saq.util.filesystem.create_temporary_directory", lambda: "/tmp/proxy-file-test")
 
         analyzer = PhishkitAnalyzer(
             get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-            context=create_test_context(root=root))
+            context=_create_delaying_context(root))
 
-        analyzer.execute_analysis(file_observable)
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.INCOMPLETE
 
         assert captured_kwargs.get("proxy") == "u:p@proxy.test:9090"
     finally:
@@ -1901,19 +1855,10 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
             json.dump({"interrupted": interrupted, "document_url": document_url}, fp)
         files.append(metrics_path)
 
-    def fake_delay(self, observable, analysis, **kwargs):
-        # mimic the real delay_analysis: register the resume (no-op here),
-        # flag the analysis delayed, return INCOMPLETE.
-        analysis.delayed = True
-        analysis.completed = False
-        return AnalysisExecutionResult.INCOMPLETE
-
     monkeypatch.setattr("saq.modules.phishkit.scan_url",
                         lambda u, o, **k: "job-xyz")
     monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
                         lambda j, o, timeout=1: files)
-    monkeypatch.setattr("saq.modules.phishkit.PhishkitAnalyzer.delay_analysis",
-                        fake_delay)
     monkeypatch.setattr("saq.modules.phishkit.create_temporary_directory",
                         lambda: out_dir)
 
@@ -1923,7 +1868,7 @@ def _drive_phishkit_scan(monkeypatch, out_dir, *, interrupted=False,
     obs.add_directive(DIRECTIVE_CRAWL)
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
+        context=_create_delaying_context(root))
 
     # cycle 1: dispatch + delay (delayed placeholder analysis captured via the
     # absent→present path).
@@ -2077,9 +2022,15 @@ def test_phishkit_partial_scan_is_cached(monkeypatch, tmp_path):
 
 
 @pytest.mark.integration
-def test_phishkit_on_cache_hit_emits_cache_served(test_context):
+def test_phishkit_on_cache_hit_emits_cache_served(monkeypatch, test_context):
     """A cache hit replays the cached analysis; on_cache_hit should emit a
     cache_served event recording the exact bytes and scan time it avoided."""
+    # a real sender (so the event is really packed) aimed at a port nothing listens on,
+    # so no test event reaches the stack's fluent-bit
+    config = get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER)
+    monkeypatch.setattr(config, "fluent_bit_metrics_enabled", True)
+    monkeypatch.setattr(config, "fluent_bit_hostname", "127.0.0.1")
+    monkeypatch.setattr(config, "fluent_bit_port", 1)
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 
@@ -2093,12 +2044,18 @@ def test_phishkit_on_cache_hit_emits_cache_served(test_context):
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
-    analyzer.fluent_bit_metrics_sender = MagicMock()
+    fluent_sender = analyzer.fluent_bit_metrics_sender
+    monkeypatch.setattr(fluent_sender, "emit", MagicMock(wraps=fluent_sender.emit))
 
     analyzer.on_cache_hit(root, url_observable)
 
-    analyzer.fluent_bit_metrics_sender.emit.assert_called_once()
-    _, payload = analyzer.fluent_bit_metrics_sender.emit.call_args.args
+    fluent_sender.emit.assert_called_once()
+    _, payload = fluent_sender.emit.call_args.args
+    # the event was really packed; the refused connection left it buffered
+    tag, _, packed = msgpack.unpackb(fluent_sender.pendings)
+    fluent_sender.close()
+    assert tag == config.fluent_bit_metrics_tag
+    assert packed == payload
     assert payload["event"] == "cache_served"
     assert payload["job_id"] == "cache-hit-job"
     assert payload["scan_type"] == "url"

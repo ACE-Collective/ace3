@@ -1,7 +1,7 @@
-"""Unit tests for LocalHardlinkBlobStore (filesystem behavior only).
+"""Tests for LocalHardlinkBlobStore.
 
-The reference/unreference DB methods are exercised in test_cache.py since
-they require the blob_refs table.
+maintain_global reads the real blob_refs table; reference/unreference are
+also exercised through the cache in test_cache.py.
 """
 import hashlib
 import io
@@ -133,11 +133,8 @@ class TestIterBlobs:
 
 class TestMaintainGlobal:
 
-    @pytest.mark.unit
-    def test_deletes_unreferenced_old_blobs(self, blob_store, monkeypatch):
-        monkeypatch.setattr(
-            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
-        )
+    @pytest.mark.integration
+    def test_deletes_unreferenced_old_blobs(self, blob_store):
         sha = blob_store.put(b"orphan blob")
         _backdate(blob_store._path_for(sha), 3600)
         stats = blob_store.maintain_global(timedelta(minutes=5))
@@ -145,34 +142,31 @@ class TestMaintainGlobal:
         assert stats.bytes_reclaimed == len(b"orphan blob")
         assert not blob_store.exists(sha)
 
-    @pytest.mark.unit
-    def test_keeps_referenced_blobs(self, blob_store, monkeypatch):
+    @pytest.mark.integration
+    def test_keeps_referenced_blobs(self, blob_store):
         sha = blob_store.put(b"referenced blob")
+        orphan = blob_store.put(b"orphan blob")
         _backdate(blob_store._path_for(sha), 3600)
-        monkeypatch.setattr(
-            "saq.analysis.blob_store.query_referenced_shas", lambda shas: {sha}
-        )
+        _backdate(blob_store._path_for(orphan), 3600)
+        # two referrers of the same blob are two blob_refs rows for one sha256
+        blob_store.reference(sha, "test", "referrer-1")
+        blob_store.reference(sha, "test", "referrer-2")
         stats = blob_store.maintain_global(timedelta(minutes=5))
-        assert stats.blobs_deleted == 0
+        assert stats.blobs_deleted == 1
         assert stats.skipped_referenced == 1
         assert blob_store.exists(sha)
+        assert not blob_store.exists(orphan)
 
-    @pytest.mark.unit
-    def test_grace_period_protects_fresh_blobs(self, blob_store, monkeypatch):
-        monkeypatch.setattr(
-            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
-        )
+    @pytest.mark.integration
+    def test_grace_period_protects_fresh_blobs(self, blob_store):
         sha = blob_store.put(b"fresh orphan")  # mtime = now
         stats = blob_store.maintain_global(timedelta(hours=1))
         assert stats.skipped_within_grace == 1
         assert stats.blobs_deleted == 0
         assert blob_store.exists(sha)
 
-    @pytest.mark.unit
-    def test_dry_run_does_not_delete(self, blob_store, monkeypatch):
-        monkeypatch.setattr(
-            "saq.analysis.blob_store.query_referenced_shas", lambda shas: set()
-        )
+    @pytest.mark.integration
+    def test_dry_run_does_not_delete(self, blob_store):
         sha = blob_store.put(b"orphan blob")
         _backdate(blob_store._path_for(sha), 3600)
         stats = blob_store.maintain_global(timedelta(minutes=5), dry_run=True)

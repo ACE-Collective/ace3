@@ -18,8 +18,6 @@ CIDR-aware for ``ip``/``ipv4``.
 The helper needs nothing but ``self.config.observable_exclusions`` and a
 ``WorkTarget``, so these are unit tests with no DB and no engine.
 """
-from unittest.mock import MagicMock
-
 import pytest
 
 from saq.analysis.root import RootAnalysis
@@ -29,33 +27,31 @@ from saq.constants import (
     F_IPV4,
     F_URL,
 )
+from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.executor import AnalysisExecutor, ObservableExclusionResult
+from saq.engine.tracking import NullTrackingWriter
 from saq.engine.work_stack import WorkTarget
+from saq.modules.test import BasicTestAnalysis
 
 
 def _make_executor(observable_exclusions: dict) -> AnalysisExecutor:
-    """Minimum-viable AnalysisExecutor for the exclusion helper.
-
-    ``self.config`` is just ``configuration_manager.config``, so the exclusion
-    dict is the only attribute that has to be a real value.
-    """
-    configuration_manager = MagicMock()
-    configuration_manager.config.observable_exclusions = observable_exclusions
+    """Minimum-viable AnalysisExecutor for the exclusion helper."""
     return AnalysisExecutor(
-        configuration_manager=configuration_manager,
-        delayed_analysis_interface=MagicMock(),
-        tracking_message_manager=MagicMock(),
+        configuration_manager=ConfigurationManager(EngineConfiguration(observable_exclusions=observable_exclusions)),
+        delayed_analysis_interface=None,
+        tracking_message_manager=NullTrackingWriter("test"),
         single_threaded_mode=True,
     )
 
 
-def _make_work_item(tmp_path, o_type: str, o_value: str, dependency=None) -> WorkTarget:
+def _make_work_item(tmp_path, o_type: str, o_value: str) -> WorkTarget:
     """A WorkTarget over a real observable of the requested type, so the type's
     own ``matches()`` override (CIDR for ip/ipv4) is what gets exercised."""
     root = RootAnalysis(storage_dir=str(tmp_path))
     observable = root.add_observable_by_spec(o_type, o_value)
     assert observable
-    return WorkTarget(observable=observable, dependency=dependency)
+    return WorkTarget(observable=observable)
 
 
 @pytest.mark.unit
@@ -167,18 +163,24 @@ def test_no_exclusions_configured(tmp_path):
 
 @pytest.mark.unit
 def test_exclusion_fails_waiting_dependency(tmp_path):
-    """A dependency being resolved by an excluded work item has to be failed and
-    advanced, otherwise its waiter is stranded."""
-    dependency = MagicMock()
+    """A dependency being resolved by an excluded work item has to be failed,
+    otherwise its waiter is stranded."""
+    root = RootAnalysis(storage_dir=str(tmp_path))
+    source = root.add_observable_by_spec(F_FQDN, "example.com")
+    target = root.add_observable_by_spec(F_FQDN, "google.com")
+    dependency = root.add_dependency(source, BasicTestAnalysis, None, target, BasicTestAnalysis, None)
+    assert dependency.ready
+
     executor = _make_executor({F_FQDN: ["google.com"]})
-    work_item = _make_work_item(tmp_path, F_FQDN, "google.com", dependency=dependency)
+    work_item = WorkTarget(observable=target, dependency=dependency)
 
     assert (
         executor._process_observable_exclusions(work_item)
         == ObservableExclusionResult.EXCLUDED
     )
-    dependency.set_status_failed.assert_called_once_with("globally excluded observable")
-    dependency.increment_status.assert_called_once()
+    assert dependency.failed
+    assert dependency.failure_reason == "globally excluded observable"
+    assert dependency not in root.active_dependencies
 
 
 @pytest.mark.unit

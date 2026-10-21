@@ -12,7 +12,7 @@ import tempfile
 from typing import Optional
 import uuid
 
-from requests import HTTPError
+import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
@@ -26,6 +26,7 @@ from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
 from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.storage.factory import reset_storage_system
+from saq.svs import attribution as svs_attribution, windows as svs_windows
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
@@ -395,6 +396,10 @@ def global_function_setup(request):
     reset_storage_system()
     reset_cas()
     reset_yara_inventory()
+    # the svs attribution gate and the hunt windows are cached per process, and tests now
+    # reach them through the real executor and real hunt files
+    svs_attribution.clear_caches()
+    svs_windows.clear_cache()
 
     # XXX we're initializing AND THEN we're resetting the database
 
@@ -508,7 +513,28 @@ def api_server():
 
 @pytest.fixture
 def mock_api_call(monkeypatch):
+    """Sends ace_api's requests to the API v2 app in-process instead of over the network.
+
+    Only the transport is replaced: the request is built from the same arguments, sent to the
+    path the real server routes (``/api/v2/...``), and the answer comes back as a
+    ``requests.Response`` that has gone through ``raise_for_status()``, as ``_execute_api_call``
+    returns it.
+
+    The request is driven through ``aceapi_v2.sync.run_async`` so it runs on the same persistent
+    background event loop that the cached async SQLAlchemy engine is bound to. The synchronous
+    ``fastapi.testclient.TestClient`` would spin up a new loop per instance and hit "Future
+    attached to a different loop" against the cached engine.
+    """
+    # local: ace_api and the v2 app pull in the whole API layer, which most tests never load
     import ace_api
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from aceapi_v2.application import app as fastapi_app
+    from aceapi_v2.sync import run_async
+
+    # the API server (tests/saq/helpers.py::execute_api_server) mounts the v2 app the same way
+    server = FastAPI()
+    server.mount("/api/v2", fastapi_app)
 
     def mock_execute_api_call(command,
                         method=ace_api.METHOD_GET,
@@ -527,81 +553,48 @@ def mock_api_call(monkeypatch):
         if api_key is None:
             api_key = ace_api.default_api_key
             if api_key is None:
-                api_key = os.environ.get("ICE_API_KEY", None)
+                api_key = os.environ.get("ACE_API_KEY", None)
 
-        return _dispatch_v2(command, method, api_key, data, params, json, files)
+        if method == ace_api.METHOD_GET:
+            method_name = "GET"
+        elif method == ace_api.METHOD_PUT:
+            method_name = "PUT"
+        elif method == ace_api.METHOD_PATCH:
+            method_name = "PATCH"
+        else:
+            method_name = "POST"
+
+        kwargs = {}
+        if params is not None:
+            kwargs["params"] = params
+        if data is not None:
+            kwargs["data"] = data
+        if json is not None:
+            kwargs["json"] = json
+        if files is not None:
+            kwargs["files"] = files
+        if api_key is not None:
+            kwargs["headers"] = {"x-ace-auth": api_key}
+
+        async def _send():
+            async with AsyncClient(transport=ASGITransport(app=server), base_url="https://testserver") as client:
+                return await client.request(method_name, f"/api/{command}", **kwargs)
+
+        answer = run_async(_send())
+
+        response = requests.Response()
+        response.status_code = answer.status_code
+        response.reason = answer.reason_phrase
+        response.headers.update(answer.headers)
+        response.url = str(answer.url)
+        response.encoding = answer.encoding
+        response._content = answer.content
+        # the body is already read, so iter_content() serves it from _content
+        response._content_consumed = True
+        response.raise_for_status()
+        return response
 
     monkeypatch.setattr(ace_api, "_execute_api_call", mock_execute_api_call)
-
-
-def _dispatch_v2(command, method, api_key, data, params, json=None, files=None):
-    """Dispatch a `v2/*` ace_api command through the FastAPI ASGI app in-process.
-
-    ace_api builds URLs as `/api/<command>`. For v2 commands (`v2/<group>/<name>`),
-    the path inside the FastAPI ASGI app is `/<group>/<name>` — `root_path="/api/v2"`
-    is only used to generate Swagger/OpenAPI URLs, not to match routes.
-
-    The request is driven through `aceapi_v2.sync.run_async` so it runs on the same
-    persistent background event loop that the cached async SQLAlchemy engine is bound
-    to. Using the synchronous `fastapi.testclient.TestClient` here would spin up a new
-    loop per instance and hit "Future attached to a different loop" against the cached
-    engine.
-    """
-    import ace_api
-    from httpx import ASGITransport, AsyncClient
-    from aceapi_v2.application import app as fastapi_app
-    from aceapi_v2.sync import run_async
-
-    path = "/" + command[len("v2/"):]
-    headers = {"x-ace-auth": api_key} if api_key else {}
-    kwargs = {"headers": headers}
-    if params is not None:
-        kwargs["params"] = params
-    # v2 endpoints take JSON bodies, which ace_api passes as `json=` (preferred) or, for older
-    # helpers, as `data=` -- except the multipart ones (engine upload, analysis submit), which
-    # pass `files=` (possibly empty) with the form fields in `data=`
-    if files is not None:
-        kwargs["data"] = data
-        kwargs["files"] = [(field, (name, fp, "application/octet-stream")) for field, (name, fp) in files]
-    elif json is not None:
-        kwargs["json"] = json
-    elif data is not None:
-        kwargs["json"] = data
-
-    method_name = {
-        ace_api.METHOD_GET: "GET",
-        ace_api.METHOD_PUT: "PUT",
-        ace_api.METHOD_POST: "POST",
-        ace_api.METHOD_PATCH: "PATCH",
-    }[method]
-
-    async def _send():
-        async with AsyncClient(
-            transport=ASGITransport(app=fastapi_app),
-            base_url="http://testserver",
-        ) as client:
-            return await client.request(method_name, path, **kwargs)
-
-    response = run_async(_send())
-
-    if response.status_code // 100 != 2:
-        raise HTTPError()
-
-    class V2Response:
-        def __init__(self, response):
-            self._response = response
-
-        def json(self):
-            return self._response.json()
-
-        def iter_content(self, *args, **kwargs):
-            yield self._response.content
-
-        @property
-        def status_code(self):
-            return self._response.status_code
-
-    return V2Response(response)
 
 #
 # for integrations we need to update the PYTHONPATH

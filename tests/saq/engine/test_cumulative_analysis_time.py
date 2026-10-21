@@ -7,18 +7,20 @@
 
 from datetime import datetime
 import uuid
-from unittest.mock import MagicMock
 
 import pytest
 
 from saq.analysis.root import load_root
 from saq.configuration.config import get_config
 from saq.constants import F_TEST, STATE_TOTAL_ANALYSIS_TIME_SECONDS
+from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
+from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
+from saq.engine.tracking import NullTrackingWriter
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis, log_count
 
@@ -29,18 +31,12 @@ from tests.saq.helpers import create_root_analysis, log_count
 #
 
 def _executor() -> AnalysisExecutor:
-    """An AnalysisExecutor with everything but execute() itself stubbed out."""
-    configuration_manager = MagicMock()
-    configuration_manager.analysis_modules = []
-    executor = AnalysisExecutor(
-        configuration_manager=configuration_manager,
-        delayed_analysis_interface=MagicMock(),
-        tracking_message_manager=MagicMock(),
+    """A real AnalysisExecutor with no analysis modules loaded."""
+    return AnalysisExecutor(
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
+        delayed_analysis_interface=None,
+        tracking_message_manager=NullTrackingWriter("test"),
     )
-    # we only care about what execute() does to root.state
-    executor._execute_recursive_analysis = MagicMock()
-    executor._execute_post_analysis = MagicMock()
-    return executor
 
 @pytest.mark.unit
 def test_root_work_item_starts_a_fresh_budget(root_analysis):
@@ -48,7 +44,8 @@ def test_root_work_item_starts_a_fresh_budget(root_analysis):
 
     _executor().execute(EngineExecutionContext(root_analysis))
 
-    assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 0
+    # the run itself is timed, so the budget is the (tiny) time this pass took
+    assert 0 <= root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] < 1
 
 @pytest.mark.unit
 def test_delayed_analysis_request_continues_the_budget(root_analysis):
@@ -64,7 +61,7 @@ def test_delayed_analysis_request_continues_the_budget(root_analysis):
 
     _executor().execute(EngineExecutionContext(request))
 
-    assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 500
+    assert 500 <= root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] < 501
 
 @pytest.mark.unit
 def test_budget_defaults_to_zero_when_missing(root_analysis):
@@ -81,7 +78,7 @@ def test_budget_defaults_to_zero_when_missing(root_analysis):
 
     _executor().execute(EngineExecutionContext(request))
 
-    assert root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] == 0
+    assert 0 <= root_analysis.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] < 1
 
 #
 # integration tests: the time actually spent analyzing is recorded, survives the

@@ -7,7 +7,8 @@ import pytest
 import yaml
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.root import load_root
+from saq.analysis.detection_point import BUILTIN_SIGNATURE_UUID
+from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
@@ -18,6 +19,7 @@ from saq.constants import (
     F_EMAIL_FROM,
     F_EMAIL_TO,
     F_FQDN,
+    F_IPV4,
     F_MESSAGE_ID,
     F_SIGNATURE_ID,
     F_URL,
@@ -38,6 +40,7 @@ from saq.modules.util.observable_modifier import (
     build_modifier_rule_matches,
     get_nested_value,
 )
+from saq.signatures.model import SignatureType
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
@@ -179,76 +182,50 @@ def test_analysis_summary_with_matches():
 
 
 # ============================================================
-# RuleConditions tests (using lightweight mocks)
+# RuleConditions tests
 # ============================================================
 
 
-class MockObservable:
-    """Minimal mock for condition testing."""
-
-    def __init__(self, type="file", value="test.html", tags=None, directives=None, display_type=None, display_value=None):
-        self.type = type
-        self.value = value
-        self._tags = tags or []
-        self._directives = directives or []
-        self._display_type = display_type
-        self._display_value = display_value
-
-    @property
-    def display_type(self) -> str:
-        if self._display_type is not None:
-            return f"{self._display_type} ({self.type})"
-        return self.type
-
-    @display_type.setter
-    def display_type(self, value: str):
-        self._display_type = value
-
-    @property
-    def display_value(self) -> str:
-        if self._display_value is not None:
-            return f"{self._display_value} ({self.value})"
-        return self.value
-
-    @display_value.setter
-    def display_value(self, value: str):
-        self._display_value = value
-
-    def has_tag(self, tag):
-        return tag in self._tags
-
-    def has_directive(self, directive):
-        return directive in self._directives
+def _root(tags=(), alert_type=None, queue="default"):
+    root = RootAnalysis(alert_type=alert_type, queue=queue)
+    for tag in tags:
+        root.add_tag(tag)
+    return root
 
 
-class MockRoot:
-    """Minimal mock for root analysis."""
+def _observable(o_type=F_URL, value="https://example.com/test.html", tags=(), directives=(),
+                display_type=None, display_value=None):
+    observable = RootAnalysis().add_observable_by_spec(o_type, value)
+    for tag in tags:
+        observable.add_tag(tag)
+    for directive in directives:
+        observable.add_directive(directive)
+    if display_type is not None:
+        observable.display_type = display_type
+    if display_value is not None:
+        observable.display_value = display_value
+    return observable
 
-    def __init__(self, tags=None, alert_type=None, queue="default", all_analysis=None):
-        self._tags = tags or []
-        self.alert_type = alert_type
-        self.queue = queue
-        self.all_analysis = all_analysis or []
 
-    def has_tag(self, tag):
-        return tag in self._tags
+def _file_observable(file_name="test.html"):
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    return _add_file_observable(root, file_name, content="test")
 
 
 @pytest.mark.unit
 def test_conditions_empty_matches_everything():
     """Empty conditions should match any observable."""
     cond = RuleConditions()
-    obs = MockObservable()
-    root = MockRoot()
-    assert cond.evaluate(obs, root) is True
+    assert cond.evaluate(_observable(), _root()) is True
 
 
 @pytest.mark.unit
 def test_conditions_observable_types_match():
     cond = RuleConditions(observable_types=["file", "url"])
-    assert cond.evaluate(MockObservable(type="file"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="url"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
+    assert cond.evaluate(_file_observable(), _root()) is True
+    assert cond.evaluate(_observable(F_URL), _root()) is True
+    assert cond.evaluate(_observable(F_IPV4, "1.2.3.4"), _root()) is False
 
 
 @pytest.fixture
@@ -275,18 +252,18 @@ def hierarchy_with_synthetic_subtype():
 def test_conditions_observable_types_match_subtype(hierarchy_with_synthetic_subtype):
     """A rule targeting the parent type matches observables of any subtype."""
     cond = RuleConditions(observable_types=["__pytest_parent__"])
-    assert cond.evaluate(MockObservable(type="__pytest_child__"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="__pytest_parent__"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
+    assert cond.evaluate(_observable("__pytest_child__", "x"), _root()) is True
+    assert cond.evaluate(_observable("__pytest_parent__", "x"), _root()) is True
+    assert cond.evaluate(_observable(F_IPV4, "1.2.3.4"), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_evaluate_early_observable_types_match_subtype(hierarchy_with_synthetic_subtype):
     """The early-eval path also honors subtype matching."""
     cond = RuleConditions(observable_types=["__pytest_parent__"])
-    assert cond.evaluate_early(MockObservable(type="__pytest_child__"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(type="__pytest_parent__"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(type="ip"), MockRoot()) is False
+    assert cond.evaluate_early(_observable("__pytest_child__", "x"), _root()) is True
+    assert cond.evaluate_early(_observable("__pytest_parent__", "x"), _root()) is True
+    assert cond.evaluate_early(_observable(F_IPV4, "1.2.3.4"), _root()) is False
 
 
 @pytest.mark.unit
@@ -301,253 +278,241 @@ def test_conditions_observable_types_match_real_email_subtype():
         pytest.skip("email_from -> email_address not loaded in this environment")
 
     cond = RuleConditions(observable_types=["email_address"])
-    assert cond.evaluate(MockObservable(type="email_from"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="email_address"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(type="ip"), MockRoot()) is False
+    assert cond.evaluate(_observable(F_EMAIL_FROM, "a@example.com"), _root()) is True
+    assert cond.evaluate(_observable(F_EMAIL_ADDRESS, "a@example.com"), _root()) is True
+    assert cond.evaluate(_observable(F_IPV4, "1.2.3.4"), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_alert_tags():
     cond = RuleConditions(alert_tags=["phishing", "external"])
-    assert cond.evaluate(MockObservable(), MockRoot(tags=["phishing", "external", "other"])) is True
-    assert cond.evaluate(MockObservable(), MockRoot(tags=["phishing"])) is False
-    assert cond.evaluate(MockObservable(), MockRoot(tags=[])) is False
+    assert cond.evaluate(_observable(), _root(tags=["phishing", "external", "other"])) is True
+    assert cond.evaluate(_observable(), _root(tags=["phishing"])) is False
+    assert cond.evaluate(_observable(), _root(tags=[])) is False
 
 
 @pytest.mark.unit
 def test_conditions_alert_type():
     cond = RuleConditions(alert_type="splunk - threat_intel")
-    assert cond.evaluate(MockObservable(), MockRoot(alert_type="splunk - threat_intel")) is True
-    assert cond.evaluate(MockObservable(), MockRoot(alert_type="other")) is False
+    assert cond.evaluate(_observable(), _root(alert_type="splunk - threat_intel")) is True
+    assert cond.evaluate(_observable(), _root(alert_type="other")) is False
 
 
 @pytest.mark.unit
 def test_conditions_queue():
     cond = RuleConditions(queue="external")
-    assert cond.evaluate(MockObservable(), MockRoot(queue="external")) is True
-    assert cond.evaluate(MockObservable(), MockRoot(queue="internal")) is False
+    assert cond.evaluate(_observable(), _root(queue="external")) is True
+    assert cond.evaluate(_observable(), _root(queue="internal")) is False
 
 
 @pytest.mark.unit
 def test_conditions_has_tags():
     cond = RuleConditions(has_tags=["suspicious"])
-    assert cond.evaluate(MockObservable(tags=["suspicious", "other"]), MockRoot()) is True
-    assert cond.evaluate(MockObservable(tags=[]), MockRoot()) is False
+    assert cond.evaluate(_observable(tags=["suspicious", "other"]), _root()) is True
+    assert cond.evaluate(_observable(tags=[]), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_has_directives():
     cond = RuleConditions(has_directives=["sandbox"])
-    assert cond.evaluate(MockObservable(directives=["sandbox"]), MockRoot()) is True
-    assert cond.evaluate(MockObservable(directives=[]), MockRoot()) is False
+    assert cond.evaluate(_observable(directives=["sandbox"]), _root()) is True
+    assert cond.evaluate(_observable(directives=[]), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_value_pattern():
     cond = RuleConditions(value_pattern=re.compile(r".*\.html$"))
-    assert cond.evaluate(MockObservable(value="body.html"), MockRoot()) is True
-    assert cond.evaluate(MockObservable(value="doc.pdf"), MockRoot()) is False
+    assert cond.evaluate(_observable(value="https://example.com/body.html"), _root()) is True
+    assert cond.evaluate(_observable(value="https://example.com/doc.pdf"), _root()) is False
+
+
+@pytest.mark.unit
+def test_conditions_value_pattern_file_observable_value_is_sha256():
+    """A file observable's value is the sha256 of its content, never its name,
+    so value_pattern cannot select files by name (file_name_pattern does that)."""
+    observable = _file_observable("body.html")
+    assert RuleConditions(value_pattern=re.compile(r"\.html$")).evaluate(observable, _root()) is False
+    assert RuleConditions(value_pattern=re.compile(r"^[0-9a-f]{64}$")).evaluate(observable, _root()) is True
+    assert RuleConditions(file_name_pattern=re.compile(r"\.html$")).evaluate(observable, _root()) is True
 
 
 @pytest.mark.unit
 def test_conditions_display_type_pattern():
     cond = RuleConditions(display_type_pattern=re.compile(r"Phishing"))
-    # display_type with _display_type set returns "Phishing URL (url)"
-    assert cond.evaluate(MockObservable(type="url", display_type="Phishing URL"), MockRoot()) is True
-    # display_type without _display_type returns the raw type "url"
-    assert cond.evaluate(MockObservable(type="url"), MockRoot()) is False
-    # display_type "file" doesn't match "Phishing"
-    assert cond.evaluate(MockObservable(type="file"), MockRoot()) is False
+    # an explicit display_type renders as "Phishing URL (url)"
+    assert cond.evaluate(_observable(F_URL, display_type="Phishing URL"), _root()) is True
+    # without one a url renders as the bare type "url"
+    assert cond.evaluate(_observable(F_URL), _root()) is False
+    assert cond.evaluate(_file_observable(), _root()) is False
+
+
+@pytest.mark.unit
+def test_conditions_display_type_pattern_uses_configured_default():
+    """Without an explicit display_type the condition sees the type's configured default label."""
+    from saq.observables.type_hierarchy import get_type_hierarchy
+    default = get_type_hierarchy().default_display_type_for(F_EMAIL_FROM)
+    if default is None:
+        pytest.skip("no default display type for email_from loaded in this environment")
+
+    observable = _observable(F_EMAIL_FROM, "a@example.com")
+    assert observable.display_type == f"{default} ({F_EMAIL_FROM})"
+    cond = RuleConditions(display_type_pattern=re.compile(re.escape(default)))
+    assert cond.evaluate(observable, _root()) is True
+    assert cond.evaluate_early(observable, _root()) is True
 
 
 @pytest.mark.unit
 def test_conditions_display_value_pattern():
     cond = RuleConditions(display_value_pattern=re.compile(r"decoded"))
-    # display_value with _display_value set returns "decoded payload (test.html)"
-    assert cond.evaluate(MockObservable(display_value="decoded payload"), MockRoot()) is True
-    # display_value without _display_value returns "test.html"
-    assert cond.evaluate(MockObservable(value="test.html"), MockRoot()) is False
+    # an explicit display_value renders as "decoded payload (https://example.com/test.html)"
+    assert cond.evaluate(_observable(display_value="decoded payload"), _root()) is True
+    # without one it is the value itself
+    assert cond.evaluate(_observable(value="https://example.com/test.html"), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_display_type_pattern_early():
     """evaluate_early should also check display_type_pattern."""
     cond = RuleConditions(display_type_pattern=re.compile(r"Phishing"))
-    assert cond.evaluate_early(MockObservable(type="url", display_type="Phishing URL"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is False
+    assert cond.evaluate_early(_observable(F_URL, display_type="Phishing URL"), _root()) is True
+    assert cond.evaluate_early(_observable(F_URL), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_display_value_pattern_early():
     """evaluate_early should also check display_value_pattern."""
     cond = RuleConditions(display_value_pattern=re.compile(r"decoded"))
-    assert cond.evaluate_early(MockObservable(display_value="decoded payload"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(value="test.html"), MockRoot()) is False
+    assert cond.evaluate_early(_observable(display_value="decoded payload"), _root()) is True
+    assert cond.evaluate_early(_observable(value="https://example.com/test.html"), _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_and_logic():
     """All conditions must match (AND logic)."""
     cond = RuleConditions(
-        observable_types=["file"],
+        observable_types=["url"],
         alert_tags=["phishing"],
         value_pattern=re.compile(r".*\.html$"),
     )
-    obs = MockObservable(type="file", value="body.html")
-    root = MockRoot(tags=["phishing"])
-    assert cond.evaluate(obs, root) is True
+    assert cond.evaluate(_observable(F_URL, "https://example.com/body.html"), _root(tags=["phishing"])) is True
 
     # Fails if any one condition doesn't match
-    assert cond.evaluate(MockObservable(type="url", value="body.html"), MockRoot(tags=["phishing"])) is False
-    assert cond.evaluate(MockObservable(type="file", value="body.html"), MockRoot(tags=[])) is False
-    assert cond.evaluate(MockObservable(type="file", value="body.pdf"), MockRoot(tags=["phishing"])) is False
+    assert cond.evaluate(_observable(F_FQDN, "body.html"), _root(tags=["phishing"])) is False
+    assert cond.evaluate(_observable(F_URL, "https://example.com/body.html"), _root(tags=[])) is False
+    assert cond.evaluate(_observable(F_URL, "https://example.com/body.pdf"), _root(tags=["phishing"])) is False
 
 
 # ============================================================
-# RuleActions tests (using lightweight mocks)
+# RuleActions tests
 # ============================================================
-
-
-class ActionTracker:
-    """Mock observable that tracks applied actions."""
-
-    def __init__(self):
-        self.directives = []
-        self.tags = []
-        self.detection_points = []
-        self._excluded_analysis = []
-        self._limited_analysis = []
-        self._ignored = False
-        self._display_type = None
-        self._display_value = None
-
-    @property
-    def ignored(self):
-        return self._ignored
-
-    @ignored.setter
-    def ignored(self, value):
-        self._ignored = value
-
-    @property
-    def display_type(self):
-        return self._display_type
-
-    @display_type.setter
-    def display_type(self, value):
-        self._display_type = value
-
-    @property
-    def display_value(self):
-        return self._display_value
-
-    @display_value.setter
-    def display_value(self, value):
-        self._display_value = value
-
-    def add_directive(self, d):
-        self.directives.append(d)
-
-    def add_tag(self, t):
-        self.tags.append(t)
-
-    def add_detection_point(self, desc, signature_uuid=None, signature_version=None, signature_family=None):
-        self.detection_points.append(desc)
-        self.detection_signatures = getattr(self, "detection_signatures", [])
-        self.detection_signatures.append((signature_uuid, signature_version))
-        self.detection_families = getattr(self, "detection_families", [])
-        self.detection_families.append(signature_family)
 
 
 @pytest.mark.unit
 def test_actions_add_directives():
     actions = RuleActions(add_directives=["extract_iocs", "sandbox"])
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.directives == ["extract_iocs", "sandbox"]
+    observable = _observable()
+    applied = actions.apply(observable)
+    assert observable.directives == ["extract_iocs", "sandbox"]
     assert applied["add_directives"] == ["extract_iocs", "sandbox"]
 
 
 @pytest.mark.unit
 def test_actions_add_tags():
     actions = RuleActions(add_tags=["suspicious", "escalation"])
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.tags == ["suspicious", "escalation"]
+    observable = _observable()
+    applied = actions.apply(observable)
+    assert observable.tags == ["suspicious", "escalation"]
     assert applied["add_tags"] == ["suspicious", "escalation"]
 
 
 @pytest.mark.unit
 def test_actions_exclude_analysis():
     actions = RuleActions(exclude_analysis=["saq.modules.sandbox:SandboxAnalyzer"])
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert "saq.modules.sandbox:SandboxAnalyzer" in tracker._excluded_analysis
+    observable = _observable()
+    applied = actions.apply(observable)
+    assert "saq.modules.sandbox:SandboxAnalyzer" in observable._excluded_analysis
     assert applied["exclude_analysis"] == ["saq.modules.sandbox:SandboxAnalyzer"]
 
 
 @pytest.mark.unit
 def test_actions_limit_analysis():
     actions = RuleActions(limit_analysis=["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"])
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert "saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer" in tracker._limited_analysis
+    observable = _observable()
+    applied = actions.apply(observable)
+    assert "saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer" in observable._limited_analysis
     assert applied["limit_analysis"] == ["saq.modules.file_analysis.ioc_extraction:IOCExtractionAnalyzer"]
 
 
 @pytest.mark.unit
 def test_actions_add_detection_points():
     actions = RuleActions(add_detection_points=["suspicious file detected", "known malware pattern"])
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.detection_points == ["suspicious file detected", "known malware pattern"]
+    observable = _observable()
+    applied = actions.apply(observable)
+    assert [d.description for d in observable.detections] == ["suspicious file detected", "known malware pattern"]
     assert applied["add_detection_points"] == ["suspicious file detected", "known malware pattern"]
-    # without a rule uuid the detection is not attributed to a rule, so it names no family
-    assert tracker.detection_families == [None, None]
+    # without a rule uuid the detection falls back to the generic built-in signature
+    assert [d.signature_uuid for d in observable.detections] == [BUILTIN_SIGNATURE_UUID] * 2
+    assert [d.signature_family for d in observable.detections] == [SignatureType.BUILTIN.value] * 2
 
 
 @pytest.mark.unit
 def test_actions_add_detection_points_name_the_observable_modifier_family():
     actions = RuleActions(add_detection_points=["suspicious file detected"])
-    tracker = ActionTracker()
-    actions.apply(tracker, signature_uuid="22222222-2222-2222-2222-222222222222", signature_version="abc")
-    assert tracker.detection_families == ["observable_modifier"]
+    observable = _observable()
+    actions.apply(observable, signature_uuid="22222222-2222-2222-2222-222222222222", signature_version="abc")
+    [detection] = observable.detections
+    assert detection.signature_uuid == "22222222-2222-2222-2222-222222222222"
+    assert detection.signature_version == "abc"
+    assert detection.signature_family == SignatureType.OBSERVABLE_MODIFIER.value
 
 
 @pytest.mark.unit
 def test_actions_empty():
     """Empty actions should return empty dict."""
     actions = RuleActions()
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
+    observable = _observable()
+    applied = actions.apply(observable)
     assert applied == {}
+    assert observable.directives == []
+    assert observable.tags == []
+    assert observable.detections == []
 
 
 @pytest.mark.unit
 def test_actions_set_display_type():
     actions = RuleActions(set_display_type="Phishing URL")
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.display_type == "Phishing URL"
+    observable = _observable(F_URL)
+    applied = actions.apply(observable)
+    assert observable.display_type == "Phishing URL (url)"
     assert applied["set_display_type"] == "Phishing URL"
 
 
 @pytest.mark.unit
 def test_actions_set_display_value():
     actions = RuleActions(set_display_value="decoded payload")
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.display_value == "decoded payload"
+    observable = _observable(F_URL, "https://example.com/test.html")
+    applied = actions.apply(observable)
+    assert observable.display_value == "decoded payload (https://example.com/test.html)"
     assert applied["set_display_value"] == "decoded payload"
+
+
+@pytest.mark.unit
+@pytest.mark.xfail(strict=True, reason="FileObservable.display_value is a getter-only property override, "
+                                       "so set_display_value raises AttributeError on file observables")
+def test_actions_set_display_value_on_file_observable():
+    observable = _file_observable("payload.bin")
+    applied = RuleActions(set_display_value="decoded payload").apply(observable)
+    assert applied["set_display_value"] == "decoded payload"
+    assert "decoded payload" in observable.display_value
 
 
 @pytest.mark.unit
 def test_actions_set_display_type_and_value():
     actions = RuleActions(set_display_type="Phishing URL", set_display_value="decoded payload")
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
-    assert tracker.display_type == "Phishing URL"
-    assert tracker.display_value == "decoded payload"
+    observable = _observable(F_URL, "https://example.com/test.html")
+    applied = actions.apply(observable)
+    assert observable.display_type == "Phishing URL (url)"
+    assert observable.display_value == "decoded payload (https://example.com/test.html)"
     assert applied["set_display_type"] == "Phishing URL"
     assert applied["set_display_value"] == "decoded payload"
 
@@ -2871,51 +2836,47 @@ def test_invalid_phase_defaults_to_post(caplog):
 def test_evaluate_early_empty_conditions():
     """Empty conditions should always return True (might match)."""
     cond = RuleConditions()
-    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+    assert cond.evaluate_early(_observable(), _root()) is True
 
 
 @pytest.mark.unit
 def test_evaluate_early_observable_type_match():
     cond = RuleConditions(observable_types=["url", "file"])
-    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(type="ip"), MockRoot()) is False
+    assert cond.evaluate_early(_observable(F_URL), _root()) is True
+    assert cond.evaluate_early(_observable(F_IPV4, "1.2.3.4"), _root()) is False
 
 
 @pytest.mark.unit
 def test_evaluate_early_alert_type_match():
     cond = RuleConditions(alert_type="splunk - threat_intel")
-    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="splunk - threat_intel")) is True
-    assert cond.evaluate_early(MockObservable(), MockRoot(alert_type="other")) is False
+    assert cond.evaluate_early(_observable(), _root(alert_type="splunk - threat_intel")) is True
+    assert cond.evaluate_early(_observable(), _root(alert_type="other")) is False
 
 
 @pytest.mark.unit
 def test_evaluate_early_queue_match():
     cond = RuleConditions(queue="external")
-    assert cond.evaluate_early(MockObservable(), MockRoot(queue="external")) is True
-    assert cond.evaluate_early(MockObservable(), MockRoot(queue="internal")) is False
+    assert cond.evaluate_early(_observable(), _root(queue="external")) is True
+    assert cond.evaluate_early(_observable(), _root(queue="internal")) is False
 
 
 @pytest.mark.unit
 def test_evaluate_early_value_pattern_match():
     cond = RuleConditions(value_pattern=re.compile(r".*\.html$"))
-    assert cond.evaluate_early(MockObservable(value="page.html"), MockRoot()) is True
-    assert cond.evaluate_early(MockObservable(value="doc.pdf"), MockRoot()) is False
+    assert cond.evaluate_early(_observable(value="https://example.com/page.html"), _root()) is True
+    assert cond.evaluate_early(_observable(value="https://example.com/doc.pdf"), _root()) is False
 
 
 @pytest.mark.unit
 def test_evaluate_early_file_name_pattern():
     """evaluate_early checks file_name_pattern against the observable's file_name attribute."""
     cond = RuleConditions(file_name_pattern=re.compile(r".*\.html$"))
-    obs_with_name = MockObservable()
-    obs_with_name.file_name = "body.html"
-    assert cond.evaluate_early(obs_with_name, MockRoot()) is True
+    assert cond.evaluate_early(_file_observable("body.html"), _root()) is True
 
-    obs_no_name = MockObservable()
-    assert cond.evaluate_early(obs_no_name, MockRoot()) is False
+    # a non-file observable has no file_name
+    assert cond.evaluate_early(_observable(value="https://example.com/body.html"), _root()) is False
 
-    obs_wrong_name = MockObservable()
-    obs_wrong_name.file_name = "doc.pdf"
-    assert cond.evaluate_early(obs_wrong_name, MockRoot()) is False
+    assert cond.evaluate_early(_file_observable("doc.pdf"), _root()) is False
 
 
 @pytest.mark.unit
@@ -2929,7 +2890,7 @@ def test_evaluate_early_ignores_dynamic_conditions():
         tree_conditions=[TreeCondition(analysis_type="test:Test")],
     )
     # Dynamic conditions are not checked, so evaluate_early returns True
-    assert cond.evaluate_early(MockObservable(), MockRoot()) is True
+    assert cond.evaluate_early(_observable(), _root()) is True
 
 
 @pytest.mark.unit
@@ -2939,7 +2900,7 @@ def test_evaluate_early_mixed_passing_immutable_and_dynamic():
         observable_types=["url"],
         alert_tags=["phishing"],  # dynamic
     )
-    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is True
+    assert cond.evaluate_early(_observable(F_URL), _root()) is True
 
 
 @pytest.mark.unit
@@ -2949,7 +2910,7 @@ def test_evaluate_early_mixed_failing_immutable_and_dynamic():
         observable_types=["file"],  # will fail for url observable
         alert_tags=["phishing"],  # dynamic, would be ignored
     )
-    assert cond.evaluate_early(MockObservable(type="url"), MockRoot()) is False
+    assert cond.evaluate_early(_observable(F_URL), _root()) is False
 
 
 # ============================================================
@@ -3390,30 +3351,30 @@ def test_tree_condition_self_scope_parsed_from_yaml():
 def test_conditions_has_yara_meta_tags_match():
     """has_yara_meta_tags should match when observable has the corresponding yara_meta: directive."""
     cond = RuleConditions(has_yara_meta_tags=["type=doc"])
-    obs = MockObservable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
-    assert cond.evaluate(obs, MockRoot()) is True
+    obs = _observable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
+    assert cond.evaluate(obs, _root()) is True
 
 
 @pytest.mark.unit
 def test_conditions_has_yara_meta_tags_no_match():
     """has_yara_meta_tags should fail when the observable lacks the directive."""
     cond = RuleConditions(has_yara_meta_tags=["type=doc"])
-    obs = MockObservable(directives=[])
-    assert cond.evaluate(obs, MockRoot()) is False
+    obs = _observable(directives=[])
+    assert cond.evaluate(obs, _root()) is False
 
 
 @pytest.mark.unit
 def test_conditions_has_yara_meta_tags_multiple():
     """has_yara_meta_tags with multiple tags should require ALL of them (AND logic)."""
     cond = RuleConditions(has_yara_meta_tags=["type=doc", "source=email"])
-    obs_both = MockObservable(directives=[
+    obs_both = _observable(directives=[
         f"{DIRECTIVE_YARA_META_PREFIX}type=doc",
         f"{DIRECTIVE_YARA_META_PREFIX}source=email",
     ])
-    assert cond.evaluate(obs_both, MockRoot()) is True
+    assert cond.evaluate(obs_both, _root()) is True
 
-    obs_one = MockObservable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
-    assert cond.evaluate(obs_one, MockRoot()) is False
+    obs_one = _observable(directives=[f"{DIRECTIVE_YARA_META_PREFIX}type=doc"])
+    assert cond.evaluate(obs_one, _root()) is False
 
 
 @pytest.mark.unit
@@ -3483,8 +3444,7 @@ def test_has_yara_meta_tags_no_match_integration():
 def test_actions_ignore():
     """ignore: true should record 'ignore' in the applied dict."""
     actions = RuleActions(ignore=True)
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
+    applied = actions.apply(_observable())
     assert applied["ignore"] is True
 
 
@@ -3492,8 +3452,7 @@ def test_actions_ignore():
 def test_actions_ignore_default():
     """Default ignore=False should not add 'ignore' to applied dict."""
     actions = RuleActions()
-    tracker = ActionTracker()
-    applied = actions.apply(tracker)
+    applied = actions.apply(_observable())
     assert "ignore" not in applied
 
 
@@ -4986,84 +4945,114 @@ def test_no_match_observable_sealed_completed():
 # ============================================================
 
 
-class _StubDetailsAnalysis:
-    """Minimal stand-in for an Analysis exposing only what
-    _load_details_for_match touches, with a load_details() that counts disk
-    reads and repopulates details from a simulated on-disk copy."""
+class _DetailsAnalysis(Analysis):
+    pass
 
-    def __init__(self, external_details_path, details_size, disk_details):
-        self.external_details_path = external_details_path
-        self.details_size = details_size
-        self.details = {}
-        self._disk_details = disk_details
-        self.load_count = 0
 
-    def load_details(self):
-        self.load_count += 1
-        self.details = self._disk_details
-        return True
+def _flushed_analysis(details):
+    """Return (root, analysis) where the analysis details were saved to the
+    root's storage dir and then flushed from memory, as the engine does after
+    every module call."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    analysis = _DetailsAnalysis()
+    analysis.details = details
+    analysis.details_modified = True
+    root.add_observable_by_spec(F_FQDN, "example.com").add_analysis(analysis)
+    root.analysis_tree_manager.flush_analysis_details(analysis)
+    assert analysis.external_details_path is not None
+    assert analysis.details == {}
+    return root, analysis
+
+
+def _count_loads(monkeypatch, analysis):
+    reads = []
+    real_load = analysis.load_details
+
+    def counting_load():
+        reads.append(analysis.external_details_path)
+        return real_load()
+
+    monkeypatch.setattr(analysis, "load_details", counting_load)
+    return reads
 
 
 @pytest.mark.unit
-def test_load_details_for_match_caches_within_root():
+def test_load_details_for_match_caches_within_root(monkeypatch):
     """A saved analysis is read from disk once; later sweeps (even after the
     engine flushes details back to {}) are served from the cache."""
     cache = {}
-    analysis = _StubDetailsAnalysis("EmailAnalysis_abc.json", 100, {"email": {"from_address": "x@y.com"}})
+    root, analysis = _flushed_analysis({"email": {"from_address": "x@y.com"}})
+    reads = _count_loads(monkeypatch, analysis)
 
     first = _load_details_for_match(analysis, cache)
     assert first == {"email": {"from_address": "x@y.com"}}
-    assert analysis.load_count == 1
+    assert len(reads) == 1
 
-    # simulate the engine flushing details between observable_modifier sweeps
-    analysis.details = {}
+    # the engine flushes details between observable_modifier sweeps
+    root.analysis_tree_manager.flush_analysis_details(analysis)
+    assert analysis.details == {}
     second = _load_details_for_match(analysis, cache)
     assert second == {"email": {"from_address": "x@y.com"}}
-    assert analysis.load_count == 1  # served from cache, no second disk read
+    assert len(reads) == 1  # served from cache, no second disk read
 
 
 @pytest.mark.unit
-def test_load_details_for_match_invalidates_on_size_change():
+def test_load_details_for_match_invalidates_on_size_change(monkeypatch):
     """A deferred analysis that re-saves with new content (new details_size)
     must be reloaded, not served stale from the cache (e.g. RdapAnalysis filling
     in age_created_in_days on a later pass)."""
     cache = {}
-    analysis = _StubDetailsAnalysis("RdapAnalysis_abc.json", 100, {"age_created_in_days": "30"})
+    root, analysis = _flushed_analysis({"age_created_in_days": "30"})
+    reads = _count_loads(monkeypatch, analysis)
 
     assert _load_details_for_match(analysis, cache)["age_created_in_days"] == "30"
-    assert analysis.load_count == 1
+    assert len(reads) == 1
+    original_size = analysis.details_size
 
-    # deferred re-save: details change, size changes, disk copy updated
-    analysis.details = {}
-    analysis.details_size = 140
-    analysis._disk_details = {"age_created_in_days": "3"}
+    # deferred re-save to the same file with different content
+    analysis.details = {"age_created_in_days": "3"}
+    analysis.details_modified = True
+    root.analysis_tree_manager.flush_analysis_details(analysis)
+    assert analysis.details_size != original_size
 
     refreshed = _load_details_for_match(analysis, cache)
     assert refreshed["age_created_in_days"] == "3"  # reloaded, not stale
-    assert analysis.load_count == 2
+    assert len(reads) == 2
 
 
 @pytest.mark.unit
-def test_load_details_for_match_no_cache_loads_every_time():
+def test_load_details_for_match_no_cache_loads_every_time(monkeypatch):
     """With details_cache=None the legacy behavior is preserved: load every call."""
-    analysis = _StubDetailsAnalysis("EmailAnalysis_abc.json", 100, {"k": "v"})
-    _load_details_for_match(analysis, None)
-    analysis.details = {}
-    _load_details_for_match(analysis, None)
-    assert analysis.load_count == 2
+    root, analysis = _flushed_analysis({"k": "v"})
+    reads = _count_loads(monkeypatch, analysis)
+    assert _load_details_for_match(analysis, None) == {"k": "v"}
+    root.analysis_tree_manager.flush_analysis_details(analysis)
+    assert _load_details_for_match(analysis, None) == {"k": "v"}
+    assert len(reads) == 2
 
 
 @pytest.mark.unit
-def test_load_details_for_match_unsaved_analysis_not_cached():
+def test_load_details_for_match_unsaved_analysis_not_cached(monkeypatch, caplog):
     """An analysis whose details were never saved (external_details_path is None)
     is never cached -- there is no stable disk key to invalidate against."""
     cache = {}
-    analysis = _StubDetailsAnalysis(None, None, {"k": "v"})
-    _load_details_for_match(analysis, cache)
-    analysis.details = {}
-    _load_details_for_match(analysis, cache)
-    assert analysis.load_count == 2
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    analysis = _DetailsAnalysis()
+    analysis.details = {"k": "v"}
+    root.add_observable_by_spec(F_FQDN, "example.com").add_analysis(analysis)
+    assert analysis.external_details_path is None
+    reads = _count_loads(monkeypatch, analysis)
+
+    with caplog.at_level(logging.ERROR):
+        # load_details() refuses an analysis that was never saved, so the in-memory details are used as-is
+        assert _load_details_for_match(analysis, cache) == {"k": "v"}
+        assert _load_details_for_match(analysis, cache) == {"k": "v"}
+
+    assert len(reads) == 2
     assert cache == {}
+    assert [r.levelno for r in caplog.records if "external_details_path is None" in r.getMessage()] == [logging.ERROR] * 2
 
 
 def _build_root_with_flushed_email_analysis(from_address="soc@vendor.com"):

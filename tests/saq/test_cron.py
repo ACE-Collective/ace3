@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from saq.configuration.config import get_service_config
+from saq.constants import SERVICE_CRON
 from saq.cron import ACECronConfig, ACECronService
 
 
@@ -66,20 +68,12 @@ def mock_cron(monkeypatch):
 
 @pytest.fixture
 def cron_config(monkeypatch, tmpdir):
-    """patches get_service_config to return a valid cron service config"""
+    """points the real cron service config at an empty cron.yaml"""
     config_path = tmpdir.join("cron.yaml")
     config_path.write("jobs: []\n")
 
-    config = ACECronConfig(
-        name="cron",
-        description="cron service",
-        enabled=True,
-        python_module="saq.cron",
-        python_class="ACECronService",
-        cron_config_path=str(config_path),
-    )
-
-    monkeypatch.setattr("saq.cron.get_service_config", lambda name: config)
+    config = get_service_config(SERVICE_CRON)
+    monkeypatch.setattr(config, "cron_config_path", str(config_path))
     return config
 
 

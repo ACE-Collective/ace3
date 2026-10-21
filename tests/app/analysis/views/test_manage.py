@@ -284,6 +284,31 @@ def test_manage_search_orders_by_relevance_and_shows_hits(web_client, analyst, m
 
 
 @pytest.mark.integration
+def test_manage_search_drops_matches_the_filters_exclude(web_client, analyst, monkeypatch):
+    """The view's SQL post-filter keeps only the search matches the analyst's filters let through."""
+    import uuid as uuidlib
+
+    kept = _insert_alert(str(uuidlib.uuid4()), 'alpha alert')
+    filtered_out = _insert_alert(str(uuidlib.uuid4()), 'beta alert')
+
+    def search(request, post_filter):
+        return _search_response(post_filter([filtered_out.uuid, kept.uuid, str(uuidlib.uuid4())]))
+
+    monkeypatch.setattr("app.analysis.views.manage.search_alerts", search)
+
+    with web_client.session_transaction() as sess:
+        _seed_manage_session(sess, analyst, filters=[{"name": "Description", "inverted": False, "values": ["alpha"]}])
+        sess['search'] = {'mode': 'query', 'query': 'alert'}
+
+    response = web_client.get(url_for("analysis.manage"))
+    assert response.status_code == 200
+    html = response.data.decode()
+    assert kept.uuid in html
+    assert filtered_out.uuid not in html
+    assert '1 matching alert,' in html
+
+
+@pytest.mark.integration
 def test_manage_similar_mode(web_client, analyst, monkeypatch):
     import uuid as uuidlib
     from unittest.mock import Mock

@@ -3,7 +3,6 @@ stage and queue reconcile."""
 
 import logging
 import uuid
-from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import update
@@ -15,14 +14,12 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE,
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
+from saq.database.util import alert as alert_util
 from saq.database.util.alert import ALERT, get_last_queue_change, move_alert_to_queue
-from saq.engine.analysis_orchestrator import AnalysisOrchestrator
-from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.engine.execution_context import EngineExecutionContext
-from saq.engine.executor import AnalysisExecutor
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator
 
 pytestmark = pytest.mark.integration
 
@@ -60,7 +57,9 @@ def _stored_queue(alert_uuid: str) -> str:
 @pytest.fixture
 def submitted_payloads(monkeypatch):
     calls = []
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: calls.append(alert_uuid))
+    submit_payload_task = alert_util.submit_payload_task
+    monkeypatch.setattr(alert_util, "submit_payload_task",
+                        lambda alert_uuid: calls.append(alert_uuid) or submit_payload_task(alert_uuid))
     return calls
 
 
@@ -188,23 +187,8 @@ class TestMoveAlertToQueue:
             move_alert_to_queue(alert, queue, "bad")
 
 
-def _orchestrator() -> AnalysisOrchestrator:
-    config_manager = Mock(spec=ConfigurationManager)
-    config_manager.config = Mock()
-    return AnalysisOrchestrator(
-        configuration_manager=config_manager,
-        analysis_executor=Mock(spec=AnalysisExecutor),
-        workload_manager=Mock(),
-        lock_manager=Mock(),
-    )
-
-
 def _context(root: RootAnalysis) -> EngineExecutionContext:
-    context = Mock(spec=EngineExecutionContext)
-    context.root = root
-    context.analysis_skipped = False
-    context.analysis_aborted = False
-    return context
+    return EngineExecutionContext(root)
 
 
 class TestPostAnalysis:
@@ -216,7 +200,7 @@ class TestPostAnalysis:
         return root, alert
 
     def _sync(self, root):
-        _orchestrator()._sync_alert_to_database(_context(root))
+        create_test_orchestrator()._sync_alert_to_database(_context(root))
 
     def test_an_open_unowned_alert_is_moved(self, correlation_alert, submitted_payloads):
         root, alert = correlation_alert
@@ -266,7 +250,7 @@ class TestReconcile:
         move_alert_to_queue(alert, "elsewhere", "moved without the tree")
         assert root.queue == QUEUE_DEFAULT
 
-        _orchestrator()._check_disposition(_context(root))
+        create_test_orchestrator()._check_disposition(_context(root))
         assert root.queue == "elsewhere"
 
 

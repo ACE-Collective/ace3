@@ -17,7 +17,6 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, 
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
 from saq.email_archive import archive_email
-from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.observables.file import FileObservable
 from saq.util.time import local_time
@@ -41,27 +40,27 @@ def api_server():
     stop_api_server(api_server_process)
 
 @pytest.mark.integration
-def test_invalid_auth(mock_api_call):
+def test_invalid_auth():
     ace_api.set_default_api_key("invalid")
     with pytest.raises(requests.exceptions.HTTPError):
         result = ace_api.ping()
 
 @pytest.mark.integration
-def test_ping(mock_api_call):
+def test_ping():
     result = ace_api.ping()
     assert result
     assert 'result' in result
     assert result['result'] == 'pong'
 
 @pytest.mark.integration
-def test_get_supported_api_version(mock_api_call):
+def test_get_supported_api_version():
     result = ace_api.get_supported_api_version()
     assert result
     assert 'result' in result
     assert result['result'] == 1
 
 @pytest.mark.integration
-def test_get_valid_companies(mock_api_call):
+def test_get_valid_companies():
     result = ace_api.get_valid_companies()
     assert result
     assert 'result' in result
@@ -98,7 +97,7 @@ def test_get_valid_observables():
     assert len(result['result']) > 0
 
 @pytest.mark.integration
-def test_get_valid_directives(mock_api_call):
+def test_get_valid_directives():
     from saq.constants import VALID_DIRECTIVES, DIRECTIVE_DESCRIPTIONS
     result = ace_api.get_valid_directives()
     assert result
@@ -152,7 +151,7 @@ def _submit(analysis_mode=None,
         os.remove(temp_path)
 
 @pytest.mark.integration
-def test_submit(mock_api_call):
+def test_submit():
     result = _submit()
     assert result
 
@@ -207,7 +206,7 @@ def test_submit(mock_api_call):
     assert row[3] == 'test_empty'
 
 @pytest.mark.integration
-def test_resubmit(mock_api_call):
+def test_resubmit():
     # submit something so we have something to resubmit
     result = _submit(analysis_mode=ANALYSIS_MODE_CORRELATION)
     assert result
@@ -263,7 +262,7 @@ def test_resubmit(mock_api_call):
     assert row[3] == ANALYSIS_MODE_CORRELATION
 
 @pytest.mark.integration
-def test_submit_with_utc_timezone(mock_api_call):
+def test_submit_with_utc_timezone():
     # make sure we can submit with a UTC timezone already set
     result = _submit(event_time=_get_localized_submit_time())
     assert result
@@ -279,7 +278,7 @@ def test_submit_with_utc_timezone(mock_api_call):
     assert root.event_time == _get_localized_submit_time()
 
 @pytest.mark.integration
-def test_submit_with_other_timezone(mock_api_call):
+def test_submit_with_other_timezone():
     # make sure we can submit with another timezone already set
     result = _submit(event_time=_get_localized_submit_time().astimezone(pytz.timezone('US/Eastern')))
     assert result
@@ -295,7 +294,7 @@ def test_submit_with_other_timezone(mock_api_call):
     assert root.event_time == _get_localized_submit_time()
 
 @pytest.mark.integration
-def test_get_analysis(mock_api_call):
+def test_get_analysis():
     # only alerts are served, and a correlation-mode submission becomes one as it is submitted
     result = _submit(analysis_mode=ANALYSIS_MODE_CORRELATION)
     assert result
@@ -329,7 +328,7 @@ def test_get_analysis(mock_api_call):
     assert 'disposition' in result
 
 @pytest.mark.integration
-def test_get_analysis_is_alerts_only(mock_api_call):
+def test_get_analysis_is_alerts_only():
     """A submission that has not become an alert is not found."""
     result = _submit()
     uuid = result['result']['uuid']
@@ -338,7 +337,7 @@ def test_get_analysis_is_alerts_only(mock_api_call):
         ace_api.get_analysis(uuid)
 
 @pytest.mark.integration
-def test_download(mock_api_call):
+def test_download():
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
@@ -355,7 +354,7 @@ def test_download(mock_api_call):
         shutil.rmtree(temp_dir)
 
 @pytest.mark.integration
-def test_upload(mock_api_call):
+def test_upload():
     root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=os.path.join(get_temp_dir(), 'unittest'))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
@@ -371,7 +370,7 @@ def test_upload(mock_api_call):
     assert root.details == { 'hello': 'world' }
 
 @pytest.mark.integration
-def test_clear(mock_api_call):
+def test_clear():
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
@@ -384,7 +383,7 @@ def test_clear(mock_api_call):
     assert ace_api.clear(root.uuid, lock_uuid)
 
 @pytest.mark.integration
-def test_clear_invalid_lock_uuid(mock_api_call):
+def test_clear_invalid_lock_uuid():
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.details = { 'hello': 'world' }
@@ -401,7 +400,7 @@ def test_clear_invalid_lock_uuid(mock_api_call):
     assert os.path.exists(root.storage_dir)
 
 @pytest.mark.integration
-def test_legacy_submit(mock_api_call):
+def test_legacy_submit():
     
     alert = ace_api.Alert(description='Test Alert')
     alert.add_observable_by_spec(F_IP, '1.2.3.4', local_time(), directives=[DIRECTIVE_NO_SCAN])
@@ -430,7 +429,7 @@ def test_legacy_submit(mock_api_call):
         assert fp.read() == 'test'
 
 @pytest.mark.integration
-def test_legacy_import(mock_api_call):
+def test_legacy_import():
     pass
 
 @pytest.mark.skip(reason="skipping tests with api_server")
@@ -503,6 +502,7 @@ def test_failed_submit(api_server, tmpdir):
     assert new_analysis.submit_kwargs == analysis.submit_kwargs
 
 @pytest.mark.skip(reason="skipping tests with api_server")
+@pytest.mark.system
 def test_submit_failed_alerts(api_server, tmpdir):
 
     fail_dir = tmpdir / "failed"
@@ -600,7 +600,7 @@ def test_submit_failed_analysis(api_server, tmpdir):
         stop_api_server(api_server)
 
 @pytest.mark.integration
-def test_analysis_file_handling(mock_api_call, tmpdir):
+def test_analysis_file_handling(tmpdir):
 
     normal_file_path = tmpdir / "normal.txt"
     normal_file_path.write_text("test", encoding="utf8")
@@ -648,7 +648,7 @@ def test_analysis_file_handling(mock_api_call, tmpdir):
     assert _file_bytes('bytes.txt') == b'This is a bytes.'
 
 @pytest.mark.integration
-def test_get_open_events(mock_api_call):
+def test_get_open_events():
     result = ace_api.get_open_events()
     assert result == []
 
@@ -703,7 +703,7 @@ def _create_test_event(db) -> int:
     return cursor.fetchone()[0]
 
 @pytest.mark.integration
-def test_get_event(mock_api_call):
+def test_get_event():
     with get_db_connection() as db:
         event_id = _create_test_event(db)
         cursor = db.cursor()
@@ -721,7 +721,7 @@ def test_get_event(mock_api_call):
     assert result['alerts'] == ['aaaaaaaa-1234-1234-1234-123456789abc']
 
 @pytest.mark.integration
-def test_update_event_status(mock_api_call):
+def test_update_event_status():
     with get_db_connection() as db:
         event_id = _create_test_event(db)
         cursor = db.cursor()
@@ -733,8 +733,7 @@ def test_update_event_status(mock_api_call):
     assert result['status'] == 'CLOSED'
 
 @pytest.mark.integration
-def test_iter_archived_email(mock_api_call, tmpdir, monkeypatch):
-    monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: EmailArchiveTargetType.LOCAL)
+def test_iter_archived_email(tmpdir):
     content = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body"
     email = tmpdir / "test_email.eml"
     email.write_binary(content)

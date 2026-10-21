@@ -12,6 +12,7 @@ from saq.integration.integration_loader import (
     load_integration_component_etc,
     load_integration_from_directory
 )
+from saq.integration.integration_manager import disable_integration
 from saq.integration.integration_util import (
     validate_integration_dir,
     _recurse_integration_dirs,
@@ -119,63 +120,77 @@ class TestGetValidIntegrationDirs:
         assert str(integration) in result
 
 
+@pytest.fixture
+def integration_env(tmp_path, monkeypatch):
+    """Points the integration base and var dirs at tmp_path and restores what loading changes.
+
+    Returns a function that creates an integration directory the way integrations.example/ lays
+    one out: integration.md, src/<package>/, bin/ and etc/saq.integration.yaml.
+    """
+    base_dir = tmp_path / "base"
+    data_dir = tmp_path / "data"
+    (base_dir / "integrations").mkdir(parents=True)
+    data_dir.mkdir()
+    monkeypatch.setattr("saq.integration.integration_util.get_base_dir", lambda: str(base_dir))
+    monkeypatch.setattr("saq.integration.integration_util.get_data_dir", lambda: str(data_dir))
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+    monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
+
+    def create(name: str, disabled: bool = False) -> str:
+        integration_dir = base_dir / "integrations" / name
+        (integration_dir / "src" / name).mkdir(parents=True)
+        (integration_dir / "src" / name / "__init__.py").write_text("")
+        (integration_dir / "bin").mkdir()
+        (integration_dir / "etc").mkdir()
+        (integration_dir / "etc" / "saq.integration.yaml").write_text(f"integration_{name}:\n  name: {name}\n")
+        (integration_dir / "integration.md").write_text(f"# {name}")
+        if disabled:
+            disable_integration(name)
+        return str(integration_dir)
+
+    return create
+
+
+def _assert_loaded(integration_dir: str):
+    assert os.path.join(integration_dir, "src") in sys.path
+    assert os.path.join(integration_dir, "bin") in os.environ["PATH"].split(":")
+    assert os.path.join(integration_dir, "etc", "saq.integration.yaml") in get_global_runtime_settings().integration_config_paths
+
+
 @pytest.mark.unit
 class TestLoadIntegrations:
-    
-    @patch('saq.integration.integration_loader.get_valid_integration_dirs')
-    @patch('saq.integration.integration_loader.is_integration_enabled')
-    @patch('saq.integration.integration_loader.load_integration_from_directory')
-    @patch('saq.integration.integration_loader.get_integration_name_from_path')
-    def test_load_integrations_all_enabled_success(self, mock_get_name, mock_load_integration, 
-                                                  mock_is_enabled, mock_get_dirs):
+
+    def test_load_integrations_all_enabled_success(self, integration_env):
         """Test loading all enabled integrations successfully."""
-        mock_get_dirs.return_value = ["/path/to/integration1", "/path/to/integration2"]
-        mock_get_name.side_effect = ["integration1", "integration2"]
-        mock_is_enabled.return_value = True
-        mock_load_integration.return_value = True
-        
+        integration1 = integration_env("integration1")
+        integration2 = integration_env("integration2")
+
         result = load_integrations()
         assert result is True
-        assert mock_load_integration.call_count == 2
+        _assert_loaded(integration1)
+        _assert_loaded(integration2)
 
-    @patch('saq.integration.integration_loader.get_valid_integration_dirs')
-    @patch('saq.integration.integration_loader.is_integration_enabled')
-    @patch('saq.integration.integration_loader.get_integration_name_from_path')
-    def test_load_integrations_disabled_integration(self, mock_get_name, mock_is_enabled, mock_get_dirs):
+    def test_load_integrations_disabled_integration(self, integration_env):
         """Test disabled integrations are skipped."""
-        mock_get_dirs.return_value = ["/path/to/integration1"]
-        mock_get_name.return_value = "integration1"
-        mock_is_enabled.return_value = False
-        
+        enabled = integration_env("enabled_integration")
+        disabled = integration_env("disabled_integration", disabled=True)
+
         result = load_integrations()
         assert result is True
+        _assert_loaded(enabled)
+        assert os.path.join(disabled, "src") not in sys.path
+        assert os.path.join(disabled, "bin") not in os.environ["PATH"].split(":")
+        assert get_global_runtime_settings().integration_config_paths == [
+            os.path.join(enabled, "etc", "saq.integration.yaml")]
 
-    @patch('saq.integration.integration_loader.get_valid_integration_dirs')
     @patch('saq.integration.integration_loader.is_integration_enabled')
-    @patch('saq.integration.integration_loader.load_integration_from_directory')
-    @patch('saq.integration.integration_loader.get_integration_name_from_path')
-    def test_load_integrations_load_failure(self, mock_get_name, mock_load_integration, 
-                                           mock_is_enabled, mock_get_dirs):
-        """Test handling integration load failure."""
-        mock_get_dirs.return_value = ["/path/to/integration1"]
-        mock_get_name.return_value = "integration1"
-        mock_is_enabled.return_value = True
-        mock_load_integration.return_value = False
-        
-        result = load_integrations()
-        assert result is False
-
-    @patch('saq.integration.integration_loader.get_valid_integration_dirs')
-    @patch('saq.integration.integration_loader.is_integration_enabled')
-    @patch('saq.integration.integration_loader.get_integration_name_from_path')
     @patch('saq.error.reporting.write_error_report')
-    def test_load_integrations_exception_handling(self, mock_write_error_report, mock_get_name, 
-                                                 mock_is_enabled, mock_get_dirs):
+    def test_load_integrations_exception_handling(self, mock_write_error_report, mock_is_enabled, integration_env):
         """Test exception handling during integration loading."""
-        mock_get_dirs.return_value = ["/path/to/integration1"]
-        mock_get_name.return_value = "integration1"
+        integration_env("integration1")
         mock_is_enabled.side_effect = Exception("Test exception")
-        
+
         result = load_integrations()
         assert result is False
         mock_write_error_report.assert_called_once()
@@ -311,32 +326,11 @@ class TestLoadIntegrationComponentEtc:
 
 @pytest.mark.unit
 class TestLoadIntegrationFromDirectory:
-    
-    @patch('saq.integration.integration_loader.load_integration_component_src')
-    @patch('saq.integration.integration_loader.load_integration_component_bin')
-    @patch('saq.integration.integration_loader.load_integration_component_etc')
-    def test_load_integration_from_directory_all_components_success(self, mock_etc, mock_bin, mock_src):
-        """Test loading integration from directory with all components successful."""
-        mock_src.return_value = True
-        mock_bin.return_value = True
-        mock_etc.return_value = True
-        
-        result = load_integration_from_directory("/test/path")
-        assert result is True
-        
-        mock_src.assert_called_once_with("/test/path")
-        mock_bin.assert_called_once_with("/test/path")
-        mock_etc.assert_called_once_with("/test/path")
 
-    @patch('saq.integration.integration_loader.load_integration_component_src')
-    @patch('saq.integration.integration_loader.load_integration_component_bin')
-    @patch('saq.integration.integration_loader.load_integration_component_etc')
-    def test_load_integration_from_directory_component_failure(self, mock_etc, mock_bin, mock_src):
-        """Test loading integration handles component failures correctly."""
-        mock_src.return_value = False
-        mock_bin.return_value = True
-        mock_etc.return_value = True
-        
-        result = load_integration_from_directory("/test/path")
-        # Result should still be True due to OR operation (|=)
+    def test_load_integration_from_directory_all_components(self, integration_env):
+        """Test loading integration from directory wires src, bin and etc."""
+        integration_dir = integration_env("integration1")
+
+        result = load_integration_from_directory(integration_dir)
         assert result is True
+        _assert_loaded(integration_dir)

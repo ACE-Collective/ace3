@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 import saq.cron_tasks
+from saq.configuration.config import get_service_config
+from saq.constants import SERVICE_CRON
 from saq.cli.commands.cron import CRON_CADENCE_CHOICES
-from saq.cron import ACECronConfig
 from saq.cron_tasks import CRON_CADENCES, CronTask, CronTaskRunner, discover_tasks, get_max_parallel_tasks, run_tasks
+from saq.integration.integration_manager import disable_integration
 from tests import unittest_session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -24,18 +26,6 @@ def _write_task(path: Path, body: str = "exit 0", executable: bool = True) -> Pa
     if executable:
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
-
-
-def _cron_config(max_parallel_tasks=None) -> ACECronConfig:
-    return ACECronConfig(
-        name="cron",
-        description="cron service",
-        enabled=True,
-        python_module="saq.cron",
-        python_class="ACECronService",
-        cron_config_path="etc/cron.yaml",
-        max_parallel_tasks=max_parallel_tasks,
-    )
 
 
 @pytest.fixture
@@ -58,25 +48,22 @@ def saq_home(exec_tmp, monkeypatch):
     # the stub drops the slug and runs the task, like the real wrapper minus the logging
     _write_task(home / "bin" / "run-cron-job", 'shift\nexec "$@"')
     monkeypatch.setattr(saq.cron_tasks, "get_base_dir", lambda: str(home))
-    monkeypatch.setattr(saq.cron_tasks, "get_valid_integration_dirs", lambda: [])
-    monkeypatch.setattr(saq.cron_tasks, "get_service_config", lambda name: _cron_config())
+    monkeypatch.setattr("saq.integration.integration_util.get_base_dir", lambda: str(home))
+    monkeypatch.setattr("saq.integration.integration_util.get_data_dir", lambda: str(exec_tmp / "data"))
+    monkeypatch.setattr(get_service_config(SERVICE_CRON), "max_parallel_tasks", None)
     return home
 
 
 @pytest.fixture
-def integrations(exec_tmp, monkeypatch):
+def integrations(saq_home):
     """creates integration dirs; returns a function (name, enabled) -> integration dir"""
-    dirs = []
-    disabled = set()
-    monkeypatch.setattr(saq.cron_tasks, "get_valid_integration_dirs", lambda: [str(d) for d in dirs])
-    monkeypatch.setattr(saq.cron_tasks, "is_integration_enabled", lambda name: name not in disabled)
 
     def _create(name: str, enabled: bool = True) -> Path:
-        path = exec_tmp / "integrations" / name
+        path = saq_home / "integrations" / name
         path.mkdir(parents=True)
-        dirs.append(path)
+        (path / "integration.md").write_text(f"# {name}")
         if not enabled:
-            disabled.add(name)
+            disable_integration(name)
         return path
 
     return _create
@@ -146,11 +133,11 @@ class TestDiscoverTasks:
 @pytest.mark.unit
 class TestMaxParallelTasks:
     def test_argument_wins(self, saq_home, monkeypatch):
-        monkeypatch.setattr(saq.cron_tasks, "get_service_config", lambda name: _cron_config(3))
+        monkeypatch.setattr(get_service_config(SERVICE_CRON), "max_parallel_tasks", 3)
         assert get_max_parallel_tasks(7) == 7
 
     def test_configured_value(self, saq_home, monkeypatch):
-        monkeypatch.setattr(saq.cron_tasks, "get_service_config", lambda name: _cron_config(3))
+        monkeypatch.setattr(get_service_config(SERVICE_CRON), "max_parallel_tasks", 3)
         assert get_max_parallel_tasks() == 3
 
     def test_defaults_to_cpu_count(self, saq_home, monkeypatch):

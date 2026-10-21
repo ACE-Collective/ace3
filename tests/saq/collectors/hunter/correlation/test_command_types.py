@@ -1,7 +1,7 @@
 import datetime
 import json
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -433,20 +433,12 @@ def _config(logic) -> CorrelateConfig:
     return CorrelateConfig.model_validate({"logic": logic})
 
 
-@pytest.fixture
-def _mock_secrets_and_config():
-    mock_raw = MagicMock()
-    mock_raw._data = {}
-    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
-         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-        yield
-
-
-@pytest.mark.unit
+@pytest.mark.integration
 class TestEngineWithCustomCommand:
 
-    def test_property_transform_enriches_and_filters(self, _mock_secrets_and_config, no_cache):
-        register_command_type("echo", _EchoCommand())
+    def test_property_transform_enriches_and_filters(self, no_cache):
+        echo = _EchoCommand()
+        register_command_type("echo", echo)
         config = _config([
             {"transform": {
                 "type": "event", "method": "property",
@@ -462,6 +454,8 @@ class TestEngineWithCustomCommand:
 
         assert [e["user"] for e in result.events] == ["alice"]
         assert result.events[0]["echoed"] == [{"message": "alice"}]
+        # custom command types receive the live merged config
+        assert echo.calls[0][0].config is get_config().raw._data
 
         transform = result.trace.event_traces[1].steps[0].step
         assert transform.trace_type == "transform"
@@ -471,7 +465,7 @@ class TestEngineWithCustomCommand:
         # not a query: no time window on the trace
         assert transform.query_start_time is None
 
-    def test_custom_render_summary_is_used(self, _mock_secrets_and_config, no_cache):
+    def test_custom_render_summary_is_used(self, no_cache):
         class _Summarized(_EchoCommand):
             def render_summary(self, context, options):
                 return f"lookup {options.message}"
@@ -487,7 +481,7 @@ class TestEngineWithCustomCommand:
 
         assert result.trace.event_traces[0].steps[0].step.rendered_command == "lookup alice"
 
-    def test_unregistered_type_errors_and_alerts(self, _mock_secrets_and_config):
+    def test_unregistered_type_errors_and_alerts(self):
         config = _config([{"transform": {
             "method": "property", "property_name": "p",
             "command": {"type": "missing_type"},

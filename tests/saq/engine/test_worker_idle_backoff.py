@@ -22,14 +22,14 @@ fix: making ``execute()`` truthy naively would let the ``continue`` skip the
 ``SINGLE_SHOT`` break below it, and single-shot mode (which nearly every module
 test uses) would drain the whole queue instead of running one work item.
 """
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
 from saq.analysis.root import RootAnalysis
-from saq.constants import LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.enums import EngineExecutionMode
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 
@@ -109,17 +109,9 @@ def worker() -> Worker:
     ``Worker`` builds its lock manager, workload manager and orchestrator in
     ``__init__`` with no injection point, so they are reassigned afterwards.
     """
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-    configuration_manager.config.auto_refresh_frequency = 0
-
     worker = Worker(
         name="test_worker",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 
@@ -135,17 +127,6 @@ def worker() -> Worker:
     worker.tracking_message_manager.get_current_analysis_module.return_value = None
 
     return worker
-
-
-@pytest.fixture(autouse=True)
-def mock_worker_environment():
-    """No database sessions, and no work directory (so ``execute()`` skips the
-    storage relocation branch)."""
-    with patch("saq.engine.worker.remove_all_sessions"), patch(
-        "saq.engine.worker.get_engine_config"
-    ) as mock_get_engine_config:
-        mock_get_engine_config.return_value.work_dir = None
-        yield
 
 
 @pytest.mark.unit

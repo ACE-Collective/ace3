@@ -37,20 +37,23 @@ assigned ``None``).
 
 from datetime import datetime
 import uuid as uuidlib
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
 from saq.analysis.root import RootAnalysis, load_root
-from saq.constants import F_TEST, LockManagerType, WorkloadManagerType
+from saq.configuration.config import get_engine_config
+from saq.constants import F_TEST
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
-from saq.engine.enums import EngineExecutionMode
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.tracking import NullTrackingWriter
 from saq.engine.worker import Worker
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
@@ -61,70 +64,41 @@ from tests.saq.helpers import create_root_analysis
 
 
 def _executor() -> AnalysisExecutor:
-    """An AnalysisExecutor with everything but execute() itself stubbed out.
+    """A real AnalysisExecutor with no analysis modules loaded.
 
-    Same recipe as tests/saq/engine/test_cumulative_analysis_time.py -- we only
-    care about whether execute() decides to run the recursive analysis.
+    The recursive analysis and post analysis are wrapped so the tests can see
+    whether execute() decided to run them.
     """
-    configuration_manager = MagicMock()
-    configuration_manager.analysis_modules = []
     executor = AnalysisExecutor(
-        configuration_manager=configuration_manager,
-        delayed_analysis_interface=MagicMock(),
-        tracking_message_manager=MagicMock(),
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
+        delayed_analysis_interface=None,
+        tracking_message_manager=NullTrackingWriter("test"),
     )
-    executor._execute_recursive_analysis = MagicMock()
-    executor._execute_post_analysis = MagicMock()
+    executor._execute_recursive_analysis = MagicMock(wraps=executor._execute_recursive_analysis)
+    executor._execute_post_analysis = MagicMock(wraps=executor._execute_post_analysis)
     return executor
 
 
 def _orchestrator(analysis_executor) -> AnalysisOrchestrator:
     """A real AnalysisOrchestrator over the given executor."""
-    configuration_manager = MagicMock()
     return AnalysisOrchestrator(
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration()),
         analysis_executor=analysis_executor,
         workload_manager=MagicMock(),
         lock_manager=MagicMock(),
     )
 
 
-def _metrics_disabled():
-    """get_engine_config() stand-in with metrics logging off."""
-    engine_config = MagicMock()
-    engine_config.metrics_logging.enabled = False
-    return engine_config
-
-
 def _worker() -> Worker:
-    """A real Worker with its collaborators replaced.
-
-    Worker builds its lock manager, workload manager and orchestrator in
-    __init__ with no injection point, so they are reassigned afterwards.
-    """
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = False
-    configuration_manager.config.auto_refresh_frequency = 0
-
-    worker = Worker(
+    return Worker(
         name="test_worker_execution_context_merge",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=False)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 
-    worker.workload_manager = MagicMock()
-    worker.lock_manager = MagicMock()
-    worker.analysis_orchestrator = MagicMock()
-    worker.tracking_message_manager = MagicMock()
-    return worker
-
 
 @pytest.mark.unit
-def test_executor_receives_the_worker_context(root_analysis):
+def test_executor_receives_the_worker_context(root_analysis, monkeypatch):
     """The orchestrator hands the executor the context it already has.
 
     It used to hand over execution_context.work_item, which is what made the
@@ -134,11 +108,8 @@ def test_executor_receives_the_worker_context(root_analysis):
     analysis_executor = Mock(spec=AnalysisExecutor)
     orchestrator = _orchestrator(analysis_executor)
 
-    with patch(
-        "saq.engine.analysis_orchestrator.get_engine_config",
-        return_value=_metrics_disabled(),
-    ):
-        orchestrator._execute_analysis(execution_context)
+    monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
+    orchestrator._execute_analysis(execution_context)
 
     analysis_executor.execute.assert_called_once()
     assert analysis_executor.execute.call_args.args[0] is execution_context
@@ -174,7 +145,7 @@ def test_uncancelled_context_still_analyzes(root_analysis):
 
 
 @pytest.mark.unit
-def test_cancel_arriving_during_work_item_load_is_honored(root_analysis):
+def test_cancel_arriving_during_work_item_load_is_honored(root_analysis, monkeypatch):
     """A lock lost while _process_work_item is loading the root must stick.
 
     This is the window the two contexts left open: the executor's context did
@@ -194,11 +165,8 @@ def test_cancel_arriving_during_work_item_load_is_honored(root_analysis):
     orchestrator._check_disposition = MagicMock(return_value=False)
     orchestrator._handle_post_analysis_logic = MagicMock()
 
-    with patch(
-        "saq.engine.analysis_orchestrator.get_engine_config",
-        return_value=_metrics_disabled(),
-    ):
-        orchestrator.orchestrate_analysis(execution_context)
+    monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
+    orchestrator.orchestrate_analysis(execution_context)
 
     executor._execute_recursive_analysis.assert_not_called()
 

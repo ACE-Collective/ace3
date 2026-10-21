@@ -1,23 +1,21 @@
-from unittest.mock import MagicMock, patch
+import logging
+from unittest.mock import patch
 
 import pytest
 
+from saq.configuration.config import get_service_config
 from saq.configuration.yaml_parser import YAMLConfig
+from saq.constants import SERVICE_MONITORING
 from saq.monitoring.service import ACEMonitoringService, ACEMonitoringServiceConfig, ThreadedMonitorConfig
+from tests.saq.helpers import wait_for_condition
+from tests.saq.monitoring.conftest import ConcreteTestMonitor
 
 
-def _make_service_config(monitors=None):
-    """Build an ACEMonitoringServiceConfig with the given monitors, keyed by name."""
-    if monitors is None:
-        monitors = {}
-    return ACEMonitoringServiceConfig(
-        name="monitoring",
-        description="test monitoring service",
-        enabled=True,
-        python_module="saq.monitoring.service",
-        python_class="ACEMonitoringService",
-        monitors=monitors,
-    )
+@pytest.fixture
+def set_monitors(monkeypatch):
+    def _set(monitors):
+        monkeypatch.setattr(get_service_config(SERVICE_MONITORING), "monitors", monitors)
+    return _set
 
 
 def _make_monitor_config(python_module, python_class, frequency=1.0, enabled=True):
@@ -29,167 +27,132 @@ def _make_monitor_config(python_module, python_class, frequency=1.0, enabled=Tru
     )
 
 
+def _make_test_monitor_config(frequency=0.1, enabled=True):
+    return _make_monitor_config("tests.saq.monitoring.conftest", "ConcreteTestMonitor",
+                                frequency=frequency, enabled=enabled)
+
+
 @pytest.mark.unit
 class TestACEMonitoringService:
     def test_get_config_class(self):
         assert ACEMonitoringService.get_config_class() is ACEMonitoringServiceConfig
 
-    @patch("saq.monitoring.service.get_config")
-    def test_init_loads_monitors_from_config(self, mock_get_config):
-        config = _make_service_config(monitors={
+    def test_init_loads_monitors_from_config(self, set_monitors):
+        set_monitors({
             "loaded_monitor": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="ConcreteTestMonitor",
                 frequency=2.0,
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         assert len(service.threaded_monitors) == 1
         assert service.threaded_monitors[0].name == "loaded_monitor"
         assert service.threaded_monitors[0].frequency == 2.0
 
-    @patch("saq.monitoring.service.get_config")
-    def test_init_with_no_monitors(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
+    def test_init_with_no_monitors(self, set_monitors):
+        set_monitors({})
 
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
 
     @patch("saq.error.reporting.write_error_report")
-    @patch("saq.monitoring.service.get_config")
-    def test_load_catches_import_error(self, mock_get_config, mock_report):
-        config = _make_service_config(monitors={
+    def test_load_catches_import_error(self, mock_report, set_monitors):
+        set_monitors({
             "bad_import": _make_monitor_config(
                 python_module="nonexistent.module",
                 python_class="FakeClass",
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
         mock_report.assert_called_once()
 
     @patch("saq.error.reporting.write_error_report")
-    @patch("saq.monitoring.service.get_config")
-    def test_load_catches_attribute_error(self, mock_get_config, mock_report):
-        config = _make_service_config(monitors={
+    def test_load_catches_attribute_error(self, mock_report, set_monitors):
+        set_monitors({
             "bad_class": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="NonexistentClass",
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
         mock_report.assert_called_once()
 
-    @patch("saq.monitoring.service.get_config")
-    def test_load_passes_name_and_frequency(self, mock_get_config):
-        config = _make_service_config(monitors={
+    def test_load_passes_name_and_frequency(self, set_monitors):
+        set_monitors({
             "named_monitor": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="ConcreteTestMonitor",
                 frequency=7.5,
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         monitor = service.threaded_monitors[0]
         assert monitor.name == "named_monitor"
         assert monitor.frequency == 7.5
 
-    @patch("saq.monitoring.service.get_config")
-    def test_start_delegates_to_monitors(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
+    def test_start_stop_wait_drive_the_loaded_monitors(self, set_monitors):
+        set_monitors({"looping_monitor": _make_test_monitor_config()})
 
         service = ACEMonitoringService()
-        mock_monitor = MagicMock()
-        service.threaded_monitors = [mock_monitor]
+        monitor = service.threaded_monitors[0]
 
         service.start()
-        mock_monitor.start.assert_called_once()
+        try:
+            wait_for_condition(lambda: monitor.execute_count >= 2)
+        finally:
+            service.stop()
+            service.wait()
 
-    @patch("saq.monitoring.service.get_config")
-    def test_stop_delegates_to_monitors(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
+        assert monitor.shutdown_event.is_set()
+        assert not monitor.main_thread.is_alive()
 
-        service = ACEMonitoringService()
-        mock_monitor = MagicMock()
-        service.threaded_monitors = [mock_monitor]
-
-        service.stop()
-        mock_monitor.stop.assert_called_once()
-
-    @patch("saq.monitoring.service.get_config")
-    def test_wait_delegates_to_monitors(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
+    def test_start_single_threaded_executes_each_monitor_once(self, set_monitors):
+        set_monitors({
+            "monitor_a": _make_test_monitor_config(),
+            "monitor_b": _make_test_monitor_config(),
+        })
 
         service = ACEMonitoringService()
-        mock_monitor = MagicMock()
-        service.threaded_monitors = [mock_monitor]
-
-        service.wait()
-        mock_monitor.wait.assert_called_once()
-
-    @patch("saq.monitoring.service.get_config")
-    def test_start_single_threaded_delegates(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
-
-        service = ACEMonitoringService()
-        mock_monitor = MagicMock()
-        service.threaded_monitors = [mock_monitor]
-
         service.start_single_threaded()
-        mock_monitor.start_single_threaded.assert_called_once()
 
-    @patch("saq.monitoring.service.get_config")
-    def test_wait_for_start_returns_false_on_failure(self, mock_get_config):
-        config = _make_service_config(monitors={})
-        mock_get_config.return_value.get_service_config.return_value = config
+        assert [m.execute_count for m in service.threaded_monitors] == [1, 1]
+
+    def test_wait_for_start_returns_false_when_a_monitor_never_starts(self, set_monitors):
+        set_monitors({})
 
         service = ACEMonitoringService()
-        mock_monitor = MagicMock()
-        mock_monitor.wait_for_start.return_value = False
-        service.threaded_monitors = [mock_monitor]
+        service.threaded_monitors = [ConcreteTestMonitor()]
 
         assert service.wait_for_start(timeout=0.1) is False
 
-    @patch("saq.monitoring.service.get_config")
-    def test_disabled_monitor_is_not_loaded(self, mock_get_config):
-        config = _make_service_config(monitors={
+    def test_disabled_monitor_is_not_loaded(self, set_monitors):
+        set_monitors({
             "disabled_monitor": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="ConcreteTestMonitor",
                 enabled=False,
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
 
-    @patch("saq.monitoring.service.get_config")
-    def test_disabled_monitor_logs_info(self, mock_get_config, caplog):
-        config = _make_service_config(monitors={
+    def test_disabled_monitor_logs_info(self, set_monitors, caplog):
+        set_monitors({
             "disabled_monitor": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="ConcreteTestMonitor",
                 enabled=False,
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
-        import logging
         with caplog.at_level(logging.INFO):
             service = ACEMonitoringService()
 
@@ -202,9 +165,8 @@ class TestACEMonitoringService:
         )
         assert config.enabled is True
 
-    @patch("saq.monitoring.service.get_config")
-    def test_mixed_enabled_and_disabled(self, mock_get_config):
-        config = _make_service_config(monitors={
+    def test_mixed_enabled_and_disabled(self, set_monitors):
+        set_monitors({
             "monitor_a": _make_monitor_config(
                 python_module="tests.saq.monitoring.conftest",
                 python_class="ConcreteTestMonitor",
@@ -221,7 +183,6 @@ class TestACEMonitoringService:
                 enabled=True,
             ),
         })
-        mock_get_config.return_value.get_service_config.return_value = config
 
         service = ACEMonitoringService()
         assert len(service.threaded_monitors) == 2

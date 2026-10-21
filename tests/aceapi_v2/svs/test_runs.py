@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from saq.database.model import Alert, SVSRun
 from saq.database.pool import get_db
 from saq.svs.hosts import build_spec, create_host
-from saq.svs import windows
 from saq.svs.markers import MARKER_REGEX
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.svs.conftest import add_catalog_test
@@ -23,9 +22,7 @@ REGISTRATION = {"test_guid": GUID, "targets": [{"hostname": "win10-01.lab.exampl
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    # no enabled hunts: the observation window is the floor
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
+def setup(no_hunts):
     add_catalog_test(GUID)
     add_catalog_test(LINUX_GUID, platforms=("linux",))
     create_host(build_spec("win10-01.lab.example", usernames=["svc_art"], platform="windows"), None)
