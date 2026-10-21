@@ -201,13 +201,12 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 ### Web layer
 
 - `app/` — Flask GUI (blueprints: `main`, `auth`, `analysis`, `events`, `remediation`, `file_collection`), Jinja templates, the analyst-facing alert view.
-- `aceapi/` — legacy Flask API (`/api/...`), used by `ace_api.py` and the CLI.
-- `aceapi_v2/` — newer FastAPI app, router-per-resource under `aceapi_v2/<resource>/router.py`.
+- `aceapi_v2/` — the FastAPI app behind `/api/v2`, router-per-resource under `aceapi_v2/<resource>/router.py`.
 - Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
 
 ### CLI
 
-`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `api start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 
@@ -320,7 +319,7 @@ ACE is never down for more than a few minutes, and when something is wrong someo
 
 The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
 
-- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, and skips both during shutdown. Don't also call `report_exception()`, which writes a second report. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, and skips both during shutdown. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
 - Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
 - Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
 - A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.

@@ -628,7 +628,7 @@ def _format_exception(exception: Optional[BaseException]) -> Optional[str]:
     """The traceback, rendered the way ACE renders error reports.
 
     ``ExceptionFormatter`` annotates frames with source context, which is the reason to prefer
-    it over ``traceback.format_exc()``; it is the same renderer ``report_exception()`` uses, so
+    it over ``traceback.format_exc()``; it is the same renderer ``write_error_report()`` uses, so
     a crash report and an error report for the same failure read identically.
     """
     if exception is None:

@@ -831,7 +831,6 @@ CONFIG_GUI_LISTEN_PORT = "listen_port"
 CONFIG_API = "api"
 CONFIG_API_PREFIX = "prefix"
 CONFIG_API_KEY = "api_key"
-CONFIG_API_SECRET_KEY = "secret_key"
 
 # ssl
 CONFIG_SSL = "SSL"

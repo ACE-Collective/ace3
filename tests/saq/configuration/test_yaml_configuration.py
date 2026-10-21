@@ -6,6 +6,7 @@ from saq.configuration import (
         YAMLConfig,
         ConfigurationException)
 from saq.configuration.loader import load_configuration
+from saq.configuration.schema import APIConfig
 
 import pytest
 
@@ -190,3 +191,19 @@ def test_unittest_config_paths_missing_file(tmp_path, monkeypatch, capsys):
     config = load_configuration(config_paths=[])
     assert config._data['database_ace']['database'] == 'ace-unittest'
     assert 'SAQ_UNITTEST_CONFIG_PATHS' in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_api_config_ignores_secret_key():
+    # a site overlay may still set api.secret_key, which nothing reads; it must not fail validation
+    config = APIConfig.model_validate({
+        "listen_address": "0.0.0.0",
+        "listen_port": 443,
+        "ssl_cert": "ssl/ace.cert.pem",
+        "ssl_key": "ssl/ace.key.pem",
+        "default_alert_type": "default",
+        "api_key": "key",
+        "prefix": "AUTO",
+        "secret_key": "left-over",
+    })
+    assert not hasattr(config, "secret_key")
