@@ -1063,9 +1063,13 @@ def test_pivot_cells():
     index = {
         CATEGORY_HTTP: [{"method": "GET", "url": "http://a.example/x", "status": "200"},
                         {"method": "CONNECT", "url": None}],
-        "objects": [{"protocol": "http", "file_name": "x", "size": 3, "sha256": "ab" * 32, "url": None}],
+        "objects": [{"protocol": "http", "file_name": "x", "size": 3, "sha256": "ab" * 32, "url": None},
+                    {"protocol": "http", "file_name": "y", "size": 3, "sha256": "cd" * 32, "url": "http://a.example/y"}],
     }
     http, files = pcap.index_tables(index)
+    # a carved file's URL pivots like a request's; a file with no matched URL has an empty cell
+    assert files["rows"][1][4] == {"text": "http://a.example/y", "pivot_type": F_URL, "pivot_value": "http://a.example/y"}
+    assert files["rows"][0][4] is None
     assert http["rows"][0][1] == {"text": "http://a.example/x", "pivot_type": F_URL, "pivot_value": "http://a.example/x"}
     # nothing to pivot on: a plain empty cell
     assert http["rows"][1][1] is None

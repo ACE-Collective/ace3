@@ -1501,7 +1501,7 @@ def index_tables(index: Optional[dict], category: Optional[str] = None, capture:
         tables.append(_table("Carved Files", ["Protocol", "File Name", "Size", "SHA256", "URL"],
                              # a file observable's value is its sha256, so the file name pivots on the content
                              [[r["protocol"], _pivot(F_FILE, r["sha256"], text=r["file_name"]), r["size"],
-                               _pivot(F_SHA256, r["sha256"]), r.get("url")] for r in index["objects"]],
+                               _pivot(F_SHA256, r["sha256"]), _pivot(F_URL, r.get("url"))] for r in index["objects"]],
                              # tshark's object export does not say when each object crossed the wire
                              order="By protocol, then file name. Not chronological."))
     return tables

@@ -32,8 +32,11 @@ def test_pivot_links_render_escaped(app):
 def test_file_pivots_render(app):
     analysis = PcapCategoryAnalysis()
     analysis.details.update({"category": CATEGORY_FILES, "total": 1, "rows": [
-        {"protocol": "http", "file_name": "payload.bin", "size": 7, "sha256": "ab" * 32, "url": None}]})
+        {"protocol": "http", "file_name": "payload.bin", "size": 7, "sha256": "ab" * 32, "url": HOSTILE_URL}]})
     html = _render(app, analysis)
+
+    assert 'data-pivot-type="url" data-pivot-value="http://evil.example/&#34;&gt;&lt;script&gt;' in html
+    assert "<script>alert(1)</script>" not in html
 
     assert f'data-pivot-type="file" data-pivot-value="{"ab" * 32}">payload.bin</a>' in html
     assert f'data-pivot-type="sha256" data-pivot-value="{"ab" * 32}">{"ab" * 32}</a>' in html

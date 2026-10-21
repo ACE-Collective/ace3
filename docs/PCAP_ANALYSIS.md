@@ -28,7 +28,7 @@ sslkeylog.txt
 
 - IP addresses, MAC addresses and hostnames are added `volatile`, so they are hidden unless the
   analyst selects "Show All Observables" or they lead to a detection. Everything else is visible.
-- In the node tables, JA4 (TLS), URL (HTTP), and file name and SHA256 (Files) values are links that
+- In the node tables, JA4 (TLS), URL (HTTP), and file name, SHA256 and URL (Files) values are links that
   pivot to every alert containing that observable, exactly like clicking it in the alert tree. A
   file name pivots on the file's content: a file observable's value is its sha256.
 - Within a node, observables sort by type (files, URLs, FQDNs, JA4, User-Agents, hostnames, IPs, MACs).
