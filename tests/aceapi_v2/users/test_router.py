@@ -656,9 +656,14 @@ class TestSelfServiceApiKeyRoutes:
         own, _ = await create_user_api_key(session, user.id, name="target", inherit=False, scope=key_scope("alert:read"))
         await session.flush()
 
-        for credential in (scoped, user.test_api_key):
+        refusals = {
+            scoped: "this route acts on your own account, which no API key with a scope can do",
+            user.test_api_key: "this route is only available in the GUI, never to an API key",
+        }
+        for credential, refusal in refusals.items():
             async with api_key_client(credential) as c:
-                assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+                r = await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))
+                assert r.status_code == 403 and r.json()["detail"] == refusal
                 assert (await c.put(f"/users/me/apikeys/{own.id}", json=_key_body("k", "signature:read"))).status_code == 403
                 assert (await c.delete(f"/users/me/apikeys/{own.id}")).status_code == 403
 
@@ -683,6 +688,7 @@ class TestSelfServiceApiKeyRoutes:
         with pytest.raises(HTTPException) as denied:
             await check_permission(session, key, "user", "self")
         assert denied.value.status_code == 403
+        assert denied.value.detail == "user:self is only available in the GUI, never to an API key"
         assert _warned(caplog, "can never hold user.self")
 
         await check_permission(session, key, "alert", "read")
@@ -695,7 +701,9 @@ class TestSelfServiceApiKeyRoutes:
             "ops": ConfigApiKey(key=sha256_str(CONFIG_KEY), scope=["*:*"]),
         })
         async with api_key_client(CONFIG_KEY) as c:
-            assert (await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))).status_code == 403
+            r = await c.post("/users/me/apikeys", json=_key_body("k", "alert:read"))
+        assert r.status_code == 403
+        assert r.json()["detail"] == "this route acts on your own account, and this API key belongs to no user"
 
     @pytest.mark.asyncio
     async def test_a_cross_site_request_cannot_mint(self, _override_db_session, session: AsyncSession):
@@ -846,3 +854,68 @@ class TestSelfServiceApiKeyRoutes:
             await session.flush()
 
             assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404
+
+
+class TestRefusalMessages:
+    """A 403 says whether the account's grants or the key's scope refused, and so whether the
+    user can fix it on Preferences or needs an administrator."""
+
+    @staticmethod
+    async def _refusal(c: AsyncClient) -> str:
+        r = await c.get(SIGNATURE_READ_PATH)
+        assert r.status_code == 403, r.text
+        return r.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("can_edit_keys", [True, False])
+    async def test_only_the_keys_scope_is_missing_it(self, _override_db_session, session: AsyncSession, can_edit_keys):
+        user, _ = await _make_analyst(session, f"rtr_refuse_scope_{can_edit_keys}")
+        if not can_edit_keys:
+            session.add(AuthUserPermission(user_id=user.id, major="user", minor="self", effect="DENY"))
+        key = await make_api_key(session, user.id, inherit=False, scope=[("alert", "read")])
+
+        async with api_key_client(key) as c:
+            detail = await self._refusal(c)
+        assert detail.startswith("this API key's scope does not include signature:read, which your account has; ")
+        assert detail.endswith(
+            "you can add it to the key on the Preferences page" if can_edit_keys
+            else "an administrator has to add it to the key")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("credential", ["gui session", "inheriting key", "key scoped to it"])
+    async def test_only_the_account_is_missing_it(self, _override_db_session, session: AsyncSession, credential):
+        user, _ = await _make_analyst(session, "rtr_refuse_account")
+        session.add(AuthUserPermission(user_id=user.id, major="signature", minor="read", effect="DENY"))
+        scoped = await make_api_key(session, user.id, inherit=False, scope=[("signature", "read")])
+        client = {
+            "gui session": lambda: _browser_for(user),
+            "inheriting key": lambda: api_key_client(user.test_api_key),
+            "key scoped to it": lambda: api_key_client(scoped),
+        }[credential]()
+
+        async with client as c:
+            assert await self._refusal(c) == "your account does not have signature:read; an administrator has to grant it"
+
+    @pytest.mark.asyncio
+    async def test_both_are_missing_it(self, _override_db_session, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user, _ = await _make_analyst(session, "rtr_refuse_both")
+        session.add(AuthUserPermission(user_id=user.id, major="signature", minor="read", effect="DENY"))
+        key = await make_api_key(session, user.id, inherit=False, scope=[("alert", "read")])
+
+        async with api_key_client(key) as c:
+            assert await self._refusal(c) == (
+                "your account does not have signature:read, and this API key's scope does not include it; "
+                "an administrator has to grant it, and then it has to be added to the key")
+        # one record names both
+        assert _warned(caplog, f"user {user.id} does not have permission signature.read; api key")
+
+    @pytest.mark.asyncio
+    async def test_a_config_keys_scope_is_missing_it(self, _override_db_session, monkeypatch):
+        monkeypatch.setattr(get_config(), "apikeys", {
+            "ops": ConfigApiKey(key=sha256_str(CONFIG_KEY), scope=["alert:read"]),
+        })
+        async with api_key_client(CONFIG_KEY) as c:
+            assert await self._refusal(c) == (
+                "this API key's scope does not include signature:read; the key is defined in ACE's "
+                "configuration, so an administrator has to change it")
