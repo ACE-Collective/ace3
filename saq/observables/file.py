@@ -250,7 +250,15 @@ class FileObservable(Observable):
 
     @property
     def display_value(self) -> str:
+        # the value is the sha256, so the file path stands in for it, both on its own and
+        # after an assigned display value
+        if self._display_value is not None:
+            return f"{self._display_value} ({self.file_path})"
         return self.file_path
+
+    @display_value.setter
+    def display_value(self, value: Optional[str]):
+        self._display_value = value
 
     @property
     def jinja_template_path(self) -> str:
