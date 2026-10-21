@@ -26,25 +26,18 @@ from unittest.mock import Mock
 
 import pytest
 
-from saq.constants import LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT
 
 
 def _make_worker(name: str = "test_worker") -> Worker:
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-    configuration_manager.config.auto_refresh_frequency = 0
-
     return Worker(
         name=name,
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 

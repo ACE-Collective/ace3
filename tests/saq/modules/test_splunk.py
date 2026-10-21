@@ -2,6 +2,7 @@ import datetime
 from unittest.mock import Mock, patch
 
 import pytest
+import pytz
 from pydantic import ValidationError
 
 from saq.analysis import RootAnalysis
@@ -15,6 +16,7 @@ from saq.modules.splunk import (
 )
 from saq.observables.mapping import FieldsMode, ObservableMapping
 from saq.query.config import PivotLinkConfig
+from saq.splunk import SplunkQueryObject, encode_splunk_query_link, splunk_gui_path
 from tests.saq.mock_datetime import MOCK_NOW
 
 
@@ -60,13 +62,15 @@ class MockSplunk:
         # Mock client with jobs dict for job lookup
         self.client = Mock()
         self.client.jobs = MockJobsDict()
+        self.host = "splunk.local"
+        self.gui_path = splunk_gui_path()
 
     def add_mock_job(self, job):
         """Add a job to the mock jobs dict for lookup."""
         self.client.jobs.add(job)
 
-    def encoded_query_link(self, query, start_time=None, end_time=None):
-        return query + ' world'
+    # building the link is local code, so the real one runs
+    encoded_query_link = SplunkQueryObject.encoded_query_link
 
     def query_async(self, query, job=None, limit=1000, start=None, end=None, use_index_time=False, timeout=None):
         # create a mock job with an incrementing name
@@ -99,11 +103,11 @@ def test_splunk_api_analyzer_search_url(test_context):
 
         # test no param
         result = analyzer.search_url()
-        assert result == 'hello world'
+        assert result == 'https://splunk.local/en-US/app/search/search?q=search+hello'
 
         # test with param
         result = analyzer.search_url('foo')
-        assert result == 'foo world'
+        assert result == 'https://splunk.local/en-US/app/search/search?q=search+foo'
 
 
 @pytest.mark.unit
@@ -157,8 +161,11 @@ def test_splunk_api_analyzer_fill_timespec(test_context):
 
         # verify
         assert analyzer.target_query == 'hello _index_earliest = 11/11/2017:07:36:01 _index_latest = 11/11/2017:07:36:01 world'
-        # the MockSplunk appends ' world' to the query, and the query passed is 'hello  ' (with <O_TIMESPEC> removed)
-        assert analyzer.analysis.details['gui_link'] == 'hello  world world'
+        # the link is to the query with <O_TIMESPEC> removed, over the same time range
+        tz = pytz.timezone(analyzer.timezone)
+        assert analyzer.analysis.details['gui_link'].startswith('https://splunk.local/en-US/app/search/search?q=search+hello++world&earliest=')
+        assert analyzer.analysis.details['gui_link'] == encode_splunk_query_link(
+            'splunk.local', splunk_gui_path(), 'hello  world', MOCK_NOW.astimezone(tz), MOCK_NOW.astimezone(tz))
         assert analyzer.analysis.details['gui_link_label'] == 'Open in Splunk'
 
 

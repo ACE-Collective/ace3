@@ -12,13 +12,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from saq.constants import LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.enums import EngineExecutionMode, WorkerManagerState
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineExecutionMode, EngineType, WorkerManagerState
+from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.engine.worker_manager import WorkerManager
 from saq.shutdown import get_shutdown_coordinator, reset_shutdown_coordinator
+from tests.saq.helpers import create_root_analysis, wait_for_condition
 
 
 @pytest.fixture(autouse=True)
@@ -64,10 +66,7 @@ class FakeWorker:
 
 
 def make_manager(workers) -> WorkerManager:
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-
-    manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
+    manager = WorkerManager(ConfigurationManager(EngineConfiguration()), Mock(spec=NodeManagerInterface))
     manager.workers = list(workers)
     # the watchdog keeps checking analysis timeouts while we wait; that path needs the
     # real tracking reader and is covered elsewhere, so neutralize it here
@@ -163,49 +162,30 @@ def test_worker_cancels_in_flight_analysis_on_shutdown():
     claimed a long analysis ran it until it was killed -- leaving the lock held and the
     workload row stranded behind it.
     """
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-    configuration_manager.config.auto_refresh_frequency = 0
-
     worker = Worker(
         name="test_worker",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 
-    context = Mock()
+    context = EngineExecutionContext(create_root_analysis())
     worker.current_execution_context = context
 
     worker._start_shutdown_watcher()
     worker.immediate_shutdown()
 
-    for _ in range(200):
-        if context.cancel_analysis.called:
-            break
-        time.sleep(0.01)
-
-    context.cancel_analysis.assert_called_once()
+    # generous: the test suite's log handler ships the watcher's log record, root included,
+    # to its manager process before the cancel, and that can take seconds
+    wait_for_condition(lambda: context.cancel_analysis_flag, timeout=30, delay=0.01)
 
 
 @pytest.mark.unit
 def test_shutdown_watcher_is_harmless_when_idle():
     """A worker between work items has no context to cancel; the loop notices the event
     on its own."""
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-    configuration_manager.config.auto_refresh_frequency = 0
-
     worker = Worker(
         name="test_worker",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
     worker.current_execution_context = None

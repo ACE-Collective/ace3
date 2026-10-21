@@ -3,7 +3,6 @@ result and alert summary (saq.svs.run_summary)."""
 
 import uuid
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
@@ -11,11 +10,12 @@ from sqlalchemy import select, update
 from saq.database.model import SVSAttribution, SVSCatalogTest, SVSRun, SVSRunResult, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import expectations, signatures
+from saq.signatures.loaders.util import content_hash
+from saq.svs import expectations
 from saq.svs.run_filters import run_filter_conditions
 from saq.svs.run_summary import run_summaries
 from saq.svs.test_state import RECENT_RUNS, TestState, catalog_histories, evaluate_tests
-from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, write_yara_rule, yara_rule_source
 
 pytestmark = pytest.mark.integration
 
@@ -23,13 +23,13 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
 OTHER = "44444444-dddd-4ddd-8ddd-444444444444"
 MULTI = "eeeeeeee-5555-4555-8555-555555555555"
-RULE_HASH = "a" * 64
+# the inventory's hash of the rule: the rule's own source
+RULE_HASH = content_hash(yara_rule_source("Suspicious_Macro", SIGNATURE))
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {
-        SIGNATURE: SimpleNamespace(name="Suspicious_Macro", content_hash=RULE_HASH)})
+def setup(no_hunts, yara_dir):
+    write_yara_rule(yara_dir, "Suspicious_Macro", SIGNATURE)
     add_catalog_test(GUID)
     add_test_host("win10-01")
 
@@ -117,8 +117,8 @@ class TestStates:
         _result(_reviewed(test_content_hash="c" * 64), SIGNATURE, "hit", "hit")
         assert _history().state == TestState.STALE
 
-    def test_a_rule_ace_cannot_read_is_not_counted_as_changed(self, user_id, monkeypatch):
-        monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+    def test_a_rule_ace_cannot_read_is_not_counted_as_changed(self, user_id, yara_dir):
+        (yara_dir / "unittest" / "Suspicious_Macro.yar").unlink()
         expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(), SIGNATURE, "hit", "hit", reviewed_content_hash="b" * 64)
         assert _history().state == TestState.VALIDATED

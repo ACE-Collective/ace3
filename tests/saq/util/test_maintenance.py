@@ -1,11 +1,9 @@
-import configparser
-
 from datetime import datetime, timedelta
 
 from saq.analysis import RootAnalysis
 from saq.database import ALERT, Alert, Event, get_db
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_SIMULATED
+from saq.constants import DISPOSITION_SIMULATED, ENV_ACE_IS_PRIMARY_NODE
 from saq.database.model import DetectionPoint
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
 from saq.util.maintenance import archive_simulated_alerts, cleanup_alerts, distribute_old_alerts
@@ -30,6 +28,8 @@ import pytest
 @pytest.mark.integration
 def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_to_event, expected_raises, upload_failure, non_success, expected_count, alert_still_exists, dry_run, monkeypatch, tmpdir):
     def mock_upload(*args, **kwargs):
+        assert kwargs["remote_host"] == target
+        assert kwargs["api_key"] == "key"
         if upload_failure:
             raise RuntimeError("upload failure")
         if non_success:
@@ -37,20 +37,8 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
         else:
             return { "result": True }
 
-    mock_config = configparser.ConfigParser()
-    mock_config.read_string("""
-    [global]
-    node = localhost
-    [api]
-    api_key = key
-    """)
-    def mock_get_config():
-        return mock_config
-
-    import saq.util.maintenance
     monkeypatch.setattr(saq.util.maintenance, "upload", mock_upload)
-    import saq.configuration
-    monkeypatch.setattr(saq.configuration, "get_config", mock_get_config)
+    monkeypatch.setattr(get_config().api, "api_key", "key")
 
     if insert_alert:
         storage_dir = tmpdir / "alert"
@@ -117,7 +105,7 @@ def test_cache_stats_skips_when_not_primary(monkeypatch, caplog):
     must skip it (no cache_stats line emitted)."""
     import logging as _logging
     import saq.util.maintenance as maintenance
-    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     with caplog.at_level(_logging.INFO):
         maintenance.emit_cache_stats()
     assert not [r for r in caplog.records if "cache_stats" in r.getMessage()]
@@ -127,7 +115,7 @@ def test_cache_stats_skips_when_not_primary(monkeypatch, caplog):
 def test_gc_durable_blobs_skips_when_not_primary(monkeypatch):
     """Durable blob GC is global maintenance — non-primary nodes must skip it."""
     import saq.util.maintenance as maintenance
-    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     stats = maintenance.gc_durable_blobs()
     assert stats.blobs_scanned == 0
     assert stats.blobs_deleted == 0

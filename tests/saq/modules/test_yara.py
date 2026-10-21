@@ -1,5 +1,8 @@
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
 from unittest.mock import Mock
 
 import pytest
@@ -21,20 +24,108 @@ from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
-from saq.signatures.builtin import YARA_RULE_MATCH
+from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
 from saq.svs.markers import find_markers_in_match, new_marker
-from saq.util.filesystem import abs_path
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.server import ScannerSettings, YaraScannerServer
 from tests.saq.test_util import create_test_context
 
 
+def _meta_value(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return f'"{value}"'
+
+
+def _rule(name: str, meta: dict | None = None, tags: list[str] | None = None,
+          strings: str = '$a = "Hello, world!"', condition: str = "any of them") -> str:
+    meta_block = ""
+    if meta:
+        meta_block = "    meta:\n" + "".join(f"        {key} = {_meta_value(value)}\n" for key, value in meta.items())
+
+    tag_list = f" : {' '.join(tags)}" if tags else ""
+    return f"rule {name}{tag_list}\n{{\n{meta_block}    strings:\n        {strings}\n    condition:\n        {condition}\n}}\n"
+
+
+@pytest.fixture
+def signature_dir(tmp_path, monkeypatch) -> str:
+    result = str(tmp_path / "signatures")
+    os.mkdir(result)
+    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", result)
+    return result
+
+
+@pytest.fixture
+def write_rules(signature_dir):
+    def _write(*rules: str, subdir: str = "rules"):
+        rule_dir = os.path.join(signature_dir, subdir)
+        os.makedirs(rule_dir, exist_ok=True)
+        with open(os.path.join(rule_dir, "test.yar"), "w") as fp:
+            fp.write("\n".join(rules))
+
+        return rule_dir
+
+    return _write
+
+
+@pytest.fixture
+def socket_dir(monkeypatch):
+    # AF_UNIX paths are limited to 108 bytes, which a tmp_path under xdist can come close to.
+    # nothing serves this directory until yara_service starts a server in it, so until then the
+    # module finds the service unavailable and scans with its local scanner
+    result = tempfile.mkdtemp(prefix="yss-")
+    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", result)
+    yield result
+    shutil.rmtree(result, ignore_errors=True)
+
+
+@pytest.fixture
+def yara_service(signature_dir, socket_dir, write_rules):
+    """Starts a real yara scanner service over the given rules, at the socket the module uses."""
+    servers = []
+
+    def _start(*rules: str, git_repo_dirs: tuple[str, ...] = ()) -> YaraScannerServer:
+        if rules:
+            write_rules(*rules)
+
+        server = YaraScannerServer(ScannerSettings(
+            socket_dir=socket_dir, signature_dir=signature_dir, git_repo_dirs=git_repo_dirs, worker_count=1,
+            update_frequency=60, default_timeout=5, compile_timeout=60, io_timeout=5,
+            max_data_bytes=1024 * 1024, max_requests_per_worker=0, backlog=50))
+        servers.append(server)
+        server.start()
+        assert server.wait_for_start(30)
+        return server
+
+    yield _start
+
+    for server in servers:
+        server.stop()
+
+
+def _git_commit(repo_dir: str) -> str:
+    for args in (["init", "-q"], ["add", "."], ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-q", "-m", "rules"]):
+        subprocess.run(["git", *args], cwd=repo_dir, check=True)
+
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True).stdout.strip()
+
+
 # ---------------------------------------------------------------------------
-# Unit tests — mock the yara scanner to verify meta_tags plumbing
+# meta_tags plumbing, against a real yara scanner service and the real local scanner
 # ---------------------------------------------------------------------------
-class TestYaraScannerMetaTagsUnit:
+META_TAGGED_RULES = (
+    _rule("always_match"),
+    _rule("meta_tagged_email_body", meta={"meta_tags": "content_type=email_body"}),
+    _rule("meta_tagged_source_imap", meta={"meta_tags": "source=imap"}),
+)
+
+
+class TestYaraScannerMetaTags:
     """Verify that execute_analysis passes meta_tags through to the scanner."""
 
     def _create_module(self, root):
@@ -44,9 +135,15 @@ class TestYaraScannerMetaTagsUnit:
         )
         return AnalysisModuleAdapter(module)
 
-    @pytest.mark.unit
-    def test_meta_tags_passed_to_scanner(self, monkeypatch, root_analysis):
-        """FileObservable with yara_meta directives passes meta_tags to scan_file."""
+    def _matched_rules(self, observable) -> set[str]:
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        return {r["rule"] for r in analysis.scan_results}
+
+    @pytest.mark.integration
+    def test_meta_tags_passed_to_scanner(self, yara_service, root_analysis):
+        """FileObservable with yara_meta directives enables the rules tagged with them."""
+        yara_service(*META_TAGGED_RULES)
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
@@ -55,46 +152,32 @@ class TestYaraScannerMetaTagsUnit:
         observable.add_yara_meta("content_type", "email_body")
         observable.add_yara_meta("source", "imap")
 
-        captured = {}
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            captured["meta_tags"] = meta_tags
-            return []
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert sorted(captured["meta_tags"]) == ["content_type=email_body", "source=imap"]
+        assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body", "meta_tagged_source_imap"}
 
-    @pytest.mark.unit
-    def test_no_meta_tags_passes_none(self, monkeypatch, root_analysis):
-        """FileObservable with no yara_meta directives passes meta_tags=None."""
+    @pytest.mark.integration
+    def test_no_meta_tags_passes_none(self, yara_service, root_analysis):
+        """FileObservable with no yara_meta directives matches only the untagged rules."""
+        yara_service(*META_TAGGED_RULES)
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
 
         observable = root_analysis.add_file_observable(file_path)
 
-        captured = {}
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            captured["meta_tags"] = meta_tags
-            return []
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert captured["meta_tags"] is None
+        assert self._matched_rules(observable) == {"always_match"}
 
-    @pytest.mark.unit
-    def test_meta_tags_passed_to_local_scanner_when_service_unavailable(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_meta_tags_passed_to_local_scanner_when_service_unavailable(self, socket_dir, write_rules, root_analysis):
         """When the yara scanner service is unavailable, local scanner fallback receives meta_tags."""
+        write_rules(*META_TAGGED_RULES)
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
@@ -102,34 +185,16 @@ class TestYaraScannerMetaTagsUnit:
         observable = root_analysis.add_file_observable(file_path)
         observable.add_yara_meta("content_type", "email_body")
 
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            raise YaraServiceUnavailable("connection refused")
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        captured = {}
-
-        class MockLocalScanner:
-            scan_results = []
-
-            def scan(self, path, meta_tags=None):
-                captured["meta_tags"] = meta_tags
-                return False
-
-        def mock_initialize_local_scanner(self):
-            self.scanner = MockLocalScanner()
-
-        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
-
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert captured["meta_tags"] == ["content_type=email_body"]
+        assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body"}
 
-    @pytest.mark.unit
-    def test_no_scan_directive_skips_scanning(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_no_scan_directive_skips_scanning(self, yara_service, root_analysis):
         """FileObservable with DIRECTIVE_NO_SCAN skips scanning entirely."""
+        yara_service(*META_TAGGED_RULES)
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
             fp.write(b"Hello, world!\n")
@@ -138,19 +203,11 @@ class TestYaraScannerMetaTagsUnit:
         observable.add_directive(DIRECTIVE_NO_SCAN)
         observable.add_yara_meta("content_type", "email_body")
 
-        scan_called = {"called": False}
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            scan_called["called"] = True
-            return []
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
         adapter = self._create_module(root_analysis)
         result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert scan_called["called"] is False
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
 
 
 # ---------------------------------------------------------------------------
@@ -350,164 +407,67 @@ class TestYaraScannerMetaTagsIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Unit tests — verify signature_id observable is emitted from rule.meta.uuid
+# signature_id observables are emitted from rule.meta.uuid
 # ---------------------------------------------------------------------------
+UUID_A = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
+UUID_B = "3a1ddc4e-def5-439b-b3d3-d51352786d94"
+
+
+def _create_module(root):
+    module = YaraScanner_v3_4(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+    )
+    return AnalysisModuleAdapter(module)
+
+
+def _scan(root_analysis, content=b"Hello, world!\n", name="test.txt"):
+    file_path = root_analysis.create_file_path(name)
+    with open(file_path, "wb") as fp:
+        fp.write(content)
+    observable = root_analysis.add_file_observable(file_path)
+
+    assert _create_module(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    return observable
+
+
 class TestYaraSignatureIdEmission:
     """When a yara rule matches and has a `uuid` meta field, a signature_id observable
     should be attached to the resulting YaraScanResults_v3_4 analysis."""
 
-    def _create_module(self, root):
-        module = YaraScanner_v3_4(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-        )
-        return AnalysisModuleAdapter(module)
+    def _signature_ids(self, observable) -> list[str]:
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        return [o.value for o in analysis.observables if o.type == F_SIGNATURE_ID]
 
-    def _match(self, rule_name, rule_uuid=None, modifiers=None):
-        meta = {}
-        if rule_uuid is not None:
-            meta["uuid"] = rule_uuid
-        if modifiers is not None:
-            meta["modifiers"] = modifiers
-        return {
-            "rule": rule_name,
-            "meta": meta,
-            "tags": [],
-            "strings": [],
-        }
-
-    @pytest.mark.unit
-    def test_rule_with_uuid_emits_signature_id(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_rule_with_uuid_emits_signature_id(self, yara_service, root_analysis):
         """A matching rule carrying a uuid meta field emits a signature_id observable."""
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
+        yara_service(_rule("test_rule_with_uuid", meta={"uuid": UUID_A}))
+        assert self._signature_ids(_scan(root_analysis)) == [UUID_A]
 
-        observable = root_analysis.add_file_observable(file_path)
-
-        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
-        matches = [self._match("test_rule_with_uuid", rule_uuid=rule_uuid)]
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            return matches
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
-        assert analysis is not None
-        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
-        assert len(sig_observables) == 1
-        assert sig_observables[0].value == rule_uuid
-
-    @pytest.mark.unit
-    def test_rule_without_uuid_does_not_emit(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_rule_without_uuid_does_not_emit(self, yara_service, root_analysis):
         """A matching rule whose meta lacks a uuid must NOT emit a signature_id."""
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
+        yara_service(_rule("test_rule_no_uuid"))
+        assert self._signature_ids(_scan(root_analysis)) == []
 
-        observable = root_analysis.add_file_observable(file_path)
-
-        matches = [self._match("test_rule_no_uuid")]
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            return matches
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
-        assert analysis is not None
-        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
-        assert sig_observables == []
-
-    @pytest.mark.unit
-    def test_multiple_rules_emit_distinct_signature_ids(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_multiple_rules_emit_distinct_signature_ids(self, yara_service, root_analysis):
         """Two matching rules with different uuids emit two signature_id observables."""
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
+        yara_service(_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_B}))
+        assert set(self._signature_ids(_scan(root_analysis))) == {UUID_A, UUID_B}
 
-        observable = root_analysis.add_file_observable(file_path)
-
-        uuid_a = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
-        uuid_b = "3a1ddc4e-def5-439b-b3d3-d51352786d94"
-        matches = [
-            self._match("rule_a", rule_uuid=uuid_a),
-            self._match("rule_b", rule_uuid=uuid_b),
-        ]
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            return matches
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
-        assert analysis is not None
-        emitted = {o.value for o in analysis.observables if o.type == F_SIGNATURE_ID}
-        assert emitted == {uuid_a, uuid_b}
-
-    @pytest.mark.unit
-    def test_duplicate_uuid_across_matches_dedups(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_duplicate_uuid_across_matches_dedups(self, yara_service, root_analysis):
         """If two rule matches share the same uuid, only one signature_id observable is emitted."""
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
-
-        observable = root_analysis.add_file_observable(file_path)
-
-        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
-        matches = [
-            self._match("rule_a", rule_uuid=rule_uuid),
-            self._match("rule_b", rule_uuid=rule_uuid),
-        ]
-
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            return matches
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
-        assert analysis is not None
-        sig_observables = [o for o in analysis.observables if o.type == F_SIGNATURE_ID]
-        assert len(sig_observables) == 1
-        assert sig_observables[0].value == rule_uuid
+        yara_service(_rule("rule_a", meta={"uuid": UUID_A}), _rule("rule_b", meta={"uuid": UUID_A}))
+        assert self._signature_ids(_scan(root_analysis)) == [UUID_A]
 
 
-def _yara_match(rule_name, meta=None, strings=None, tags=None):
-    """Build a yara scan result dict as returned by the scanner."""
-    return {
-        "rule": rule_name,
-        "meta": meta or {},
-        "tags": tags or [],
-        "strings": strings or [],
-    }
-
-
-@pytest.mark.unit
-def test_disassembly_failure_is_reported_and_analysis_continues(monkeypatch, caplog, root_analysis):
-    file_path = root_analysis.create_file_path("test.txt")
-    with open(file_path, "wb") as fp:
-        fp.write(b"Hello, world!\n")
-    observable = root_analysis.add_file_observable(file_path)
-
-    matches = [_yara_match("asm_rule", tags=["asm"], strings=[(7, "$code_x86", b"world")])]
-    monkeypatch.setattr(yara_client, "scan_file", lambda path, meta_tags=None, qa=None: matches)
+@pytest.mark.integration
+def test_disassembly_failure_is_reported_and_analysis_continues(yara_service, monkeypatch, caplog, root_analysis):
+    yara_service(_rule("asm_rule", tags=["asm"], strings='$code_x86 = "world"'))
 
     def failing_disassemble(*args, **kwargs):
         raise ValueError("bad instruction stream")
@@ -516,12 +476,8 @@ def test_disassembly_failure_is_reported_and_analysis_continues(monkeypatch, cap
     write_error_report = Mock()
     monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
 
-    adapter = AnalysisModuleAdapter(YaraScanner_v3_4(
-        context=create_test_context(root=root_analysis),
-        config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-    ))
     with caplog.at_level(logging.ERROR):
-        assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        observable = _scan(root_analysis)
 
     analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
     assert analysis.scan_results[0]["context"][0][4] == "Failed to disassemble"
@@ -533,67 +489,41 @@ def test_disassembly_failure_is_reported_and_analysis_continues(monkeypatch, cap
 class TestYaraEnabledMeta:
     """A rule whose `enabled` meta is falsy is ignored as if it never matched."""
 
-    def _create_module(self, root):
-        module = YaraScanner_v3_4(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-        )
-        return AnalysisModuleAdapter(module)
-
-    def _run(self, monkeypatch, root_analysis, matches):
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
-        observable = root_analysis.add_file_observable(file_path)
-
-        monkeypatch.setattr(
-            yara_client, "scan_file",
-            lambda path, meta_tags=None, qa=None: matches,
-        )
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-        return observable
-
-    @pytest.mark.unit
+    @pytest.mark.integration
     @pytest.mark.parametrize("enabled_value", [False, "false", "False", "no", "off", "disabled", 0])
-    def test_disabled_rule_produces_no_analysis(self, monkeypatch, root_analysis, enabled_value):
+    def test_disabled_rule_produces_no_analysis(self, yara_service, root_analysis, enabled_value):
         """A file matching only a disabled rule behaves exactly like no match: no analysis."""
-        matches = [_yara_match("disabled_rule", meta={"enabled": enabled_value})]
-        observable = self._run(monkeypatch, root_analysis, matches)
+        yara_service(_rule("disabled_rule", meta={"enabled": enabled_value}))
+        observable = _scan(root_analysis)
 
         assert observable.get_and_load_analysis(YaraScanResults_v3_4) is None
         assert not root_analysis.has_detections()
 
-    @pytest.mark.unit
+    @pytest.mark.integration
     @pytest.mark.parametrize("enabled_value", [True, "true", "yes", 1])
-    def test_enabled_rule_is_processed(self, monkeypatch, root_analysis, enabled_value):
+    def test_enabled_rule_is_processed(self, yara_service, root_analysis, enabled_value):
         """An explicitly-enabled rule (or one with no `enabled` meta) is processed normally."""
-        matches = [_yara_match("enabled_rule", meta={"enabled": enabled_value})]
-        observable = self._run(monkeypatch, root_analysis, matches)
+        yara_service(_rule("enabled_rule", meta={"enabled": enabled_value}))
+        observable = _scan(root_analysis)
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
         assert analysis is not None
         assert root_analysis.has_detections()
 
-    @pytest.mark.unit
-    def test_missing_enabled_meta_defaults_to_enabled(self, monkeypatch, root_analysis):
-        matches = [_yara_match("default_rule")]
-        observable = self._run(monkeypatch, root_analysis, matches)
+    @pytest.mark.integration
+    def test_missing_enabled_meta_defaults_to_enabled(self, yara_service, root_analysis):
+        yara_service(_rule("default_rule"))
+        observable = _scan(root_analysis)
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
         assert analysis is not None
         assert root_analysis.has_detections()
 
-    @pytest.mark.unit
-    def test_mixed_enabled_and_disabled(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_mixed_enabled_and_disabled(self, yara_service, root_analysis):
         """Only the enabled rule survives filtering; the disabled one yields nothing."""
-        matches = [
-            _yara_match("disabled_rule", meta={"enabled": False}),
-            _yara_match("enabled_rule"),
-        ]
-        observable = self._run(monkeypatch, root_analysis, matches)
+        yara_service(_rule("disabled_rule", meta={"enabled": False}), _rule("enabled_rule"))
+        observable = _scan(root_analysis)
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
         assert analysis is not None
@@ -605,52 +535,29 @@ class TestYaraEnabledMeta:
 class TestYaraQueueMeta:
     """A rule's `queue` meta rides along on the detection point it creates."""
 
-    def _create_module(self, root):
-        module = YaraScanner_v3_4(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-        )
-        return AnalysisModuleAdapter(module)
-
-    def _run(self, monkeypatch, root_analysis, matches):
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"Hello, world!\n")
-        observable = root_analysis.add_file_observable(file_path)
-
-        monkeypatch.setattr(
-            yara_client, "scan_file",
-            lambda path, meta_tags=None, qa=None: matches,
-        )
-
-        adapter = self._create_module(root_analysis)
-        result = adapter.execute_analysis(observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-        return observable
-
-    @pytest.mark.unit
-    def test_queue_meta_attached_to_detection_point(self, monkeypatch, root_analysis):
-        matches = [_yara_match("routed_rule", meta={"queue": "experimental"})]
-        self._run(monkeypatch, root_analysis, matches)
+    @pytest.mark.integration
+    def test_queue_meta_attached_to_detection_point(self, yara_service, root_analysis):
+        yara_service(_rule("routed_rule", meta={"queue": "experimental"}))
+        _scan(root_analysis)
 
         detection_points = root_analysis.all_detection_points
         assert len(detection_points) == 1
         assert detection_points[0].queue == "experimental"
 
-    @pytest.mark.unit
-    def test_no_queue_meta_leaves_detection_unrouted(self, monkeypatch, root_analysis):
-        matches = [_yara_match("plain_rule")]
-        self._run(monkeypatch, root_analysis, matches)
+    @pytest.mark.integration
+    def test_no_queue_meta_leaves_detection_unrouted(self, yara_service, root_analysis):
+        yara_service(_rule("plain_rule"))
+        _scan(root_analysis)
 
         detection_points = root_analysis.all_detection_points
         assert len(detection_points) == 1
         assert detection_points[0].queue is None
 
-    @pytest.mark.unit
-    def test_no_alert_rule_with_queue_creates_no_detection(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_no_alert_rule_with_queue_creates_no_detection(self, yara_service, root_analysis):
         """A no_alert rule adds no detection point, so its queue meta is moot."""
-        matches = [_yara_match("quiet_rule", meta={"modifiers": "no_alert", "queue": "experimental"})]
-        self._run(monkeypatch, root_analysis, matches)
+        yara_service(_rule("quiet_rule", meta={"modifiers": "no_alert", "queue": "experimental"}))
+        _scan(root_analysis)
 
         assert root_analysis.all_detection_points == []
         assert not root_analysis.has_detections()
@@ -660,35 +567,12 @@ class TestYaraDetectionOnFile:
     """A match puts its detection on the file it matched, with structured details (docs/SVS.md,
     Part 1, D-20), not on the yara_rule observable every file matching the rule shares."""
 
-    def _create_module(self, root):
-        module = YaraScanner_v3_4(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-        )
-        return AnalysisModuleAdapter(module)
-
-    def _run(self, monkeypatch, root_analysis, matches, content=b"Hello, world!\n", name="test.txt"):
-        file_path = root_analysis.create_file_path(name)
-        with open(file_path, "wb") as fp:
-            fp.write(content)
-        observable = root_analysis.add_file_observable(file_path)
-
-        monkeypatch.setattr(
-            yara_client, "scan_file",
-            lambda path, meta_tags=None, qa=None: matches,
-        )
-
-        adapter = self._create_module(root_analysis)
-        assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
-        return observable
-
-    @pytest.mark.unit
-    def test_detection_sits_on_the_file_with_details(self, monkeypatch, root_analysis):
-        signature_dir = abs_path(get_service_config(SERVICE_YARA_SCANNER).signature_dir)
-        rule_uuid = "da44c9b8-24f5-472f-acab-1907f4ce4ad9"
-        match = _yara_match("phish_rule", meta={"uuid": rule_uuid})
-        match["namespace"] = os.path.join(signature_dir, "phish")
-        observable = self._run(monkeypatch, root_analysis, [match])
+    @pytest.mark.integration
+    def test_detection_sits_on_the_file_with_details(self, yara_service, write_rules, root_analysis):
+        # the rule comes from a git repository, so the detection carries the commit as its version
+        commit = _git_commit(write_rules(_rule("phish_rule", meta={"uuid": UUID_A}), subdir="phish"))
+        yara_service(git_repo_dirs=("phish",))
+        observable = _scan(root_analysis)
 
         assert len(observable.detections) == 1
         detection = observable.detections[0]
@@ -697,9 +581,10 @@ class TestYaraDetectionOnFile:
             "sha256": observable.value,
             "rule": "phish_rule",
             "namespace": "phish",
-            "rule_uuid": rule_uuid,
+            "rule_uuid": UUID_A,
         }
-        assert detection.signature_uuid == rule_uuid
+        assert detection.signature_uuid == UUID_A
+        assert detection.signature_version == commit
         assert detection.signature_family == "yara"
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
@@ -708,44 +593,42 @@ class TestYaraDetectionOnFile:
         # the rules and their strings stay in the pruned alert view
         assert analysis.always_visible()
 
-    @pytest.mark.unit
-    def test_rule_without_uuid_has_no_rule_uuid_and_the_builtin_family(self, monkeypatch, root_analysis):
-        observable = self._run(monkeypatch, root_analysis, [_yara_match("no_uuid_rule")])
+    @pytest.mark.integration
+    def test_rule_without_uuid_has_no_rule_uuid_and_the_builtin_family(self, yara_service, root_analysis):
+        yara_service(_rule("no_uuid_rule"))
+        observable = _scan(root_analysis)
 
         detection = observable.detections[0]
         assert detection.details["rule_uuid"] is None
-        # the scanner's default namespace, or none, is kept as it is
-        assert detection.details["namespace"] is None
+        # the namespace is the rule directory, relative to the signature directory
+        assert detection.details["namespace"] == "rules"
         assert detection.signature_uuid == YARA_RULE_MATCH.uuid
+        assert detection.signature_version == SIGNATURE_VERSION_UNKNOWN
         assert detection.signature_family == "builtin"
 
-    @pytest.mark.unit
-    def test_one_rule_matching_two_files_is_two_detections(self, monkeypatch, root_analysis):
-        first = self._run(monkeypatch, root_analysis, [_yara_match("shared_rule")], b"one", "one.txt")
-        second = self._run(monkeypatch, root_analysis, [_yara_match("shared_rule")], b"two", "two.txt")
+    @pytest.mark.integration
+    def test_one_rule_matching_two_files_is_two_detections(self, yara_service, root_analysis):
+        yara_service(_rule("shared_rule", strings='$a = "one"\n        $b = "two"'))
+        first = _scan(root_analysis, b"one", "one.txt")
+        second = _scan(root_analysis, b"two", "two.txt")
 
         assert [d.details["sha256"] for d in first.detections] == [first.value]
         assert [d.details["sha256"] for d in second.detections] == [second.value]
         assert len(root_analysis.all_detection_points) == 2
 
-    @pytest.mark.unit
-    def test_no_alert_rule_leaves_the_analysis_prunable(self, monkeypatch, root_analysis):
-        observable = self._run(
-            monkeypatch, root_analysis, [_yara_match("quiet_rule", meta={"modifiers": "no_alert"})])
+    @pytest.mark.integration
+    def test_no_alert_rule_leaves_the_analysis_prunable(self, yara_service, root_analysis):
+        yara_service(_rule("quiet_rule", meta={"modifiers": "no_alert"}))
+        observable = _scan(root_analysis)
 
         assert not observable.detections
         assert not observable.get_and_load_analysis(YaraScanResults_v3_4).always_visible()
 
+
 class TestYaraQAMatches:
     """QA matches are recorded by the yara scanner service, never by the module (docs/YARA_QA.md)."""
 
-    QA_META = {"modifiers": "qa", "uuid": "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"}
-
-    def _create_module(self, root):
-        return YaraScanner_v3_4(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
-        )
+    QA_RULE = _rule("qa_rule", meta={"modifiers": "qa", "uuid": "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"})
 
     def _observable(self, root_analysis):
         file_path = root_analysis.create_file_path("test.txt")
@@ -754,69 +637,53 @@ class TestYaraQAMatches:
 
         return root_analysis.add_file_observable(file_path)
 
-    @pytest.mark.unit
-    def test_service_is_told_where_the_file_came_from(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_service_is_told_where_the_file_came_from(self, yara_service, monkeypatch, root_analysis):
+        yara_service(self.QA_RULE)
         observable = self._observable(root_analysis)
-        captured = {}
+        scan_file = Mock(wraps=yara_client.scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", scan_file)
 
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            captured["qa"] = qa
-            return [_yara_match("qa_rule", meta=self.QA_META)]
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-        result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+        result = _create_module(root_analysis).execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert captured["qa"] == {
+        assert scan_file.call_args.kwargs["qa"] == {
             "root_uuid": root_analysis.uuid,
             "observable_uuid": observable.uuid,
             "file_name": "test.txt",
             "file_size": 14,
             "sha256": observable.value,
         }
+        assert [r["rule"] for r in observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results] == ["qa_rule"]
         # a qa rule never alerts
         assert not root_analysis.has_detections()
 
-    @pytest.mark.unit
-    def test_no_qa_context_when_qa_results_are_not_saved(self, monkeypatch, root_analysis):
+    @pytest.mark.integration
+    def test_no_qa_context_when_qa_results_are_not_saved(self, yara_service, monkeypatch, root_analysis):
+        yara_service(self.QA_RULE)
         observable = self._observable(root_analysis)
-        captured = {}
+        scan_file = Mock(wraps=yara_client.scan_file)
+        monkeypatch.setattr(yara_client, "scan_file", scan_file)
 
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            captured["qa"] = qa
-            return []
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-        module = self._create_module(root_analysis)
+        module = YaraScanner_v3_4(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+        )
         monkeypatch.setattr(module.config, "save_qa_scan_results", False)
         AnalysisModuleAdapter(module).execute_analysis(observable)
 
-        assert captured["qa"] is None
+        assert scan_file.call_args.kwargs["qa"] is None
 
-    @pytest.mark.unit
-    def test_local_scanner_qa_matches_are_logged_and_dropped(self, monkeypatch, caplog, root_analysis):
+    @pytest.mark.integration
+    def test_local_scanner_qa_matches_are_logged_and_dropped(self, socket_dir, write_rules, caplog, root_analysis):
+        write_rules(self.QA_RULE)
         observable = self._observable(root_analysis)
 
-        def mock_scan_file(path, meta_tags=None, qa=None):
-            raise YaraServiceUnavailable("connection refused")
-
-        monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
-
-        class QAMatchingLocalScanner:
-            scan_results = [_yara_match("qa_rule", meta=TestYaraQAMatches.QA_META)]
-
-            def scan(self, path, meta_tags=None):
-                return True
-
-        def mock_initialize_local_scanner(self):
-            self.scanner = QAMatchingLocalScanner()
-
-        monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
-
         with caplog.at_level("WARNING"):
-            result = AnalysisModuleAdapter(self._create_module(root_analysis)).execute_analysis(observable)
+            result = _create_module(root_analysis).execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
+        assert any("yara scanner service unavailable, scanning locally" in record.message for record in caplog.records)
         assert observable.get_and_load_analysis(YaraScanResults_v3_4) is not None
         assert not root_analysis.has_detections()
         assert any("with the local yara scanner: the match is not recorded" in record.message for record in caplog.records)

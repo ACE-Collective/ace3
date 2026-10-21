@@ -113,18 +113,14 @@ def test_initialize_modules_disabled_module(test_context):
     assert len(engine.configuration_manager.analysis_modules) == 0
 
 @pytest.mark.integration
-def test_initialize_modules_module_load_failure(monkeypatch, test_context):
+def test_initialize_modules_module_load_failure(monkeypatch, test_context, caplog):
     config = get_analysis_module_config("basic_test")
     assert config is not None
     config.enabled = True
-
-    def mock_load_module_from_config(*args, **kwargs):
-        return None
-
-    import saq.engine.module_loader
-    monkeypatch.setattr(saq.engine.module_loader, "load_module_from_config", mock_load_module_from_config)
+    monkeypatch.setattr(config, "python_module", "tests.saq.does_not_exist")
 
     engine = Engine()
     engine.configuration_manager.load_modules()
     # module fails to load
     assert len(engine.configuration_manager.analysis_modules) == 0
+    assert any("unable to import module tests.saq.does_not_exist" in record.getMessage() for record in caplog.records)

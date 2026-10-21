@@ -4,7 +4,6 @@ import shutil
 import sys
 import tempfile
 import uuid
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +12,8 @@ from saq.collectors.hunter.correlation.commands import execute_command
 from saq.collectors.hunter.correlation.sandbox import get_hunt_source_roots, get_sandbox_config, get_sandbox_root
 from saq.collectors.hunter.correlation.schema import CommandConfig
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
+from saq.configuration.config import get_config
+from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
 from saq.environment import get_base_dir, get_data_dir
 from saq.sandbox.launcher import NET_ABI, SCOPE_ABI, landlock_abi
 from saq.sandbox.runner import get_read_dirs, get_read_files, landlock_available
@@ -30,12 +31,9 @@ def _python(code: str, *args: str, **kwargs) -> CommandConfig:
     return CommandConfig(type="executable", path=PYTHON, args=["-c", code, *args], **kwargs)
 
 
-def _limits(**overrides):
-    """Patch the sandbox limits for one test."""
-    return patch(
-        "saq.collectors.hunter.correlation.commands.get_sandbox_config",
-        return_value=get_sandbox_config().model_copy(update=overrides),
-    )
+def _limits(monkeypatch, **overrides):
+    for name, value in overrides.items():
+        monkeypatch.setattr(get_sandbox_config(), name, value)
 
 
 def _processes_with_marker(marker: str) -> list[int]:
@@ -187,20 +185,20 @@ print(json.dumps({"cwd": os.getcwd(), "home": os.environ["HOME"], "tmpdir": os.e
 
 @pytest.mark.unit
 class TestLimits:
-    def test_memory_limit(self, tmpdir):
-        with _limits(memory_limit=256 * 1024 ** 2):
-            with pytest.raises(RuntimeError, match="MemoryError"):
-                _run(_python("x = bytearray(512 * 1024 ** 2)"), tmpdir)
+    def test_memory_limit(self, tmpdir, monkeypatch):
+        _limits(monkeypatch, memory_limit=256 * 1024 ** 2)
+        with pytest.raises(RuntimeError, match="MemoryError"):
+            _run(_python("x = bytearray(512 * 1024 ** 2)"), tmpdir)
 
-    def test_file_size_limit(self, tmpdir):
-        with _limits(file_size_limit=1024 ** 2):
-            with pytest.raises(RuntimeError, match="exited with code"):
-                _run(_python("open('big', 'wb').write(b'x' * 2 * 1024 ** 2)"), tmpdir)
+    def test_file_size_limit(self, tmpdir, monkeypatch):
+        _limits(monkeypatch, file_size_limit=1024 ** 2)
+        with pytest.raises(RuntimeError, match="exited with code"):
+            _run(_python("open('big', 'wb').write(b'x' * 2 * 1024 ** 2)"), tmpdir)
 
-    def test_output_limit(self, tmpdir):
-        with _limits(max_output_bytes=1024 ** 2):
-            with pytest.raises(RuntimeError, match="more than 1048576 bytes"):
-                _run(_python("import sys\nwhile True: sys.stdout.write('x' * 65536)"), tmpdir)
+    def test_output_limit(self, tmpdir, monkeypatch):
+        _limits(monkeypatch, max_output_bytes=1024 ** 2)
+        with pytest.raises(RuntimeError, match="more than 1048576 bytes"):
+            _run(_python("import sys\nwhile True: sys.stdout.write('x' * 65536)"), tmpdir)
 
     def test_stdin_is_empty_without_input(self, tmpdir):
         cmd = _python("import sys; print(len(sys.stdin.read()))", timeout="10s")
@@ -211,7 +209,7 @@ class TestLimits:
         assert json.loads(_run(cmd, tmpdir, event={"a": 1})) == {"a": 1}
 
     @pytest.mark.skipif(landlock_abi() < NET_ABI, reason=f"TCP port rules need Landlock ABI {NET_ABI} (Linux 6.7)")
-    def test_tcp_connections_limited_to_allowed_ports(self, tmpdir):
+    def test_tcp_connections_limited_to_allowed_ports(self, tmpdir, monkeypatch):
         import socket
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
@@ -223,21 +221,21 @@ class TestLimits:
                "except OSError as e:\n" \
                "    print(type(e).__name__)"
         try:
-            with _limits(allowed_tcp_ports=[port]):
-                assert _run(_python(code, str(port)), tmpdir).strip() == "connected"
+            _limits(monkeypatch, allowed_tcp_ports=[port])
+            assert _run(_python(code, str(port)), tmpdir).strip() == "connected"
             # the production default: the metadata endpoint's port 80, or any other, is refused
-            with _limits(allowed_tcp_ports=[443, 53]):
-                assert _run(_python(code, str(port)), tmpdir).strip() == "PermissionError"
+            _limits(monkeypatch, allowed_tcp_ports=[443, 53])
+            assert _run(_python(code, str(port)), tmpdir).strip() == "PermissionError"
         finally:
             listener.close()
 
-    def test_process_limit(self, tmpdir):
+    def test_process_limit(self, tmpdir, monkeypatch):
         code = "import subprocess, sys, time\n" \
                "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']) for _ in range(8)]\n" \
                "time.sleep(300)"
-        with _limits(max_processes=4):
-            with pytest.raises(RuntimeError, match="more than 4 processes"):
-                _run(_python(code, timeout="60s"), tmpdir)
+        _limits(monkeypatch, max_processes=4)
+        with pytest.raises(RuntimeError, match="more than 4 processes"):
+            _run(_python(code, timeout="60s"), tmpdir)
 
 
 @pytest.mark.unit
@@ -357,20 +355,31 @@ class TestStaging:
 
 @pytest.mark.unit
 class TestHuntSourceRoots:
-    def _config(self, *rule_dirs):
-        return SimpleNamespace(hunt_types=[SimpleNamespace(rule_dirs=list(rule_dirs))])
+    def _set_rule_dirs(self, *rule_dirs: HuntRuleDirConfig):
+        # global_function_setup restores the configuration after each test
+        get_config().clear_hunt_type_configs()
+        get_config().add_hunt_type_config("sandbox_test", HuntTypeConfig(
+            name="sandbox_test",
+            python_module="saq.collectors.hunter.query_hunter",
+            python_class="QueryHunt",
+            rule_dirs=list(rule_dirs),
+            update_frequency=60,
+        ))
 
     def test_git_dir_preferred_over_rule_dir(self, tmp_path):
-        entry = SimpleNamespace(rule_dir=str(tmp_path / "repo" / "hunts"), git_dir=str(tmp_path / "repo"))
-        with patch("saq.collectors.hunter.correlation.sandbox.get_config", return_value=self._config(entry)):
-            roots = get_hunt_source_roots()
+        self._set_rule_dirs(HuntRuleDirConfig(rule_dir=str(tmp_path / "repo" / "hunts"), git_dir=str(tmp_path / "repo")))
+        roots = get_hunt_source_roots()
         assert str(tmp_path / "repo") in roots
         assert str(tmp_path / "repo" / "hunts") not in roots
+        assert os.path.realpath(get_compiled_hunt_dir()) in roots
+
+    def test_rule_dir_used_without_git_dir(self, tmp_path):
+        self._set_rule_dirs(HuntRuleDirConfig(rule_dir=str(tmp_path / "hunts")))
+        assert str(tmp_path / "hunts") in get_hunt_source_roots()
 
     def test_root_containing_saq_home_is_ignored(self):
-        entry = SimpleNamespace(rule_dir="signatures/hunts", git_dir=".")
-        with patch("saq.collectors.hunter.correlation.sandbox.get_config", return_value=self._config(entry)):
-            roots = get_hunt_source_roots()
+        self._set_rule_dirs(HuntRuleDirConfig(rule_dir="signatures/hunts", git_dir="."))
+        roots = get_hunt_source_roots()
         assert os.path.realpath(get_base_dir()) not in roots
         assert "/" not in roots
 

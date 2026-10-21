@@ -89,9 +89,7 @@ def test_distributed_set_status():
 
 
 @pytest.mark.integration
-def test_execute_drain_routines(monkeypatch):
-    from saq.engine.node_manager import distributed_node_manager
-
+def test_execute_drain_routines():
     node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
     node_manager.initialize_node()
     node_id = get_global_runtime_settings().saq_node_id
@@ -102,7 +100,6 @@ def test_execute_drain_routines(monkeypatch):
     assert get_node_status(node_id) == NODE_STATUS_RUNNING
 
     # a draining node with no outstanding work becomes drained
-    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", lambda: (0, 0, 0))
     node_manager.set_status(NODE_STATUS_DRAINING)
     node_manager._node_manager.execute_drain_routines()
     assert get_node_status(node_id) == NODE_STATUS_DRAINED
@@ -120,9 +117,7 @@ def test_execute_drain_routines(monkeypatch):
 
 
 @pytest.mark.integration
-def test_execute_drain_routines_advances_draining_collectors(monkeypatch):
-    from saq.engine.node_manager import distributed_node_manager
-
+def test_execute_drain_routines_advances_draining_collectors():
     node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
     node_manager.initialize_node()
     node_id = get_global_runtime_settings().saq_node_id
@@ -139,7 +134,6 @@ def test_execute_drain_routines_advances_draining_collectors(monkeypatch):
     assert get_node_status(node_id) == NODE_STATUS_DRAINING
 
     # and the next cycle completes the drain
-    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", lambda: (0, 0, 0))
     node_manager._node_manager.execute_drain_routines()
     assert get_node_status(node_id) == NODE_STATUS_DRAINED
 

@@ -34,10 +34,11 @@ from unittest.mock import Mock
 import pytest
 
 from saq.analysis.root import load_root
-from saq.constants import F_TEST, LockManagerType, WorkloadManagerType
+from saq.constants import F_TEST
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
-from saq.engine.enums import EngineExecutionMode
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.shutdown_adapter import WorkerShutdownAdapter
 from saq.engine.worker import Worker
@@ -124,16 +125,9 @@ def test_worker_shutdown_adapter_tracks_worker():
     They are separate on purpose: an immediate shutdown must break a module out
     of ``sleep()``, a controlled one means "finish the work item you have".
     """
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-
     worker = Worker(
         name="test_worker",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 

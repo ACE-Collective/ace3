@@ -1,10 +1,16 @@
 import logging
+import uuid
 from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import ValidationError
 
+from saq.configuration.config import get_config
+from saq.database.pool import get_db_connection
+from saq.database.util.locking import acquire_lock
+from saq.search import index
 from saq.search.index import IndexResult
+from saq.search.model import SCHEMA_VERSION
 from saq.search.service import (
     DEFAULT_WORKER_COUNT,
     MAX_TASK_ATTEMPTS,
@@ -40,6 +46,13 @@ def task():
     return SearchIndexTask(alert_uuid="test-alert-uuid")
 
 
+def _locks(alert_uuid: str) -> list[tuple]:
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT lock_uuid, lock_owner FROM locks WHERE uuid = %s", (alert_uuid,))
+        return list(cursor.fetchall())
+
+
 class TestSubmit:
     def test_disabled_service_is_a_noop(self, monkeypatch):
         with patch("saq.search.tasks.get_redis_connection") as mock_redis:
@@ -67,57 +80,53 @@ class TestSubmit:
             assert submit_index_task("u") is False
 
 
+@pytest.mark.integration
 class TestExecuteTask:
     def test_index_takes_and_releases_the_lock(self, worker, task):
-        with (
-            patch("saq.search.service.acquire_lock", return_value=True) as mock_acquire,
-            patch("saq.search.service.release_lock") as mock_release,
-            patch("saq.search.service.index.index_alert", return_value=IndexResult(alert_uuid="test-alert-uuid", document_count=7, point_count=41)) as mock_index,
-        ):
+        held = []
+
+        def index_alert(alert_uuid, model=None):
+            held.extend(_locks(alert_uuid))
+            return IndexResult(alert_uuid=alert_uuid, document_count=7, point_count=41)
+
+        with patch("saq.search.service.index.index_alert", side_effect=index_alert) as mock_index:
             outcome = worker.execute_task(task)
 
         assert outcome == {"documents": 7, "points": 41}
-        assert mock_acquire.call_args[0][0] == "test-alert-uuid"
-        assert mock_acquire.call_args[1]["lock_owner"] == "SearchIndexWorker(worker-0)"
-        lock_uuid = mock_acquire.call_args[0][1]
         mock_index.assert_called_once_with("test-alert-uuid", model=None)
-        mock_release.assert_called_once_with("test-alert-uuid", lock_uuid)
+        assert len(held) == 1
+        assert held[0][1] == "SearchIndexWorker(worker-0)"
+        assert _locks("test-alert-uuid") == []
 
     def test_locked_alert_raises_lock_unavailable(self, worker, task):
-        with (
-            patch("saq.search.service.acquire_lock", return_value=False),
-            patch("saq.search.service.release_lock") as mock_release,
-            patch("saq.search.service.index.index_alert") as mock_index,
-        ):
+        other_lock = str(uuid.uuid4())
+        assert acquire_lock(task.alert_uuid, other_lock, lock_owner="someone else")
+
+        with patch("saq.search.service.index.index_alert") as mock_index:
             with pytest.raises(AlertLockUnavailable):
                 worker.execute_task(task)
 
         mock_index.assert_not_called()
-        mock_release.assert_not_called()
+        assert _locks(task.alert_uuid) == [(other_lock, "someone else")]
 
     def test_index_error_still_releases_lock(self, worker, task):
-        with (
-            patch("saq.search.service.acquire_lock", return_value=True) as mock_acquire,
-            patch("saq.search.service.release_lock") as mock_release,
-            patch("saq.search.service.index.index_alert", side_effect=RuntimeError("boom")),
-        ):
+        with patch("saq.search.service.index.index_alert", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError):
                 worker.execute_task(task)
 
-        mock_release.assert_called_once_with("test-alert-uuid", mock_acquire.call_args[0][1])
+        assert _locks(task.alert_uuid) == []
 
-    def test_payload_and_delete_do_not_lock(self, worker):
-        with (
-            patch("saq.search.service.acquire_lock") as mock_acquire,
-            patch("saq.search.service.index.update_alert_payload") as mock_payload,
-            patch("saq.search.service.index.delete_alert") as mock_delete,
-        ):
-            assert worker.execute_task(SearchIndexTask(alert_uuid="u", op=OP_PAYLOAD)) == {"updated": mock_payload.return_value}
-            assert worker.execute_task(SearchIndexTask(alert_uuid="u", op=OP_DELETE)) == {}
+    def test_payload_and_delete_do_not_lock(self, worker, mock_qdrant):
+        alert_uuid = str(uuid.uuid4())
+        other_lock = str(uuid.uuid4())
+        assert acquire_lock(alert_uuid, other_lock, lock_owner="someone else")
 
-        mock_acquire.assert_not_called()
-        mock_payload.assert_called_once_with("u")
-        mock_delete.assert_called_once_with("u")
+        # the alert has no row, so there is nothing to update
+        assert worker.execute_task(SearchIndexTask(alert_uuid=alert_uuid, op=OP_PAYLOAD)) == {"updated": False}
+        assert worker.execute_task(SearchIndexTask(alert_uuid=alert_uuid, op=OP_DELETE)) == {}
+
+        assert mock_qdrant.delete.call_args.kwargs["points_selector"].filter.must[0].match.value == alert_uuid
+        assert _locks(alert_uuid) == [(other_lock, "someone else")]
 
 
 BASE_SERVICE_CONFIG = {
@@ -224,7 +233,6 @@ class TestTaskRecovery:
             patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
             patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
             patch("saq.error.reporting.write_error_report"),
-            patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()
 
@@ -236,28 +244,28 @@ class TestTaskRecovery:
             patch.object(SearchIndexWorker, "execute_task", side_effect=AlertLockUnavailable("u")),
             patch.object(SearchIndexWorker, "defer_task") as mock_defer,
             patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()
 
         mock_defer.assert_called_once()
         mock_requeue.assert_not_called()
 
-    def test_missing_alert_does_not_requeue(self, worker, task):
+    @pytest.mark.integration
+    def test_missing_alert_does_not_requeue(self, worker):
         """A deleted alert is a terminal success, not a failure to retry."""
+        task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
         with (
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch("saq.search.service.acquire_lock", return_value=True),
-            patch("saq.search.service.release_lock"),
-            patch("saq.search.index.load_alert", return_value=None),
             patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
             patch.object(SearchIndexWorker, "defer_task") as mock_defer,
-            patch("saq.search.service.remove_all_sessions"),
+            patch("saq.search.service.get_redis_connection"),
         ):
             worker.worker_execute()
 
         mock_requeue.assert_not_called()
         mock_defer.assert_not_called()
+        assert worker.tasks_completed == 1
+        assert _locks(task.alert_uuid) == []
 
 
 class TestLogging:
@@ -271,7 +279,7 @@ class TestLogging:
 
     @staticmethod
     def run_task(worker, task, caplog, **index_patches):
-        """Runs one task through worker_execute with redis and the db session stubbed out."""
+        """Runs one task through worker_execute with redis stubbed out."""
         patches = {
             "index_alert": patch("saq.search.service.index.index_alert"),
             "update_alert_payload": patch("saq.search.service.index.update_alert_payload"),
@@ -281,10 +289,7 @@ class TestLogging:
         with (
             caplog.at_level(logging.INFO),
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch("saq.search.service.acquire_lock", return_value=True),
-            patch("saq.search.service.release_lock"),
             patch("saq.search.service.get_redis_connection") as mock_get_redis,
-            patch("saq.search.service.remove_all_sessions"),
             patches["index_alert"],
             patches["update_alert_payload"],
             patches["delete_alert"],
@@ -292,6 +297,7 @@ class TestLogging:
             mock_get_redis.return_value.llen.return_value = 3
             worker.worker_execute()
 
+    @pytest.mark.integration
     def test_index_task_logs_one_completion_line(self, worker, task, caplog):
         result = IndexResult(alert_uuid="test-alert-uuid", document_count=7, point_count=41, seconds=0.81)
         self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", return_value=result))
@@ -309,9 +315,11 @@ class TestLogging:
         assert not hasattr(records[0], "skipped")
         assert worker.tasks_completed == 1
 
-    def test_skipped_index_reports_the_reason(self, worker, task, caplog):
-        result = IndexResult(alert_uuid="test-alert-uuid", skipped="alert not found")
-        self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", return_value=result))
+    @pytest.mark.integration
+    def test_skipped_index_reports_the_reason(self, worker, caplog):
+        # no alerts row: the real index_alert skips it before reaching the model or qdrant
+        task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
+        self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", wraps=index.index_alert))
 
         records = self.records(caplog, "search_index_task_complete")
         assert len(records) == 1
@@ -344,7 +352,6 @@ class TestLogging:
             patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
             patch("saq.search.service.get_redis_connection"),
             patch("saq.error.reporting.write_error_report"),
-            patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()
 
@@ -360,7 +367,6 @@ class TestLogging:
         with (
             caplog.at_level(logging.INFO),
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", "{not json")),
-            patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()
 
@@ -403,12 +409,12 @@ class TestLogging:
         assert exiting[0].tasks_failed == 0
         assert exiting[0].tasks_deferred == 0
 
-    def test_prepare_logs_the_model_and_collection(self, worker, caplog):
+    def test_prepare_logs_the_model_and_collection(self, worker, caplog, monkeypatch):
+        monkeypatch.setattr(get_config().search, "embedding_model", "all-MiniLM-L6-v2")
         with (
             caplog.at_level(logging.INFO),
             patch("saq.search.service.download_model") as download_model,
             patch("saq.search.service.load_model", return_value=Mock()),
-            patch("saq.search.service.get_model_name", return_value="all-MiniLM-L6-v2"),
             patch("saq.search.service.index.get_qdrant_client"),
             patch("saq.search.service.index.ensure_collection", return_value="ace3-alerts-unittest-v1"),
         ):
@@ -427,13 +433,13 @@ class TestLogging:
         assert ready[0].collection == "ace3-alerts-unittest-v1"
         assert isinstance(ready[0].model_load_ms, int)
 
-    def test_manager_start_names_the_collection(self, caplog):
+    def test_manager_start_names_the_collection(self, caplog, monkeypatch):
+        monkeypatch.setattr(get_config().search, "embedding_model", "all-MiniLM-L6-v2")
+        monkeypatch.setattr(get_config().qdrant, "collection_prefix", "ace3-alerts-unittest")
         manager = SearchIndexManager(worker_count=2)
         with (
             caplog.at_level(logging.INFO),
             patch.object(SearchIndexWorker, "start"),
-            patch("saq.search.service.get_model_name", return_value="all-MiniLM-L6-v2"),
-            patch("saq.search.service.index.collection_name", return_value="ace3-alerts-unittest-v1"),
         ):
             manager.start()
 
@@ -441,4 +447,4 @@ class TestLogging:
         assert len(records) == 1
         assert records[0].worker_count == 2
         assert records[0].model == "all-MiniLM-L6-v2"
-        assert records[0].collection == "ace3-alerts-unittest-v1"
+        assert records[0].collection == index.collection_name() == "ace3-alerts-unittest-all-minilm-l6-v2-v" + str(SCHEMA_VERSION)

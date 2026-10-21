@@ -15,12 +15,19 @@ from aceapi_v2.svs.coverage import service
 from saq.database.model import SVSCoverage, SVSCoverageSnapshot, SVSCoverageState, SVSRun, SVSRunResult
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import coverage, expectations, signatures, windows
+from saq.svs import coverage, expectations
 from saq.svs.attack import load_attack_catalog
 from saq.svs.coverage import refresh_coverage
-from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable
+from saq.svs.signatures import SignatureTagsUnavailable
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import (
+    ATTACK_EXTRACT,
+    add_catalog_test,
+    add_test_host,
+    started_run,
+    write_hunt,
+    write_yara_rule,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -210,14 +217,11 @@ def _refresh_state():
 #
 
 @pytest.fixture
-def drill_down(attack_catalog, monkeypatch, test_user):
+def drill_down(attack_catalog, hunt_dir, yara_dir, test_user):
     """T1059 and its sub-techniques, refreshed: one validated PowerShell test on windows, one test of
     the parent never run on linux, a removed test, a counting tag and a disabled one."""
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
-    tags = {HUNT: SignatureTags(HUNT, "hunt", "powershell hunt", True, ("T1086",), ()),
-            DISABLED: SignatureTags(DISABLED, "yara", "old rule", False, ("T1059",), ())}
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
+    write_hunt(hunt_dir, HUNT, name="powershell hunt", tags=["mitre:T1086"])
+    write_yara_rule(yara_dir, "old_rule", DISABLED, mitre_attack="T1059", enabled="false")
 
     add_test_host("win10-01")
     add_catalog_test(GUID)

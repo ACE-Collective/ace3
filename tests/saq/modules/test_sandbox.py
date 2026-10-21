@@ -1,53 +1,47 @@
-from unittest.mock import Mock
-
 import pytest
 
+from saq.analysis.root import RootAnalysis
 from saq.constants import DIRECTIVE_SANDBOX_FORCE
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.sandbox import *
 from saq.modules.sandbox import SandboxAnalysisModule, SandboxAnalysisModuleConfig
 
 
-def _make_module(is_sandboxable):
-    """Build a SandboxAnalysisModule without running __init__ (which needs config),
-    stubbing only the pieces should_sandbox_file relies on."""
-    module = object.__new__(SandboxAnalysisModule)
-    module.is_sandboxable_file = Mock(return_value=is_sandboxable)
-    return module
-
-
-def _make_observable(forced):
-    observable = Mock()
-    observable.has_directive.side_effect = lambda d: forced and d == DIRECTIVE_SANDBOX_FORCE
+def _make_file_observable(tmp_path, file_name, content, forced):
+    root = RootAnalysis(storage_dir=str(tmp_path / "root"))
+    root.initialize_storage()
+    path = root.create_file_path(file_name)
+    with open(path, "w") as fp:
+        fp.write(content)
+    observable = root.add_file_observable(path)
+    if forced:
+        observable.add_directive(DIRECTIVE_SANDBOX_FORCE)
     return observable
 
 
 @pytest.mark.unit
-def test_should_sandbox_file_forced_bypasses_file_type_check():
-    module = _make_module(is_sandboxable=False)
-    observable = _make_observable(forced=True)
+def test_should_sandbox_file_forced_bypasses_file_type_check(tmp_path):
+    module = _make_configured_module(supported_extensions=["exe"])
+    observable = _make_file_observable(tmp_path, "evil.html", "<html><script>alert(1)</script></html>", forced=True)
 
-    assert module.should_sandbox_file(observable, "/tmp/evil.html") is True
-    # forced short-circuits before the file-type check
-    module.is_sandboxable_file.assert_not_called()
-
-
-@pytest.mark.unit
-def test_should_sandbox_file_not_forced_delegates_to_is_sandboxable_file():
-    module = _make_module(is_sandboxable=True)
-    observable = _make_observable(forced=False)
-
-    assert module.should_sandbox_file(observable, "/tmp/test.exe") is True
-    module.is_sandboxable_file.assert_called_once_with("/tmp/test.exe")
+    assert not module.is_sandboxable_file(observable.full_path)
+    assert module.should_sandbox_file(observable, observable.full_path) is True
 
 
 @pytest.mark.unit
-def test_should_sandbox_file_not_forced_and_not_sandboxable_returns_false():
-    module = _make_module(is_sandboxable=False)
-    observable = _make_observable(forced=False)
+def test_should_sandbox_file_not_forced_delegates_to_is_sandboxable_file(tmp_path):
+    module = _make_configured_module(supported_extensions=["exe"])
+    observable = _make_file_observable(tmp_path, "test.exe", "MZ", forced=False)
 
-    assert module.should_sandbox_file(observable, "/tmp/notes.txt") is False
-    module.is_sandboxable_file.assert_called_once_with("/tmp/notes.txt")
+    assert module.should_sandbox_file(observable, observable.full_path) is True
+
+
+@pytest.mark.unit
+def test_should_sandbox_file_not_forced_and_not_sandboxable_returns_false(tmp_path):
+    module = _make_configured_module(supported_extensions=["exe"])
+    observable = _make_file_observable(tmp_path, "notes.txt", "just some notes", forced=False)
+
+    assert module.should_sandbox_file(observable, observable.full_path) is False
 
 
 def _make_configured_module(config_class=SandboxAnalysisModuleConfig, **kwargs):

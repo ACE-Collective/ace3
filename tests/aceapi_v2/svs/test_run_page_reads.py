@@ -17,7 +17,7 @@ from saq.database.model import Alert, SVSRun, SVSRunResult
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT
-from saq.svs import runs, signatures, windows
+from saq.svs import runs
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
@@ -31,12 +31,8 @@ SIGNATURE_B = "44444444-dddd-4ddd-8ddd-444444444444"
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+def setup(no_hunts, yara_dir):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_catalog_test(OTHER_GUID)
     add_test_host("win10-01")

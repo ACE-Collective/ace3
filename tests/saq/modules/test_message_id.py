@@ -1,32 +1,23 @@
 import hashlib
 import logging
+import os
 from unittest.mock import Mock
 
 import pytest
 
-from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config
-import saq.email_archive
-import saq.modules.email.message_id
+from saq.email_archive import archive_email
 
 from saq.analysis import RootAnalysis
-from saq.constants import ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2, F_MESSAGE_ID, F_FILE, DB_EMAIL_ARCHIVE, AnalysisExecutionResult
-from saq.database import get_db_connection
+from saq.constants import ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2, F_MESSAGE_ID, F_FILE, AnalysisExecutionResult
 from saq.modules.email.message_id import MessageIDAnalysisV2, MessageIDAnalyzerV2
+from saq.util.time import local_time
 from tests.saq.test_util import create_test_context
 
-# TODO put this into a common email archive testing library
-@pytest.fixture(autouse=True)
-def reset_database(request, pytestconfig):
-    if request.node.get_closest_marker('integration') is None:
-        return
-
-    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-        c = db.cursor()
-        c.execute("DELETE FROM archive_server")
-        db.commit()
-
-    saq.email_archive.SERVER_ID = None
+def _archive(tmpdir, message_id: str, content: bytes):
+    email = tmpdir / "archived_email"
+    email.write_binary(content)
+    return archive_email(str(email), message_id, ["test@local"], local_time())
 
 @pytest.mark.unit
 def test_message_id_analysis_v2():
@@ -39,16 +30,12 @@ def test_message_id_analysis_v2():
     assert analysis.generate_summary() == "Message ID Analysis: archived email extracted test"
 
 @pytest.mark.integration
-def test_message_id_analyzer_v2(test_context, tmpdir, monkeypatch):
+def test_message_id_analyzer_v2(test_context, tmpdir):
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
+    _archive(tmpdir, "<test@local>", b"This is a test.")
 
-    def mock_iter_archived_email(message_id: str):
-        yield b"This is a test."
-
-    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
-    monkeypatch.setattr(saq.modules.email.message_id, "email_is_archived", lambda message_id: True)
     analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
     analyzer.execute_analysis(observable)
     analysis = observable.get_and_load_analysis(analyzer.generated_analysis_type)
@@ -60,38 +47,35 @@ def test_message_id_analyzer_v2(test_context, tmpdir, monkeypatch):
         assert fp.read() == "This is a test."
 
 @pytest.mark.integration
-def test_message_id_analyzer_v2_emtpy_result(test_context, tmpdir, monkeypatch):
+def test_message_id_analyzer_v2_emtpy_result(test_context, tmpdir, caplog):
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
+    _archive(tmpdir, "<test@local>", b"")
 
-    def mock_iter_archived_email(message_id: str):
-        yield b""
-
-    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
     analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
-    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    with caplog.at_level(logging.INFO):
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert "got 0 bytes for <test@local>" in caplog.text
     assert observable.get_and_load_analysis(analyzer.generated_analysis_type) is None
+    assert not os.path.exists(root.create_file_path(f"{hashlib.sha256('<test@local>'.encode()).hexdigest()}.rfc822"))
 
 @pytest.mark.integration
-def test_message_id_analyzer_v2_unknown_message_id(tmpdir, monkeypatch):
+def test_message_id_analyzer_v2_unknown_message_id(tmpdir, caplog):
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
+    _archive(tmpdir, "<other@local>", b"This is a test.")
 
-    # unknown message_id or unable to process
-
-    def mock_iter_archived_email(message_id: str):
-        raise RuntimeError("Unknown message id")
-
-    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
     analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
-    analyzer.execute_analysis(observable)
+    with caplog.at_level(logging.INFO):
+        analyzer.execute_analysis(observable)
+    assert "email <test@local> is not archived" in caplog.text
     analysis = observable.get_and_load_analysis(analyzer.generated_analysis_type)
     assert analysis is None
 
 @pytest.mark.integration
-def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir, monkeypatch):
+def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir):
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
@@ -101,12 +85,8 @@ def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir, monkeyp
         fp.write("Already exists.")
 
     file_observable = root.add_file_observable(hashed_name)
+    _archive(tmpdir, "<test@local>", b"This is a test.")
 
-    def mock_iter_archived_email(message_id: str):
-        yield b"This is a test."
-
-    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
-    monkeypatch.setattr(saq.modules.email.message_id, "email_is_archived", lambda message_id: True)
     analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
     analyzer.execute_analysis(observable)
     analysis = observable.get_and_load_analysis(analyzer.generated_analysis_type)
@@ -121,12 +101,9 @@ def test_message_id_analyzer_v2_archive_failure_is_reported(tmpdir, monkeypatch,
     root = RootAnalysis(storage_dir=str(tmpdir / "root"))
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
+    # indexed in the archive but the encrypted file is gone
+    os.unlink(_archive(tmpdir, "<test@local>", b"This is a test.").archive_path)
 
-    def mock_iter_archived_email(message_id: str):
-        raise RuntimeError("archive unreadable")
-
-    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
-    monkeypatch.setattr(saq.modules.email.message_id, "email_is_archived", lambda message_id: True)
     write_error_report = Mock()
     monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
 
@@ -138,3 +115,4 @@ def test_message_id_analyzer_v2_archive_failure_is_reported(tmpdir, monkeypatch,
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
     write_error_report.assert_called_once()
+    assert observable.get_and_load_analysis(analyzer.generated_analysis_type) is None

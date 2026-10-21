@@ -1,4 +1,3 @@
-import configparser
 import io
 import logging
 import pytest
@@ -6,7 +5,7 @@ import pytest
 from saq.configuration import get_config
 from saq.configuration.schema import ACEConfig
 from saq.environment import get_global_runtime_settings, set_node
-from saq.logging import CustomFileHandler, initialize_logging
+from saq.logging import CustomFileHandler
 
 @pytest.mark.unit
 def test_custom_file_handler(tmpdir, monkeypatch):
@@ -28,28 +27,6 @@ def test_custom_file_handler(tmpdir, monkeypatch):
     handler.current_filename = None
     monkeypatch.setattr(handler.stream, "close", lambda: _fail())
     handler.emit(record)
-
-@pytest.mark.skip("cannot reset logging now")
-@pytest.mark.unit
-def test_initialize_logging(datadir, monkeypatch):
-    # valid configuration
-    initialize_logging(str(datadir / "debug_logging.yaml"))
-
-    # invalid configuration
-    with pytest.raises(Exception):
-        initialize_logging(str(datadir / "invalid_file.yaml"))
-
-    # logging sql commands
-    config = configparser.ConfigParser()
-    config.read_string("""[global]
-                       log_sql = yes""")
-    
-
-    import saq.configuration
-    monkeypatch.setattr(saq.configuration, "get_config", lambda: config)
-    initialize_logging(str(datadir / "debug_logging.yaml"))
-
-    # TODO not sure what to check for here
 
 @pytest.mark.integration
 def test_set_node():

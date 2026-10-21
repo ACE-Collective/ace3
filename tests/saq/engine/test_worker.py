@@ -2,8 +2,10 @@ from datetime import datetime, timedelta
 import pytest
 from unittest.mock import Mock
 
-from saq.constants import F_IP, LockManagerType, WorkloadManagerType
+from saq.constants import F_IP
 from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.environment import get_global_runtime_settings
@@ -30,19 +32,10 @@ class TestWorkerDelayedAnalysisFunctions:
     @pytest.fixture
     def worker(self):
         """Create a worker instance for testing."""
-        mock_config_manager = Mock(spec=ConfigurationManager)
-        mock_config_manager.config = Mock()
-        mock_config_manager.config.analysis_mode_priority = None
-        mock_config_manager.config.lock_manager_type = LockManagerType.LOCAL
-        mock_config_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-        mock_config_manager.config.single_threaded_mode = True
-        
-        mock_node_manager = Mock(spec=NodeManagerInterface)
-        
         return Worker(
             name="test_worker",
-            configuration_manager=mock_config_manager,
-            node_manager=mock_node_manager
+            configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True)),
+            node_manager=Mock(spec=NodeManagerInterface),
         )
 
     def test_get_delayed_analysis_timeout_hours_only(self, worker):
@@ -329,22 +322,15 @@ class TestWorkerDelayedAnalysisFunctions:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("lock_manager_type", [LockManagerType.LOCAL, LockManagerType.DISTRIBUTED])
-def test_worker_lock_owner_is_node_prefixed(lock_manager_type):
+@pytest.mark.parametrize("engine_type", [EngineType.LOCAL, EngineType.DISTRIBUTED])
+def test_worker_lock_owner_is_node_prefixed(engine_type):
     """The worker lock_owner must start with this node's name so that
     DistributedNodeManager.initialize_node() can clear leftover locks on restart
     (it deletes locks WHERE lock_owner LIKE '<node_name>-%'). If the prefix is
     missing, locks held at restart are orphaned until they expire."""
-    mock_config_manager = Mock(spec=ConfigurationManager)
-    mock_config_manager.config = Mock()
-    mock_config_manager.config.analysis_mode_priority = None
-    mock_config_manager.config.lock_manager_type = lock_manager_type
-    mock_config_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    mock_config_manager.config.single_threaded_mode = True
-
     worker = Worker(
         name="email-0",
-        configuration_manager=mock_config_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=engine_type, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 

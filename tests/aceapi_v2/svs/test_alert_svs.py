@@ -14,7 +14,6 @@ from aceapi_v2.svs.alerts import service
 from saq.alert_routing import reset_alert_routers
 from saq.constants import F_HOSTNAME, QUEUE_DEFAULT
 from saq.database.util.alert import ALERT
-from saq.svs import windows
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.helpers import create_root_analysis, insert_alert
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
@@ -25,11 +24,8 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
+def setup(no_hunts):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
     add_catalog_test(GUID, name="PowerShell download")
     add_test_host("win10-01")
     yield

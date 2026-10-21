@@ -2,6 +2,7 @@ import pytest
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
+    ANALYSIS_MODULE_FILE_TYPE,
     ANALYSIS_MODULE_HTML_JS_EXTRACTION,
     DIRECTIVE_PREVIEW,
     DIRECTIVE_YARA_META_PREFIX,
@@ -13,12 +14,13 @@ from saq.constants import (
     AnalysisExecutionResult,
 )
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.file_type import FileTypeAnalysis
+from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.html_js_extraction import (
     HTMLJavaScriptExtractionAnalysis,
     HTMLJavaScriptExtractor,
 )
 from tests.saq.helpers import create_root_analysis
+from tests.saq.test_util import create_test_context
 
 
 @pytest.mark.unit
@@ -493,11 +495,13 @@ def test_file_naming(tmpdir, test_context):
         assert file_obs.file_name.endswith(".js")
 
 
-def _make_mock_file_type_analysis(mime_type):
-    """Create a mock FileTypeAnalysis with the given MIME type."""
-    analysis = FileTypeAnalysis()
-    analysis.details = {'type': None, 'mime': mime_type}
-    return analysis
+def _run_file_type_analysis(root, observable, expected_mime):
+    """file type analysis is a declared dependency; run it directly since we
+    invoke execute_analysis outside the engine (which would normally do it)"""
+    AnalysisModuleAdapter(FileTypeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE))).execute_analysis(observable)
+    assert observable.get_and_load_analysis(FileTypeAnalysis).mime_type == expected_mime
 
 
 @pytest.mark.unit
@@ -528,11 +532,7 @@ def test_svg_defanged_extension_with_mime_fallback(monkeypatch, tmpdir, test_con
         config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
     analyzer.root = root
 
-    mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
-
-    # file type analysis is a declared dependency; provide it directly since we
-    # invoke execute_analysis outside the engine (which would normally seed it)
-    observable.add_analysis(mock_analysis)
+    _run_file_type_analysis(root, observable, 'image/svg+xml')
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -616,11 +616,7 @@ if(_c)(0,eval)(_c);
         config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
     analyzer.root = root
 
-    mock_analysis = _make_mock_file_type_analysis('image/svg+xml')
-
-    # file type analysis is a declared dependency; provide it directly since we
-    # invoke execute_analysis outside the engine (which would normally seed it)
-    observable.add_analysis(mock_analysis)
+    _run_file_type_analysis(root, observable, 'image/svg+xml')
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -740,7 +736,7 @@ def test_unknown_extension_no_mime_skipped(monkeypatch, tmpdir, test_context):
 
     target_path = root.create_file_path("document.pdf")
     with open(target_path, "w") as fp:
-        fp.write("<script>alert('sneaky')</script>")
+        fp.write("%PDF-1.4\n<script>alert('sneaky')</script>\n%%EOF\n")
 
     observable = root.add_file_observable(target_path)
 
@@ -749,11 +745,7 @@ def test_unknown_extension_no_mime_skipped(monkeypatch, tmpdir, test_context):
         config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
     analyzer.root = root
 
-    mock_analysis = _make_mock_file_type_analysis('application/pdf')
-
-    # file type analysis is a declared dependency; provide it directly since we
-    # invoke execute_analysis outside the engine (which would normally seed it)
-    observable.add_analysis(mock_analysis)
+    _run_file_type_analysis(root, observable, 'application/pdf')
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
@@ -796,8 +788,8 @@ def test_javascript_source_sniffed_as_html_is_skipped(tmpdir, test_context):
         config=get_analysis_module_config(ANALYSIS_MODULE_HTML_JS_EXTRACTION)))
     analyzer.root = root
 
-    # this is what libmagic really reports for this content
-    observable.add_analysis(_make_mock_file_type_analysis('text/html'))
+    # libmagic sniffs this content as text/html
+    _run_file_type_analysis(root, observable, 'text/html')
 
     result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED

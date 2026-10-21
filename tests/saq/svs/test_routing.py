@@ -23,12 +23,8 @@ from saq.database.model import Alert, AlertQueueChange, SVSAttribution, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT
-from saq.engine.analysis_orchestrator import AnalysisOrchestrator
-from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.engine.execution_context import EngineExecutionContext
-from saq.engine.executor import AnalysisExecutor
 from saq.svs import routing
 from saq.svs.attribution import saved_sightings
 from saq.svs.constants import ScanPoint
@@ -37,7 +33,7 @@ from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraServiceUnavailable
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, sync_alert
 
 pytestmark = pytest.mark.integration
 
@@ -46,9 +42,8 @@ CALLER = Caller(name="art-launcher", address="10.1.2.3")
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
+def setup(no_hunts):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield
@@ -167,21 +162,6 @@ class TestPreInsert:
         assert _queue(root.uuid) == QUEUE_DEFAULT
 
 
-def _orchestrator() -> AnalysisOrchestrator:
-    config_manager = Mock(spec=ConfigurationManager)
-    config_manager.config = Mock()
-    return AnalysisOrchestrator(configuration_manager=config_manager, analysis_executor=Mock(spec=AnalysisExecutor),
-                                workload_manager=Mock(), lock_manager=Mock())
-
-
-def _sync(root: RootAnalysis):
-    context = Mock(spec=EngineExecutionContext)
-    context.root = root
-    context.analysis_skipped = False
-    context.analysis_aborted = False
-    _orchestrator()._sync_alert_to_database(context)
-
-
 class TestPostAnalysis:
     def _hunt_alert(self, run):
         """A hunt alert inserted before analysis: nothing in it names a test host yet."""
@@ -195,7 +175,7 @@ class TestPostAnalysis:
         # analysis decoded a command line on the target
         root.add_observable_by_spec(F_HOSTNAME, "win10-01")
         root.add_observable_by_spec(F_TEST, f"decoded {run.marker}")
-        _sync(root)
+        sync_alert(root)
 
         assert _queue(root.uuid) == get_config().svs.queue
         assert _changes(root.uuid)[-1] == (QUEUE_DEFAULT, get_config().svs.queue, "svs_marker")
@@ -204,13 +184,13 @@ class TestPostAnalysis:
         root = self._hunt_alert(run)
         root.add_observable_by_spec(F_HOSTNAME, "win10-01")
         root.add_observable_by_spec(F_TEST, f"decoded {run.marker}")
-        _sync(root)
+        sync_alert(root)
         assert _queue(root.uuid) == get_config().svs.queue
 
         # a later pass finds a detection on another branch
         other = root.add_observable_by_spec(F_TEST, "unrelated")
         other.add_detection_point("real detection")
-        _sync(root)
+        sync_alert(root)
 
         assert _queue(root.uuid) == QUEUE_DEFAULT
         assert _changes(root.uuid)[-1] == (get_config().svs.queue, QUEUE_DEFAULT, "svs_marker")
@@ -223,7 +203,7 @@ class TestPostAnalysis:
 
         root.add_observable_by_spec(F_HOSTNAME, "win10-01")
         root.add_observable_by_spec(F_TEST, f"decoded {run.marker}")
-        _sync(root)
+        sync_alert(root)
 
         assert _queue(root.uuid) == QUEUE_DEFAULT
         # attributed all the same: the alert gets its SVS status

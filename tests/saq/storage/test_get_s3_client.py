@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("boto3")
 
+from saq.configuration.config import get_config
 from saq.configuration.schema import S3Config
 from saq.storage.s3 import build_boto_config, get_s3_client
 
@@ -13,27 +14,19 @@ from saq.storage.s3 import build_boto_config, get_s3_client
 pytestmark = pytest.mark.unit
 
 
-def _mock_s3_config(**overrides) -> MagicMock:
-    """A mocked self-hosted S3Config.
-
-    The timeout fields must be real numbers, not MagicMocks: build_boto_config() feeds them to
-    botocore, which validates them. A bare MagicMock() here raises
-    "TypeError: '<' not supported between instances of 'MagicMock' and 'int'".
-    """
-    config = MagicMock()
-    config.host = "s3.local"
-    config.port = 9000
-    config.access_key = "key"
-    config.secret_key = "secret"
-    config.secure = False
-    config.cert_check = False
-    config.region = None
-    config.connect_timeout = 10
-    config.read_timeout = 60
-    config.max_attempts = 3
-    for key, value in overrides.items():
-        setattr(config, key, value)
-    return config
+def _s3_config(**overrides) -> S3Config:
+    """A self-hosted S3Config."""
+    values = dict(
+        host="s3.local",
+        port=9000,
+        access_key="key",
+        secret_key="secret",
+        secure=False,
+        cert_check=False,
+        region=None,
+    )
+    values.update(overrides)
+    return S3Config(**values)
 
 
 def assert_bounded(boto_config, *, connect=10, read=60, attempts=3):
@@ -54,10 +47,9 @@ class TestGetS3ClientAWSNative:
     """Tests for the AWS-native path when no self-hosted S3 config is present."""
 
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_returns_boto3_client_with_region(self, mock_get_config, mock_boto3):
+    def test_returns_boto3_client_with_region(self, mock_boto3, monkeypatch):
         """When get_config().s3 is None, creates a boto3 client with just the region."""
-        mock_get_config.return_value.s3 = None
+        monkeypatch.setattr(get_config(), "s3", None)
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 
@@ -71,10 +63,9 @@ class TestGetS3ClientAWSNative:
         assert result is mock_client
 
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_returns_boto3_client_without_region(self, mock_get_config, mock_boto3):
+    def test_returns_boto3_client_without_region(self, mock_boto3, monkeypatch):
         """When get_config().s3 is None and no region provided, creates client with region_name=None."""
-        mock_get_config.return_value.s3 = None
+        monkeypatch.setattr(get_config(), "s3", None)
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
 
@@ -87,10 +78,9 @@ class TestGetS3ClientAWSNative:
         assert result is mock_client
 
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_does_not_pass_endpoint_or_credentials(self, mock_get_config, mock_boto3):
+    def test_does_not_pass_endpoint_or_credentials(self, mock_boto3, monkeypatch):
         """AWS-native path should not pass endpoint_url, access key, or secret key."""
-        mock_get_config.return_value.s3 = None
+        monkeypatch.setattr(get_config(), "s3", None)
 
         get_s3_client(region="us-west-1")
 
@@ -104,15 +94,14 @@ class TestGetS3ClientSelfHosted:
     """Tests for the self-hosted S3-compatible path when S3 config is present."""
 
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_returns_client_with_explicit_endpoint_and_credentials(self, mock_get_config, mock_boto3):
+    def test_returns_client_with_explicit_endpoint_and_credentials(self, mock_boto3, monkeypatch):
         """When get_config().s3 exists, creates a client with explicit endpoint and credentials."""
-        mock_get_config.return_value.s3 = _mock_s3_config(
+        monkeypatch.setattr(get_config(), "s3", _s3_config(
             host="minio.local",
             access_key="test-access-key",
             secret_key="test-secret-key",
             region="us-east-1",
-        )
+        ))
 
         mock_client = MagicMock()
         mock_boto3.client.return_value = mock_client
@@ -134,10 +123,9 @@ class TestGetS3ClientSelfHosted:
         (False, "http"),
     ])
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_uses_correct_protocol(self, mock_get_config, mock_boto3, secure, expected_protocol):
+    def test_uses_correct_protocol(self, mock_boto3, secure, expected_protocol, monkeypatch):
         """Endpoint URL protocol should match the secure setting."""
-        mock_get_config.return_value.s3 = _mock_s3_config(secure=secure, cert_check=True)
+        monkeypatch.setattr(get_config(), "s3", _s3_config(secure=secure, cert_check=True))
 
         get_s3_client()
 
@@ -145,10 +133,9 @@ class TestGetS3ClientSelfHosted:
         assert call_kwargs["endpoint_url"] == f"{expected_protocol}://s3.local:9000"
 
     @patch("saq.storage.s3.boto3")
-    @patch("saq.storage.s3.get_config")
-    def test_region_parameter_ignored_when_self_hosted(self, mock_get_config, mock_boto3):
+    def test_region_parameter_ignored_when_self_hosted(self, mock_boto3, monkeypatch):
         """When self-hosted config exists, the region parameter is ignored in favor of config region."""
-        mock_get_config.return_value.s3 = _mock_s3_config(region="config-region")
+        monkeypatch.setattr(get_config(), "s3", _s3_config(region="config-region"))
 
         get_s3_client(region="ignored-region")
 
@@ -159,19 +146,17 @@ class TestGetS3ClientSelfHosted:
 class TestBotoConfigDefaults:
     """The values themselves, and that they survive the trip into botocore."""
 
-    @patch("saq.storage.s3.get_config")
-    def test_falls_back_to_schema_defaults_when_no_s3_config(self, mock_get_config):
+    def test_falls_back_to_schema_defaults_when_no_s3_config(self, monkeypatch):
         """The AWS-native branch is taken exactly BECAUSE get_config().s3 is None, so there is no
         S3Config to read. It must still be bounded, from the schema's own defaults rather than a
         second set of literals."""
-        mock_get_config.return_value.s3 = None
+        monkeypatch.setattr(get_config(), "s3", None)
         assert_bounded(build_boto_config())
 
-    @patch("saq.storage.s3.get_config")
-    def test_honors_configured_values(self, mock_get_config):
-        mock_get_config.return_value.s3 = _mock_s3_config(
+    def test_honors_configured_values(self, monkeypatch):
+        monkeypatch.setattr(get_config(), "s3", _s3_config(
             connect_timeout=3, read_timeout=15, max_attempts=7
-        )
+        ))
         assert_bounded(build_boto_config(), connect=3, read=15, attempts=7)
 
     def test_schema_defaults_are_the_documented_values(self):
@@ -194,7 +179,7 @@ class TestBotoConfigDefaults:
 
 
 @pytest.mark.unit
-def test_resolved_client_actually_carries_the_bounds():
+def test_resolved_client_actually_carries_the_bounds(monkeypatch):
     """Assert against a real resolved client, not just the kwargs we passed.
 
     The mocked tests above prove we BUILD the right config; this proves boto3 keeps it. Needs no
@@ -204,9 +189,8 @@ def test_resolved_client_actually_carries_the_bounds():
 
     from saq.storage.s3 import build_boto_config
 
-    with patch("saq.storage.s3.get_config") as mock_get_config:
-        mock_get_config.return_value.s3 = None
-        config = build_boto_config()
+    monkeypatch.setattr(get_config(), "s3", None)
+    config = build_boto_config()
 
     client = boto3.client(
         "s3",
@@ -225,8 +209,7 @@ def test_resolved_client_actually_carries_the_bounds():
 
 
 @pytest.mark.unit
-@patch("saq.storage.s3.get_config")
-def test_transfer_config_bounds_s3transfer_retries(mock_get_config):
+def test_transfer_config_bounds_s3transfer_retries(monkeypatch):
     """s3transfer keeps its OWN retry counter on top of botocore's.
 
     Its default is 5, so an unbounded download would retry 5 x max_attempts. Everything else about
@@ -236,7 +219,7 @@ def test_transfer_config_bounds_s3transfer_retries(mock_get_config):
 
     from saq.storage.s3 import build_transfer_config
 
-    mock_get_config.return_value.s3 = _mock_s3_config(max_attempts=3)
+    monkeypatch.setattr(get_config(), "s3", _s3_config(max_attempts=3))
     config = build_transfer_config()
     default = TransferConfig()
 

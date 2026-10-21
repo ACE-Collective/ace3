@@ -3,6 +3,7 @@
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import pymysql
 import pytest
@@ -22,7 +23,6 @@ from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 from saq.svs import attribution
 from saq.svs.attribution import (
     AlertHosts,
-    ExistingAttribution,
     RunSnapshot,
     Sighting,
     TargetSnapshot,
@@ -44,6 +44,7 @@ from saq.svs.constants import (
     ROUTER_ACTOR,
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
+    AttributionSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -52,7 +53,8 @@ from saq.svs.constants import (
 )
 from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import new_marker
-from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
+from saq.svs.runs import Registration, TargetSpec, register, start
+from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
 
 MARKER = "svs-" + "a" * 26
 OTHER_MARKER = "svs-" + "b" * 26
@@ -64,24 +66,28 @@ class ChildAnalysis(Analysis):
     pass
 
 
-def _run(marker: str = MARKER, run_id: int = 1, host: str = "win10-01", fqdn=None, ips=(), started=T0,
-         observation=timedelta(hours=1), attribution_window=timedelta(hours=25)) -> RunSnapshot:
-    return RunSnapshot(
-        id=run_id, uuid=str(uuid.uuid4()), test_guid=GUID, marker=marker, started_at=started,
-        observation_ends_at=started + observation if started else None,
-        attribution_ends_at=started + attribution_window if started else None,
-        targets=(TargetSnapshot(host, fqdn, frozenset(ips)),))
+def _run(host: str = "win10-01", started: Optional[datetime] = T0) -> RunSnapshot:
+    """A run of GUID against host, started at started (None: registered and never started), as
+    attribution reads it. Its windows are the floor and the default extra hours: 1 and 25 hours."""
+    run = register(Registration(test_guid=GUID, targets=[TargetSpec(host)], launcher="art"), LAUNCHER,
+                   now=started or T0)
+    if started is not None:
+        run = start(run.uuid, LAUNCHER, now=started)
+    return resolve_markers([run.marker])[run.marker]
 
 
-@pytest.fixture
-def runs(monkeypatch):
-    """Evaluation against runs given here instead of the database."""
-    state = {"markers": {}, "window": [], "existing": ([], set(), set())}
-    monkeypatch.setattr(attribution, "resolve_markers",
-                        lambda markers: {m: state["markers"][m] for m in markers if m in state["markers"]})
-    monkeypatch.setattr(attribution, "runs_in_window", lambda when: list(state["window"]))
-    monkeypatch.setattr(attribution, "_existing", lambda alert_uuid: state["existing"])
-    return state
+def _person_row(run: RunSnapshot, alert_uuid: str, content_hash: str, *, manual: bool = False,
+                removed: bool = False) -> None:
+    """A row a person left: a hand attribution (manual), or a router row a person removed."""
+    with private_transaction() as session:
+        user_id = session.execute(select(User.id).where(User.username == "unittest")).scalar_one()
+        session.add(SVSAttribution(
+            run_id=run.id, alert_uuid=alert_uuid, content_hash=content_hash, signature_uuid=str(uuid.uuid4()),
+            confidence=AttributionConfidence.MARKER.value,
+            source=AttributionSource.MANUAL.value if manual else AttributionSource.ROUTER.value,
+            actor="unittest", actor_user_id=user_id if manual else None, created_at=datetime.now(),
+            removed_at=datetime.now() if removed else None, removed_by="unittest" if removed else None,
+            removed_by_user_id=user_id if removed else None))
 
 
 def _tree():
@@ -157,26 +163,6 @@ class TestFindingMarkers:
         assert len(root.extensions[SIGHTINGS_EXTENSION]) == 2
         assert saved_sightings(root)[0] == sighting
 
-    def test_the_executor_hook_saves_what_analysis_details_carry(self, monkeypatch):
-        monkeypatch.setattr(attribution, "attribution_open", lambda now=None: True)
-        root, parent, child, url = _tree()
-
-        class Delta:
-            analysis = {"details": {"stdout": f"ran {MARKER}"}}
-
-        assert record_delta_sightings(root, parent, Delta(), "module_x") == 1
-        assert saved_sightings(root) == [Sighting(MARKER, parent.uuid, ScanPoint.ANALYSIS, "module_x")]
-
-    def test_the_executor_hook_does_nothing_while_the_gate_is_closed(self, monkeypatch):
-        monkeypatch.setattr(attribution, "attribution_open", lambda now=None: False)
-        root, parent, child, url = _tree()
-
-        class Delta:
-            analysis = {"details": {"stdout": f"ran {MARKER}"}}
-
-        assert record_delta_sightings(root, parent, Delta(), "module_x") == 0
-        assert not (root.extensions or {}).get(SIGHTINGS_EXTENSION)
-
 
 #
 # hosts and time
@@ -217,17 +203,23 @@ class TestHosts:
 
 
 #
-# evaluation, against runs given by the test
+# evaluation
 #
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestEvaluate:
-    def test_a_marker_in_the_alerts_details_attributes_everything(self, runs):
+    @pytest.fixture(autouse=True)
+    def setup(self, no_hunts):
+        add_catalog_test(GUID)
+        add_test_host("win10-01")
+        add_test_host("srv-01")
+
+    def test_a_marker_in_the_alerts_details_attributes_everything(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"events": [{"cmd": f"whoami & REM {MARKER}"}]}
+        root.details = {"events": [{"cmd": f"whoami & REM {run.marker}"}]}
         root.add_detection_point("hunt hit")
         url.add_detection_point("bad url")
-        run = runs["markers"][MARKER] = _run()
 
         evaluation = evaluate(root, T0 + timedelta(minutes=5))
         assert evaluation.status == SVSStatus.TEST
@@ -238,15 +230,15 @@ class TestEvaluate:
                    for a in evaluation.attributions)
         assert {a.scan_point for a in evaluation.attributions} == {ScanPoint.ROOT_DETAILS}
 
-    def test_a_marker_attributes_its_own_branch(self, runs):
+    def test_a_marker_attributes_its_own_branch(self):
         """Up (the parent and the root's own detections) and down, not the sibling URL."""
+        run = _run()
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         parent.add_detection_point("parent hit")
         child.add_detection_point("child hit")
         url.add_detection_point("bad url")
-        save_sightings(root, [Sighting(MARKER, child.uuid, ScanPoint.FILE_CONTENTS, "yara")])
-        runs["markers"][MARKER] = _run()
+        save_sightings(root, [Sighting(run.marker, child.uuid, ScanPoint.FILE_CONTENTS, "yara")])
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.PARTIAL
@@ -255,62 +247,61 @@ class TestEvaluate:
         by_description = {dp.description: h for h, dp in _hashes(root).items()}
         assert attributed == {by_description["hunt hit"], by_description["parent hit"], by_description["child hit"]}
 
-    def test_a_marker_beneath_a_detection_attributes_it(self, runs):
+    def test_a_marker_beneath_a_detection_attributes_it(self):
+        run = _run()
         root, parent, child, url = _tree()
         parent.add_detection_point("parent hit")
         analysis = ChildAnalysis()
         child.add_analysis(analysis)
-        analysis.add_observable_by_spec(F_TEST, f"deeper {MARKER}")
-        runs["markers"][MARKER] = _run()
+        analysis.add_observable_by_spec(F_TEST, f"deeper {run.marker}")
 
         assert evaluate(root, T0).status == SVSStatus.TEST
 
     @pytest.mark.parametrize("run,result", [
         (None, MarkerResult.UNKNOWN),
-        (_run(host="srv-01"), MarkerResult.OTHER_HOST),
-        (_run(started=None), MarkerResult.OUTSIDE_WINDOW),
-        (_run(started=T0 + timedelta(minutes=1)), MarkerResult.OUTSIDE_WINDOW),
-        (_run(started=T0 - timedelta(hours=26)), MarkerResult.OUTSIDE_WINDOW),
+        ({"host": "srv-01"}, MarkerResult.OTHER_HOST),
+        ({"started": None}, MarkerResult.OUTSIDE_WINDOW),
+        ({"started": T0 + timedelta(minutes=1)}, MarkerResult.OUTSIDE_WINDOW),
+        ({"started": T0 - timedelta(hours=26)}, MarkerResult.OUTSIDE_WINDOW),
     ])
-    def test_a_marker_that_does_not_agree_is_a_mismatch(self, runs, run, result):
-        root, parent, child, url = _tree()
-        root.details = {"cmd": MARKER}
-        root.add_detection_point("hunt hit")
-        if run is not None:
-            runs["markers"][MARKER] = run
+    def test_a_marker_that_does_not_agree_is_a_mismatch(self, run, result):
+        marker = _run(**run).marker if run is not None else MARKER
         # a run on the same host whose window covers the alert: context would claim it
-        runs["window"] = [_run(marker=OTHER_MARKER, run_id=2)]
+        _run()
+        root, parent, child, url = _tree()
+        root.details = {"cmd": marker}
+        root.add_detection_point("hunt hit")
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.MISMATCH
-        assert [(j.marker, j.result) for j in evaluation.mismatches] == [(MARKER, result)]
+        assert [(j.marker, j.result) for j in evaluation.mismatches] == [(marker, result)]
         assert evaluation.attributions == []
 
-    def test_one_disagreeing_marker_ends_attribution_for_the_whole_alert(self, runs):
+    def test_one_disagreeing_marker_ends_attribution_for_the_whole_alert(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"a": MARKER, "b": OTHER_MARKER}
+        root.details = {"a": run.marker, "b": OTHER_MARKER}
         root.add_detection_point("hunt hit")
-        runs["markers"][MARKER] = _run()
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.MISMATCH
         assert evaluation.attributions == []
 
-    def test_late(self, runs):
+    def test_late(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"cmd": MARKER}
+        root.details = {"cmd": run.marker}
         root.add_detection_point("hunt hit")
-        runs["markers"][MARKER] = _run()
 
         (a,) = evaluate(root, T0 + timedelta(hours=2)).attributions
         assert a.late
 
-    def test_context_with_exactly_one_candidate(self, runs):
+    def test_context_with_exactly_one_candidate(self):
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         url.add_detection_point("bad url")
         run = _run()
-        runs["window"] = [run, _run(marker=OTHER_MARKER, run_id=2, host="srv-01")]
+        _run(host="srv-01")
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.TEST_CONTEXT
@@ -320,68 +311,69 @@ class TestEvaluate:
         assert len(evaluation.attributions) == 2
 
     @pytest.mark.parametrize("signature", [SVS_REGISTRATION_REFUSED, SVS_MARKER_MISMATCH])
-    def test_the_svs_built_ins_are_never_attributed(self, runs, signature):
+    def test_the_svs_built_ins_are_never_attributed(self, signature):
         root, parent, child, url = _tree()
         root.add_detection_point("svs built-in", signature_uuid=signature.uuid)
-        runs["window"] = [_run()]
+        _run()
 
         evaluation = evaluate(root, T0)
         assert evaluation.detections == []
         assert evaluation.status is None
         assert evaluation.attributions == []
 
-    def test_context_with_two_candidates_attributes_nothing(self, runs):
+    def test_context_with_two_candidates_attributes_nothing(self):
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
-        runs["window"] = [_run(), _run(marker=OTHER_MARKER, run_id=2)]
+        first, second = _run(), _run()
 
         evaluation = evaluate(root, T0)
         assert evaluation.status is None
         assert evaluation.attributions == []
-        assert [r.id for r in evaluation.candidate_runs] == [1, 2]
+        assert [r.id for r in evaluation.candidate_runs] == [first.id, second.id]
 
-    def test_no_detections_no_attribution(self, runs):
+    def test_no_detections_no_attribution(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"cmd": MARKER}
-        runs["markers"][MARKER] = _run()
+        root.details = {"cmd": run.marker}
 
         evaluation = evaluate(root, T0)
         assert evaluation.status is None
         assert evaluation.attributions == []
 
-    def test_what_a_person_removed_stays_removed(self, runs):
+    def test_what_a_person_removed_stays_removed(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"cmd": MARKER}
+        root.details = {"cmd": run.marker}
         root.add_detection_point("hunt hit")
         url.add_detection_point("bad url")
-        run = runs["markers"][MARKER] = _run()
-        removed = _hashes(root)
-        removed = next(h for h, dp in removed.items() if dp.description == "bad url")
-        runs["existing"] = ([ExistingAttribution(run.id, removed, AttributionConfidence.MARKER, True)],
-                            {(run.id, removed)}, set())
+        by_description = {dp.description: h for h, dp in _hashes(root).items()}
+        # the person attributed the hunt hit by hand and removed the bad url
+        _person_row(run, root.uuid, by_description["hunt hit"], manual=True)
+        _person_row(run, root.uuid, by_description["bad url"], removed=True)
 
         evaluation = evaluate(root, T0)
         assert evaluation.status == SVSStatus.PARTIAL
-        assert removed not in {a.content_hash for a in evaluation.attributions}
+        assert by_description["bad url"] not in {a.content_hash for a in evaluation.attributions}
 
-    def test_a_run_a_person_disassociated_the_alert_from_attributes_nothing(self, runs):
+    def test_a_run_a_person_disassociated_the_alert_from_attributes_nothing(self):
+        run = _run()
         root, parent, child, url = _tree()
-        root.details = {"cmd": MARKER}
+        root.details = {"cmd": run.marker}
         root.add_detection_point("hunt hit")
-        run = runs["markers"][MARKER] = _run()
+        (content_hash,) = _hashes(root)
+        _person_row(run, root.uuid, content_hash, removed=True)
         # a detection added since the disassociation is not attributed either
         url.add_detection_point("bad url")
-        runs["existing"] = ([], set(), {run.id})
 
         evaluation = evaluate(root, T0)
         assert evaluation.attributions == [] and evaluation.status is None
 
-    def test_a_persons_association_counts(self, runs):
+    def test_a_persons_association_counts(self):
+        run = _run()
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         (content_hash,) = _hashes(root)
-        runs["existing"] = ([ExistingAttribution(7, content_hash, AttributionConfidence.MARKER, False)],
-                            {(7, content_hash)}, set())
+        _person_row(run, root.uuid, content_hash, manual=True)
 
         assert evaluate(root, T0).status == SVSStatus.TEST
 
@@ -452,6 +444,25 @@ class TestDatabase:
         assert snapshot.uuid == run.uuid
         assert snapshot.targets == (TargetSnapshot("win10-01", "win10-01.lab.example", frozenset({"10.0.0.5"})),)
         assert run.marker in attribution._caches.markers
+
+    def test_the_executor_hook_saves_what_analysis_details_carry(self):
+        started_run(GUID)
+        root, parent, child, url = _tree()
+
+        class Delta:
+            analysis = {"details": {"stdout": f"ran {MARKER}"}}
+
+        assert record_delta_sightings(root, parent, Delta(), "module_x") == 1
+        assert saved_sightings(root) == [Sighting(MARKER, parent.uuid, ScanPoint.ANALYSIS, "module_x")]
+
+    def test_the_executor_hook_does_nothing_while_the_gate_is_closed(self):
+        root, parent, child, url = _tree()
+
+        class Delta:
+            analysis = {"details": {"stdout": f"ran {MARKER}"}}
+
+        assert record_delta_sightings(root, parent, Delta(), "module_x") == 0
+        assert not (root.extensions or {}).get(SIGHTINGS_EXTENSION)
 
     def test_runs_in_window(self):
         run = started_run(GUID)

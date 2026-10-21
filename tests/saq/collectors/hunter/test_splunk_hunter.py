@@ -173,64 +173,6 @@ def test_splunk_query(manager_kwargs, datadir):
         else:
             raise RuntimeError(f"invalid description: {submission.description}")
 
-@pytest.mark.skip(reason="missing file")
-@pytest.mark.integration
-def test_splunk_query_observable_id_mapping(manager_kwargs, datadir):
-    class ObservableStub:
-        def __init__(self, type, value):
-            self.type = type
-            self.value = value
-
-    mock_db_observables = {
-        '1': ObservableStub('test_type', 'test_value')
-    }
-
-    manager = HuntManager(**manager_kwargs)
-    manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'Test Splunk Observable ID Mapping')
-    assert len(manager.hunts) == 1
-    hunt = manager.get_hunt_by_name('Test Splunk Observable ID Mapping')
-    assert hunt
-
-    with open(str(datadir / 'hunts/splunk/test_output_2.json'), 'r') as fp:
-        query_results = json.load(fp)
-
-    result = hunt.execute(unit_test_query_results=query_results, mock_db_observables=mock_db_observables)
-    assert isinstance(result, list)
-    assert len(result) == 4
-    for submission in result:
-        assert submission.root.has_observable_by_spec("test_type", "test_value")
-
-@pytest.mark.skip(reason="missing file")
-@pytest.mark.integration
-def test_splunk_query_multiple_observable_id_mapping(manager_kwargs, datadir):
-    class ObservableStub:
-        def __init__(self, type, value):
-            self.type = type
-            self.value = value
-
-    mock_db_observables = {
-        '1234': ObservableStub('test_type1', 'test_value1'),
-        '5678': ObservableStub('test_type2', 'test_value2'),
-    }
-
-    manager = HuntManager(**manager_kwargs)
-    manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'Test Splunk Observable ID Mapping')
-    assert len(manager.hunts) == 1
-    hunt = manager.get_hunt_by_name('Test Splunk Observable ID Mapping')
-    assert hunt
-
-    with open(str(datadir / 'hunts/splunk/test_list_output.json'), 'r') as fp:
-        query_results = json.load(fp)
-
-    result = hunt.execute(unit_test_query_results=query_results, mock_db_observables=mock_db_observables)
-    assert isinstance(result, list)
-    assert len(result) == 1
-    for submission in result:
-        assert submission.observables == [
-            {'type': 'test_type1', 'value': 'test_value1'},
-            {'type': 'test_type2', 'value': 'test_value2'}
-        ]
-
 @pytest.mark.integration
 def test_splunk_hunt_types(manager_kwargs):
     manager1 = HuntManager(**manager_kwargs)

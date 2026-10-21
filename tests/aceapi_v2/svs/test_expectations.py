@@ -15,7 +15,7 @@ from aceapi_v2.svs.expectations import service as expectations_service
 from aceapi_v2.svs.expectations.schemas import ExpectationRequest
 from saq.database.model import SVSRunResultState
 from saq.database.pool import get_db
-from saq.svs import results, signatures, windows
+from saq.svs import results
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
@@ -29,9 +29,7 @@ MULTI_GUID = "eeeeeeee-5555-4555-8555-555555555555"
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+def setup(no_hunts, yara_dir):
     add_catalog_test(GUID)
     add_catalog_test(OTHER_GUID)
     add_test_host("win10-01")

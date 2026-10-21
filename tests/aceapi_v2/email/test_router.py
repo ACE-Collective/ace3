@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from saq.configuration.config import get_config
 from saq.email_archive import archive_email
 from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings
@@ -24,7 +25,7 @@ TEST_EMAIL = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject:
 
 @pytest.fixture(autouse=True)
 def local_email_archive(monkeypatch):
-    monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: EmailArchiveTargetType.LOCAL)
+    monkeypatch.setattr(get_config().email_archive, "target", EmailArchiveTargetType.LOCAL.value)
 
 
 @pytest.fixture

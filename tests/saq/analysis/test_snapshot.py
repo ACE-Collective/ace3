@@ -1,14 +1,16 @@
 """Tests for ModuleExecutionSnapshot capture and diff computation."""
 
 from datetime import datetime, UTC
-from unittest.mock import MagicMock
 import pytest
 
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
 from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
 from saq.constants import F_FILE, F_IP, F_FQDN, F_EMAIL_ADDRESS, R_EXTRACTED_FROM, R_IS_HASH_OF
+from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
 from saq.modules.rdap import RdapAnalysis
+from saq.modules.test import TestAnalysis as _TestAnalysis
 
 
 def _make_root(tmp_path):
@@ -17,18 +19,24 @@ def _make_root(tmp_path):
     return root
 
 
-def _make_mock_module(name="saq.modules.test:TestAnalysis", instance=None, version=1, wide_diff=False):
-    module = MagicMock()
-    module.config = MagicMock()
-    module.config.name = name
-    module.config.wide_diff = wide_diff
-    module.instance = instance
-    module.version = version
-    # MODULE_PATH expects a specific interface — mock the generated_analysis_type
-    module.generated_analysis_type = MagicMock()
-    module.generated_analysis_type.__module__ = "saq.modules.test"
-    module.generated_analysis_type.__qualname__ = "TestAnalysis"
-    return module
+class _SnapshotTestModule(AnalysisModule):
+    def __init__(self, analysis_type, **config):
+        super().__init__(config=AnalysisModuleConfig(
+            name="snapshot_test",
+            python_module=__name__,
+            python_class="_SnapshotTestModule",
+            enabled=True,
+            **config,
+        ))
+        self.analysis_type = analysis_type
+
+    @property
+    def generated_analysis_type(self):
+        return self.analysis_type
+
+
+def _make_module(analysis_type=_TestAnalysis, instance=None, version=1, wide_diff=False):
+    return _SnapshotTestModule(analysis_type, instance=instance, version=version, wide_diff=wide_diff)
 
 
 class TestObservableStateCapture:
@@ -69,7 +77,7 @@ class TestNarrowSnapshot:
     def test_capture_and_diff_add_tag(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
 
@@ -87,7 +95,7 @@ class TestNarrowSnapshot:
     def test_diff_add_detection(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
 
@@ -103,7 +111,7 @@ class TestNarrowSnapshot:
     def test_diff_add_directive(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs.add_directive("sandbox")
@@ -116,7 +124,7 @@ class TestNarrowSnapshot:
     def test_diff_add_observable(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
 
@@ -136,7 +144,7 @@ class TestNarrowSnapshot:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         event_time = _dt(2026, 4, 13, 12, 0, 0, tzinfo=_UTC)
@@ -152,7 +160,7 @@ class TestNarrowSnapshot:
     def test_diff_add_observable_with_initial_state(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
 
@@ -175,7 +183,7 @@ class TestNarrowSnapshot:
         its own children."""
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
 
@@ -200,7 +208,7 @@ class TestNarrowSnapshot:
         source_path = tmp_path / "source.png"
         source_path.write_bytes(b"fake image bytes")
         analyzed = root.add_file_observable(str(source_path))
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, analyzed, module)
 
@@ -231,7 +239,7 @@ class TestNarrowSnapshot:
     def test_diff_new_non_file_observable_has_no_file_path(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         root.add_observable_by_spec(F_FQDN, "evil.com")
@@ -248,7 +256,7 @@ class TestNarrowSnapshot:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         obs.add_tag("benign")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs.remove_tag("benign")
@@ -262,7 +270,7 @@ class TestNarrowSnapshot:
     def test_diff_no_changes(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         after = ModuleExecutionSnapshot.narrow(root, obs, module)
@@ -275,7 +283,7 @@ class TestNarrowSnapshot:
     def test_diff_root_tag(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         root.add_tag("alert_tag")
@@ -288,7 +296,7 @@ class TestNarrowSnapshot:
     def test_diff_scalar_transitions(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs._grouping_target = True
@@ -303,7 +311,7 @@ class TestNarrowSnapshot:
     def test_diff_excluded_and_limited_analysis(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs._excluded_analysis.append("saq.modules.test:TestAnalysis")
@@ -321,7 +329,7 @@ class TestWideSnapshot:
         root = _make_root(tmp_path)
         target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other_obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
 
         before = ModuleExecutionSnapshot.wide(root, target_obs, module)
 
@@ -343,7 +351,7 @@ class TestWideSnapshot:
         root = _make_root(tmp_path)
         target_obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other_obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
 
         before = ModuleExecutionSnapshot.wide(root, target_obs, module)
         # Only mutate the target, not the other
@@ -370,7 +378,7 @@ class TestAnalysisChildrenTracking:
         analysis._observables.append(child_obs)
         target_obs.add_analysis_to_tree(analysis, target_obs)
 
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
         before = ModuleExecutionSnapshot.wide(root, target_obs, module)
 
         # Simulate ignore action: remove child_obs from the analysis
@@ -395,7 +403,7 @@ class TestAnalysisChildrenTracking:
         analysis = Analysis()
         target_obs.add_analysis_to_tree(analysis, target_obs)
 
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
         before = ModuleExecutionSnapshot.wide(root, target_obs, module)
 
         # Add new_child to the analysis
@@ -418,7 +426,7 @@ class TestAnalysisChildrenTracking:
         analysis._observables.append(child_obs)
         target_obs.add_analysis_to_tree(analysis, target_obs)
 
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
         before = ModuleExecutionSnapshot.wide(root, target_obs, module)
         # No changes
         after = ModuleExecutionSnapshot.wide(root, target_obs, module)
@@ -437,7 +445,7 @@ class TestAnalysisChildrenTracking:
         analysis._observables.append(child_obs)
         target_obs.add_analysis_to_tree(analysis, target_obs)
 
-        module = _make_mock_module()
+        module = _make_module()
         before = ModuleExecutionSnapshot.narrow(root, target_obs, module)
         analysis._observables.remove(child_obs)
         after = ModuleExecutionSnapshot.narrow(root, target_obs, module)
@@ -452,22 +460,34 @@ class TestDeltaModuleMetadata:
     def test_module_identity_captured(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module(
-            name="saq.modules.intel:ThreatIntel",
-            instance="instance1",
-            version=3,
-        )
+        module = _make_module(instance="instance1", version=3)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs.add_tag("malicious")
         after = ModuleExecutionSnapshot.narrow(root, obs, module)
         delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
 
+        assert delta.module_path == "saq.modules.test:TestAnalysis:instance1"
         assert delta.module_instance == "instance1"
         assert delta.module_version == 3
         assert delta.observable_uuid == obs.uuid
         assert delta.observable_type == F_IP
         assert delta.observable_value == "10.0.0.1"
+
+    @pytest.mark.unit
+    def test_module_without_analysis_type_is_identified_by_config_name(self, tmp_path):
+        root = _make_root(tmp_path)
+        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
+        module = _make_module(analysis_type=None)
+
+        before = ModuleExecutionSnapshot.narrow(root, obs, module)
+        obs.add_tag("malicious")
+        after = ModuleExecutionSnapshot.narrow(root, obs, module)
+        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
+
+        assert delta.module_path == "snapshot_test"
+        assert delta.analysis is None
+        assert delta.target_observable_diff.added_tags == ["malicious"]
         assert delta.created_at is not None
 
 
@@ -509,7 +529,7 @@ class TestObservableDiffRemovals:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         setup(obs)
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         mutate(obs)
@@ -525,7 +545,7 @@ class TestObservableDiffRemovals:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs.add_relationship(R_IS_HASH_OF, other)
@@ -548,7 +568,7 @@ class TestObservableDiffRemovals:
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         event_time = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
         other = root.add_observable_by_spec(F_FQDN, "timed.example.com", o_time=event_time)
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs.add_relationship(R_IS_HASH_OF, other)
@@ -565,7 +585,7 @@ class TestObservableDiffRemovals:
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         other = root.add_observable_by_spec(F_FQDN, "example.com")
         obs.add_relationship(R_IS_HASH_OF, other)
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs._relationships.pop(0)
@@ -582,7 +602,7 @@ class TestObservableDiffRemovals:
     def test_diff_redirection_transition(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         obs._redirection = "00000000-0000-0000-0000-000000000001"
@@ -603,7 +623,7 @@ class TestRootDiffPaths:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_tag("pending_review")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         root.remove_tag("pending_review")
@@ -632,11 +652,7 @@ class TestAnalysisDetailsCapture:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        # config.name must match Analysis.module_path (the slot key in
-        # observable._analysis) — the snapshot's _get_module_path falls
-        # back to config.name when the mock fails the MODULE_PATH
-        # isinstance assertion.
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         # Simulate a module run: install a RdapAnalysis with details.
@@ -662,7 +678,7 @@ class TestAnalysisDetailsCapture:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         analysis = RdapAnalysis()
@@ -688,7 +704,7 @@ class TestAnalysisDetailsCapture:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         analysis = RdapAnalysis()
@@ -708,7 +724,7 @@ class TestAnalysisDetailsCapture:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         analysis = RdapAnalysis()
@@ -743,7 +759,7 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         analysis = RdapAnalysis()
@@ -765,7 +781,7 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         # First call: delayed analysis already in slot, tagged pre-delay.
         analysis = RdapAnalysis()
@@ -801,7 +817,7 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         analysis = RdapAnalysis()
         analysis.delayed = True
@@ -824,7 +840,7 @@ class TestDelayedAnalysisTransitions:
 
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_mock_module(name="saq.modules.rdap:RdapAnalysis")
+        module = _make_module(RdapAnalysis)
 
         analysis = RdapAnalysis()
         analysis.delayed = False  # synchronous module — already complete
@@ -840,7 +856,7 @@ class TestDelayedAnalysisTransitions:
     def test_root_diff_add_detection(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         root.add_detection_point("alert me", details={"rule": "x"})
@@ -855,7 +871,7 @@ class TestDelayedAnalysisTransitions:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("to be removed", details={"rule": "x"})
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         root.detections.pop(0)
@@ -876,7 +892,7 @@ class TestSnapshotCaptureEdgeCases:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("pre-existing", details={"k": "v"})
-        module = _make_mock_module()
+        module = _make_module()
 
         before = ModuleExecutionSnapshot.narrow(root, obs, module)
         # snapshot captured one root detection
@@ -896,7 +912,7 @@ class TestSnapshotCaptureEdgeCases:
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
         root.add_detection_point("pre-existing", details={"k": "v"})
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
 
         before = ModuleExecutionSnapshot.wide(root, obs, module)
         assert len(before.root_detection_ids) == 1
@@ -916,7 +932,7 @@ class TestSnapshotCaptureEdgeCases:
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_IP, "10.0.0.1")
         existing = root.add_observable_by_spec(F_FQDN, "existing.example.com")
-        module = _make_mock_module(wide_diff=True)
+        module = _make_module(wide_diff=True)
 
         before = ModuleExecutionSnapshot.wide(root, target, module)
         new_obs = root.add_observable_by_spec(F_EMAIL_ADDRESS, "victim@example.com")
@@ -938,10 +954,7 @@ class TestAnalysisSerialization:
     def test_analysis_dict_captures_summary_and_external_details(self, tmp_path):
         root = _make_root(tmp_path)
         target = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        # Bare Analysis() — its module_path resolves to
-        # "saq.analysis.analysis:Analysis". Align the mock module's fallback
-        # module-path so snapshot.diff picks up the new analysis key.
-        module = _make_mock_module(name="saq.analysis.analysis:Analysis")
+        module = _make_module(Analysis)
 
         before = ModuleExecutionSnapshot.narrow(root, target, module)
 

@@ -38,10 +38,8 @@ YARA_RULE = "22222222-bbbb-4bbb-8bbb-222222222222"
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
+def setup(no_hunts):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield
