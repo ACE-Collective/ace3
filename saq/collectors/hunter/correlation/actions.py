@@ -70,7 +70,7 @@ def _log_action(
         try:
             message = _jinja_env.from_string(action.log_message).render(**context)
         except Exception:
-            logging.error("failed to render log message template: %s", action.log_message, exc_info=True)
+            logging.warning("failed to render log message template: %s", action.log_message, exc_info=True)
             return
     else:
         message = f"executed {action.type} action"

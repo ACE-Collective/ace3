@@ -8,14 +8,14 @@ import time
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ExecutionMode
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.git import get_commit_hash, git_dir_contains
 from saq.logging import get_transaction_id, transaction_id
 from saq.network_semaphore import NetworkSemaphoreClient
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.util import local_time, abs_path
 from saq.util.hashing import sha256
-from saq.collectors.hunter.base_hunter import Hunt, InvalidHuntTypeError
+from saq.collectors.hunter.base_hunter import Hunt
 from saq.collectors.submission_file_manager import SubmissionFileManager
 
 
@@ -109,9 +109,6 @@ class HuntManager:
 
         # the yaml files that failed to load
         self.failed_yaml_files = {} # key = yaml_path, value = (os.path.getmtime(), os.path.getsize(), sha256 of file content)
-
-        # the yaml files that we skipped
-        self.skipped_yaml_files = set() # key = yaml_path
 
         # the type of concurrency contraint this type of hunt uses (can be None)
         # use the set_concurrency_limit() function to change it
@@ -241,8 +238,7 @@ class HuntManager:
             try:
                 hunt.cancel()
             except Exception:
-                logging.error("unable to cancel hunt {hunt}: {e}")
-                report_exception()
+                logging.exception("unable to cancel hunt {hunt}: {e}")
 
     def wait(self, *args, **kwargs):
         self.manager_control_event.wait(*args, **kwargs)
@@ -308,8 +304,7 @@ class HuntManager:
             existing_yaml_paths = set([hunt.file_path for hunt in self._hunts])
             for yaml_path in self._list_hunt_yaml():
                 if ( yaml_path not in existing_yaml_paths 
-                        and yaml_path not in self.failed_yaml_files
-                        and yaml_path not in self.skipped_yaml_files ):
+                        and yaml_path not in self.failed_yaml_files ):
                     logging.info(f"detected new hunt yaml {yaml_path}")
                     trigger_reload = True
 
@@ -459,8 +454,7 @@ class HuntManager:
                         "enabled" if track_suppression else "disabled",
                     )
         except Exception as e:
-            logging.error(f"uncaught exception: {e}")
-            report_exception()
+            logging.exception(f"uncaught exception: {e}")
         finally:
             self.release_concurrency_lock(hunt.semaphore)
             # at this point this hunt has finished and is eligible to execute again
@@ -489,11 +483,10 @@ class HuntManager:
                     except Exception as e:
                         # a submission we cannot stage is one we cannot deliver. log it loudly
                         # rather than dropping it silently the way the in-memory queue used to
-                        logging.error(
+                        logging.exception(
                             "unable to stage submission %s for hunt %s (uuid=%s, type=%s): %s",
                             submission.root.uuid, hunt.name, hunt.uuid, hunt.type, e,
                         )
-                        report_exception()
 
                 if submissions:
                     logging.info(
@@ -613,14 +606,8 @@ class HuntManager:
                 else:
                     logging.debug(f"not loading {hunt} (hunt_filter returned False)")
 
-            except InvalidHuntTypeError as e:
-                report_exception()
-                self.skipped_yaml_files.add(hunt_config_file_path)
-                logging.warning(f"skipping {hunt_config_file_path} for {self}: {e}")
-                continue
             except Exception as e:
-                logging.error(f"unable to load hunt from {hunt_config_file_path}: {e}")
-                report_exception()
+                logging.exception(f"unable to load hunt from {hunt_config_file_path}: {e}")
                 try:
                     self.failed_yaml_files[hunt_config_file_path] = (
                         os.path.getmtime(hunt_config_file_path),
@@ -655,7 +642,6 @@ class HuntManager:
         with self.hunt_lock:
             self._hunts = []
             self.failed_yaml_files = {}
-            self.skipped_yaml_files = set()
 
         self.wait_control_event.set()
 

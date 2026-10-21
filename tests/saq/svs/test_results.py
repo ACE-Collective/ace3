@@ -370,7 +370,7 @@ class TestStaleness:
 
     def test_a_failed_computation_leaves_the_end_and_the_run_stale(self, monkeypatch):
         run = _run(ended=False)
-        monkeypatch.setattr("saq.svs.runs.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
 
         def broken(run_id, now=None):
             raise RuntimeError("database down")

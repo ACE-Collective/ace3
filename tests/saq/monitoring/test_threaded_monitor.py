@@ -75,10 +75,10 @@ class TestACEThreadedMonitor:
             monitor.stop()
             monitor.wait()
 
-    # reporting now goes through log_loop_exception, so the error report is raised from
-    # inside saq.error.reporting rather than from this module. patched only to keep the
-    # test from writing a real error-report file; the assertion below is about the log.
-    @patch("saq.error.reporting.report_exception")
+    # log_loop_exception logs the traceback, and the root logger's ErrorReportHandler writes
+    # the report from that record. patched only to keep the test from writing a real
+    # error-report file; the assertion below is about the log.
+    @patch("saq.error.reporting.write_error_report")
     def test_main_loop_logs_error_on_exception(self, mock_report, caplog):
         error = ValueError("something went wrong")
         monitor = ConcreteTestMonitor(name="error_monitor", frequency=0.05, execute_side_effect=error)

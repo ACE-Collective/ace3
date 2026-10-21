@@ -58,7 +58,7 @@ class TestACEMonitoringService:
         service = ACEMonitoringService()
         assert service.threaded_monitors == []
 
-    @patch("saq.monitoring.service.report_exception")
+    @patch("saq.error.reporting.write_error_report")
     @patch("saq.monitoring.service.get_config")
     def test_load_catches_import_error(self, mock_get_config, mock_report):
         config = _make_service_config(monitors={
@@ -73,7 +73,7 @@ class TestACEMonitoringService:
         assert service.threaded_monitors == []
         mock_report.assert_called_once()
 
-    @patch("saq.monitoring.service.report_exception")
+    @patch("saq.error.reporting.write_error_report")
     @patch("saq.monitoring.service.get_config")
     def test_load_catches_attribute_error(self, mock_get_config, mock_report):
         config = _make_service_config(monitors={

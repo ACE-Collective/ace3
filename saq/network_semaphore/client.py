@@ -5,7 +5,6 @@ from threading import Event, Thread
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_NETWORK_SEMAPHORE
 from saq.environment import get_global_runtime_settings
-from saq.error.reporting import report_exception
 from saq.network_semaphore.config import NetworkSemaphoreConfig
 from saq.network_semaphore.fallback import add_undefined_fallback_semaphore, get_defined_fallback_semaphores, get_undefined_fallback_semaphores, get_undefined_fallback_semaphores_lock, maintain_undefined_semaphores
 
@@ -144,8 +143,7 @@ class NetworkSemaphoreClient:
                 return False
                     
             except Exception as e:
-                logging.error(f"unable to use fallback semaphore {semaphore_name}: {e}")
-                report_exception()
+                logging.exception(f"unable to use fallback semaphore {semaphore_name}: {e}")
 
             return False
 
@@ -193,8 +191,7 @@ class NetworkSemaphoreClient:
             try:
                 self.fallback_semaphore.release()
             except Exception as e:
-                logging.error(f"unable to release fallback semaphore {self.semaphore_name}: {e}")
-                report_exception(e)
+                logging.exception(f"unable to release fallback semaphore {self.semaphore_name}: {e}")
 
             # make sure we set this so that the monitor thread exits
             self.semaphore_acquired = False

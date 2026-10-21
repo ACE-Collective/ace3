@@ -6,7 +6,6 @@ import pymysql
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 
 
 def acquire_lock(uuid: str, lock_uuid: str, lock_owner: Optional[str] = None, allow_expired_takeover: bool = False) -> bool:
@@ -92,13 +91,11 @@ WHERE
                 return False
 
         except Exception as e:
-            logging.error("attempt to acquire lock failed: {}".format(e))
-            report_exception()
+            logging.exception("attempt to acquire lock failed: {}".format(e))
             return False
 
     except Exception as e:
-        logging.error("attempt to acquire lock failed: {}".format(e))
-        report_exception()
+        logging.exception("attempt to acquire lock failed: {}".format(e))
         return False
 
 def release_lock(uuid: str, lock_uuid: str, ignore_lock_failure: bool = False) -> bool:
@@ -131,8 +128,7 @@ def release_lock(uuid: str, lock_uuid: str, ignore_lock_failure: bool = False) -
 
             return cursor.rowcount == 1
     except Exception as e:
-        logging.error("unable to release lock {}: {}".format(uuid, e))
-        report_exception()
+        logging.exception("unable to release lock {}: {}".format(uuid, e))
 
     return False
 
@@ -158,8 +154,7 @@ def force_release_lock(uuid: str, lock_uuid: Optional[str] = None) -> bool:
 
             return cursor.rowcount == 1
     except Exception as e:
-        logging.error("unable to force release lock {}: {}".format(uuid, e))
-        report_exception()
+        logging.exception("unable to force release lock {}: {}".format(uuid, e))
 
     return False
 

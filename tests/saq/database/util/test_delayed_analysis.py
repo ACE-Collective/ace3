@@ -23,7 +23,7 @@ def mock_db():
         patch("saq.database.util.delayed_analysis.get_db_connection") as mock_get_db_connection,
         patch("saq.database.util.delayed_analysis.execute_with_retry") as mock_execute_with_retry,
         patch("saq.database.util.delayed_analysis.get_global_runtime_settings") as mock_settings,
-        patch("saq.database.util.delayed_analysis.report_exception"),
+        patch("saq.error.reporting.write_error_report"),
     ):
         mock_settings.return_value.saq_node_id = 1
         db = MagicMock()

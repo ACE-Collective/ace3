@@ -209,6 +209,17 @@ def _install_suppression_filter():
             handler.addFilter(ThreadSuppressionFilter())
 
 
+def _install_error_report_handler():
+    """add an ErrorReportHandler to the root logger. idempotent"""
+    # saq.error.reporting imports this module, and the config and environment modules
+    # with it, so importing it at module level is circular
+    from saq.error.reporting import ErrorReportHandler
+
+    root_logger = logging.getLogger()
+    if not any(isinstance(h, ErrorReportHandler) for h in root_logger.handlers):
+        root_logger.addHandler(ErrorReportHandler())
+
+
 DEFAULT_TRANSACTION_ID = "00000000-0000-0000-0000-000000000000"
 _transaction_id = contextvars.ContextVar("transactionId", default=DEFAULT_TRANSACTION_ID)
 
@@ -323,6 +334,10 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
 
     # disable the verbose logging in the requests module
     logging.getLogger("requests").setLevel(logging.WARNING)
+
+    # logging.exception() writes an error report. installed before the filters below so a
+    # suppressed record writes none and every report carries the transaction id
+    _install_error_report_handler()
 
     # support supression filtering for production logging
     _install_suppression_filter()

@@ -8,7 +8,6 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file
@@ -75,8 +74,7 @@ def normalize_extracted_permissions(extracted_path: str):
                     logging.error("unable to adjust permissions on file {}: {}".format(full_path, e))
 
     except Exception as e:
-        logging.error("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
-        report_exception()
+        logging.exception("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
 
 
 KEY_FILE_COUNT = 'file_count'

@@ -16,7 +16,6 @@ from typing import Optional
 from saq.alert_routing.detection_queue import DetectionQueueRouter
 from saq.alert_routing.router import AlertRouter, RouteDecision, RouteStage
 from saq.configuration.config import get_config
-from saq.error.reporting import report_exception
 
 _BUILTIN_ROUTERS: tuple[AlertRouter, ...] = (DetectionQueueRouter(),)
 
@@ -120,8 +119,7 @@ def route_alert(root, stage: RouteStage) -> Optional[RouteDecision]:
             if not isinstance(decision, RouteDecision):
                 raise TypeError(f"router {router.name!r} returned {decision!r}, not a RouteDecision")
         except Exception as e:
-            logging.error(f"alert router {router.name} failed on {root}: {e}")
-            report_exception()
+            logging.exception(f"alert router {router.name} failed on {root}: {e}")
             continue
 
         decision = replace(decision, router=router.name)

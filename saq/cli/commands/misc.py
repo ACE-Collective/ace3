@@ -5,7 +5,6 @@ import sys
 
 from saq.cli.cli_main import get_cli_subparsers
 from saq.configuration import get_config
-from saq.error.reporting import report_exception
 
 
 #
@@ -37,8 +36,7 @@ def close_event(args):
             event.status = closed_status
             print("event closed")
         except Exception as e:
-            print(f"unable to close event: {e}")
-            report_exception()
+            logging.exception(f"unable to close event {event_id}: {e}")
 
     if args.dry_run:
         get_db().rollback()

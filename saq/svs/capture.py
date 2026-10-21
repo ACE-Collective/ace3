@@ -42,7 +42,6 @@ from saq.configuration.config import get_config
 from saq.database.model import SVSYaraCapture
 from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
-from saq.error.reporting import report_exception
 from saq.json_encoding import _JSONEncoder
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, is_yara_detection
 from saq.observables.file import FileObservable
@@ -298,9 +297,8 @@ def _capture(pool: CASPool, alert_uuid: str, candidate: CaptureCandidate) -> Cap
     except Exception as e:
         release_capture_holds(pool, capture_id, held)
         _set_row(capture_id, state=CaptureState.MISSING, missing_reason=MissingReason.STORAGE)
-        logging.error("unable to store svs capture %s of alert %s: %s", candidate, alert_uuid, e,
+        logging.exception("unable to store svs capture %s of alert %s: %s", candidate, alert_uuid, e,
                       extra=_log_extra(alert_uuid, candidate, missing_reason=MissingReason.STORAGE.value))
-        report_exception()
         return CaptureResult(CaptureStatus.MISSING, capture_id)
 
     values = dict(

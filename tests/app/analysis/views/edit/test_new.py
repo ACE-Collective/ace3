@@ -1,4 +1,5 @@
-from unittest.mock import patch, MagicMock, mock_open
+import logging
+from unittest.mock import patch, MagicMock, Mock, mock_open
 from flask import url_for
 import pytest
 import io
@@ -626,3 +627,40 @@ def test_new_alert_file_upload_with_multipart_form(mock_db_conn, web_client):
     
     # Should redirect successfully after processing file
     assert response.status_code == 302
+
+@pytest.mark.integration
+@patch('app.analysis.views.edit.new.get_db_connection')
+def test_new_alert_file_save_failure_is_reported(mock_db_conn, web_client, monkeypatch, caplog):
+    """An uploaded file that cannot be saved stops the submission and is reported."""
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
+    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
+
+    def failing_save(self, dst, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("werkzeug.datastructures.FileStorage.save", failing_save)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit, caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for('analysis.new_alert'), data={
+            'new_alert_insert_date': '01-01-2024 12:00:00',
+            'timezone': 'UTC',
+            'new_alert_type': 'manual',
+            'new_alert_description': 'File Upload Alert',
+            'new_alert_queue': 'default',
+            'target_node_data': '1,test-location,1',
+            'observables_types_0': F_FILE,
+            'observables_values_0': (io.BytesIO(b'uploaded content'), 'upload.txt'),
+            'observables_directives_0': 'no_scan',
+            'observable_data_sep_0': 'single',
+            'submit_type': 'single'
+        }, content_type='multipart/form-data')
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    mock_api_submit.assert_not_called()
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to save")]
+    assert len(records) == 1
+    write_error_report.assert_called_once()

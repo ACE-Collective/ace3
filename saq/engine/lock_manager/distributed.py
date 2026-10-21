@@ -7,7 +7,6 @@ from typing import Callable, Optional
 from saq.configuration.config import get_config
 from saq.database.util.locking import acquire_lock, force_release_lock, release_lock
 from saq.engine.lock_manager.interface import LockManagerInterface
-from saq.error import report_exception
 
 class DistributedLockManager(LockManagerInterface):
     """Manages distributed locks with automatic keepalive functionality."""
@@ -144,13 +143,11 @@ class DistributedLockManager(LockManagerInterface):
                         try:
                             self._on_lock_lost()
                         except Exception as callback_error:
-                            logging.error(f"error in on_lock_lost callback for {target_uuid}: {callback_error}")
-                            report_exception()
+                            logging.exception(f"error in on_lock_lost callback for {target_uuid}: {callback_error}")
                     break
 
         except Exception as e:
-            logging.error(f"Unexpected error in keepalive loop for {target_uuid}: {e}")
-            report_exception()
+            logging.exception(f"Unexpected error in keepalive loop for {target_uuid}: {e}")
 
         logging.debug(f"Lock keepalive for {target_uuid} exited")
 

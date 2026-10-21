@@ -20,7 +20,6 @@ from aceapi_ai.health.router import router as health_router
 from aceapi_ai.query.router import build_query_router
 from aceapi_ai.search.router import router as search_router
 from saq.ai_query.registry import build_backend_registry
-from saq.error.reporting import report_exception
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.error("unhandled exception processing %s %s", request.method, request.url.path)
-        report_exception()
+        logger.error("unhandled exception processing %s %s", request.method, request.url.path, exc_info=exc)
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     registry = build_backend_registry()

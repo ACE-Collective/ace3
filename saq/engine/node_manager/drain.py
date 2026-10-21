@@ -19,7 +19,6 @@ from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_base_dir, get_global_runtime_settings
-from saq.error import report_exception
 
 
 def get_compatible_transfer_target(analysis_mode: str) -> tuple[int, str, str] | None:
@@ -122,8 +121,7 @@ WHERE
             root.load()
             analysis_mode = root.analysis_mode
         except Exception as e:
-            logging.error("unable to load root %s for delayed analysis transfer: %s", uuid, e)
-            report_exception()
+            logging.exception("unable to load root %s for delayed analysis transfer: %s", uuid, e)
             skipped += 1
             continue
 
@@ -192,8 +190,7 @@ WHERE
             transferred += 1
 
         except Exception as e:
-            logging.error("unable to transfer delayed analysis %s to node %s: %s", uuid, target_name, e)
-            report_exception()
+            logging.exception("unable to transfer delayed analysis %s to node %s: %s", uuid, target_name, e)
             skipped += 1
 
         finally:

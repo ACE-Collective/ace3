@@ -342,7 +342,7 @@ def test_set_disposition_all_valid_dispositions(web_client):
         assert alert.disposition == disposition
 
 
-@patch('app.analysis.views.edit.disposition.report_exception')
+@patch('saq.error.reporting.write_error_report')
 def test_set_disposition_exception_reporting(mock_report_exception, web_client):
     """Test that exceptions are properly reported."""
     # Mock set_dispositions to raise an exception

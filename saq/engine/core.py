@@ -13,7 +13,6 @@ from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
-from saq.error import report_exception
 from saq.error.reporting import log_loop_exception
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.service import ACEServiceInterface
@@ -264,8 +263,7 @@ class Engine():
                 logging.info("received keyboard interrupt")
                 break
             except Exception as e:
-                logging.error(f"error in single-threaded execution: {e}")
-                report_exception()
+                logging.exception(f"error in single-threaded execution: {e}")
                 break
 
             break

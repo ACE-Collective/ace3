@@ -7,5 +7,6 @@ source =
     saq
     aceapi
     aceapi_v2
+    aceapi_ai
 parallel = True
 concurrency = multiprocessing,thread

@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from saq.configuration.config import get_service_config
 from saq.constants import REDIS_DB_BG_TASKS, SERVICE_SEARCH_INDEXER
-from saq.error.reporting import report_exception
 from saq.redis_client import get_redis_connection
 
 TASK_KEY = "search_index_tasks"
@@ -52,8 +51,7 @@ def submit_task(alert_uuid: str, op: TaskOp) -> bool:
         get_redis_connection(REDIS_DB_BG_TASKS).rpush(TASK_KEY, SearchIndexTask(alert_uuid=alert_uuid, op=op).model_dump_json())
         return True
     except Exception as e:
-        logging.error(f"error submitting search {op} task for {alert_uuid}: {e}")
-        report_exception()
+        logging.exception(f"error submitting search {op} task for {alert_uuid}: {e}")
         return False
 
 

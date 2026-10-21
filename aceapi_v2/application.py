@@ -45,7 +45,6 @@ from aceapi_v2.threats.router import router as threats_router
 from aceapi_v2.user_preferences.router import router as user_preferences_router
 from aceapi_v2.users.router import router as users_router
 from aceapi_v2.yara_qa.router import router as yara_qa_router
-from saq.error.reporting import report_exception
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +82,7 @@ def _new_app(title: str, description: str) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.error("unhandled exception processing %s %s", request.method, request.url.path)
-        report_exception()
+        logger.error("unhandled exception processing %s %s", request.method, request.url.path, exc_info=exc)
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     return app

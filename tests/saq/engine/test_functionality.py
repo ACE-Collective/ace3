@@ -1540,7 +1540,9 @@ def test_analysis_mode_no_priority():
     assert results.index('got work item RootAnalysis({})'.format(test_1_uuid)) == 0
 
 @pytest.mark.integration
-def test_error_reporting():
+def test_module_failure_writes_no_error_report():
+    """A module that raises is logged at WARNING with its traceback and gets a crash report
+    (see the crash report tests below). An error report would only repeat the crash report."""
     # remember what was already in the error reporting directory
     def _enum_error_reporting():
         return set(os.listdir(os.path.join(get_data_dir(), 'error_reports')))
@@ -1560,21 +1562,11 @@ def test_error_reporting():
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # look at what is in the error reporting directory now
-    # exclude what we found before to find the new stuff
-    new_reports = _enum_error_reporting() - existing_reports
+    records = search_log_condition(lambda r: 'analysis module' in r.getMessage() and 'testing failure case' in r.getMessage())
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
 
-    # we should have a single error report
-    assert len(new_reports) == 1
-
-    # one should be a file
-    file_path = None
-    for _file in new_reports:
-        path = os.path.join(os.path.join(get_data_dir(), 'error_reports', _file))
-        if os.path.isfile(path):
-            file_path = path
-
-    assert file_path
+    assert _enum_error_reporting() - existing_reports == set()
 
 #
 # analysis module crash reports

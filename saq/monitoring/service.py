@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 from saq.configuration.config import get_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_MONITORING
-from saq.error.reporting import report_exception
 from saq.monitoring.threaded_monitor import ACEThreadedMonitor
 from saq.service import ACEServiceInterface
 
@@ -47,8 +46,7 @@ class ACEMonitoringService(ACEServiceInterface):
                 )
                 self.threaded_monitors.append(monitor)
             except Exception as e:
-                logging.error("error loading threaded monitor %s: %s", name, e)
-                report_exception(e)
+                logging.exception("error loading threaded monitor %s: %s", name, e)
 
     def start(self):
         for monitor in self.threaded_monitors:

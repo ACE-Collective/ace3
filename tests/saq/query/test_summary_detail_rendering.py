@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from jinja2 import UndefinedError
@@ -106,3 +108,14 @@ def test_fromjson_filter_with_empty_string():
     template = "{% set data = json_str | fromjson %}{% if data.displayName %}yes{% else %}no{% endif %}"
     result = render_jinja_template(template, {"json_str": ""})
     assert result == "no"
+
+
+@pytest.mark.unit
+def test_render_jinja_template_render_error_is_a_warning(caplog):
+    """An exception raised while rendering returns None and is the template author's to fix."""
+    with caplog.at_level(logging.WARNING):
+        assert render_jinja_template("{{ 1 / 0 }}", {}) is None
+
+    records = [r for r in caplog.records if "unexpected error rendering jinja template" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING

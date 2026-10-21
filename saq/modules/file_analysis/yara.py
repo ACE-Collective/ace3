@@ -17,7 +17,6 @@ from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTI
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_data_dir
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
@@ -218,8 +217,7 @@ class YaraScanner_v3_4(AnalysisModule):
             try:
                 os.makedirs(self.scan_failure_dir)
             except Exception as e:
-                logging.error("unable to create directory {0}: {1}".format(self.scan_failure_dir, str(e)))
-                report_exception()
+                logging.exception("unable to create directory {0}: {1}".format(self.scan_failure_dir, str(e)))
                 self.scan_failure_dir = None
 
         # in the case where the yara scanning server is unavailable a local scanner is used
@@ -445,8 +443,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 logging.debug("no yara results for {}".format(local_file_path))
                 return AnalysisExecutionResult.COMPLETED
         except Exception as e:
-            logging.warning("error scanning file {}: ({}) {}".format(local_file_path, type(e), e))
-            report_exception()
+            logging.exception("error scanning file {}: ({}) {}".format(local_file_path, type(e), e))
             
             # we copy the files we cannot scan to a directory where we can debug it later
             if self.save_scan_failures and self.scan_failure_dir is not None:
@@ -458,8 +455,7 @@ class YaraScanner_v3_4(AnalysisModule):
                     shutil.copy(local_file_path, dest_path)
                     logging.debug("copied {} to {}".format(local_file_path, dest_path))
                 except Exception as e:
-                    logging.error("unable to copy {} to {}: {}".format(local_file_path, self.scan_failure_dir, e))
-                    report_exception()
+                    logging.exception("unable to copy {} to {}: {}".format(local_file_path, self.scan_failure_dir, e))
             
             return AnalysisExecutionResult.COMPLETED
 
@@ -571,8 +567,7 @@ class YaraScanner_v3_4(AnalysisModule):
                         fp.seek(start_byte)
                         context_data = fp.read(length)
                     except Exception as e:
-                        logging.error("unable to seek to position {} in {}: {}".format(start_byte, local_file_path, e))
-                        report_exception()
+                        logging.exception("unable to seek to position {} in {}: {}".format(start_byte, local_file_path, e))
 
                     p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE)
                     p.stdin.write(context_data)
@@ -602,8 +597,8 @@ class YaraScanner_v3_4(AnalysisModule):
                             # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
                             yara_result['context'][-1].append(disassemble(_full_path, position, first_instr_offset, len(value), context_data, decoder))
                         except Exception:
-                            report_exception()
-                            yara_result['context'][-1].append(disassemble('Failed to disassemble'))
+                            logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
+                            yara_result['context'][-1].append('Failed to disassemble')
 
             # did this rule have any tags?
             for tag in yara_result['tags']:

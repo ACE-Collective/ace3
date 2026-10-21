@@ -724,8 +724,11 @@ class TestUnhandledException:
         side_effect=RuntimeError("boom"),
     )
     async def test_unhandled_exception_logged_and_returns_500(
-        self, mock_create_zip, _override_db_session, valid_api_key: str, caplog
+        self, mock_create_zip, _override_db_session, valid_api_key: str, caplog, monkeypatch
     ):
+        write_error_report = MagicMock()
+        monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
         # starlette's ServerErrorMiddleware re-raises after building the response so
         # the server can still log it; disable raise_app_exceptions so we can observe
         # the 500 response the catch-all handler produced
@@ -749,7 +752,11 @@ class TestUnhandledException:
         assert records, "expected an aceapi_v2.application log record"
         record = records[-1]
         assert record.levelno == logging.ERROR
-        assert record.exc_info is None
+        assert isinstance(record.exc_info[1], RuntimeError)
+
+        # and the traceback on that record is what wrote the error report
+        write_error_report.assert_called_once()
+        assert write_error_report.call_args.kwargs["record"] is record
 
 
 class TestViewAlertLogs:

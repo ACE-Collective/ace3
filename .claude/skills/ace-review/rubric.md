@@ -17,7 +17,7 @@ Their priorities, in order: **uptime > logging > tests > performance**, then kee
   - New behavior has no tests at all.
   - It is a security hole: missing permission check, injection, XSS, or secrets in logs.
 - **fix-first**: merge after fixing.
-  - A caught exception doesn't go through `log_loop_exception()`, or is silent with no justifying comment.
+  - A caught exception is logged without its traceback (`logging.exception()` or `log_loop_exception()`), or is silent with no justifying comment.
   - A failure path is untested, or a test has no marker.
   - It's an N+1 query, OFFSET paging, or per-request heavy work on a user-facing path.
   - It re-implements a helper that already exists.

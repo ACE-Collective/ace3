@@ -5,7 +5,6 @@ import sys
 
 from saq.configuration.config import get_config
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 from saq.integration.integration_manager import is_integration_enabled
 from saq.integration.integration_util import (
     get_integration_name_from_path,
@@ -46,8 +45,7 @@ def load_integrations() -> bool:
                 logging.error(f"failed to load integration from {dir_path}")
                 result = False
         except Exception as e:
-            logging.error(f"failed to load integration from {dir_path}: {e}")
-            report_exception()
+            logging.exception(f"failed to load integration from {dir_path}: {e}")
             result = False
 
     #initialize_integrations()
@@ -124,8 +122,7 @@ def initialize_integrations():
             importlib.import_module(integration_config.python_module)
             imported.add(integration_config.python_module)
         except Exception as e:
-            logging.error(f"failed to import integration module {integration_config.name}: {e}")
-            report_exception()
+            logging.exception(f"failed to import integration module {integration_config.name}: {e}")
 
     _warn_about_undeclared_integrations(imported)
 

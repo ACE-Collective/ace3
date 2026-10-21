@@ -9,7 +9,6 @@ from saq.configuration.config import get_analysis_module_config, get_config
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.module_loader import ModuleLoader
 from saq.modules.interfaces import AnalysisModuleInterface
-from saq.error import report_exception
 
 
 class ConfigurationManager:
@@ -117,8 +116,7 @@ class ConfigurationManager:
         try:
             analysis_module.verify_environment()
         except Exception as e:
-            logging.error(f"analysis module {analysis_module} failed environment verification: {e}")
-            report_exception()
+            logging.exception(f"analysis module {analysis_module} failed environment verification: {e}")
             raise e
         
         # Get module configuration

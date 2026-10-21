@@ -82,7 +82,7 @@ def render_event_templates_multi(
         try:
             parsed_templates.append(jinja2.Environment().parse(template))
         except jinja2.TemplateSyntaxError:
-            logging.error("jinja template syntax error in template: %s", template, exc_info=True)
+            logging.warning("jinja template syntax error in template: %s", template, exc_info=True)
             return []
 
     all_paths: list[tuple] = []

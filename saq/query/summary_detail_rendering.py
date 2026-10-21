@@ -50,8 +50,8 @@ def render_jinja_template(template_str: str, event: dict, strict: bool = False) 
         logging.error("unexpected UndefinedError in permissive mode for template: %s", template_str, exc_info=True)
         return None
     except TemplateSyntaxError:
-        logging.error("jinja template syntax error in template: %s", template_str, exc_info=True)
+        logging.warning("jinja template syntax error in template: %s", template_str, exc_info=True)
         return None
     except Exception:
-        logging.error("unexpected error rendering jinja template: %s", template_str, exc_info=True)
+        logging.warning("unexpected error rendering jinja template: %s", template_str, exc_info=True)
         return None

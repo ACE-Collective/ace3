@@ -1,5 +1,7 @@
+import logging
 import os
 from threading import Event
+from unittest.mock import Mock
 import uuid as uuid_module
 import pytest
 import requests
@@ -609,6 +611,36 @@ def test_dead_lettered_item_does_not_block_following_work(monkeypatch, remote_no
     assert _work_distribution_row(remote_node_group, poison_id)[0] == "ERROR"
     assert _work_distribution_row(remote_node_group, good_id)[0] == "COMPLETED", \
         "work queued behind a poison item must still be delivered"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("error, level, reported", [
+    # a node that cannot be reached is an operational condition: a warning, no error report
+    (requests.exceptions.ConnectionError("target is unreachable"), logging.WARNING, False),
+    (RuntimeError("bad submission"), logging.ERROR, True),
+])
+def test_failed_delivery_reports_only_unexpected_errors(monkeypatch, remote_node_group, caplog, error, level, reported):
+    _ensure_live_any_mode_node()
+
+    def _fails(self, submission):
+        raise error
+
+    monkeypatch.setattr(RemoteNode, "submit", _fails)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    with caplog.at_level(logging.WARNING):
+        execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4()))
+
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to submit work item")]
+    assert len(records) == 1
+    assert records[0].levelno == level
+    assert write_error_report.called is reported
 
 
 @pytest.mark.integration

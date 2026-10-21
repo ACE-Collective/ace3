@@ -222,7 +222,7 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 #### Shutdown
 
-`saq/shutdown.py` is the single shutdown control point for an ACE process (`docs/SHUTDOWN.md`): one `ShutdownCoordinator` per process, whose flag `is_shutting_down()` exposes to any code that needs to tell "this failed" from "this failed because we are stopping". Signal handlers only set that flag — SIGTERM and SIGINT mean the same thing, and `ace service start` (`saq/cli/commands/service.py`) owns the whole lifecycle, running `stop()`/`wait()` under bounded timeouts and force-exiting at a deadline shorter than the container's `stop_grace_period`. The engine abandons and requeues in-flight analysis rather than finishing it, releases its own locks and marks the node `stopped`. Taking a node out of the cluster before stopping it is a separate, pre-existing thing: the `nodes.status` drain state machine, driven by `ace node drain` or `POST /api/v2/nodes/{id}/drain`, with `bin/ace-shutdown.sh` as the operator entry point. In a long-running loop use `log_loop_exception()` rather than `logging.error()` + `report_exception()`.
+`saq/shutdown.py` is the single shutdown control point for an ACE process (`docs/SHUTDOWN.md`): one `ShutdownCoordinator` per process, whose flag `is_shutting_down()` exposes to any code that needs to tell "this failed" from "this failed because we are stopping". Signal handlers only set that flag — SIGTERM and SIGINT mean the same thing, and `ace service start` (`saq/cli/commands/service.py`) owns the whole lifecycle, running `stop()`/`wait()` under bounded timeouts and force-exiting at a deadline shorter than the container's `stop_grace_period`. The engine abandons and requeues in-flight analysis rather than finishing it, releases its own locks and marks the node `stopped`. Taking a node out of the cluster before stopping it is a separate, pre-existing thing: the `nodes.status` drain state machine, driven by `ace node drain` or `POST /api/v2/nodes/{id}/drain`, with `bin/ace-shutdown.sh` as the operator entry point. In a long-running loop use `log_loop_exception()` rather than `logging.exception()`.
 
 #### Phishkit
 
@@ -246,8 +246,8 @@ default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
 trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
-`report_exception()` and `data/error_reports` are a separate mechanism that still serves every
-other caller.
+Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
+separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
 #### Content-addressed storage
 
@@ -317,7 +317,7 @@ ACE is never down for more than a few minutes, and when something is wrong someo
 
 The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
 
-- A caught exception that should be logged goes through `log_loop_exception(e, context)` (`saq/error/reporting.py`), not bare `logging.error()`/`logging.exception()`. This applies everywhere, not just in loops: it logs, writes the error report, emits the monitor event, and stays quiet during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, and skips both during shutdown. Don't also call `report_exception()`, which writes a second report. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
 - Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
 - Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
 - A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.

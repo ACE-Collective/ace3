@@ -12,7 +12,6 @@ from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.constants import AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules.base_module import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
@@ -227,20 +226,18 @@ def load_module_from_config(analysis_module_name: str) -> Optional[AnalysisModul
     try:
         _module = importlib.import_module(python_module_name)
     except Exception as e:
-        logging.error("unable to import module {}: {}".format(python_module_name, e))
-        report_exception()
+        logging.exception("unable to import module {}: {}".format(python_module_name, e))
         return None
 
     python_class_name = module_config.python_class
     try:
         python_module_class = getattr(_module, python_class_name)
     except AttributeError:
-        logging.error(
+        logging.exception(
             "class {} does not exist in module {} in analysis module {}".format(
                 python_class_name, python_module_name, analysis_module_name
             )
         )
-        report_exception()
         return None
 
     #instance = module_config.instance
@@ -252,10 +249,9 @@ def load_module_from_config(analysis_module_name: str) -> Optional[AnalysisModul
         # NOTE instance now comes from the config, it's no longer passed to the constructor
         return create_analysis_module_adapter(python_module_class(module_config))
     except Exception as e:
-        logging.error(
+        logging.exception(
             "unable to load analysis module {}: {}".format(
                 module_config, e
             )
         )
-        report_exception()
         return None

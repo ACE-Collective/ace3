@@ -1,3 +1,6 @@
+import logging
+from unittest.mock import Mock
+
 import pytest
 from flask import url_for
 
@@ -99,6 +102,26 @@ class TestLogin:
             assert response.status_code == 200
             assert b'Invalid username or password' in response.data
     
+    def test_login_lookup_failure_is_reported(self, app, monkeypatch, caplog):
+        """A user lookup that raises is an ACE error, reported, while the login form only
+        says the credentials are invalid."""
+        monkeypatch.setattr("app.auth.views.get_db", lambda: Mock(query=Mock(side_effect=RuntimeError("database down"))))
+        write_error_report = Mock()
+        monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+        with app.test_client() as client, caplog.at_level(logging.ERROR):
+            response = client.post(url_for('auth.login'), data={
+                'username': 'testuser',
+                'password': 'password123'
+            })
+
+        assert response.status_code == 200
+        assert b'Invalid username or password' in response.data
+        records = [r for r in caplog.records if r.getMessage().startswith("login failed")]
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+        write_error_report.assert_called_once()
+
     def test_login_invalid_password(self, app, test_user):
         """Test login with incorrect password."""
         with app.test_client() as client:

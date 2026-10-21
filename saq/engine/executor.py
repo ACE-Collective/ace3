@@ -65,7 +65,6 @@ from saq.engine.errors import (
 from saq.engine.shutdown_interface import ShutdownInterface
 from saq.engine.tracking import TrackingWriter
 from saq.engine.work_stack import WorkStack, WorkTarget
-from saq.error import report_exception
 from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
 from saq.modules.interfaces import AnalysisModuleInterface
@@ -438,11 +437,10 @@ class AnalysisExecutor:
                     f"post analysis for module {analysis_module.name} on {context.root} returned {state[analysis_module.name]}"
                 )
             except Exception as e:
-                logging.error(
+                logging.exception(
                     "post analysis module {} failed: {}".format(analysis_module, e)
                 )
                 state[analysis_module.name] = True
-                report_exception()
 
     def _execute_pre_analysis(self, context) -> bool:
         """Execute pre-analysis routines for all analysis modules.
@@ -475,10 +473,9 @@ class AnalysisExecutor:
                         analysis_module.execute_pre_analysis()
                     )
                 except Exception:
-                    logging.error(
+                    logging.exception(
                         "pre analysis module {} failed".format(analysis_module)
                     )
-                    report_exception()
                     state[analysis_module.name] = False
 
             if context.cancel_analysis_flag:
@@ -1657,14 +1654,14 @@ class AnalysisExecutor:
         except Exception as e:
             # this is techinically an error but it is going to happen so we log it as a warning.
             # exc_info puts the traceback on this line so it is in saq.log, not only in the
-            # crash report
+            # crash report. at WARNING it writes no error report: the crash report below is
+            # the richer record of the same failure
             logging.warning(
                 "analysis module {} failed on {} for {} reason {}".format(
                     analysis_module, work_item, root, e
                 ),
                 exc_info=True,
             )
-            report_exception()
 
             # the analyst-facing record: one directory, named by a crash id that is logged,
             # carrying the traceback, the tree and the file the module died on. see

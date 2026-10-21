@@ -196,7 +196,7 @@ Services are launched by `ace service start <name>`, which owns the whole lifecy
   keeping it below the container's `stop_grace_period`.
 
 In a loop's catch-all handler, use `log_loop_exception()` rather than
-`logging.error()` + `report_exception()`:
+`logging.exception()`:
 
 ```python
 from saq.error.reporting import log_loop_exception
@@ -208,8 +208,10 @@ while not shutting_down:
         log_loop_exception(e, "doing work")
 ```
 
-During shutdown that logs at INFO and skips the error report. Outside shutdown it behaves
-as before. This matters more than it looks: peers disappear in dependency order, so
+During shutdown that logs at INFO, without the traceback, so no error report is written.
+Outside shutdown it logs at ERROR with the traceback, and the root logger's
+`ErrorReportHandler` writes the report. (That handler skips the report for any record
+logged during shutdown, but only `log_loop_exception()` lowers the level.) This matters more than it looks: peers disappear in dependency order, so
 without it every loop in every worker in every service reports an error per iteration for
 the last few seconds of its life.
 

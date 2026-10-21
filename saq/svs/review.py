@@ -45,7 +45,6 @@ from saq.database.pool import get_db
 from saq.database.util.alert import AlertOwner, check_alert_ownership
 from saq.detection_verdicts.constants import VERDICT_FP
 from saq.detection_verdicts.store import set_verdicts
-from saq.error.reporting import report_exception
 from saq.svs import runs
 from saq.svs.constants import AttributionConfidence, ResultStatus, RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
@@ -328,8 +327,7 @@ def review(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
             fp_verdicts = set_verdicts(targets, VERDICT_FP, user_id, analyst=False).changed
     except Exception as e:
         db.rollback()
-        logging.error("unable to close the alerts of reviewed svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
-        report_exception()
+        logging.exception("unable to close the alerts of reviewed svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
     logging.info("svs run %s reviewed by %s: %d alerts closed, %d ignored detections FP", run.uuid, actor,
                  alerts_closed, fp_verdicts,

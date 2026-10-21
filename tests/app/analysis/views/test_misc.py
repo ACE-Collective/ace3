@@ -1,6 +1,7 @@
 import logging
 import os
 from io import BytesIO
+from unittest.mock import Mock
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -32,6 +33,29 @@ class TestUploadFile:
         assert result.status_code == 302
         assert result.location == url_for('analysis.file')
     
+    def test_upload_file_save_failure_is_reported(self, web_client, monkeypatch, caplog):
+        """A file that cannot be saved to the temp dir redirects back and is reported."""
+        def failing_save(self, dst, *args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("werkzeug.datastructures.FileStorage.save", failing_save)
+        write_error_report = Mock()
+        monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+        data = {
+            'file_path': (BytesIO(b'test file content'), 'test_file.txt'),
+            'comment': 'test comment',
+            'alert_uuid': ''
+        }
+        with caplog.at_level(logging.ERROR):
+            result = web_client.post(url_for('analysis.upload_file'), data=data, content_type='multipart/form-data')
+
+        assert result.status_code == 302
+        assert result.location == url_for('analysis.file')
+        records = [r for r in caplog.records if r.getMessage().startswith("unable to save file to")]
+        assert len(records) == 1
+        write_error_report.assert_called_once()
+
     def test_upload_file_new_alert_success(self, web_client):
         """Test successful file upload creating new alert."""
         from saq.database.util.alert import get_alert_by_uuid

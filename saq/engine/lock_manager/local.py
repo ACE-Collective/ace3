@@ -6,7 +6,6 @@ from typing import Callable, Optional
 
 from saq.configuration.config import get_config
 from saq.engine.lock_manager.interface import LockManagerInterface
-from saq.error import report_exception
 
 
 class LocalLockManager(LockManagerInterface):
@@ -180,8 +179,7 @@ class LocalLockManager(LockManagerInterface):
                 logging.debug(f"Keeping lock alive for {target_uuid}")
                     
         except Exception as e:
-            logging.error(f"Unexpected error in keepalive loop for {target_uuid}: {e}")
-            report_exception()
+            logging.exception(f"Unexpected error in keepalive loop for {target_uuid}: {e}")
             
         logging.debug(f"Lock keepalive for {target_uuid} exited")
 
