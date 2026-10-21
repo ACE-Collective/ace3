@@ -192,7 +192,7 @@ class TestClosingARun:
 
     def test_a_failure_never_undoes_the_close(self, run, monkeypatch):
         alert_uuid = _alert(marker=run.marker)
-        monkeypatch.setattr("saq.svs.runs.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
         def down(*args, **kwargs):
             raise RuntimeError("database down")
 

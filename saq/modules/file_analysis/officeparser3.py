@@ -6,7 +6,6 @@ from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_empty_macro, is_macro_ext
@@ -219,8 +218,7 @@ class OfficeParserAnalyzer3(AnalysisModule):
                         logging.debug("skipping empty file {}".format(full_path))
                         continue
                 except Exception as e:
-                    logging.error("unable to check size of {}: {}".format(full_path, e))
-                    report_exception()
+                    logging.exception("unable to check size of {}: {}".format(full_path, e))
 
                 # if this is a macro file we want to see if it is an "empty macro file"
                 if is_macro_ext(output_file):

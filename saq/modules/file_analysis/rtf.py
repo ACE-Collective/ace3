@@ -6,7 +6,6 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import RTF_EXTRACTED_SUSPECT_FILE
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_rtf_file
@@ -126,8 +125,7 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
         try:
             os.mkdir(output_dir)
         except Exception as e:
-            logging.error("unable to create directory {}: {}".format(output_dir, e))
-            report_exception()
+            logging.exception("unable to create directory {}: {}".format(output_dir, e))
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
@@ -138,8 +136,7 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
             analysis.stderr, analysis.stdout = p.communicate()
             analysis.return_code = p.returncode
         except Exception as e:
-            logging.error("execution of {} failed: {}".format(self.rtfobj_path, e))
-            report_exception()
+            logging.exception("execution of {} failed: {}".format(self.rtfobj_path, e))
             return AnalysisExecutionResult.COMPLETED
 
         # walk the output directory and add all discovered files as observables

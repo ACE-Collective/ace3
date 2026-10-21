@@ -9,7 +9,6 @@ from sqlalchemy import Executable
 from sqlalchemy.exc import DBAPIError
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
-from saq.error import report_exception
 
 
 # MySQL error codes that mean the connection itself is gone rather than the statement
@@ -201,8 +200,7 @@ def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
                 try:
                     get_db().rollback() # rolls back to the begin_nested()
                 except Exception as rollback_error:
-                    logging.error(f"unable to roll back transaction: {rollback_error}")
-                    report_exception()
+                    logging.exception(f"unable to roll back transaction: {rollback_error}")
                     raise e
 
                 # ... and try again 

@@ -9,7 +9,6 @@ from saq.constants import (
 )
 from saq.database.util.alert import describe_frozen, set_disposition_reviews
 from saq.disposition import is_selectable_disposition
-from saq.error.reporting import report_exception
 
 @analysis.route('/review_disposition', methods=['POST'])
 @require_permission('alert', 'review')
@@ -68,8 +67,7 @@ def review_disposition():
         flash(f"{message}; {skipped}" if skipped else message)
     except Exception as e:
         flash("unable to record disposition review (review error logs)")
-        logging.error("unable to review disposition for %s alerts: %s", len(alert_uuids), e)
-        report_exception()
+        logging.exception("unable to review disposition for %s alerts: %s", len(alert_uuids), e)
 
     if analysis_page:
         return redirect(url_for('analysis.index'))

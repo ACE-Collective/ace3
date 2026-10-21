@@ -12,7 +12,6 @@ from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.email import normalize_email_address
 from saq.environment import get_base_dir
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 
 from fluent import sender
@@ -167,22 +166,19 @@ class EmailLoggingAnalyzer(AnalysisModule):
             try:
                 self.export_to_brocess(entry.copy())
             except Exception as e:
-                logging.error(f"unable to create brocess log export for {email_file}: {e}")
-                report_exception()
+                logging.exception(f"unable to create brocess log export for {email_file}: {e}")
 
         if self.config.fluent_bit_logging_enabled:
             try:
                 self.export_to_fluent_bit(entry.copy())
             except Exception as e:
-                logging.error(f"unable to create fluent-bit log export for {email_file}: {e}")
-                report_exception()
+                logging.exception(f"unable to create fluent-bit log export for {email_file}: {e}")
 
         if self.config.thread_recording_enabled or self.config.lookalike_telemetry_enabled:
             try:
                 self.export_lookalike_telemetry(entry.copy(), analysis)
             except Exception as e:
-                logging.error(f"unable to create lookalike telemetry for {email_file}: {e}")
-                report_exception()
+                logging.exception(f"unable to create lookalike telemetry for {email_file}: {e}")
 
         return True
 
@@ -345,5 +341,4 @@ class EmailLoggingAnalyzer(AnalysisModule):
                 db.commit()
 
         except Exception as e:
-            logging.error("unable to update brocess: {}".format(e))
-            report_exception()
+            logging.exception("unable to update brocess: {}".format(e))

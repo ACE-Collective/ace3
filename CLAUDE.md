@@ -222,7 +222,7 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 #### Shutdown
 
-`saq/shutdown.py` is the single shutdown control point for an ACE process (`docs/SHUTDOWN.md`): one `ShutdownCoordinator` per process, whose flag `is_shutting_down()` exposes to any code that needs to tell "this failed" from "this failed because we are stopping". Signal handlers only set that flag — SIGTERM and SIGINT mean the same thing, and `ace service start` (`saq/cli/commands/service.py`) owns the whole lifecycle, running `stop()`/`wait()` under bounded timeouts and force-exiting at a deadline shorter than the container's `stop_grace_period`. The engine abandons and requeues in-flight analysis rather than finishing it, releases its own locks and marks the node `stopped`. Taking a node out of the cluster before stopping it is a separate, pre-existing thing: the `nodes.status` drain state machine, driven by `ace node drain` or `POST /api/v2/nodes/{id}/drain`, with `bin/ace-shutdown.sh` as the operator entry point. In a long-running loop use `log_loop_exception()` rather than `logging.error()` + `report_exception()`.
+`saq/shutdown.py` is the single shutdown control point for an ACE process (`docs/SHUTDOWN.md`): one `ShutdownCoordinator` per process, whose flag `is_shutting_down()` exposes to any code that needs to tell "this failed" from "this failed because we are stopping". Signal handlers only set that flag — SIGTERM and SIGINT mean the same thing, and `ace service start` (`saq/cli/commands/service.py`) owns the whole lifecycle, running `stop()`/`wait()` under bounded timeouts and force-exiting at a deadline shorter than the container's `stop_grace_period`. The engine abandons and requeues in-flight analysis rather than finishing it, releases its own locks and marks the node `stopped`. Taking a node out of the cluster before stopping it is a separate, pre-existing thing: the `nodes.status` drain state machine, driven by `ace node drain` or `POST /api/v2/nodes/{id}/drain`, with `bin/ace-shutdown.sh` as the operator entry point. In a long-running loop use `log_loop_exception()` rather than `logging.exception()`.
 
 #### Phishkit
 
@@ -246,8 +246,8 @@ default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
 trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
-`report_exception()` and `data/error_reports` are a separate mechanism that still serves every
-other caller.
+Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
+separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
 #### Content-addressed storage
 

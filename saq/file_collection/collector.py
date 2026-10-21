@@ -9,7 +9,6 @@ from sqlalchemy.sql import func
 
 from saq.database.model import Alert, FileCollection
 from saq.database.pool import get_db, remove_all_sessions
-from saq.error.reporting import report_exception
 from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem
 from saq.util.time import calculate_backoff_delay
@@ -207,14 +206,12 @@ class FileCollectionCollector:
                 for work_item in self.collect_work_items():
                     self.notify_file_collection_listeners(work_item)
             except Exception as e:
-                logging.error(f"error collecting file collections from database: {e}")
-                report_exception()
+                logging.exception(f"error collecting file collections from database: {e}")
             finally:
                 try:
                     remove_all_sessions()
                 except Exception as e:
-                    logging.error(f"error removing database connection: {e}")
-                    report_exception()
+                    logging.exception(f"error removing database connection: {e}")
 
             if self.shutdown_event.is_set():
                 break

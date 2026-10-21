@@ -5,7 +5,6 @@ from threading import Event, Thread
 
 from saq.database.model import Remediation, RemediationHistory
 from saq.database.pool import get_db
-from saq.error.reporting import report_exception
 from saq.remediation.interface import RemediationListener
 from saq.remediation.remediator import Remediator
 from saq.remediation.types import RemediationWorkItem, RemediatorResult, RemediatorStatus
@@ -78,8 +77,7 @@ class RemediationWorker(RemediationListener):
                 if work:
                     self.remediate(work)
             except Exception as e:
-                logging.error(f"error executing work: {e}")
-                report_exception()
+                logging.exception(f"error executing work: {e}")
 
             if self.shutdown_event.is_set():
                 break

@@ -12,7 +12,6 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Optional
 
-from saq.error.reporting import report_exception
 from saq.remediation.external.database import find_superseding_confirmation
 from saq.remediation.external.interface import CheckListener
 from saq.remediation.external.persistence import (
@@ -102,8 +101,7 @@ class ExternalRemediationCheckWorker(CheckListener):
                 if work:
                     self.process(work)
             except Exception as e:
-                logging.error(f"error processing external remediation check: {e}")
-                report_exception()
+                logging.exception(f"error processing external remediation check: {e}")
 
             if self.shutdown_event.is_set():
                 break

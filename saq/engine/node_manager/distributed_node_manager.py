@@ -26,7 +26,6 @@ from saq.engine.node_manager.drain import transfer_delayed_analysis
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 
 
 def update_node_status(
@@ -56,8 +55,7 @@ def update_node_status(
             )
 
     except Exception as e:
-        logging.error(f"unable to update node {node_id} status: {e}")
-        report_exception()
+        logging.exception(f"unable to update node {node_id} status: {e}")
 
 
 def translate_node(node: str) -> str:
@@ -235,8 +233,7 @@ class DistributedNodeManager(NodeManagerInterface):
             reconcile_stale_node_statuses(self.node_status_update_frequency * 4)
 
         except Exception as e:
-            logging.error("error executing primary node routines: %s", e)
-            report_exception()
+            logging.exception("error executing primary node routines: %s", e)
 
     def execute_drain_routines(self):
         """Executes drain routines if this node is draining or drained."""
@@ -276,8 +273,7 @@ class DistributedNodeManager(NodeManagerInterface):
                 revert_drained_if_work_appeared(node_id)
 
         except Exception as e:
-            logging.error("error executing drain routines: %s", e)
-            report_exception()
+            logging.exception("error executing drain routines: %s", e)
 
     def execute_node_recovery_routines(self):
         """Recover this node's own lost work whose lock has expired.
@@ -290,8 +286,7 @@ class DistributedNodeManager(NodeManagerInterface):
             if node_id is not None:
                 recover_expired_locks(node_id=node_id)
         except Exception as e:
-            logging.error("error executing node recovery routines: %s", e)
-            report_exception()
+            logging.exception("error executing node recovery routines: %s", e)
 
     def update_node_status_and_execute_primary_routines(self):
         """Updates node status and executes primary node routines if needed."""

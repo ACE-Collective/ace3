@@ -13,7 +13,6 @@ from saq.cas.errors import LegalHoldActive, ObjectNotFound
 from saq.cas.pool import CASPool
 from saq.database.model import SVSSampleDeletion
 from saq.database.private_session import private_transaction
-from saq.error.reporting import report_exception
 
 # cas_holds.holder_kind of every capture hold; the holder_id is the svs_yara_captures row id, which
 # holds both the file and the match record
@@ -58,6 +57,5 @@ def purge_deleted_file(pool: CASPool, sha256: str, *, reason: str, actor: Option
                       sha256, extra={"sha256": sha256})
         return False
     except Exception as e:
-        logging.error("unable to purge the file of deleted svs sample %s: %s", sha256, e, extra={"sha256": sha256})
-        report_exception()
+        logging.exception("unable to purge the file of deleted svs sample %s: %s", sha256, e, extra={"sha256": sha256})
         return False

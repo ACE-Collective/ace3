@@ -160,7 +160,7 @@ class TestPreInsert:
         assert _attributions(root.uuid) == []
 
     def test_a_failing_router_never_breaks_the_insert(self, run, monkeypatch):
-        monkeypatch.setattr("saq.alert_routing.registry.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
         monkeypatch.setattr(routing, "evaluate", Mock(side_effect=RuntimeError("broken")))
         root = _root(marker=run.marker)
         ALERT(root)

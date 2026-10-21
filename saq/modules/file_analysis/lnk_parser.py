@@ -9,7 +9,6 @@ from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis.is_file_type import is_lnk_file
 from saq.observables.file import FileObservable
-from saq.error import report_exception
 
 import LnkParse3
 import warnings
@@ -193,8 +192,7 @@ class LnkParseAnalyzer(AnalysisModule):
                 lnk_file_observable.add_yara_meta("type", "metadata.lnk")
 
         except Exception as e:
-            report_exception()
+            logging.exception(f'LnkParse failed for {local_file_path}')
             analysis.error = str(e)
-            logging.info(f'LnkParse failed for {local_file_path}')
         
         return AnalysisExecutionResult.COMPLETED

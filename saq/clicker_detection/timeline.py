@@ -23,7 +23,6 @@ from datetime import datetime, timezone
 import logging
 from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 
-from saq.error.reporting import report_exception
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -138,11 +137,10 @@ def gather_clicker_results(root: "RootAnalysis") -> ClickerResults:
                 try:
                     loader()
                 except Exception:
-                    logging.error(
+                    logging.exception(
                         "load_details() failed for clicker event provider %s; skipping",
                         provider_class.__name__,
                     )
-                    report_exception()
                     continue
 
             error_getter = getattr(analysis, "get_clicker_error", None)
@@ -157,11 +155,10 @@ def gather_clicker_results(root: "RootAnalysis") -> ClickerResults:
             try:
                 produced = analysis.get_clicker_events() or []
             except Exception:
-                logging.error(
+                logging.exception(
                     "clicker event provider %s raised; skipping",
                     provider_class.__name__,
                 )
-                report_exception()
                 continue
 
             for event in produced:

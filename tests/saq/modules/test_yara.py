@@ -1,4 +1,6 @@
+import logging
 import os
+from unittest.mock import Mock
 
 import pytest
 import yara
@@ -171,8 +173,8 @@ class TestYaraScannerServiceFailures:
 
         The generic `except Exception` handler also swallows the exception and returns
         COMPLETED, so the meaningful distinction is that the timeout is handled by the
-        dedicated handler — which logs the specific timeout warning and does NOT call
-        report_exception (i.e. it does not generate an error report).
+        dedicated handler — which logs the specific timeout warning and does not
+        generate an error report.
         """
         file_path = root_analysis.create_file_path("test.txt")
         with open(file_path, "wb") as fp:
@@ -192,7 +194,7 @@ class TestYaraScannerServiceFailures:
             return ""
 
         monkeypatch.setattr(
-            "saq.modules.file_analysis.yara.report_exception", mock_report_exception
+            "saq.error.reporting.write_error_report", mock_report_exception
         )
 
         adapter = self._create_module(root_analysis)
@@ -228,7 +230,7 @@ class TestYaraScannerServiceFailures:
             report_exception_called["called"] = True
             return ""
 
-        monkeypatch.setattr("saq.modules.file_analysis.yara.report_exception", mock_report_exception)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_report_exception)
 
         def fail_initialize_local_scanner(self):
             raise AssertionError("the local scanner must not be used")
@@ -273,7 +275,7 @@ class TestYaraScannerServiceFailures:
             report_exception_called["called"] = True
             return ""
 
-        monkeypatch.setattr("saq.modules.file_analysis.yara.report_exception", mock_report_exception)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_report_exception)
 
         adapter = self._create_module(root_analysis)
         with caplog.at_level("WARNING"):
@@ -495,6 +497,37 @@ def _yara_match(rule_name, meta=None, strings=None, tags=None):
         "tags": tags or [],
         "strings": strings or [],
     }
+
+
+@pytest.mark.unit
+def test_disassembly_failure_is_reported_and_analysis_continues(monkeypatch, caplog, root_analysis):
+    file_path = root_analysis.create_file_path("test.txt")
+    with open(file_path, "wb") as fp:
+        fp.write(b"Hello, world!\n")
+    observable = root_analysis.add_file_observable(file_path)
+
+    matches = [_yara_match("asm_rule", tags=["asm"], strings=[(7, "$code_x86", b"world")])]
+    monkeypatch.setattr(yara_client, "scan_file", lambda path, meta_tags=None, qa=None: matches)
+
+    def failing_disassemble(*args, **kwargs):
+        raise ValueError("bad instruction stream")
+
+    monkeypatch.setattr("saq.modules.file_analysis.yara.disassemble", failing_disassemble)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    adapter = AnalysisModuleAdapter(YaraScanner_v3_4(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+    ))
+    with caplog.at_level(logging.ERROR):
+        assert adapter.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+    assert analysis.scan_results[0]["context"][0][4] == "Failed to disassemble"
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to disassemble $code_x86 at 7")]
+    assert len(records) == 1
+    write_error_report.assert_called_once()
 
 
 class TestYaraEnabledMeta:

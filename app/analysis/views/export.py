@@ -14,7 +14,6 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir
-from saq.error.reporting import report_exception
 
 @analysis.route('/email_file', methods=["POST"])
 @require_permission('alert', 'read')
@@ -65,8 +64,7 @@ def email_file():
                 finally:
                     zf.close()
             except Exception as e:
-                logging.error("Could not compress " + full_path + ': ' + str(e))
-                report_exception()
+                logging.exception("Could not compress " + full_path + ': ' + str(e))
                 flash("internal error compressing " + full_path)
                 return redirect("/analysis?direct=" + alert.uuid)
 
@@ -94,7 +92,6 @@ def email_file():
         smtp.sendmail(smtpfrom, toemails, msg.as_string())
         smtp.close()
     except Exception as e:
-        logging.error("unable to send email: {}".format(str(e)))
-        report_exception()
+        logging.exception("unable to send email: {}".format(str(e)))
 
     return redirect("/analysis?direct=" + alert.uuid)

@@ -16,7 +16,6 @@ from saq.engine.lock_manager.interface import LockManagerInterface
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 from saq.util import storage_dir_from_uuid
 
 
@@ -147,10 +146,9 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
             logging.debug("creating transfer target_dir {}".format(target_dir))
             os.makedirs(target_dir)
         except Exception as e:
-            logging.error(
+            logging.exception(
                 "unable to create transfer target_dir {}: {}".format(target_dir, e)
             )
-            report_exception()
             self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
             return False
 
@@ -201,15 +199,13 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 root.save()
 
         except Exception as e:
-            logging.error("unable to transfer {}: {}".format(uuid, e))
-            report_exception()
+            logging.exception("unable to transfer {}: {}".format(uuid, e))
             try:
                 shutil.rmtree(target_dir)
             except Exception as e:
-                logging.error(
+                logging.exception(
                     "unable to clear transfer target_dir {}: {}".format(target_dir, e)
                 )
-                report_exception()
 
             # the transfer failed before we took ownership of the item
             self.lock_manager.release_lock(uuid, ignore_lock_failure=True)
@@ -220,10 +216,9 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 if tar_path:
                     os.remove(tar_path)
             except Exception as e:
-                logging.error(
+                logging.exception(
                     "unable to delete temporary tar file {}: {}".format(tar_path, e)
                 )
-                report_exception()
 
         # at this point the database points at our local copy and we hold the lock,
         # so we are the authoritative owner of this work item. tell the remote node to
@@ -462,8 +457,7 @@ LIMIT 128""".format(
                 return target
 
         except Exception as e:
-            logging.error("unable to get work target: {}".format(e))
-            report_exception()
+            logging.exception("unable to get work target: {}".format(e))
 
         # no work available anywhere
         return None
@@ -500,8 +494,7 @@ LIMIT 128""".format(
                 logging.debug(f"cleared work target {target}")
 
         except Exception as e:
-            logging.error(f"unable to clear work target {target}: {e}")
-            report_exception()
+            logging.exception(f"unable to clear work target {target}: {e}")
 
     def add_delayed_analysis_request(self, root, observable, analysis_module, hours, minutes, seconds) -> bool:
         """Add a delayed analysis request.

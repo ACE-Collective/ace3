@@ -18,7 +18,6 @@ import logging
 import uuid as uuidlib
 
 from saq.database.util.locking import acquire_lock, get_expired_locks, release_lock
-from saq.error import report_exception
 
 
 def recover_lost_root(uuid: str) -> bool:
@@ -54,8 +53,7 @@ def recover_expired_locks(node_id=None, node_ids=None) -> int:
     try:
         expired = get_expired_locks(node_id=node_id, node_ids=node_ids)
     except Exception as e:
-        logging.error("unable to list expired locks for recovery: %s", e)
-        report_exception()
+        logging.exception("unable to list expired locks for recovery: %s", e)
         return 0
 
     recovered = 0
@@ -65,8 +63,7 @@ def recover_expired_locks(node_id=None, node_ids=None) -> int:
             if recover_lost_root(root_uuid):
                 recovered += 1
         except Exception as e:
-            logging.error("error recovering lost root %s: %s", root_uuid, e)
-            report_exception()
+            logging.exception("error recovering lost root %s: %s", root_uuid, e)
 
     if recovered:
         logging.info("recovered %d lost work items (node_id=%s)", recovered, node_id)

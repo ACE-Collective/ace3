@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional
 
 from saq.configuration.config import get_config
-from saq.error.reporting import report_exception
 
 
 class WatchedFile:
@@ -93,12 +92,10 @@ class FileWatcher:
                     try:
                         watched_file.callback()
                     except Exception as e:
-                        logging.error("callback failed for watched file {}: {}".format(watched_file.path, e))
-                        report_exception()
+                        logging.exception("callback failed for watched file {}: {}".format(watched_file.path, e))
             
             except Exception as e:
-                logging.error("unable to check file {}: {}".format(watched_file.path, e))
-                report_exception()
+                logging.exception("unable to check file {}: {}".format(watched_file.path, e))
     
     def clear_all_watched_files(self) -> None:
         """Stop watching all files."""

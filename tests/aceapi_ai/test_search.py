@@ -7,10 +7,13 @@ from unittest.mock import Mock
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
 
 from aceapi_ai.ratelimit import RateLimitExceeded, RateLimitUnavailable, rate_limiter
 from aceapi_v2.search import service as v2_service
 from saq.search.types import AlertSearchResult, SearchResponse
+from tests.aceapi_ai.conftest import get_app
+from tests.aceapi_v2.conftest import make_api_key
 
 pytestmark = pytest.mark.integration
 
@@ -125,3 +128,25 @@ async def test_unavailable_limiter_is_503(search_client, monkeypatch):
 
     monkeypatch.setattr(rate_limiter, "check_request", unavailable)
     assert (await search_client.post("/search/alerts", json={"query": "x"})).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_unhandled_exception_is_500_and_reported(_override_db_session, session, test_user, monkeypatch):
+    monkeypatch.setattr(v2_service, "search_alerts", Mock(side_effect=RuntimeError("boom")))
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    key = await make_api_key(session, test_user.id, inherit=False, scope=[("ai", "search")])
+    # starlette re-raises after building the 500 so the server can log it; without
+    # raise_app_exceptions=False the test would see that instead of the response
+    transport = ASGITransport(app=get_app(), raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"x-ace-auth": key}) as client:
+        response = await client.post("/search/alerts", json={"query": "x"})
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal server error"}
+
+    write_error_report.assert_called_once()
+    record = write_error_report.call_args.kwargs["record"]
+    assert record.getMessage() == "unhandled exception processing POST /search/alerts"
+    assert isinstance(record.exc_info[1], RuntimeError)

@@ -15,7 +15,6 @@ from saq.configuration.config import (
 from saq.configuration.schema import AnalysisModeConfig
 from saq.modules.adapter import load_module_from_config
 from saq.modules.interfaces import AnalysisModuleInterface
-from saq.error import report_exception
 
 
 class ModuleLoader:
@@ -199,6 +198,5 @@ class ModuleLoader:
             return analysis_module
             
         except Exception as e:
-            logging.error(f"failed to load analysis module {analysis_module_name}: {e}")
-            report_exception()
+            logging.exception(f"failed to load analysis module {analysis_module_name}: {e}")
             return None 

@@ -950,7 +950,7 @@ Caught per-module in `_execute_module_analysis`:
 | `WaitForAnalysisException` | create the dependency edge and move on (§9.1) |
 | `ExcessiveFileDataSizeError` | re-raised — aborts the whole work item |
 | `AnalysisFailedException` | logged as a warning (expected on retry after a kill), fails any dependency |
-| anything else | logged as a **warning** (with `exc_info`) plus `report_exception()`; the dependency (if any) is failed; and an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`) |
+| anything else | logged as a **warning** (with `exc_info`), so it writes no error report; the dependency (if any) is failed; and an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`) |
 
 Note that a module blowing up does not fail the work item — the loop continues
 with the next module.

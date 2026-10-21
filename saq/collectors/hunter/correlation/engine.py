@@ -36,7 +36,6 @@ from saq.collectors.hunter.correlation.trace import (
     sanitize_value,
 )
 from saq.collectors.hunter.correlation.transforms import apply_transform
-from saq.error.reporting import report_exception
 
 _jinja_env = SandboxedEnvironment()
 
@@ -138,8 +137,7 @@ class CorrelationEngine:
         try:
             self._secrets = export_encrypted_passwords()
         except Exception as e:
-            logging.error(f"unable to load secrets: {e}")
-            report_exception() 
+            logging.exception(f"unable to load secrets: {e}")
             self._secrets = {}
 
         # handed to custom command types as CommandContext.config; never bound in a hunt template

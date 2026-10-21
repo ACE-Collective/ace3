@@ -5,7 +5,6 @@ from pydantic import ConfigDict, Field, model_validator
 from oletools.olevba import VBA_Parser, filter_vba
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_office_ext, is_ole_file, is_rtf_file, is_zip_file
@@ -273,7 +272,6 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                 try:
                     parser.close()
                 except Exception as e:
-                    logging.error("unable to close olevba parser: {}".format(e))
-                    report_exception()
+                    logging.exception("unable to close olevba parser: {}".format(e))
 
         return AnalysisExecutionResult.COMPLETED

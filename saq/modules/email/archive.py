@@ -14,7 +14,6 @@ from saq.crypto import decrypt
 from saq.database.pool import get_db_connection
 from saq.email_archive import archive_email, index_email_archive
 from saq.environment import get_data_dir, get_global_runtime_settings
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
@@ -77,8 +76,7 @@ class EncryptedArchiveAnalyzer(AnalysisModule):
                     shutil.copyfileobj(fp_in, fp_out)
 
         except Exception as e:
-            logging.error("unable to decrypt {}: {}".format(_file.full_path, e))
-            report_exception()
+            logging.exception("unable to decrypt {}: {}".format(_file.full_path, e))
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)

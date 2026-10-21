@@ -375,7 +375,7 @@ class TestReview:
         run = _run()
         alert_uuid = _alert(run)
         run = _ended(run)
-        monkeypatch.setattr("saq.svs.review.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
 
         def down(*args, **kwargs):
             raise RuntimeError("database down")

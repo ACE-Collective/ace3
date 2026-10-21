@@ -20,7 +20,6 @@ from saq.database import Alert, get_db, retry_sql_on_deadlock
 from saq.database.pool import get_db_connection
 from saq.database.util.node import is_primary_node
 from saq.environment import get_base_dir, get_global_runtime_settings
-from saq.error import report_exception
 from saq.search.tasks import submit_delete_task
 
 from sqlalchemy.sql.expression import select, delete
@@ -59,27 +58,23 @@ def cleanup_alerts(fp_days_old: Optional[int]=None, ignore_days_old: Optional[in
     try:
         cleanup_ignored_alerts(ignore_days_old, dry_run)
     except Exception as e:
-        logging.error(f"error cleaning up ignored alerts: {e}")
-        report_exception()
+        logging.exception(f"error cleaning up ignored alerts: {e}")
 
     try:
         archive_fp_alerts(fp_days_old, dry_run)
     except Exception as e:
-        logging.error(f"error archiving fp alerts: {e}")
-        report_exception()
+        logging.exception(f"error archiving fp alerts: {e}")
 
     try:
         archive_simulated_alerts(simulated_days_old, dry_run)
     except Exception as e:
-        logging.error(f"error archiving simulated alerts: {e}")
-        report_exception()
+        logging.exception(f"error archiving simulated alerts: {e}")
 
     try:
         if distribute_days_old > 0:
             distribute_old_alerts(distribute_days_old, dry_run, get_config().global_settings.distribution_target)
     except Exception as e:
-        logging.error(f"error distributing old alerts: {e}")
-        report_exception()
+        logging.exception(f"error distributing old alerts: {e}")
 
 def cleanup_ignored_alerts(days: int, dry_run: bool):
     # delete alerts dispositioned as IGNORE and older than N days
@@ -205,16 +200,14 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
                         success_count += 1
                     except Exception as e:
                         failure_count += 1
-                        logging.error(f"unable to remove local storage_dir {storage_dir}: {e}")
-                        report_exception()
+                        logging.exception(f"unable to remove local storage_dir {storage_dir}: {e}")
                 else:
                     failure_count += 1
                     logging.error(f"upload for {uuid} returned non-success {upload_result}")
 
             except Exception as e:
                 failure_count += 1
-                logging.error(f"unable to upload alert {uuid}: {e}")
-                report_exception()
+                logging.exception(f"unable to upload alert {uuid}: {e}")
 
     if dry_run:
         logging.info(f"{success_count} alerts would be distributed to {distribution_target}")
@@ -264,8 +257,7 @@ def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:
     try:
         stats = get_blob_store().maintain_global(grace, dry_run=dry_run)
     except Exception as e:
-        logging.error(f"error running durable blob gc: {e}")
-        report_exception()
+        logging.exception(f"error running durable blob gc: {e}")
         return stats
 
     elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)
@@ -302,8 +294,7 @@ def maintain_local_cache(dry_run: bool = False) -> LocalMaintenanceStats:
     try:
         stats = get_blob_store().maintain_local(budget, dry_run=dry_run)
     except Exception as e:
-        logging.error(f"error running local blob cache maintenance: {e}")
-        report_exception()
+        logging.exception(f"error running local blob cache maintenance: {e}")
         return LocalMaintenanceStats()
 
     elapsed_ms = int((datetime.datetime.now() - started).total_seconds() * 1000)

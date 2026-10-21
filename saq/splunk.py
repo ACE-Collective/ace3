@@ -28,7 +28,6 @@ from saq.configuration.config import get_proxy_config, get_splunk_config
 from saq.configuration.secret_ref import resolve_secret
 from saq.environment import get_data_dir
 from saq.util import local_time, create_timedelta
-from saq.error import report_exception
 from saq.error.remote import RemoteApiError
 
 try:
@@ -146,8 +145,7 @@ def extract_event_timestamp(event:dict) -> datetime:
             # XXX assume UTC
             return datetime.strptime(event['_time'][:19], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)
     except Exception as e:
-        logging.error(f"_time field does not match expected format: {event['_time']}: {e}")
-        report_exception()
+        logging.exception(f"_time field does not match expected format: {event['_time']}: {e}")
 
     return local_time()
 
@@ -606,8 +604,7 @@ class SplunkQueryObject:
             raise RemoteApiError(401, f"Splunk authentication failed: {e}")
 
         except Exception as e:
-            logging.error(f'Search failed: {e}')
-            report_exception()
+            logging.exception(f'Search failed: {e}')
             if job:
                 self.delete_search_job(job)
             self.record_splunk_query_performance(job, error=e)
@@ -783,8 +780,7 @@ class SplunkQueryObject:
                 writer.writerow([job.name, query])
 
         except Exception as e:
-            logging.error(f"unable to record splunk sid: {e}")
-            report_exception()
+            logging.exception(f"unable to record splunk sid: {e}")
 
     def get_search_log(self, sid: str, target_file: str) -> bool:
         """Download the Splunk log for the given search and store it in the specified file.
@@ -807,8 +803,7 @@ class SplunkQueryObject:
                 writer.writerow([job.name, local_time(), self.start_time, self.running_start_time, self.end_time, self.dispatch_state, self.run_duration, error, self.wait_time, self.total_time, self.run_time])
 
         except Exception as e:
-            logging.error(f"unable to record splunk query performance: {e}")
-            report_exception()
+            logging.exception(f"unable to record splunk query performance: {e}")
 
     #
     # kv store

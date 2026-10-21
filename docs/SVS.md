@@ -548,7 +548,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     router from moving it, so a manual *disassociate* is not undone by re-analysis. When the SVS
     router makes no decision, the configured route applies as it does today. [FR-2]
   - **A router never breaks an insert.** The registry runs each router inside a `try`; a router
-    that raises is logged with `report_exception()` and skipped, and `ALERT()` continues. ART-15
+    that raises is logged with its traceback (writing an error report) and skipped, and `ALERT()` continues. ART-15
     says this for loading a router; it holds at runtime too, because the registry sits inside
     every alert insert. [FR-2]
   - Routers are registered as built-ins plus `alert_routers:` config entries

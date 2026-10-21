@@ -64,7 +64,6 @@ from saq.email import (
     normalize_message_id,
 )
 from saq.environment import get_base_dir, get_data_dir, get_local_timezone
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
@@ -1802,8 +1801,7 @@ class EmailAnalyzer(AnalysisModule):
                                 fp.write(b'\n\n')
 
                             except Exception as e:
-                                logging.error(f"unable to copy {attachment_path} to {combined_path}: {e}")
-                                report_exception()
+                                logging.exception(f"unable to copy {attachment_path} to {combined_path}: {e}")
 
                 # added only once the file is closed: the observable's value is the hash of what is on disk
                 combined_file = analysis.add_file_observable(combined_path)

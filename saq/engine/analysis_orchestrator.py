@@ -25,7 +25,6 @@ from saq.engine.errors import AnalysisTimeoutError
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 from saq.util import storage_dir_from_uuid
 
 
@@ -104,16 +103,14 @@ class AnalysisOrchestrator:
             logging.warning(f"analysis timeout for {execution_context.work_item}: {e}")
             return False
         except Exception as e:
-            logging.error(f"error orchestrating analysis for {execution_context.work_item}: {e}")
-            report_exception()
+            logging.exception(f"error orchestrating analysis for {execution_context.work_item}: {e}")
             return False
         finally:
             if work_item_processed:
                 try:
                     self._handle_post_analysis_logic(execution_context)
                 except Exception as e:
-                    logging.error(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
-                    report_exception()
+                    logging.exception(f"error handling post-analysis logic for {execution_context.work_item}: {e}")
 
     def _process_work_item(self, execution_context: EngineExecutionContext) -> bool:
         """Process the work item and set up the root analysis."""
@@ -230,8 +227,7 @@ class AnalysisOrchestrator:
                 )
 
         except Exception as e:
-            logging.error(f"unable to check for disposition of {execution_context.work_item}: {e}")
-            report_exception()
+            logging.exception(f"unable to check for disposition of {execution_context.work_item}: {e}")
 
         return False
 
@@ -331,8 +327,7 @@ class AnalysisOrchestrator:
                 return self._check_for_outstanding_work(cursor, execution_context)
 
         except Exception as e:
-            logging.error(f"trouble checking finished status of {execution_context.root}: {e}")
-            report_exception()
+            logging.exception(f"trouble checking finished status of {execution_context.root}: {e}")
             return True
 
     def _handle_detections_if_no_outstanding_work(
@@ -426,8 +421,7 @@ class AnalysisOrchestrator:
                 logging.info(f"scheduling analysis of {execution_context.root} for {execution_context.root.analysis_mode}")
                 execution_context.root.schedule()
             except Exception as e:
-                logging.error(f"unable to add {execution_context.root} to workload: {e}")
-                report_exception()
+                logging.exception(f"unable to add {execution_context.root} to workload: {e}")
 
             return True
 
@@ -452,8 +446,7 @@ class AnalysisOrchestrator:
         try:
             ALERT(execution_context.root)
         except Exception as e:
-            logging.error(f"unable to create alert for {execution_context.root}: {e}")
-            report_exception()
+            logging.exception(f"unable to create alert for {execution_context.root}: {e}")
 
     def _relocate_storage_directory(self, target_dir: str, execution_context: EngineExecutionContext):
         """Relocate the storage directory for alerts."""
@@ -465,8 +458,7 @@ class AnalysisOrchestrator:
             try:
                 execution_context.root.move(target_dir)
             except Exception as e:
-                logging.error(f"unable to move {execution_context.root.storage_dir} to {target_dir}: {e}")
-                report_exception()
+                logging.exception(f"unable to move {execution_context.root.storage_dir} to {target_dir}: {e}")
 
         # Update database entries to point to the new storage_dir
         try:
@@ -480,10 +472,9 @@ class AnalysisOrchestrator:
                 params.append((execution_context.root.storage_dir, execution_context.root.uuid))
                 execute_with_retry(db, cursor, sql, params, commit=True)
         except Exception as e:
-            logging.error(
+            logging.exception(
                 f"unable to update workload/delayed_analysis tables with new storage_dir for {execution_context.root}: {e}"
             )
-            report_exception()
 
     def _sync_alert_to_database(self, execution_context: EngineExecutionContext):
         """Sync the alert to the database."""
@@ -525,8 +516,7 @@ class AnalysisOrchestrator:
                 logging.error(
                     "correlation mode root has no alerts row", extra={"alert_uuid": execution_context.root.uuid})
         except Exception as e:
-            logging.error(f"unable to sync alert {execution_context.root}: {e}")
-            report_exception()
+            logging.exception(f"unable to sync alert {execution_context.root}: {e}")
         finally:
             if session:
                 session.close()

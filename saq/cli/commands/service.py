@@ -3,7 +3,6 @@ import os
 import threading
 
 from saq.cli.cli_main import get_cli_subparsers
-from saq.error.reporting import report_exception
 from saq.shutdown import get_shutdown_coordinator, run_bounded
 
 
@@ -54,8 +53,7 @@ def start_service(args):
         # only reachable if a service installed its own SIGINT handling over ours
         coordinator.request_shutdown("keyboard interrupt")
     except Exception as e:
-        logging.error(f"error starting service {args.service}: {e}")
-        report_exception()
+        logging.exception(f"error starting service {args.service}: {e}")
         # exit non-zero so the container's restart policy and whoever is watching it can
         # tell a service that fell over from one that was asked to stop
         _shutdown(service, coordinator, args.service, exit_code=1)

@@ -3,12 +3,14 @@
 
 import threading
 import time
+from unittest.mock import Mock
 
 import pytest
 
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_NETWORK_SEMAPHORE
 from saq.network_semaphore import NetworkSemaphoreServer, NetworkSemaphoreClient
+from saq.network_semaphore import client as client_module
 from saq.network_semaphore.logging import LoggingSemaphore
 from saq.network_semaphore.fallback import (
     get_defined_fallback_semaphore,
@@ -322,3 +324,25 @@ def test_cancel_request_callback_fallback_semaphore():
     assert not client_2.acquire("test")
 
     client_1.release()
+
+
+@pytest.mark.unit
+def test_failed_fallback_release_is_reported(monkeypatch):
+    client = NetworkSemaphoreClient()
+    client.semaphore_name = "test_semaphore"
+    client.semaphore_acquired = True
+    client.fallback_semaphore = Mock(release=Mock(side_effect=RuntimeError("release failed")))
+    client.release_event = threading.Event()
+    client.failsafe_thread = Mock()
+    monkeypatch.setattr(client_module, "maintain_undefined_semaphores", lambda: None)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    client.release()
+
+    write_error_report.assert_called_once()
+    record = write_error_report.call_args.kwargs["record"]
+    assert "unable to release fallback semaphore test_semaphore" in record.getMessage()
+    # the failsafe thread is still told to exit
+    assert client.semaphore_acquired is False
+    assert client.release_event.is_set()

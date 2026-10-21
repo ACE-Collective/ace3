@@ -12,7 +12,6 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.detection_verdicts.effective import unreviewed_run_condition
 from saq.disposition import get_disposition_class
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.signatures.builtin import SVS_MARKER_MISMATCH, get_builtin_signature_version
 from saq.svs.attribution import alert_event_time, attribution_open, evaluate
@@ -65,10 +64,9 @@ class YaraSampleCapture(AnalysisModule):
                 capture(pool, root.uuid, candidate)
             except Exception as e:
                 # one capture must never stop the others
-                logging.error("unable to capture svs sample %s of %s: %s", candidate, root, e,
+                logging.exception("unable to capture svs sample %s of %s: %s", candidate, root, e,
                               extra={"alert_uuid": root.uuid, "sha256": candidate.sha256,
                                      "rule_uuid": candidate.rule_uuid})
-                report_exception()
 
         return AnalysisExecutionResult.COMPLETED
 

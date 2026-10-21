@@ -37,7 +37,7 @@ from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SV
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import platform_slugs, supported_platforms
 from saq.svs.expectations import observation_for_test
@@ -301,8 +301,7 @@ def on_run_ended(run: SVSRun) -> None:
     try:
         compute_result(run.id)
     except Exception as e:
-        logging.error("unable to compute the result of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
-        report_exception()
+        logging.exception("unable to compute the result of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
 
 def _after_close(run: SVSRun, actor: str = TIMER_ACTOR) -> None:
@@ -312,8 +311,7 @@ def _after_close(run: SVSRun, actor: str = TIMER_ACTOR) -> None:
         close_run_alerts(run, actor)
     except Exception as e:
         get_db().rollback()
-        logging.error("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
-        report_exception()
+        logging.exception("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
 
 #
