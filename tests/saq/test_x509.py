@@ -215,7 +215,7 @@ def _cert_with_subject(private_key, x509_constants, attributes):
 
 @pytest.mark.unit
 def test_common_name_success_long_subject(private_key, x509_constants):
-    """Tests that regex pulls out the domain when the CN is not the only
+    """Tests that the domain is pulled out when the CN is not the only
     attribute in the subject."""
 
     # setup
@@ -235,7 +235,7 @@ def test_common_name_success_long_subject(private_key, x509_constants):
 
 @pytest.mark.unit
 def test_common_name_success_cn_only(private_key, x509_constants):
-    """Tests that regex pulls out the domain when the CN is the only
+    """Tests that the domain is pulled out when the CN is the only
     attribute in the subject."""
 
     # setup
@@ -247,20 +247,50 @@ def test_common_name_success_cn_only(private_key, x509_constants):
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(strict=True, reason="common_name's regex CN=([^,$]+) stops at the backslash of an RFC 4514 escaped comma")
 def test_common_name_with_escaped_comma(private_key, x509_constants):
     cert = _cert_with_subject(private_key, x509_constants, [
         (NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
         (NameOID.COMMON_NAME, 'Example, Inc'),
     ])
 
+    assert cert.subject.rfc4514_string() == 'CN=Example\\, Inc,O=ACE Ecosystem'
     assert 'Example, Inc' == saq_x509.common_name(cert)
 
 
 @pytest.mark.unit
+def test_common_name_with_other_escaped_characters(private_key, x509_constants):
+    """The value comes back unescaped, not as it appears in the RFC 4514 subject string."""
+    value = 'a+b "c" <d>; \\e'
+    cert = _cert_with_subject(private_key, x509_constants, [(NameOID.COMMON_NAME, value)])
+
+    assert cert.subject.rfc4514_string() != f'CN={value}'
+    assert value == saq_x509.common_name(cert)
+
+
+@pytest.mark.unit
+def test_common_name_not_taken_from_another_attribute(private_key, x509_constants):
+    """CN= inside another attribute's value is not the common name."""
+    cert = _cert_with_subject(private_key, x509_constants, [
+        (NameOID.ORGANIZATION_NAME, 'ACE CN=evil.example'),
+    ])
+
+    assert saq_x509.common_name(cert) is None
+
+
+@pytest.mark.unit
+def test_common_name_multiple_uses_most_specific(private_key, x509_constants):
+    cert = _cert_with_subject(private_key, x509_constants, [
+        (NameOID.COMMON_NAME, 'outer.example'),
+        (NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
+        (NameOID.COMMON_NAME, 'inner.example'),
+    ])
+
+    assert 'inner.example' == saq_x509.common_name(cert)
+
+
+@pytest.mark.unit
 def test_common_name_failed_subject_doesnt_contain_common_name(private_key, x509_constants):
-    """Test attribute error is handled appropriately when regex doesn't
-    match because the CN is missing from the subject."""
+    """None is returned when the subject has no CN."""
 
     # setup
     cert = _cert_with_subject(private_key, x509_constants, [

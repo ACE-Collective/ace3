@@ -13,6 +13,7 @@ import re
 from typing import List, Union
 
 from cryptography import x509
+from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from pyasn1.codec.der.decoder import decode as pyasn1_der_decode
@@ -114,18 +115,15 @@ def not_valid_after(cert: x509.Certificate) -> datetime.datetime:
     return cert.not_valid_after_utc
 
 
-def common_name(cert: x509.Certificate) -> str:
-    """Return the parsed common name from the subject."""
-    try:
-        return re.search(r'CN=([^,$]+)', subject(cert)).group(1)
-
-    # If no `group` attribute, then regex did not match
-    except AttributeError:
+def common_name(cert: x509.Certificate) -> str | None:
+    """Return the common name from the subject, or None if it has none."""
+    # read the parsed attribute rather than the RFC 4514 string, whose escaping (\, \+ ...) a regex can't undo
+    common_names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not common_names:
         return None
 
-    # This should never happen... but Justin Bieber said to "never say never"
-    except IndexError:
-        return None
+    # with more than one CN, use the last (most specific) RDN, which is the first one subject() shows
+    return common_names[-1].value
 
 
 def _get_san_extension(cert: x509.Certificate) -> Union[x509.Extension, None]:
