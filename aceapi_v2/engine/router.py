@@ -4,7 +4,7 @@ Node to node only: every caller is another ACE node, with the automation key, wh
 engine:* (etc/saq.default.yaml apikeys.automation). A node pulls a work target from the node that
 holds it (download, then clear once it is copied), and pushes one to another node (upload: a
 collector delivering a submission, a drain moving delayed analysis, `ace correlate` on a remote
-node, storage redistribution).
+node, storage redistribution). A node also starts the CLI runs recorded for it (cli, docs/GUI_CLI.md).
 """
 
 import logging
@@ -12,10 +12,13 @@ import os
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Security, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
 from aceapi_v2.auth import ApiAuthResult
+from aceapi_v2.cli import service as cli_service
+from aceapi_v2.cli.schemas import CliExecutionStarted
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.engine import service
 from aceapi_v2.engine.schemas import ClearResult, UploadModifiers, UploadResult
@@ -83,3 +86,22 @@ async def clear(
     await run_db_in_thread(service.clear_target, uuid, lock_uuid)
     logger.info("cleared work target %s for %s", uuid, _peer(request))
     return ClearResult(result=True)
+
+
+@router.post("/cli/{execution_id}", response_model=CliExecutionStarted, status_code=202)
+async def start_cli_execution(
+    execution_id: int,
+    request: Request,
+    _: Annotated[ApiAuthResult, Depends(require_permission("engine", "cli"))],
+) -> CliExecutionStarted:
+    """Run a CLI execution recorded for this node, in the background; the row says how it went.
+
+    Only the execution's id comes from the caller: the command is the one the user who holds
+    cli:execute recorded, and a row runs once (409 unless it is pending and this node's)."""
+    argv, timeout_seconds = await run_db_in_thread(cli_service.claim_execution, execution_id)
+    logger.info("starting cli execution %s for %s", execution_id, _peer(request))
+    # an async task, so the run's wait holds no thread; the response goes out first
+    return JSONResponse(
+        status_code=202,
+        content=CliExecutionStarted(id=execution_id, status=cli_service.STATUS_RUNNING).model_dump(),
+        background=BackgroundTask(cli_service.run_execution, execution_id, argv, timeout_seconds))

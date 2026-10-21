@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.analysis.router import router as analysis_router
+from aceapi_v2.cli.router import router as cli_router
 from aceapi_v2.common.router import router as common_router
 from aceapi_v2.crashes.router import router as crashes_router
 from aceapi_v2.dependencies import get_current_auth
@@ -113,6 +114,7 @@ def create_app() -> FastAPI:
     # one alert's side of SVS: /alerts/{uuid}/svs
     app.include_router(svs_alerts_router, prefix="/alerts", tags=["svs"])
     app.include_router(analysis_router, prefix="/analysis", tags=["analysis"])
+    app.include_router(cli_router, prefix="/cli", tags=["cli"])
     app.include_router(common_router, prefix="/common", tags=["common"])
     app.include_router(crashes_router, prefix="/crashes", tags=["crashes"])
     app.include_router(detection_router, prefix="/detection", tags=["detection"])
