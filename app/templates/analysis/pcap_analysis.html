@@ -1,0 +1,28 @@
+{# shared by every pcap analysis (saq/modules/file_analysis/pcap.py::PcapAnalysisPresenter) #}
+{% set details = analysis_presenter.details %}
+{% if details.error %}
+<div class="alert alert-danger">{{ details.error }}</div>
+{% endif %}
+{% if details.omitted %}
+<div class="alert alert-warning">
+    Not added (over the limit or invalid):
+    {% for o_type, count in details.omitted | dictsort %}{{ count }} {{ o_type }}{% if not loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
+{% for table in analysis_presenter.tables %}
+<h6 class="mt-3">{{ table.title }}
+    {% if table.total > table.rows | length %}<small class="text-muted">(first {{ table.rows | length }} of {{ table.total }})</small>{% endif %}
+</h6>
+<div style="overflow-x: auto">
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr>{% for column in table.columns %}<th>{{ column }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+            {% for row in table.rows %}
+            <tr>{% for cell in row %}<td style="word-break: break-all">{{ cell if cell is not none else '' }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
