@@ -256,8 +256,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 #self.scanner.blacklist = self.blacklisted_rules
 
             #except Exception as e:
-                #logging.error("unable to load blacklist file {0}: {1}".format(self.blacklist_path, str(e)))
-                #report_exception()
+                #logging.exception("unable to load blacklist file {0}: {1}".format(self.blacklist_path, str(e)))
         #else:
             #logging.warning("blacklist file {0} does not exist".format(self.blacklist_path))
 

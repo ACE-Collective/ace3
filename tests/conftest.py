@@ -492,16 +492,6 @@ def global_function_setup(request):
     sys.path = original_sys_path
 
 @pytest.fixture
-def test_client():
-    from aceapi import create_app
-    app = create_app(testing=True)
-    app_context = app.test_request_context()                      
-    app_context.push()                           
-    client = app.test_client()
-
-    yield client
-
-@pytest.fixture
 def root_analysis(tmpdir) -> RootAnalysis:
     root_uuid = str(uuid.uuid4())
     root = RootAnalysis(

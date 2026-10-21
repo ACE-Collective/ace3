@@ -27,6 +27,13 @@ ADMIN_MODULES = [
         "major": "secret",
         "minor": "read",
     },
+    {
+        "endpoint": "admin.cli_console",
+        "title": "CLI",
+        "description": "Run ACE CLI commands on the primary node, a chosen node, or several nodes at once.",
+        "major": "cli",
+        "minor": "execute",
+    },
 ]
 
 
