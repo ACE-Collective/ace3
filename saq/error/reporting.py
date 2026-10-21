@@ -1,14 +1,11 @@
 from datetime import datetime
 import logging
 import os
-import sys
 import threading
 from types import TracebackType
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from saq.configuration.config import get_config
-if TYPE_CHECKING:
-    from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_base_dir, get_data_dir
 from saq.logging import format_extra_field, iter_extra_fields
 from saq.monitor import emit_monitor
@@ -18,19 +15,7 @@ from saq.monitor_definitions import MONITOR_ERROR_REPORT
 ExcInfo = tuple[Optional[type[BaseException]], Optional[BaseException], Optional[TracebackType]]
 
 
-def report_exception(execution_context: Optional["EngineExecutionContext"]=None):
-    """Write an error report for the exception currently being handled.
-
-    A record logged with logging.exception() (or exc_info at ERROR) writes the same report
-    through ErrorReportHandler, so calling this as well writes it twice."""
-    return write_error_report(sys.exc_info(), execution_context=execution_context)
-
-
-def write_error_report(
-    exc_info: ExcInfo,
-    execution_context: Optional["EngineExecutionContext"]=None,
-    record: Optional[logging.LogRecord]=None,
-) -> Optional[str]:
+def write_error_report(exc_info: ExcInfo, record: Optional[logging.LogRecord]=None) -> Optional[str]:
     """Write an error report for exc_info and emit the error report monitor event.
 
     Returns the path of the report, or None if it could not be written. Never raises: it
@@ -45,11 +30,6 @@ def write_error_report(
         transaction_id = getattr(record, "transactionId", None)
 
         with open(error_report_path, 'w') as fp:
-            if execution_context:
-                fp.write("CURRENT ANALYSIS TARGET: {}\n".format(execution_context.root))
-                if execution_context.root:
-                    fp.write("CURRENT ANALYSIS MODE: {}\n".format(execution_context.root.analysis_mode))
-
             if record is not None:
                 fp.write("LOG MESSAGE\n")
                 fp.write(message)
@@ -76,8 +56,6 @@ def write_error_report(
             fp.write("\n")
 
         emit_monitor(MONITOR_ERROR_REPORT, {
-            "current_analysis_target": str(execution_context.root) if execution_context else None,
-            "current_analysis_mode": str(execution_context.root.analysis_mode) if execution_context and execution_context.root else None,
             "message": message,
             "transaction_id": transaction_id,
             "exception": str(reported_exception),

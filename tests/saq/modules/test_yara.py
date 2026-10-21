@@ -187,14 +187,14 @@ class TestYaraScannerServiceFailures:
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
-        report_exception_called = {"called": False}
+        write_error_report_called = {"called": False}
 
-        def mock_report_exception(*args, **kwargs):
-            report_exception_called["called"] = True
+        def mock_write_error_report(*args, **kwargs):
+            write_error_report_called["called"] = True
             return ""
 
         monkeypatch.setattr(
-            "saq.error.reporting.write_error_report", mock_report_exception
+            "saq.error.reporting.write_error_report", mock_write_error_report
         )
 
         adapter = self._create_module(root_analysis)
@@ -203,7 +203,7 @@ class TestYaraScannerServiceFailures:
 
         assert result == AnalysisExecutionResult.COMPLETED
         # the timeout must be handled by the dedicated handler, not reported as an error
-        assert report_exception_called["called"] is False
+        assert write_error_report_called["called"] is False
         assert any(
             "yara scanner service timed out" in record.message for record in caplog.records
         )
@@ -224,13 +224,13 @@ class TestYaraScannerServiceFailures:
 
         monkeypatch.setattr(yara_client, "scan_file", mock_scan_file)
 
-        report_exception_called = {"called": False}
+        write_error_report_called = {"called": False}
 
-        def mock_report_exception(*args, **kwargs):
-            report_exception_called["called"] = True
+        def mock_write_error_report(*args, **kwargs):
+            write_error_report_called["called"] = True
             return ""
 
-        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_report_exception)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_write_error_report)
 
         def fail_initialize_local_scanner(self):
             raise AssertionError("the local scanner must not be used")
@@ -241,7 +241,7 @@ class TestYaraScannerServiceFailures:
         result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert report_exception_called["called"] is True
+        assert write_error_report_called["called"] is True
         assert observable.get_analysis(YaraScanResults_v3_4) is None
 
     @pytest.mark.unit
@@ -269,20 +269,20 @@ class TestYaraScannerServiceFailures:
 
         monkeypatch.setattr(YaraScanner_v3_4, "initialize_local_scanner", mock_initialize_local_scanner)
 
-        report_exception_called = {"called": False}
+        write_error_report_called = {"called": False}
 
-        def mock_report_exception(*args, **kwargs):
-            report_exception_called["called"] = True
+        def mock_write_error_report(*args, **kwargs):
+            write_error_report_called["called"] = True
             return ""
 
-        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_report_exception)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", mock_write_error_report)
 
         adapter = self._create_module(root_analysis)
         with caplog.at_level("WARNING"):
             result = adapter.execute_analysis(observable)
 
         assert result == AnalysisExecutionResult.COMPLETED
-        assert report_exception_called["called"] is False
+        assert write_error_report_called["called"] is False
         assert any("local yara scanner timed out" in record.message for record in caplog.records)
 
 

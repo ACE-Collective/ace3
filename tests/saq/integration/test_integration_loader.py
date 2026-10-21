@@ -169,7 +169,7 @@ class TestLoadIntegrations:
     @patch('saq.integration.integration_loader.is_integration_enabled')
     @patch('saq.integration.integration_loader.get_integration_name_from_path')
     @patch('saq.error.reporting.write_error_report')
-    def test_load_integrations_exception_handling(self, mock_report_exception, mock_get_name, 
+    def test_load_integrations_exception_handling(self, mock_write_error_report, mock_get_name, 
                                                  mock_is_enabled, mock_get_dirs):
         """Test exception handling during integration loading."""
         mock_get_dirs.return_value = ["/path/to/integration1"]
@@ -178,7 +178,7 @@ class TestLoadIntegrations:
         
         result = load_integrations()
         assert result is False
-        mock_report_exception.assert_called_once()
+        mock_write_error_report.assert_called_once()
 
 
 @pytest.mark.unit
