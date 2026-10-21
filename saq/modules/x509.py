@@ -195,8 +195,10 @@ class X509Analyzer(AnalysisModule):
             logging.debug(f"{local_file_path} is not a x509 certificate")
             return AnalysisExecutionResult.COMPLETED
 
+        # never strip: a DER certificate can end in a byte that looks like whitespace, and PEM
+        # loading already tolerates the whitespace around it
         with open(local_file_path, 'rb') as f:
-            file_bytes = f.read().strip()
+            file_bytes = f.read()
 
         # custom_requirements function makes sure this is an x509 file before we load it here
         cert = x509.load_cert(file_bytes)
