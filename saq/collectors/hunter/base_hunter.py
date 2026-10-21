@@ -109,9 +109,6 @@ class HuntConfig(BaseModel):
 
         return value
 
-class InvalidHuntTypeError(ValueError):
-    pass
-
 def hunt_state_dir_name(hunt_name: str) -> str:
     """Returns the directory name used to store the persistence data for a hunt with this name.
 
