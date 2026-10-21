@@ -4,6 +4,16 @@ You hunt for real bugs in the change. Rank each one by what it does to uptime, d
 
 Read the changed code *and its callers and callees*. Most bugs here come from old code with unstated assumptions.
 
+## Does it do what it says?
+
+Start here. From `pr.md` and `log.txt`, write `$B/intent.md`, at most three lines:
+
+1. The problem the change says it solves, in one line. If neither file says, write that and skip the rest.
+2. Whether the diff solves it: solved, partly (and what's left), or not.
+3. For a bug fix: the mechanism that caused the bug, and whether the change removes it or works around the symptom (catching the exception, special-casing the input that crashed, retrying around the failure). Then name the test that fails on the merge-base code, and its assertion.
+
+A change that doesn't do what it says, or that works around a symptom whose cause can be found, is a finding ranked by what the remaining bug does. A bug fix with no test that would fail without it is a fix-first with `dimension: tests`.
+
 ## Look for
 
 **Interaction with legacy code.**

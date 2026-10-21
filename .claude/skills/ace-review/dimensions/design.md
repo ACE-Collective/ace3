@@ -32,6 +32,10 @@ Read first: `CLAUDE.md` § Engineering values → Keep it lean, § Conventions, 
   - A missing hook should be added to core generically, in its own core PR.
 - In an integration repo: code that only works because of a local core modification that isn't part of a core PR.
 
+**Instructions left stale (fix-first in CLAUDE.md or a skill, a nit elsewhere unless an operator acts on it).**
+- Leads with `check: stale-reference` are doc lines that name a path, function, class or config key the change removes. Report each line that now misleads; a history or migration-tracking doc that names it as removed is fine.
+- A change that alters what a CLAUDE.md or skill line says, without removing a name: an agent acts on every such line in every session, so read the lines about the subsystem the change touches.
+
 **Bloat (nit, unless it is pervasive).**
 - Module docstrings that retell the design doc, comments that restate the next line, and per-field commentary on obvious dataclass fields.
 - New modules, exception classes, base classes, protocols or config knobs with a single use and no concrete need. Prefer a plain function in an existing module.
