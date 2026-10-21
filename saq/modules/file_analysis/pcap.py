@@ -455,16 +455,19 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
     for layers in packets:
         frame = _first(layers, "frame.number") or ""
 
+        # every name gets a row, also one only seen as an answer (a CNAME target): it is an fqdn observable
         for name in layers.get("dns.qry.name", []) + layers.get("dns.resp.name", []) + layers.get("dns.cname", []):
-            entry = dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "count": 0})
-            entry["count"] += 1
-        if _first(layers, "dns.flags.response") in ("True", "1", "true"):
+            dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "queries": 0, "responses": 0})
+        if "dns.qry.name" in layers:
+            is_response = _first(layers, "dns.flags.response") in ("True", "1", "true")
             answers = layers.get("dns.a", []) + layers.get("dns.aaaa", []) + layers.get("dns.cname", [])
-            for name in layers.get("dns.qry.name", []):
+            for name in layers["dns.qry.name"]:
                 entry = dns[name.lower()]
-                for answer in answers:
-                    if answer not in entry["answers"]:
-                        entry["answers"].append(answer)
+                entry["responses" if is_response else "queries"] += 1
+                if is_response:
+                    for answer in answers:
+                        if answer not in entry["answers"]:
+                            entry["answers"].append(answer)
 
         handshake_types = layers.get("tls.handshake.type", [])
         flow = _flow_key(layers)
@@ -1298,8 +1301,9 @@ def index_tables(index: Optional[dict], category: Optional[str] = None) -> list[
 
     tables = []
     if category in (None, CATEGORY_DNS) and index.get(CATEGORY_DNS):
-        tables.append(_table("DNS", ["Name", "Answers", "Seen"],
-                             [[r["name"], ", ".join(r["answers"]), r["count"]] for r in index[CATEGORY_DNS]],
+        tables.append(_table("DNS", ["Name", "Answers", "Queries", "Responses"],
+                             [[r["name"], ", ".join(r["answers"]), r.get("queries"), r.get("responses")]
+                              for r in index[CATEGORY_DNS]],
                              index.get(f"{CATEGORY_DNS}_total")))
     if category in (None, CATEGORY_TLS) and index.get(CATEGORY_TLS):
         certificates = {c["sha256"]: c for c in index.get("certificates", [])}

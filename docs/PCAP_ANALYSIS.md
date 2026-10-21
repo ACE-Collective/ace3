@@ -17,7 +17,7 @@ Each kind of result has its own analysis node under the pcap, every node is coll
 ```
 capture.pcapng
  ├─ PCAP Analysis          pcap_analyzer        packets, flows and endpoint tables; IPs, MACs, hostnames
- ├─ PCAP DNS               pcap_dns             names queried and answered; FQDNs and answer IPs
+ ├─ PCAP DNS               pcap_dns             names with their answers and query/response counts; FQDNs and answer IPs
  ├─ PCAP TLS               pcap_tls             sessions (server, SNI, JA4, certificate subject/SAN/issuer); FQDNs, JA4, certificate files
  ├─ PCAP HTTP              pcap_http            requests; URLs, Host FQDNs, User-Agents
  ├─ PCAP Files             pcap_files           files carved from HTTP, SMB, FTP-data, TFTP and IMF

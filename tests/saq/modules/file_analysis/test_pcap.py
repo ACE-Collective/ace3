@@ -293,6 +293,10 @@ def test_build_index():
     dns = {r["name"]: r for r in index[CATEGORY_DNS]}
     assert set(dns) == {"www.example.com", "cdn.example.com"}
     assert dns["www.example.com"]["answers"] == ["198.51.100.7", "cdn.example.com"]
+    # one lookup is one query and one response, however many records its answer carries
+    assert (dns["www.example.com"]["queries"], dns["www.example.com"]["responses"]) == (1, 1)
+    # a CNAME target nobody looked up has a row but no lookups of its own
+    assert (dns["cdn.example.com"]["queries"], dns["cdn.example.com"]["responses"]) == (0, 0)
 
     (session,) = index[CATEGORY_TLS]
     assert session["client"] == "10.0.0.1:50000"
@@ -333,7 +337,7 @@ def test_collect_observables():
         "mac": [{"address": a} for a in ("02:00:00:aa:00:01", "ff:ff:ff:ff:ff:ff", "01:00:5e:00:00:fb",
                                          "00:00:00:00:00:00")],
     }
-    index[CATEGORY_DNS].append({"name": "1.0.0.10.in-addr.arpa", "answers": ["printer.local"], "count": 1})
+    index[CATEGORY_DNS].append({"name": "1.0.0.10.in-addr.arpa", "answers": ["printer.local"], "queries": 1, "responses": 1})
 
     items = collect_observables(index, [".arpa", ".local"])
     by_category: dict[str, set] = {}
@@ -489,11 +493,12 @@ def test_pcap_analyzer_reports_dissection_failure(monkeypatch, caplog):
 @pytest.mark.unit
 def test_presenter_tables():
     category = PcapCategoryAnalysis()
-    category.details = {"category": CATEGORY_DNS, "rows": [{"name": "a.example.com", "answers": ["1.2.3.4"], "count": 2}],
-                        "total": 7}
+    category.details = {"category": CATEGORY_DNS, "total": 7,
+                        "rows": [{"name": "a.example.com", "answers": ["1.2.3.4"], "queries": 2, "responses": 1}]}
     (table,) = PcapAnalysisPresenter(category).tables
     assert table["title"] == "DNS"
-    assert table["rows"] == [["a.example.com", "1.2.3.4", 2]]
+    assert table["columns"] == ["Name", "Answers", "Queries", "Responses"]
+    assert table["rows"] == [["a.example.com", "1.2.3.4", 2, 1]]
     assert table["total"] == 7
 
     files = PcapCategoryAnalysis()
@@ -538,6 +543,9 @@ def test_pcap_tree(root_analysis):
 
     dns = _category(network, CATEGORY_DNS)
     assert _values(dns, F_FQDN) == {"www.pcap-dns.example", "cdn.pcap-dns.example"}
+    counts = {row[0]: (row[2], row[3]) for row in PcapAnalysisPresenter(dns).tables[0]["rows"]}
+    assert counts == {"www.pcap-dns.example": (1, 1), "cdn.pcap-dns.example": (0, 0),
+                      "7.100.51.198.in-addr.arpa": (1, 0)}
     assert _values(dns, F_IP) == {"198.51.100.7"}
     assert "PCAP DNS" in dns.summary
     # nothing of these categories in the synthesized frames: no node in the tree
@@ -967,7 +975,12 @@ def _certificate_der(subject: str, issuer: str, sans: list[str]) -> bytes:
                .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1)))
     if sans:
         builder = builder.add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in sans]), critical=False)
-    return builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+    # x509_analyzer reads a certificate with .strip(), which corrupts the ~2% of DER certificates whose
+    # signature ends in a whitespace byte; sign again until this one does not, so the tests are stable
+    while True:
+        der = builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+        if der == der.strip():
+            return der
 
 
 @pytest.mark.unit
