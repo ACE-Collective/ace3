@@ -25,7 +25,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _GUARD_EXCLUDE = {
     REPO_ROOT / "app" / "auth" / "permissions.py",
     REPO_ROOT / "aceapi_v2" / "dependencies.py",
-    REPO_ROOT / "aceapi" / "auth.py",
 }
 
 # Matches @require_permission("major", "minor") and require_permission('major', 'minor').
@@ -33,28 +32,21 @@ _REQUIRE_PERMISSION_RE = re.compile(
     r"""require_permission\(\s*["'](?P<major>[^"']+)["']\s*,\s*["'](?P<minor>[^"']+)["']"""
 )
 
-# The legacy Flask API (aceapi/) enforces with @api_auth_check("major", "minor").
-_API_AUTH_CHECK_RE = re.compile(
-    r"""api_auth_check\(\s*["'](?P<major>[^"']+)["']\s*,\s*["'](?P<minor>[^"']+)["']"""
-)
-
 
 def _enforced_permission_pairs_in(path: Path) -> set[tuple[str, str]]:
-    """Statically scan a single file for the (major, minor) pairs it enforces, via either
-    require_permission(...) (app/, aceapi_v2/) or api_auth_check(...) (aceapi/)."""
-    text = path.read_text()
+    """Statically scan a single file for the (major, minor) pairs it enforces via
+    require_permission(...)."""
     return {
         (match.group("major"), match.group("minor"))
-        for regex in (_REQUIRE_PERMISSION_RE, _API_AUTH_CHECK_RE)
-        for match in regex.finditer(text)
+        for match in _REQUIRE_PERMISSION_RE.finditer(path.read_text())
     }
 
 
 def _enforced_permission_pairs() -> set[tuple[str, str]]:
-    """Statically scan app/, aceapi_v2/ (require_permission) and aceapi/ (api_auth_check) for the
-    enforced (major, minor) permission pairs."""
+    """Statically scan app/, aceapi_v2/ and aceapi_ai/ for the enforced (major, minor) permission
+    pairs."""
     pairs: set[tuple[str, str]] = set()
-    for root in ("app", "aceapi_v2", "aceapi", "aceapi_ai"):
+    for root in ("app", "aceapi_v2", "aceapi_ai"):
         for path in (REPO_ROOT / root).rglob("*.py"):
             if path in _GUARD_EXCLUDE:
                 continue

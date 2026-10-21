@@ -1380,7 +1380,7 @@ class AnalysisExecutor:
             # replay does not conflict. The inner try/except deliberately does
             # NOT re-raise — replay failure must fall through to the live path
             # so the outer except Exception below doesn't treat it as a module
-            # failure (which would call report_exception() spuriously).
+            # failure (which would write a crash report spuriously).
             if (
                 not is_resuming_delayed_module
                 and analysis_module.cache_ttl is not None
