@@ -677,8 +677,6 @@ gui:
   # Show the total alerts resulting from the current filter.
   #  Ex: "Alert (22)" would say there are 22 alerts matching the filter.
   show_total_alert_count: true
-  # Default Matching Open Events toggle position
-  matching_open_events_collapsed: false
   # Default Alert Details toggle position
   alert_details_collapsed: false
   # Hide intel if we don't want to let people see it (public/internet ace)

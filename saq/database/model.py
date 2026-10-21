@@ -127,8 +127,6 @@ class Alert(Base):
         # when we lock the Alert this is the UUID we used to lock it with
         self.lock_uuid = str(uuid.uuid4())
 
-        self._observable_open_event_counts = None
-
         # this is the RootAnalysis object that this Alert is associated with
         self._root_analysis: Optional[RootAnalysis] = None
 
@@ -384,32 +382,6 @@ class Alert(Base):
     @property
     def wiki(self) -> str:
         return ''
-
-    @property
-    def observable_open_event_counts(self):
-        """
-        Returns a dictionary containing the open events as the keys and the number of observables in this alert
-        that are also in alerts in the event.
-
-        {<event>: # of observables in this alert that are also in the event}
-        """
-        return {}
-
-        if self._observable_open_event_counts is None:
-            results = {}
-
-            # Skip file observables. The calculations will consider their hash observables instead.
-            for observable in [o for o in self.root_analysis.observable_store.values() if o.type != F_FILE]:
-                if 'OPEN' in observable.matching_events_by_status:
-                    for event in observable.matching_events_by_status['OPEN']:
-                        if event not in results:
-                            results[event] = 0
-
-                        results[event] += 1
-
-            self._observable_open_event_counts = results
-
-        return self._observable_open_event_counts
 
     @property
     def all_email_analysis(self) -> list[Analysis]:
