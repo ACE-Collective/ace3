@@ -36,7 +36,6 @@ def test_cli_commands_registered():
         "company",
         "config", "modules", "workload",
         "event", "debug", "git",
-        "s3",
     }
 
     registered = set(get_cli_subparsers().choices.keys())

@@ -31,8 +31,8 @@ def warn_if_blob_store_not_multi_node_safe():
 
     The pure-local LocalHardlinkBlobStore keeps spilled analysis-cache blobs on
     the node's own filesystem, so a blob written on one node is invisible to
-    the others. Multi-node deployments need a global backend (e.g. S3)
-    configured via analysis_cache.blob_store.
+    the others. Multi-node deployments need a global backend (a custom class
+    reaching shared storage) configured via analysis_cache.blob_store.
     """
     from saq.configuration.config import get_config
     if get_config().analysis_cache.blob_store is not None:
@@ -48,7 +48,7 @@ def warn_if_blob_store_not_multi_node_safe():
         logging.warning(
             "analysis cache blob store is node-local (LocalHardlinkBlobStore) but %s "
             "nodes are registered; multi-node deployments need a global blob store "
-            "backend configured via analysis_cache.blob_store (e.g. S3)",
+            "backend configured via analysis_cache.blob_store",
             node_count,
         )
 

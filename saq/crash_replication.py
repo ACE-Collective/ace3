@@ -11,21 +11,20 @@ by crash id, and any node can serve any report. The report then survives the own
 
 This lives outside ``saq/crash_report.py`` on purpose. That module is imported by the engine's
 crash paths and by the API, and it deliberately keeps heavy dependencies out of its import graph
-(see its lazy ``saq.database`` import). ``saq.storage`` pulls in boto3, which is not even a core
-dependency, so the same discipline applies: it is imported lazily, from inside functions, behind
-the config check.
+(see its lazy ``saq.database`` import), so it imports this module, and with it ``saq.storage``,
+only when it has a report to replicate.
 
 **Nothing here may raise or block the crash path.** Two rules follow:
 
 *Never raise* -- every public function swallows and logs, the same contract ``record_module_crash``
 holds itself to.
 
-*Never block* -- uploads happen on a daemon thread that is **never joined**. S3 requests are
-bounded (``saq/storage/s3.py`` sets connect/read timeouts and caps retries), but bounded is not
-instant: a report is several objects, each a multipart transfer of several requests, and the
-caller here is an engine worker holding a work item lock. Seconds of object store round trip still
-have no business on the crash path. The local report is already durable before any of this starts,
-so replication is pure best-effort and ``ace crash sync`` is the catch-up.
+*Never block* -- uploads happen on a daemon thread that is **never joined**. A network backend
+bounds its own requests (``saq/storage/interface.py``), but bounded is not instant: a report is
+several objects, each possibly several requests, and the caller here is an engine worker holding
+a work item lock. Seconds of object store round trip still have no business on the crash path.
+The local report is already durable before any of this starts, so replication is pure best-effort
+and ``ace crash sync`` is the catch-up.
 
 The upload order matters: **``metadata.json`` is uploaded last**, mirroring the local convention
 where it is written last. A ``<crash_id>/metadata.json`` key therefore means the remote copy is
@@ -38,7 +37,9 @@ import os
 import threading
 from typing import Optional
 
+from saq.configuration.config import get_config
 from saq.crash_report import METADATA_FILE, is_valid_crash_id
+from saq.storage import get_storage_system
 
 # How many replication threads may be in flight per process. Acquired non-blocking: if the budget
 # is gone we skip and let `ace crash sync` catch up, rather than queueing work onto the crash path.
@@ -57,8 +58,6 @@ def replication_enabled() -> bool:
     replication in exactly that case with no signal to the operator.
     """
     try:
-        from saq.configuration.config import get_config
-
         config = get_config().crash_reporting
         return bool(config.enabled and config.replicate)
     except Exception as e:
@@ -67,16 +66,10 @@ def replication_enabled() -> bool:
 
 
 def _bucket() -> str:
-    from saq.configuration.config import get_config
-
     return get_config().crash_reporting.storage_bucket
 
 
 def _storage():
-    # imported here rather than at module level: saq.storage pulls in boto3, which is not a core
-    # dependency, and this module is imported from the engine's crash path
-    from saq.storage import get_storage_system
-
     return get_storage_system()
 
 

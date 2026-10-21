@@ -1090,8 +1090,7 @@ def _replicate_crash_report(crash_dir: str, crash_id: str):
     ``saq/storage`` has no timeouts. See saq/crash_replication.py.
     """
     try:
-        # imported here rather than at module level: saq.storage pulls in boto3, which is not a
-        # core dependency, and this module is on the engine's crash path
+        # imported here rather than at module level: saq.crash_replication imports this module
         from saq.crash_replication import replicate_async, replication_enabled
 
         if not replication_enabled():

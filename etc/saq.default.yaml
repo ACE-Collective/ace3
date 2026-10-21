@@ -152,8 +152,8 @@ crash_reporting:
   # replicate crash reports to shared object storage (see the storage: section) so that ANY node
   # can serve a report written on any other node. without this, a report is only downloadable from
   # the node whose worker crashed, and every other node answers 409.
-  # turn this on when storage.target points at storage that every node shares (s3, or the local
-  # backend with base_dir on a shared filesystem)
+  # turn this on when storage.target points at storage that every node shares (a custom backend,
+  # or the local backend with base_dir on a shared filesystem)
   replicate: false
   # keep this bucket dedicated -- it holds the file observables that crashed modules, i.e. live malware
   storage_bucket: ace-crash-reports
@@ -421,38 +421,18 @@ phishkit:
   max_file_age_days: 3
 
 storage:
-  # local, s3 or custom
+  # local or custom
   target: local
   base_dir: data/storage
   # when target is custom, the backend class is imported from python_module/python_class and
   # the config below is validated against that class's get_config_class() model -- the same
-  # plugin convention as analysis_cache.blob_store. use this when the object store needs
-  # credentials the built-in s3 backend does not model (IAM instance roles, STS, ...)
+  # plugin convention as analysis_cache.blob_store. this is how an object store (S3, ...) is
+  # used: ACE ships no client for one, so the class comes from an integration
   #backend:
   #  python_module: mypackage.my_storage
   #  python_class: MyStorage
   #  config:
   #    some_setting: value
-
-# s3:
-#   host: garagehq
-#   port: 3900
-#   access_key: file:/auth/passwords/garage-access-key
-#   secret_key: file:/auth/passwords/garage-secret-key
-#   # set to use SSL
-#   secure: false
-#   # set to validate SSL certification
-#   cert_check: false
-#   region: garage
-#   # bounds on every s3 request. botocore's own defaults are 60s/60s with legacy retries (5
-#   # attempts), which lets a black-holed endpoint hold a caller for minutes per request
-#   connect_timeout: 10
-#   # per socket read, NOT a cap on a whole transfer: transfers are multipart (8MiB parts, up to
-#   # 10 concurrent), so this detects a stalled part. lowering it imposes a per-stream throughput
-#   # floor and can break large transfers on a slow link
-#   read_timeout: 60
-#   # total attempts per request including the first, under botocore's standard retry mode
-#   max_attempts: 3
 
 # global redis settings
 redis:
@@ -889,18 +869,10 @@ observable_types:
   reload_check_interval_seconds: 60.0
 
 email_archive:
-  target: local # possible values: local, s3
+  target: local # the only target
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
-
-  # s3 settings
-  # controls which section of the config to use for the s3 config
-  s3_config: s3
-  # the bucket to use for the email archive
-  s3_bucket: ace-email-archive
-  # the region to use for the email archive
-  s3_region:
   # days of archive and archive_index rows to keep. these tables are partitioned by week and
   # `ace partitions maintain` drops a week once all of it is older than this
   # (docs/DATABASE_PARTITIONS.md)

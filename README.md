@@ -38,7 +38,7 @@ ACE instance on the same machine, see [docs/MULTI_INSTANCE.md](docs/MULTI_INSTAN
 - ☐ async for I/O
 - ☐ FastAPI
 - ☐ easily scalable deployment
-- ☐ distributed file storage (Minio/S3)
+- ☐ distributed file storage
 - ☑ ace3 search feature using VectorDB
     - ☑ improve summary of all analysis
 - ☑ user permissions

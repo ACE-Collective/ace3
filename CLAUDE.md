@@ -243,9 +243,11 @@ exception handler, the `AnalysisModuleMonitor` watchdog, and `Worker._handle_fai
 Nothing in the module may raise — it runs on paths where a failure would break analysis or hang a
 dying process. `analysis_module_crashes` is a derived index; the filesystem is authoritative. On by
 default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash_replication.py`)
-copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
-upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
-trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
+copies each report into a bucket of `saq/storage/` that every node shares (the local backend on a
+shared filesystem, or a custom backend class that reaches an object store; ACE ships no object
+store client) so any node can serve any report; the upload runs on a never-joined daemon thread (a
+network backend bounds its own requests, but an object store round trip still does not belong on
+the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
 Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
 separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
@@ -262,7 +264,8 @@ every CAS operation runs in its own private session, never on the caller's `get_
 Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticated header); plain
 `encrypt()` still writes the v0 format because existing encrypted data is read across nodes.
 `ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
-`retention: ttl` and an S3 backend are designed but not built; the config rejects both.
+`retention: ttl` is designed but not built; the config rejects it. A pool on an object store uses a
+`custom` backend class.
 
 #### YARA QA results
 

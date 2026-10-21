@@ -244,8 +244,8 @@ def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:
     GLOBAL maintenance — runs only on the primary node. Deletes blobs with zero
     blob_refs rows whose durable-tier object is older than
     analysis_cache.blob_gc_grace_seconds. For the pure-local blob store this
-    unlinks orphaned files; for the S3 backend it reclaims bucket objects (only
-    when that backend has S3 GC enabled). Scheduled via cron.
+    unlinks orphaned files; a remote backend reclaims its own objects (or
+    leaves them to the store's lifecycle policy). Scheduled via cron.
     """
     stats = GlobalMaintenanceStats()
     if not is_primary_node():

@@ -1101,6 +1101,10 @@ cheap; wide is opt-in.
 
 ### A7. Forward-compatibility with S3 storage and Lambda execution
 
+> ACE ships no S3 client. Everything below that names S3 describes a backend a site supplies from
+> an integration through the pluggable `BlobStoreSpec` (and `saq/storage`'s `storage.target:
+> custom`); core ACE stays storage-agnostic.
+
 The hardlink-based blob store from §A2 is local-filesystem-specific and
 will not survive two roadmap items:
 
@@ -1222,9 +1226,9 @@ row itself is in the shared database. To make this hard to deploy by
 accident, `warn_if_blob_store_not_multi_node_safe()` runs at engine
 startup: when the `nodes` table has more than one row and no pluggable
 backend is configured, it emits a WARNING pointing operators at
-`analysis_cache.blob_store`. Multi-node deployments need a global backend
-(S3 once available, or a shared-filesystem backend if a deployment is
-willing to maintain one).
+`analysis_cache.blob_store`. Multi-node deployments need a global backend:
+a custom class over an object store, or a shared-filesystem backend if a
+deployment is willing to maintain one.
 
 #### Reference-counting table (both backends)
 

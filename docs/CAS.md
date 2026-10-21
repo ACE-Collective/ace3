@@ -1,12 +1,12 @@
 # Content-Addressed Storage (CAS)
 
 > **Status: implemented in `saq/cas/`** for the `held` and `permanent` retention modes with the
-> `local` and `custom` backends. Deferred, and recorded below where they apply: the `ttl` mode
+> `local` and `custom` backends. Deferred, and recorded below where it applies: the `ttl` mode
 > (the config schema accepts the word and rejects it as not implemented; no `cas_touches` table,
-> no partition task) and an object-store (S3) backend (`backend:` accepts `local | custom`). The
-> design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
-> `[CAS-4]` point at the item there that records the reasoning. The first consumer is SVS
-> (`docs/SVS.md`).
+> no partition task). ACE ships no object-store client, so a pool on an object store uses a
+> `custom` backend class. The design was settled during the SVS design review
+> (`docs/SVS_REVIEW.md` §7); bracketed IDs such as `[CAS-4]` point at the item there that records
+> the reasoning. The first consumer is SVS (`docs/SVS.md`).
 
 ACE stores a lot of immutable bytes: file observables, extracted payloads, cached analysis blobs,
 archived email, crash evidence. Today that happens in several independent places, each with its
@@ -16,7 +16,7 @@ own key scheme, retention mechanism and failure modes:
 |---|---|---|---|
 | Alert `hardcopies/` | `<storage_dir>/hardcopies/<sha256>` | no | life of the alert |
 | Analysis-cache blobs (`saq/analysis/blob_store.py`) | `<root>/<sha[:3]>/<sha>` + `blob_refs` | no | references expire with a ~35-day partition |
-| Email archive (`saq/email_archive/`) | `<sha[:2]>/<sha>.gz.e`; S3 key = sha | AES-GCM, system key | 30 days (S3 copies never deleted) |
+| Email archive (`saq/email_archive/`) | `<sha[:2]>/<sha>.gz.e` | AES-GCM, system key | 30 days |
 | Crash report bytes | per crash directory | no | 30 days |
 | YARA `qa_dir` (before the `yara_qa` pool) | `var/qa/<rule>/<file>-<sha>` | no | never cleaned |
 
@@ -219,8 +219,8 @@ under GC. [CAS-7, CAS-8]
   random nonce doesn't defeat dedup.
 - **Object names are plain** (`<sha[:2]>/<sha[2:4]>/<sha>`). A reader who can list the bucket
   learns which hashes ACE holds; this was accepted. [CAS-5]
-- **SSE on S3 complements this; it doesn't replace it.** SSE protects the disks, not the bucket
-  credentials.
+- **Server-side encryption in an object store complements this; it doesn't replace it.** It
+  protects the disks, not the bucket credentials.
 
 ## Backends
 
@@ -247,13 +247,12 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
   `root`), relative to the data directory. Supports `link`, which keeps the analysis cache's
   hardlink trick available: a plaintext object in a local pool is verified by re-hashing and then
   hardlinked out (`materialize`) or read in place (`open`), with no copy.
-- **S3.** Not implemented yet. When it is, it uses `saq.storage.s3.get_s3_client()`, which honors
-  `s3.secure`, `s3.cert_check` and `s3.region` (as the storage factory now does too [F-13]).
-  - Conditional writes (`If-None-Match: *`) avoid redundant uploads. Where the object store
-    doesn't support them, a redundant upload of identical content is harmless, because the index
-    decides existence.
 - **Custom.** `python_module` / `python_class` / `config`, following the pattern `saq/storage` and
-  the analysis cache already use. The class declares `node_local` and `get_config_class()`.
+  the analysis cache already use. The class declares `node_local` and `get_config_class()`. This
+  is how a pool lives in an object store: ACE ships no client for one. Such a backend bounds its
+  own network calls, and can use conditional writes (`If-None-Match: *`) to avoid redundant
+  uploads; where the store doesn't support them, a redundant upload of identical content is
+  harmless, because the index decides existence.
 - **Sharing between nodes.** A pool declared `shared: true` refuses the `local` backend at config
   validation, and a custom backend that says `node_local` when the pool is built.
 - **Read cache.** `materialize` and `open` of anything that cannot be hardlinked out of the backend
@@ -389,11 +388,9 @@ Steps 1 and 2 are built; the rest are not scheduled. [CAS-8]
 ## Prerequisites (phase 0)
 
 - The two `saq/crypto` fixes above shipped with the CAS. [F-20]
-- The `saq/storage` defects are fixed separately (the CAS does not use `saq/storage`): the
-  storage factory honors `s3.secure`, `s3.cert_check` and `s3.region`; `S3Storage.object_exists`
-  reports False only for a missing object and raises on a 403, a server error or a connection
-  failure; the local backend writes atomically and confines every path to its bucket.
-  [F-13, F-18, F-19]
+- The `saq/storage` defects are fixed separately (the CAS does not use `saq/storage`): the local
+  backend writes atomically and confines every path to its bucket. [F-19] (F-13 and F-18 were
+  defects of the S3 backend, which has since been removed from ACE.)
 
 ## Left for implementation
 
@@ -409,12 +406,10 @@ These were not design questions; the implementation picked them:
   the decrypt it followed, and held cold reads to ~75/s; throttled, the same load ran at ~2,800
   materializes/s. The eviction pass re-checks each victim's mtime, so an entry read since the
   walk is kept.
-- Conditional writes are moot until an object-store backend exists; the index decides existence
-  either way.
+- Conditional writes are a custom backend's choice; the index decides existence either way.
 
 Still open, for the pools that need them:
 - the `ttl` mode (`cas_touches`, its own database chain, the partition task) and the load test
   that gates it;
-- the S3 backend, needed before any pool can be `shared: true`;
 - multi-key decryption once the system key is ever rotated (the key id in every v1 header and
   `cas_objects.key_id` is the hook).

@@ -2,14 +2,13 @@
 Storage factory for creating and configuring storage adapters.
 
 This module provides a factory class that creates storage adapters based on
-the current configuration, supporting local filesystem storage, S3-compatible storage,
-and pluggable backends loaded from configuration (storage.target: custom).
+the current configuration, supporting local filesystem storage and pluggable backends
+loaded from configuration (storage.target: custom).
 """
 
 import importlib
 import logging
 import os
-from typing import Optional
 
 from saq.configuration.config import get_config
 from saq.storage.adapter import StorageAdapter
@@ -23,7 +22,7 @@ class StorageFactory:
     Factory class for creating storage adapters.
 
     This factory creates and configures storage adapters based on the current
-    configuration. It supports local filesystem storage and S3-compatible storage.
+    configuration. It supports local filesystem storage and pluggable backends.
     """
 
     @staticmethod
@@ -57,9 +56,6 @@ class StorageFactory:
                     f"storage.backend is configured but storage.target is {target!r}; "
                     "set storage.target to custom to use it")
 
-            if target == "s3":
-                return StorageFactory._create_s3_storage(config)
-
             return StorageFactory._create_local_storage(config)
 
         except StorageError:
@@ -78,9 +74,9 @@ class StorageFactory:
         the class, validate the YAML `config:` sub-dict against the class's own Pydantic model,
         and hand that model to the constructor as its single argument.
 
-        This exists so a deployment whose object store needs credentials the built-in s3
-        backend does not model -- an IAM instance role, STS, a signing proxy -- can supply its
-        own backend without that vendor's specifics landing in core.
+        This is how a deployment uses an object store (S3, Azure Blob, ...): ACE ships no
+        object-store client, so the site supplies the backend class, typically from an
+        integration, and that vendor's specifics never land in core.
         """
         spec = None if config.storage is None else config.storage.backend
         if spec is None:
@@ -127,98 +123,6 @@ class StorageFactory:
         storage = LocalStorage(base_dir=base_dir)
         return StorageAdapter(storage)
 
-    @staticmethod
-    def _create_s3_storage(config) -> StorageAdapter:
-        """Create an S3-compatible storage adapter."""
-        from saq.storage.s3 import S3Storage
-
-        s3_config = config.s3
-
-        host = s3_config.host
-        port = s3_config.port
-        access_key = s3_config.access_key
-        secret_key = s3_config.secret_key
-
-        # validate required configuration
-        if not all([host, port, access_key, secret_key]):
-            missing = []
-            if not host:
-                missing.append("host")
-            if not port:
-                missing.append("port")
-            if not access_key:
-                missing.append("access_key")
-            if not secret_key:
-                missing.append("secret_key")
-
-            raise StorageError(f"missing required S3 configuration: {', '.join(missing)}")
-
-        # convert port to integer
-        try:
-            port_int = int(port)
-        except (ValueError, TypeError):
-            raise StorageError(f"invalid S3 port configuration: {port}")
-
-        # the same TLS, certificate and region settings get_s3_client() honors
-        return StorageFactory.create_storage_with_config(
-            host=host,
-            port=port_int,
-            access_key=access_key,
-            secret_key=secret_key,
-            secure=s3_config.secure,
-            region=s3_config.region,
-            verify=s3_config.cert_check,
-        )
-
-    @staticmethod
-    def create_storage_with_config(
-        host: str,
-        port: int,
-        access_key: str,
-        secret_key: str,
-        secure: bool = False,
-        region: Optional[str] = None,
-        verify: bool = True,
-    ) -> StorageAdapter:
-        """
-        Create a storage adapter with explicit S3 configuration.
-
-        Args:
-            host: S3-compatible server hostname or IP address
-            port: S3-compatible server port
-            access_key: S3 access key
-            secret_key: S3 secret key
-            secure: Whether to use HTTPS (default: False)
-            region: S3 region (optional)
-            verify: Whether to verify the server's TLS certificate (default: True)
-
-        Returns:
-            StorageAdapter: A configured storage adapter
-
-        Raises:
-            StorageError: If storage creation fails
-        """
-        from saq.storage.s3 import S3Storage
-
-        try:
-            s3_storage = S3Storage(
-                host=host,
-                port=port,
-                access_key=access_key,
-                secret_key=secret_key,
-                secure=secure,
-                region=region,
-                config={"verify": verify},
-            )
-
-            storage_adapter = StorageAdapter(s3_storage)
-            return storage_adapter
-
-        except Exception as e:
-            error_msg = f"failed to create storage adapter with custom config: {str(e)}"
-            logging.error(error_msg)
-            raise StorageError(error_msg)
-
 
 def get_storage_system() -> StorageAdapter:
     """
@@ -239,9 +143,9 @@ def get_storage_system() -> StorageAdapter:
 def reset_storage_system() -> None:
     """Drop the cached storage adapter so the next call builds a fresh one.
 
-    The cached adapter holds a boto3 client, and a boto3 client holds a urllib3 connection pool
-    with live sockets. Those are **not fork safe**: a forked child that inherits one shares the
-    parent's TCP connections, which shows up as interleaved or truncated responses and hangs.
+    The cached adapter may wrap a custom backend whose client holds a connection pool with live
+    sockets. Those are **not fork safe**: a forked child that inherits one shares the parent's TCP
+    connections, which shows up as interleaved or truncated responses and hangs.
 
     ACE forks its engine workers (``ACE_MP_CONTEXT = multiprocessing.get_context("fork")``), and
     workers now touch storage to replicate crash reports, so this is registered below to run

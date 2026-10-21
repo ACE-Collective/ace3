@@ -938,9 +938,6 @@ CONFIG_EMAIL_ARCHIVE_MODULE_DIR = "archive_dir"
 CONFIG_EMAIL_ARCHIVE = "email_archive"
 CONFIG_EMAIL_ARCHIVE_TARGET = "target"
 CONFIG_EMAIL_ARCHIVE_PRIMARY = "primary"
-CONFIG_EMAIL_ARCHIVE_S3_CONFIG = "s3_config"
-CONFIG_EMAIL_ARCHIVE_S3_REGION = "s3_region"
-CONFIG_EMAIL_ARCHIVE_S3_BUCKET = "s3_bucket"
 
 # timeline
 CONFIG_TIMELINE = "timeline"
@@ -1026,17 +1023,6 @@ CONFIG_RABBITMQ_USER = "username"
 CONFIG_RABBITMQ_PASSWORD = "password"
 CONFIG_RABBITMQ_HOST = "host"
 CONFIG_RABBITMQ_PORT = "port"
-
-# s3-compatible storage
-CONFIG_S3 = "s3"
-CONFIG_S3_HOST = "host"
-CONFIG_S3_PORT = "port"
-CONFIG_S3_ACCESS_KEY = "access_key"
-CONFIG_S3_SECRET_KEY = "secret_key"
-CONFIG_S3_SECURE = "secure"
-CONFIG_S3_CERT_CHECK = "cert_check"
-CONFIG_S3_REGION = "region"
-CONFIG_S3_USE_EC2_METADATA = "use_ec2_metadata"
 
 # redis
 CONFIG_REDIS = "redis"

@@ -1,7 +1,8 @@
 import os
 import pytest
+from pydantic import ValidationError
 
-from saq.configuration.config import get_config
+from saq.configuration.schema import EmailArchiveConfig
 from saq.database import get_db_connection
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.email_archive import (
@@ -17,14 +18,23 @@ from saq.email_archive import (
     get_archived_email_path,
     iter_decrypt_email,
 )
-from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_data_dir
 from saq.util.time import local_time
 
-@pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.LOCAL])
-def patch_email_archive_target_type(monkeypatch, request):
-    monkeypatch.setattr(get_config().email_archive, "target", request.param.value)
-    return request.param
+@pytest.mark.unit
+def test_s3_target_is_rejected_by_name():
+    # a deployment still configured for the removed s3 target must not start archiving to local
+    # disk without being told
+    with pytest.raises(ValidationError, match="email_archive.target s3 is no longer supported"):
+        EmailArchiveConfig(target="s3", primary="email_archive")
+
+
+@pytest.mark.unit
+def test_target_defaults_to_local_and_rejects_anything_else():
+    assert EmailArchiveConfig(primary="email_archive").target == "local"
+    with pytest.raises(ValidationError):
+        EmailArchiveConfig(target="nfs", primary="email_archive")
+
 
 @pytest.mark.integration
 def test_register_email_archive():

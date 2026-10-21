@@ -790,29 +790,6 @@ def wait_for_process(process: Process):
         process.join(5)
         raise RuntimeError("engine did not stop")
 
-def reset_s3_email_archive_bucket():
-    try:
-        from saq.storage.s3 import get_s3_client
-    except Exception:
-        logging.warning("boto3 not available, skipping s3 email archive bucket reset")
-        return
-
-    if get_config().s3 is None:
-        logging.debug("s3 configuration not available, skipping s3 email archive bucket reset")
-        return
-
-    client = get_s3_client()
-    bucket = get_config().email_archive.s3_bucket
-    kwargs = {"Bucket": bucket}
-    while True:
-        response = client.list_objects_v2(**kwargs)
-        for obj in response.get("Contents", []):
-            client.delete_object(Bucket=bucket, Key=obj["Key"])
-        if response.get("IsTruncated"):
-            kwargs["ContinuationToken"] = response["NextContinuationToken"]
-        else:
-            break
-
 def create_submission_file_manager(base_dir) -> "SubmissionFileManager":
     """Returns a SubmissionFileManager rooted at base_dir with all four directories created.
 

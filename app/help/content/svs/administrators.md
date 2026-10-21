@@ -642,7 +642,7 @@ Samples need a decision before you rely on them. The default `svs_samples` pool 
 
 Do one of two things:
 
-- Redefine the pool with a backend every node can reach and `shared: true`. ACE has no S3 backend yet, so this is a `custom` backend class; a shared pool refuses a node-local backend at validation. Give `yara_qa` the same treatment.
+- Redefine the pool with a backend every node can reach and `shared: true`. ACE ships no object-store backend, so this is a `custom` backend class; a shared pool refuses a node-local backend at validation. Give `yara_qa` the same treatment.
 - Or disable capture until you have one: `analysis_module_svs_yara_sample_capture.enabled: false`.
 
 ```yaml

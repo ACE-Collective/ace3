@@ -1,8 +1,8 @@
 """Content-addressed blob storage for the analysis result cache.
 
 The BlobStore interface abstracts bulk-content storage from the cache layer so
-the local filesystem backend (used today) and a future S3 backend share the
-same code paths. See docs/design/analysis_diff_tracking.md §A7 for the full
+the local filesystem backend and a pluggable remote backend (a custom class
+configured through ``analysis_cache.blob_store``) share the same code paths. See docs/design/analysis_diff_tracking.md §A7 for the full
 design.
 
 Two kinds of things live in the blob store:
@@ -12,7 +12,7 @@ Two kinds of things live in the blob store:
 2. File observable payloads (deferred to Phase 4; not written in Phase 2).
 
 Reference counting is explicit via the ``blob_refs`` table — we never rely on
-filesystem link counts, because the S3 backend won't have them.
+filesystem link counts, because a remote backend won't have them.
 """
 
 import hashlib
@@ -197,8 +197,8 @@ class BlobStore(ABC):
     def materialize(self, sha256: str, dest_path: str) -> None:
         """Make the blob available at a local filesystem path.
 
-        Local backend hardlinks when same-FS, falls back to copy. The S3
-        backend (future) downloads to the dest path.
+        Local backend hardlinks when same-FS, falls back to copy. A remote
+        backend downloads to the dest path.
         """
 
 

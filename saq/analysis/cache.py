@@ -575,7 +575,7 @@ class CacheLookupResult(NamedTuple):
     ``lookup_ms`` decomposes into three components measured within the
     timed region: ``db_ms`` (the SELECT), ``decode_ms`` (zstd decompress +
     JSON parse + ``ModuleExecutionDelta.from_dict``), and ``blob_ms``
-    (spilled-details inline + per-file ``blob_store.exists`` — the S3 cost).
+    (spilled-details inline + per-file ``blob_store.exists`` — the remote store cost).
     These three sum to ``lookup_ms``. ``key_ms`` is measured SEPARATELY and
     is NOT part of ``lookup_ms``: ``generate_cache_key`` (which probes each
     module's external tools) runs before the ``lookup_ms`` timer starts, so

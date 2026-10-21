@@ -249,8 +249,8 @@ kept as the alert has it, the YARA module is unchanged, and phase 3's replay pro
 **Sample storage on a multi-node site.** Capture runs in the engine of whichever node owns the
 alert and validation runs in `service_svs` on one node, so the `svs_samples` pool has to be
 reachable from every node (`shared: true`). The CAS ships only the `local` backend, which is enough
-for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
-backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
+for a single-node instance. **Providing a shared backend is the site integrator's job**: a
+`custom` class that declares `node_local = False`, over an object store or a shared filesystem.
 ACE does not build one as an SVS prerequisite. Capture is enabled by default with a `local` pool,
 which is right for a single node. A multi-node site gives `svs_samples` a shared backend, or sets
 `analysis_module_svs_yara_sample_capture.enabled: false` until it has one; otherwise each node keeps

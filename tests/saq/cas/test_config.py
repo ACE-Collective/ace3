@@ -40,7 +40,8 @@ def test_unknown_keys_are_rejected():
 
 
 @pytest.mark.unit
-def test_s3_is_not_a_backend_yet():
+def test_s3_is_not_a_backend():
+    # an object store is reached through a custom backend class
     with pytest.raises(ValidationError):
         CASPoolConfig(backend="s3")
 

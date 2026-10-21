@@ -8,13 +8,10 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.configuration.config import get_config
 from saq.email_archive import archive_email
-from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import reset_s3_email_archive_bucket
 
 pytestmark = pytest.mark.integration
 
@@ -23,14 +20,8 @@ TEST_MESSAGE_ID = "<test-message-id@example.com>"
 TEST_EMAIL = b"From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test Email\r\n\r\nTest body"
 
 
-@pytest.fixture(autouse=True)
-def local_email_archive(monkeypatch):
-    monkeypatch.setattr(get_config().email_archive, "target", EmailArchiveTargetType.LOCAL.value)
-
-
 @pytest.fixture
 def archived_email(tmpdir):
-    reset_s3_email_archive_bucket()
     email = tmpdir / "test_email.eml"
     email.write_binary(TEST_EMAIL)
     return archive_email(str(email), TEST_MESSAGE_ID, ["test@local"], local_time())
