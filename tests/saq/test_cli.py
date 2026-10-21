@@ -18,8 +18,8 @@ def test_cli_commands_registered():
         # core commands
         "hunt", "persistence", "per", "integration", "service", "correlate",
         "submit", "remediation",
-        # gui / api
-        "gui", "api",
+        # gui
+        "gui",
         # user management
         "user",
         # test utilities
@@ -89,7 +89,6 @@ def test_cli_subcommands_registered():
         return set(sp.choices[name]._subparsers._group_actions[0].choices.keys())
 
     assert {"start"} <= choices("gui")
-    assert {"start"} <= choices("api")
     assert {"stats", "gc", "local-maintenance"} <= choices("cache")
     assert {"archive", "distribute"} <= choices("alert")
     assert {"add", "delete", "list"} <= choices("company")

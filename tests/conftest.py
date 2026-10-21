@@ -487,16 +487,6 @@ def global_function_setup(request):
     sys.path = original_sys_path
 
 @pytest.fixture
-def test_client():
-    from aceapi import create_app
-    app = create_app(testing=True)
-    app_context = app.test_request_context()                      
-    app_context.push()                           
-    client = app.test_client()
-
-    yield client
-
-@pytest.fixture
 def root_analysis(tmpdir) -> RootAnalysis:
     root_uuid = str(uuid.uuid4())
     root = RootAnalysis(
@@ -517,7 +507,7 @@ def api_server():
     stop_api_server(api_server_process)
 
 @pytest.fixture
-def mock_api_call(test_client, monkeypatch):
+def mock_api_call(monkeypatch):
     import ace_api
 
     def mock_execute_api_call(command,
@@ -539,67 +529,7 @@ def mock_api_call(test_client, monkeypatch):
             if api_key is None:
                 api_key = os.environ.get("ICE_API_KEY", None)
 
-        if command.startswith("v2/"):
-            return _dispatch_v2(command, method, api_key, data, params, json, files)
-
-        if method == ace_api.METHOD_GET:
-            func = test_client.get
-        elif method == ace_api.METHOD_PUT:
-            func = test_client.put
-        else:
-            func = test_client.post
-
-        kwargs = { }
-        if params is not None:
-            kwargs['query_string'] = params
-        #if ssl_verification is not None:
-            #kwargs['verify'] = ssl_verification
-        #else:
-            #kwargs['verify'] = False
-        if data is not None:
-            kwargs['data'] = data
-        if files is not None:
-            for (post_field, (file_name, fp)) in files:
-                # is this a multi-value post field?
-                if post_field in kwargs["data"]:
-                    # turn this into a list if we haven't done so already
-                    if not isinstance(kwargs["data"][post_field], list):
-                        kwargs["data"][post_field] = [ kwargs["data"][post_field] ]
-
-                    # then append this to the list
-                    kwargs["data"][post_field].append((fp, file_name, "application/octet-stream"))
-                else:
-                    # otherwise it's a single value
-                    kwargs["data"][post_field] = (fp, file_name, "application/octet-stream")
-            #kwargs['files'] = files
-        #if proxies is not None:
-            #kwargs['proxies'] = proxies
-        if timeout is not None:
-            kwargs['timeout'] = timeout
-        if api_key is not None:
-            kwargs['headers'] = { "x-ace-auth": api_key }
-
-        response = func(command, **kwargs)
-
-        if str(response.status_code)[0] != "2":
-            raise HTTPError()
-
-        class CustomResponse:
-            def __init__(self, response):
-                self.response = response
-
-            def json(self):
-                return self.response.json
-
-            def iter_content(self, *args, **kwargs):
-                yield self.response.data
-
-            @property
-            def status_code(self):
-                return self.response.status_code
-
-        #response.raise_for_status()
-        return CustomResponse(response)
+        return _dispatch_v2(command, method, api_key, data, params, json, files)
 
     monkeypatch.setattr(ace_api, "_execute_api_call", mock_execute_api_call)
 
