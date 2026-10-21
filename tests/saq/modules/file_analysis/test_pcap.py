@@ -1411,3 +1411,35 @@ def test_dns_answer_ip_takes_its_first_response_time():
     times = {i.value: i.time for i in collect_observables(index, []) if i.o_type == F_IP}
     # one observable per IP, at the earliest response that returned it, whichever name it answered
     assert times == {"198.51.100.7": 1767225601.25, "198.51.100.8": 1767225605.5, "198.51.100.9": None}
+
+
+@pytest.mark.unit
+def test_hosts_tables_pivot_on_observables_only():
+    analysis = PcapAnalysis()
+    analysis.details[pcap.KEY_INDEX] = {
+        "hostnames": [{"name": "WS-1", "source": "dhcp", "mac": "02:00:00:aa:00:01"},
+                      {"name": "NB", "source": "nbns", "mac": None}],
+        "statistics": {
+            "ip": [{"address": "10.0.0.1", "packets": 2, "bytes": 3}, {"address": "224.0.0.251", "packets": 1, "bytes": 1}],
+            "mac": [{"address": "02:00:00:aa:00:01", "packets": 2, "bytes": 3},
+                    {"address": "ff:ff:ff:ff:ff:ff", "packets": 1, "bytes": 1}],
+            "flows": [{"protocol": "tcp", "a": "10.0.0.1:50000", "b": "198.51.100.7:443", "frames": 3, "bytes": "1 kB",
+                       "start": 0.5, "duration": 1.0},
+                      {"protocol": "udp", "a": "fe80::1:5353", "b": "2001:db8::7:53", "frames": 1, "bytes": "90 bytes",
+                       "start": 1.0, "duration": 0.0}],
+        },
+    }
+    tables = {t["title"]: t["rows"] for t in PcapAnalysisPresenter(analysis).tables}
+
+    def pivot(o_type, value, text=None):
+        return {"text": text or value, "pivot_type": o_type, "pivot_value": value}
+
+    assert tables["Hostnames"] == [[pivot(F_HOSTNAME, "WS-1"), "dhcp", pivot(F_MAC_ADDRESS, "02:00:00:aa:00:01")],
+                                   [pivot(F_HOSTNAME, "NB"), "nbns", None]]
+    # multicast and broadcast are never observables, so they are not links
+    assert [r[0] for r in tables["IP Endpoints"]] == [pivot(F_IP, "10.0.0.1"), "224.0.0.251"]
+    assert [r[0] for r in tables["Ethernet Endpoints"]] == [pivot(F_MAC_ADDRESS, "02:00:00:aa:00:01"), "ff:ff:ff:ff:ff:ff"]
+    # a flow endpoint shows address:port and pivots on the address, IPv6 included
+    assert tables["Flows"][0][1:3] == [pivot(F_IP, "10.0.0.1", "10.0.0.1:50000"),
+                                       pivot(F_IP, "198.51.100.7", "198.51.100.7:443")]
+    assert tables["Flows"][1][1:3] == ["fe80::1:5353", pivot(F_IP, "2001:db8::7", "2001:db8::7:53")]

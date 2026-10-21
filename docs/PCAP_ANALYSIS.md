@@ -32,9 +32,11 @@ sslkeylog.txt
   each analyzed. Using the first response keeps it to one timed observable per IP.
 - IP addresses, MAC addresses and hostnames are added `volatile`, so they are hidden unless the
   analyst selects "Show All Observables" or they lead to a detection. Everything else is visible.
-- In the node tables, JA4 (TLS), URL (HTTP), and file name, SHA256 and URL (Files) values are links that
+- In the node tables, JA4 (TLS), URL (HTTP), file name, SHA256 and URL (Files), and the hostnames, IP
+  and MAC addresses and flow endpoints of PCAP Analysis are links that
   pivot to every alert containing that observable, exactly like clicking it in the alert tree. A
-  file name pivots on the file's content: a file observable's value is its sha256.
+  file name pivots on the file's content: a file observable's value is its sha256. An address the
+  module never adds as an observable (multicast, broadcast, loopback, link-local) stays plain text.
 - Within a node, observables sort by type (files, URLs, FQDNs, JA4, User-Agents, hostnames, IPs, MACs).
 - Display types say where an observable came from: `DNS Query Name` (a name looked up), `DNS CNAME
   Target`, `DNS Zone (SOA/NS)` (the owner of an SOA or NS record, usually from the authority section

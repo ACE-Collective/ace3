@@ -1446,6 +1446,22 @@ def _pivot(o_type: str, value: Optional[str], text: Optional[str] = None) -> Opt
     return {"text": text or value, "pivot_type": o_type, "pivot_value": value}
 
 
+def _ip_pivot(address: Optional[str], text: Optional[str] = None):
+    """A link for an address the hosts analysis adds as an observable; plain text for one it never adds."""
+    if address and _is_interesting_ip(address):
+        return _pivot(F_IP, address, text)
+    return text or address
+
+
+def _mac_pivot(address: Optional[str]):
+    return _pivot(F_MAC_ADDRESS, address) if address and _is_interesting_mac(address) else address
+
+
+def _flow_endpoint(endpoint: str):
+    # conversations print address:port with no brackets around an IPv6 address
+    return _ip_pivot(endpoint.rsplit(":", 1)[0], endpoint)
+
+
 def _table(title: str, columns: list[str], rows: list[list], total: Optional[int] = None,
            order: Optional[str] = None, note: Optional[str] = None) -> dict:
     return {"title": title, "columns": columns, "rows": rows, "total": total if total is not None else len(rows),
@@ -1572,19 +1588,23 @@ class PcapAnalysisPresenter(AnalysisPresenter):
                 tables.append(_table("Embedded Decryption Secrets", ["Secret", "Count"], rows))
             if index.get("hostnames"):
                 tables.append(_table("Hostnames", ["Name", "Source", "MAC"],
-                                     [[r["name"], r["source"], r.get("mac")] for r in index["hostnames"]],
+                                     [[_pivot(F_HOSTNAME, r["name"]), r["source"], _mac_pivot(r.get("mac"))]
+                                      for r in index["hostnames"]],
                                      order=_capture_order("In the order they first appear in the capture", capture)))
             if statistics.get("ip"):
                 tables.append(_table("IP Endpoints", ["Address", "Packets", "Bytes"],
-                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["ip"]], statistics.get("ip_total"),
+                                     [[_ip_pivot(r["address"]), r["packets"], r["bytes"]] for r in statistics["ip"]],
+                                     statistics.get("ip_total"),
                                      order="Most packets first."))
             if statistics.get("mac"):
                 tables.append(_table("Ethernet Endpoints", ["Address", "Packets", "Bytes"],
-                                     [[r["address"], r["packets"], r["bytes"]] for r in statistics["mac"]], statistics.get("mac_total"),
+                                     [[_mac_pivot(r["address"]), r["packets"], r["bytes"]] for r in statistics["mac"]],
+                                     statistics.get("mac_total"),
                                      order="Most packets first."))
             if statistics.get("flows"):
                 tables.append(_table("Flows", ["Protocol", "A", "B", "Frames", "Bytes", "Start", "Duration"],
-                                     [[r["protocol"], r["a"], r["b"], r["frames"], r["bytes"], r["start"], r["duration"]]
+                                     [[r["protocol"], _flow_endpoint(r["a"]), _flow_endpoint(r["b"]), r["frames"], r["bytes"],
+                                       r["start"], r["duration"]]
                                       for r in statistics["flows"]], statistics.get("flows_total"),
                                      order="Most frames first. Start is seconds after the first packet."))
             return tables
