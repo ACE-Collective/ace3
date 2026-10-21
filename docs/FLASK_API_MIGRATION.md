@@ -25,7 +25,7 @@ This doc tracks three surfaces:
 
 **Legacy endpoints remaining: 0.** `aceapi/`, `api_uwsgi.py`, the `http-api` container and its nginx `/api` location are deleted.
 
-GUI routes (`app/`): **no API-shaped candidates left** out of 66 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **no API-shaped candidates left** out of 82 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Integration blueprints: the example integration's one data route is migrated (see [its appendix entry](#integration-routes--apiv2integrationsname)). Integrations kept in other repositories migrate in their own; the playbook is [Integration routes](#integration-routes).
 
@@ -508,7 +508,7 @@ Notes:
 - **The route answers in the CLI's shape, not FastAPI's**: 200 `{"valid": true, ...}`, 400 `{"valid": false, "error": ...}`, 415 for a body that is not JSON. The CLI reads `error` from a 400.
 - **Name the stragglers instead of guessing.** Every `HUNT_AUDIT` record carries `user` and `src_ip`, and the log stream it arrives on says which container answered, so the remaining users of an old route can be listed by name. A user who has not validated since the switch does not show up either way.
 - **Check what the CLI imports, not the pull.** A reinstall that runs `git pull` in the clone reports "Already up to date" against whatever remote the clone has; one analyst's clone pointed at another repository and kept installing the old CLI. `python -c 'import hunt_compiler.validate as v; print(v.__file__)'` names the file that actually runs.
-- **No request timeout.** uwsgi's `harakiri` killed a worker at 300 seconds; uvicorn has none, so a validation nginx has given up on keeps its thread until the hunt's own query and correlate timeouts end it. Hunt scripts run in `http-api-v2`, beside the GUI's API traffic, which is why that container has a `pids_limit`; a container of its own for `/api/v2/hunt/` is planned as a separate change.
+- **No request timeout.** uwsgi's `harakiri` killed a worker at 300 seconds; uvicorn has none, so a validation nginx has given up on keeps its thread until the hunt's own query and correlate timeouts end it. Hunt scripts run in `http-api-v2`, beside the GUI's API traffic, which is why that container has a `pids_limit`. Hunt validation does not get a container of its own: the node-to-node routes were the traffic worth isolating, and they have `http-api-engine` ([ENGINE_API.md](ENGINE_API.md)).
 - **API keys.** `aceapi/auth.py` also held the synchronous key helpers behind `ace user add-api-key`, `list-api-keys`, `revoke-api-key` and `modify --new-api-key/--clear-api-key`; they moved to `saq/database/util/user_management.py`. Requests are authenticated by `aceapi_v2/auth/`.
 
 ### Integration routes → `/api/v2/integrations/<name>`
@@ -529,7 +529,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 66** `@blueprint.route` handlers across the eight `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 82** `@blueprint.route` handlers across the ten `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -548,21 +548,23 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    36 |        9 |                    0 | 27 (16 B + 11 C)    |
+| `analysis`        |    37 |        9 |                    0 | 28 (16 B + 12 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     1 |        1 |                    0 |                   0 |
 | `file_collection` |     1 |        1 |                    0 |                   0 |
 | `auth`            |     3 |        0 |                    0 |           3 (flow)  |
 | `admin`           |     4 |        4 |                    0 |                   0 |
 | `signatures`      |     6 |        6 |                    0 |                   0 |
+| `svs`             |    11 |       10 |                    0 |              1 (B)  |
+| `help`            |     4 |        2 |                    0 | 2 (1 B + 1 static)  |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **66**|   **27** |                **0** |              **39** |
+| **Total**         | **82**|   **39** |                **0** |              **43** |
 
-Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), `/download_file` (see the file views appendix entry), and `/observable_action`, `/observable_action_check_for_clickers` and `/observable_action_open_clicker_search_splunk` (see the observable actions appendix entry).
+New since the previous survey: the `svs` and `help` blueprints, and `/search/include_tests` (a session setter, C). Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), `/download_file` (see the file views appendix entry), and `/observable_action`, `/observable_action_check_for_clickers` and `/observable_action_open_clicker_search_splunk` (see the observable actions appendix entry).
 
 ### `analysis` blueprint
 
-36 routes total: 9 template, 16 redirect (B), 11 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+37 routes total: 9 template, 16 redirect (B), 12 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 No candidates left, in either tier; see the appendix entries for where they went.
 
@@ -570,11 +572,13 @@ No candidates left, in either tier; see the appendix entries for where they went
 
 13 routes total: 5 template, 8 redirect (`remove_alerts`, `edit_event`, `add_tag`, and the five `bulk_*` routes). No candidates remain.
 
-### Pages-only blueprints: `admin`, `signatures`, `remediation`, `file_collection`, `main`, `auth`
+### Pages-only blueprints: `admin`, `signatures`, `svs`, `remediation`, `file_collection`, `help`, `main`, `auth`
 
 - **`admin`** — 4 GET pages (`/admin/`, `/admin/users`, `/admin/detection`, `/admin/secrets`); all data through v2. `tests/app/admin/test_admin_smoke.py::TestAdminIsPagesOnly::test_admin_blueprint_serves_only_get_pages` enforces it.
 - **`signatures`** — 6 GET pages behind a `signature:read` `before_request` gate (`app/signatures/views/access.py`); data from `/api/v2/signatures/yara-qa`, `/svs/samples`, `/svs/yara/validations`, `/filter-screens`, `/saved-filters`. `tests/app/signatures/test_signatures_smoke.py::TestSignaturesIsPagesOnly::test_signatures_blueprint_serves_only_get_pages` enforces it. The samples and validations pages write default saved filters on render (`ensure_default_saved_filters`).
+- **`svs`** — 10 GET pages behind an `svs:run_read` `before_request` gate (`app/svs/views/access.py`), and `/svs/`, which redirects to the Runs tab; data from `/api/v2/svs/runs`, `/tests`, `/coverage`, `/worklist` and `/test-hosts`. `tests/app/svs/test_svs_smoke.py::TestSVSIsPagesOnly::test_svs_blueprint_serves_only_get_pages` enforces it. The list pages write default saved filters on render.
 - **`remediation`**, **`file_collection`** — one GET page each (`/remediation/manage`, `remediation:read`; `/file_collection/manage`, `file_collection:read`), shells over `/api/v2/remediation` and `/api/v2/file-collections` like the Signatures pages. `tests/app/remediation/test_manage.py` and `tests/app/file_collection/test_manage.py` enforce it. Both write default saved filters on render.
+- **`help`** — the training guides, for any logged-in user: 2 GET pages (`/help/`, `/help/<set>/<guide>`), `/help/<set>/`, which redirects to the set's first guide, and `/help/<set>/images/<file>`, which serves the guides' own images through `send_from_directory`. That last one is static content the pages embed, not API surface. No pages-only test; `tests/app/help/test_help_content.py` covers the content.
 - **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me` and `/api/v2/users/me/preferences`. No pages-only test.
 - **`auth`** — `/login`, `/logout`, `/login/change`: Flask-Login session flow, stays in Flask.
 
