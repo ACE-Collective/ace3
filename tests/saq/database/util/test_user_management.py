@@ -1,10 +1,18 @@
 import pytest
 from werkzeug.security import check_password_hash
 
+from saq.configuration.config import get_config
 from saq.constants import QUEUE_DEFAULT
 from saq.database.model import User
 from saq.database.pool import get_db
-from saq.database.util.user_management import add_user, delete_user
+from saq.database.util.user_management import (
+    add_user,
+    create_api_key,
+    delete_user,
+    list_api_keys,
+    revoke_api_key,
+)
+from saq.util import is_uuid, sha256_str
 
 
 @pytest.mark.integration
@@ -262,3 +270,49 @@ def test_delete_user_with_relationships():
     # Verify deletion
     db = get_db()
     assert db.query(User).filter(User.username == username).first() is None
+
+
+def _key_by_plaintext(user_id: int, api_key: str):
+    return next((k for k in list_api_keys(user_id) if k.key_hash == sha256_str(api_key)), None)
+
+
+@pytest.mark.integration
+def test_create_list_revoke_api_key():
+    user_id = get_config().global_settings.automation_user_id
+    api_key = create_api_key(user_id, "test", inherit=True)
+    assert is_uuid(api_key)
+
+    key = _key_by_plaintext(user_id, api_key)
+    assert key is not None
+    assert key.name == "test"
+    assert key.inherit_user_scope
+    assert list(key.scope) == []
+
+    assert revoke_api_key(key.id)
+    assert _key_by_plaintext(user_id, api_key) is None
+    assert not revoke_api_key(-1)
+
+
+@pytest.mark.integration
+def test_scoped_api_key_stores_its_scope():
+    user_id = get_config().global_settings.automation_user_id
+    api_key = create_api_key(user_id, "ai", scope=[("ai", "read")])
+
+    key = _key_by_plaintext(user_id, api_key)
+    assert not key.inherit_user_scope
+    assert [(s.major, s.minor, s.effect) for s in key.scope] == [("ai", "read", "ALLOW")]
+
+
+@pytest.mark.integration
+def test_create_api_key_requires_exactly_one_of_inherit_or_scope():
+    user_id = get_config().global_settings.automation_user_id
+    with pytest.raises(ValueError):
+        create_api_key(user_id, "bad")  # neither inherit nor scope
+    with pytest.raises(ValueError):
+        create_api_key(user_id, "bad", inherit=True, scope=[("ai", "read")])  # both
+
+
+@pytest.mark.integration
+def test_create_api_key_rejects_a_non_uuid_key():
+    with pytest.raises(ValueError):
+        create_api_key(get_config().global_settings.automation_user_id, "test", inherit=True, api_key="invalid")
