@@ -102,7 +102,7 @@ SORT_ORDER = {
 DISPLAY_FILTER = "dns || tls.handshake || http.request || http.response || http2.headers || dhcp || nbns"
 
 TSHARK_FIELDS = (
-    "frame.number",
+    "frame.number", "frame.time_epoch",
     "ip.src", "ip.dst", "ipv6.src", "ipv6.dst",
     "tcp.stream", "udp.stream", "tcp.srcport", "tcp.dstport", "udp.srcport", "udp.dstport",
     "dns.flags.response", "dns.qry.name", "dns.resp.name", "dns.resp.type", "dns.cname", "dns.a", "dns.aaaa",
@@ -478,6 +478,13 @@ def _parse_fields(output: str) -> list[dict]:
     return [packet.get("_source", {}).get("layers", {}) for packet in packets if isinstance(packet, dict)]
 
 
+def _epoch(layers: dict) -> Optional[float]:
+    try:
+        return float(_first(layers, "frame.time_epoch"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _flow_key(layers: dict) -> Optional[str]:
     if "tcp.stream" in layers:
         return f"tcp:{layers['tcp.stream'][0]}"
@@ -524,9 +531,14 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
                 entry = dns[name.lower()]
                 entry["responses" if is_response else "queries"] += 1
                 if is_response:
+                    seen_at = _epoch(layers)
+                    answer_times = entry.setdefault("answer_times", {})
                     for answer in answers:
                         if answer not in entry["answers"]:
                             entry["answers"].append(answer)
+                        # when the answer was first returned: the time an answer IP observable carries
+                        if seen_at is not None and (answer not in answer_times or seen_at < answer_times[answer]):
+                            answer_times[answer] = seen_at
 
         handshake_types = layers.get("tls.handshake.type", [])
         flow = _flow_key(layers)
@@ -782,6 +794,8 @@ class PcapObservable:
     no_crawl: bool = False
     # shown in the alert tree; one per observable, so it is only set when no module has set one
     display_type: Optional[str] = None
+    # epoch seconds; a timed observable is distinct from the same value without a time
+    time: Optional[float] = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -807,7 +821,7 @@ def _is_interesting_mac(value: str) -> bool:
 
 
 def _host_observable(category: str, host: str, excluded_suffixes: list[str], fqdn_display_type: Optional[str] = None,
-                     ip_display_type: Optional[str] = None) -> Optional[PcapObservable]:
+                     ip_display_type: Optional[str] = None, ip_time: Optional[float] = None) -> Optional[PcapObservable]:
     host = _host_without_port(host).rstrip(".").lower()
     if not host:
         return None
@@ -815,7 +829,7 @@ def _host_observable(category: str, host: str, excluded_suffixes: list[str], fqd
         ipaddress.ip_address(host)
         if not _is_interesting_ip(host):
             return None
-        return PcapObservable(category, F_IP, host, volatile=True, display_type=ip_display_type)
+        return PcapObservable(category, F_IP, host, volatile=True, display_type=ip_display_type, time=ip_time)
     except ValueError:
         pass
     if any(host.endswith(suffix) for suffix in excluded_suffixes):
@@ -884,9 +898,16 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
 
     for row in index.get(CATEGORY_DNS, []):
         _add(_host_observable(CATEGORY_DNS, row["name"], excluded_fqdn_suffixes, fqdn_display_type=_dns_display_type(row)))
+    # one observable per answer IP, at the first time any response returned it
+    first_answered: dict[str, float] = {}
+    for row in index.get(CATEGORY_DNS, []):
+        for answer, seen_at in row.get("answer_times", {}).items():
+            if answer not in first_answered or seen_at < first_answered[answer]:
+                first_answered[answer] = seen_at
     for row in index.get(CATEGORY_DNS, []):
         for answer in row["answers"]:
-            _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes, ip_display_type="DNS Answer IP"))
+            _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes, ip_display_type="DNS Answer IP",
+                                  ip_time=first_answered.get(answer)))
 
     ja4_labels = ja4_display_types(index.get(CATEGORY_TLS, []))
     # a name DNS also saw keeps its DNS label, so the label never depends on which category ran first
@@ -953,7 +974,8 @@ def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: l
                         url.sort_order = SORT_ORDER[F_URL]
                         observable.add_relationship(R_DOWNLOADED_FROM, url)
         else:
-            observable = analysis.add_observable_by_spec(item.o_type, item.value, volatile=item.volatile)
+            o_time = None if item.time is None else datetime.datetime.fromtimestamp(item.time, datetime.timezone.utc)
+            observable = analysis.add_observable_by_spec(item.o_type, item.value, o_time=o_time, volatile=item.volatile)
 
         # None: an invalid value for its type, or the root's per-type limit was reached
         if observable is None:

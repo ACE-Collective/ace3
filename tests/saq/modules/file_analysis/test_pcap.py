@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import shutil
@@ -571,6 +572,10 @@ def test_pcap_tree(root_analysis):
     counts = {row[0]: (row[2], row[3]) for row in PcapAnalysisPresenter(dns).tables[0]["rows"]}
     assert counts == {"www.pcap-dns.example": (1, 1), "cdn.pcap-dns.example": (0, 0),
                       "7.100.51.198.in-addr.arpa": (1, 0)}
+    # the answer IP carries the time of the response that returned it (frame 4, 00:00:03); names do not
+    (answer_ip,) = dns.get_observables_by_type(F_IP)
+    assert answer_ip.time == datetime.datetime(2026, 1, 1, 0, 0, 3, tzinfo=datetime.timezone.utc)
+    assert all(o.time is None for o in dns.get_observables_by_type(F_FQDN))
     labels = {o.value: o.display_type for o in dns.observables}
     assert labels == {"www.pcap-dns.example": "DNS Query Name (fqdn)", "cdn.pcap-dns.example": "DNS CNAME Target (fqdn)",
                       "198.51.100.7": "DNS Answer IP (ip)"}
@@ -1389,3 +1394,20 @@ def test_sni_label_only_for_names_dns_did_not_see():
     # the same name under TLS adds no label of its own, whichever category module runs first
     assert labels[(CATEGORY_TLS, "seen.example")] is None
     assert labels[(CATEGORY_TLS, "unresolved.example")] == "TLS SNI"
+
+
+
+@pytest.mark.unit
+def test_dns_answer_ip_takes_its_first_response_time():
+    packets = [
+        {"frame.number": ["1"], "frame.time_epoch": ["1767225605.5"], "dns.flags.response": ["True"],
+         "dns.qry.name": ["b.example"], "dns.a": ["198.51.100.7", "198.51.100.8"]},
+        {"frame.number": ["2"], "frame.time_epoch": ["1767225601.25"], "dns.flags.response": ["True"],
+         "dns.qry.name": ["a.example"], "dns.a": ["198.51.100.7"]},
+        # no packet time: the answer stays untimed rather than guessing one
+        {"frame.number": ["3"], "dns.flags.response": ["True"], "dns.qry.name": ["c.example"], "dns.a": ["198.51.100.9"]},
+    ]
+    index = build_index(packets, [], [], max_rows=500)
+    times = {i.value: i.time for i in collect_observables(index, []) if i.o_type == F_IP}
+    # one observable per IP, at the earliest response that returned it, whichever name it answered
+    assert times == {"198.51.100.7": 1767225601.25, "198.51.100.8": 1767225605.5, "198.51.100.9": None}

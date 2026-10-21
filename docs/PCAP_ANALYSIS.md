@@ -26,6 +26,10 @@ sslkeylog.txt
  └─ TLS Key Log            tls_keylog           secret counts by label (never the secrets); tag tls_keylog
 ```
 
+- DNS answer IPs carry a time: the packet time of the first DNS response that returned them (as a
+  hunt's `time: true` does). A timed observable is distinct from the same value without one, so an
+  answer IP that was also contacted appears both under PCAP DNS (timed) and in the hosts (untimed),
+  each analyzed. Using the first response keeps it to one timed observable per IP.
 - IP addresses, MAC addresses and hostnames are added `volatile`, so they are hidden unless the
   analyst selects "Show All Observables" or they lead to a detection. Everything else is visible.
 - In the node tables, JA4 (TLS), URL (HTTP), and file name, SHA256 and URL (Files) values are links that
