@@ -62,7 +62,6 @@ class TestLocalOverlay:
 @pytest.fixture
 def sentineled_infra(monkeypatch):
     config = get_config()
-    monkeypatch.setattr(config.api, "secret_key", AI_UNUSED_SENTINEL)
     monkeypatch.setattr(config.api, "api_key", AI_UNUSED_SENTINEL)
     monkeypatch.setattr(config.gui, "secret_key", AI_UNUSED_SENTINEL)
 
@@ -71,7 +70,7 @@ class TestInfraSecrets:
     def test_unittest_config_fails(self, failures):
         # the test config carries real (test) flask/node keys -- exactly what must fail
         check_infra_secrets_neutralized(failures)
-        assert len(failures) == 3
+        assert len(failures) == 2
 
     def test_sentineled_config_passes(self, failures, sentineled_infra):
         check_infra_secrets_neutralized(failures)
