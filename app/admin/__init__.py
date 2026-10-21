@@ -11,10 +11,12 @@ from app.admin.views.hub import admin_hub
 from app.admin.views.users import manage_users
 from app.admin.views.detection import detection_settings
 from app.admin.views.secrets import manage_secrets
+from app.admin.views.cli import cli_console
 
 __all__ = [
     'admin_hub',
     'manage_users',
     'detection_settings',
     'manage_secrets',
+    'cli_console',
 ]

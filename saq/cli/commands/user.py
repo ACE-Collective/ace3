@@ -145,7 +145,7 @@ def modify_user(args):
 
     if args.new_api_key:
         # legacy convenience: an inherit-scoped key that behaves like the pre-refactor single key
-        from aceapi.auth import create_api_key
+        from saq.database.util.user_management import create_api_key
         api_key = create_api_key(user_id, name="cli", inherit=True)
         print()
         print(f"api key = {api_key}")
@@ -153,7 +153,7 @@ def modify_user(args):
         print()
 
     if args.clear_api_key:
-        from aceapi.auth import list_api_keys, revoke_api_key
+        from saq.database.util.user_management import list_api_keys, revoke_api_key
         keys = list_api_keys(user_id)
         for k in keys:
             revoke_api_key(k.id)
@@ -176,7 +176,7 @@ modify_user_parser.add_argument('--clear-api-key', action='store_true', required
 modify_user_parser.set_defaults(func=modify_user)
 
 def add_api_key(args):
-    from aceapi.auth import create_api_key
+    from saq.database.util.user_management import create_api_key
     from saq.permissions.logic import parse_permission_pattern
 
     user_id = _resolve_user_id(args.username)
@@ -205,7 +205,7 @@ add_api_key_scope_group.add_argument('--scope', default=None, help='Comma-separa
 add_api_key_parser.set_defaults(func=add_api_key)
 
 def list_user_api_keys_cli(args):
-    from aceapi.auth import list_api_keys
+    from saq.database.util.user_management import list_api_keys
     user_id = _resolve_user_id(args.username)
     for k in list_api_keys(user_id):
         if k.inherit_user_scope:
@@ -219,7 +219,7 @@ list_api_keys_parser.add_argument('username', help="The username whose keys to l
 list_api_keys_parser.set_defaults(func=list_user_api_keys_cli)
 
 def revoke_api_key_cli(args):
-    from aceapi.auth import revoke_api_key
+    from saq.database.util.user_management import revoke_api_key
     if revoke_api_key(args.key_id):
         logging.info("revoked api key %s", args.key_id)
     else:

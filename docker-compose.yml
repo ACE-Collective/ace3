@@ -347,7 +347,6 @@ services:
         fluentd-async: "true"
     depends_on:
       - http-app
-      - http-api
       - http-api-v2
       - http-api-engine
       - http-api-ai
@@ -375,7 +374,6 @@ services:
         fluentd-async: "true"
     depends_on:
       - http-app
-      - http-api
       - http-api-v2
       - http-api-engine
       - http-api-ai
@@ -410,32 +408,6 @@ services:
     networks:
       - ace
 
-  http-api:
-    platform: linux/amd64
-    environment:
-      <<: *common-env
-      ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
-      FLUENT_BIT_TAG: ace-api
-    image: ${ACE3_IMAGE_URL:-ace3:latest}
-    depends_on:
-      - ace
-    command: /bin/bash -c "/opt/ace/docker/startup/start.sh uwsgi --yaml etc/uwsgi_api.yaml"
-    init: true
-    restart: always
-    stop_grace_period: 60s
-    # POST /api/hunt/validate (copies of validate-hunt installed before it moved to
-    # /api/v2/hunt/validate) runs hunt scripts here. The sandbox kills a command with more than
-    # hunter.correlation.executable.max_processes processes, but it counts them by polling, so
-    # this is the hard ceiling for a fork loop that outruns it. 12 uwsgi workers each running one
-    # capped command stay far below it.
-    pids_limit: 2048
-    volumes: *common-volumes
-    hostname: ace
-    expose:
-      - "3031"
-    networks:
-      - ace
-
   http-api-v2:
     platform: linux/amd64
     environment:
@@ -452,7 +424,7 @@ services:
     # POST /api/v2/hunt/validate runs hunt scripts here. The sandbox kills a command with more than
     # hunter.correlation.executable.max_processes processes, but it counts them by polling, so
     # this is the hard ceiling for a fork loop that outruns it. Every thread counts against it
-    # too: twice http-api's, for the 12 workers' thread pools (up to 40 threads each).
+    # too, so it allows for the 12 workers' thread pools (up to 40 threads each).
     pids_limit: 4096
     volumes: *common-volumes
     hostname: ace

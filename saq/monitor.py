@@ -108,7 +108,7 @@ class MonitorEmitter:
             # deliberately not logging.error. the root logger's only handler is itself a
             # fluent-bit handler, so when fluent-bit goes away -- which is exactly when
             # this fails -- an error here is another message aimed at the thing that just
-            # stopped answering. report_exception() and the database pool both emit
+            # stopped answering. ErrorReportHandler and the database pool both emit
             # monitors, so at ERROR a single fluent-bit outage amplified into a loop.
             # debug keeps the detail available without feeding it back in.
             logging.debug("failed to emit monitor data to fluent-bit: %s", e)

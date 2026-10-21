@@ -13,7 +13,6 @@ import yaml
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from aceapi.auth import create_api_key
 from hunt_compiler.models import CompiledHunt, EmbeddedFile
 from saq.analysis.root import RootAnalysis, Submission, load_root
 from saq.collectors.hunter.base_hunter import Hunt
@@ -30,7 +29,7 @@ from saq.configuration.schema import CommandTypeConfig, HuntTypeConfig
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, TAG_HUNT_VALIDATION
 from saq.database.model import Alert
 from saq.database.pool import get_db
-from saq.database.util.user_management import add_user, delete_user
+from saq.database.util.user_management import add_user, create_api_key, delete_user
 from saq.error.remote import RemoteApiError
 from saq.logging import ThreadSuppressionFilter
 from saq.permissions.user import add_user_permission
@@ -167,8 +166,9 @@ class _V2Response:
 
 
 class _V2HuntApi:
-    """POST /api/v2/hunt/validate, called like the Flask test client calls the legacy route. Run
-    on the loop the cached async database engine is bound to (see tests/conftest.py::_dispatch_v2)."""
+    """POST /api/v2/hunt/validate, with the request built from the keyword arguments these tests
+    pass. Run on the loop the cached async database engine is bound to (see
+    tests/conftest.py::mock_api_call)."""
 
     def __init__(self, raise_app_exceptions: bool = True):
         # Starlette re-raises an unhandled exception after its handler has answered 500; False
@@ -197,12 +197,8 @@ class _V2HuntApi:
         return _V2Response(run_async(_send()))
 
 
-@pytest.fixture(params=["legacy", "v2"])
-def hunt_api(request):
-    """Every test runs against both POST /api/hunt/validate (Flask) and POST
-    /api/v2/hunt/validate, which must answer alike until the Flask route is deleted."""
-    if request.param == "legacy":
-        return request.getfixturevalue("test_client")
+@pytest.fixture
+def hunt_api():
     return _V2HuntApi()
 
 
@@ -1458,7 +1454,7 @@ def test_validate_hunt_audits_a_rejected_request(hunt_api, auth_headers, hunt_au
 
 @pytest.mark.integration
 def test_validate_hunt_audits_a_body_that_is_not_json(hunt_audit_records, auth_headers):
-    """The v2 route answers a body that is not JSON itself, and audits it as refused."""
+    """A body that is not JSON is answered 415 and audited as refused."""
     response = _V2HuntApi().post(HUNT_VALIDATE_URL, data="some text", content_type="text/plain", headers=auth_headers)
 
     assert response.status_code == 415
