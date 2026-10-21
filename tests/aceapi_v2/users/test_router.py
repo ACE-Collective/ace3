@@ -8,13 +8,18 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
-from aceapi_v2.users.schemas import ApiKeyScope
 from aceapi_v2.users.service import create_user_api_key, list_user_api_keys
 from saq.configuration import get_config
 from saq.configuration.schema import ConfigApiKey
-from saq.database.model import AuthApiKey, AuthGroup, AuthGroupPermission, AuthGroupUser, AuthUserPermission, User
+from saq.database.model import AuthApiKey, AuthGroup, AuthGroupUser, AuthUserPermission, User
 from saq.util import sha256_str
-from tests.aceapi_v2.conftest import api_key_client, make_api_key, make_flask_session_cookie
+from tests.aceapi_v2.conftest import (
+    add_analyst_group,
+    api_key_client,
+    key_scope,
+    make_api_key,
+    make_flask_session_cookie,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -234,6 +239,28 @@ class TestHappyPath:
         assert not any(k["id"] == key_id for k in listed)
 
     @pytest.mark.asyncio
+    async def test_key_changes_are_audited_as_the_admin(
+        self, client: AsyncClient, session: AsyncSession, test_user: User, valid_api_key: str, caplog
+    ):
+        """An admin changing another user's key: each record names the key's owner, and the admin's
+        account and the API key the admin used."""
+        caplog.set_level(logging.INFO)
+        admin_key_id = (await session.execute(
+            select(AuthApiKey.id).where(AuthApiKey.key_hash == sha256_str(valid_api_key)))).scalar_one()
+        owner = await _make_user(session, "rtr_apikey_audit", perms=[])
+
+        created = await client.post(
+            f"/users/{owner.id}/apikeys", json={"name": "k", "inherit": False, "scope": [{"major": "alert", "minor": "read"}]})
+        key_id = created.json()["key_id"]
+        assert (await client.put(f"/users/apikeys/{key_id}", json={"name": "k", "inherit": True, "scope": []})).status_code == 200
+        assert (await client.delete(f"/users/apikeys/{key_id}")).json()["revoked"] is True
+
+        audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key_id]
+        assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
+        assert [(r.user_id, r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+            (owner.id, "unittest", test_user.id, admin_key_id)] * 3
+
+    @pytest.mark.asyncio
     async def test_create_scoped_key_via_api(self, client: AsyncClient, session: AsyncSession):
         user = await _make_user(session, "rtr_apikey_scoped", perms=[])
         r = await client.post(
@@ -388,7 +415,11 @@ class TestHappyPath:
             assert (await c.delete("/users/apikeys/1")).status_code == 403
 
     @pytest.mark.asyncio
-    async def test_grant_and_revoke_permission(self, client: AsyncClient, session: AsyncSession):
+    async def test_grant_and_revoke_permission(
+        self, client: AsyncClient, session: AsyncSession, test_user: User, caplog
+    ):
+        caplog.set_level(logging.INFO)
+        admin_id = test_user.id  # read before the expire_all() calls below
         user = await _make_user(session, "rtr_grant", perms=[])
         uid = user.id
         grant = await client.post("/users/permissions", json={
@@ -411,6 +442,9 @@ class TestHappyPath:
         assert (await session.execute(
             select(AuthUserPermission).where(AuthUserPermission.id == perm_id)
         )).scalar_one_or_none() is None
+
+        audit = next(r for r in caplog.records if r.getMessage().startswith(f"AUDIT: user unittest revoked user permission rows [{perm_id}]"))
+        assert audit.actor_id == admin_id and audit.actor_key_id is not None
 
     @pytest.mark.asyncio
     async def test_revoke_rejects_unknown_fields(self, client: AsyncClient, session: AsyncSession):
@@ -531,17 +565,10 @@ class TestSelfService:
         assert (await noperm_client.patch("/users/me", json={"queue": ""})).status_code == 422
 
 
-# The analyst group from the user:self design: everything except the CLI, secrets and user admin.
-ANALYST_GRANTS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
-
 # a signature:read route that needs no data behind it: 404 once past the gate, 403 at it
 SIGNATURE_READ_PATH = "/signatures/yara-qa/matches/999999"
 
 CONFIG_KEY = "7d0c6a52-3f7e-4f5e-9a51-6c1f0f3b2e11"
-
-
-def _scope(*patterns: str) -> list[ApiKeyScope]:
-    return [ApiKeyScope(major=p.split(":")[0], minor=p.split(":")[1]) for p in patterns]
 
 
 def _warned(caplog, text: str) -> bool:
@@ -551,14 +578,7 @@ def _warned(caplog, text: str) -> bool:
 async def _make_analyst(session: AsyncSession, username: str) -> tuple[User, AuthGroup]:
     """A user whose only grants come from an analyst group (and so who holds user:self)."""
     user = await _make_user(session, username, perms=[])
-    group = AuthGroup(name=f"{username}_grp")
-    session.add(group)
-    await session.flush()
-    session.add(AuthGroupUser(group_id=group.id, user_id=user.id))
-    for major, minor, effect in ANALYST_GRANTS:
-        session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
-    await session.flush()
-    return user, group
+    return user, await add_analyst_group(session, user)
 
 
 def _browser_for(user: User, fetch_site: str = "same-origin") -> AsyncClient:
@@ -609,7 +629,7 @@ class TestSelfServiceApiKeyRoutes:
         user, _ = await _make_analyst(session, "rtr_self_denied")
         session.add(AuthUserPermission(user_id=user.id, major="user", minor="self", effect="DENY"))
         await session.flush()
-        key, _ = await create_user_api_key(session, user.id, name="admin made", inherit=False, scope=_scope("alert:read"))
+        key, _ = await create_user_api_key(session, user.id, name="admin made", inherit=False, scope=key_scope("alert:read"))
         await session.flush()
 
         async with _browser_for(user) as c:
@@ -630,7 +650,7 @@ class TestSelfServiceApiKeyRoutes:
         caplog.set_level(logging.WARNING)
         user, _ = await _make_analyst(session, "rtr_self_keys")
         scoped = await make_api_key(session, user.id, inherit=False, scope=[("user", "self"), ("alert", "read")])
-        own, _ = await create_user_api_key(session, user.id, name="target", inherit=False, scope=_scope("alert:read"))
+        own, _ = await create_user_api_key(session, user.id, name="target", inherit=False, scope=key_scope("alert:read"))
         await session.flush()
 
         for credential in (scoped, user.test_api_key):
@@ -710,6 +730,21 @@ class TestSelfServiceApiKeyRoutes:
         assert hash_after == hash_before
         async with api_key_client(created["api_key"]) as key:
             assert (await key.get(SIGNATURE_READ_PATH)).status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_own_key_changes_are_audited_as_the_owner(self, _override_db_session, session: AsyncSession, caplog):
+        caplog.set_level(logging.INFO)
+        user, _ = await _make_analyst(session, "rtr_self_audit")
+        async with _browser_for(user) as c:
+            key_id = (await _mint(c, "alert:read"))["key_id"]
+            assert (await c.put(f"/users/me/apikeys/{key_id}", json=_key_body("mine", "signature:read"))).status_code == 200
+            assert (await c.delete(f"/users/me/apikeys/{key_id}")).json()["revoked"] is True
+
+        audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key_id]
+        assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
+        # a GUI session, so no API key acted
+        assert [(r.user_id, r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+            (user.id, "rtr_self_audit", user.id, None)] * 3
 
     @pytest.mark.asyncio
     async def test_another_users_key_cannot_be_edited_or_revoked(self, _override_db_session, session: AsyncSession):

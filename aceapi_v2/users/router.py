@@ -215,7 +215,7 @@ async def create_my_api_key(
             name=body.name,
             inherit=False,
             scope=body.scope,
-            created_by=user_id,
+            actor=auth,
             self_service=True,
         )
     except service.UserNotFoundForApiKeyError as e:
@@ -242,7 +242,7 @@ async def update_my_api_key(
     try:
         key = await service.update_user_api_key(
             session, key_id, name=body.name, inherit=False, scope=body.scope,
-            owner_id=user_id, actor_id=user_id,
+            owner_id=user_id, actor=auth,
         )
     except service.InvalidPermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -261,7 +261,7 @@ async def revoke_my_api_key(
     """Revoke one of the caller's keys. ``revoked`` is false for a key that does not exist or is
     another user's, so the answer does not reveal which."""
     user_id = _require_user(auth)
-    revoked = await service.revoke_user_api_key(session, key_id, owner_id=user_id, actor_id=user_id)
+    revoked = await service.revoke_user_api_key(session, key_id, owner_id=user_id, actor=auth)
     return {"revoked": revoked}
 
 
@@ -292,7 +292,7 @@ async def create_api_key(
             name=body.name,
             inherit=body.inherit,
             scope=body.scope,
-            created_by=auth.auth_user_id,
+            actor=auth,
         )
     except service.UserNotFoundForApiKeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -315,8 +315,7 @@ async def update_api_key(
     up the new permissions without being reissued. Same exactly-one-of rule as creation."""
     try:
         key = await service.update_user_api_key(
-            session, key_id, name=body.name, inherit=body.inherit, scope=body.scope,
-            actor_id=auth.auth_user_id,
+            session, key_id, name=body.name, inherit=body.inherit, scope=body.scope, actor=auth,
         )
     except service.InvalidPermissionError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -331,7 +330,7 @@ async def revoke_api_key(
     session: Annotated[AsyncSession, Depends(get_async_session)],
     auth: Annotated[ApiAuthResult, Depends(require_permission("user", "write"))],
 ) -> dict:
-    revoked = await service.revoke_user_api_key(session, key_id, actor_id=auth.auth_user_id)
+    revoked = await service.revoke_user_api_key(session, key_id, actor=auth)
     return {"revoked": revoked}
 
 
@@ -351,7 +350,7 @@ async def delete_permission(
             session,
             user_permission_ids=body.user_permission_ids,
             group_permission_ids=body.group_permission_ids,
-            actor_id=auth.auth_user_id,
+            actor=auth,
         )
     except service.PermissionNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -27,6 +27,7 @@ from saq.database.model import (
 from saq.permissions.catalog import get_catalog_pairs, get_permission_catalog
 from saq.permissions.logic import get_permission_rows_async, held_catalog_pairs, key_scope_allows
 from saq.util import sha256_str
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.users.schemas import (
     ApiKeyRead,
     ApiKeyScope,
@@ -437,7 +438,7 @@ async def revoke_permissions(
     *,
     user_permission_ids: list[int],
     group_permission_ids: list[int],
-    actor_id: int | None = None,
+    actor: ApiAuthResult | None = None,
 ) -> None:
     """Deletes the named permission rows. Raises PermissionNotFoundError if any id matches nothing.
 
@@ -463,9 +464,10 @@ async def revoke_permissions(
     await session.flush()
 
     if user_permission_ids or group_permission_ids:
+        audit = _audit_actor(actor)
         logging.info(
             "AUDIT: user %s revoked user permission rows %s and group permission rows %s",
-            actor_id, user_permission_ids, group_permission_ids)
+            audit["actor"], user_permission_ids, group_permission_ids, extra=audit)
 
 
 def all_timezones() -> list[str]:
@@ -531,6 +533,14 @@ def _describe_scope(inherit: bool, rows: list[AuthApiKeyPermission]) -> str:
     return ", ".join(f"{row.major}:{row.minor}" for row in rows)
 
 
+def _audit_actor(actor: ApiAuthResult | None) -> dict:
+    """Who made a change, for an AUDIT record's extra={}. The user id alone is not enough: it does
+    not say which API key acted for that user, and a config key has no user at all."""
+    if actor is None:
+        return {"actor": None, "actor_id": None, "actor_key_id": None}
+    return {"actor": actor.auth_name, "actor_id": actor.auth_user_id, "actor_key_id": actor.key_id}
+
+
 def _reject_self_service_inherit(inherit: bool) -> None:
     if inherit:
         raise InvalidPermissionError(
@@ -581,7 +591,7 @@ async def create_user_api_key(
     name: str,
     inherit: bool,
     scope: list[ApiKeyScope],
-    created_by: int | None = None,
+    actor: ApiAuthResult | None = None,
     self_service: bool = False,
 ) -> tuple[AuthApiKey, str]:
     """Create a new API key for a user; return ``(key, plaintext)``. The plaintext is available
@@ -605,13 +615,14 @@ async def create_user_api_key(
     if self_service:
         await _check_scope_within_grants(session, user_id, name, rows)
 
+    audit = _audit_actor(actor)
     api_key = str(uuid.uuid4())
     key = AuthApiKey(
         user_id=user_id,
         name=name,
         key_hash=sha256_str(api_key),
         inherit_user_scope=inherit,
-        created_by=created_by,
+        created_by=audit["actor_id"],
     )
     key.scope.extend(rows)
 
@@ -619,8 +630,8 @@ async def create_user_api_key(
     await session.flush()
     logging.info(
         "AUDIT: user %s created api key %s (%r) for user %s with scope %s",
-        created_by, key.id, name, user_id, _describe_scope(inherit, rows),
-        extra={"api_key_id": key.id, "user_id": user_id, "actor_id": created_by})
+        audit["actor"], key.id, name, user_id, _describe_scope(inherit, rows),
+        extra={"api_key_id": key.id, "user_id": user_id, **audit})
     return key, api_key
 
 
@@ -632,7 +643,7 @@ async def update_user_api_key(
     inherit: bool,
     scope: list[ApiKeyScope],
     owner_id: int | None = None,
-    actor_id: int | None = None,
+    actor: ApiAuthResult | None = None,
 ) -> AuthApiKey | None:
     """Rename a key and replace its scope in place. Returns None if no such key exists.
 
@@ -648,7 +659,15 @@ async def update_user_api_key(
         _reject_self_service_inherit(inherit)
     name, rows = _validate_api_key_scope(name=name, inherit=inherit, scope=scope)
 
-    stmt = select(AuthApiKey).options(selectinload(AuthApiKey.scope)).where(AuthApiKey.id == key_id)
+    # the scope is replaced from the rows read here, so a concurrent edit has to wait for this one
+    # to commit and then read what it left; without the lock both delete the same old rows and
+    # each inserts its own, which merges the two scopes or fails u_api_key_perm
+    stmt = (
+        select(AuthApiKey)
+        .options(selectinload(AuthApiKey.scope))
+        .where(AuthApiKey.id == key_id)
+        .with_for_update()
+    )
     if owner_id is not None:
         stmt = stmt.where(AuthApiKey.user_id == owner_id)
     key = (await session.execute(stmt)).scalar_one_or_none()
@@ -667,10 +686,11 @@ async def update_user_api_key(
     await session.flush()
     key.scope.extend(rows)
     await session.flush()
+    audit = _audit_actor(actor)
     logging.info(
         "AUDIT: user %s updated api key %s (%r) of user %s to scope %s",
-        actor_id, key.id, name, key.user_id, _describe_scope(inherit, rows),
-        extra={"api_key_id": key.id, "user_id": key.user_id, "actor_id": actor_id})
+        audit["actor"], key.id, name, key.user_id, _describe_scope(inherit, rows),
+        extra={"api_key_id": key.id, "user_id": key.user_id, **audit})
     return key
 
 
@@ -686,7 +706,7 @@ def _api_key_read(key: AuthApiKey) -> ApiKeyRead:
 
 
 async def revoke_user_api_key(
-    session: AsyncSession, key_id: int, owner_id: int | None = None, actor_id: int | None = None
+    session: AsyncSession, key_id: int, owner_id: int | None = None, actor: ApiAuthResult | None = None
 ) -> bool:
     """Delete an API key by id. Returns False if no such key existed -- or, with `owner_id` (a
     user revoking their own key), if the key belongs to someone else. This is not reversible."""
@@ -697,9 +717,10 @@ async def revoke_user_api_key(
     name, user_id = key.name, key.user_id
     await session.delete(key)
     await session.flush()
+    audit = _audit_actor(actor)
     logging.info(
-        "AUDIT: user %s revoked api key %s (%r) of user %s", actor_id, key_id, name, user_id,
-        extra={"api_key_id": key_id, "user_id": user_id, "actor_id": actor_id})
+        "AUDIT: user %s revoked api key %s (%r) of user %s", audit["actor"], key_id, name, user_id,
+        extra={"api_key_id": key_id, "user_id": user_id, **audit})
     return True
 
 

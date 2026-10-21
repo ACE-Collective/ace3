@@ -879,7 +879,7 @@ class TestWildcardPermissionMatching:
         assert user_has_permission(user.id, "test", "read") is False
         assert user_has_permission(user.id, "test10", "read") is False
 
-# The analyst group from the user:self design: everything except the CLI, secrets and user admin.
+# A typical analyst group: everything except the CLI, secrets and user administration.
 ANALYST_ROWS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
 
 
@@ -896,7 +896,9 @@ class TestHeldCatalogPairs:
 
     def test_a_user_deny_beats_a_group_allow(self):
         held = held_catalog_pairs([("signature", "download", "DENY")], [("signature", "*", "ALLOW")], CATALOG_PAIRS)
-        assert held == {("signature", "read")}
+        signature = {pair for pair in CATALOG_PAIRS if pair[0] == "signature"}
+        assert ("signature", "read") in held
+        assert held == signature - {("signature", "download")}
 
     def test_grants_match_case_sensitively(self):
         assert held_catalog_pairs([("Signature", "read", "ALLOW")], [], CATALOG_PAIRS) == frozenset()
