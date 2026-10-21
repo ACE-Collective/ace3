@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import select, text
 
 from aceapi_v2.cli import service
+from saq.configuration.config import get_config
 from saq.database.model import CliExecution, Nodes, User
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
@@ -263,6 +264,20 @@ def test_dispatch_asks_the_node_at_its_location(monkeypatch):
 
     assert calls == [(execution_id, "node-a.example:443")]
     assert _row(execution_id).status == service.STATUS_PENDING
+
+
+@pytest.mark.integration
+def test_dispatch_translates_the_node_location(monkeypatch):
+    a = _add_node("node-a", location="node-a")
+    (execution_id,) = _create(["node", "list"], [a])
+    monkeypatch.setitem(get_config().node_translation, "unittest", "node-a,node-a-http:443")
+    calls = []
+    monkeypatch.setattr(service.ace_api, "start_cli_execution",
+                        lambda i, **kwargs: calls.append((i, kwargs["remote_host"])))
+
+    service.dispatch_execution(execution_id)
+
+    assert calls == [(execution_id, "node-a-http:443")]
 
 
 @pytest.mark.integration

@@ -268,8 +268,11 @@ def dispatch_execution(execution_id: int) -> None:
     node_name, location = row
     context = f"starting cli execution {execution_id} on node {node_name} ({location})"
 
+    # imported here: the node manager pulls in saq.modules, which imports aceapi_v2 back (circular)
+    from saq.engine.node_manager.distributed_node_manager import translate_node
+
     try:
-        ace_api.start_cli_execution(execution_id, remote_host=location, timeout=DISPATCH_TIMEOUT)
+        ace_api.start_cli_execution(execution_id, remote_host=translate_node(location), timeout=DISPATCH_TIMEOUT)
         return
     except requests.HTTPError as e:
         detail = e.response.text if e.response is not None else str(e)
