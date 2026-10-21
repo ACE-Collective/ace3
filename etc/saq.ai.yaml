@@ -18,7 +18,6 @@
 api:
   # not used by the AI app (it serves no node-to-node traffic); the sentinel keeps the real
   # node-to-node key out of this process, and the startup check asserts it
-  secret_key: ai-container-unused
   api_key: ai-container-unused
 
 gui:
