@@ -689,6 +689,10 @@ upload_command_parser.set_defaults(func=_cli_upload)
 def clear(uuid, lock_uuid, *args, **kwargs):
     return _execute_api_call('v2/engine/clear/{}/{}'.format(uuid, lock_uuid), method=METHOD_POST, *args, **kwargs).status_code == 200
 
+def start_cli_execution(execution_id, *args, **kwargs):
+    """Ask a node to start running a CLI execution recorded for it (docs/GUI_CLI.md)."""
+    return _execute_api_call('v2/engine/cli/{}'.format(execution_id), method=METHOD_POST, *args, **kwargs).json()
+
 #
 # supporting backwards comptability for the old ace_client_lib.client library
 #

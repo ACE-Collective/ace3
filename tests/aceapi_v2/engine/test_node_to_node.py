@@ -133,3 +133,22 @@ async def test_automation_scope_still_denies_out_of_scope_endpoints(automation):
     """
     async with automation as client:
         assert (await client.get(f"/alerts/{uuid.uuid4()}")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cli_start_allowed_by_shipped_automation_scope(automation):
+    """POST /api/v2/engine/cli/{id}: the node that took a GUI CLI request starts each node's run
+    with the same key (aceapi_v2/cli/service.py::dispatch_execution). An unknown id is a 404, so
+    anything but a 403 means the scope let the request through."""
+    async with automation as client:
+        assert (await client.post("/engine/cli/999999999")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_automation_scope_cannot_request_cli_executions(automation):
+    """engine:cli only starts a run a user with cli:execute recorded; the node key itself must
+    never be able to record one."""
+    async with automation as client:
+        response = await client.post("/cli/executions", json={"command": "node list"})
+
+    assert response.status_code == 403

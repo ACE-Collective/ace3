@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.131] - 2026-10-21
+
+- [Remove report_exception()](https://github.com/ACE-Collective/ace3/pull/795)
+- [Remove the unused api.secret_key; refresh the tracker's GUI survey](https://github.com/ACE-Collective/ace3/pull/793)
+- [Run ACE CLI commands from the Admin panel](https://github.com/ACE-Collective/ace3/pull/792)
+- [Remove the legacy Flask API](https://github.com/ACE-Collective/ace3/pull/791)
+- [Remove the unreachable InvalidHuntTypeError branch from the hunt manager](https://github.com/ACE-Collective/ace3/pull/790)
+- [Measure aceapi_ai in test coverage](https://github.com/ACE-Collective/ace3/pull/789)
+- [Log caught exceptions with logging.exception() instead of report_exception()](https://github.com/ACE-Collective/ace3/pull/788)
+- [Write error reports from logging.exception()](https://github.com/ACE-Collective/ace3/pull/787)
+- [Make alert icons dark mode friendly](https://github.com/ACE-Collective/ace3/pull/786)
+
 ## [3.0.130] - 2026-10-20
 
 - [Download the search embedding model once, under a lock](https://github.com/ACE-Collective/ace3/pull/784)

@@ -11,6 +11,7 @@ else under `/api/v2`. This page explains why, and how to size it.
 | `GET /api/v2/engine/download/{uuid}` | an engine pulling a work item from this node (`transfer_work_target`, `saq/engine/workload_manager/database.py`) |
 | `POST /api/v2/engine/clear/{uuid}/{lock_uuid}` | the same engine, once it owns the pulled copy |
 | `POST /api/v2/engine/upload/{uuid}` | remote collector delivery (`saq/collectors/remote_node.py`) and drain (`saq/engine/node_manager/drain.py`) |
+| `POST /api/v2/engine/cli/{id}` | the node that took a GUI CLI request, starting the run recorded for this node ([GUI_CLI.md](GUI_CLI.md)) |
 
 The container runs `api_engine_uvicorn.py`, which serves `aceapi_v2.create_engine_app()`: the
 engine router plus `/health` and `/common`, and nothing a user would call. Both nginx listeners

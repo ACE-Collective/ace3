@@ -92,7 +92,6 @@ class RemediationWorker(RemediationListener):
             # set the remediator result to error and log the error
             remediator_result = RemediatorResult(status=RemediatorStatus.ERROR, message=f"{e.__class__.__name__}: {e}")
             logging.error(f"{self.remediator.name} failed to {target.action.value} {target.type} {target.key}: {e}")
-            #report_exception()
 
         update = Remediation.__table__.update()
         update = update.values(
