@@ -4,7 +4,6 @@ import pymysql
 from saq.database.pool import get_db_connection
 from saq.database.retry import execute_with_retry
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 
 
 def add_delayed_analysis_request(root, observable, analysis_module, hours, minutes, seconds) -> bool:
@@ -58,9 +57,8 @@ def add_delayed_analysis_request(root, observable, analysis_module, hours, minut
                          root, analysis_module.name, observable))
         return True
     except Exception as e:
-        logging.error("unable to insert delayed analysis on {} by {} for {}: {}".format(
+        logging.exception("unable to insert delayed analysis on {} by {} for {}: {}".format(
                          root, analysis_module.name, observable, e))
-        report_exception()
         return False
 
 def clear_delayed_analysis_requests(root):

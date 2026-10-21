@@ -25,7 +25,6 @@ from saq.constants import REDIS_DB_BG_TASKS, SERVICE_SEARCH_INDEXER
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import ACE_MP_CONTEXT
-from saq.error.reporting import report_exception
 from saq.logging import initialize_transaction_id
 from saq.redis_client import get_redis_connection
 from saq.search import index
@@ -154,8 +153,7 @@ class SearchIndexWorker:
 
                 # ready=False means startup itself is failing (qdrant unreachable, model
                 # download blocked) rather than a single task going wrong
-                logging.error("search_indexer_worker_error", extra={"worker": self.name, "ready": self.model is not None, "error": str(e)})
-                report_exception()
+                logging.exception("search_indexer_worker_error", extra={"worker": self.name, "ready": self.model is not None, "error": str(e)})
                 # don't spin if there's a major issue
                 self.shutdown_event.wait(1)
 
@@ -207,7 +205,7 @@ class SearchIndexWorker:
             self.defer_task(task_data)
         except Exception as e:
             self.tasks_failed += 1
-            logging.error(
+            logging.exception(
                 "search_index_task_error",
                 extra={
                     "worker": self.name,
@@ -218,7 +216,6 @@ class SearchIndexWorker:
                     "error": str(e),
                 },
             )
-            report_exception()
             self.requeue_task(task_data)
         finally:
             remove_all_sessions()

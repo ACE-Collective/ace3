@@ -240,7 +240,6 @@ def update_organization(args):
     from saq.configuration.config import get_analysis_module_config
     from saq.constants import ANALYSIS_MODULE_USER_TAGGER
     from saq.environment import get_base_dir
-    from saq.error.reporting import report_exception
 
     # load the organization information
     config = get_analysis_module_config(ANALYSIS_MODULE_USER_TAGGER)
@@ -287,8 +286,7 @@ def update_organization(args):
                 return response['entries'][0]['attributes']
 
         except Exception as e:
-            logging.error("unable to perform ldap query: {0}".format(str(e)))
-            report_exception()
+            logging.exception("unable to perform ldap query: {0}".format(str(e)))
             return None
 
     if os.path.exists(temp_file):

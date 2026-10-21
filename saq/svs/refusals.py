@@ -28,7 +28,6 @@ from saq.database.model import SVSRegistrationRefusal
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.environment import get_local_timezone
-from saq.error.reporting import report_exception
 from saq.signatures.builtin import SVS_REGISTRATION_REFUSED, get_builtin_signature_version
 from saq.svs.hosts import InvalidTestHost, split_hostname
 from saq.util.uuid import storage_dir_from_uuid
@@ -150,8 +149,7 @@ def refuse(caller: Caller, hostname: str, username: Optional[str], reason: str, 
     try:
         alert_uuid = _create_alert(caller, hostname, username, reason, launcher, test_guid, payload or {})
     except Exception as e:
-        logging.error("unable to create the alert for a refused svs run registration by %s: %s", caller.name, e)
-        report_exception()
+        logging.exception("unable to create the alert for a refused svs run registration by %s: %s", caller.name, e)
         db.rollback()
 
     if alert_uuid is not None:

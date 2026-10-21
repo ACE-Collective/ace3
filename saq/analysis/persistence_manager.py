@@ -5,7 +5,6 @@ import shutil
 from typing import TYPE_CHECKING
 import uuid
 
-from saq.error.reporting import report_exception
 
 if TYPE_CHECKING:
     from saq.analysis.analysis import Analysis
@@ -144,5 +143,4 @@ class AnalysisDetailsPersistenceManager:
             # this can happen now if the alert is still analyzing
             # since we are flushing as we go and they can be loaded at any time
             logging.warning(f"unable to load json from {full_file_path}: {e}")
-            report_exception()
             return False

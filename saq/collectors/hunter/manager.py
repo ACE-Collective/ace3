@@ -8,7 +8,7 @@ import time
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ExecutionMode
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.git import get_commit_hash, git_dir_contains
 from saq.logging import get_transaction_id, transaction_id
 from saq.network_semaphore import NetworkSemaphoreClient
@@ -241,8 +241,7 @@ class HuntManager:
             try:
                 hunt.cancel()
             except Exception:
-                logging.error("unable to cancel hunt {hunt}: {e}")
-                report_exception()
+                logging.exception("unable to cancel hunt {hunt}: {e}")
 
     def wait(self, *args, **kwargs):
         self.manager_control_event.wait(*args, **kwargs)
@@ -459,8 +458,7 @@ class HuntManager:
                         "enabled" if track_suppression else "disabled",
                     )
         except Exception as e:
-            logging.error(f"uncaught exception: {e}")
-            report_exception()
+            logging.exception(f"uncaught exception: {e}")
         finally:
             self.release_concurrency_lock(hunt.semaphore)
             # at this point this hunt has finished and is eligible to execute again
@@ -489,11 +487,10 @@ class HuntManager:
                     except Exception as e:
                         # a submission we cannot stage is one we cannot deliver. log it loudly
                         # rather than dropping it silently the way the in-memory queue used to
-                        logging.error(
+                        logging.exception(
                             "unable to stage submission %s for hunt %s (uuid=%s, type=%s): %s",
                             submission.root.uuid, hunt.name, hunt.uuid, hunt.type, e,
                         )
-                        report_exception()
 
                 if submissions:
                     logging.info(
@@ -614,13 +611,11 @@ class HuntManager:
                     logging.debug(f"not loading {hunt} (hunt_filter returned False)")
 
             except InvalidHuntTypeError as e:
-                report_exception()
                 self.skipped_yaml_files.add(hunt_config_file_path)
                 logging.warning(f"skipping {hunt_config_file_path} for {self}: {e}")
                 continue
             except Exception as e:
-                logging.error(f"unable to load hunt from {hunt_config_file_path}: {e}")
-                report_exception()
+                logging.exception(f"unable to load hunt from {hunt_config_file_path}: {e}")
                 try:
                     self.failed_yaml_files[hunt_config_file_path] = (
                         os.path.getmtime(hunt_config_file_path),

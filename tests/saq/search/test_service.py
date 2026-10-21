@@ -63,7 +63,7 @@ class TestSubmit:
         assert SearchIndexTask.model_validate_json(payload) == SearchIndexTask(alert_uuid="u", op=op)
 
     def test_redis_failure_returns_false(self, enable_indexer):
-        with patch("saq.search.tasks.get_redis_connection", side_effect=RuntimeError("down")), patch("saq.search.tasks.report_exception"):
+        with patch("saq.search.tasks.get_redis_connection", side_effect=RuntimeError("down")), patch("saq.error.reporting.write_error_report"):
             assert submit_index_task("u") is False
 
 
@@ -223,7 +223,7 @@ class TestTaskRecovery:
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
             patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
             patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch("saq.search.service.report_exception"),
+            patch("saq.error.reporting.write_error_report"),
             patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()
@@ -343,7 +343,7 @@ class TestLogging:
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
             patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
             patch("saq.search.service.get_redis_connection"),
-            patch("saq.search.service.report_exception"),
+            patch("saq.error.reporting.write_error_report"),
             patch("saq.search.service.remove_all_sessions"),
         ):
             worker.worker_execute()

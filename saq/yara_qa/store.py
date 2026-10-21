@@ -47,7 +47,6 @@ from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
-from saq.error.reporting import report_exception
 from saq.json_encoding import _JSONEncoder
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
@@ -228,8 +227,7 @@ def record_qa_match(match_result: dict, target: QATarget) -> QARecordResult:
     try:
         return record_qa_match_or_raise(match_result, target)
     except Exception as e:
-        logging.error("unable to store yara qa match of rule %s on %s: %s", match_result.get("rule"), target, e)
-        report_exception()
+        logging.exception("unable to store yara qa match of rule %s on %s: %s", match_result.get("rule"), target, e)
         return QARecordResult(QARecordStatus.FAILED)
 
 

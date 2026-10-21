@@ -1,3 +1,4 @@
+import copy
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import logging
@@ -556,11 +557,25 @@ class MemoryLogHandler(logging.Handler):
             return
 
         try:
-            test_log_messages.append(record)
+            test_log_messages.append(self._picklable(record))
         except Exception as e:
             # next to this slot's unittest log rather than in the repository root
             with open(os.path.join(unittest_session.LOG_DIR, unittest_session.get_log_file_name("logging_issues")), "a") as fp:
                 fp.write(f"*** ERROR: unable to append record {record}: {e}\n")
+
+    @staticmethod
+    def _picklable(record: logging.LogRecord) -> logging.LogRecord:
+        """A copy of record the manager process can unpickle. The traceback in exc_info cannot
+        be pickled, so it travels as text in exc_text instead; a test that needs exc_info
+        itself uses caplog."""
+        if not record.exc_info:
+            return record
+
+        record = copy.copy(record)
+        if not record.exc_text:
+            record.exc_text = logging.Formatter().formatException(record.exc_info)
+        record.exc_info = None
+        return record
 
     def clear(self):
         with test_log_sync:

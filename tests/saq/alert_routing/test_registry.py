@@ -138,7 +138,7 @@ class TestFailures:
     def test_a_raising_router_is_reported_and_skipped(self, monkeypatch):
         """A router never breaks the alert insert or the analysis pass it runs inside."""
         reported = []
-        monkeypatch.setattr("saq.alert_routing.registry.report_exception", lambda *a, **k: reported.append(1))
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: reported.append(1))
         register_alert_router(RaisingRouter("broken", 100))
         register_alert_router(FixedRouter("fallback", 200, queue="fallback"))
 
@@ -146,7 +146,7 @@ class TestFailures:
         assert reported == [1]
 
     def test_a_router_returning_something_else_is_skipped(self, monkeypatch):
-        monkeypatch.setattr("saq.alert_routing.registry.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
         register_alert_router(BadReturnRouter("bad", 100))
         assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT) is None
 

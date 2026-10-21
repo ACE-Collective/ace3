@@ -45,7 +45,7 @@ from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.engine.workload_manager.memory import MemoryWorkloadManager
 from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
 from saq.shutdown import wait_for_shared_flag
@@ -441,8 +441,7 @@ class Worker:
         try:
             self.configuration_manager.load_modules()
         except Exception as e:
-            logging.error("unable to load modules: {} (worker exiting)".format(e))
-            report_exception()
+            logging.exception("unable to load modules: {} (worker exiting)".format(e))
             return False
 
         # let the main process know we started
@@ -648,8 +647,7 @@ class Worker:
                     logging.warning(f"analysis orchestration failed for {work_item}")
 
             except Exception as e:
-                logging.error("error orchestrating analysis for {}: {}".format(work_item, e))
-                report_exception(execution_context)
+                logging.exception("error orchestrating analysis for {}: {}".format(work_item, e))
 
             finally:
                 # Clean up: stop keepalive and clear work target
@@ -674,8 +672,7 @@ class Worker:
         try:
             submit_index_task(execution_context.work_item.uuid)
         except Exception as e:
-            logging.error(f"unable to submit {execution_context.work_item} for search indexing: {e}")
-            report_exception(execution_context)
+            logging.exception(f"unable to submit {execution_context.work_item} for search indexing: {e}")
 
     def analysis_has_timed_out(self, record: Optional[TrackingRecord]) -> bool:
         """Returns True if the current analysis has timed out (is stuck).
@@ -820,8 +817,7 @@ class Worker:
             self.tracking_message_manager.resolve_pending_failure(record.root_uuid)
 
         except Exception as e:
-            logging.error(f"unable to mark analysis as failed: {e}")
-            report_exception()
+            logging.exception(f"unable to mark analysis as failed: {e}")
 
         finally:
             self.lock_manager.release_lock(record.root_uuid, ignore_lock_failure=True)

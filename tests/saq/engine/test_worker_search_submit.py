@@ -65,7 +65,7 @@ def test_submit_failure_does_not_fail_the_work_item():
     worker = _worker(requested=True)
     with patch("saq.engine.worker.get_engine_config") as mock_config, \
          patch("saq.engine.worker.submit_index_task", side_effect=RuntimeError("redis down")), \
-         patch("saq.engine.worker.report_exception") as mock_report:
+         patch("saq.error.reporting.write_error_report") as mock_report:
         mock_config.return_value.work_dir = None
         assert worker.execute(_root()) is True
 

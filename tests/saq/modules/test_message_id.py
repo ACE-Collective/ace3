@@ -1,4 +1,6 @@
 import hashlib
+import logging
+from unittest.mock import Mock
 
 import pytest
 
@@ -113,3 +115,26 @@ def test_message_id_analyzer_v2_target_file_exists(test_context, tmpdir, monkeyp
     assert observable.has_tag("decrypted_email")
     with open(observable.full_path, "r") as fp:
         assert fp.read() == "Already exists."
+
+@pytest.mark.integration
+def test_message_id_analyzer_v2_archive_failure_is_reported(tmpdir, monkeypatch, caplog):
+    root = RootAnalysis(storage_dir=str(tmpdir / "root"))
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_MESSAGE_ID, "<test@local>")
+
+    def mock_iter_archived_email(message_id: str):
+        raise RuntimeError("archive unreadable")
+
+    monkeypatch.setattr(saq.modules.email.message_id, "iter_archived_email", mock_iter_archived_email)
+    monkeypatch.setattr(saq.modules.email.message_id, "email_is_archived", lambda message_id: True)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    analyzer = MessageIDAnalyzerV2(get_analysis_module_config(ANALYSIS_MODULE_MESSAGE_ID_ANALYZER_V2), context=create_test_context(root=root))
+    with caplog.at_level(logging.ERROR):
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    records = [r for r in caplog.records if "unable to get archived email <test@local>" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    write_error_report.assert_called_once()

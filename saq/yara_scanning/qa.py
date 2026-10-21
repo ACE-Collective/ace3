@@ -36,7 +36,7 @@ from typing import Callable, Optional
 
 from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.signatures.yara_meta import meta_enabled, meta_is_qa
 from saq.yara_qa.store import QATarget, record_qa_match_or_raise
 from saq.yara_scanning import protocol
@@ -337,8 +337,7 @@ class QARecorder:
                 return False
 
             except Exception as e:
-                logging.error("unable to record yara qa match of rule %s on %s: %s", match.get("rule"), target, e)
-                report_exception()
+                logging.exception("unable to record yara qa match of rule %s on %s: %s", match.get("rule"), target, e)
 
         self._remove(name)
         return True

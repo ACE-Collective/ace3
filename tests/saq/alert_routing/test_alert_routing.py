@@ -105,7 +105,7 @@ class TestPreInsert:
             def route(self, root, stage):
                 raise RuntimeError("broken router")
 
-        monkeypatch.setattr("saq.alert_routing.registry.report_exception", lambda *a, **k: None)
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
         register_alert_router(Broken("broken", 100))
         root = _saved_root()
 

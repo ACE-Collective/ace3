@@ -97,7 +97,7 @@ def test_failed_rollback_preserves_the_original_exception():
     session.rollback.side_effect = RuntimeError("rollback also failed")
 
     with patch("saq.database.retry.get_db", return_value=session), \
-            patch("saq.database.retry.report_exception"):
+            patch("saq.error.reporting.write_error_report"):
         with pytest.raises(DBAPIError) as exc_info:
             retry_on_deadlock(target, attempts=3)
 

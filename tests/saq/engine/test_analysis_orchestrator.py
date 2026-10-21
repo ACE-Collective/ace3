@@ -297,8 +297,8 @@ class TestAnalysisOrchestratorFinallyBlock:
             # analysis should still return True because the exception was in the finally block
             assert result is True
             # verify error was logged
-            mock_logging.error.assert_called()
-            error_call_args = str(mock_logging.error.call_args)
+            mock_logging.exception.assert_called()
+            error_call_args = str(mock_logging.exception.call_args)
             assert "post-analysis logic" in error_call_args
 
     def test_orchestrate_analysis_exception_before_finally_block(self, orchestrator, execution_context):
@@ -325,7 +325,7 @@ class TestAnalysisOrchestratorFinallyBlock:
 
             assert result is False
             # verify both errors were logged
-            assert mock_logging.error.call_count >= 2
+            assert mock_logging.exception.call_count >= 2
 
 
 @pytest.mark.unit

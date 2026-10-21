@@ -20,7 +20,7 @@ from saq.database import ALERT, execute_with_retry, get_db_connection, remove_al
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_data_dir, get_global_runtime_settings
-from saq.error.reporting import log_loop_exception, report_exception
+from saq.error.reporting import log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
 
@@ -140,8 +140,8 @@ class RemoteNode:
             return temp_root.uuid
 
         except Exception as e:
+            # the caller logs this and decides whether it is worth an error report
             logging.warning("submission irregularity for {}: {} ({})".format(submission, e, type(e)))
-            report_exception()
             raise e
 
         finally:
@@ -627,16 +627,15 @@ ORDER BY
                                          load_seconds, time.monotonic() - submit_start_time))
                         submission_success = True
                     except Exception as e:
-                        if self.full_delivery:
-                            if not isinstance(e, urllib3.exceptions.MaxRetryError) \
-                                    and not isinstance(e, urllib3.exceptions.NewConnectionError) \
-                                    and not isinstance(e, requests.exceptions.ConnectionError):
-                                # if it's not a connection issue then report it
-                                report_exception()
-
-                        logging.warning("unable to submit work item {} to {} via group {}: {}".format(
-                                submission, target, self, e))
-                        report_exception()
+                        # a node that cannot be reached is an operational condition, not an ACE bug
+                        if isinstance(e, (urllib3.exceptions.MaxRetryError,
+                                          urllib3.exceptions.NewConnectionError,
+                                          requests.exceptions.ConnectionError)):
+                            logging.warning("unable to submit work item {} to {} via group {}: {}".format(
+                                    submission, target, self, e))
+                        else:
+                            logging.exception("unable to submit work item {} to {} via group {}: {}".format(
+                                    submission, target, self, e))
 
                         # if we are in full delivery mode then we need to try this one again later
                         if self.full_delivery and (isinstance(e, urllib3.exceptions.MaxRetryError) \

@@ -196,7 +196,7 @@ Services are launched by `ace service start <name>`, which owns the whole lifecy
   keeping it below the container's `stop_grace_period`.
 
 In a loop's catch-all handler, use `log_loop_exception()` rather than
-`logging.error()` + `report_exception()`:
+`logging.exception()`:
 
 ```python
 from saq.error.reporting import log_loop_exception

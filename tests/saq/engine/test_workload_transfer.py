@@ -138,7 +138,6 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
     """A 400 from the remote clear must not fail the transfer, delete the local
     copy, report an exception, or release the (now-owned) lock."""
     import ace_api
-    from saq.engine.workload_manager import database as db_module
 
     uuid, _ = item
 
@@ -147,7 +146,7 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
 
     monkeypatch.setattr(ace_api, "clear", fake_clear)
     report_exception_mock = Mock()
-    monkeypatch.setattr(db_module, "report_exception", report_exception_mock)
+    monkeypatch.setattr("saq.error.reporting.write_error_report", report_exception_mock)
 
     manager = make_manager(DistributedLockManager())
     result = manager.transfer_work_target(uuid, workload_node_id(uuid))

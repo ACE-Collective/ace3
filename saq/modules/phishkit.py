@@ -15,7 +15,6 @@ from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_CRAWL, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_RENDER, F_URL, F_FILE, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_base_dir
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis import FileTypeAnalysis, OCRAnalyzer
@@ -619,8 +618,7 @@ class PhishkitAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             error_msg = f"phishkit scan failed for {observable} job ID {analysis.job_id}: {e}"
-            logging.error(error_msg)
-            report_exception()
+            logging.exception(error_msg)
             analysis.error = error_msg
             self._emit_scan_outcome(observable, analysis, "failed")
             return AnalysisExecutionResult.COMPLETED
@@ -879,8 +877,7 @@ class PhishkitAnalyzer(AnalysisModule):
 
             except Exception as e:
                 error_msg = f"Failed to scan file {observable.value}: {str(e)}"
-                logging.error(error_msg)
-                report_exception()
+                logging.exception(error_msg)
                 analysis.error = error_msg
                 self._emit_scan_outcome(observable, analysis, "failed")
                 return AnalysisExecutionResult.COMPLETED

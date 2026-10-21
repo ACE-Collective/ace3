@@ -9,7 +9,6 @@ from flask_login import login_user, logout_user, login_required, current_user
 from app.auth.forms import LoginForm, ChangePasswordForm, PASS_SPECIAL_CHARS, PASS_MIN_LENGTH
 from app.models import User
 from saq.database import get_db
-from saq.error import report_exception
 
 def get_remote_ipv4():
     if request.environ.get('HTTP_X_FORWARDED_FOR') is None:
@@ -68,8 +67,7 @@ def login():
     try:
         user = get_db().query(User).filter_by(username=form.username.data).one_or_none()
     except Exception as e:
-        logging.warning(f"login failed: invalid username {form.username.data} from {get_remote_ipv4()}: {e}")
-        report_exception()
+        logging.exception(f"login failed: invalid username {form.username.data} from {get_remote_ipv4()}: {e}")
         flash('Invalid username or password.')
         return render_template('auth/login.html', form=form)
 

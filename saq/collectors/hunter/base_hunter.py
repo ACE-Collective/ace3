@@ -42,7 +42,6 @@ from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, QUEUE_DEFAULT, ExecutionMode
 from saq.environment import get_data_dir
-from saq.error import report_exception
 from saq.error.remote import RemoteApiError
 from saq.gui.icon import IconConfiguration
 from saq.query.config import SummaryDetailConfig
@@ -599,8 +598,7 @@ class Hunt:
                 self.record_hunt_exception(e)
             except Exception as e:
                 result_status = "error"
-                logging.error(f"{self} failed: {e}")
-                report_exception()
+                logging.exception(f"{self} failed: {e}")
                 self.record_hunt_exception(e)
             finally:
                 try:
@@ -629,9 +627,8 @@ class Hunt:
                     )
                     self.startup_barrier.reset()
                 except Exception as e:
-                    logging.error("unable to finalize hunt %s (uuid=%s, type=%s): %s",
+                    logging.exception("unable to finalize hunt %s (uuid=%s, type=%s): %s",
                                   self.name, self.uuid, self.type, e)
-                    report_exception()
                 finally:
                     self.execution_lock.release()
 

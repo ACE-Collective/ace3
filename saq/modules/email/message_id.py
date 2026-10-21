@@ -6,7 +6,6 @@ from saq.email_archive import iter_archived_email, email_is_archived
 from saq.analysis.analysis import Analysis
 from saq.analysis.search import search_down
 from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 
 KEY_ERROR = "error"
@@ -105,8 +104,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
 
         except Exception as e:
-            logging.info(f"unable to get archived email {message_id.value}: {e}")
-            report_exception()
+            logging.exception(f"unable to get archived email {message_id.value}: {e}")
             if analysis:
                 analysis.error = str(e)
 

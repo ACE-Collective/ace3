@@ -7,7 +7,6 @@ from typing import Optional
 from saq.configuration.config import get_config
 from saq.database import Event, EventStatus, get_db
 from saq.environment import get_global_runtime_settings
-from saq.error import report_exception
 
 from yaml import load as yaml_load
 try:
@@ -73,5 +72,4 @@ def get_auto_close_events(criteria: Optional[dict]=None) -> list[int]:
                 if any([c.matches(_get_threat_names(event)) for c in load_auto_close_criteria()])]
 
     except Exception as e:
-        logging.error(f"unable to load auto close criteria: {e}")
-        report_exception()
+        logging.exception(f"unable to load auto close criteria: {e}")

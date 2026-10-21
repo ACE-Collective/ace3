@@ -8,7 +8,6 @@ from saq.analysis.observable import Observable
 from saq.analysis.search import recurse_tree, search_down
 from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_source_email
 from saq.constants import DIRECTIVE_SANDBOX, F_EMAIL_CONVERSATION, F_FILE, F_URL, parse_email_conversation, AnalysisExecutionResult
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 
@@ -101,8 +100,7 @@ class EmailConversationFrequencyAnalyzer(AnalysisModule):
         try:
             source_count = query_brocess_by_source_email(mail_from)
         except Exception as e:
-            logging.error("unable to query brocess: {}".format(e))
-            report_exception()
+            logging.exception("unable to query brocess: {}".format(e))
             self.enter_cooldown()
             return AnalysisExecutionResult.COMPLETED
 
@@ -129,8 +127,7 @@ class EmailConversationFrequencyAnalyzer(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
 
             except Exception as e:
-                logging.error("unable to query brocess: {}".format(e))
-                report_exception()
+                logging.exception("unable to query brocess: {}".format(e))
                 self.enter_cooldown()
                 return AnalysisExecutionResult.COMPLETED
 

@@ -33,7 +33,6 @@ from saq.clicker_detection.config import (
 )
 from saq.clicker_detection.timeline import ClickerEvent
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_CRAWL, F_URL
-from saq.error.reporting import report_exception
 from saq.modules.api_analysis import AnalysisDelay
 from saq.observables.mapping import ObservableMapping
 from saq.query.extraction import extract_observables_from_event
@@ -223,8 +222,7 @@ class ClickerDetectionMixin:
         try:
             gui_link = self._build_search_link()
         except Exception:
-            logging.error("failed to build clicker gui link")
-            report_exception()
+            logging.exception("failed to build clicker gui link")
             gui_link = None
         if gui_link:
             self.analysis.details["gui_link"] = gui_link
@@ -306,8 +304,7 @@ class ClickerDetectionMixin:
         try:
             portal_url = self._build_search_link()
         except Exception:
-            logging.error("failed to build clicker search link")
-            report_exception()
+            logging.exception("failed to build clicker search link")
             portal_url = None
 
         def _field(row, key):

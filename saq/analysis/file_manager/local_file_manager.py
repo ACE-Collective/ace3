@@ -8,7 +8,6 @@ from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
-from saq.error import report_exception
 
 
 class LocalFileManager(FileManagerInterface):
@@ -64,8 +63,7 @@ class LocalFileManager(FileManagerInterface):
             logging.debug("initialized storage directory {}".format(target_dir))
 
         except Exception as e:
-            logging.error("unable to initialize storage: {}".format(e))
-            report_exception()
+            logging.exception("unable to initialize storage: {}".format(e))
             raise e
             
     def ensure_storage_directories(self):
@@ -282,8 +280,7 @@ class LocalFileManager(FileManagerInterface):
                     logging.debug("deleting {}".format(file_path))
                     os.remove(file_path)
                 except Exception as e:
-                    logging.error("unable to remove {}: {}".format(file_path, e))
-                    report_exception()
+                    logging.exception("unable to remove {}: {}".format(file_path, e))
 
         self.cleanup_empty_directories()
 

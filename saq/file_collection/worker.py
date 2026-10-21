@@ -8,7 +8,6 @@ from sqlalchemy.sql import func
 
 from saq.database.model import FileCollection, FileCollectionHistory
 from saq.database.pool import get_db, remove_all_sessions
-from saq.error.reporting import report_exception
 from saq.file_collection.database import get_file_collection
 from saq.file_collection.file_collector import FileCollector
 from saq.file_collection.interface import FileCollectionListener
@@ -108,8 +107,7 @@ class FileCollectionWorker(FileCollectionListener):
                 if work:
                     self.collect(work)
             except Exception as e:
-                logging.error(f"error executing work: {e}")
-                report_exception()
+                logging.exception(f"error executing work: {e}")
             finally:
                 if work:
                     with self._pending_ids_lock:
@@ -119,8 +117,7 @@ class FileCollectionWorker(FileCollectionListener):
                     try:
                         remove_all_sessions()
                     except Exception as e:
-                        logging.error(f"error removing database connection: {e}")
-                        report_exception()
+                        logging.exception(f"error removing database connection: {e}")
 
             if self.shutdown_event.is_set():
                 break

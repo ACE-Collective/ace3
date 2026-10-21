@@ -7,7 +7,6 @@ from sqlalchemy.sql import func
 
 from saq.database.model import Remediation
 from saq.database.pool import get_db, remove_all_sessions
-from saq.error.reporting import report_exception
 from saq.remediation.interface import RemediationListener
 from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem
 
@@ -122,14 +121,12 @@ class RemediationCollector:
                 for work_item in self.collect_work_items():
                     self.notify_remediation_listeners(work_item)
             except Exception as e:
-                logging.error(f"error collecting remediations from database: {e}")
-                report_exception()
+                logging.exception(f"error collecting remediations from database: {e}")
             finally:
                 try:
                     remove_all_sessions()
                 except Exception as e:
-                    logging.error(f"error removing database connection: {e}")
-                    report_exception()
+                    logging.exception(f"error removing database connection: {e}")
 
             if self.shutdown_event.is_set():
                 break

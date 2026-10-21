@@ -11,7 +11,6 @@ from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.cracking import crack_password, generate_wordlist
 from saq.environment import get_base_dir
-from saq.error.reporting import report_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 
@@ -189,8 +188,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
                     # Some office documents cause these errors in msoffcrypto that we want to ignore
                     common_errors = ['unpack requires a buffer of 4 bytes']
                     if str(e) not in common_errors:
-                        logging.error(f"Unable to check encryption status of {_file.full_path}: {str(e)}")
-                        report_exception()
+                        logging.exception(f"Unable to check encryption status of {_file.full_path}: {str(e)}")
 
                     return AnalysisExecutionResult.COMPLETED
 
@@ -272,8 +270,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
         except Exception as e:
             # expected condition if it's not an office document
             if str(e) not in ['Unsupported file format', 'Unrecognized file format']:
-                logging.error(f"decryption for {_file} failed: {e}")
-                report_exception()
+                logging.exception(f"decryption for {_file} failed: {e}")
 
             logging.debug(f"decryption failed for unsupported file format on file {_file}")
 

@@ -38,7 +38,6 @@ from saq.svs.constants import SVSStatus
 from saq.database.database_observable import get_observable_disposition_histories
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
-from saq.error.reporting import report_exception
 from saq.gui.alert_actions import get_alert_actions
 from saq.modules.phishkit_chain import build_crawl_chains
 from saq.modules.util.observable_modifier import build_modifier_rule_matches
@@ -531,8 +530,8 @@ def index():
     try:
         alert.load()
     except Exception as e:
+        logging.exception("unable to load alert {}: {}".format(alert, e))
         flash("unable to load alert {0}: {1}".format(alert, str(e)))
-        report_exception()
         return redirect(url_for('analysis.manage'))
 
     observable_uuid = None

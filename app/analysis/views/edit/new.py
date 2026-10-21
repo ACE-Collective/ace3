@@ -25,7 +25,6 @@ from saq.database.model import Alert, new_alert_version
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_temp_dir
-from saq.error.reporting import report_exception
 from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
@@ -171,8 +170,8 @@ ORDER BY
                             try:
                                 upload_file.save(save_path)
                             except Exception as e:
+                                logging.exception(f"unable to save {save_path}: {e}")
                                 flash(f"unable to save {save_path}: {e}")
-                                report_exception()
                                 return redirect(url_for('analysis.manage'))
 
                             observable_files.append((upload_file.filename, open(save_path, 'rb')))
@@ -265,9 +264,8 @@ ORDER BY
                     return redirect(url_for('analysis.index', direct=uuid))
 
         except Exception as e:
-            logging.error(f"unable to submit alert: {e}")
+            logging.exception(f"unable to submit alert: {e}")
             flash(f"unable to submit alert: {e}")
-            report_exception()
 
         return redirect(url_for('analysis.manage'))
 

@@ -168,7 +168,7 @@ class TestLoadIntegrations:
     @patch('saq.integration.integration_loader.get_valid_integration_dirs')
     @patch('saq.integration.integration_loader.is_integration_enabled')
     @patch('saq.integration.integration_loader.get_integration_name_from_path')
-    @patch('saq.integration.integration_loader.report_exception')
+    @patch('saq.error.reporting.write_error_report')
     def test_load_integrations_exception_handling(self, mock_report_exception, mock_get_name, 
                                                  mock_is_enabled, mock_get_dirs):
         """Test exception handling during integration loading."""

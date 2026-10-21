@@ -16,7 +16,6 @@ from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_a
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
 from saq.environment import get_temp_dir
-from saq.error.reporting import report_exception
 from saq.util import local_time
 
 
@@ -35,8 +34,7 @@ def _add_upload_comment(file_observable, comment: str, alert_uuid: str):
     try:
         run_async_with_session(create_comment, current_user.id, F_FILE, file_observable.value, comment)
     except Exception as e:
-        logging.error(f"unable to add the upload comment to {file_observable} in alert {alert_uuid}: {e}")
-        report_exception()
+        logging.exception(f"unable to add the upload comment to {file_observable} in alert {alert_uuid}: {e}")
         flash("uploaded the file, but unable to save the comment")
         return
 
@@ -65,8 +63,8 @@ def upload_file():
     try:
         file_path.save(temp_path)
     except Exception as e:
+        logging.exception(f"unable to save file to {temp_path}: {e}")
         flash(f"unable to save file to temporary location: {e}")
-        report_exception()
         return redirect(url_for('analysis.file'))
 
     if not alert_uuid:
