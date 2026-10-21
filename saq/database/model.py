@@ -2763,6 +2763,50 @@ class Nodes(Base):
         nullable=False,
         server_default=text("'online'"))
 
+
+class CliExecution(Base):
+    """One ACE CLI command run from the GUI (Admin -> CLI) on one node (docs/GUI_CLI.md).
+
+    The row is written by the API that took the request, then the node it names claims it
+    (pending -> running) and runs it; it doubles as the audit record of who ran what where."""
+
+    __tablename__ = 'cli_executions'
+    __table_args__ = (
+        Index('i_cli_execution_status', 'status'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # SET NULL with the name kept on the row: deleting a user must not erase what they ran
+    user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('nodes.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    # the arguments after `ace`, shlex-quoted, so shlex.split() gives back the exact argv
+    command: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Enum('pending', 'running', 'completed', 'timed_out', 'failed', 'abandoned'),
+        nullable=False,
+        server_default=text("'pending'"))
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # stdout and stderr interleaved, capped (aceapi_v2/cli/service.py::MAX_OUTPUT_BYTES)
+    output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    output_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # why it failed when it never produced an exit code (node unreachable, could not start)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'))
+    started_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+
+
 class CollectorStatus(Base):
     """Status reported by a collector service running on a node. Used by the
     node drain feature to determine when a node's collectors have flushed

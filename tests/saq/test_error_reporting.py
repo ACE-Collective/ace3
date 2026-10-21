@@ -8,7 +8,7 @@ import saq.error.reporting
 import saq.shutdown
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir, get_data_dir
-from saq.error.reporting import ErrorReportHandler, log_loop_exception, report_exception, write_error_report
+from saq.error.reporting import ErrorReportHandler, log_loop_exception, write_error_report
 from saq.logging import _install_error_report_handler, suppress_external_logging, transaction_id
 from saq.monitor import enable_monitor_cache, get_emitter
 from saq.monitor_definitions import MONITOR_ERROR_REPORT
@@ -24,17 +24,6 @@ def reports(monkeypatch) -> list[logging.LogRecord]:
     records = []
     monkeypatch.setattr(saq.error.reporting, "write_error_report", lambda exc_info, record=None: records.append(record))
     return records
-
-
-@pytest.mark.integration
-def test_report_exception():
-    try:
-        1 / 0
-    except Exception as e:
-        report_exception()
-
-    error_reporting_dir = _error_reporting_dir()
-    assert len(os.listdir(error_reporting_dir)) == 1
 
 
 @pytest.mark.unit

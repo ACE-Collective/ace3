@@ -5,7 +5,6 @@ omit =
 source = 
     app
     saq
-    aceapi
     aceapi_v2
     aceapi_ai
 parallel = True

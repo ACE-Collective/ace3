@@ -186,14 +186,14 @@ class TestLoadIntegrations:
 
     @patch('saq.integration.integration_loader.is_integration_enabled')
     @patch('saq.error.reporting.write_error_report')
-    def test_load_integrations_exception_handling(self, mock_report_exception, mock_is_enabled, integration_env):
+    def test_load_integrations_exception_handling(self, mock_write_error_report, mock_is_enabled, integration_env):
         """Test exception handling during integration loading."""
         integration_env("integration1")
         mock_is_enabled.side_effect = Exception("Test exception")
 
         result = load_integrations()
         assert result is False
-        mock_report_exception.assert_called_once()
+        mock_write_error_report.assert_called_once()
 
 
 @pytest.mark.unit

@@ -1,10 +1,8 @@
 """Hunt validation router (ACE API v2).
 
 POST /api/v2/hunt/validate: the validate-hunt CLI checks, and optionally runs, a hunt package
-against this node (aceapi_v2/hunt/service.py). It replaces POST /api/hunt/validate, which stays
-until every installed CLI calls this route; both answer with the same body and status, so the
-route answers in that shape too rather than FastAPI's: 200 {"valid": true, ...} and 400
-{"valid": false, "error": ...}. Needs hunt:write.
+against this node (aceapi_v2/hunt/service.py). It answers in the shape the CLI reads rather than
+FastAPI's: 200 {"valid": true, ...} and 400 {"valid": false, "error": ...}. Needs hunt:write.
 """
 
 import json
@@ -24,7 +22,7 @@ router = APIRouter(dependencies=[Security(get_current_auth)])
 
 
 def _json(body: dict, status: int) -> Response:
-    # the legacy route's encoding (aceapi/json.py), so either route answers the same bytes
+    # sorted keys and ACE's encoder for datetimes and the like, which FastAPI's JSONResponse lacks
     return Response(json.dumps(body, cls=_JSONEncoder, sort_keys=True), status_code=status,
                     media_type="application/json")
 

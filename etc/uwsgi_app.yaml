@@ -1,5 +1,4 @@
 uwsgi:
-  #module: api_uwsgi:application
   callable: application
   master: true
   processes: 12
@@ -11,7 +10,6 @@ uwsgi:
   #plugins: python3
   venv: /venv
   mount: /ace=ace_uwsgi.py
-  #mount: /api=api_uwsgi.py
   manage-script-name: true
   harakiri: 300
 
