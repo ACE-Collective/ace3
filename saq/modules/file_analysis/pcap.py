@@ -105,7 +105,7 @@ TSHARK_FIELDS = (
     "frame.number",
     "ip.src", "ip.dst", "ipv6.src", "ipv6.dst",
     "tcp.stream", "udp.stream", "tcp.srcport", "tcp.dstport", "udp.srcport", "udp.dstport",
-    "dns.flags.response", "dns.qry.name", "dns.resp.name", "dns.cname", "dns.a", "dns.aaaa",
+    "dns.flags.response", "dns.qry.name", "dns.resp.name", "dns.resp.type", "dns.cname", "dns.a", "dns.aaaa",
     "tls.handshake.type", "tls.handshake.extensions_server_name", "tls.handshake.ja4",
     "tls.handshake.random", "tls.handshake.certificate",
     "http.request.method", "http.host", "http.request.full_uri", "http.user_agent",
@@ -116,6 +116,9 @@ TSHARK_FIELDS = (
 )
 
 EXPORT_OBJECT_PROTOCOLS = ("http", "smb", "ftp-data", "tftp", "imf")
+
+# the owner of an SOA or NS record (usually from the authority section of a reply with no answer) is a zone
+DNS_ZONE_RECORD_TYPES = {"2", "6"}
 
 # TLS handshake message types
 TLS_CLIENT_HELLO = "1"
@@ -502,9 +505,18 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
     for layers in packets:
         frame = _first(layers, "frame.number") or ""
 
-        # every name gets a row, also one only seen as an answer (a CNAME target): it is an fqdn observable
+        # every name gets a row, also one never looked up (a CNAME target, a zone): it is an fqdn observable
         for name in layers.get("dns.qry.name", []) + layers.get("dns.resp.name", []) + layers.get("dns.cname", []):
-            dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "queries": 0, "responses": 0})
+            dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "queries": 0, "responses": 0,
+                                          "seen_as": []})
+        roles = [(name, "cname") for name in layers.get("dns.cname", [])]
+        # dns.resp.name and dns.resp.type are parallel: one entry per resource record
+        roles += [(name, "zone") for name, record_type in zip(layers.get("dns.resp.name", []), layers.get("dns.resp.type", []))
+                  if record_type in DNS_ZONE_RECORD_TYPES]
+        for name, role in roles:
+            seen_as = dns[name.lower()]["seen_as"]
+            if role not in seen_as:
+                seen_as.append(role)
         if "dns.qry.name" in layers:
             is_response = _first(layers, "dns.flags.response") in ("True", "1", "true")
             answers = layers.get("dns.a", []) + layers.get("dns.aaaa", []) + layers.get("dns.cname", [])
@@ -836,6 +848,18 @@ def ja4_display_types(sessions: list[dict]) -> dict[str, str]:
     return result
 
 
+def _dns_display_type(row: dict) -> str:
+    """How the name was seen, the most direct way first."""
+    if row.get("queries") or row.get("responses"):
+        return "DNS Query Name"
+    seen_as = row.get("seen_as", [])
+    if "cname" in seen_as:
+        return "DNS CNAME Target"
+    if "zone" in seen_as:
+        return "DNS Zone (SOA/NS)"
+    return "DNS Record Name"
+
+
 def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[PcapObservable]:
     """Every observable the index holds, each in the category whose analysis adds it."""
     result: list[PcapObservable] = []
@@ -857,11 +881,8 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
     for row in index.get("hostnames", []):
         _add(PcapObservable(CATEGORY_HOSTS, F_HOSTNAME, row["name"], volatile=True))
 
-    # every name has a row: a name nobody looked up only appeared as a CNAME target
     for row in index.get(CATEGORY_DNS, []):
-        looked_up = row.get("queries") or row.get("responses")
-        _add(_host_observable(CATEGORY_DNS, row["name"], excluded_fqdn_suffixes,
-                              fqdn_display_type="DNS Query Name" if looked_up else "DNS CNAME Target"))
+        _add(_host_observable(CATEGORY_DNS, row["name"], excluded_fqdn_suffixes, fqdn_display_type=_dns_display_type(row)))
     for row in index.get(CATEGORY_DNS, []):
         for answer in row["answers"]:
             _add(_host_observable(CATEGORY_DNS, answer, excluded_fqdn_suffixes, ip_display_type="DNS Answer IP"))

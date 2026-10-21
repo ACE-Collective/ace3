@@ -33,7 +33,9 @@ sslkeylog.txt
   file name pivots on the file's content: a file observable's value is its sha256.
 - Within a node, observables sort by type (files, URLs, FQDNs, JA4, User-Agents, hostnames, IPs, MACs).
 - Display types say where an observable came from: `DNS Query Name` (a name looked up), `DNS CNAME
-  Target` (a name only seen as an answer), `DNS Answer IP`, and for JA4 the sessions' destinations,
+  Target`, `DNS Zone (SOA/NS)` (the owner of an SOA or NS record, usually from the authority section
+  of a reply with no answer), `DNS Record Name` (any other record owner), `DNS Answer IP`, and for
+  JA4 the sessions' destinations,
   e.g. `JA4 to www.example.com, cdn.example.net, login.example.org, +9 more` (the SNI, or the
   server address when there is none). An observable has one display type wherever it appears in the
   alert, so the pcap modules never replace one another module set: a name that is also a certificate

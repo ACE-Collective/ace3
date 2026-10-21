@@ -297,6 +297,8 @@ def test_build_index():
     assert (dns["www.example.com"]["queries"], dns["www.example.com"]["responses"]) == (1, 1)
     # a CNAME target nobody looked up has a row but no lookups of its own
     assert (dns["cdn.example.com"]["queries"], dns["cdn.example.com"]["responses"]) == (0, 0)
+    assert dns["cdn.example.com"]["seen_as"] == ["cname"]
+    assert dns["www.example.com"]["seen_as"] == []
 
     (session,) = index[CATEGORY_TLS]
     assert session["client"] == "10.0.0.1:50000"
@@ -315,6 +317,29 @@ def test_build_index():
     assert {h["name"] for h in index["hostnames"]} == {"Workstation-1", "NBHOST"}
     assert index["certificates"] == [{"sha256": "11" * 32, "path": "c.pcap.pcap_objects/certificates/1.der"},
                                      {"sha256": "22" * 32, "path": None}]
+
+
+@pytest.mark.unit
+def test_dns_display_types():
+    packets = [
+        # an HTTPS record lookup with no answer: the SOA of the zone comes back in the authority section
+        {"frame.number": ["1"], "dns.flags.response": ["True"], "dns.qry.name": ["fonts.example.com"],
+         "dns.resp.name": ["example.com"], "dns.resp.type": ["6"]},
+        # a CNAME chain
+        {"frame.number": ["2"], "dns.flags.response": ["True"], "dns.qry.name": ["www.example.com"],
+         "dns.resp.name": ["www.example.com", "cdn.example.net"], "dns.resp.type": ["5", "1"],
+         "dns.cname": ["cdn.example.net"], "dns.a": ["198.51.100.7"]},
+        # an additional record for a name that is neither
+        {"frame.number": ["3"], "dns.flags.response": ["True"], "dns.qry.name": ["mx.example.com"],
+         "dns.resp.name": ["mx.example.com", "relay.example.org"], "dns.resp.type": ["15", "1"]},
+    ]
+    index = build_index(packets, [], [], max_rows=500)
+    labels = {i.value: i.display_type for i in collect_observables(index, []) if i.category == CATEGORY_DNS}
+    assert labels == {
+        "fonts.example.com": "DNS Query Name", "example.com": "DNS Zone (SOA/NS)",
+        "www.example.com": "DNS Query Name", "cdn.example.net": "DNS CNAME Target",
+        "mx.example.com": "DNS Query Name", "relay.example.org": "DNS Record Name",
+        "198.51.100.7": "DNS Answer IP"}
 
 
 @pytest.mark.unit
