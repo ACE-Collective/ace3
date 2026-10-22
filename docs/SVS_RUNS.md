@@ -98,6 +98,10 @@ ace svs catalog status                 # each repository's commit, test count an
 ace svs catalog refresh [--force]      # read now; --force reads an unchanged commit again
 ```
 
+`GET /api/v2/svs/catalog/repositories` (`svs:run_read`) serves the same status. A launcher checks
+out the `commit` it names to run each test as the catalog has it, including the `src/` files a
+test's `content_hash` doesn't cover (`docs/SVS_API.md`, *Catalog repositories*).
+
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
 finds its sub-techniques), name, platform, executor, repository or `removed`.
 
