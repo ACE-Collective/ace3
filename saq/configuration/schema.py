@@ -318,11 +318,6 @@ class WikiConfig(BaseModel):
     alert_reference_enabled: bool = Field(..., description="enable alert reference links to wiki documentation")
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
 
-class SMTPConfig(BaseModel):
-    enabled: bool = Field(..., description="enable SMTP email sending")
-    server: str = Field(..., description="SMTP server address")
-    mail_from: str = Field(..., description="from email address")
-
 class EmailArchiveConfig(BaseModel):
     target: str = Field(..., description="possible values: local, s3")
     primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
@@ -952,7 +947,6 @@ class ACEConfig(BaseModel):
     gui_favicons: Optional[dict[str, str]] = None
     network_configuration: Optional[NetworkConfigurationConfig] = None
     wiki: Optional[WikiConfig] = None
-    smtp: Optional[SMTPConfig] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
     ldap: Optional[LDAPConfig] = None

@@ -799,12 +799,6 @@ wiki:
   # If you want the a wiki link next to the event names on the manage events page
   event_link_enabled: false
 
-smtp:
-  # smtp information for sending emails
-  enabled: false
-  server: localhost
-  mail_from: ace@localhost
-
 nrd:
   # kill switch for the refresh script. When false, `ace nrd refresh`
   # exits as a no-op before any DB or HTTP work, regardless of database age,
