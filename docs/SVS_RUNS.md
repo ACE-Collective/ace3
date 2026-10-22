@@ -140,7 +140,8 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 |---|---|
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
 | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). 409 when another run holds a target's host. |
-| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
+| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. `output` is what the test printed (*The test's output*, below). |
+| `POST /api/v2/svs/runs/{run_id}/cleanup` | Optional. The test's cleanup begins now (*Cleanup*, below). |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
 | `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
 
@@ -199,6 +200,34 @@ It only reads: no run, no event, no refusal row and no alert, so a launcher can 
 against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
 `validate`, `outcome`, `reasons`). What it reads can change before the launcher registers (a test
 host edited, an expectation decided), so registering still decides for itself.
+
+### The test's output
+
+`executed` takes `output`, what the executor printed (stdout and stderr), so a reviewer can see why
+an expected detection is missing. It is kept with the run (`launcher_output`) and shown on the run
+page, folded, under *Output*. Up to 64 KiB is kept as sent; longer output keeps its start and its
+last 16 KiB, where errors usually are, around a marker saying how many bytes were left out. The
+event log records the size the launcher sent and whether it was truncated, not the text.
+
+### Cleanup
+
+Atomic tests clean up after themselves (`cleanup_command`), inside the run's window, and what the
+cleanup does can fire signatures that are not what the test is about. A launcher that calls
+`POST /api/v2/svs/runs/{run_id}/cleanup` just before it runs the cleanup records when it began
+(`cleanup_at`), on a `started` run, once (409 in any other state, and the second time). The call is
+in the event log like the other launcher calls.
+
+- **Which detections.** Each attribution keeps the alert's event time it was judged by
+  (`event_time`); one at or after `cleanup_at` is the cleanup's (`cleanup` on the attribution and on
+  the run's alert). One written before event times were kept is the test's.
+- **Still the run's.** Its alerts are routed to the test queue, closed with the run and kept or
+  marked not a test like any other.
+- **Left out of what the run teaches.** A signature the test fired outside its cleanup is counted
+  by those alerts alone. One that fired only during the cleanup is `cleanup` in the result: never a
+  candidate, so a review never proposes it as an expectation. If it is expected, it is `missing`.
+  An analyst can still decide it by hand on the test (*Expectations and ignores*).
+- **On the run page,** the result lists what fired only during the cleanup apart, after the rest,
+  and the alerts and detections say *cleanup*.
 
 ### The marker
 
@@ -385,8 +414,8 @@ the number of runs that need attention, when any do.
     the owner and reviewer.
   - Above the list, once a run is reviewed, is the share of missing expected signatures that were
     possibly suppressed, over every reviewed run's signed-off result. Past 50 reviewed runs or 90
-    days since the first review, a share above 10% says that keeping the hunter from suppressing
-    test targets is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
+    days since the first review, a share above 10% says that the suppression runs don't key by
+    themselves is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
 - **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
   attention, and the expected hits and missing signatures. The filters carry over between the two
   views, and opening a batch lists its runs.
@@ -414,7 +443,7 @@ to watch it on while it runs. It reloads itself while the run is `created` or `s
 its result is being recomputed.
 - **The header** has the test, the run's state, and a timeline of its observation and attribution
   windows. Below it are the marker, targets, platform, launcher and batch (which opens the batch's runs),
-  the windows' lengths, the owner, and the launcher's exit code, errors and `extra`.
+  the windows' lengths, the owner, and the launcher's exit code, errors, the test's output and `extra`.
 - **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
   *Mark reviewed* (*Review again* on a reviewed run).
   - The page lists what still stands in the way of a review: candidates to decide, context-only
@@ -700,12 +729,14 @@ below), each signature is:
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
 | `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunter dropped a match of it during the run for that suppression, or (without `group_by`) the hunt alerted within that period before the run's window closed (below) |
+| `cleanup` | It fired only during the test's cleanup, and it isn't expected (*Cleanup*, above) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
 | `ignored` | It fired, and it is ignored for the test or globally |
 
-- **Precedence.** A signature that fired is `ignored` before anything else, then `hit`, then
-  `rejected`, then `candidate`. An ignored signature is never missing either.
+- **Precedence.** A signature that fired only during the cleanup is `cleanup`, or `missing` when it
+  is expected. Any other that fired is `ignored` before anything else, then `hit`, then `rejected`,
+  then `candidate`. An ignored signature is never missing either.
 - **Signatures that never count.** `generic`, `legacy` and `yara_rule_match` stand for many
   unrelated detections (no specific signature, detections from before signatures were recorded, a
   YARA rule without a `uuid`). `observable_flagged_for_detection` fires on whatever analysts
@@ -718,8 +749,11 @@ below), each signature is:
   - the content hash of the rule itself as it was when the result was computed. A missing row has
     one too: coverage uses it to tell when an expected rule changed.
 - **Possibly suppressed.**
-  - **A hunt with `group_by`** suppresses each group on its own, inside its query results. When it
-    drops a match for its suppression and the match's event time falls in a run's attribution
+  - **A hunt with `group_by`** suppresses each group on its own, inside its query results. During a
+    run, a group on one of the run's test hosts is suppressed under a key of the run's own (*Hunt
+    suppression during runs*, below), so it drops a match there only once that run's own first
+    match alerted, or when the runs couldn't be looked up. When it drops a match for its suppression
+    and the match's event time falls in a run's attribution
     window, on one of the run's test hosts (its `hostname`, `fqdn` or test-host `ipv4` observables,
     as attribution reads them), the hunter records it in `svs_suppressed_matches`: one row per run
     and hunt, for the first such match, and the run's result goes stale. The match goes to the run
@@ -737,8 +771,8 @@ below), each signature is:
     correlation mode put their detection on their alerts, so only theirs can be found.
   - For a hunt with `dedup_key` and no `group_by` that answer is imprecise: that alert may have been
     for another key. The row says so (`suppression_imprecise`).
-  - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
-    show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
+  - What runs don't key by themselves is revisited once reviewed runs show how often a missing
+    signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
 - **Kept current.** The result is computed when the run ends. Anything that would change it marks
   it stale and the timers recompute it on their next pass (`svs.runs.timer_interval_seconds`):
@@ -755,6 +789,32 @@ below), each signature is:
 | `svs run …: hunt … suppressed a match for group_value …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value` |
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
 | `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
+
+### Hunt suppression during runs
+
+A hunt with a `suppression` period stays silent for a group after it alerted on it, which would
+make a test re-run inside that period read *missing*. So while a run is open, a hunt with `group_by`
+keys the suppression of each group by the run (`QueryHunt.key_suppression`):
+
+- **Which groups.** A group whose alert involves one of the run's test hosts (its `hostname`, `fqdn`
+  or test host `ipv4` observables, as attribution reads them) with its event time inside the run's
+  attribution window. Several runs' windows can cover it: the run context attribution would choose
+  is the one (*Without a marker: context*, above).
+- **What it does.** The group's suppression is recorded and checked under a key of its own for the
+  run (`svs_run:<run uuid>:<group value>`), so each run's first match alerts and the rest of that
+  run's are suppressed as usual. An alert before the run (production, or another run) doesn't hide
+  the test, and the test doesn't suppress the group for production or for the next run.
+- **What it doesn't reach.** A hunt without `group_by`, whose suppression stops the whole hunt from
+  running, and whose catch-up after suppression must not lose production alerts; a group whose
+  alert doesn't carry the test host (a `group_by` field other than the host, with no host
+  observable); and `dedup_key`. Those can still hide a test. For a hunt without `group_by` the
+  result reads *possibly suppressed* (*Results*, above); a dropped match of a group that doesn't
+  carry the test host isn't recorded for the run either, so the hunt reads *missing*.
+- **Cost.** Nothing while no run is open (the attribution gate, *Cost*, above); otherwise one query
+  per hunt execution, and one more when it drops a match, to record it (*Results*, above).
+- **Logs.** Each group keyed by a run is logged at INFO, `hunt … group_value …: suppression keyed by
+  svs run …`, with the run's `svs_run`, `svs_test` and `svs_marker`, `hunt_uuid` and `group_value`.
+  A failure to look the runs up is logged at ERROR, and the hunt suppresses by group as before.
 
 ## Expectations and ignores
 

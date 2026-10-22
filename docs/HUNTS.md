@@ -374,7 +374,7 @@ If set, triggers a suppression of future alerts for this hunt every time an aler
 
 This setting is rarely used.
 
-A hunt with `group_by` suppresses each group on its own. During an SVS test run, a match it drops for its suppression on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt was suppressed rather than blind (`docs/SVS_RUNS.md`, *Results*).
+With `group_by`, suppression is per group value. While an SVS test run is open on a test host, a group whose alert involves that host is suppressed under a key of the run's own, so a test re-run inside the suppression period still alerts (`docs/SVS_RUNS.md`, *Hunt suppression during runs*). A match the hunt still drops for its suppression on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt was suppressed rather than blind (`docs/SVS_RUNS.md`, *Results*).
 
 ### `query_timeout` (string, optional) [HH:MM:SS]
 

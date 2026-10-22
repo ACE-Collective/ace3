@@ -1,7 +1,7 @@
 """SVS test runs router for ACE API v2 (docs/SVS_RUNS.md, *Registering a run*; docs/SVS_API.md).
 
 The launcher's lifecycle calls: register a run (or validate a registration without making it), start
-it, report how the test executed, cancel it.
+it, report how the test executed and when its cleanup began, cancel it.
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
@@ -206,6 +206,14 @@ async def run_executed(run_id: str, body: RunExecutedRequest, auth: RegisterAuth
     """Report how the test executed on a started run. A non-zero exit code or an error moves it to
     error. 409 in any other state."""
     return await run_db_in_thread(service.executed, run_id, body, _caller(auth, request))
+
+
+@router.post("/{run_id}/cleanup", response_model=RunLifecycle)
+async def run_cleanup(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
+    """The test's cleanup begins now, on a started run: detections whose event time is at or after
+    it are attributed as the cleanup's and left out of the run's candidates and expectations. Once
+    per run; 409 in any other state or the second time."""
+    return await run_db_in_thread(service.cleanup, run_id, _caller(auth, request))
 
 
 @router.post("/{run_id}/cancel", response_model=RunLifecycle)

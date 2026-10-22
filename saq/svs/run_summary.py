@@ -21,6 +21,7 @@ class RunSummary:
     candidate: int = 0
     rejected: int = 0
     ignored: int = 0
+    cleanup: int = 0
     # something changed since the result was computed; the timers recompute it shortly
     result_stale: bool = False
     # the expected signatures per status as signed off at the run's latest review (reviewed_status)

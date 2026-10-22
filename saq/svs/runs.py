@@ -77,10 +77,17 @@ CALL_REGISTER = "register"
 CALL_VALIDATE = "validate"
 CALL_START = "start"
 CALL_EXECUTED = "executed"
+CALL_CLEANUP = "cleanup"
 CALL_CANCEL = "cancel"
 
 # the outcome of a registration or start refused because another run holds a target's host
 OUTCOME_HOST_BUSY = "host busy"
+
+# the test's output kept with the run; longer output keeps its start and its end, where errors are
+MAX_OUTPUT_BYTES = 64 * 1024
+OUTPUT_TAIL_BYTES = 16 * 1024
+# room for the marker between them
+OUTPUT_MARKER_BYTES = 100
 
 
 class InvalidRegistration(ValueError):
@@ -655,14 +662,34 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
     return run
 
 
+def truncate_output(output: str) -> tuple[str, int, bool]:
+    """The output as kept with a run: whole when it fits MAX_OUTPUT_BYTES as UTF-8, else its start and
+    its last OUTPUT_TAIL_BYTES around a marker saying how much was left out. Returns it, the size the
+    launcher sent in bytes, and whether it was truncated. Anything that isn't valid text (a lone
+    surrogate) is replaced, which the database's utf8mb4 requires."""
+    data = output.encode("utf-8", errors="replace")
+    if len(data) <= MAX_OUTPUT_BYTES:
+        return data.decode("utf-8"), len(data), False
+    head = data[:MAX_OUTPUT_BYTES - OUTPUT_TAIL_BYTES - OUTPUT_MARKER_BYTES]
+    tail = data[-OUTPUT_TAIL_BYTES:]
+    marker = f"\n[... svs: {len(data) - len(head) - len(tail)} bytes of output left out ...]\n"
+    # a cut inside a multibyte character drops that character
+    return head.decode("utf-8", errors="ignore") + marker + tail.decode("utf-8", errors="ignore"), len(data), True
+
+
 def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str] = None,
-             now: Optional[datetime] = None) -> SVSRun:
-    """Records how the test executed on a Started run. A non-zero exit code or an error is a
-    launcher-reported failure, which moves the run to Error. Raises UnknownRun, RunStateConflict."""
+             now: Optional[datetime] = None, output: Optional[str] = None) -> SVSRun:
+    """Records how the test executed on a Started run, and what it printed. A non-zero exit code or
+    an error is a launcher-reported failure, which moves the run to Error. Raises UnknownRun,
+    RunStateConflict."""
     now = now or datetime.now()
     payload = {"exit_code": exit_code, "error": error}
+    if output is not None:
+        # the output itself is on the run, not repeated in its event log
+        output, output_bytes, truncated = truncate_output(output)
+        payload.update(output_bytes=output_bytes, output_truncated=truncated)
     run = get_run(run_uuid)
-    values = {"executed_at": now, "exit_code": exit_code, "launcher_error": error}
+    values = {"executed_at": now, "exit_code": exit_code, "launcher_error": error, "launcher_output": output}
     failed = exit_code != 0 or bool(error)
 
     if run.state != RunState.STARTED:
@@ -691,7 +718,30 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     get_db().commit()
     if failed:
         log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
-    _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code)
+    _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code,
+              output_bytes=payload.get("output_bytes"), output_truncated=payload.get("output_truncated"))
+    return run
+
+
+def cleanup(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
+    """Records, once, that the test's cleanup begins now on a Started run: detections whose event
+    time is at or after it are the cleanup's, still the run's alerts but left out of what it
+    teaches (docs/SVS_RUNS.md, *Cleanup*). Raises UnknownRun, RunStateConflict."""
+    # to the second, as start() does: stored from the exact time, MySQL could round it up past a
+    # cleanup detection whose event time is whole seconds (a hunt's), which would count as the test's
+    now = (now or datetime.now()).replace(microsecond=0)
+    run = get_run(run_uuid)
+    if run.state != RunState.STARTED or run.cleanup_at is not None or get_db().execute(
+            update(SVSRun)
+            .where(SVSRun.id == run.id, SVSRun.state == RunState.STARTED.value, SVSRun.cleanup_at.is_(None))
+            .values(cleanup_at=now)
+            .execution_options(synchronize_session=False)).rowcount != 1:
+        raise _conflict(run, CALL_CLEANUP, caller, {"cleanup_at": run.cleanup_at.isoformat()} if run.cleanup_at else None)
+
+    run.cleanup_at = now
+    _launcher_call(run, CALL_CLEANUP, caller, "recorded", {"cleanup_at": now.isoformat()}, now=now)
+    get_db().commit()
+    _log_call(run, CALL_CLEANUP, run.launcher, "recorded", caller, cleanup_at=now.isoformat())
     return run
 
 

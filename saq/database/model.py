@@ -2165,8 +2165,15 @@ class SVSRun(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # what the launcher reported through executed
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # when the launcher said the test's cleanup began: detections whose event time is at or after
+    # it are the cleanup's, left out of what the run teaches (docs/SVS_RUNS.md, *Cleanup*)
+    cleanup_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # what the test printed (stdout and stderr), as executed reported it, at most
+    # saq.svs.runs.MAX_OUTPUT_BYTES; deferred, since only the run's detail reads it and the
+    # listing and attribution load whole runs
+    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -2335,6 +2342,9 @@ class SVSAttribution(Base):
     confidence: Mapped[str] = mapped_column(Enum('marker', 'context'), nullable=False)
     # the alert's event time was past the run's observation window
     late: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the alert's event time the attribution was judged by, as runs record time; NULL for rows
+    # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
+    event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
@@ -2523,7 +2533,7 @@ class SVSRunResult(Base):
     signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # saq.svs.constants.ResultStatus; NULL once the signature left the live result
     status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     # the alerts attributed to the run that carry the signature
     alert_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
     # every one of its attributions is late, or by context alone
@@ -2538,7 +2548,7 @@ class SVSRunResult(Base):
     suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
     reviewed_status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     reviewed_alert_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     reviewed_late_only: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     reviewed_content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
@@ -2567,7 +2577,8 @@ class SVSSuppressedMatch(Base):
         ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
         nullable=False)
     hunt_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
-    # the match's group_value, the key the hunt's suppression is recorded under
+    # the match's group_value, which keys its suppression by itself or with the run
+    # (QueryHunt.key_suppression)
     group_value: Mapped[str] = mapped_column(Text, nullable=False)
     # the match's event time, as runs record time (naive, local)
     event_time: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)

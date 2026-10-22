@@ -96,6 +96,7 @@ class ResultStatus(StrEnum):
     CANDIDATE = "candidate"                      # it fired, and nobody has decided about it yet
     REJECTED = "rejected"                        # it fired, and it was rejected for the test
     IGNORED = "ignored"                          # it fired, and it is ignored (globally or for the test)
+    CLEANUP = "cleanup"                          # it fired only during the test's cleanup, and isn't expected
 
 
 class ObservationSource(StrEnum):

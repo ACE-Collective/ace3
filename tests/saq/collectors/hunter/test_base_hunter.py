@@ -1159,9 +1159,11 @@ class _GroupedTestHunt(TestHunt):
     field, so grouping has to be introduced by a subclass rather than by config"""
     __test__ = False
 
-    def __init__(self, *args, group_values=None, **kwargs):
+    def __init__(self, *args, group_values=None, suppression_keys=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.group_values = group_values or []
+        # group_value -> the suppression_key QueryHunt.key_suppression would give it
+        self.suppression_keys = suppression_keys or {}
 
     @property
     def group_by(self):
@@ -1183,6 +1185,8 @@ class _GroupedTestHunt(TestHunt):
             root.initialize_storage()
             submission = Submission(root)
             submission.group_value = group_value
+            if group_value in self.suppression_keys:
+                submission.suppression_key = self.suppression_keys[group_value]
             submissions.append(submission)
 
         return submissions
@@ -1237,6 +1241,22 @@ def test_execute_threaded_hunt_records_suppression_state_when_configured(manager
     assert persisted is not None
     assert set(persisted.keys()) == {"alice", "bob"}
     assert log_count("suppression tracking enabled") == 1
+
+@pytest.mark.integration
+def test_execute_threaded_hunt_records_a_runs_suppression_under_its_key(manager_kwargs):
+    """a submission whose suppression an svs run keys is recorded under that key, not its group's"""
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_run_keyed_suppression", suppression="00:01:00"),
+        group_values=["win10-01", "prod-01"],
+        suppression_keys={"win10-01": "svs_run:r1:win10-01"})
+    hunt.semaphore = None
+
+    manager.execute_threaded_hunt(hunt)
+
+    assert set(read_persistence_data(hunt.type, hunt.name, "last_alert_times")) == {"svs_run:r1:win10-01", "prod-01"}
+
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_still_records_ungrouped_last_alert_time(manager_kwargs):

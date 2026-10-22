@@ -40,7 +40,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Iterable, Iterator, Optional
 
 from sqlalchemy import exists, or_, select, update
@@ -398,6 +398,15 @@ def runs_in_window(when: datetime, until: Optional[datetime] = None) -> list[Run
         return _snapshots(session, runs)
 
 
+def runs_overlapping(start: datetime, end: datetime) -> list[RunSnapshot]:
+    """The runs whose attribution window overlaps start to end."""
+    with private_transaction() as session:
+        runs = list(session.execute(
+            select(SVSRun).where(SVSRun.started_at <= end, SVSRun.attribution_ends_at >= start)
+            .order_by(SVSRun.id)).scalars())
+        return _snapshots(session, runs)
+
+
 #
 # the alert's hosts
 #
@@ -504,6 +513,8 @@ class Evaluation:
     existing: list[ExistingAttribution] = field(default_factory=list)
     # set when a context attribution was refused because more than one run could claim the alert
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
+    # the alert's event time it was judged by, kept on each attribution
+    event_time: Optional[datetime] = None
 
     @property
     def mismatches(self) -> list[MarkerJudgement]:
@@ -618,10 +629,36 @@ def context_claimant(candidates: list[RunSnapshot]) -> Optional[RunSnapshot]:
     return None
 
 
+def suppression_runs(roots: list[RootAnalysis], now: Optional[datetime] = None) -> list[Optional[RunSnapshot]]:
+    """For each root a grouped hunt is about to submit, the run that keys its suppression: the run
+    context attribution would give it to, by its hosts and event time, or the latest started of the
+    runs that could claim it when their claims overlap. None when no run's window covers it on one
+    of its hosts, as for every root while no run is open. One query for all the roots."""
+    if not roots or not attribution_open():
+        return [None] * len(roots)
+
+    now = now or datetime.now()
+    times = [alert_event_time(root, now) for root in roots]
+    runs = runs_overlapping(min(times), max(times))
+    result = []
+    for root, event_time in zip(roots, times):
+        hosts = alert_hosts(root)
+        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
+        result.append(context_claimant(candidates)
+                      or max(candidates, key=lambda run: (run.started_at, run.id), default=None))
+    return result
+
+
+def run_suppression_key(run_uuid: str, group_value: str) -> str:
+    """The key a grouped hunt's suppression of group_value is recorded under during a run: the first
+    match for each run alerts, and a test never suppresses production or another run."""
+    return f"svs_run:{run_uuid}:{group_value}"
+
+
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
     """Judges every marker in the alert against its run and attributes its detections. Reads the
     database, writes nothing; the caller checks the gate (attribution_open) first."""
-    evaluation = Evaluation(detections=alert_detections(root))
+    evaluation = Evaluation(detections=alert_detections(root), event_time=event_time)
     hosts = alert_hosts(root)
     sightings = tree_sightings(root)
 
@@ -793,6 +830,8 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
         scan_point = attribution.scan_point.value if attribution.scan_point else None
         if (row.confidence, row.late, row.scan_point) != (attribution.confidence.value, attribution.late, scan_point):
             values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
+        if evaluation.event_time is not None and row.event_time != _to_second(evaluation.event_time):
+            values.update(event_time=evaluation.event_time)
         if values and _update_own_row(session, row.id, **values):
             result.written.append(attribution)
 
@@ -804,7 +843,7 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
         inserted = session.execute(mysql_insert(SVSAttribution).prefix_with("IGNORE").values(
             run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
             signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
-            confidence=attribution.confidence.value, late=attribution.late,
+            confidence=attribution.confidence.value, late=attribution.late, event_time=evaluation.event_time,
             source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
             actor=ROUTER_ACTOR, created_at=now))
         if inserted.rowcount == 1:
@@ -822,6 +861,11 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
     mark_runs_stale(session, run_ids=touched)
 
     return result, runs, flagged
+
+
+def _to_second(value: datetime) -> datetime:
+    """A time as a DateTime column stores it: MySQL rounds a fraction to the nearest second."""
+    return (value + timedelta(microseconds=500000)).replace(microsecond=0)
 
 
 def _update_own_row(session, row_id: int, *conditions, **values) -> bool:

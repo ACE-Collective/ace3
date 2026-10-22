@@ -4,9 +4,11 @@ import os
 import shutil
 from datetime import datetime, timedelta
 from queue import Queue
+from uuid import uuid4
 
 import pytest
 import yaml
+from sqlalchemy import select
 
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
@@ -33,6 +35,8 @@ from saq.constants import (
     SUMMARY_DETAIL_FORMAT_PRE,
     SUMMARY_DETAIL_FORMAT_TXT,
 )
+from saq.database.model import SVSCatalogTest, SVSRun, SVSRunTarget
+from saq.database.private_session import private_transaction
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id, transaction_id
 from saq.observables.mapping import (
@@ -43,8 +47,12 @@ from saq.observables.mapping import (
 )
 from saq.query.config import SummaryDetailConfig
 from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
+from saq.svs import attribution
+from saq.svs.attribution import run_suppression_key
+from saq.svs.markers import new_marker
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
+from tests.saq.svs.conftest import add_catalog_test
 
 
 class TestQueryHunt(QueryHunt):
@@ -5412,3 +5420,102 @@ def test_completion_fields_reset_between_executions():
         hunt.execute(start_time=local_time() - timedelta(hours=1), end_time=local_time())
 
     assert hunt.completion_fields()["result_count"] is None
+
+
+#
+# suppression during svs runs (docs/SVS_RUNS.md, *Hunt suppression during runs*)
+#
+
+SVS_TEST_GUID = "dddddddd-4444-4444-8444-444444444444"
+
+
+def _svs_run(started: datetime, host: str = "win10-01") -> SVSRun:
+    """A started run on host, with a 1 hour observation and a 25 hour attribution window."""
+    with private_transaction() as session:
+        if session.execute(select(SVSCatalogTest.id).where(SVSCatalogTest.guid == SVS_TEST_GUID)).first() is None:
+            add_catalog_test(SVS_TEST_GUID)
+    run = SVSRun(uuid=str(uuid4()), test_guid=SVS_TEST_GUID, test_content_hash="0" * 64, catalog_commit="a" * 40,
+                 platform="windows", state="started", marker=new_marker(), launcher="art", extra="{}",
+                 created_at=started, started_at=started, observation_seconds=3600, attribution_seconds=25 * 3600,
+                 observation_ends_at=started + timedelta(hours=1), attribution_ends_at=started + timedelta(hours=25),
+                 targets=[SVSRunTarget(hostname=host, host=host)])
+    with private_transaction() as session:
+        session.add(run)
+        session.flush()
+        session.expunge(run)
+    attribution.clear_caches()
+    return run
+
+
+def _svs_grouped_hunt(hunt_manager):
+    return default_hunt(
+        manager=hunt_manager,
+        name="test_svs_run_suppression",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="01:00:00",
+        group_by="host",
+        observable_mapping=[ObservableMapping(fields=["host"], type="hostname")],
+    )
+
+
+def _record(hunt, submissions):
+    """What HuntManager.execute_threaded_hunt records after the hunt ran."""
+    for submission in submissions:
+        hunt.set_last_alert_time(local_time(), submission.suppression_key)
+
+
+@pytest.mark.integration
+def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, caplog):
+    now = datetime.now()
+    first = _svs_run(now - timedelta(hours=2))
+    hunt = _svs_grouped_hunt(hunt_manager)
+    # an alert on the test host before the run suppresses its group
+    before = local_time()
+    hunt.set_last_alert_time(before, "win10-01")
+
+    with caplog.at_level(logging.INFO):
+        submissions = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
+    assert {s.group_value: s.suppression_key for s in submissions} == {
+        "win10-01": run_suppression_key(first.uuid, "win10-01"), "prod-01": "prod-01"}
+    (record,) = [r for r in caplog.records if "suppression keyed by svs run" in r.getMessage()]
+    assert (record.svs_run, record.group_value) == (first.uuid, "win10-01")
+    _record(hunt, submissions)
+
+    # the rest of the run's matches, and production's, are suppressed as usual
+    assert hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}]) == []
+    # and the run never touched the group's own suppression
+    assert hunt.get_last_alert_time("win10-01") == before
+
+    # the same test again, within the hunt's suppression period: the next run's first match alerts
+    second = _svs_run(now - timedelta(minutes=30))
+    (submission,) = hunt.process_query_results([{"host": "win10-01"}])
+    assert submission.suppression_key == run_suppression_key(second.uuid, "win10-01")
+
+
+@pytest.mark.integration
+def test_without_a_run_the_group_is_the_key(hunt_manager):
+    # a run on another host, and one whose window is over
+    _svs_run(datetime.now(), host="win10-02")
+    _svs_run(datetime.now() - timedelta(hours=30))
+    hunt = _svs_grouped_hunt(hunt_manager)
+    hunt.set_last_alert_time(local_time(), "win10-01")
+    assert hunt.process_query_results([{"host": "win10-01"}]) == []
+    (submission,) = hunt.process_query_results([{"host": "prod-01"}])
+    assert submission.suppression_key == "prod-01"
+
+
+@pytest.mark.integration
+def test_a_failure_to_key_by_run_falls_back_to_the_group(hunt_manager, monkeypatch, caplog):
+    _svs_run(datetime.now())
+    hunt = _svs_grouped_hunt(hunt_manager)
+    hunt.set_last_alert_time(local_time(), "win10-01")
+
+    def broken(roots):
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(query_hunter_module, "suppression_runs", broken)
+    with caplog.at_level(logging.ERROR):
+        (submission,) = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
+    assert submission.suppression_key == "prod-01"
+    (record,) = [r for r in caplog.records if "unable to key the suppression" in r.getMessage()]
+    assert record.levelno == logging.ERROR and record.exc_info is not None
