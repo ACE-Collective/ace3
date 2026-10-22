@@ -377,6 +377,23 @@ def test_extract_observables_file_type():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("name, stored", [
+    ("../../escaped.exe", "_escaped.exe"),
+    ("/opt/ace/escaped.exe", "_opt_ace_escaped.exe"),
+    ("..", "_"),
+    ("invoice 2026.pdf", "invoice 2026.pdf"),
+])
+def test_extract_observables_file_name_is_not_a_path(name, stored):
+    """The file name comes from the event, so it is reduced to a plain file name."""
+    mappings = [ObservableMapping(field="file_data", type=F_FILE, file_name="{{ attachment }}")]
+    event = {"file_data": "content", "attachment": name}
+
+    _, file_contents, _ = extract_observables_from_event(event, mappings)
+
+    assert [file_content.file_name for file_content in file_contents] == [stored]
+
+
+@pytest.mark.unit
 def test_extract_observables_empty_value_skipped():
     """Test that empty values are skipped."""
     mappings = [

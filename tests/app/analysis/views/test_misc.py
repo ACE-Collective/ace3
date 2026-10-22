@@ -106,6 +106,30 @@ class TestUploadFile:
         with open(file_observable.full_path, 'rb') as f:
             assert f.read() == test_content
     
+    @pytest.mark.parametrize("path_in_name", [False, True])
+    def test_upload_file_name_is_not_a_path(self, web_client, tmp_path, path_in_name):
+        """The client's file name is stored as a plain file name in the alert, never as a path."""
+        # in a directory of its own, so that what the name points at is not the temporary copy
+        name = os.path.join(f"escaped-{uuid4().hex}", "escaped.txt")
+        client_name = f"../../{name}" if path_in_name else str(tmp_path / name)
+        data = {
+            'file_path': (BytesIO(b'escaped'), client_name),
+            'comment': '',
+            'alert_uuid': ''
+        }
+
+        result = web_client.post(url_for('analysis.upload_file'), data=data, content_type='multipart/form-data')
+
+        assert result.status_code == 302
+        alert = get_alert_by_uuid(parse_qs(urlparse(result.location).query)['direct'][0])
+        alert.load()
+        (file_observable,) = [o for o in alert.root_analysis.observables if o.type == 'file']
+        assert "/" not in file_observable.file_path
+        assert file_observable.file_path.endswith("_" + name.replace("/", "_"))
+        assert os.path.dirname(os.path.realpath(file_observable.full_path)) == os.path.realpath(alert.root_analysis.file_dir)
+        assert not (tmp_path / name).parent.exists()
+        assert not os.path.exists(os.path.dirname(os.path.join(alert.root_analysis.file_dir, "..", "..", name)))
+
     def test_upload_file_existing_alert_success(self, web_client):
         """Test successful file upload to existing alert."""
         from saq.database.util.alert import get_alert_by_uuid

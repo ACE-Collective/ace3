@@ -6,7 +6,6 @@ alert row through the synchronous get_db() session, so it runs through run_db_in
 """
 
 import logging
-import os
 import shutil
 import uuid as uuidlib
 from datetime import datetime
@@ -34,6 +33,9 @@ from saq.util.hashing import sha256_file
 
 logger = logging.getLogger(__name__)
 
+# the name an upload is stored under when the client sent it without one
+DEFAULT_UPLOAD_NAME = "upload"
+
 
 def reject_if_node_draining() -> None:
     """503 when this node is draining or drained: a submission is always queued on the node that
@@ -48,19 +50,25 @@ def reject_if_node_draining() -> None:
             detail=f"node {get_global_runtime_settings().saq_node} is draining; submit to another node")
 
 
-def _add_file(root: RootAnalysis, file_name: str, fp: IO[bytes], file_observable_dicts: list[dict]) -> str | None:
+def _add_file(root: RootAnalysis, file_name: str | None, fp: IO[bytes], file_observable_dicts: list[dict]) -> str | None:
     """Store an uploaded file in the root as a file observable, with what the submission said
     about it (matched on its sha256). Returns its path, or None when it was not added."""
-    full_path = root.create_file_path(file_name)
-    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    # the client chooses the name, and may place the file in a subdirectory (ace_api's
+    # relative_storage_path), but a name that leads out of the root's files directory is refused
+    try:
+        full_path = root.create_file_path(file_name or DEFAULT_UPLOAD_NAME)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid file name {file_name!r}") from e
+
     with open(full_path, "wb") as out:
         shutil.copyfileobj(fp, out)
 
     file_sha256 = sha256_file(full_path)
-    observable_dict = next((d for d in file_observable_dicts if d["value"] == file_sha256),
-                           {"value": file_sha256, "file_path": file_name})
+    observable_dict = next((d for d in file_observable_dicts if d["value"] == file_sha256), {"value": file_sha256})
 
-    file_observable = root.add_file_observable(full_path, target_path=observable_dict["file_path"])
+    # stored where it was written: the observable's file_path is the client's name for the same
+    # upload, and is no more trustworthy than the upload's own
+    file_observable = root.add_file_observable(full_path)
     if not file_observable:
         return None
 

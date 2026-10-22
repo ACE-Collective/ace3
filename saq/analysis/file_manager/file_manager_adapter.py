@@ -61,6 +61,9 @@ class FileManagerAdapter(FileManagerInterface):
             
         Returns:
             Full path to the file
+
+        Raises:
+            ValueError: If the path is not inside the file directory
         """
         return self._file_manager.create_file_path(relative_path)
         
@@ -78,6 +81,7 @@ class FileManagerAdapter(FileManagerInterface):
             
         Raises:
             FileNotFoundError: If source file doesn't exist
+            ValueError: If the target path is not inside the file directory
             Exception: If file operations fail
         """
         return self._file_manager.store_file(source_path, target_path, move)

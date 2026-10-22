@@ -97,7 +97,12 @@ def find_nt_paths_in_text(text):
 
 def safe_file_name(file_name):
     """Returns a file name with all path separator and directory traversal replaced with underscores."""
-    return re.sub('_+', '_', file_name.replace('\\', '_').replace('../', '_').replace('/', '_').replace('~', '_'))
+    result = re.sub('_+', '_', file_name.replace('\\', '_').replace('../', '_').replace('/', '_').replace('~', '_').replace('\0', '_'))
+    # what is left of "." or ".." is still the directory or its parent
+    if result in ('.', '..'):
+        return '_'
+
+    return result
 
 def extract_windows_filepaths(command_line):
     """Given a command line, extract any file paths found inside of it and return a list of them."""

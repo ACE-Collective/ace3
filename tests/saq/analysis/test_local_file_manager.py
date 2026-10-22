@@ -180,3 +180,147 @@ def test_storage_operations(file_manager, temp_storage_dir):
     # Test delete
     file_manager.delete_storage()
     assert not os.path.exists(move_dest) 
+
+@pytest.fixture
+def outside_dir(tmp_path):
+    """A directory next to the storage directory that nothing may be written to."""
+    path = tmp_path / "outside"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def contained_file_manager(tmp_path):
+    fm = LocalFileManager(str(tmp_path / "storage"))
+    os.makedirs(fm.file_dir)
+    return fm
+
+
+def _refused_record(caplog, name):
+    return [r for r in caplog.records
+            if r.levelname == "WARNING" and r.getMessage().startswith("refusing file path") and r.path == name]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["../escaped.txt", "sub/../../escaped.txt", "../../outside/escaped.txt", "", ".", "sub/.."])
+def test_create_file_path_refuses_paths_outside_the_file_dir(contained_file_manager, outside_dir, caplog, name):
+    with pytest.raises(ValueError, match="outside of the files directory"):
+        contained_file_manager.create_file_path(name)
+
+    assert len(_refused_record(caplog, name)) == 1
+    assert os.listdir(contained_file_manager.storage_dir) == [FILE_SUBDIR]
+    assert os.listdir(contained_file_manager.file_dir) == []
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_file_path_refuses_an_absolute_path(contained_file_manager, outside_dir, caplog):
+    name = str(outside_dir / "sub" / "escaped.txt")
+    with pytest.raises(ValueError):
+        contained_file_manager.create_file_path(name)
+
+    assert len(_refused_record(caplog, name)) == 1
+    # not even its directory is created
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_file_path_refuses_a_symlink_out_of_the_file_dir(contained_file_manager, outside_dir, caplog):
+    os.symlink(outside_dir, os.path.join(contained_file_manager.file_dir, "link"))
+    with pytest.raises(ValueError):
+        contained_file_manager.create_file_path("link/escaped.txt")
+
+    # a symlink to a file outside is refused the same way
+    outside_file = outside_dir / "target.txt"
+    outside_file.write_text("outside")
+    os.symlink(outside_file, os.path.join(contained_file_manager.file_dir, "file_link"))
+    with pytest.raises(ValueError):
+        contained_file_manager.create_file_path("file_link")
+
+    assert len(_refused_record(caplog, "link/escaped.txt")) == 1
+    assert os.listdir(outside_dir) == ["target.txt"]
+
+
+@pytest.mark.unit
+def test_create_file_path_inside_the_file_dir(contained_file_manager):
+    file_dir = contained_file_manager.file_dir
+    assert contained_file_manager.create_file_path("a/../b.txt") == os.path.join(file_dir, "a/../b.txt")
+    assert contained_file_manager.create_file_path("..b.txt") == os.path.join(file_dir, "..b.txt")
+    # an absolute path inside the files dir, at any depth
+    full_path = os.path.join(file_dir, "sub", "c.txt")
+    assert contained_file_manager.create_file_path(full_path) == full_path
+    assert os.path.isdir(os.path.join(file_dir, "sub"))
+
+
+@pytest.mark.unit
+def test_create_file_path_with_a_relative_storage_dir(tmp_path, outside_dir, monkeypatch):
+    """Storage directories are relative to SAQ_HOME, which is the working directory."""
+    monkeypatch.chdir(tmp_path)
+    fm = LocalFileManager("storage")
+    os.makedirs(fm.file_dir)
+
+    assert fm.create_file_path("a.txt") == os.path.join("storage", FILE_SUBDIR, "a.txt")
+    assert fm.create_file_path(os.path.join("storage", FILE_SUBDIR, "a.txt")) == os.path.join("storage", FILE_SUBDIR, "a.txt")
+    assert fm.create_file_path(str(tmp_path / "storage" / FILE_SUBDIR / "b.txt")) == str(tmp_path / "storage" / FILE_SUBDIR / "b.txt")
+    with pytest.raises(ValueError):
+        fm.create_file_path(os.path.join("..", "..", "outside", "escaped.txt"))
+    with pytest.raises(ValueError):
+        fm.create_file_path(str(outside_dir / "escaped.txt"))
+    # the full-path form, with a directory traversal for a name
+    with pytest.raises(ValueError):
+        fm.create_file_path(os.path.join("storage", FILE_SUBDIR, ".."))
+
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target_path", ["../escaped.txt", "../../outside/escaped.txt", "sub/../../escaped.txt"])
+def test_store_file_refuses_a_target_outside_the_file_dir(contained_file_manager, outside_dir, test_file, caplog, target_path):
+    with pytest.raises(ValueError, match="outside of the files directory"):
+        contained_file_manager.store_file(test_file, target_path)
+
+    assert len(_refused_record(caplog, os.path.join(contained_file_manager.file_dir, target_path))) == 1
+    # refused before anything is stored
+    assert os.listdir(contained_file_manager.storage_dir) == [FILE_SUBDIR]
+    assert os.listdir(outside_dir) == []
+    assert os.path.exists(test_file)
+
+
+@pytest.mark.unit
+def test_store_file_refuses_an_absolute_target(contained_file_manager, outside_dir, test_file):
+    with pytest.raises(ValueError):
+        contained_file_manager.store_file(test_file, str(outside_dir / "escaped.txt"))
+
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_store_file_refuses_a_symlink_out_of_the_file_dir(contained_file_manager, outside_dir, test_file):
+    os.symlink(outside_dir, os.path.join(contained_file_manager.file_dir, "link"))
+    with pytest.raises(ValueError):
+        contained_file_manager.store_file(test_file, "link/escaped.txt")
+
+    # a source "inside" the files dir that links out of it is not stored either, so a link
+    # extracted from an archive cannot copy a file from elsewhere into the analysis
+    outside_file = outside_dir / "secret.txt"
+    outside_file.write_text("secret")
+    linked_source = os.path.join(contained_file_manager.file_dir, "secret.txt")
+    os.symlink(outside_file, linked_source)
+    with pytest.raises(ValueError):
+        contained_file_manager.store_file(linked_source)
+
+    assert sorted(os.listdir(outside_dir)) == ["secret.txt"]
+    assert not os.path.exists(contained_file_manager.hardcopy_dir)
+
+
+@pytest.mark.unit
+def test_store_file_with_a_target_inside_the_file_dir(contained_file_manager, test_file):
+    sha256_hash, relative_path = contained_file_manager.store_file(test_file, "sub/stored.txt")
+    assert relative_path == "sub/stored.txt"
+    assert os.path.exists(os.path.join(contained_file_manager.file_dir, "sub", "stored.txt"))
+
+    # a file already in the files dir stays where it is
+    full_path = contained_file_manager.create_file_path("already_here.txt")
+    with open(full_path, "w") as fp:
+        fp.write("already here")
+    assert contained_file_manager.store_file(full_path)[1] == "already_here.txt"

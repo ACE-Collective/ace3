@@ -16,7 +16,7 @@ from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_a
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
 from saq.environment import get_temp_dir
-from saq.util import local_time
+from saq.util import local_time, safe_file_name
 
 
 def _mark_added_by_current_user(file_observable):
@@ -56,9 +56,12 @@ def upload_file():
     from werkzeug.utils import secure_filename
 
     # Use secure_filename to sanitize the uploaded file name
-    safe_file_name = secure_filename(file_name)
     temp_dir = get_temp_dir()
-    temp_path = os.path.join(temp_dir, safe_file_name)
+    temp_path = os.path.join(temp_dir, secure_filename(file_name))
+
+    # the client's name is stored in the alert too, so it gets the same treatment, but one that
+    # keeps spaces and non-ascii characters
+    target_name = safe_file_name(file_name)
 
     try:
         file_path.save(temp_path)
@@ -76,7 +79,7 @@ def upload_file():
         root.event_time = datetime.now()
         root.details = {'user': current_user.username, 'comment': comment}
 
-        file_observable = root.add_file_observable(temp_path, file_name)
+        file_observable = root.add_file_observable(temp_path, target_name)
         if file_observable:
             _mark_added_by_current_user(file_observable)
         root.save()
@@ -110,7 +113,7 @@ def upload_file():
             # the same file at the same path is the observable already in the tree, which the engine
             # may have added, so only a new observable is marked as the analyst's
             existing_uuids = {o.uuid for o in alert.root_analysis.all_observables}
-            file_observable = alert.root_analysis.add_file_observable(temp_path, file_name)
+            file_observable = alert.root_analysis.add_file_observable(temp_path, target_name)
             if file_observable and file_observable.uuid not in existing_uuids:
                 _mark_added_by_current_user(file_observable)
 

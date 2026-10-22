@@ -76,6 +76,19 @@ class LocalFileManager(FileManagerInterface):
         if not os.path.exists(os.path.join(get_base_dir(), self._storage_dir, '.ace')):
             os.makedirs(os.path.join(get_base_dir(), self._storage_dir, '.ace'))
 
+    def _refuse_outside_file_dir(self, target_path: str, name: str):
+        """Raises ValueError when target_path is not a file inside the files directory. Names come
+        from submitters and from analyzed content (upload, attachment and archive member names), so
+        an absolute name, a ../ or a symlink out of the files directory must never be written to."""
+        file_dir = os.path.realpath(self.file_dir)
+        resolved = os.path.realpath(target_path)
+        if resolved != file_dir and os.path.commonpath([file_dir, resolved]) == file_dir:
+            return
+
+        logging.warning("refusing file path %r outside of the files directory of %s", name, self._storage_dir,
+                        extra={"storage_dir": self._storage_dir, "path": name})
+        raise ValueError(f"file path {name!r} is outside of the files directory {self.file_dir}")
+
     def create_file_path(self, relative_path: str) -> str:
         """
         Creates a file path relative to the file subdirectory.
@@ -86,14 +99,19 @@ class LocalFileManager(FileManagerInterface):
             
         Returns:
             Full path to the file
+
+        Raises:
+            ValueError: If the path is not inside the file directory
         """
         if os.path.dirname(relative_path) == self.file_dir:
             # already a full path within the files dir
-            return relative_path
+            target_path = relative_path
         else:
             target_path = os.path.join(self.file_dir, relative_path)
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            return target_path
+
+        self._refuse_outside_file_dir(target_path, relative_path)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        return target_path
             
     def store_file(self, source_path: Any, target_path: Optional[str] = None, move: bool = False) -> tuple[str, str]:
         """
@@ -109,6 +127,7 @@ class LocalFileManager(FileManagerInterface):
             
         Raises:
             FileNotFoundError: If source file doesn't exist
+            ValueError: If the target path is not inside the file directory
             Exception: If file operations fail
         """
         # Convert to string path
@@ -123,7 +142,9 @@ class LocalFileManager(FileManagerInterface):
             target_path = source_path
         else:
             target_path = os.path.join(self.file_dir, target_path or os.path.basename(source_path))
-            
+
+        self._refuse_outside_file_dir(target_path, target_path)
+
         # Ensure target directory exists
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         
