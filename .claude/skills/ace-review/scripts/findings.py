@@ -8,6 +8,10 @@ counted here, not judged.
     findings.py finish BUNDLE              number ranked.json into verified.json, write summary.json
     findings.py answer BUNDLE ID ANSWER [--note TEXT]
                                            record the user's answer to a finding
+    findings.py flaw ID ANSWER [--note TEXT] [--dir FLAW_DIR]
+                                           record the user's decision on a design flaw
+    findings.py flaws [--all] [--dir FLAW_DIR]
+                                           the design flaws, open ones first
     findings.py stats [STATE_DIR] [--since YYYY-MM-DD]
                                            what became of the findings of every finished round
 
@@ -16,18 +20,29 @@ BLOCKER_VOTES verifiers and stays a blocker only if a majority confirms it at th
 severity; a new fix-first gets one verifier; nits and pre-existing findings share the
 batch verifier, which also rechecks each open finding of earlier rounds (previous.json).
 Verifiers write verify/<cid>-<k>.json, and the batch verifier verify/batch.json.
+collect also numbers the design flaws the reviewers found (flaws-*.json) F<n> into
+flaw-candidates.json; the batch verifier judges those too.
 
 tally writes survivors.json, rejected.json and carried.json (the earlier findings
-rechecked: fixed or open). It stops at missing votes unless --allow-missing, which
+rechecked: fixed or open), and the flaws the batch verifier kept into flaws.json. It stops at missing votes unless --allow-missing, which
 counts only the votes cast.
 
 finish reads ranked.json: the survivors after duplicates are merged, each one that is
 an earlier finding again marked "repeats": "<id>". It drops the repeats, numbers the rest
 R<round>-<n> into verified.json, and writes summary.json, whose verdict_floor counts
 earlier findings still open like new ones. summary.json marks the round finished.
+finish also records each flaw in flaws.json in core's docs/design-flaws/ (target.json's
+flaw_dir), one <id>.yaml per flaw, so the flaws are shared through the repo: a flaw the
+verifier matched to a file there ("known": "<id>") adds this branch as one more
+workaround of it, any other becomes a new file named after its title, undecided. One
+branch counts once per flaw: a rerun of finish replaces what its round recorded, a full
+round everything the branch recorded before, and a delta round the branch's earlier
+workaround of each flaw it finds again. A flaw never changes the
+verdict floor.
 
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
-in target.json, it is accepted or rejected.
+in target.json, it is accepted or rejected. A flaw's answer is defer (keep going, fix it
+later), address (stop and fix it first), wrong, or fixed, which removes its file.
 
 stats walks STATE_DIR (default $SAQ_HOME/local/ace-review) and gives each new finding one
 outcome, the first that applies: the user's answer; "fixed (rechecked)" when a later
@@ -51,13 +66,23 @@ import shutil
 import subprocess
 import sys
 
+import yaml
+
 SEVERITIES = ("blocker", "fix-first", "nit")
 DIMENSIONS = ("uptime", "logging", "tests", "performance", "correctness", "design")
 ORIGINS = ("new", "pre-existing")
 ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
+FLAW_SIZES = ("small", "medium", "large")
+FLAW_RECOMMENDATIONS = ("stop", "keep going")
+# fixed has no status: a fixed flaw's file is removed, and git history keeps it
+FLAW_ANSWERS = {"defer": "deferred", "address": "addressing", "wrong": "wrong", "fixed": None}
+OPEN_FLAWS = ("undecided", "addressing", "deferred")
 BLOCKER_VOTES = 3
-STATE_DIR = os.path.join(os.environ.get("SAQ_HOME", "/opt/ace"), "local", "ace-review")
+SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
+STATE_DIR = os.path.join(SAQ_HOME, "local", "ace-review")
+FLAW_DIR = os.path.join(SAQ_HOME, "docs", "design-flaws")
+FLAW_HEADER = "# A flaw in ACE's design that a change had to work around; see README.md in this directory.\n"
 ACTED_ON = ("fixed", "fixed (rechecked)", "lines changed")
 NEARBY = 2
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? ")
@@ -86,8 +111,19 @@ def problems(finding: dict) -> list[str]:
     return found
 
 
+def flaw_problems(flaw: dict) -> list[str]:
+    found = [f"{field}={flaw.get(field)!r}" for field, allowed in
+             (("fix_size", FLAW_SIZES), ("recommendation", FLAW_RECOMMENDATIONS)) if flaw.get(field) not in allowed]
+    return found + [f"no {field}" for field in ("title", "flaw", "workaround", "file") if not flaw.get(field)]
+
+
 def collect(bundle: str) -> dict:
-    candidates, bad = [], []
+    candidates, flaws, bad = [], [], []
+    for path in sorted(glob.glob(os.path.join(bundle, "flaws-*.json"))):
+        for index, flaw in enumerate(load(path, [])):
+            if issues := flaw_problems(flaw):
+                bad.append(f"{os.path.basename(path)}[{index}]: {', '.join(issues)}")
+            flaws.append({**flaw, "fid": f"F{len(flaws) + 1}", "source": os.path.basename(path)})
     for path in sorted(glob.glob(os.path.join(bundle, "findings-*.json"))):
         for index, finding in enumerate(load(path, [])):
             if issues := problems(finding):
@@ -96,7 +132,8 @@ def collect(bundle: str) -> dict:
     if bad:
         sys.exit("malformed findings, fix them and collect again:\n" + "\n".join(bad))
 
-    plan = {"single": [], "batch": [], "carry": [f["id"] for f in load(os.path.join(bundle, "previous.json"), []) if f["status"] == "open"]}
+    plan = {"single": [], "batch": [], "carry": [f["id"] for f in load(os.path.join(bundle, "previous.json"), []) if f["status"] == "open"],
+            "flaws": [f["fid"] for f in flaws]}
     for candidate in candidates:
         if candidate["origin"] == "new" and candidate["severity"] in ("blocker", "fix-first"):
             votes = BLOCKER_VOTES if candidate["severity"] == "blocker" else 1
@@ -107,6 +144,7 @@ def collect(bundle: str) -> dict:
     shutil.rmtree(os.path.join(bundle, "verify"), ignore_errors=True)
     os.makedirs(os.path.join(bundle, "verify"))
     dump(os.path.join(bundle, "candidates.json"), candidates)
+    dump(os.path.join(bundle, "flaw-candidates.json"), flaws)
     dump(os.path.join(bundle, "plan.json"), plan)
     return plan
 
@@ -160,12 +198,15 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
                 missing.append(f"verify/{item['cid']}-{k}.json")
             else:
                 votes.setdefault(item["cid"], []).append(vote)
-    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] else {}
+    flaw_plan = plan.get("flaws", [])
+    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] or flaw_plan else {}
     for vote in batch.get("candidates", []):
         votes.setdefault(vote.get("cid"), []).append(vote)
     carried = [c for c in batch.get("carried", []) if c.get("status") in ("fixed", "open")]
     missing += [f"verify/batch.json: {cid}" for cid in plan["batch"] if cid not in votes]
     missing += [f"verify/batch.json: carried {fid}" for fid in plan["carry"] if fid not in {c["id"] for c in carried}]
+    flaw_votes = {v.get("fid"): v for v in batch.get("flaws", [])}
+    missing += [f"verify/batch.json: flaw {fid}" for fid in flaw_plan if fid not in flaw_votes]
     if missing and not allow_missing:
         sys.exit("missing votes, relaunch these verifiers (or pass --allow-missing):\n" + "\n".join(missing))
 
@@ -177,10 +218,91 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
         else:
             survivors.append(result)
     survivors.sort(key=rank)
+
+    kept_flaws, rejected_flaws = [], []
+    for flaw in load(os.path.join(bundle, "flaw-candidates.json"), []):
+        result = flaw_votes.get(flaw["fid"], {})
+        if result.get("verdict") not in ("CONFIRMED", "PLAUSIBLE"):
+            rejected_flaws.append({"fid": flaw["fid"], "title": flaw["title"], "reason": result.get("reason", "no verifier vote")})
+            continue
+        # the verifier's judgment of the fix and of whether to stop wins over the reviewer's,
+        # and so does its known, even null: that is the verifier saying it is no known flaw
+        kept_flaws.append({**flaw, **{k: result[k] for k in ("fix_size", "recommendation", "why") if result.get(k)},
+                           **({"known": result["known"]} if "known" in result else {}),
+                           "verdict": result["verdict"], "reason": result.get("reason", "")})
     dump(os.path.join(bundle, "survivors.json"), survivors)
     dump(os.path.join(bundle, "rejected.json"), rejected)
     dump(os.path.join(bundle, "carried.json"), carried)
-    return {"survivors": len(survivors), "rejected": len(rejected), "carried": len(carried), "missing": missing}
+    dump(os.path.join(bundle, "flaws.json"), kept_flaws)
+    dump(os.path.join(bundle, "rejected-flaws.json"), rejected_flaws)
+    return {"survivors": len(survivors), "rejected": len(rejected), "carried": len(carried),
+            "flaws": len(kept_flaws), "rejected_flaws": len(rejected_flaws), "missing": missing}
+
+
+def flaw_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "flaw"
+
+
+def load_flaws(directory: str) -> dict[str, dict]:
+    flaws = {}
+    for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
+        with open(path) as fp:
+            flaws[os.path.basename(path)[:-len(".yaml")]] = yaml.safe_load(fp)
+    return flaws
+
+
+def save_flaw(directory: str, fid: str, entry: dict) -> None:
+    # written whole and renamed, so a review that dies mid-write leaves the old file
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{fid}.yaml")
+    with open(path + ".tmp", "w") as fp:
+        fp.write(FLAW_HEADER)
+        yaml.safe_dump(entry, fp, sort_keys=False, allow_unicode=True, width=100)
+    os.replace(path + ".tmp", path)
+
+
+def record_flaws(target: dict, flaws: list[dict]) -> list[dict]:
+    """Add this round's flaws to docs/design-flaws/ and return how each one stands there."""
+    directory = target.get("flaw_dir") or FLAW_DIR
+    entries = load_flaws(directory)
+    repo, branch, number = os.path.basename(target.get("repo", "")), target.get("branch", ""), target.get("round", 1)
+    # a rerun of finish replaces what its round recorded. A full round looked at the whole
+    # change, so it also replaces what the branch's earlier rounds recorded; a delta round
+    # never saw the code they found their flaws in
+    def replaced(w: dict) -> bool:
+        return (w["repo"], w["branch"]) == (repo, branch) and (w["round"] == number or not target.get("delta"))
+
+    changed = set()
+    for fid, entry in entries.items():
+        kept = [w for w in entry["workarounds"] if not replaced(w)]
+        if len(kept) != len(entry["workarounds"]):
+            entry["workarounds"] = kept
+            changed.add(fid)
+    today = datetime.date.today().isoformat()
+
+    recorded = []
+    for flaw in flaws:
+        fid = flaw["known"] if flaw.get("known") in entries else flaw_slug(flaw["title"])
+        entry = entries.get(fid)
+        new = entry is None or (entry["status"] == "undecided" and not entry["workarounds"])
+        if entry is None:
+            entry = entries[fid] = {"title": flaw["title"], "status": "undecided", "area": flaw.get("area", ""),
+                                    "fix_size": flaw["fix_size"], "flaw": flaw["flaw"], "fix": flaw.get("fix", ""),
+                                    "first_seen": today, "workarounds": []}
+        entry["workarounds"] = [w for w in entry["workarounds"] if (w["repo"], w["branch"]) != (repo, branch)]
+        entry["workarounds"].append({"repo": repo, "branch": branch, "round": number, "file": flaw["file"],
+                                     "line": flaw.get("line"), "what": flaw["workaround"], "seen": today})
+        changed.add(fid)
+        recorded.append({"id": fid, "title": entry["title"], "new": new, "status": entry["status"], "fix_size": flaw["fix_size"],
+                         "recommendation": flaw["recommendation"], "why": flaw.get("why", ""),
+                         "workarounds": len(entry["workarounds"]), "path": os.path.join(directory, f"{fid}.yaml")})
+    for fid in sorted(changed):
+        if entries[fid]["status"] == "undecided" and not entries[fid]["workarounds"]:
+            # only this round's earlier run, or the branch's earlier rounds, had found it
+            os.remove(os.path.join(directory, f"{fid}.yaml"))
+        else:
+            save_flaw(directory, fid, entries[fid])
+    return recorded
 
 
 def finish(bundle: str) -> dict:
@@ -212,6 +334,7 @@ def finish(bundle: str) -> dict:
         "not_repeated": repeats,
         "rejected": len(load(os.path.join(bundle, "rejected.json"), [])),
         "verdict_floor": floor,
+        "flaws": record_flaws(target, load(os.path.join(bundle, "flaws.json"), [])),
         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     dump(os.path.join(bundle, "verified.json"), verified)
@@ -239,6 +362,30 @@ def answer(bundle: str, fid: str, value: str, note: str | None = None) -> dict:
     path = os.path.join(bundle, "answers.json")
     dump(path, [a for a in load(path, []) if a["id"] != fid] + [entry])
     return entry
+
+
+def answer_flaw(directory: str, fid: str, value: str, note: str | None = None) -> dict:
+    entry = load_flaws(directory).get(fid)
+    if entry is None:
+        sys.exit(f"no design flaw {fid} in {directory}")
+    if value not in FLAW_ANSWERS:
+        sys.exit(f"the answer for a design flaw is one of {', '.join(FLAW_ANSWERS)}")
+    if FLAW_ANSWERS[value] is None:
+        os.remove(os.path.join(directory, f"{fid}.yaml"))
+        return {"id": fid, "status": "fixed", "removed": True}
+    entry["status"] = FLAW_ANSWERS[value]
+    entry["decided"] = datetime.date.today().isoformat()
+    if note:
+        entry["note"] = note
+    save_flaw(directory, fid, entry)
+    return {"id": fid, **entry}
+
+
+def list_flaws(directory: str, everything: bool = False) -> list[dict]:
+    """Open flaws, the ones with the most workarounds first: each workaround is more to undo later."""
+    order = {status: n for n, status in enumerate(OPEN_FLAWS)}
+    shown = [{"id": fid, **e} for fid, e in load_flaws(directory).items() if everything or e["status"] in order]
+    return sorted(shown, key=lambda e: (order.get(e["status"], len(order)), -len(e["workarounds"]), e["id"]))
 
 
 def tree_of(repo: str, *revs: str | None) -> str | None:
@@ -354,6 +501,14 @@ def main() -> None:
     sub.choices["answer"].add_argument("id")
     sub.choices["answer"].add_argument("answer")
     sub.choices["answer"].add_argument("--note")
+    command = sub.add_parser("flaw")
+    command.add_argument("id")
+    command.add_argument("answer", choices=sorted(FLAW_ANSWERS))
+    command.add_argument("--note")
+    command.add_argument("--dir", default=FLAW_DIR)
+    command = sub.add_parser("flaws")
+    command.add_argument("--all", action="store_true", help="include the flaws marked wrong")
+    command.add_argument("--dir", default=FLAW_DIR)
     command = sub.add_parser("stats")
     command.add_argument("state", nargs="?", default=STATE_DIR)
     command.add_argument("--since", help="only rounds finished on or after this date, YYYY-MM-DD")
@@ -367,6 +522,10 @@ def main() -> None:
         result = finish(args.bundle)
     elif args.command == "stats":
         result = stats(args.state, args.since)
+    elif args.command == "flaw":
+        result = answer_flaw(args.dir, args.id, args.answer, args.note)
+    elif args.command == "flaws":
+        result = list_flaws(args.dir, args.all)
     else:
         result = answer(args.bundle, args.id, args.answer, args.note)
     print(json.dumps(result, indent=2))

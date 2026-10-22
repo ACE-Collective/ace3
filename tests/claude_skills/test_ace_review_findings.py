@@ -37,7 +37,8 @@ def earlier(fid, status, **fields):
 def bundle(tmp_path):
     path = tmp_path / "round-2"
     path.mkdir()
-    (path / "target.json").write_text(json.dumps({"round": 2, "rule_changes_digest": "d1"}))
+    (path / "target.json").write_text(json.dumps({"round": 2, "rule_changes_digest": "d1", "flaw_dir": str(tmp_path / "flaws"),
+                                                  "repo": "/opt/ace", "branch": "mw/topic"}))
     return path
 
 
@@ -65,7 +66,7 @@ def test_collect_plans_three_votes_for_a_blocker_and_batches_the_rest(bundle):
 
     plan = findings.collect(str(bundle))
 
-    assert plan == {"single": [{"cid": "C1", "votes": 3}, {"cid": "C2", "votes": 1}], "batch": ["C3", "C4"], "carry": ["R1-1"]}
+    assert plan == {"single": [{"cid": "C1", "votes": 3}, {"cid": "C2", "votes": 1}], "batch": ["C3", "C4"], "carry": ["R1-1"], "flaws": []}
     assert read_json(bundle / "plan.json") == plan
     assert [c["source"] for c in read_json(bundle / "candidates.json")] == ["findings-uptime.json"] * 4
     assert list((bundle / "verify").iterdir()) == []
@@ -186,7 +187,7 @@ def test_tally_reads_the_batch_and_the_rechecked_findings(bundle):
 
     result = findings.tally(str(bundle))
 
-    assert result == {"survivors": 1, "rejected": 1, "carried": 2, "missing": []}
+    assert result == {"survivors": 1, "rejected": 1, "carried": 2, "flaws": 0, "rejected_flaws": 0, "missing": []}
     assert read_json(bundle / "rejected.json") == [{
         "cid": "C1", "dimension": "design", "severity": "nit", "file": "saq/x.py", "line": 1, "title": "a claim",
         "reason": "a formatter would fix it",
@@ -240,6 +241,7 @@ def test_finish_drops_repeats_numbers_the_rest_and_counts_what_is_still_open(bun
         "not_repeated": 1,
         "rejected": 1,
         "verdict_floor": "rework",
+        "flaws": [],
     }
 
 
@@ -305,7 +307,7 @@ def test_the_command_line_runs_a_round_from_findings_to_answers(bundle, monkeypa
         return json.loads(capsys.readouterr().out)
 
     write_json(bundle / "findings-uptime.json", [finding(severity="blocker")])
-    assert run("collect", str(bundle)) == {"single": [{"cid": "C1", "votes": 3}], "batch": [], "carry": []}
+    assert run("collect", str(bundle)) == {"single": [{"cid": "C1", "votes": 3}], "batch": [], "carry": [], "flaws": []}
     for k in (1, 2, 3):
         vote(bundle, "C1", k, "CONFIRMED", "blocker")
     assert run("tally", str(bundle), "--allow-missing")["survivors"] == 1
@@ -314,6 +316,196 @@ def test_the_command_line_runs_a_round_from_findings_to_answers(bundle, monkeypa
     assert run("answer", str(bundle), "R2-1", "didn't matter", "--note", "cosmetic") == {
         "id": "R2-1", "answer": "didn't matter", "note": "cosmetic"
     }
+
+
+def flaw(**fields):
+    return {"dimension": "design", "title": "the tree has no hook for X", "flaw": "saq/analysis/root.py has no event for X",
+            "area": "analysis tree", "workaround": "polls the root for X", "file": "saq/y.py", "line": 7, "fix_size": "large",
+            "fix": "add the hook", "recommendation": "keep going", "why": "contained", **fields}
+
+
+def flaws_through_tally(bundle, flaws, votes):
+    write_json(bundle / "flaws-design.json", flaws)
+    plan = findings.collect(str(bundle))
+    write_json(bundle / "verify" / "batch.json", {"flaws": votes})
+    findings.tally(str(bundle))
+    return plan
+
+
+def flaw_files(bundle):
+    return findings.load_flaws(read_json(bundle / "target.json")["flaw_dir"])
+
+
+def finish_with_flaws(bundle, flaws):
+    write_json(bundle / "ranked.json", [])
+    write_json(bundle / "flaws.json", flaws)
+    return findings.finish(str(bundle))
+
+
+def test_collect_numbers_the_design_flaws_for_the_batch_verifier(bundle):
+    write_json(bundle / "flaws-correctness.json", [flaw(dimension="correctness")])
+    write_json(bundle / "flaws-design.json", [flaw(), flaw(title="another")])
+
+    plan = findings.collect(str(bundle))
+
+    assert plan["flaws"] == ["F1", "F2", "F3"]
+    assert [(f["fid"], f["source"]) for f in read_json(bundle / "flaw-candidates.json")] == [
+        ("F1", "flaws-correctness.json"), ("F2", "flaws-design.json"), ("F3", "flaws-design.json"),
+    ]
+
+
+def test_collect_refuses_malformed_flaws(bundle):
+    write_json(bundle / "flaws-design.json", [flaw(fix_size="huge", workaround="")])
+
+    with pytest.raises(SystemExit, match=r"flaws-design.json\[0\]: fix_size='huge', no workaround"):
+        findings.collect(str(bundle))
+
+
+def test_tally_keeps_the_flaws_the_verifier_found_real_with_its_judgment(bundle):
+    flaws_through_tally(bundle, [flaw(), flaw(title="not a flaw")], [
+        {"fid": "F1", "verdict": "PLAUSIBLE", "known": "D2", "fix_size": "small", "recommendation": "stop", "why": "a day's work", "reason": "real"},
+        {"fid": "F2", "verdict": "REJECTED", "reason": "the change could fix it itself"},
+    ])
+
+    [kept] = read_json(bundle / "flaws.json")
+    assert {k: kept[k] for k in ("fid", "verdict", "known", "fix_size", "recommendation", "why")} == {
+        "fid": "F1", "verdict": "PLAUSIBLE", "known": "D2", "fix_size": "small", "recommendation": "stop", "why": "a day's work",
+    }
+    assert read_json(bundle / "rejected-flaws.json") == [{"fid": "F2", "title": "not a flaw", "reason": "the change could fix it itself"}]
+
+
+def test_a_verifier_that_finds_no_known_flaw_overrides_the_reviewers_match(bundle):
+    findings.save_flaw(read_json(bundle / "target.json")["flaw_dir"], "something-else", {"title": "something else", "status": "deferred", "workarounds": []})
+    flaws_through_tally(bundle, [flaw(known="something-else")], [
+        {"fid": "F1", "verdict": "CONFIRMED", "known": None, "reason": "a different flaw"},
+    ])
+
+    assert read_json(bundle / "flaws.json")[0]["known"] is None
+    summary = finish_with_flaws(bundle, read_json(bundle / "flaws.json"))
+    assert [(f["id"], f["new"], f["status"]) for f in summary["flaws"]] == [(HOOK, True, "undecided")]
+    assert flaw_files(bundle)["something-else"]["workarounds"] == []
+
+
+def test_tally_waits_for_the_flaw_votes(bundle):
+    write_json(bundle / "flaws-design.json", [flaw()])
+    findings.collect(str(bundle))
+
+    with pytest.raises(SystemExit, match="verify/batch.json: flaw F1"):
+        findings.tally(str(bundle))
+    assert findings.tally(str(bundle), allow_missing=True)["rejected_flaws"] == 1
+
+
+HOOK = "the-tree-has-no-hook-for-x"
+
+
+def test_finish_writes_each_new_flaw_to_its_own_file_undecided(bundle, tmp_path):
+    summary = finish_with_flaws(bundle, [flaw()])
+
+    assert summary["verdict_floor"] == "ship"
+    assert summary["flaws"] == [{"id": HOOK, "title": "the tree has no hook for X", "new": True, "status": "undecided", "fix_size": "large",
+                                 "recommendation": "keep going", "why": "contained", "workarounds": 1,
+                                 "path": str(tmp_path / "flaws" / f"{HOOK}.yaml")}]
+    text = (tmp_path / "flaws" / f"{HOOK}.yaml").read_text()
+    assert text.startswith("# A flaw in ACE's design")
+    entry = flaw_files(bundle)[HOOK]
+    assert {k: entry[k] for k in ("title", "status", "area", "fix_size", "flaw", "fix")} == {
+        "title": "the tree has no hook for X", "status": "undecided", "area": "analysis tree", "fix_size": "large",
+        "flaw": "saq/analysis/root.py has no event for X", "fix": "add the hook",
+    }
+    # the repo by name: the files are shared, and the checkout's path is different on every machine
+    assert [(w["repo"], w["branch"], w["round"], w["file"], w["line"], w["what"]) for w in entry["workarounds"]] == [
+        ("ace", "mw/topic", 2, "saq/y.py", 7, "polls the root for X"),
+    ]
+
+
+def test_a_known_flaw_counts_one_workaround_per_branch(bundle, tmp_path):
+    finish_with_flaws(bundle, [flaw()])
+    findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "defer")
+    # the same branch's next round finds it again, and so does another branch, in other words
+    later = tmp_path / "round-3"
+    write_json(later / "target.json", {**read_json(bundle / "target.json"), "round": 3})
+    other = tmp_path / "other" / "round-1"
+    write_json(other / "target.json", {**read_json(bundle / "target.json"), "round": 1, "branch": "jd/other"})
+
+    finish_with_flaws(later, [flaw(known=HOOK, workaround="polls again", line=9)])
+    summary = finish_with_flaws(other, [flaw(known=HOOK, title="worded differently")])
+
+    assert [(f["id"], f["new"], f["status"], f["workarounds"]) for f in summary["flaws"]] == [(HOOK, False, "deferred", 2)]
+    assert list(flaw_files(bundle)) == [HOOK]
+    assert [(w["branch"], w["round"], w["line"]) for w in flaw_files(bundle)[HOOK]["workarounds"]] == [("mw/topic", 3, 9), ("jd/other", 1, 7)]
+
+
+def test_a_known_id_that_has_no_file_is_a_new_flaw(bundle):
+    summary = finish_with_flaws(bundle, [flaw(known="gone")])
+
+    assert [(f["id"], f["new"]) for f in summary["flaws"]] == [(HOOK, True)]
+
+
+def test_rerunning_finish_replaces_what_the_round_recorded(bundle):
+    finish_with_flaws(bundle, [flaw(), flaw(title="dropped on the rerun")])
+
+    summary = finish_with_flaws(bundle, [flaw()])
+
+    assert [(f["id"], f["new"]) for f in summary["flaws"]] == [(HOOK, True)]
+    assert {fid: len(e["workarounds"]) for fid, e in flaw_files(bundle).items()} == {HOOK: 1}
+
+
+@pytest.mark.parametrize("delta, left", [(False, {"kept": 0}), (True, {"kept": 1, HOOK: 1})])
+def test_a_full_round_drops_the_workarounds_the_branch_no_longer_has(bundle, tmp_path, delta, left):
+    finish_with_flaws(bundle, [flaw(), flaw(title="kept")])
+    findings.answer_flaw(str(tmp_path / "flaws"), "kept", "defer")
+    later = tmp_path / "round-3"
+    write_json(later / "target.json", {**read_json(bundle / "target.json"), "round": 3, "delta": delta})
+
+    finish_with_flaws(later, [])
+
+    # a full round looked at all of the change; a delta round only at what changed since
+    assert {fid: len(e["workarounds"]) for fid, e in flaw_files(bundle).items()} == left
+
+
+def test_rerunning_finish_keeps_an_answered_flaw(bundle, tmp_path):
+    finish_with_flaws(bundle, [flaw(title="dropped on the rerun")])
+    findings.answer_flaw(str(tmp_path / "flaws"), "dropped-on-the-rerun", "address", note="small after all")
+
+    summary = finish_with_flaws(bundle, [])
+
+    assert summary["flaws"] == []
+    entry = flaw_files(bundle)["dropped-on-the-rerun"]
+    assert (entry["status"], entry["note"], entry["workarounds"]) == ("addressing", "small after all", [])
+
+
+def test_a_fixed_flaw_loses_its_file(bundle, tmp_path):
+    finish_with_flaws(bundle, [flaw()])
+
+    assert findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "fixed") == {"id": HOOK, "status": "fixed", "removed": True}
+    assert flaw_files(bundle) == {}
+
+
+def test_answer_flaw_refuses_what_it_cannot_record(bundle, tmp_path):
+    finish_with_flaws(bundle, [flaw()])
+
+    with pytest.raises(SystemExit, match="no design flaw nope"):
+        findings.answer_flaw(str(tmp_path / "flaws"), "nope", "defer")
+    with pytest.raises(SystemExit, match="one of defer, address, wrong, fixed"):
+        findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "later")
+    assert flaw_files(bundle)[HOOK]["status"] == "undecided"
+
+
+def test_flaw_slugs_are_file_names():
+    assert findings.flaw_slug("RootAnalysis can't say: is it loaded?") == "rootanalysis-can-t-say-is-it-loaded"
+    assert len(findings.flaw_slug("x " * 100)) <= 60 and not findings.flaw_slug("x " * 100).endswith("-")
+    assert findings.flaw_slug("!!!") == "flaw"
+
+
+def test_the_flaw_list_puts_open_flaws_with_the_most_workarounds_first(tmp_path, monkeypatch, capsys):
+    directory = tmp_path / "flaws"
+    for fid, status, workarounds in (("a", "deferred", 1), ("b", "deferred", 3), ("c", "undecided", 1), ("d", "addressing", 1), ("e", "wrong", 1)):
+        findings.save_flaw(str(directory), fid, {"title": fid, "status": status, "workarounds": [{"branch": f"b{n}"} for n in range(workarounds)]})
+
+    assert [e["id"] for e in findings.list_flaws(str(directory))] == ["c", "d", "b", "a"]
+    monkeypatch.setattr(sys, "argv", ["findings.py", "flaws", "--all", "--dir", str(directory)])
+    findings.main()
+    assert [e["id"] for e in json.loads(capsys.readouterr().out)] == ["c", "d", "b", "a", "e"]
 
 
 @pytest.mark.parametrize("step, message", [(findings.tally, "run collect first"), (findings.finish, "no ranked.json")])

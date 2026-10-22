@@ -36,6 +36,11 @@ Read first: `CLAUDE.md` § Engineering values → Keep it lean, § Conventions, 
 - Leads with `check: stale-reference` are doc lines that name a path, function, class or config key the change removes. Report each line that now misleads; a history or migration-tracking doc that names it as removed is fine.
 - A change that alters what a CLAUDE.md or skill line says, without removing a name: an agent acts on every such line in every session, so read the lines about the subsystem the change touches.
 
+**Workarounds of a design flaw (a flaw, see rubric.md, not a finding).**
+- Agents rarely stop to question the design they are given; they bend the new code around it. When the change is awkward, ask whether it is awkward because of ACE. The signs are listed under "Design flaws worked around" in rubric.md.
+- Search the tree for the same workaround elsewhere: a second copy is a strong sign, and makes the case for stopping.
+- Write each one to `$B/flaws-design.json`. Report a finding on the workaround as well only if the workaround itself is wrong by the rules here.
+
 **Bloat (nit, unless it is pervasive).**
 - Module docstrings that retell the design doc, comments that restate the next line, and per-field commentary on obvious dataclass fields.
 - New modules, exception classes, base classes, protocols or config knobs with a single use and no concrete need. Prefer a plain function in an existing module.

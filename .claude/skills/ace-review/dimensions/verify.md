@@ -28,9 +28,19 @@ You judge one candidate, as one vote of possibly several. Don't read the other v
 
 ## Batch
 
-You judge each listed candidate (nits and pre-existing findings) as above. For each listed earlier finding, read its entry in `$B/previous.json` and the current code, and decide whether it is `fixed` or still `open`; a finding the change moved elsewhere without fixing is still open. Write `$B/verify/batch.json`:
+You judge each listed candidate (nits and pre-existing findings) as above. For each listed earlier finding, read its entry in `$B/previous.json` and the current code, and decide whether it is `fixed` or still `open`; a finding the change moved elsewhere without fixing is still open.
+
+For each listed design flaw, find it by its `fid` in `$B/flaw-candidates.json` and judge it by "Design flaws worked around" in rubric.md:
+
+- **REJECTED** when the flaw isn't in the base branch's code, or the change doesn't depend on it, or the change could fix the cause itself (then it is a finding, not a flaw), or its file in `docs/design-flaws/` marks it `wrong`.
+- Otherwise **CONFIRMED**, or **PLAUSIBLE** when the flaw is real but you can't tell whether the change needs the workaround.
+- Read the known flaws, the `<id>.yaml` files in `flaw_dir` (from `target.json`). Set `known` to the id when one is the same flaw, even under another title.
+- Size the fix again and give your own recommendation; yours is the one reported. Count the workarounds a known flaw's file lists when you apply the stop rule.
+
+Write `$B/verify/batch.json`:
 
 ```json
 {"candidates": [{"cid": "C7", "verdict": "...", "severity": "...", "origin": "...", "reason": "..."}],
- "carried": [{"id": "R1-2", "status": "fixed | open", "reason": "one line"}]}
+ "carried": [{"id": "R1-2", "status": "fixed | open", "reason": "one line"}],
+ "flaws": [{"fid": "F1", "verdict": "CONFIRMED | PLAUSIBLE | REJECTED", "known": "<id> or null", "fix_size": "small | medium | large", "recommendation": "stop | keep going", "why": "one line", "reason": "one line: why it is or isn't a flaw"}]}
 ```
