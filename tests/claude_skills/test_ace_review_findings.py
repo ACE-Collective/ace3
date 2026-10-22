@@ -244,7 +244,6 @@ def test_finish_drops_repeats_numbers_the_rest_and_counts_what_is_still_open(bun
         "rejected": 1,
         "verdict_floor": "rework",
         "flaws": [],
-        "flaws_error": None,
     }
 
 
@@ -329,36 +328,13 @@ class FakeGitHub:
         self.next_id = 100
         self.calls = []
         self.down = False
-        # GitHub's list shows a new issue only some time later; these it doesn't show yet
-        self.unlisted = set()
 
-    def add(self, title, state="OPEN", reason="", assignees=(), labels=("design flaw",), body="the flaw"):
+    def add(self, title, state="OPEN", reason="", labels=("design flaw",), body="the flaw"):
         number = self.next_id
         self.next_id += 1
         self.issues[number] = {"number": number, "title": title, "body": body, "state": state, "stateReason": reason,
-                               "assignees": list(assignees), "labels": list(labels), "comments": [],
-                               "url": f"https://github.com/o/r/issues/{number}"}
+                               "labels": list(labels), "url": f"https://github.com/o/r/issues/{number}"}
         return number
-
-    def comment(self, number, body):
-        url = f"https://github.com/o/r/issues/{number}#issuecomment-{self.next_id}"
-        self.next_id += 1
-        self.issues[number]["comments"].append({"body": body, "url": url})
-        return url
-
-    @staticmethod
-    def as_gh(issue):
-        return {**issue, "assignees": [{"login": a} for a in issue["assignees"]], "labels": [{"name": label} for label in issue["labels"]]}
-
-    def workarounds(self, number):
-        return [c["body"] for c in self.issues[number]["comments"] if c["body"].startswith("<!-- ace-review workaround")]
-
-    def writes(self):
-        return [call for call in self.calls if call[:2] not in (("issue", "list"), ("issue", "view"))]
-
-    def find_comment(self, path):
-        url_end = f"#issuecomment-{path.rsplit('/', 1)[1]}"
-        return next((i, c) for i in self.issues.values() for c in i["comments"] if c["url"].endswith(url_end))
 
     def __call__(self, *args, stdin=None):
         if self.down:
@@ -366,31 +342,11 @@ class FakeGitHub:
         self.calls.append(args)
         match args:
             case ("issue", "list", "--label", label, "--state", "all", "--limit", _, "--json", _):
-                return json.dumps([self.as_gh(i) for n, i in self.issues.items() if label in i["labels"] and n not in self.unlisted])
+                return json.dumps([{k: v for k, v in i.items() if k != "labels"} for i in self.issues.values() if label in i["labels"]])
             case ("issue", "create", "--label", label, "--title", title, "--body-file", "-"):
-                number = self.add(title, labels=(label,), body=stdin)
-                self.unlisted.add(number)
-                return self.issues[number]["url"] + "\n"
-            case ("issue", "comment", number, "--body-file", "-"):
-                return self.comment(int(number), stdin) + "\n"
-            case ("issue", "view", number, "--json", _):
-                return json.dumps(self.as_gh(self.issues[int(number)]))
-            case ("issue", "reopen", number):
-                self.issues[int(number)].update(state="OPEN", stateReason="REOPENED")
-            case ("issue", "close", number, "--reason", reason):
-                self.issues[int(number)].update(state="CLOSED", stateReason="NOT_PLANNED" if reason == "not planned" else "COMPLETED")
-            case ("issue", "edit", number, "--add-assignee", "@me"):
-                self.issues[int(number)]["assignees"].append("me")
-            case ("issue", "edit", number, "--remove-assignee", login):
-                self.issues[int(number)]["assignees"].remove(login)
-            case ("api", "-X", "PATCH", path, "-f", body):
-                self.find_comment(path)[1]["body"] = body.removeprefix("body=")
-            case ("api", "-X", "DELETE", path):
-                issue, comment = self.find_comment(path)
-                issue["comments"].remove(comment)
+                return self.issues[self.add(title, labels=(label,), body=stdin)]["url"] + "\n"
             case _:
                 raise AssertionError(f"unexpected gh call {args}")
-        return ""
 
 
 @pytest.fixture(autouse=True)
@@ -418,12 +374,6 @@ def finish_with_flaws(bundle, flaws):
     write_json(bundle / "ranked.json", [])
     write_json(bundle / "flaws.json", flaws)
     return findings.finish(str(bundle))
-
-
-def later_round(bundle, tmp_path, **fields):
-    path = tmp_path / f"round-{fields.get('round', 3)}"
-    write_json(path / "target.json", {**read_json(bundle / "target.json"), "round": 3, **fields})
-    return path
 
 
 def test_collect_numbers_the_design_flaws_for_the_batch_verifier(bundle):
@@ -458,6 +408,7 @@ def test_tally_keeps_the_flaws_the_verifier_found_real_with_its_judgment(bundle)
 
 def test_a_verifier_that_finds_no_known_flaw_overrides_the_reviewers_match(bundle, github):
     other = github.add("something else")
+    findings.known(str(bundle))
     flaws_through_tally(bundle, [flaw(known=other)], [
         {"fid": "F1", "verdict": "CONFIRMED", "known": None, "reason": "a different flaw"},
     ])
@@ -465,7 +416,6 @@ def test_a_verifier_that_finds_no_known_flaw_overrides_the_reviewers_match(bundl
     assert read_json(bundle / "flaws.json")[0]["known"] is None
     summary = finish_with_flaws(bundle, read_json(bundle / "flaws.json"))
     assert [(f["id"], f["issue"], f["new"], f["status"]) for f in summary["flaws"]] == [("F1", None, True, "undecided")]
-    assert github.writes() == []
 
 
 def test_tally_waits_for_the_flaw_votes(bundle):
@@ -478,186 +428,114 @@ def test_tally_waits_for_the_flaw_votes(bundle):
 
 
 def test_known_snapshots_the_flaws_a_reviewer_may_match(bundle, github):
-    deferred = github.add("deferred one")
-    github.comment(deferred, '<!-- ace-review workaround {"repo": "ace", "branch": "jd/a", "round": 1} -->\nhere')
-    github.comment(deferred, "a plain comment is no workaround")
-    addressing = github.add("addressing one", assignees=["me"])
+    still_open = github.add("open one")
     wrong = github.add("wrong one", state="CLOSED", reason="NOT_PLANNED")
     github.add("fixed one", state="CLOSED", reason="COMPLETED")
     github.add("not a flaw", labels=("bug",))
 
-    assert findings.known(str(bundle)) == {"known": 3}
+    assert findings.known(str(bundle)) == {"known": 2}
 
-    assert [(f["id"], f["status"], f["workarounds"]) for f in read_json(bundle / "known-flaws.json")] == [
-        (deferred, "deferred", 1), (addressing, "addressing", 0), (wrong, "wrong", 0),
+    assert read_json(bundle / "known-flaws.json") == [
+        {"id": still_open, "title": "open one", "status": "open", "url": f"https://github.com/o/r/issues/{still_open}", "body": "the flaw"},
+        {"id": wrong, "title": "wrong one", "status": "wrong", "url": f"https://github.com/o/r/issues/{wrong}", "body": "the flaw"},
     ]
 
 
-def test_known_lets_the_review_go_on_without_github(bundle, github):
+def test_known_lets_the_review_go_on_without_github_and_remembers_why(bundle, github):
     github.down = True
 
     assert findings.known(str(bundle)) == {"known": 0, "error": "gh issue list failed: could not connect"}
     assert read_json(bundle / "known-flaws.json") == []
+    assert (bundle / "known-flaws-error.txt").read_text() == "gh issue list failed: could not connect\n"
+
+    github.down = False
+    findings.known(str(bundle))
+    assert not (bundle / "known-flaws-error.txt").exists()
 
 
-def test_finish_leaves_a_new_flaw_undecided_and_off_github(bundle, github):
-    summary = finish_with_flaws(bundle, [flaw()])
-
-    assert summary["verdict_floor"] == "ship" and summary["flaws_error"] is None
-    assert summary["flaws"] == [{"id": "F1", "issue": None, "url": None, "title": "the tree has no hook for X", "new": True,
-                                 "status": "undecided", "fix_size": "large", "recommendation": "keep going", "why": "contained",
-                                 "workarounds": 1, "posted": False}]
-    assert github.writes() == []
-
-
-def test_finish_comments_once_per_branch_on_a_known_flaw(bundle, tmp_path, github):
+def test_finish_lists_each_flaw_with_its_issue_and_leaves_github_alone(bundle, github):
     number = github.add("no hook for X")
-    finish_with_flaws(bundle, [flaw(known=number)])
-    [comment] = github.workarounds(number)
-    assert comment.startswith('<!-- ace-review workaround {"repo": "ace", "branch": "mw/topic", "round": 2} -->\n')
-    assert "`saq/y.py:7`:\n\npolls the root for X" in comment
-
-    # the branch's next round edits its comment; another branch adds its own
-    finish_with_flaws(later_round(bundle, tmp_path), [flaw(known=f"#{number}", workaround="polls again", line=9)])
-    other = tmp_path / "other" / "round-1"
-    write_json(other / "target.json", {**read_json(bundle / "target.json"), "round": 1, "branch": "jd/other"})
-    summary = finish_with_flaws(other, [flaw(known=number, title="worded differently")])
-
-    assert [(f["issue"], f["new"], f["status"], f["workarounds"], f["posted"]) for f in summary["flaws"]] == [
-        (number, False, "deferred", 2, True)]
-    assert summary["flaws"][0]["title"] == "no hook for X"
-    mine, theirs = github.workarounds(number)
-    assert '"branch": "mw/topic", "round": 3' in mine and "polls again" in mine
-    assert '"branch": "jd/other"' in theirs
-
-
-def test_two_flaws_of_a_round_on_one_issue_make_one_comment(bundle, github):
-    number = github.add("no hook for X")
-
-    summary = finish_with_flaws(bundle, [flaw(known=number), flaw("F2", known=number, title="same thing")])
-
-    assert len(github.workarounds(number)) == 1
-    assert [f["workarounds"] for f in summary["flaws"]] == [1, 1]
-
-
-def test_a_review_of_another_repo_posts_nothing_until_answered(bundle, github):
-    number = github.add("no hook for X")
-    write_json(bundle / "target.json", {**read_json(bundle / "target.json"), "kind": "integration", "repo": "/opt/ace/integrations/acme"})
-
-    summary = finish_with_flaws(bundle, [flaw(known=number)])
-
-    assert [(f["issue"], f["posted"]) for f in summary["flaws"]] == [(number, False)]
-    assert github.writes() == []
-    findings.answer_flaw("F1", "defer", str(bundle))
-    assert '"repo": "acme"' in github.workarounds(number)[0]
-
-
-@pytest.mark.parametrize("delta, left", [(False, 0), (True, 1)])
-def test_a_full_round_deletes_the_workarounds_the_branch_no_longer_has(bundle, tmp_path, github, delta, left):
-    number = github.add("no hook for X")
-    finish_with_flaws(bundle, [flaw(known=number)])
-
-    finish_with_flaws(later_round(bundle, tmp_path, delta=delta), [])
-
-    # a full round looked at all of the change; a delta round only at what changed since
-    assert len(github.workarounds(number)) == left
-
-
-def test_rerunning_finish_replaces_what_the_round_posted(bundle, github):
-    kept, dropped = github.add("kept"), github.add("dropped")
-    write_json(bundle / "target.json", {**read_json(bundle / "target.json"), "delta": True})
-    finish_with_flaws(bundle, [flaw(known=kept), flaw("F2", known=dropped)])
-
-    finish_with_flaws(bundle, [flaw(known=kept)])
-
-    assert (len(github.workarounds(kept)), len(github.workarounds(dropped))) == (1, 0)
-
-
-def test_finish_without_github_reports_why_and_posts_nothing(bundle, github):
-    number = github.add("no hook for X")
+    findings.known(str(bundle))
     github.down = True
 
-    summary = finish_with_flaws(bundle, [flaw(known=number), flaw("F2")])
+    summary = finish_with_flaws(bundle, [flaw(known=f"#{number}"), flaw("F2"), flaw("F3", known=999)])
 
-    assert summary["flaws_error"] == "gh issue list failed: could not connect"
-    assert [(f["issue"], f["status"], f["posted"]) for f in summary["flaws"]] == [(number, "unknown", False), (None, "unknown", False)]
+    assert summary["verdict_floor"] == "ship"
+    # a known id with no issue behind it is a new flaw
+    assert summary["flaws"] == [
+        {"id": "F1", "issue": number, "url": f"https://github.com/o/r/issues/{number}", "title": "no hook for X", "new": False,
+         "status": "open", "fix_size": "large", "recommendation": "keep going", "why": "contained"},
+        {"id": "F2", "issue": None, "url": None, "title": "the tree has no hook for X", "new": True, "status": "undecided",
+         "fix_size": "large", "recommendation": "keep going", "why": "contained"},
+        {"id": "F3", "issue": None, "url": None, "title": "the tree has no hook for X", "new": True, "status": "undecided",
+         "fix_size": "large", "recommendation": "keep going", "why": "contained"},
+    ]
 
 
-def test_finish_with_no_flaws_and_nothing_posted_before_leaves_github_alone(bundle, github):
-    github.down = True
-
-    assert finish_with_flaws(bundle, [])["flaws_error"] is None
-
-
-def test_answering_a_new_flaw_files_its_issue_once(bundle, github):
+def test_file_files_a_new_flaw_once(bundle, github):
+    findings.known(str(bundle))
     finish_with_flaws(bundle, [flaw()])
 
-    assert findings.answer_flaw("F1", "defer", str(bundle))["status"] == "deferred"
+    result = findings.file_flaw(str(bundle), "F1")
+
     [number] = github.issues
+    assert result == {"id": "F1", "issue": number, "url": f"https://github.com/o/r/issues/{number}", "filed": True}
     issue = github.issues[number]
-    assert (issue["title"], issue["labels"], issue["state"], issue["assignees"]) == ("the tree has no hook for X", ["design flaw"], "OPEN", [])
-    assert issue["body"].startswith("saq/analysis/root.py has no event for X\n\n**Real fix** (large): add the hook")
-    assert len(github.workarounds(number)) == 1
-    assert read_json(bundle / "filed-flaws.json") == {"F1": number}
+    assert (issue["title"], issue["labels"], issue["state"]) == ("the tree has no hook for X", ["design flaw"], "OPEN")
+    # the repo by name: the checkout's path is different on every machine
+    assert issue["body"] == ("saq/analysis/root.py has no event for X\n\n**Real fix** (large): add the hook\n\n**Area:** analysis tree\n\n"
+                             "**Worked around** in `ace` branch `mw/topic`, `saq/y.py:7`:\n\npolls the root for X\n\n"
+                             "<sub>Filed by /ace-review.</sub>\n")
 
-    # changing the answer, and rerunning finish, work on the same issue, though GitHub doesn't list it yet
-    assert number in github.unlisted
-    assert findings.answer_flaw("F1", "address", str(bundle), note="small after all") == {
-        "id": "F1", "issue": number, "url": issue["url"], "status": "addressing"}
-    summary = finish_with_flaws(bundle, [flaw()])
+    # answering again, and rerunning finish, find the same issue
+    assert findings.file_flaw(str(bundle), "F1") == {**result, "filed": False}
     assert list(github.issues) == [number]
-    assert (issue["assignees"], len(github.workarounds(number))) == (["me"], 1)
-    assert issue["comments"][-1]["body"] == "addressing: small after all\n"
-    assert [(f["issue"], f["new"], f["status"], f["posted"]) for f in summary["flaws"]] == [(number, False, "addressing", True)]
+    summary = finish_with_flaws(bundle, [flaw()])
+    assert [(f["issue"], f["new"], f["status"]) for f in summary["flaws"]] == [(number, False, "open")]
 
 
-@pytest.mark.parametrize("answer, closed", [("wrong", False), ("fixed", False), ("defer", True), ("address", True)])
-def test_an_answer_sets_the_issue_state_that_is_the_flaws_status(github, answer, closed):
-    number = github.add("no hook", state="CLOSED" if closed else "OPEN", reason="NOT_PLANNED" if closed else "",
-                        assignees=[] if answer == "address" else ["me"])
+def test_file_never_files_a_flaw_that_has_an_issue(bundle, github):
+    number = github.add("no hook for X")
+    findings.known(str(bundle))
+    finish_with_flaws(bundle, [flaw(known=number)])
 
-    findings.answer_flaw(str(number), answer)
-
-    assert findings.flaw_status(github.issues[number]) == findings.FLAW_ANSWERS[answer]
-
-
-def test_answer_flaw_refuses_what_it_cannot_record(bundle, github):
-    finish_with_flaws(bundle, [flaw()])
-    bug = github.add("a bug", labels=("bug",))
-
-    with pytest.raises(SystemExit, match="one of defer, address, wrong, fixed"):
-        findings.answer_flaw("F1", "later", str(bundle))
-    with pytest.raises(SystemExit, match="no design flaw F9"):
-        findings.answer_flaw("F9", "defer", str(bundle))
-    with pytest.raises(SystemExit, match="needs --bundle"):
-        findings.answer_flaw("F1", "defer")
-    with pytest.raises(SystemExit, match=f"issue #{bug} is not labeled 'design flaw'"):
-        findings.answer_flaw(f"#{bug}", "wrong")
-    assert github.writes() == []
+    assert findings.file_flaw(str(bundle), "F1") == {"id": "F1", "issue": number, "url": f"https://github.com/o/r/issues/{number}", "filed": False}
+    assert list(github.issues) == [number]
 
 
-def test_the_flaw_list_puts_open_flaws_with_the_most_workarounds_first(github, monkeypatch, capsys):
-    numbers = {}
-    for name, state, reason, assignees, workarounds in (("a", "OPEN", "", [], 1), ("b", "OPEN", "", [], 3), ("d", "OPEN", "", ["me"], 1),
-                                                        ("e", "CLOSED", "NOT_PLANNED", [], 1)):
-        numbers[name] = github.add(name, state=state, reason=reason, assignees=assignees)
-        for n in range(workarounds):
-            github.comment(numbers[name], f'<!-- ace-review workaround {{"repo": "ace", "branch": "b{n}", "round": 1}} -->\nx')
-
-    assert [e["id"] for e in findings.list_flaws()] == [numbers[n] for n in "dba"]
-    assert findings.list_flaws()[1]["workarounds"][0] == {"repo": "ace", "branch": "b0", "round": 1,
-                                                          "url": github.issues[numbers["b"]]["comments"][0]["url"]}
-    monkeypatch.setattr(sys, "argv", ["findings.py", "flaws", "--all"])
-    findings.main()
-    assert [e["id"] for e in json.loads(capsys.readouterr().out)] == [numbers[n] for n in "dbae"]
-
-
-def test_the_command_line_says_why_github_failed(github, monkeypatch):
+def test_file_refuses_a_flaw_the_reviewers_could_not_match(bundle, github):
     github.down = True
-    monkeypatch.setattr(sys, "argv", ["findings.py", "flaws"])
+    findings.known(str(bundle))
+    github.down = False
+    finish_with_flaws(bundle, [flaw()])
+
+    with pytest.raises(SystemExit, match="had no known flaws to match F1 to .*could not connect.*run known again"):
+        findings.file_flaw(str(bundle), "F1")
+    with pytest.raises(SystemExit, match="no design flaw F9"):
+        findings.file_flaw(str(bundle), "F9")
+    assert github.issues == {}
+
+
+def test_the_command_line_snapshots_and_files_flaws(bundle, github, monkeypatch, capsys):
+    def run(*args):
+        monkeypatch.setattr(sys, "argv", ["findings.py", *args])
+        findings.main()
+        return json.loads(capsys.readouterr().out)
+
+    assert run("known", str(bundle)) == {"known": 0}
+    finish_with_flaws(bundle, [flaw()])
+    assert run("file", str(bundle), "F1")["filed"] is True
+
+
+def test_the_command_line_says_why_github_failed(bundle, github, monkeypatch):
+    findings.known(str(bundle))
+    finish_with_flaws(bundle, [flaw()])
+    github.down = True
+    monkeypatch.setattr(sys, "argv", ["findings.py", "file", str(bundle), "F1"])
 
     with pytest.raises(SystemExit, match="could not connect"):
         findings.main()
+    assert not (bundle / "filed-flaws.json").exists()
 
 
 @pytest.mark.parametrize("outcome, message", [

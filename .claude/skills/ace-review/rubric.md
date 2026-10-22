@@ -64,10 +64,10 @@ For each flaw, size the real fix:
 - **large**: cross-cutting, many callers, or migrating existing data.
 
 Then recommend **stop** or **keep going**:
-- Recommend stop when the fix is small, when the workaround would spread (other code will copy it, it is a pattern other authors will follow), when it writes data in a shape that is costly to migrate later, or when the flaw's issue already has two or more workarounds.
+- Recommend stop when the fix is small, when the workaround would spread (other code will copy it, it is a pattern other authors will follow), or when it writes data in a shape that is costly to migrate later.
 - Recommend keep going when the fix is medium or large and the workaround is contained and easy to remove once the flaw is fixed.
 
-Read the known flaws before reporting one: `$B/known-flaws.json`, one entry per issue, with its `id` (the issue number), `status`, number of `workarounds` and `body`. A flaw already there is reported again with its id in `known`, so its issue counts one more workaround. Skip a flaw whose status is `wrong`.
+Read the known flaws before reporting one: `$B/known-flaws.json`, one entry per issue, with its `id` (the issue number), `status` (`open` or `wrong`) and `body`. A flaw already there is reported again with its id in `known`. Skip a flaw whose status is `wrong`.
 
 Report only flaws that this change actually works around, with the code that does it. A flaw you happen to notice in code nearby, which the change doesn't depend on, isn't one.
 
@@ -142,9 +142,9 @@ Write no file when there are none.
 
 ## Design flaws: your decision
 <one entry per flaw in summary.json whose status is undecided:>
-- **<id>: <title>** (<fix_size> fix, <n> workaround(s) so far, <"new" | the issue link>): <the flaw, one or two lines>. *Here:* <what the change does around it, `file:line`>. *Real fix:* <fix>. *Recommend:* **<stop | keep going>**, <why>.
-<then one line per flaw already decided: "Also works around #<issue> (<status>), now <n> workarounds." When a deferred flaw now meets the stop rule in rubric.md, say so. When a known flaw's workaround wasn't posted (a review of another repo, or flaws_error), say that answering it posts it.>
-<end with: "Answer each with defer (keep going, fix later) or address (stop and fix it first)." When a flaw is new, add that the answer files it as a public issue in ACE-Collective/ace3. When summary.json has flaws_error, say that nothing reached GitHub, and why.>
+- **<id>: <title>** (<fix_size> fix, <"new" | the issue link>): <the flaw, one or two lines>. *Here:* <what the change does around it, `file:line`>. *Real fix:* <fix>. *Recommend:* **<stop | keep going>**, <why>.
+<then one line per flaw that already has an issue: "Also works around #<issue>: <title>. *Recommend:* **<stop | keep going>**, <why>.">
+<end with: "Answer each new one with defer (keep going, fix later), address (stop and fix it first) or wrong; defer and address file it as a public issue in ACE-Collective/ace3." When `known` reported an error, say that the reviewers had no known flaws to match against, so a flaw listed as new may already have an issue.>
 
 **Verdict: <SHIP | FIX-FIRST | REWORK>**: <2-4 sentences: the one or two things that decide it>
 

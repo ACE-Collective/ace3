@@ -10,7 +10,7 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
 
-Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each with one comment per branch that works around it. `/ace-review` records them. Before you write a workaround, check whether it is for one of them, and if so, follow the workarounds its issue lists rather than inventing another.
+Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
 ## Environment
 

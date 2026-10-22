@@ -9,9 +9,7 @@ counted here, not judged.
     findings.py answer BUNDLE ID ANSWER [--note TEXT]
                                            record the user's answer to a finding
     findings.py known BUNDLE               snapshot the design flaw issues into known-flaws.json
-    findings.py flaw ID ANSWER [--bundle BUNDLE] [--note TEXT]
-                                           record the user's decision on a design flaw
-    findings.py flaws [--all]              the design flaws, open ones first
+    findings.py file BUNDLE FID            file a new design flaw as a GitHub issue
     findings.py stats [STATE_DIR] [--since YYYY-MM-DD]
                                            what became of the findings of every finished round
 
@@ -33,25 +31,17 @@ R<round>-<n> into verified.json, and writes summary.json, whose verdict_floor co
 earlier findings still open like new ones. summary.json marks the round finished.
 The design flaws are GitHub issues labeled "design flaw" in core's repo, whatever repo is
 reviewed. known writes the ones a reviewer may match a flaw to (open, or closed as not
-planned, which is a flaw found wrong) to known-flaws.json, numbered by issue. Each
-workaround is one comment on its issue, one per repo and branch, carrying a marker so
-later rounds edit or delete it. The issue's state is the flaw's status: open is
-deferred, open and assigned is addressing, closed as not planned is wrong, and closed as
-completed is fixed.
+planned, which is a flaw found wrong) to known-flaws.json, numbered by issue. finish
+lists each flaw of the round in summary.json with its issue, or none for a new flaw, and
+never writes to GitHub. A flaw never changes the verdict floor.
 
-finish posts the workaround of each flaw that has an issue ("known": <number>), but only
-in a review of core, whose branch goes to that public repo anyway. A full round of core
-also deletes the comments of the branch's earlier rounds on flaws it no longer finds, a
-delta round only those of the same round (a rerun). A flaw with no issue stays
-undecided in the bundle until the user answers it, and so does the workaround of a flaw
-found in another repo: the answer files the issue and posts the comment. If GitHub
-can't be reached, summary.json says why in flaws_error and nothing is posted. A flaw
-never changes the verdict floor.
+file files a new flaw (its F<n> in flaws.json) as an issue, once the user has answered
+it: the only write to GitHub the review makes. The issue's body is the flaw, the real
+fix and the workaround that ran into it, and the review never changes the issue again;
+its state is the user's to keep.
 
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
-in target.json, it is accepted or rejected. A flaw's answer is defer (keep going, fix it
-later), address (stop and fix it first), wrong, or fixed; its ID is an issue number, or
-the F<n> of a flaw in --bundle's flaws.json.
+in target.json, it is accepted or rejected.
 
 stats walks STATE_DIR (default $SAQ_HOME/local/ace-review) and gives each new finding one
 outcome, the first that applies: the user's answer; "fixed (rechecked)" when a later
@@ -82,11 +72,7 @@ ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
 FLAW_SIZES = ("small", "medium", "large")
 FLAW_RECOMMENDATIONS = ("stop", "keep going")
-FLAW_ANSWERS = {"defer": "deferred", "address": "addressing", "wrong": "wrong", "fixed": "fixed"}
-OPEN_FLAWS = ("addressing", "deferred")
 FLAW_LABEL = "design flaw"
-FLAW_FIELDS = "number,title,body,state,stateReason,assignees,comments,url"
-WORKAROUND = re.compile(r"^<!-- ace-review workaround (\{.*?\}) -->")
 GH_TIMEOUT = 60
 BLOCKER_VOTES = 3
 SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
@@ -252,48 +238,30 @@ def gh(*args: str, stdin: str | None = None) -> str:
     try:
         result = subprocess.run(["gh", *args], cwd=SAQ_HOME, input=stdin, capture_output=True, text=True, timeout=GH_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired) as e:
-        raise RuntimeError(f"gh {' '.join(args[:2])}: {e}") from e
+        raise RuntimeError(f"gh {' '.join(args)}: {e}") from e
     if result.returncode:
-        raise RuntimeError(f"gh {' '.join(args[:2])} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
-
-
-def flaw_status(issue: dict) -> str:
-    if issue["state"] == "OPEN":
-        return "addressing" if issue["assignees"] else "deferred"
-    return "wrong" if issue.get("stateReason") == "NOT_PLANNED" else "fixed"
-
-
-def flaw_entry(issue: dict) -> dict:
-    workarounds = []
-    for comment in issue["comments"]:
-        if match := WORKAROUND.match(comment["body"]):
-            # the url ends in #issuecomment-<id>, the id the REST API edits it by
-            workarounds.append({**json.loads(match.group(1)), "comment": int(comment["url"].rsplit("-", 1)[1]), "url": comment["url"]})
-    return {"title": issue["title"], "body": issue["body"], "status": flaw_status(issue), "url": issue["url"], "workarounds": workarounds}
-
-
-def fetch_flaws() -> dict[int, dict]:
-    issues = json.loads(gh("issue", "list", "--label", FLAW_LABEL, "--state", "all", "--limit", "1000", "--json", FLAW_FIELDS))
-    return {issue["number"]: flaw_entry(issue) for issue in issues}
-
-
-def fetch_filed(issues: dict[int, dict], filed: dict[str, int]) -> None:
-    """Add the issues the answers filed to issues: GitHub's list shows a new issue only some time later."""
-    for number in set(filed.values()) - set(issues):
-        issues[number] = flaw_entry(json.loads(gh("issue", "view", str(number), "--json", FLAW_FIELDS)))
 
 
 def known(bundle: str) -> dict:
     """Write the flaws a reviewer may match one to; a review goes on without them if GitHub is down."""
-    path = os.path.join(bundle, "known-flaws.json")
+    path, error_path = os.path.join(bundle, "known-flaws.json"), os.path.join(bundle, "known-flaws-error.txt")
     try:
-        flaws = fetch_flaws()
+        issues = json.loads(gh("issue", "list", "--label", FLAW_LABEL, "--state", "all", "--limit", "1000",
+                               "--json", "number,title,body,state,stateReason,url"))
     except RuntimeError as e:
         dump(path, [])
+        # kept, so that file refuses a flaw the reviewers could not match to its issue
+        with open(error_path, "w") as fp:
+            fp.write(f"{e}\n")
         return {"known": 0, "error": str(e)}
-    entries = [{"id": number, "title": f["title"], "status": f["status"], "workarounds": len(f["workarounds"]),
-                "url": f["url"], "body": f["body"]} for number, f in sorted(flaws.items()) if f["status"] != "fixed"]
+    if os.path.exists(error_path):
+        os.remove(error_path)
+    # a flaw closed as not planned was found wrong, and the reviewers skip it; a fixed one is gone
+    entries = [{"id": i["number"], "title": i["title"], "status": "open" if i["state"] == "OPEN" else "wrong",
+                "url": i["url"], "body": i["body"]}
+               for i in sorted(issues, key=lambda i: i["number"]) if i["state"] == "OPEN" or i.get("stateReason") == "NOT_PLANNED"]
     dump(path, entries)
     return {"known": len(entries)}
 
@@ -303,94 +271,48 @@ def issue_number(value) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def branch_of(target: dict) -> tuple[str, str]:
+def flaw_issues(bundle: str, flaws: list[dict]) -> list[dict]:
+    """How each of the round's flaws stands: the issue it was matched to or filed as, or none if new."""
+    issues = {f["id"]: f for f in load(os.path.join(bundle, "known-flaws.json"), [])}
+    filed = load(os.path.join(bundle, "filed-flaws.json"), {})
+    recorded = []
+    for flaw in flaws:
+        # a known id with no issue behind it is a new flaw
+        issue = filed.get(flaw["fid"]) or issues.get(issue_number(flaw.get("known")), {})
+        recorded.append({"id": flaw["fid"], "issue": issue.get("id"), "url": issue.get("url"), "title": issue.get("title", flaw["title"]),
+                         "new": not issue, "status": issue.get("status", "undecided"), "fix_size": flaw["fix_size"],
+                         "recommendation": flaw["recommendation"], "why": flaw.get("why", "")})
+    return recorded
+
+
+def issue_body(target: dict, flaw: dict) -> str:
     # the repo by name: the checkout's path is different on every machine
-    return os.path.basename(target.get("repo", "")), target.get("branch", "")
-
-
-def issue_body(flaw: dict) -> str:
+    repo, branch = os.path.basename(target.get("repo", "")), target.get("branch", "")
+    where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
     return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
             f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
-            "<sub>Recorded by /ace-review. Each of its workaround comments is one branch that works around this flaw, "
-            "so their count is the cost of leaving it unfixed.</sub>\n")
+            f"**Worked around** in `{repo}` branch `{branch}`, `{where}`:\n\n{flaw['workaround']}\n\n"
+            "<sub>Filed by /ace-review.</sub>\n")
 
 
-def workaround_comment(target: dict, flaw: dict) -> str:
-    repo, branch = branch_of(target)
-    marker = json.dumps({"repo": repo, "branch": branch, "round": target.get("round", 1)})
-    where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
-    return (f"<!-- ace-review workaround {marker} -->\n"
-            f"Worked around in `{repo}` branch `{branch}` (review round {target.get('round', 1)}, "
-            f"{datetime.date.today().isoformat()}), `{where}`:\n\n{flaw['workaround']}\n")
-
-
-def delete_comment(comment: int) -> None:
-    gh("api", "-X", "DELETE", f"repos/{{owner}}/{{repo}}/issues/comments/{comment}")
-
-
-def post_workaround(number: int, entry: dict, target: dict, flaw: dict) -> None:
-    """One comment per branch: a later round edits the branch's comment rather than adding one."""
-    mine = [w for w in entry["workarounds"] if (w["repo"], w["branch"]) == branch_of(target)]
-    body = workaround_comment(target, flaw)
-    if mine:
-        gh("api", "-X", "PATCH", f"repos/{{owner}}/{{repo}}/issues/comments/{mine[0]['comment']}", "-f", f"body={body}")
-        for extra in mine[1:]:
-            delete_comment(extra["comment"])
-    else:
-        gh("issue", "comment", str(number), "--body-file", "-", stdin=body)
-
-
-def posted_before(bundle: str) -> bool:
-    """Whether an earlier round of this branch posted a workaround that this one may have to delete."""
-    rounds = glob.glob(os.path.join(os.path.dirname(os.path.abspath(bundle)), "round-*", "summary.json"))
-    return any(f.get("posted") for path in rounds for f in load(path, {}).get("flaws", []))
-
-
-def record_flaws(bundle: str, target: dict, flaws: list[dict]) -> tuple[list[dict], str | None]:
-    """Post this round's workarounds of the flaws that have an issue, and return how each flaw stands.
-
-    A failure to read the issues leaves them unposted (the answer posts them); a failure
-    after that stops finish, which a rerun completes, since it edits its own comments."""
-    filed = load(os.path.join(bundle, "filed-flaws.json"), {})
-    post = target.get("kind", "core") == "core"
-    error = None
-    issues: dict[int, dict] = {}
-    if flaws or (post and posted_before(bundle)):
-        try:
-            issues = fetch_flaws()
-            fetch_filed(issues, filed)
-        except RuntimeError as e:
-            error, post = str(e), False
-    numbers = {flaw["fid"]: filed.get(flaw["fid"]) or issue_number(flaw.get("known")) for flaw in flaws}
-    if error is None:
-        # a known id with no issue behind it is a new flaw
-        numbers = {fid: n if n in issues else None for fid, n in numbers.items()}
-
-    if post:
-        # a full round looked at the whole change, so the branch no longer works around a flaw
-        # it didn't find; a delta round never saw the code its earlier rounds found theirs in
-        found = set(numbers.values())
-        for number, entry in issues.items():
-            for w in list(entry["workarounds"]):
-                if (w["repo"], w["branch"]) == branch_of(target) and number not in found and (
-                        w["round"] == target.get("round", 1) or not target.get("delta")):
-                    delete_comment(w["comment"])
-                    entry["workarounds"].remove(w)
-
-    recorded, posted = [], set()
-    for flaw in flaws:
-        number = numbers[flaw["fid"]]
-        entry = issues.get(number, {"status": "unknown" if error else "undecided", "workarounds": []})
-        # two of the round's flaws can be one known flaw; the branch gets one comment on it
-        if number and post and number not in posted:
-            post_workaround(number, entry, target, flaw)
-            posted.add(number)
-        others = [w for w in entry["workarounds"] if (w["repo"], w["branch"]) != branch_of(target)]
-        recorded.append({"id": flaw["fid"], "issue": number, "url": entry.get("url"), "title": entry.get("title", flaw["title"]),
-                         "new": number is None, "status": entry["status"], "fix_size": flaw["fix_size"],
-                         "recommendation": flaw["recommendation"], "why": flaw.get("why", ""),
-                         "workarounds": len(others) + 1, "posted": number in posted})
-    return recorded, error
+def file_flaw(bundle: str, fid: str) -> dict:
+    """File a new flaw as an issue. It is the review's only write to GitHub, and the issue is never changed after."""
+    flaw = {f["fid"]: f for f in load(os.path.join(bundle, "flaws.json"), [])}.get(fid)
+    if flaw is None:
+        sys.exit(f"no design flaw {fid} in {bundle}")
+    if os.path.exists(error_path := os.path.join(bundle, "known-flaws-error.txt")):
+        with open(error_path) as fp:
+            sys.exit(f"the reviewers had no known flaws to match {fid} to ({fp.read().strip()}); "
+                     "run known again and check it is not one of them before filing it")
+    [standing] = flaw_issues(bundle, [flaw])
+    if not standing["new"]:
+        return {"id": fid, "issue": standing["issue"], "url": standing["url"], "filed": False}
+    url = gh("issue", "create", "--label", FLAW_LABEL, "--title", flaw["title"], "--body-file", "-",
+             stdin=issue_body(load(os.path.join(bundle, "target.json"), {}), flaw)).strip()
+    issue = {"id": issue_number(url.rsplit("/", 1)[1]), "url": url, "title": flaw["title"], "status": "open"}
+    path = os.path.join(bundle, "filed-flaws.json")
+    dump(path, {**load(path, {}), fid: issue})
+    return {"id": fid, "issue": issue["id"], "url": url, "filed": True}
 
 
 def finish(bundle: str) -> dict:
@@ -413,7 +335,6 @@ def finish(bundle: str) -> dict:
     blocking = [f for f in verified if f["origin"] == "new"] + still_open
     severities = {f["severity"] for f in blocking}
     floor = "rework" if "blocker" in severities else "fix-first" if "fix-first" in severities else "ship"
-    flaws, flaws_error = record_flaws(bundle, target, load(os.path.join(bundle, "flaws.json"), []))
     summary = {
         "round": target.get("round", 1),
         "new": {s: sum(1 for f in verified if f["origin"] == "new" and f["severity"] == s) for s in SEVERITIES},
@@ -423,8 +344,7 @@ def finish(bundle: str) -> dict:
         "not_repeated": repeats,
         "rejected": len(load(os.path.join(bundle, "rejected.json"), [])),
         "verdict_floor": floor,
-        "flaws": flaws,
-        "flaws_error": flaws_error,
+        "flaws": flaw_issues(bundle, load(os.path.join(bundle, "flaws.json"), [])),
         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     dump(os.path.join(bundle, "verified.json"), verified)
@@ -452,57 +372,6 @@ def answer(bundle: str, fid: str, value: str, note: str | None = None) -> dict:
     path = os.path.join(bundle, "answers.json")
     dump(path, [a for a in load(path, []) if a["id"] != fid] + [entry])
     return entry
-
-
-def answer_flaw(fid: str, value: str, bundle: str | None = None, note: str | None = None) -> dict:
-    """Apply the user's decision to a flaw's issue, filing the issue first if the flaw has none."""
-    if value not in FLAW_ANSWERS:
-        sys.exit(f"the answer for a design flaw is one of {', '.join(FLAW_ANSWERS)}")
-    number = issue_number(fid)
-    if number is None:
-        if bundle is None:
-            sys.exit(f"{fid} is no issue number; a flaw of a review needs --bundle")
-        flaw = {f["fid"]: f for f in load(os.path.join(bundle, "flaws.json"), [])}.get(fid)
-        if flaw is None:
-            sys.exit(f"no design flaw {fid} in {bundle}")
-        target = load(os.path.join(bundle, "target.json"), {})
-        path = os.path.join(bundle, "filed-flaws.json")
-        filed = load(path, {})
-        issues = fetch_flaws()
-        fetch_filed(issues, filed)
-        number = filed.get(fid) or issue_number(flaw.get("known"))
-        if number not in issues:
-            url = gh("issue", "create", "--label", FLAW_LABEL, "--title", flaw["title"], "--body-file", "-", stdin=issue_body(flaw))
-            number = issue_number(url.strip().rsplit("/", 1)[1])
-            issues[number] = {"workarounds": []}
-        # recorded before anything else can fail, so answering again never files a second issue
-        dump(path, {**filed, fid: number})
-        post_workaround(number, issues[number], target, flaw)
-
-    issue = json.loads(gh("issue", "view", str(number), "--json", "state,assignees,labels,url"))
-    if FLAW_LABEL not in {label["name"] for label in issue["labels"]}:
-        sys.exit(f"issue #{number} is not labeled {FLAW_LABEL!r}")
-    if value in ("defer", "address"):
-        if issue["state"] == "CLOSED":
-            gh("issue", "reopen", str(number))
-        if value == "address" and not issue["assignees"]:
-            gh("issue", "edit", str(number), "--add-assignee", "@me")
-        for assignee in issue["assignees"] if value == "defer" else []:
-            gh("issue", "edit", str(number), "--remove-assignee", assignee["login"])
-    elif issue["state"] == "OPEN":
-        gh("issue", "close", str(number), "--reason", "not planned" if value == "wrong" else "completed")
-    if note:
-        gh("issue", "comment", str(number), "--body-file", "-", stdin=f"{FLAW_ANSWERS[value]}: {note}\n")
-    return {"id": fid, "issue": number, "url": issue["url"], "status": FLAW_ANSWERS[value]}
-
-
-def list_flaws(everything: bool = False) -> list[dict]:
-    """Open flaws, the ones with the most workarounds first: each workaround is more to undo later."""
-    order = {status: n for n, status in enumerate(OPEN_FLAWS)}
-    shown = [{"id": number, "title": f["title"], "status": f["status"], "url": f["url"],
-              "workarounds": [{k: w[k] for k in ("repo", "branch", "round", "url")} for w in f["workarounds"]]}
-             for number, f in fetch_flaws().items() if everything or f["status"] in order]
-    return sorted(shown, key=lambda e: (order.get(e["status"], len(order)), -len(e["workarounds"]), e["id"]))
 
 
 def tree_of(repo: str, *revs: str | None) -> str | None:
@@ -618,13 +487,9 @@ def main() -> None:
     sub.choices["answer"].add_argument("id")
     sub.choices["answer"].add_argument("answer")
     sub.choices["answer"].add_argument("--note")
-    command = sub.add_parser("flaw")
+    command = sub.add_parser("file")
+    command.add_argument("bundle")
     command.add_argument("id")
-    command.add_argument("answer", choices=sorted(FLAW_ANSWERS))
-    command.add_argument("--bundle")
-    command.add_argument("--note")
-    command = sub.add_parser("flaws")
-    command.add_argument("--all", action="store_true", help="include the flaws found wrong and the fixed ones")
     command = sub.add_parser("stats")
     command.add_argument("state", nargs="?", default=STATE_DIR)
     command.add_argument("--since", help="only rounds finished on or after this date, YYYY-MM-DD")
@@ -641,10 +506,8 @@ def main() -> None:
             result = stats(args.state, args.since)
         elif args.command == "known":
             result = known(args.bundle)
-        elif args.command == "flaw":
-            result = answer_flaw(args.id, args.answer, args.bundle, args.note)
-        elif args.command == "flaws":
-            result = list_flaws(args.all)
+        elif args.command == "file":
+            result = file_flaw(args.bundle, args.id)
         else:
             result = answer(args.bundle, args.id, args.answer, args.note)
     except RuntimeError as e:

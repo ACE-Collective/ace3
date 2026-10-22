@@ -87,7 +87,7 @@ Each finding is judged in a fresh context by a verifier that tries to disprove i
    If `batch`, `carry` or `flaws` is non-empty, one more:
    > You are the batch verifier for /ace-review. Read `$S/rubric.md` and `$S/dimensions/verify.md`, then follow its "Batch" section for the bundle in `$B`: candidates `<batch>`, earlier findings `<carry>`, design flaws `<flaws>`.
 3. Run `findings.py tally $B`. If it lists missing votes, relaunch those verifiers once, then tally with `--allow-missing`.
-4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. A flaw that already has an issue gets this branch's workaround as a comment on it, but only in a review of core; every other flaw waits for the user's answer (step 6). `summary.json` lists each flaw with its `issue` (null for a new one), and `flaws_error` says why, if GitHub couldn't be reached.
+4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. `summary.json` lists each flaw with the `issue` the verifier matched it to, or null for a new one. finish writes nothing to GitHub.
 
 ## 5. Report
 
@@ -101,17 +101,17 @@ Don't post anything anywhere. The user decides what goes on the PR.
 
 When the user answers a finding, record it, so the next round neither repeats nor rechecks it: `findings.py answer $B <id> fixed|wrong|intentional|"didn't matter" [--note TEXT]`. A decision on the rule changes is `findings.py answer $B rules accepted|rejected`.
 
-Design flaws are tracked as GitHub issues labeled `design flaw` in core's repo (ACE-Collective/ace3), whatever repo is reviewed. Each workaround is one comment on its issue, one per repo and branch, which later rounds of that branch edit or delete. The issue's state is the flaw's status: open is deferred, open and assigned is addressing, closed as not planned is wrong, and closed as completed is fixed.
+Design flaws are tracked as GitHub issues labeled `design flaw` in core's repo (ACE-Collective/ace3), whatever repo is reviewed. The review files a new flaw's issue and never changes an issue after that: no comments, no edits, no state changes. The issue's state is the user's to keep, and the review only reads it: an open issue is a known flaw, one closed as not planned is a flaw found wrong (reviewers skip it), and one closed as completed is fixed.
 
-A decision on a design flaw goes to its issue: `findings.py flaw <id> defer|address|wrong|fixed [--bundle $B] [--note TEXT]`, where `<id>` is the issue number, or a flaw's `F<n>` from `summary.json` with `--bundle`. A new flaw has no issue until the user answers it: the answer files the issue and posts the workaround, and answering it again changes the same issue.
-- `defer`: keep going with the change as it is. The issue stays open to fix later.
-- `address`: stop and fix the flaw first, which assigns the issue to the user. That fix is its own PR (one concern per PR), which closes the issue with `Fixes #<n>`; afterwards this branch drops its workaround.
-- `wrong` when it isn't a flaw. The issue is closed as not planned, and later reviews skip it.
-- `fixed` closes the issue as completed, for a fix that didn't close it itself.
+A new flaw is filed only when the user answers it:
+- `defer` (keep going, fix it later) or `address` (stop and fix it first): run `findings.py file $B F<n>`, which files the issue, with the flaw, the real fix and this branch's workaround in its body, and prints its link. Filing the same flaw again prints the same issue. When the answer is address, the fix is its own PR (one concern per PR), which closes the issue with `Fixes #<n>`; afterwards this branch drops its workaround.
+- `wrong` when it isn't a flaw: nothing is filed.
 
-The repo is public, so the review writes to GitHub only what the user has chosen to track there or what is going there anyway: the review files no issue itself, and posts comments by itself only in a review of core. Before you answer a flaw found in an integration or signatures review, show the user the title, the flaw and the workaround it will publish, and file it only once they agree that it reveals nothing private.
+A known flaw already has its issue, so there is nothing to file; the stop-or-keep-going decision is the user's alone.
 
-`findings.py flaws [--all]` lists the flaws: open ones first, the ones with the most workarounds first, each with the branches and lines that work around it. Offer it when the user asks what to fix next.
+The repo is public, so the review writes to GitHub only what the user has chosen to track there. Before you file a flaw found in an integration or signatures review, show the user the title and the body it will publish, and file it only once they agree that it reveals nothing private. `file` refuses while `known-flaws-error.txt` is in the bundle (GitHub was down when `known` ran, so the reviewers couldn't match the flaw to its issue): run `findings.py known $B` again and check the flaw against `known-flaws.json` first.
+
+`gh issue list --label "design flaw"` lists the flaws. Offer it when the user asks what to fix next.
 
 When the user asks how the review is doing, for instance before and after an edit to this skill, run `findings.py stats [--since YYYY-MM-DD]`. Present `lines changed` and `unchanged` as hints: they are inferred from whether the code moved, not answered.
 
