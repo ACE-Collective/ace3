@@ -779,12 +779,43 @@ class TestSuppressedMatches:
         other_hunt = "22222222-bbbb-4bbb-8bbb-222222222222"
         assert len(record_suppressed_matches(other_hunt, [_match(started + timedelta(minutes=20))])) == 1
 
+    def test_the_run_that_claims_it_by_context(self, started):
+        """Runs one after the other on a host: the earlier run's attribution window still covers the
+        later run's test, but its claim on the host has ended, so the match is the later run's."""
+        first = started_run(GUID, now=started)
+        # after the first run's observation window (the floor, an hour), which ends its claim
+        second = started_run(GUID, now=started + timedelta(minutes=90))
+        written = record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=100))])
+        assert [run.id for run, _ in written] == [second.id]
+        assert [run_id for run_id, _, _ in _suppressed()] == [second.id]
+        assert _generation(first.id) is None
+
     @pytest.mark.usefixtures("overlapping_runs")
-    def test_every_run_that_could_claim_it(self, started):
+    def test_every_run_whose_claims_overlap(self, started):
         first = started_run(GUID, now=started)
         second = started_run(GUID, now=started + timedelta(minutes=5))
         record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))])
         assert [run_id for run_id, _, _ in _suppressed()] == [first.id, second.id]
+
+    def test_a_row_another_execution_recorded_meanwhile(self, started, monkeypatch, caplog):
+        """Another node's execution of the hunt records the run between the read and the write: the
+        insert keeps its row, and the run is neither logged nor marked stale again."""
+        run = started_run(GUID, now=started)
+        write = attribution._write_suppressed_matches
+
+        def racing(session, hunt_uuid, pending):
+            with private_transaction() as other:
+                other.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid, group_value="bob",
+                                             event_time=started + timedelta(minutes=5)))
+            return write(session, hunt_uuid, pending)
+
+        monkeypatch.setattr(attribution, "_write_suppressed_matches", racing)
+        with caplog.at_level("INFO"):
+            assert record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))]) == []
+
+        assert _suppressed() == [(run.id, "bob", started + timedelta(minutes=5))]
+        assert _generation(run.id) is None
+        assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
 
 
 @pytest.mark.unit

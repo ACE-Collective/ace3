@@ -722,8 +722,10 @@ below), each signature is:
     drops a match for its suppression and the match's event time falls in a run's attribution
     window, on one of the run's test hosts (its `hostname`, `fqdn` or test-host `ipv4` observables,
     as attribution reads them), the hunter records it in `svs_suppressed_matches`: one row per run
-    and hunt, for the first such match, and the run's result goes stale. Every run that could claim
-    the match by context gets it. The hunt is `possibly_suppressed` in that run's result exactly
+    and hunt, for the first such match, and the run's result goes stale. The match goes to the run
+    context attribution would give it to, so a run's test never counts against the run before it
+    on the host, or to each of them when their claims overlap (runs registered before claims were
+    enforced). The hunt is `possibly_suppressed` in that run's result exactly
     when it has such a row, so that is not a guess, and no alert is named: the hunt's latest alert
     may have been another group's. Nothing is recorded while no run is open, as for alerts, and a
     failure to record is logged at ERROR and keeps the suppression.

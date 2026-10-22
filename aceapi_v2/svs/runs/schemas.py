@@ -258,9 +258,11 @@ class RunResult(BaseModel):
     context_only: bool = Field(description="every attribution of it is by context alone")
     content_hash: Optional[str] = Field(default=None, description="the rule's own content hash when the result was computed")
     suppressing_alert_uuid: Optional[str] = Field(
-        default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period")
+        default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period; "
+                                  "null for a hunt with group_by, whose suppression the hunter recorded")
     suppression_imprecise: bool = Field(
-        description="the hunt groups or deduplicates its alerts, so that alert may not have suppressed the run's")
+        description="the hunt deduplicates its alerts (dedup_key without group_by), so that alert may not have "
+                    "suppressed the run's")
     reviewed_status: Optional[str] = Field(default=None, description="the status as signed off; null until the run is reviewed")
     reviewed_alert_count: Optional[int] = None
     reviewed_late_only: Optional[bool] = None

@@ -113,7 +113,8 @@ class HuntInfo:
     # its suppression period, None without one (or when it can't be read)
     suppression: Optional[timedelta]
     # it groups (group_by) or deduplicates (dedup_key) its alerts, so its suppression is per group
-    # or key and an earlier alert need not have suppressed the run's
+    # or key and an earlier alert need not have suppressed the run's. Only a hunt that deduplicates
+    # without group_by is judged by that alert (per_group)
     grouped: bool
     # it groups by group_by, so the hunter records the runs it suppressed a match for
     # (svs_suppressed_matches) and its suppression need not be inferred from its alerts

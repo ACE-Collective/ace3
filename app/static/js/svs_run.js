@@ -759,7 +759,7 @@
                     const why = el("div", "small");
                     append(why, muted("by the hunt's alert "), alert_link(row.suppressing_alert_uuid));
                     if (row.suppression_imprecise) {
-                        why.appendChild(muted(" (the hunt groups or deduplicates: maybe not)"));
+                        why.appendChild(muted(" (the hunt deduplicates its alerts: maybe not)"));
                     }
                     status.appendChild(why);
                 }

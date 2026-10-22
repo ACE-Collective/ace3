@@ -902,8 +902,9 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
                               now: Optional[datetime] = None) -> list[tuple[RunSnapshot, str]]:
     """Records the runs whose attribution window covers the event time of a match (root, group_value)
     that a hunt with group_by dropped for its suppression, on one of the run's test hosts, and marks
-    their results stale: the first match per run and hunt (svs_suppressed_matches). Every run that
-    could claim the match by context gets it, since each was on its host. Nothing is read while no
+    their results stale: the first match per run and hunt (svs_suppressed_matches). The match goes
+    to the run context attribution would give it to (context_claimant), or to each of the runs when
+    their claims on the host overlap, since none of them can be told apart. Nothing is read while no
     run is open, and nothing is written for a run and hunt already recorded. Returns the (run,
     group_value) recorded now."""
     if not matches or not attribution_open():
@@ -915,8 +916,10 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
     first: dict[int, tuple[RunSnapshot, str, datetime]] = {}
     for (root, group_value), event_time in sorted(zip(matches, times), key=lambda item: item[1]):
         hosts = alert_hosts(root)
-        for run in runs:
-            if run.id not in first and run.in_window(event_time) and hosts.involves_run(run):
+        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
+        claimant = context_claimant(candidates)
+        for run in [claimant] if claimant is not None else candidates:
+            if run.id not in first:
                 first[run.id] = (run, group_value, event_time)
     if not first:
         return []
