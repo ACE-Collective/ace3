@@ -497,13 +497,13 @@ def test_actions_set_display_value():
 
 
 @pytest.mark.unit
-@pytest.mark.xfail(strict=True, reason="FileObservable.display_value is a getter-only property override, "
-                                       "so set_display_value raises AttributeError on file observables")
 def test_actions_set_display_value_on_file_observable():
     observable = _file_observable("payload.bin")
-    applied = RuleActions(set_display_value="decoded payload").apply(observable)
+    applied = RuleActions(set_display_value="decoded payload", ignore=True).apply(observable)
     assert applied["set_display_value"] == "decoded payload"
-    assert "decoded payload" in observable.display_value
+    # the actions after set_display_value still apply
+    assert applied["ignore"] is True
+    assert observable.display_value == f"decoded payload ({observable.file_path})"
 
 
 @pytest.mark.unit
@@ -883,6 +883,38 @@ def test_file_observable_matching():
     result = adapter.analyze(observable, final_analysis=True)
     assert result == AnalysisExecutionResult.INCOMPLETE
     assert observable.has_directive("extract_iocs")
+
+
+@pytest.mark.unit
+def test_set_display_value_rule_on_file_observable():
+    """A set_display_value rule on a file observable is recorded, and the rules after it
+    still run on that observable."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    observable = _add_file_observable(root, "body.html", "<html>test</html>")
+    rules = [
+        {
+            "name": "label the file",
+            "phase": "pre",
+            "conditions": {"observable_types": ["file"]},
+            "actions": {"set_display_value": "decoded payload"},
+        },
+        {
+            "name": "tag the labelled file",
+            "phase": "pre",
+            "conditions": {"observable_types": ["file"], "display_value_pattern": "^decoded payload "},
+            "actions": {"add_tags": ["labelled"]},
+        },
+    ]
+    adapter = _create_analyzer_with_rules(root, rules)
+
+    assert adapter.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+    assert observable.display_value == "decoded payload (body.html)"
+    assert observable.has_tag("labelled")
+
+    analysis = observable.get_and_load_analysis(ObservableModifierAnalysis)
+    assert [m["name"] for m in analysis.details["matched_rules"]] == ["label the file", "tag the labelled file"]
 
 
 @pytest.mark.unit

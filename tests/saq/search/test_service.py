@@ -1,4 +1,5 @@
 import logging
+import shutil
 import uuid
 from unittest.mock import Mock, patch
 
@@ -32,6 +33,7 @@ from saq.search.tasks import (
     submit_index_task,
     submit_payload_task,
 )
+from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.unit
 
@@ -324,6 +326,23 @@ class TestLogging:
         records = self.records(caplog, "search_index_task_complete")
         assert len(records) == 1
         assert records[0].skipped == "alert not found"
+
+    @pytest.mark.integration
+    def test_alert_without_storage_completes_as_skipped(self, worker, caplog):
+        # retrying cannot bring the files back: the task completes instead of being requeued
+        # until it is dead-lettered
+        alert = insert_alert()
+        shutil.rmtree(alert.storage_dir)
+        task = SearchIndexTask(alert_uuid=alert.uuid)
+        with patch.object(SearchIndexWorker, "requeue_task") as mock_requeue:
+            self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", wraps=index.index_alert))
+
+        mock_requeue.assert_not_called()
+        records = self.records(caplog, "search_index_task_complete")
+        assert len(records) == 1
+        assert records[0].alert_uuid == alert.uuid
+        assert records[0].skipped == "alert storage missing"
+        assert worker.tasks_completed == 1
 
     def test_payload_task_logs_completion(self, worker, caplog):
         """payload and delete succeeded silently before this: an analyst dispositioning 50

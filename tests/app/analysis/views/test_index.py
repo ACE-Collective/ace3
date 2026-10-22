@@ -446,6 +446,26 @@ def test_index_template_context(web_client, root_analysis):
 
 
 @pytest.mark.integration
+def test_index_has_no_email_file(web_client, root_analysis, tmp_path):
+    """Emailing a file from an alert was removed: the page has no email form, and nothing serves
+    the route its form posted to."""
+    target_path = tmp_path / "test_file.txt"
+    target_path.write_text("test")
+    assert root_analysis.add_file_observable(str(target_path))
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    assert b'email_modal' not in result.data
+    assert b'btn-submit-email' not in result.data
+
+    # the route sat next to upload_file in the analysis blueprint
+    email_file_url = url_for("analysis.upload_file").replace("upload_file", "email_file")
+    assert web_client.post(email_file_url, data={"toemail": "test@example.com"}).status_code == 404
+
+
+@pytest.mark.integration
 def test_index_database_queries(web_client, root_analysis):
     """Test that index view handles database queries correctly."""
     root_analysis.save()
@@ -1176,11 +1196,10 @@ def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analys
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="get_analysis_module_config_by_module_path ignores the class name, so every "
-                   "analysis of a python module that hosts several modules gets the last-registered module's config")
 def test_alert_page_collapses_by_the_analysis_modules_own_config(web_client, root_analysis, monkeypatch):
     monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST), "default_collapsed", True)
 
     body = _render_collapsible_tree(web_client, root_analysis)
 
     assert body.count('<ul hidden="until-found">') == 1
+    assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)

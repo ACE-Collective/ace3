@@ -11,6 +11,7 @@ import importlib
 
 import pytest
 
+from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.loader import load_configuration
 from saq.configuration.lazy_registry import resolve_config_class
 from saq.configuration.schema import ACEConfig
@@ -134,3 +135,36 @@ def test_every_enabled_analysis_module_constructs(resolved_config):
             failures.append(f"{config.name} ({config.python_module}.{config.python_class}): {e}")
 
     assert not failures, "enabled analysis modules failed to construct:\n" + "\n".join(failures)
+
+
+@pytest.mark.unit
+def test_every_analysis_module_config_is_found_by_its_module_path(resolved_config):
+    """The module path of the analysis each module generates leads back to that module's config.
+
+    get_analysis_module_config_by_module_path() reads generated_analysis_type from an instance
+    that was never initialized, so a module whose property depends on __init__ would fail it
+    here, where the real, constructed module says what the answer should be.
+    """
+    failures = []
+
+    for config in resolved_config.analysis_modules:
+        module_class = getattr(importlib.import_module(config.python_module), config.python_class)
+        if not config.enabled or config.name in MODULES_REQUIRING_CREDENTIALS:
+            # these cannot be constructed here, but the lookup still probes them, so reading
+            # the property from an uninitialized instance must at least work
+            try:
+                module_class.__new__(module_class).generated_analysis_type
+            except Exception as e:
+                failures.append(f"{config.name}: generated_analysis_type needs __init__: {e!r}")
+            continue
+
+        module = module_class(config)
+        if module.generated_analysis_type is None:
+            continue
+
+        module_path = MODULE_PATH(module)
+        found = resolved_config.get_analysis_module_config_by_module_path(module_path)
+        if found is None or found.name != config.name:
+            failures.append(f"{module_path} resolved to {found.name if found else None}, not {config.name}")
+
+    assert not failures, "analysis modules not found by their module path:\n" + "\n".join(failures)

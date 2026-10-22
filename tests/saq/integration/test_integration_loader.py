@@ -195,14 +195,36 @@ class TestLoadIntegrations:
         assert result is False
         mock_write_error_report.assert_called_once()
 
+    def test_load_integrations_component_raises(self, integration_env, monkeypatch, caplog):
+        """A component that raises fails that integration, is logged with its traceback, and the rest still load."""
+        healthy = integration_env("healthy")
+        # without a bin/ the bin component never reads PATH, so only the other integration fails
+        os.rmdir(os.path.join(healthy, "bin"))
+        broken = integration_env("broken")
+        # the bin component raises KeyError reading PATH
+        monkeypatch.delenv("PATH")
+
+        result = load_integrations()
+        assert result is False
+
+        assert os.path.join(healthy, "src") in sys.path
+        assert get_global_runtime_settings().integration_config_paths == [
+            os.path.join(healthy, "etc", "saq.integration.yaml")]
+
+        failures = [r for r in caplog.records if r.message.startswith(f"failed to load integration from {broken}")]
+        assert len(failures) == 1
+        assert failures[0].levelname == "ERROR"
+        assert failures[0].exc_info[0] is KeyError
+
 
 @pytest.mark.unit
 class TestLoadIntegrationComponentSrc:
     
     def test_load_integration_component_src_no_src_dir(self, tmpdir):
         """Test loading src component when src directory doesn't exist."""
-        result = load_integration_component_src(str(tmpdir))
-        assert result is True
+        original_path = list(sys.path)
+        load_integration_component_src(str(tmpdir))
+        assert sys.path == original_path
 
     def test_load_integration_component_src_with_src_dir(self, tmpdir):
         """Test loading src component with existing src directory."""
@@ -213,8 +235,7 @@ class TestLoadIntegrationComponentSrc:
         if src_path in sys.path:
             sys.path.remove(src_path)
             
-        result = load_integration_component_src(str(tmpdir))
-        assert result is True
+        load_integration_component_src(str(tmpdir))
         assert src_path in sys.path
         
         # Clean up
@@ -230,8 +251,7 @@ class TestLoadIntegrationComponentSrc:
         sys.path.append(src_path)
         original_path_length = len(sys.path)
         
-        result = load_integration_component_src(str(tmpdir))
-        assert result is True
+        load_integration_component_src(str(tmpdir))
         # Should not be added again
         assert len(sys.path) == original_path_length
         
@@ -245,8 +265,9 @@ class TestLoadIntegrationComponentBin:
     
     def test_load_integration_component_bin_no_bin_dir(self, tmpdir):
         """Test loading bin component when bin directory doesn't exist."""
-        result = load_integration_component_bin(str(tmpdir))
-        assert result is True
+        original_path = os.environ["PATH"]
+        load_integration_component_bin(str(tmpdir))
+        assert os.environ["PATH"] == original_path
 
     def test_load_integration_component_bin_with_bin_dir(self, tmpdir):
         """Test loading bin component with existing bin directory."""
@@ -256,36 +277,34 @@ class TestLoadIntegrationComponentBin:
         # Store original PATH
         original_path = os.environ.get("PATH", "")
         
-        result = load_integration_component_bin(str(tmpdir))
-        assert result is True
+        load_integration_component_bin(str(tmpdir))
         assert bin_path in os.environ["PATH"]
         
         # Restore original PATH
         os.environ["PATH"] = original_path
 
-    def test_load_integration_component_bin_already_in_path(self, tmpdir):
+    def test_load_integration_component_bin_already_in_path(self, monkeypatch, tmpdir):
         """Test loading bin component when bin directory already in PATH."""
         bin_dir = tmpdir.mkdir("bin")
         bin_path = str(bin_dir)
-        
-        # Add to PATH first
-        original_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = f"{original_path}:{bin_path}"
-        
-        result = load_integration_component_bin(str(tmpdir))
-        assert result is True
-        
-        # Restore original PATH
-        os.environ["PATH"] = original_path
+
+        # monkeypatch restores PATH even when the assertion fails
+        path_with_bin = f"{os.environ['PATH']}:{bin_path}"
+        monkeypatch.setenv("PATH", path_with_bin)
+
+        load_integration_component_bin(str(tmpdir))
+        # Should not be added again
+        assert os.environ["PATH"] == path_with_bin
 
 
 @pytest.mark.unit
 class TestLoadIntegrationComponentEtc:
     
-    def test_load_integration_component_etc_no_etc_dir(self, tmpdir):
+    def test_load_integration_component_etc_no_etc_dir(self, monkeypatch, tmpdir):
         """Test loading etc component when etc directory doesn't exist."""
-        result = load_integration_component_etc(str(tmpdir))
-        assert result is True
+        monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
+        load_integration_component_etc(str(tmpdir))
+        assert get_global_runtime_settings().integration_config_paths == []
 
     def test_load_integration_component_etc_with_ini_files(self, monkeypatch, tmpdir):
         """Test loading etc component with ini files."""
@@ -293,8 +312,7 @@ class TestLoadIntegrationComponentEtc:
         config_file = etc_dir.join("saq.integration.yaml")
         config_file.write("section:\n  key: value")
         monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
-        result = load_integration_component_etc(str(tmpdir))
-        assert result is True
+        load_integration_component_etc(str(tmpdir))
         assert get_global_runtime_settings().integration_config_paths == [str(config_file)]
 
     def test_load_integration_component_etc_non_ini_files_ignored(self, monkeypatch, tmpdir):
@@ -305,8 +323,7 @@ class TestLoadIntegrationComponentEtc:
         
         monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
         
-        result = load_integration_component_etc(str(tmpdir))
-        assert result is True
+        load_integration_component_etc(str(tmpdir))
         assert get_global_runtime_settings().integration_config_paths == []
 
     def test_load_integration_component_etc_multiple_ini_files(self, monkeypatch, tmpdir):
@@ -319,8 +336,7 @@ class TestLoadIntegrationComponentEtc:
         
         monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
         
-        result = load_integration_component_etc(str(tmpdir))
-        assert result is True
+        load_integration_component_etc(str(tmpdir))
         assert get_global_runtime_settings().integration_config_paths == [str(config1)]
 
 
@@ -331,6 +347,5 @@ class TestLoadIntegrationFromDirectory:
         """Test loading integration from directory wires src, bin and etc."""
         integration_dir = integration_env("integration1")
 
-        result = load_integration_from_directory(integration_dir)
-        assert result is True
+        load_integration_from_directory(integration_dir)
         _assert_loaded(integration_dir)
