@@ -1,12 +1,12 @@
 """Wire schemas for SVS test runs."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from aceapi_v2.alerts.schemas import AlertRow
-from saq.svs.constants import RUN_STATES, RunState
+from saq.svs.constants import RUN_STATES, ObservationSource, RunState
 
 
 class RunTargetRequest(BaseModel):
@@ -54,6 +54,31 @@ class RunLifecycle(BaseModel):
     attribution_ends_at: Optional[datetime] = None
     error_reason: Optional[str] = None
     close_reason: Optional[str] = None
+
+
+class RunValidationTarget(BaseModel):
+    hostname: str = Field(description="as sent")
+    username: Optional[str] = Field(default=None, description="as sent")
+    accepted: bool = Field(description="the target is a test host and a user it lists")
+    reason: Optional[str] = Field(default=None, description="why the target would be refused")
+    test_host: Optional[str] = Field(default=None, description="the test host it names, by its short name")
+    platform: Optional[str] = Field(default=None, description="that test host's platform")
+
+
+class RunValidation(BaseModel):
+    """What POST /api/v2/svs/runs/ would decide for the same body, decided without changing anything."""
+
+    decision: Literal["accepted", "refused", "invalid"]
+    status_code: int = Field(description="what registering would answer: 201, 403 or 422")
+    message: Optional[str] = Field(default=None, description="why the registration is invalid: the 422's detail")
+    targets: list[RunValidationTarget] = Field(
+        description="every target, judged as registering would; empty when the registration is invalid before its "
+                    "targets are judged")
+    platform: Optional[str] = Field(default=None, description="the platform the run would be on, when accepted")
+    observation_seconds: Optional[int] = Field(default=None, description="when accepted")
+    observation_source: Optional[ObservationSource] = Field(
+        default=None, description="where the observation window comes from: override, expected or all_hunts")
+    attribution_seconds: Optional[int] = Field(default=None, description="when accepted")
 
 
 #

@@ -1,6 +1,7 @@
 """SVS test runs router for ACE API v2 (docs/SVS_RUNS.md, *Registering a run*; docs/SVS_API.md).
 
-The launcher's lifecycle calls: register a run, start it, report how the test executed, cancel it.
+The launcher's lifecycle calls: register a run (or validate a registration without making it), start
+it, report how the test executed, cancel it.
 Every call needs svs:run_register [ART-2]. A registration against a host that is not a test host is
 refused with 403 and alerts (docs/SVS_RUNS.md, *Refused registrations*).
 
@@ -50,6 +51,7 @@ from aceapi_v2.svs.runs.schemas import (
     RunPage,
     RunRegistrationRequest,
     RunResultPage,
+    RunValidation,
     SuppressionShare,
 )
 from aceapi_v2.sync import run_db_in_thread
@@ -183,6 +185,14 @@ async def register_run(body: RunRegistrationRequest, auth: RegisterAuth, request
     catalog, a target whose platform the test doesn't support, or an extra that is too large; 403
     when a target is not a test host or not a user the host lists, which also alerts."""
     return await run_db_in_thread(service.register, body, _caller(auth, request))
+
+
+@router.post("/validate", response_model=RunValidation)
+async def validate_registration(body: RunRegistrationRequest, auth: RegisterAuth, request: Request) -> RunValidation:
+    """What registering this body would decide: accepted (with the run's platform and windows),
+    refused (with the reason per target) or invalid. Creates no run, event, refusal or alert, so a
+    launcher's dry run is invisible to triage."""
+    return await run_db_in_thread(service.validate, body, _caller(auth, request))
 
 
 @router.post("/{run_id}/start", response_model=RunLifecycle)

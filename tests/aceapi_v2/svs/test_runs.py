@@ -119,13 +119,48 @@ async def test_a_registration_against_a_non_test_host_is_refused_and_alerts(clie
 
 
 @pytest.mark.asyncio
+async def test_validate_answers_what_registering_would_and_writes_nothing(client: AsyncClient):
+    response = await client.post("/svs/runs/validate", json=REGISTRATION)
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "decision": "accepted", "status_code": 201, "message": None, "platform": "windows",
+        "observation_seconds": 3600, "observation_source": "all_hunts", "attribution_seconds": 25 * 3600,
+        "targets": [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art", "accepted": True, "reason": None,
+                     "test_host": "win10-01", "platform": "windows"}]}
+
+    response = await client.post("/svs/runs/validate", json={**REGISTRATION, "targets": [
+        {"hostname": "prod-dc-01"}, {"hostname": "win10-01", "username": "administrator"}]})
+    assert response.status_code == 200, response.text
+    validation = response.json()
+    assert (validation["decision"], validation["status_code"], validation["platform"]) == ("refused", 403, None)
+    assert [(t["accepted"], t["reason"], t["test_host"]) for t in validation["targets"]] == [
+        (False, "prod-dc-01 is not a test host", None),
+        (False, "administrator is not a user of test host win10-01", "win10-01")]
+
+    response = await client.post("/svs/runs/validate", json={**REGISTRATION, "test_guid": LINUX_GUID})
+    validation = response.json()
+    assert (validation["decision"], validation["status_code"]) == ("invalid", 422)
+    assert "test host win10-01 is windows" in validation["message"]
+
+    db = get_db()
+    db.expire_all()
+    assert db.execute(select(SVSRun)).first() is None
+    assert db.query(Alert).all() == []
+
+    # the body is checked as registering checks it
+    assert (await client.post("/svs/runs/validate", json={**REGISTRATION, "targets": []})).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_every_call_needs_run_register(_override_db_session, session: AsyncSession, test_user):
     reader = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
     async with api_key_client(reader) as client:
         assert (await client.post("/svs/runs/", json=REGISTRATION)).status_code == 403
+        assert (await client.post("/svs/runs/validate", json=REGISTRATION)).status_code == 403
 
     launcher = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_register")])
     async with api_key_client(launcher) as client:
+        assert (await client.post("/svs/runs/validate", json=REGISTRATION)).status_code == 200
         run = await _register(client)
         assert (await client.post(f"/svs/runs/{run['run_id']}/start")).status_code == 200
 

@@ -14,6 +14,9 @@ record carries the run's svs_run, svs_test and svs_marker fields (docs/SVS.md, *
 Closing a run gives its fully attributed alerts the disposition SIMULATED, and the timers close
 the alerts attributed to a closed run afterwards the same way.
 
+A launcher can also validate a registration: decide() works out everything registering would
+decide, and only reads, so a dry run creates no run, refusal or alert.
+
 A person cancels and closes runs through saq/svs/review.py, which also takes runs and reviews them.
 
 svs_runs, svs_run_targets and svs_run_events are written here, except for what attribution writes
@@ -41,8 +44,8 @@ from saq.error.reporting import log_loop_exception
 from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import platform_slugs, supported_platforms
 from saq.svs.expectations import observation_for_test
-from saq.svs.constants import RunEventKind, RunState
-from saq.svs.hosts import InvalidTestHost, match_target, normalize_username, split_hostname
+from saq.svs.constants import ObservationSource, RunEventKind, RunState
+from saq.svs.hosts import InvalidTestHost, TargetMatch, match_target, normalize_username, split_hostname
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller, prune_refusals, refuse
 from saq.svs.result_state import mark_runs_stale
@@ -67,6 +70,7 @@ CLOSE_REASON_BY_PERSON = "closed by hand"
 
 # the launcher's calls, as they are logged and recorded
 CALL_REGISTER = "register"
+CALL_VALIDATE = "validate"
 CALL_START = "start"
 CALL_EXECUTED = "executed"
 CALL_CANCEL = "cancel"
@@ -356,7 +360,14 @@ def _validate(registration: Registration) -> tuple[SVSCatalogTest, str]:
 def _run_platform(test: SVSCatalogTest, matches) -> str:
     """The one platform a run is on: the platform of its targets' test hosts, which have to agree (a
     host without one is taken to be on it too), else the test's only supported platform. Raises
-    InvalidRegistration when neither says."""
+    InvalidRegistration when a host's platform isn't one the test supports, or neither says."""
+    platforms = supported_platforms(test)
+    for _, match in matches:
+        if match.host.platform is not None and match.host.platform not in platforms:
+            raise InvalidRegistration(
+                f"test {test.guid} supports {', '.join(platforms) or 'no platform'}; "
+                f"test host {match.host.hostname} is {match.host.platform}")
+
     host_platforms = sorted({match.host.platform for _, match in matches if match.host.platform is not None})
     if len(host_platforms) > 1:
         raise InvalidRegistration(
@@ -375,22 +386,71 @@ def _run_platform(test: SVSCatalogTest, matches) -> str:
         "set the test hosts' platform")
 
 
+@dataclass
+class RegistrationDecision:
+    """What registering would decide, worked out without changing anything: invalid (422), refused
+    (403, a reason per refused target), or accepted, with the run's platform and windows."""
+
+    test: Optional[SVSCatalogTest] = None
+    extra: Optional[str] = None
+    # every target with how it matched the test hosts; empty when the registration is invalid before
+    # its targets are judged
+    matches: list[tuple[TargetSpec, TargetMatch]] = field(default_factory=list)
+    invalid: Optional[str] = None
+    platform: Optional[str] = None
+    observation: Optional[timedelta] = None
+    observation_source: Optional[ObservationSource] = None
+    attribution: Optional[timedelta] = None
+
+    @property
+    def refused(self) -> list[tuple[TargetSpec, str]]:
+        return [(target, match.reason or "not a test host") for target, match in self.matches if not match.matched]
+
+
+def decide(registration: Registration) -> RegistrationDecision:
+    """Decides a registration as register would, in the same order, and only reads."""
+    try:
+        test, extra = _validate(registration)
+    except InvalidRegistration as e:
+        return RegistrationDecision(invalid=str(e))
+
+    decision = RegistrationDecision(test=test, extra=extra, matches=[
+        (target, match_target(target.hostname, target.username)) for target in registration.targets])
+    if decision.refused:
+        return decision
+
+    try:
+        decision.platform = _run_platform(test, decision.matches)
+    except InvalidRegistration as e:
+        decision.invalid = str(e)
+        return decision
+
+    decision.observation, decision.observation_source = observation_for_test(test.guid, decision.platform)
+    decision.attribution = attribution_window(decision.observation)
+    return decision
+
+
+def validate(registration: Registration, caller: Caller) -> RegistrationDecision:
+    """A launcher's dry run: what registering would decide, with no run, event, refusal or alert."""
+    decision = decide(registration)
+    outcome = "invalid" if decision.invalid else "refused" if decision.refused else "accepted"
+    _log_call(None, CALL_VALIDATE, registration.launcher, outcome, caller, svs_test=registration.test_guid,
+              invalid=decision.invalid, reasons=[reason for _, reason in decision.refused],
+              platform=decision.platform)
+    return decision
+
+
 def register(registration: Registration, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
     """Registers a run in state Created and returns it, with its marker. Raises
     InvalidRegistration, and RegistrationRefused after recording each refused target."""
     now = now or datetime.now()
-    test, extra = _validate(registration)
+    decision = decide(registration)
+    if decision.invalid:
+        raise InvalidRegistration(decision.invalid)
+
+    test = decision.test
     payload = registration.payload()
-
-    matches = []
-    refused = []
-    for target in registration.targets:
-        match = match_target(target.hostname, target.username)
-        if match.matched:
-            matches.append((target, match))
-        else:
-            refused.append((target, match.reason or "not a test host"))
-
+    refused = decision.refused
     if refused:
         for target, reason in refused:
             refuse(caller, target.hostname, target.username, reason, launcher=registration.launcher,
@@ -399,35 +459,24 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
                   svs_test=test.guid, reasons=[reason for _, reason in refused])
         raise RegistrationRefused([reason for _, reason in refused])
 
-    platforms = supported_platforms(test)
-    for target, match in matches:
-        if match.host.platform is not None and match.host.platform not in platforms:
-            raise InvalidRegistration(
-                f"test {test.guid} supports {', '.join(platforms) or 'no platform'}; "
-                f"test host {match.host.hostname} is {match.host.platform}")
-
-    platform = _run_platform(test, matches)
-    observation, observation_source = observation_for_test(test.guid, platform)
-    attribution = attribution_window(observation)
-
     run = SVSRun(
         uuid=str(uuid.uuid4()),
         test_guid=test.guid,
         test_content_hash=test.content_hash,
         catalog_commit=test.commit,
-        platform=platform,
+        platform=decision.platform,
         state=RunState.CREATED.value,
         marker=new_marker(),
         launcher=registration.launcher,
         batch_id=registration.batch_id,
-        extra=extra,
+        extra=decision.extra,
         registered_by=caller.user_id,
         created_at=now,
-        observation_seconds=int(observation.total_seconds()),
-        attribution_seconds=int(attribution.total_seconds()))
+        observation_seconds=int(decision.observation.total_seconds()),
+        attribution_seconds=int(decision.attribution.total_seconds()))
 
     seen = set()
-    for target, match in matches:
+    for target, match in decision.matches:
         host, fqdn = split_hostname(target.hostname)
         user = normalize_username(target.username) if target.username is not None else None
         if (host, fqdn, user) in seen:
@@ -441,7 +490,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     db.add(run)
     db.flush()
     _add_event(run, RunEventKind.REGISTERED, caller.name, actor_user_id=caller.user_id, to_state=run.state,
-               details={**payload, "platform": run.platform, "observation_source": observation_source.value},
+               details={**payload, "platform": run.platform, "observation_source": decision.observation_source.value},
                now=now)
     db.commit()
 
