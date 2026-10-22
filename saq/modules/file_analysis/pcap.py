@@ -52,6 +52,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import PCAPNG_BYTE_ORDER_MAGICS, PCAPNG_SECTION_HEADER, is_pcap_file
 from saq.observables.file import FileObservable
+from saq.util.filesystem import unique_file_path
 from saq.util.hashing import sha256_bytes, sha256_file
 from saq.util.strings import format_item_list_for_summary
 from saq.util.ui import human_readable_size
@@ -439,16 +440,6 @@ def parse_capinfos(output: str) -> dict:
     }
 
 
-def _unique_path(path: str) -> str:
-    if not os.path.exists(path):
-        return path
-    base, ext = os.path.splitext(path)
-    index = 1
-    while os.path.exists(f"{base}_{index}{ext}"):
-        index += 1
-    return f"{base}_{index}{ext}"
-
-
 def _host_without_port(host: str) -> str:
     host = host.strip()
     if host.startswith("["):
@@ -785,7 +776,7 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
             entry = {"protocol": protocol, "file_name": file_name, "sha256": sha256,
                      "size": source_stat.st_size, "path": None}
             if remaining > 0:
-                target = _unique_path(os.path.join(target_dir, protocol, file_name))
+                target = unique_file_path(os.path.join(target_dir, protocol, file_name))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.move(source, target)
                 entry["path"] = os.path.relpath(target, base_dir)
@@ -1086,18 +1077,28 @@ def _observable_key(observable: Observable) -> tuple[str, str]:
 
 
 def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: list[PcapObservable],
-                         max_per_type: int) -> tuple[dict[str, int], dict[str, int]]:
+                         max_per_type: int, reserved: list[PcapObservable] = ()) -> tuple[dict[str, int], dict[str, int]]:
     """Adds the observables to the analysis, at most max_per_type of each type for the whole capture:
     the ones every pcap node of pcap_file already has count, so one capture never puts more than
-    max_per_type nodes of a type in the tree. Returns (added, omitted) counts by type."""
+    max_per_type nodes of a type in the tree. reserved are observables another node adds later,
+    whose room is kept for them. Returns (added, omitted) counts by type."""
     added: dict[str, int] = {}
     omitted: dict[str, int] = {}
     present = {_observable_key(o) for o in analysis.observables}
     per_type: dict[str, int] = {}
+    in_capture: set[tuple[str, str]] = set()
     for node in pcap_file.all_analysis:
         if isinstance(node, PCAP_ANALYSIS_TYPES):
             for o in node.observables:
                 per_type[o.type] = per_type.get(o.type, 0) + 1
+                in_capture.add(_observable_key(o))
+    for item in reserved:
+        if item.key not in in_capture:
+            per_type[item.o_type] = per_type.get(item.o_type, 0) + 1
+
+    # a payload file before a certificate: the certificates seen in the handshakes never take the
+    # room of what crossed the wire
+    items = sorted(items, key=lambda item: item.no_crawl)
 
     for item in items:
         if item.key in present:
@@ -1421,7 +1422,10 @@ class PcapCategoryAnalyzer(AnalysisModule):
         config = get_config().pcap
         category = self.config.category
         index = pcap_analysis.index
-        items = [o for o in collect_observables(index, config.excluded_fqdn_suffixes) if o.category == category]
+        everything = collect_observables(index, config.excluded_fqdn_suffixes)
+        items = [o for o in everything if o.category == category]
+        # the files node may run after this one: its payload files keep their room
+        reserved = [o for o in everything if o.category == CATEGORY_FILES] if category != CATEGORY_FILES else []
         rows = index.get(_rows_key(category), [])
         # nothing in the capture for this category: no node in the tree
         if not items and not rows:
@@ -1437,7 +1441,7 @@ class PcapCategoryAnalyzer(AnalysisModule):
         if category == CATEGORY_TLS:
             analysis.details["certificates"] = index.get("certificates", [])
 
-        added, omitted = add_pcap_observables(analysis, _file, items, config.max_observables_per_type)
+        added, omitted = add_pcap_observables(analysis, _file, items, config.max_observables_per_type, reserved)
         analysis.details[KEY_ADDED] = added
         analysis.details[KEY_OMITTED] = omitted
         return AnalysisExecutionResult.COMPLETED

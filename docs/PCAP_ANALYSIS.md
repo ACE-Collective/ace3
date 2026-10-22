@@ -57,7 +57,9 @@ sslkeylog.txt
   (broadcast/multicast) and all-zero MACs; names ending in `excluded_fqdn_suffixes` (`.arpa`,
   `.local` by default).
 - One capture adds at most `max_observables_per_type` (50) observables of one type, counted across
-  all its nodes (hosts, DNS, TLS, HTTP, files, decryption), whichever adds them first. Each node
+  all its nodes (hosts, DNS, TLS, HTTP, files, decryption), whichever adds them first, except that
+  payload files always come before certificates: the TLS node keeps room for the files node's
+  payloads, and decryption adds its payloads before its certificates. Each node
   keeps at most `max_table_rows` rows per table. The analysis details and the page say how many
   were left out. The root-wide `maximum_observable_count` still applies on top of this.
 - At most `max_extracted_files` files are carved out of one capture: the exported objects first, then
