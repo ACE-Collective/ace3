@@ -1396,8 +1396,11 @@ analysis_module_har_extraction:
 # pcap module reads these, so they are set once here
 pcap:
   tshark_path: /usr/bin/tshark
-  # seconds one tshark run may take
-  tshark_timeout: 240
+  # seconds one tshark run may take. Every pcap module also checks, before each run, that the run
+  # fits in what is left of its maximum_analysis_time and of the alert's analysis time for the pass
+  # (maximum_cumulative_analysis_fail_time, 900 s), and records an error on the capture instead of
+  # starting one that does not
+  tshark_timeout: 120
   # relative to DATA_DIR
   work_dir: var/pcap_sandbox
   max_file_size: 1073741824
@@ -1419,8 +1422,8 @@ analysis_module_pcap_analyzer:
   enabled: true
   default_collapsed: true
   # capinfos (30 s at most), then two tshark runs (statistics, then fields and carved files) of up
-  # to pcap.tshark_timeout each
-  maximum_analysis_time: 600
+  # to pcap.tshark_timeout each, plus 30 s around each run
+  maximum_analysis_time: 360
 
 # one instance per category of the capture; each adds its observables under its own node
 analysis_module_pcap_dns:
@@ -1466,7 +1469,8 @@ analysis_module_pcap_tls_decryption:
   python_class: PcapTlsDecryptor
   enabled: true
   default_collapsed: true
-  maximum_analysis_time: 600
+  # one tshark run of up to pcap.tshark_timeout, plus 30 s around it
+  maximum_analysis_time: 180
 
 # recognizes TLS key logs (SSLKEYLOGFILE format) by content and applies one added late
 analysis_module_tls_keylog:
@@ -1835,7 +1839,7 @@ analysis_module_archive:
   python_class: ArchiveAnalyzer
   enabled: true
   # comma separated list of excluded mime types we do not want to extract
-  excluded_mime_types: application/x-shockwave-flash,application/vnd.tcpdump.pcap,application/x-mach-binary
+  excluded_mime_types: application/x-shockwave-flash,application/x-mach-binary
   # if an archive has more than max_file_count files then we do not analyze it
   # more attacks only have a single file inside the zip; avoid archives with thousands of files
   max_file_count: 6

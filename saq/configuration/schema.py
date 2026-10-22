@@ -262,7 +262,7 @@ class PcapConfig(BaseModel):
     """pcap/pcapng dissection with tshark in the Landlock sandbox, shared by every pcap module (docs/PCAP_ANALYSIS.md)"""
     model_config = ConfigDict(extra="forbid")
     tshark_path: str = Field(default="/usr/bin/tshark", description="the tshark binary; capinfos is taken from the same directory")
-    tshark_timeout: int = Field(default=240, gt=0, description="seconds one tshark run may take")
+    tshark_timeout: int = Field(default=120, gt=0, description="seconds one tshark run may take")
     work_dir: str = Field(default="var/pcap_sandbox", description="where each tshark run gets its private working directory (relative to DATA_DIR)")
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed tshark process; allowed_tcp_ports stays empty (no network)")
     max_file_size: int = Field(default=1024 ** 3, gt=0, description="largest capture dissected, in bytes")
@@ -1380,6 +1380,13 @@ class ACEConfig(BaseModel):
             raise ValueError(f"analysis mode config for {name} not found")
 
         return self.__analysis_modes[name]
+
+    def get_maximum_cumulative_analysis_fail_time(self, analysis_mode: str) -> int:
+        """How long one analysis pass over a root in this mode may take before the engine abandons it."""
+        analysis_mode_config = self.get_analysis_mode_config(analysis_mode)
+        if analysis_mode_config.maximum_cumulative_analysis_fail_time is not None:
+            return analysis_mode_config.maximum_cumulative_analysis_fail_time
+        return self.global_settings.maximum_cumulative_analysis_fail_time
     
     #
     # module groups

@@ -48,7 +48,7 @@ sslkeylog.txt
   of a reply with no answer), `DNS Record Name` (any other record owner), `DNS Answer IP`, `TLS SNI`
   (a server name only seen in a TLS hello, never in DNS), and for JA4 the sessions' destinations,
   e.g. `JA4 client fingerprint (TLS ClientHello), seen to www.example.com, cdn.example.net,
-  login.example.org, +9 more` (the SNI, or the
+  login.example.org + 9 more` (the SNI, or the
   server address when there is none). An observable has one display type wherever it appears in the
   alert, so the pcap modules never replace one another module set: a name that is also a certificate
   SAN shows `Certificate SAN DNS Name` under PCAP DNS too.
@@ -64,6 +64,9 @@ sslkeylog.txt
 - Each node adds at most `max_observables_per_type` observables of one type and keeps at most
   `max_table_rows` rows per table; the analysis details and its page say how many were left out.
   The root-wide `maximum_observable_count` still applies on top of this.
+- At most `max_extracted_files` files are carved out of one capture: the exported objects first, then
+  the certificates with what is left, so a payload is never crowded out by a capture's handshakes.
+  A file over the limit is still listed, with no observable.
 - Carved files and certificates are linked to the pcap with `extracted_from`. An HTTP object is
   linked to its URL with `downloaded_from` when exactly one request in the capture has a path
   ending in its file name. Certificates become file observables, so `x509_analyzer` adds their
@@ -81,8 +84,16 @@ and runs three tools in the Landlock sandbox:
 3. tshark `-T json -Y <filter> -e <fields> --export-objects ...` for DNS, TLS handshakes, HTTP(/2)
    headers, DHCP and NBNS, plus the exported objects. Certificates are taken from the handshake bytes.
 
-Each tshark run is bounded by `tshark_timeout` (240 s), so the three fit in `pcap_analyzer`'s
-`maximum_analysis_time` (600 s).
+Each tshark run is bounded by `tshark_timeout` (120 s), so the three, with 30 s around each tshark run
+for the copy, the sandbox's stop and parsing, fit in `pcap_analyzer`'s `maximum_analysis_time`
+(360 s). Before it starts, every pcap module also checks that its runs fit in what is left of its
+`maximum_analysis_time` and of the alert's analysis time for the pass
+(`maximum_cumulative_analysis_fail_time`, 900 s). The engine abandons the rest of the alert's
+analysis once that time is used up. A capture whose runs do not fit is not dissected (or decrypted):
+its analysis says so ("skipped: dissecting this capture can take ... s and only ... s are left") and
+the module logs it at INFO. A capture this can happen to is one of several large ones in the same
+alert. Raising `tshark_timeout` for very large captures needs the modules' `maximum_analysis_time`
+raised with it.
 
 The JSON of the third run is about 1 kB per matching packet and has to fit under the sandbox's output
 cap (`sandbox.max_output_bytes`, 64 MiB), so its display filter also takes only the first
@@ -96,6 +107,9 @@ Carved files and certificates are written beside the capture in the alert's stor
 `<capture>.pcap_objects/` (and `<capture>.pcap_decrypted/` for decryption), never `<capture>.extracted/`,
 which belongs to `archive`. `archive` skips anything `is_pcap_file()` recognizes: libmagic calls a pcapng
 `application/octet-stream`, which its mime exclusions cannot catch, and 7z "extracts" junk from one.
+A capture inside an archive is extracted like any other file and then dissected. A pcapng is
+recognized by its section header type and its byte-order magic together, never by the four-byte
+type alone (`\n\r\r\n`, which text can start with).
 `hidden_mime` skips captures too: an email in the capture is carved as an IMF object, while a MIME
 body found in the raw capture bytes is broken up by packet headers.
 
@@ -108,12 +122,20 @@ tshark's dissectors parse hostile bytes, so tshark only ever runs through
 link, so tshark cannot change the evidence), nothing
 of ACE readable, no network (`sandbox.allowed_tcp_ports` stays empty), rlimits, a `tshark_timeout`
 and an output cap. On a node without Landlock the module refuses to run tshark and records an
-error rather than running it unsandboxed. Every failure is recorded in the analysis `error` and
-shown in its summary, for the analyst. A failure of the capture itself (tshark cannot read it, a
-timeout, too much output) is the analyst's to see and is logged at INFO only. Anything else,
-including a node without Landlock, which cannot dissect any capture, is logged at ERROR with an
-error report through `log_loop_exception`. A capture cut short mid-packet is dissected as far as
-it goes.
+error rather than running it unsandboxed. A failure is recorded in the analysis `error` and shown
+in its summary, for the analyst:
+
+- A failure of the capture itself (tshark cannot read it, a timeout, too much output) is the
+  analyst's to see and is logged at INFO only.
+- A node that cannot dissect any capture (no Landlock, or a tshark the sandbox cannot start: a
+  missing binary, a wrong `tshark_path`) raises `PcapNodeError`, which is logged at ERROR with an
+  error report through `log_loop_exception`.
+- Anything unexpected (a bug) is left to the engine, which writes a crash report holding the
+  capture (`docs/CRASH_REPORTS.md`).
+
+A capture cut short mid-packet is dissected as far as it goes. When the engine shuts down, the
+module stops before its next tshark run and records nothing, so the capture is dissected (or the
+key log applied) again when the work item is picked up again.
 
 ## TLS decryption
 
@@ -136,9 +158,10 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   decrypts the capture again with every key log in the tree. The result is added to the existing
   node, never in place of it: the rows of its tables are kept and the new ones are appended, so the
   files an earlier key log carved stay listed. Applying the same key logs twice adds nothing.
-  There is one tshark run per capture, all inside `tls_keylog`'s `maximum_analysis_time`. A capture
-  whose run would no longer fit is skipped rather than risking the worker. The key log's summary
-  says "not applied to N pcaps (out of time)" and the module logs it at INFO.
+  There is one tshark run per capture, all inside what is left of `tls_keylog`'s
+  `maximum_analysis_time` and of the alert's analysis time for the pass. A capture whose run would
+  no longer fit is skipped rather than risking the worker or the rest of the alert's analysis. The
+  key log's summary says "not applied to N pcaps (out of time)" and the module logs it at INFO.
 - **Embedded secrets.** A pcapng can carry its own keys in Decryption Secrets Blocks (Wireshark
   writes them when saving a capture taken with a key log, or `editcap --inject-secrets` adds them).
   tshark decrypts with them on its own, so the plaintext pass already sees inside TLS: the HTTPS
@@ -164,8 +187,6 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   CN/SAN FQDNs, SAN IPs, sha256 and the X509 detail tree, but does not add the `crawl` URLs that
   would otherwise send every certificate name (every SAN, and CA certificates) to phishkit. The HTTP
   URLs actually seen in the capture are added normally; an analyst can still crawl any URL by hand.
-- `archive` does not extract pcaps from archives (`excluded_mime_types` lists
-  `application/vnd.tcpdump.pcap`); a capture inside a zip is not dissected.
 - No analysis caching (`cache_ttl` unset): `tls_keylog` changes another observable's analysis,
   which the cache cannot replay.
 
