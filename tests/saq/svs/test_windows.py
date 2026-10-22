@@ -85,6 +85,8 @@ def test_hunt_info_keeps_every_hunt_for_results(hunt_dir):
     assert (info["grouped"].suppression, info["grouped"].grouped, info["grouped"].latency) == (
         timedelta(days=1), True, timedelta(minutes=5))
     assert (info["off"].enabled, info["off"].grouped, info["off"].suppression) == (False, True, None)
+    # only group_by suppresses per group, which the hunter records
+    assert (info["grouped"].per_group, info["off"].per_group, info["broken"].per_group) == (True, False, False)
     assert (info["broken"].latency, info["broken"].suppression) == (None, timedelta(hours=1))
     # the inventory's hash: the raw file, as saq.signatures.loaders.hunt computes it
     assert info["grouped"].content_hash == content_hash((hunt_dir / "grouped.yaml").read_text())

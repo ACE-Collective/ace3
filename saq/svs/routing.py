@@ -82,7 +82,7 @@ def _alert_row(alert_uuid: str) -> Optional[_AlertRow]:
 
 class MarkerRouter(AlertRouter):
 
-    def route(self, root, stage: RouteStage) -> Optional[RouteDecision]:
+    def route(self, root, stage: RouteStage, final: bool) -> Optional[RouteDecision]:
         if not attribution_open():
             return None
 
@@ -96,9 +96,10 @@ class MarkerRouter(AlertRouter):
         log_sightings(root.uuid, evaluation, stage.value)
         written = write_attributions(root.uuid, evaluation)
         self._warn_fallback_time(root, stage, evaluation, bool(written.written))
-        # confirmed after the correlation pass, which may still find a marker in analysis details
+        # confirmed by the alert's last pass: until then a delayed module may still find a marker
+        # in its analysis details
         maintenance.record_alert(root.uuid, evaluation.maintenance.id if evaluation.maintenance else None,
-                                 confirmed=stage == RouteStage.POST_ANALYSIS)
+                                 confirmed=final)
 
         queue = get_config().svs.queue
         if alert is not None and alert.last_change is not None and alert.last_change[0] == SVS_MANUAL_ROUTER:

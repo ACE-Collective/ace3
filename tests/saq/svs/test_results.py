@@ -19,6 +19,7 @@ from saq.database.model import (
     SVSRunEvent,
     SVSRunResult,
     SVSRunResultState,
+    SVSSuppressedMatch,
     User,
 )
 from saq.database.pool import get_db
@@ -116,16 +117,26 @@ def _state(run: SVSRun) -> SVSRunResultState:
     return db.get(SVSRunResultState, run.id)
 
 
-def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=False, latency="01:00:00") -> Path:
+def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=False, dedup=False,
+          latency="01:00:00") -> Path:
     """HUNT's file: a hunt whose latency is its frequency."""
     rule = {"name": "suspicious powershell"}
     if suppression:
         rule["suppression"] = suppression
     if grouped:
         rule["group_by"] = "hostname"
+    if dedup:
+        rule["dedup_key"] = "{{ hostname }}"
     path = write_hunt(hunt_dir, HUNT, frequency=latency, **rule)
     windows.clear_cache()
     return path
+
+
+def _suppressed_match(run: SVSRun, hunt_uuid: str = HUNT) -> None:
+    """The hunter's record that the hunt dropped a match for its suppression during the run."""
+    with private_transaction() as session:
+        session.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid, group_value="win10-01",
+                                       event_time=run.started_at + timedelta(minutes=5)))
 
 
 def _hunt_alert(inserted_at: datetime) -> str:
@@ -293,26 +304,46 @@ class TestSuppression:
         assert row.suppressing_alert_uuid == during != before
         assert row.suppression_imprecise is False
 
-    def test_a_grouped_hunt_is_imprecise(self, hunt_dir):
-        _hunt(hunt_dir, grouped=True)
+    def test_a_deduplicating_hunt_is_imprecise(self, hunt_dir):
+        _hunt(hunt_dir, dedup=True)
         run = _run()
         _hunt_alert(run.started_at - timedelta(hours=3))
         results.compute_result(run.id)
-        assert _row(run, HUNT).suppression_imprecise is True
+        row = _row(run, HUNT)
+        assert (row.status, row.suppression_imprecise) == ("possibly_suppressed", True)
 
-    def test_another_runs_alert_of_a_grouped_hunt_does_not_suppress(self, hunt_dir):
-        # it was suppressed under that run's key (QueryHunt.key_suppression)
+    def test_a_grouped_hunt_the_hunter_recorded_as_suppressed(self, hunt_dir, caplog):
+        """Certain, whatever its alerts: none is named, since the latest may be another group's."""
         _hunt(hunt_dir, grouped=True)
         run = _run()
-        other = _run(started_at=timedelta(hours=30))
-        _attribute(other, YARA, alert_uuid=_hunt_alert(run.started_at - timedelta(hours=3)))
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(run)
+
+        with caplog.at_level(logging.INFO):
+            results.compute_result(run.id)
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid, row.suppression_imprecise) == (
+            "possibly_suppressed", None, False)
+        record = next(r for r in caplog.records if "is missing expected signature" in r.getMessage())
+        assert record.getMessage().endswith(", possibly suppressed") and record.possibly_suppressed
+
+    def test_a_grouped_hunt_the_hunter_did_not_suppress_is_missing(self, hunt_dir):
+        """An alert of the hunt within its suppression period, of another group, or a record of
+        another run, does not make it suppressed."""
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(_run(OTHER_GUID))
+
         results.compute_result(run.id)
         assert _row(run, HUNT).status == "missing"
 
-        # an alert no run holds still may have
-        production = _hunt_alert(run.started_at - timedelta(hours=2))
+    def test_a_grouped_hunt_without_suppression_is_missing(self, hunt_dir):
+        _hunt(hunt_dir, grouped=True, suppression=None)
+        run = _run()
+        _suppressed_match(run)
         results.compute_result(run.id)
-        assert (_row(run, HUNT).status, _row(run, HUNT).suppressing_alert_uuid) == ("possibly_suppressed", production)
+        assert _row(run, HUNT).status == "missing"
 
     def test_another_runs_alert_of_an_ungrouped_hunt_still_suppresses(self, hunt_dir):
         _hunt(hunt_dir)

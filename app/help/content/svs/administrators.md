@@ -60,7 +60,7 @@ does nothing until you grant it.
 | `svs:run_read` | The SVS area (Runs, Tests, Coverage, Worklist), run and test pages, the catalog, the test hosts list, and their read APIs |
 | `svs:run_manage` | Taking ownership of, canceling, closing and reviewing runs; a test's expectations, ignores and observation window; resolving worklist rows; associating alerts with runs by hand |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores; retiring and deleting YARA samples |
-| `svs:run_register` | The launcher's calls: register, start, executed, cancel |
+| `svs:run_register` | The launcher's calls: validate, register, start, executed, cancel |
 | `svs:validate` | Requesting a YARA validation and reading its status (counts and rule names only) |
 | `signature:read` | The Signatures hub, including the Samples and Validations cards and validation reports |
 | `signature:download` | The bytes of samples and QA matches, in zips protected with the password `infected` |
@@ -391,6 +391,7 @@ The launcher drives each run through `/api/v2/svs/runs` with its `svs:run_regist
 
 | Step | Call | Notes |
 |---|---|---|
+| 0. Check | `POST /api/v2/svs/runs/validate` | Optional, a dry run. The register body; answers 200 with what registering would decide (`decision`, the `status_code` it would answer, each target judged) and creates no run, refusal or alert. |
 | 1. Register | `POST /api/v2/svs/runs/` | Body: `test_guid`, `targets` (each `hostname` and `username`), `launcher` (required, 1 to 256 characters), optional `batch_id` and `extra`. Answers 201 with `run_id`, `marker`, `platform` and the window lengths. |
 | 2. Put the marker in the test | none | As an input argument the test passes to its command, or as a trailing comment on the executor's command in a per-run copy of the test's YAML |
 | 3. Start | `POST /api/v2/svs/runs/{run_id}/start` | Right before the test fires. The windows start now. |
@@ -409,13 +410,14 @@ curl -X POST https://ace.lab.example/api/v2/svs/runs/$RUN/executed -H "x-ace-aut
      -H 'Content-Type: application/json' -d '{"exit_code": 0}'
 ```
 
-A call that doesn't apply to the run's state (starting twice, `executed` before `start`) answers 409 with the current state. Every call, accepted or not, is in the run's event log with its payload.
+A call that doesn't apply to the run's state (starting twice, `executed` before `start`) answers 409 with the current state. Registering or starting a run on a test host another run holds also answers 409, with `holders`: each run holding it and `until`, when its hold ends (null while it hasn't started). Every call, accepted or not, is in the run's event log with its payload.
 
 ### What to agree with the launcher's owner
 
 - **Call start promptly.** A run not started within `svs.runs.start_timeout_minutes` (30) goes to `error` and is closed at once with the reason *start timeout*. It never shows in *Needs attention*; find those runs with the Runs tab's state and reason filters (`f=state:closed&f=reason:start%20timeout` in the API).
 - **Put the marker where telemetry shows it.** A marker that never reaches ACE means nothing is attributed by marker. A marker only on the command line doesn't reach a YARA detection on a sibling file observable: put it in the file too, or accept that those detections are attributed only by context.
-- **Run one test per host at a time.** Attribution by context works only when exactly one run could have caused an alert. Overlapping runs on one host leave context-only alerts unattributed.
+- **Run one test per host at a time.** ACE enforces it, because attribution by context works only when exactly one run could have caused an alert. A run holds its test hosts from registration until it is canceled before start, or once started until its observation window ends, whatever its state. A launcher that runs a host's tests one after another waits out each run's hold (the `until` in the 409) before it registers the next; an alert without a marker then goes to the run that started last on its host.
+- **Mark tests that leave something behind.** A test that installs persistence, a scheduled task or a service can fire after its observation window. Check *The test leaves something behind* on the test's page, and its runs hold their hosts for their whole attribution window, so the next run on the host can't claim those alerts.
 - **Use `batch_id` and `extra`.** The batch groups runs on the Runs tab's Batches view; `extra` (at most `svs.runs.max_extra_bytes`) is shown on the run page and is the place for a ticket number or job id.
 
 ![A run in error: the launcher reported exit code 1 and an HTTP 407 proxy error, with the run's marker, windows and extra](images/run-error.png)
@@ -756,13 +758,14 @@ Compare each started run's `observation_ends_at` with the current time: a run pa
 | Registration answers 403 | The key's user lacks `svs:run_register`, or the key's scope doesn't include it; the `detail` says which. `data/logs/ace-api-v2` says `does not have permission svs.run_register` or `scope does not permit`. | `ace perm user add art-launcher svs:run_register`; create a key with `--scope svs:run_register` |
 | Registration answers 403 `registration refused` with reasons | A target isn't a test host, its FQDN doesn't match the host's, the user isn't listed, or no user was given for a host that lists users. A refusal alert is raised. | Fix the test host or the launcher's target ([Refused registrations](#refused-registrations)) |
 | Registration answers 422 | The test isn't in the catalog or was removed; the test doesn't support a host's platform; the hosts' platforms differ or none is set; `launcher` missing; `extra` too large; too many targets | Read the `detail`; check `ace svs catalog status`; set the hosts' platform |
-| `start` or `executed` answers 409 | The call doesn't fit the run's state: started twice, executed before start, or the run already timed out | Read the `state` in the answer; register a new run |
+| `start` or `executed` answers 409 with a `state` | The call doesn't fit the run's state: started twice, executed before start, or the run already timed out | Read the `state` in the answer; register a new run |
+| Registration or `start` answers 409 with `holders` | Another run holds a target's test host: one not started yet (`until` is null), or a started one whose observation window (its attribution window, for a test that holds the host) hasn't ended. Registering again answers the same until then. | Wait until the latest `until` and retry; cancel a holder that will never start |
 | Run went to `error` and was closed with *start timeout* | The launcher didn't call `start` within `svs.runs.start_timeout_minutes` | Fix the launcher, or raise the timeout and restart `svs` and `http-api-v2` |
 | Run in `error` with an exit code | The launcher reported the test failed on the host (in the demo, a proxy refused the download with HTTP 407) | Fix the host, close the run, register a new one |
 | Runs stay `started` past their window; Time left shows *ending* | `service_svs` is down, or runs on a node with `ACE_IS_PRIMARY_NODE` not `1` (its log says it stays idle) | `docker compose up -d svs`; check the primary node setting |
 | No alerts attributed to a run | The marker never reached the alerts; the alert names neither the target's host name nor one of its IPs; the event time is outside the window (host clock, slow ingestion); the marker is on a command line and the detection on a sibling file | Search `data/logs/ace-engine` for the marker: no line means it isn't in any alert; `other host` or `outside window` is the next row. Check the hunt completion records. Associate alerts by hand. |
 | An alert shows MARKER MISMATCH | Its marker is unknown (another instance's run, a copy-paste), on a host that isn't the run's target, or outside the window (before `start`, after the attribution window) | Register the right targets; call `start` before the test fires; raise `attribution_extra_hours` for late telemetry. A mismatch is never taken back, but a person can associate the alert by hand. |
-| `TEST?` alerts pile up, or `svs context attribution … refused` warnings | Context attribution takes any alert about a target inside a run's window; with two overlapping runs on one host, it attributes nothing | Run one test per host at a time; keep test hosts quiet; reviewers mark noise *Not a test* |
+| `TEST?` alerts pile up, or `svs context attribution … refused` warnings | Context attribution takes any alert about a target inside a run's window; when several runs' windows cover it, the one that started last takes it. Only runs whose holds on the host overlapped, which only runs registered before ACE enforced one run per host can have, attribute nothing. | Keep test hosts quiet; check *The test leaves something behind* on tests that do; reviewers mark noise *Not a test* |
 | A run's alert stays in the default queue as PARTIAL TEST | Some of its detections aren't on the marker's branch of the analysis tree | Expected. Analysts triage the other detections; the run stays in *Needs attention* until the alert is dispositioned. |
 | Validations stay `queued` | `service_svs` is down or idle (nothing else signals it, see *Known limitations*); or one long validation holds the only worker | Start `svs`; raise `svs.yara.max_concurrent_validations` |
 | Validation failed: `commit … is not in repository …` | CI ran before the branch was pushed, the commit was rebased away, or it exists only in a fork | Push the branch and re-run the CI job |

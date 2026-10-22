@@ -14,12 +14,18 @@ from pydantic import ValidationError
 from sqlalchemy import Select, and_, or_, select
 
 from aceapi_v2.common.listing import InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
-from aceapi_v2.svs.catalog.schemas import CATALOG_TEST_CSV_FIELDS, CatalogTest, CatalogTestDetail, PlatformState
+from aceapi_v2.svs.catalog.schemas import (
+    CATALOG_TEST_CSV_FIELDS,
+    CatalogRepository,
+    CatalogTest,
+    CatalogTestDetail,
+    PlatformState,
+)
 from saq.database.model import SVSCatalogTest
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_TESTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
-from saq.svs.catalog import supported_platforms
+from saq.svs.catalog import repository_status, supported_platforms
 from saq.svs.catalog_filters import catalog_filter_conditions
 from saq.svs.samples import to_utc_naive
 from saq.svs.test_state import TestHistory, catalog_histories
@@ -118,3 +124,7 @@ def get_catalog_test(guid: str) -> CatalogTestDetail:
         for platform, state in history.platform_states.items()]
     return CatalogTestDetail(**_row(test, history), platform_states=platform_states, description=test.description,
                              test=json.loads(test.test))
+
+
+def list_repositories() -> list[CatalogRepository]:
+    return [CatalogRepository(**vars(status)) for status in repository_status()]

@@ -36,8 +36,10 @@ RUN sed -i -e '/^Components: main$/ s/$/ contrib non-free/' /etc/apt/sources.lis
     sed -i -e '/^Suites: trixie trixie-updates$/ s/$/ trixie-backports/' /etc/apt/sources.list.d/debian.sources
 
 # install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# (tshark: answer wireshark-common's debconf question up front; dumpcap is never installed setuid)
+RUN echo "wireshark-common wireshark-common/install-setuid boolean false" | debconf-set-selections && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         7zip \
         7zip-rar \
         apt-transport-https \
@@ -99,6 +101,7 @@ RUN apt-get update && \
         ssdeep \
         strace \
         tesseract-ocr \
+        tshark \
         unace-nonfree \
         unixodbc-dev \
         unrar \

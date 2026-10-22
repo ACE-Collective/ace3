@@ -196,6 +196,7 @@ F_IPV4_CONVERSATION = 'ipv4_conversation'
 F_IPV4_FULL_CONVERSATION = 'ipv4_full_conversation'
 F_JA3 = 'ja3'
 F_JA3S = 'ja3s'
+F_JA4 = 'ja4'
 F_JARM_HASH = 'jarm_hash'
 F_MAC_ADDRESS = 'mac_address'
 F_MD5 = 'md5'
@@ -368,6 +369,7 @@ DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL = 'extract_urls_domain_as_url'
 DIRECTIVE_FORCE_DOWNLOAD = 'force_download'
 DIRECTIVE_IGNORE_AUTOMATION_LIMITS = 'ignore_automation_limits'
 DIRECTIVE_NO_CACHE = 'no_cache'
+DIRECTIVE_NO_CRAWL = 'no_crawl'
 DIRECTIVE_NO_SANDBOX = 'no_sandbox'
 DIRECTIVE_NO_SCAN = 'no_scan'
 DIRECTIVE_OCR = 'ocr'
@@ -405,6 +407,7 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_FORCE_DOWNLOAD: 'download the content of the URL no matter what',
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS: 'ignores any automation limits when analyzing this observable',
     DIRECTIVE_NO_CACHE: 'do not use local cache',
+    DIRECTIVE_NO_CRAWL: 'do not add crawl URLs for names extracted from this observable (e.g. a passively observed certificate)',
     DIRECTIVE_NO_SANDBOX: 'do not run the observable through any sandboxes',
     DIRECTIVE_NO_SCAN: 'do not scan this file with yara',
     DIRECTIVE_OCR: 'run OCR text extraction on this image file',
@@ -1148,6 +1151,12 @@ ANALYSIS_MODULE_OFFICEPARSER3 = "officeparser3"
 ANALYSIS_MODULE_OLEVBA_V1_2 = "olevba_v1_2"
 ANALYSIS_MODULE_ONENOTE_EXTRACTION = "onenote_extraction"
 ANALYSIS_MODULE_PARSE_URL = "parse_url"
+ANALYSIS_MODULE_PCAP_ANALYZER = "pcap_analyzer"
+ANALYSIS_MODULE_PCAP_DNS = "pcap_dns"
+ANALYSIS_MODULE_PCAP_FILES = "pcap_files"
+ANALYSIS_MODULE_PCAP_HTTP = "pcap_http"
+ANALYSIS_MODULE_PCAP_TLS = "pcap_tls"
+ANALYSIS_MODULE_PCAP_TLS_DECRYPTION = "pcap_tls_decryption"
 ANALYSIS_MODULE_PCODEDMP = "pcodedmp"
 ANALYSIS_MODULE_PDF_ANALYZER = "pdf_analyzer"
 ANALYSIS_MODULE_PDFTOTEXT = "pdftotext"
@@ -1161,6 +1170,7 @@ ANALYSIS_MODULE_SITE_TAGGER = "site_tagger"
 ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1 = "snort_signature_analysis_v1"
 ANALYSIS_MODULE_SPLUNK_API = "splunk_api"
 ANALYSIS_MODULE_SSDEEP = "ssdeep"
+ANALYSIS_MODULE_TLS_KEYLOG = "tls_keylog"
 ANALYSIS_MODULE_UPX = "upx"
 ANALYSIS_MODULE_URL_EMAIL_PIVOT_ANALYZER = "url_email_pivot_analyzer"
 ANALYSIS_MODULE_URL_EXTRACTION = "url_extraction"

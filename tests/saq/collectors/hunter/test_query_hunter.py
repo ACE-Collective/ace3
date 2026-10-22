@@ -48,12 +48,12 @@ from saq.observables.mapping import (
 )
 from saq.query.config import SummaryDetailConfig
 from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
-from saq.svs import attribution
-from saq.svs.attribution import run_suppression_key
+from saq.svs import attribution, maintenance
 from saq.svs.markers import new_marker
+from saq.svs.refusals import Caller
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.svs.conftest import add_catalog_test, add_test_host
 
 
 class TestQueryHunt(QueryHunt):
@@ -864,6 +864,72 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog, hunt
     group_values = sorted(s.group_value for s in submissions)
     assert group_values == ["1.2.3.4", "5.6.7.8"]
     assert "ignoring suppression" in caplog.text
+
+
+def _grouped_hunt(hunt_manager, name: str):
+    """A grouped hunt with suppression whose group 1.2.3.4 just alerted."""
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name=name,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="00:01:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+    )
+    hunt.set_last_alert_time(local_time(), "1.2.3.4")
+    return hunt
+
+
+@pytest.mark.unit
+def test_per_group_suppression_records_the_suppressed_matches_for_svs(monkeypatch, hunt_manager):
+    """Only the dropped matches go to svs, each with its root and group_value."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    recorded = []
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches",
+                        lambda hunt_uuid, matches: recorded.append((hunt_uuid, matches)))
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record")
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
+
+    assert [s.group_value for s in submissions] == ["5.6.7.8"]
+    assert len(recorded) == 1
+    hunt_uuid, matches = recorded[0]
+    assert hunt_uuid == hunt.uuid
+    assert [value for _, value in matches] == ["1.2.3.4"]
+    assert any(o.value == "1.2.3.4" for o in matches[0][0].observables)
+
+
+@pytest.mark.unit
+def test_per_group_suppression_records_nothing_for_a_manual_hunt(monkeypatch, hunt_manager):
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    recorded = []
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches",
+                        lambda hunt_uuid, matches: recorded.append(matches))
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record_manual")
+    hunt.manual_hunt = True
+
+    assert len(hunt.process_query_results([{"src": "1.2.3.4"}])) == 1
+    assert recorded == []
+
+
+@pytest.mark.unit
+def test_a_failure_to_record_suppressed_matches_keeps_the_suppression(monkeypatch, caplog, hunt_manager):
+    """The record is lost, logged at ERROR with its traceback; the group stays suppressed."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    def fail(hunt_uuid, matches):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches", fail)
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record_failure")
+
+    with caplog.at_level(logging.ERROR):
+        submissions = hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
+
+    assert [s.group_value for s in submissions] == ["5.6.7.8"]
+    record = next(r for r in caplog.records if "unable to record the suppressed matches" in r.getMessage())
+    assert record.levelno == logging.ERROR and record.exc_info is not None
+    assert (record.hunt_uuid, record.group_values) == (hunt.uuid, ["1.2.3.4"])
 
 
 @pytest.mark.unit
@@ -5384,7 +5450,7 @@ def _svs_run(started: datetime, host: str = "win10-01") -> SVSRun:
     return run
 
 
-def _grouped_hunt(hunt_manager):
+def _svs_grouped_hunt(hunt_manager):
     return default_hunt(
         manager=hunt_manager,
         name="test_svs_run_suppression",
@@ -5405,7 +5471,7 @@ def _record(hunt, submissions):
 def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, caplog):
     now = datetime.now()
     first = _svs_run(now - timedelta(hours=2))
-    hunt = _grouped_hunt(hunt_manager)
+    hunt = _svs_grouped_hunt(hunt_manager)
     # an alert on the test host before the run suppresses its group
     before = local_time()
     hunt.set_last_alert_time(before, "win10-01")
@@ -5413,7 +5479,7 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     with caplog.at_level(logging.INFO):
         submissions = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert {s.group_value: s.suppression_key for s in submissions} == {
-        "win10-01": run_suppression_key(first.uuid, "win10-01"), "prod-01": "prod-01"}
+        "win10-01": f"svs_run:{first.uuid}:win10-01", "prod-01": "prod-01"}
     (record,) = [r for r in caplog.records if "suppression keyed by svs run" in r.getMessage()]
     assert (record.svs_run, record.group_value) == (first.uuid, "win10-01")
     _record(hunt, submissions)
@@ -5426,7 +5492,21 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     # the same test again, within the hunt's suppression period: the next run's first match alerts
     second = _svs_run(now - timedelta(minutes=30))
     (submission,) = hunt.process_query_results([{"host": "win10-01"}])
-    assert submission.suppression_key == run_suppression_key(second.uuid, "win10-01")
+    assert submission.suppression_key == f"svs_run:{second.uuid}:win10-01"
+
+
+@pytest.mark.integration
+def test_a_maintenance_windows_matches_are_suppressed_under_the_windows_own_key(hunt_manager, caplog):
+    """A host's staging never suppresses production or a run (docs/SVS_RUNS.md, *Maintenance windows*)."""
+    add_test_host("win10-01")
+    window = maintenance.open_window("win10-01", 30, "staging", Caller(name="art-launcher"),
+                                     now=datetime.now() - timedelta(minutes=10))
+    hunt = _svs_grouped_hunt(hunt_manager)
+    with caplog.at_level(logging.INFO):
+        (submission,) = hunt.process_query_results([{"host": "win10-01"}])
+    assert submission.suppression_key == f"svs_maintenance:{window.uuid}:win10-01"
+    (record,) = [r for r in caplog.records if "suppression keyed by svs maintenance window" in r.getMessage()]
+    assert (record.svs_maintenance, record.group_value) == (window.uuid, "win10-01")
 
 
 @pytest.mark.integration
@@ -5434,7 +5514,7 @@ def test_without_a_run_the_group_is_the_key(hunt_manager):
     # a run on another host, and one whose window is over
     _svs_run(datetime.now(), host="win10-02")
     _svs_run(datetime.now() - timedelta(hours=30))
-    hunt = _grouped_hunt(hunt_manager)
+    hunt = _svs_grouped_hunt(hunt_manager)
     hunt.set_last_alert_time(local_time(), "win10-01")
     assert hunt.process_query_results([{"host": "win10-01"}]) == []
     (submission,) = hunt.process_query_results([{"host": "prod-01"}])
@@ -5444,13 +5524,13 @@ def test_without_a_run_the_group_is_the_key(hunt_manager):
 @pytest.mark.integration
 def test_a_failure_to_key_by_run_falls_back_to_the_group(hunt_manager, monkeypatch, caplog):
     _svs_run(datetime.now())
-    hunt = _grouped_hunt(hunt_manager)
+    hunt = _svs_grouped_hunt(hunt_manager)
     hunt.set_last_alert_time(local_time(), "win10-01")
 
     def broken(roots):
         raise RuntimeError("database went away")
 
-    monkeypatch.setattr(query_hunter_module, "suppression_runs", broken)
+    monkeypatch.setattr(query_hunter_module, "suppression_owners", broken)
     with caplog.at_level(logging.ERROR):
         (submission,) = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert submission.suppression_key == "prod-01"

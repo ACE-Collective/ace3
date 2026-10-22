@@ -10,7 +10,7 @@ from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file
+from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file, is_pcap_file
 from saq.observables.file import FileObservable
 from saq.util.strings import format_item_list_for_summary
 
@@ -195,6 +195,11 @@ class ArchiveAnalyzer(AnalysisModule):
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error("cannot find local file path for {}".format(_file))
+            return AnalysisExecutionResult.COMPLETED
+
+        # a capture is never an archive, but libmagic calls a pcapng application/octet-stream, which 7z
+        # then "extracts" junk from; the pcap modules dissect it instead
+        if is_pcap_file(local_file_path):
             return AnalysisExecutionResult.COMPLETED
 
         # we need file type analysis first
