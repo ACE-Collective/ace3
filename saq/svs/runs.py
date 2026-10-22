@@ -513,7 +513,7 @@ class RegistrationDecision:
 
     @property
     def refused(self) -> list[tuple[TargetSpec, str]]:
-        return [(target, match.reason or "not a test host") for target, match in self.matches if not match.matched]
+        return [(target, match.reason) for target, match in self.matches if not match.matched]
 
 
 def decide(registration: Registration, now: Optional[datetime] = None) -> RegistrationDecision:

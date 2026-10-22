@@ -60,7 +60,7 @@ does nothing until you grant it.
 | `svs:run_read` | The SVS area (Runs, Tests, Coverage, Worklist), run and test pages, the catalog, the test hosts list, and their read APIs |
 | `svs:run_manage` | Taking ownership of, canceling, closing and reviewing runs; a test's expectations, ignores and observation window; resolving worklist rows; associating alerts with runs by hand |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores; retiring and deleting YARA samples |
-| `svs:run_register` | The launcher's calls: register, start, executed, cancel |
+| `svs:run_register` | The launcher's calls: validate, register, start, executed, cancel |
 | `svs:validate` | Requesting a YARA validation and reading its status (counts and rule names only) |
 | `signature:read` | The Signatures hub, including the Samples and Validations cards and validation reports |
 | `signature:download` | The bytes of samples and QA matches, in zips protected with the password `infected` |
@@ -391,6 +391,7 @@ The launcher drives each run through `/api/v2/svs/runs` with its `svs:run_regist
 
 | Step | Call | Notes |
 |---|---|---|
+| 0. Check | `POST /api/v2/svs/runs/validate` | Optional, a dry run. The register body; answers 200 with what registering would decide (`decision`, the `status_code` it would answer, each target judged) and creates no run, refusal or alert. |
 | 1. Register | `POST /api/v2/svs/runs/` | Body: `test_guid`, `targets` (each `hostname` and `username`), `launcher` (required, 1 to 256 characters), optional `batch_id` and `extra`. Answers 201 with `run_id`, `marker`, `platform` and the window lengths. |
 | 2. Put the marker in the test | none | As an input argument the test passes to its command, or as a trailing comment on the executor's command in a per-run copy of the test's YAML |
 | 3. Start | `POST /api/v2/svs/runs/{run_id}/start` | Right before the test fires. The windows start now. |

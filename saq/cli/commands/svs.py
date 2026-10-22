@@ -237,30 +237,19 @@ catalog_refresh_parser.set_defaults(func=cli_catalog_refresh)
 
 def cli_catalog_status(args):
     """Print each catalog repository's commit, test count and last error."""
-    from sqlalchemy import func
+    from saq.svs.catalog import RETIRED_ERROR, repository_status
 
-    from saq.configuration.config import get_config
-    from saq.database.model import SVSCatalogRepository, SVSCatalogTest
-    from saq.database.pool import get_db
-    from saq.svs.catalog import RETIRED_ERROR
-
-    configured = get_config().svs.catalog.repositories
-    rows = {row.name: row for row in get_db().query(SVSCatalogRepository)}
-    removed = dict(get_db().query(SVSCatalogTest.repository, func.count(SVSCatalogTest.id))
-                   .filter(SVSCatalogTest.removed_at.isnot(None)).group_by(SVSCatalogTest.repository))
-    for name in sorted(set(configured) | set(rows)):
-        row = rows.get(name)
-        state = "" if name in configured else " (no longer in svs.catalog.repositories)"
-        error = row.error if row is not None else None
-        if error == RETIRED_ERROR:
-            state, error = f" ({RETIRED_ERROR})", None
-        if row is None or row.refreshed_at is None:
-            print(f"{name}{state}: never read" + (f"; last error: {error}" if error else ""))
+    for status in repository_status():
+        state = "" if status.configured else " (no longer in svs.catalog.repositories)"
+        if status.retired:
+            state = f" ({RETIRED_ERROR})"
+        error = f"; last error: {status.error}" if status.error else ""
+        if status.refreshed_at is None:
+            print(f"{status.name}{state}: never read{error}")
             continue
 
-        print(f"{name}{state}: {row.test_count} tests at {_short(row.commit)}, read {row.refreshed_at}, "
-              f"{row.skipped_count} skipped, {removed.get(name, 0)} removed since"
-              + (f"; last error: {error}" if error else ""))
+        print(f"{status.name}{state}: {status.test_count} tests at {_short(status.commit)}, read {status.refreshed_at}, "
+              f"{status.skipped_count} skipped, {status.removed_count} removed since{error}")
     return 0
 
 
