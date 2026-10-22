@@ -137,6 +137,7 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
 | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). 409 when another run holds a target's host. |
 | `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
+| `POST /api/v2/svs/runs/{run_id}/cleanup` | Optional. The test's cleanup begins now (*Cleanup*, below). |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
 | `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
 
@@ -195,6 +196,26 @@ It only reads: no run, no event, no refusal row and no alert, so a launcher can 
 against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
 `validate`, `outcome`, `reasons`). What it reads can change before the launcher registers (a test
 host edited, an expectation decided), so registering still decides for itself.
+
+### Cleanup
+
+Atomic tests clean up after themselves (`cleanup_command`), inside the run's window, and what the
+cleanup does can fire signatures that are not what the test is about. A launcher that calls
+`POST /api/v2/svs/runs/{run_id}/cleanup` just before it runs the cleanup records when it began
+(`cleanup_at`), on a `started` run, once (409 in any other state, and the second time). The call is
+in the event log like the other launcher calls.
+
+- **Which detections.** Each attribution keeps the alert's event time it was judged by
+  (`event_time`); one at or after `cleanup_at` is the cleanup's (`cleanup` on the attribution and on
+  the run's alert). One written before event times were kept is the test's.
+- **Still the run's.** Its alerts are routed to the test queue, closed with the run and kept or
+  marked not a test like any other.
+- **Left out of what the run teaches.** A signature the test fired outside its cleanup is counted
+  by those alerts alone. One that fired only during the cleanup is `cleanup` in the result: never a
+  candidate, so a review never proposes it as an expectation. If it is expected, it is `missing`.
+  An analyst can still decide it by hand on the test (*Expectations and ignores*).
+- **On the run page,** the result lists what fired only during the cleanup apart, after the rest,
+  and the alerts and detections say *cleanup*.
 
 ### The marker
 
@@ -696,12 +717,14 @@ below), each signature is:
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
 | `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunt alerted within that period before the run's window closed (below) |
+| `cleanup` | It fired only during the test's cleanup, and it isn't expected (*Cleanup*, above) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
 | `ignored` | It fired, and it is ignored for the test or globally |
 
-- **Precedence.** A signature that fired is `ignored` before anything else, then `hit`, then
-  `rejected`, then `candidate`. An ignored signature is never missing either.
+- **Precedence.** A signature that fired only during the cleanup is `cleanup`, or `missing` when it
+  is expected. Any other that fired is `ignored` before anything else, then `hit`, then `rejected`,
+  then `candidate`. An ignored signature is never missing either.
 - **Signatures that never count.** `generic`, `legacy` and `yara_rule_match` stand for many
   unrelated detections (no specific signature, detections from before signatures were recorded, a
   YARA rule without a `uuid`). `observable_flagged_for_detection` fires on whatever analysts

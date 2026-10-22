@@ -31,6 +31,7 @@ from saq.svs.runs import (
     TargetSpec,
     UnknownRun,
     cancel,
+    cleanup,
     executed,
     register,
     run_timers,
@@ -429,6 +430,39 @@ def test_executed_before_start_is_a_conflict():
     with pytest.raises(RunStateConflict):
         executed(run.uuid, LAUNCHER, 0)
     assert _state(run.uuid).executed_at is None
+
+
+def test_cleanup_is_recorded_once_on_a_started_run(caplog):
+    run = register(_registration(), LAUNCHER, now=T0)
+    with pytest.raises(RunStateConflict):
+        cleanup(run.uuid, LAUNCHER, now=T0)
+
+    start(run.uuid, LAUNCHER, now=T0)
+    caplog.set_level(logging.INFO)
+    cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3))
+    assert _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
+    event = _events(run.uuid)[-1]
+    assert (event.kind, json.loads(event.details)) == (RunEventKind.LAUNCHER_CALL, {
+        "call": "cleanup", "outcome": "recorded", "payload": {"cleanup_at": (T0 + timedelta(minutes=3)).isoformat()}})
+    (record,) = [r for r in caplog.records if getattr(r, "call", None) == "cleanup" and r.outcome == "recorded"]
+    assert record.svs_run == run.uuid
+
+    # once: the second call is a conflict, recorded, and changes nothing
+    with pytest.raises(RunStateConflict):
+        cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=4))
+    assert _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
+    assert json.loads(_events(run.uuid)[-1].details)["outcome"] == "conflict"
+
+
+def test_cleanup_begins_at_the_whole_second_of_the_call():
+    # stored from the exact time, it would round up past a cleanup detection of that second
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    returned = cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3, milliseconds=600))
+
+    assert returned.cleanup_at == _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
+    assert json.loads(_events(run.uuid)[-1].details)["payload"] == {
+        "cleanup_at": (T0 + timedelta(minutes=3)).isoformat()}
 
 
 def test_cancel_a_started_run_keeps_its_windows():

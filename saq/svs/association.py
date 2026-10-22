@@ -157,16 +157,13 @@ def _audit(message: str, run: SVSRun, alert_uuid: str, actor: str, user_id: int,
                                              "actor_user_id": user_id, **fields})
 
 
-def _late(alert: _Alert, run: SVSRun) -> bool:
-    """The alert's event came after the run's observation window, judged as the router judges it."""
-    if run.observation_ends_at is None:
-        return False
+def _event_time(alert: _Alert) -> datetime:
+    """The alert's event time, judged as the router judges it."""
     try:
-        event_time = alert_event_time(load_root(alert.storage_dir), alert.insert_date)
+        return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
     except Exception as e:
         logging.warning("unable to load alert %s for its event time; using its insert time: %s", alert.uuid, e)
-        event_time = alert.insert_date
-    return event_time > run.observation_ends_at
+        return alert.insert_date
 
 
 #
@@ -193,9 +190,10 @@ def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: 
         db.rollback()
         raise InvalidAssociation(f"alert {alert.uuid} has no detections to attribute")
 
-    late = _late(alert, run)
+    event_time = _event_time(alert) if run.observation_ends_at is not None else None
+    late = event_time is not None and event_time > run.observation_ends_at
     manual = {"source": AttributionSource.MANUAL.value, "confidence": AttributionConfidence.MARKER.value,
-              "scan_point": None, "late": late, "actor": actor[:256], "actor_user_id": user_id,
+              "scan_point": None, "late": late, "event_time": event_time, "actor": actor[:256], "actor_user_id": user_id,
               "removed_at": None, "removed_by": None, "removed_by_user_id": None, "removal_reason": None}
     for content_hash, signature_uuid, signature_family in detections:
         db.execute(mysql_insert(SVSAttribution)

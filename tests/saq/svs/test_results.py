@@ -25,7 +25,7 @@ from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.signatures.builtin import GENERIC, OBSERVABLE_FLAGGED
 from saq.signatures.loaders.util import content_hash
-from saq.svs import expectations, results, runs, windows
+from saq.svs import expectations, results, review, runs, windows
 from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.runs import Registration, TargetSpec
@@ -84,12 +84,13 @@ def _run(test_guid: str = GUID, *, ended: bool = True, started_at: timedelta = t
 
 
 def _attribute(run: SVSRun, signature_uuid: str, *, alert_uuid=None, late=False, confidence="marker",
-               removed=False) -> str:
+               removed=False, event_time: Optional[datetime] = None) -> str:
     alert_uuid = alert_uuid or str(uuid.uuid4())
     with private_transaction() as session:
         session.add(SVSAttribution(
             run_id=run.id, alert_uuid=alert_uuid, content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             signature_uuid=signature_uuid, signature_family="yara", confidence=confidence, late=late,
+            event_time=event_time,
             source="router", actor="svs", created_at=datetime.now(),
             removed_at=datetime.now() if removed else None, removed_by="svs" if removed else None))
     return alert_uuid
@@ -153,6 +154,33 @@ class TestStatuses:
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "hit", YARA: "rejected", NOISE: "ignored", OTHER: "candidate",
                                   missing: "missing"}
+
+    def test_what_fired_only_in_the_cleanup(self, user_id):
+        run = _run()
+        cleanup_at = run.started_at + timedelta(minutes=10)
+        db = get_db()
+        db.execute(update(SVSRun).where(SVSRun.id == run.id).values(cleanup_at=cleanup_at))
+        db.commit()
+        before, after = cleanup_at - timedelta(minutes=1), cleanup_at
+        # fired by the test and again by its cleanup: counted by the test's alerts alone
+        _attribute(run, HUNT, event_time=before)
+        _attribute(run, HUNT, event_time=after)
+        _attribute(run, HUNT, event_time=after)
+        # fired only by the cleanup: not a candidate
+        _attribute(run, OTHER, event_time=after)
+        # expected, and fired only by the cleanup: missing
+        _attribute(run, YARA, event_time=after + timedelta(minutes=1))
+        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
+        # an attribution from before event times were kept is the test's
+        _attribute(run, NOISE)
+
+        results.compute_result(run.id)
+        assert _statuses(run) == {HUNT: "candidate", OTHER: "cleanup", YARA: "missing", NOISE: "candidate"}
+        assert _row(run, HUNT).alert_count == 1
+        assert _row(run, OTHER).alert_count == 1
+        # nothing the cleanup fired stands in the way of a review
+        assert review.review_blockers(get_db(), get_db().get(SVSRun, run.id), lock=False)["candidates"] == sorted(
+            [HUNT, NOISE])
 
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()

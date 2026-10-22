@@ -79,6 +79,7 @@ from saq.svs import review, run_comments, runs
 from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
+from saq.svs.results import cleanup_condition
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries, suppression_share
 from saq.svs.samples import to_utc_naive
@@ -98,7 +99,7 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
         targets=[_target(t) for t in run.targets],
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
         holds_host=run.holds_host, created_at=run.created_at, started_at=run.started_at,
-        observation_ends_at=run.observation_ends_at,
+        cleanup_at=run.cleanup_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason)
 
 
@@ -171,6 +172,10 @@ def executed(run_id: str, body: RunExecutedRequest, caller: Caller) -> RunLifecy
     return _call(runs.executed, run_id, caller, body.exit_code, body.error)
 
 
+def cleanup(run_id: str, caller: Caller) -> RunLifecycle:
+    return _call(runs.cleanup, run_id, caller)
+
+
 def cancel(run_id: str, caller: Caller) -> RunLifecycle:
     return _call(runs.cancel, run_id, caller)
 
@@ -228,7 +233,8 @@ def _row_values(row) -> dict:
         run_id=run.uuid, state=run.state, test_guid=run.test_guid, test_name=test_name, technique=technique,
         technique_name=technique_name, platform=run.platform, marker=run.marker, targets=[_target(t) for t in run.targets],
         launcher=run.launcher, batch_id=run.batch_id, created_at=run.created_at, started_at=run.started_at,
-        executed_at=run.executed_at, exit_code=run.exit_code, ended_at=run.ended_at, canceled_at=run.canceled_at,
+        executed_at=run.executed_at, exit_code=run.exit_code, cleanup_at=run.cleanup_at, ended_at=run.ended_at,
+        canceled_at=run.canceled_at,
         closed_at=run.closed_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason,
         owner=owner, reviewer=reviewer, reviewed_at=run.reviewed_at, changed_since_review=run.changed_since_review,
@@ -240,7 +246,8 @@ def _summary_values(summary: RunSummary) -> dict:
         result_hit=summary.hit, result_expected=summary.expected,
         result_missing=summary.missing + summary.possibly_suppressed,
         result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
-        result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        result_rejected=summary.rejected, result_ignored=summary.ignored, result_cleanup=summary.cleanup,
+        result_stale=summary.result_stale,
         reviewed_hit=summary.reviewed_hit, reviewed_expected=summary.reviewed_expected,
         reviewed_missing=summary.reviewed_missing + summary.reviewed_possibly_suppressed,
         reviewed_possibly_suppressed=summary.reviewed_possibly_suppressed,
@@ -655,7 +662,8 @@ def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> 
 
 def _attributions_statement() -> Select:
     actor, remover, keeper = aliased(User), aliased(User), aliased(User)
-    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username)
+    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username,
+                   cleanup_condition().label("cleanup"))
             .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
             .outerjoin(actor, actor.id == SVSAttribution.actor_user_id)
             .outerjoin(remover, remover.id == SVSAttribution.removed_by_user_id)
@@ -663,11 +671,12 @@ def _attributions_statement() -> Select:
 
 
 def _attribution(row) -> Attribution:
-    attribution, run_uuid, actor_user, removed_by_user, kept_by_user = row
+    attribution, run_uuid, actor_user, removed_by_user, kept_by_user, cleanup = row
     return Attribution(
         id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
         signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
-        confidence=attribution.confidence, late=attribution.late, source=attribution.source,
+        confidence=attribution.confidence, late=attribution.late, event_time=attribution.event_time,
+        cleanup=bool(cleanup), source=attribution.source,
         scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
         created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
         removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,
@@ -720,7 +729,8 @@ def _run_alert(alert_uuid: str, alert, attributions: list[Attribution], detectio
                                   signature_family=a.signature_family, attribution=a) for a in by_hash.values())
     return RunAlert(
         alert_uuid=alert_uuid, alert=alert, holds=bool(holding), confidence=confidence,
-        late=any(a.late for a in holding), manual=any(a.source == "manual" for a in holding),
+        late=any(a.late for a in holding), cleanup=bool(holding) and all(a.cleanup for a in holding),
+        manual=any(a.source == "manual" for a in holding),
         kept=any(a.kept_at is not None for a in context),
         undecided_context=any(a.kept_at is None for a in context), detections=rows)
 

@@ -52,6 +52,7 @@ class RunLifecycle(BaseModel):
                                          "observation window (its test's settings)")
     created_at: datetime
     started_at: Optional[datetime] = None
+    cleanup_at: Optional[datetime] = Field(default=None, description="when the launcher said the test's cleanup began")
     observation_ends_at: Optional[datetime] = None
     attribution_ends_at: Optional[datetime] = None
     error_reason: Optional[str] = None
@@ -120,6 +121,8 @@ class RunRow(BaseModel):
     started_at: Optional[datetime] = None
     executed_at: Optional[datetime] = Field(default=None, description="when the launcher reported how the test executed")
     exit_code: Optional[int] = None
+    cleanup_at: Optional[datetime] = Field(default=None, description="when the launcher said the test's cleanup began: "
+                                                                     "detections after it are the cleanup's")
     ended_at: Optional[datetime] = None
     canceled_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -139,6 +142,7 @@ class RunRow(BaseModel):
     result_candidate: int = Field(default=0, description="signatures that fired and nobody has decided about")
     result_rejected: int = Field(default=0)
     result_ignored: int = Field(default=0)
+    result_cleanup: int = Field(default=0, description="signatures that fired only during the test's cleanup")
     result_stale: bool = Field(default=False, description="the result is about to be recomputed")
     reviewed_hit: int = Field(default=0, description="result_hit as signed off at the run's latest review; 0 until it is reviewed")
     reviewed_expected: int = Field(default=0, description="result_expected as signed off")
@@ -251,8 +255,8 @@ class RunResult(BaseModel):
     signature_name: Optional[str] = None
     status: Optional[str] = Field(
         default=None,
-        description="hit, missing, possibly_suppressed, candidate, rejected or ignored; null once the signature "
-                    "left the live result and the row holds only the reviewed result")
+        description="hit, missing, possibly_suppressed, candidate, rejected, ignored or cleanup; null once the "
+                    "signature left the live result and the row holds only the reviewed result")
     alert_count: int = Field(description="the run's attributed alerts that carry the signature")
     late_only: bool = Field(description="every attribution of it is late")
     context_only: bool = Field(description="every attribution of it is by context alone")
@@ -290,6 +294,10 @@ class Attribution(BaseModel):
     signature_family: Optional[str] = None
     confidence: str = Field(description="marker or context; a person's association is marker")
     late: bool = Field(description="the alert's event came after the run's observation window")
+    event_time: Optional[datetime] = Field(default=None, description="the alert's event time it was judged by; null "
+                                                                     "for attributions written before it was kept")
+    cleanup: bool = Field(description="its event time is at or after the run's cleanup_at: the test's cleanup caused it, "
+                                      "so it is left out of the run's candidates and expectations")
     source: str = Field(description="router (the marker router) or manual (a person associated the alert)")
     scan_point: Optional[str] = Field(default=None, description="where the agreeing marker was found; null for context or manual")
     actor: str = Field(description="who attributed it: svs for the router, else the person")
@@ -329,6 +337,7 @@ class RunAlert(BaseModel):
     confidence: Optional[str] = Field(
         default=None, description="of those that hold: marker when any is (a person's association is marker), else context")
     late: bool = Field(description="an attribution that holds is late")
+    cleanup: bool = Field(description="every attribution that holds is the test's cleanup's")
     manual: bool = Field(description="an attribution that holds was made by a person")
     kept: bool = Field(description="a person kept its context attributions")
     undecided_context: bool = Field(

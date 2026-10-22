@@ -68,9 +68,10 @@ def run() -> SVSRun:
     return started_run(GUID, now=datetime.now() - timedelta(minutes=1))
 
 
-def _alert(*, marker=None, host="win10-01", analysis_mode=None) -> RootAnalysis:
+def _alert(*, marker=None, host="win10-01", analysis_mode=None, event_time=None) -> RootAnalysis:
     """An alert inserted through ALERT(), which the marker router judges."""
-    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode=analysis_mode)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=event_time or datetime.now(),
+                                analysis_mode=analysis_mode)
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, host)
     if marker:
@@ -112,7 +113,9 @@ def _events(run: SVSRun, kind: RunEventKind) -> list[dict]:
 
 class TestAssociate:
     def test_an_unattributed_alert(self, run, user_id):
-        root = _alert(host="srv-01")
+        # an event time well before the alert's insert time, so the two can't be confused
+        event_time = (datetime.now() - timedelta(seconds=30)).replace(microsecond=0)
+        root = _alert(host="srv-01", event_time=event_time)
         assert _row(root.uuid).queue == QUEUE_DEFAULT
 
         result = association.associate(run.uuid, root.uuid, user_id, ACTOR, "seen on the test VM's console")
@@ -121,10 +124,26 @@ class TestAssociate:
         (row,) = _attributions(root.uuid, run.id)
         assert (row.source, row.confidence, row.scan_point, row.late, row.actor, row.actor_user_id) == (
             "manual", "marker", None, False, ACTOR, user_id)
+        assert row.event_time == event_time
         assert _last_change(root.uuid) == (QUEUE_DEFAULT, get_config().svs.queue, SVS_MANUAL_ROUTER)
         (event,) = _events(run, RunEventKind.ASSOCIATED)
         assert event["alert_uuid"] == root.uuid and event["reason"] == "seen on the test VM's console"
         assert get_db().get(SVSRunResultState, run.id).stale
+
+    def test_an_alert_whose_root_fails_to_load_is_judged_by_its_insert_time(self, run, user_id, monkeypatch,
+                                                                            caplog):
+        root = _alert(host="srv-01", event_time=(datetime.now() - timedelta(seconds=30)).replace(microsecond=0))
+
+        def fail(storage_dir):
+            raise OSError(f"no root in {storage_dir}")
+
+        monkeypatch.setattr(association, "load_root", fail)
+        association.associate(run.uuid, root.uuid, user_id, ACTOR)
+
+        (row,) = _attributions(root.uuid, run.id)
+        assert row.event_time == _row(root.uuid).insert_date
+        assert any(r.levelname == "WARNING" and r.getMessage().startswith(f"unable to load alert {root.uuid}")
+                   for r in caplog.records)
 
     def test_over_the_routers_rows(self, run, user_id):
         root = _alert(marker=run.marker)
