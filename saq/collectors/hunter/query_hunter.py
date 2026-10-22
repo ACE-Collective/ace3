@@ -1043,7 +1043,7 @@ class QueryHunt(Hunt):
                             file_obs.add_tag(tag)
                         if file_content.display_type is not None:
                             file_obs.display_type = file_content.display_type
-                    # note: display_value is not set for FileObservable as it's read-only
+                    # note: display_value is not set here, the mapping rejects it for file observables (validate_display_value_for_file_type)
 
                 submission.root.details[QUERY_DETAILS_EVENTS].append(event)
                 submissions.append(submission)
@@ -1091,7 +1091,7 @@ class QueryHunt(Hunt):
                                 file_obs.add_tag(tag)
                             if file_content.display_type is not None:
                                 file_obs.display_type = file_content.display_type
-                        # note: display_value is not set for FileObservable as it's read-only
+                        # note: display_value is not set here, the mapping rejects it for file observables (validate_display_value_for_file_type)
 
                     event_grouping[grouping_target].root.details[QUERY_DETAILS_EVENTS].append(event)
                     event_submission_map.setdefault(event_index, []).append(event_grouping[grouping_target])
