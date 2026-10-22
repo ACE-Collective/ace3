@@ -113,6 +113,27 @@ class TestFallbackEventTime:
         assert (warning.hunt, warning.alert_uuid, warning.svs_run, warning.stage) == (
             "suspicious powershell", root.uuid, run_uuid, "pre_insert")
 
+    def test_a_hunt_first_attributed_by_a_later_pass_is_warned_about_then(self, run, caplog):
+        run_uuid = run.uuid
+        # as inserted, it names no host, so nothing concerns a run
+        root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() + timedelta(minutes=1))
+        root.initialize_storage()
+        root.add_detection_point("hunt hit")
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert _attributions(root.uuid) == []
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+
+        # analysis finds the test host
+        root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+        root.save()
+        sync_alert(root)
+        assert _attributions(root.uuid) == [("context", False)]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.alert_uuid, warning.svs_run, warning.stage) == (root.uuid, run_uuid, "post_analysis")
+
     def test_the_events_own_time_is_not_warned_about(self, run, caplog):
         root = _root()
         caplog.set_level(logging.INFO)

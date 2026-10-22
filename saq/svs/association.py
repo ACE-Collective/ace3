@@ -193,7 +193,8 @@ def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: 
         raise InvalidAssociation(f"alert {alert.uuid} has no detections to attribute")
 
     event_time, source = _event_time(alert)
-    late = event_time > run.observation_ends_at
+    # a run canceled or timed out before it started has no observation window to be late for
+    late = run.observation_ends_at is not None and event_time > run.observation_ends_at
     manual = {"source": AttributionSource.MANUAL.value, "confidence": AttributionConfidence.MARKER.value,
               "scan_point": None, "late": late, "event_time": event_time, "event_time_source": source.value,
               "actor": actor[:256], "actor_user_id": user_id,

@@ -3,6 +3,7 @@
 saq.svs.attribution)."""
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -172,6 +173,32 @@ class TestAssociate:
         monkeypatch.setattr(association, "_movable", taken_first)
         result = association.associate(run.uuid, root.uuid, user_id, ACTOR)
         assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
+
+    def test_a_run_canceled_before_it_started(self, user_id):
+        """It has no observation window, so nothing associated with it is late."""
+        canceled = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],
+                                                   launcher="art"), LAUNCHER)
+        runs.cancel(canceled.uuid, LAUNCHER)
+        assert runs.get_run(canceled.uuid).observation_ends_at is None
+
+        root = _alert(host="srv-01")
+        association.associate(canceled.uuid, root.uuid, user_id, ACTOR)
+        (row,) = _attributions(root.uuid, canceled.id)
+        assert (row.source, row.late, row.event_time_source) == ("manual", False, "event")
+
+    def test_an_alert_that_cannot_be_loaded_is_judged_by_its_insert_time(self, run, user_id, monkeypatch, caplog):
+        root = _alert(host="srv-01")
+
+        def unloadable(storage_dir):
+            raise OSError(f"{storage_dir} is gone")
+
+        monkeypatch.setattr(association, "load_root", unloadable)
+        association.associate(run.uuid, root.uuid, user_id, ACTOR)
+        (row,) = _attributions(root.uuid, run.id)
+        assert row.event_time_source == "insert_time"
+        assert abs(row.event_time - _row(root.uuid).insert_date) <= timedelta(seconds=1)
+        assert [r for r in caplog.records if r.levelno == logging.WARNING
+                and f"unable to load alert {root.uuid}" in r.getMessage()]
 
     def test_refused(self, user_id):
         created = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],

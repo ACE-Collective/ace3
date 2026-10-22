@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
 from saq.database import private_session
@@ -32,6 +32,7 @@ from saq.svs.attribution import (
     attribution_open,
     context_claimant,
     evaluate,
+    event_time_source,
     find_markers_in_data,
     record_delta_sightings,
     resolve_markers,
@@ -46,6 +47,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
+    EventTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -202,6 +204,14 @@ class TestHosts:
         aware = datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc)
         root.event_time = aware
         assert alert_event_time(root, T0) == aware.astimezone(get_local_timezone()).replace(tzinfo=None)
+
+    def test_event_time_source(self):
+        root = RootAnalysis(uuid=str(uuid.uuid4()))
+        assert event_time_source(root) == EventTimeSource.INSERT_TIME
+        root.event_time = T0
+        assert event_time_source(root) == EventTimeSource.EVENT
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        assert event_time_source(root) == EventTimeSource.QUERY_TIME
 
 
 #
@@ -571,6 +581,35 @@ class TestDatabase:
         with private_transaction() as session:
             assert set(session.execute(select(SVSAttribution.event_time).where(
                 SVSAttribution.alert_uuid == root.uuid)).scalars()) == {later}
+
+    def _sources(self, alert_uuid):
+        with private_transaction() as session:
+            return set(session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == alert_uuid)).scalars())
+
+    def test_the_event_time_source_is_kept(self):
+        run = started_run(GUID)
+        root = self._root(run)
+        event_time = _soon().replace(microsecond=0)
+        root.event_time = event_time
+        write_attributions(root.uuid, evaluate(root, event_time))
+        assert self._sources(root.uuid) == {"event"}
+
+        # a later pass that finds the time was the hunt's query time says so
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        assert self._sources(root.uuid) == {"query_time"}
+
+        # rows written before the source was recorded get it on the next pass
+        with private_transaction() as session:
+            session.execute(SVSAttribution.__table__.update().where(
+                SVSAttribution.alert_uuid == root.uuid).values(event_time_source=None))
+        root.extensions.pop(KEY_EVENT_TIME_FALLBACK)
+        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        assert self._sources(root.uuid) == {"event"}
+
+        # and a pass that changes nothing writes nothing
+        assert write_attributions(root.uuid, evaluate(root, event_time)).written == []
 
     def _reviewed_run(self):
         run = started_run(GUID)
