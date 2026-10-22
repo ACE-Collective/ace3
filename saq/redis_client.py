@@ -5,6 +5,8 @@ from saq.configuration.config import (
 
 
 import redis
+from redis.backoff import ExponentialWithJitterBackoff
+from redis.retry import Retry
 
 
 def get_redis_connection(database: int, config_name: Optional[str] = None) -> redis.Redis:
@@ -32,6 +34,9 @@ def get_redis_connection(database: int, config_name: Optional[str] = None) -> re
         # redis-py waits forever by default; a stall raises redis.TimeoutError instead
         "socket_connect_timeout": redis_config.socket_connect_timeout,
         "socket_timeout": redis_config.socket_timeout,
+        # redis-py's default retry also retries timeouts, which re-sends a command the server may
+        # already have run (a BLPOP that lost its task, an RPUSH queued twice)
+        "retry": Retry(ExponentialWithJitterBackoff(base=1, cap=10), 3, supported_errors=(redis.ConnectionError,)),
     }
 
     if redis_config.use_ssl:
