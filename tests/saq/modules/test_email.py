@@ -846,6 +846,38 @@ def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("file_name", [".", ".."])
+def test_an_attachment_named_a_directory_is_extracted(root_analysis, file_name):
+    """"." and ".." name the files directory and its parent, which the file manager refuses, so a
+    sender naming the payload that way must not keep it from being extracted."""
+    raw_email = _build_attachment_email('text/html', f'dot-name-{len(file_name)}').replace(
+        b'filename="invoice.html"', f'filename="{file_name}"'.encode())
+    email_path = os.path.join(get_temp_dir(), 'dot_name.email.rfc822')
+    with open(email_path, 'wb') as fp:
+        fp.write(raw_email)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(email_path)
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    email_analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(EmailAnalysis)
+    assert isinstance(email_analysis, EmailAnalysis)
+    attachments = [o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_name == "_"]
+    assert len(attachments) == 1
+    with open(attachments[0].full_path, 'rb') as fp:
+        assert b'https://example.com/x' in fp.read()
+
+
+@pytest.mark.integration
 def test_malformed_content_type_attachment_still_gets_render(root_analysis):
     """An attachment declaring a malformed Content-Type must still be rendered.
 

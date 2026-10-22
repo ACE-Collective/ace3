@@ -111,7 +111,7 @@ from saq.modules.email.constants import (
     KEY_X_SENDER_IP,
 )
 from saq.observables.file import FileObservable
-from saq.util.filesystem import shorten_basename_for_suffix
+from saq.util.filesystem import safe_file_name, shorten_basename_for_suffix
 from saq.util.networking import is_subdomain
 from saq.whitelist import (
     WHITELIST_TYPE_SMTP_FROM,
@@ -1570,7 +1570,7 @@ class EmailAnalyzer(AnalysisModule):
                                                                            target.get_content_subtype(), unknown_ext)
 
                 # sanitize the file name
-                sanitized_file_name = re.sub(r'_+', '_', re.sub(r'\.\.', '_', re.sub(r'/', '_', file_name)))
+                sanitized_file_name = safe_file_name(file_name)
                 if file_name != sanitized_file_name:
                     logging.debug("changed file name from {} to {}".format(file_name, sanitized_file_name))
                     file_name = sanitized_file_name
