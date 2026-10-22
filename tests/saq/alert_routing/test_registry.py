@@ -38,7 +38,7 @@ class FixedRouter(AlertRouter):
         self.stages = set(stages)
         self.calls = 0
 
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         self.calls += 1
         if stage.value not in self.stages:
             return None
@@ -46,17 +46,17 @@ class FixedRouter(AlertRouter):
 
 
 class NeverRouter(AlertRouter):
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         return None
 
 
 class RaisingRouter(AlertRouter):
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         raise RuntimeError("router is broken")
 
 
 class BadReturnRouter(AlertRouter):
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         return "a queue name instead of a decision"
 
 
@@ -91,7 +91,7 @@ class TestOrder:
         register_alert_router(late)
         register_alert_router(early)
 
-        decision = route_alert(create_root_analysis(), RouteStage.PRE_INSERT)
+        decision = route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False)
         assert decision.queue == "early"
         # the registry names the router that decided, whatever the router put there
         assert decision.router == "early"
@@ -104,17 +104,29 @@ class TestOrder:
         root.add_detection_point("yara hit", queue="experimental")
         register_alert_router(FixedRouter("marker", 100, queue="svs"))
 
-        assert route_alert(root, RouteStage.PRE_INSERT).queue == "svs"
+        assert route_alert(root, RouteStage.PRE_INSERT, final=False).queue == "svs"
 
     def test_no_decision(self):
         register_alert_router(NeverRouter("never", 100))
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT) is None
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False) is None
 
     def test_stages_are_passed_through(self):
         register_alert_router(FixedRouter("post_only", 100, queue="moved", stages=("post_analysis",)))
         root = create_root_analysis()
-        assert route_alert(root, RouteStage.PRE_INSERT) is None
-        assert route_alert(root, RouteStage.POST_ANALYSIS).queue == "moved"
+        assert route_alert(root, RouteStage.PRE_INSERT, final=False) is None
+        assert route_alert(root, RouteStage.POST_ANALYSIS, final=True).queue == "moved"
+
+    def test_final_is_passed_through(self):
+        seen = []
+
+        class Recording(AlertRouter):
+            def route(self, root, stage, final):
+                seen.append(final)
+
+        register_alert_router(Recording("recording", 100))
+        route_alert(create_root_analysis(), RouteStage.POST_ANALYSIS, final=True)
+        route_alert(create_root_analysis(), RouteStage.POST_ANALYSIS, final=False)
+        assert seen == [True, False]
 
     def test_names_are_unique(self):
         register_alert_router(NeverRouter("twice", 100))
@@ -127,7 +139,7 @@ class TestOrder:
         register_alert_router(FixedRouter("logged", 100, queue="logged_queue"))
         root = create_root_analysis()
         with caplog.at_level(logging.INFO):
-            route_alert(root, RouteStage.PRE_INSERT)
+            route_alert(root, RouteStage.PRE_INSERT, final=False)
 
         (record,) = [r for r in caplog.records if r.getMessage() == "alert router decided a queue"]
         assert (record.alert_uuid, record.stage, record.router, record.queue) == (
@@ -142,13 +154,13 @@ class TestFailures:
         register_alert_router(RaisingRouter("broken", 100))
         register_alert_router(FixedRouter("fallback", 200, queue="fallback"))
 
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT).queue == "fallback"
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False).queue == "fallback"
         assert reported == [1]
 
     def test_a_router_returning_something_else_is_skipped(self, monkeypatch):
         monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
         register_alert_router(BadReturnRouter("bad", 100))
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT) is None
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False) is None
 
     @pytest.mark.parametrize("queue", ["", "   ", "q" * 65, None])
     def test_a_decision_needs_a_usable_queue(self, queue):
@@ -169,7 +181,7 @@ class TestConfiguration:
         configured(_config("from_config", "FixedRouter", 150, queue="configured"))
 
         assert [r.name for r in get_alert_routers()] == ["from_config", "detection_queue"]
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT).queue == "configured"
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False).queue == "configured"
 
     def test_one_broken_entry_does_not_stop_the_others(self, configured):
         configured(
@@ -184,7 +196,7 @@ class TestConfiguration:
         assert [r.name for r in get_alert_routers()] == ["works", "detection_queue"]
         assert set(get_alert_router_load_errors()) == {
             "cannot_build", "missing_class", "missing_module", "not_a_router", "detection_queue"}
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT).queue == "works"
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False).queue == "works"
 
     def test_unknown_kwargs_are_a_load_error(self, configured):
         configured(_config("typo", "NeverRouter", 100, colour="red"))
@@ -202,7 +214,7 @@ class TestConfiguration:
             while not stop.is_set():
                 names = [r.name for r in get_alert_routers()]
                 seen.append(("detection_queue" in names, "steady" in names))
-                route_alert(root, RouteStage.PRE_INSERT)
+                route_alert(root, RouteStage.PRE_INSERT, final=False)
 
         threads = [threading.Thread(target=reader) for _ in range(4)]
         for thread in threads:
@@ -241,9 +253,9 @@ class TestExampleIntegration:
         assert get_alert_router_load_errors() == {}
 
         untagged = create_root_analysis()
-        assert route_alert(untagged, RouteStage.PRE_INSERT) is None
+        assert route_alert(untagged, RouteStage.PRE_INSERT, final=False) is None
 
         tagged = create_root_analysis()
         tagged.add_tag("example_route")
-        decision = route_alert(tagged, RouteStage.PRE_INSERT)
+        decision = route_alert(tagged, RouteStage.PRE_INSERT, final=False)
         assert (decision.queue, decision.router) == ("example", "example_tag_router")
