@@ -10,6 +10,8 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
 
+`docs/design-flaws/` lists known flaws in ACE's design that changes have had to work around, one `<id>.yaml` each (see its README.md). Before you write a workaround, check whether it is for one of them, and if so, follow the workarounds that file lists rather than inventing another.
+
 ## Environment
 
 Development happens **inside the `dev` container** (this is where Claude Code normally runs — check with `ls /.dockerenv`). `SAQ_HOME=/opt/ace`, Python 3.14 in `/venv`, user `ace`.
