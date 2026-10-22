@@ -20,7 +20,10 @@ from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import MARKER_REGEX
 from saq.svs.refusals import Caller
+from saq.svs.expectations import set_test_settings
 from saq.svs.runs import (
+    HostBusy,
+    HostHolder,
     InvalidRegistration,
     Registration,
     RegistrationRefused,
@@ -241,6 +244,113 @@ def test_validate_an_invalid_registration(values, message, judged):
 
 
 #
+# one run per test host
+#
+
+def test_a_run_not_started_holds_its_hosts():
+    first = register(_registration(), LAUNCHER, now=T0)
+
+    with pytest.raises(HostBusy) as error:
+        register(_registration(), LAUNCHER, now=T0 + timedelta(minutes=5))
+    assert error.value.holders == [HostHolder("win10-01", first.uuid, RunState.CREATED, None)]
+    assert f"test host win10-01 is held by run {first.uuid} (created, not started)" in str(error.value)
+    # a lifecycle conflict: no run, no refusal, no alert
+    assert [run.uuid for run in get_db().execute(select(SVSRun)).scalars()] == [first.uuid]
+    assert get_db().execute(select(SVSRegistrationRefusal)).first() is None
+    assert get_db().execute(select(Alert)).first() is None
+
+    # another host is free, and a run canceled before it started never held one
+    register(_registration(targets=[TargetSpec("anyuser-01")]), LAUNCHER, now=T0)
+    cancel(first.uuid, LAUNCHER, now=T0 + timedelta(minutes=6))
+    register(_registration(), LAUNCHER, now=T0 + timedelta(minutes=7))
+
+
+def test_a_started_run_holds_its_hosts_until_its_observation_window_ends():
+    first = register(_registration(), LAUNCHER, now=T0)
+    start(first.uuid, LAUNCHER, now=T0)
+    # in any state: it may have fired
+    executed(first.uuid, LAUNCHER, 1, now=T0 + timedelta(minutes=1))
+
+    for now in (T0 + timedelta(minutes=59), T0 + timedelta(hours=1)):
+        with pytest.raises(HostBusy) as error:
+            register(_registration(), LAUNCHER, now=now)
+        assert error.value.holders == [HostHolder("win10-01", first.uuid, RunState.ERROR, T0 + timedelta(hours=1))]
+
+    second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=1, seconds=1))
+    start(second.uuid, LAUNCHER, now=T0 + timedelta(hours=1, seconds=1))
+    assert not _state(second.uuid).holds_host
+
+
+def test_a_test_that_holds_the_host_holds_it_for_the_attribution_window():
+    set_test_settings(GUID, None, holds_host=True)
+    first = register(_registration(), LAUNCHER, now=T0)
+    assert _state(first.uuid).holds_host
+    start(first.uuid, LAUNCHER, now=T0)
+
+    with pytest.raises(HostBusy) as error:
+        register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+    assert error.value.holders[0].until == T0 + timedelta(hours=25)
+
+    # a test's settings apply to runs registered after them: this run doesn't hold the host
+    set_test_settings(GUID, None, holds_host=False)
+    second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=25, seconds=1))
+    assert not _state(second.uuid).holds_host
+    assert json.loads(_events(second.uuid)[0].details)["holds_host"] is False
+
+
+def test_start_refuses_a_run_whose_host_another_run_holds(monkeypatch, caplog):
+    # runs registered before one run per host was enforced
+    monkeypatch.setattr(runs, "host_holders", lambda *args, **kwargs: [])
+    first = register(_registration(), LAUNCHER, now=T0)
+    start(first.uuid, LAUNCHER, now=T0)
+    second = register(_registration(), LAUNCHER, now=T0)
+    monkeypatch.undo()
+
+    caplog.set_level(logging.INFO)
+    with pytest.raises(HostBusy) as error:
+        start(second.uuid, LAUNCHER, now=T0 + timedelta(minutes=1))
+    assert [holder.run_uuid for holder in error.value.holders] == [first.uuid]
+
+    assert _state(second.uuid).state == RunState.CREATED
+    event = _events(second.uuid)[-1]
+    assert event.kind == RunEventKind.LAUNCHER_CALL
+    assert json.loads(event.details) == {"call": "start", "outcome": "host busy",
+                                         "payload": {"holding_runs": [first.uuid]}}
+    (record,) = [r for r in caplog.records if getattr(r, "outcome", None) == "host busy"]
+    assert (record.svs_run, record.holding_runs) == (second.uuid, [first.uuid])
+
+
+def test_validate_reports_the_host_busy():
+    first = register(_registration(), LAUNCHER, now=T0)
+    decision = validate(_registration(), LAUNCHER)
+    assert decision.invalid is None and decision.refused == []
+    assert [holder.run_uuid for holder in decision.busy] == [first.uuid]
+
+
+def test_concurrent_registrations_take_a_host_once():
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def register_one():
+        barrier.wait(10)
+        try:
+            outcomes.append(register(_registration(), LAUNCHER).uuid)
+        except HostBusy:
+            outcomes.append("busy")
+        finally:
+            get_db().remove()
+
+    threads = [threading.Thread(target=register_one) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+    assert sorted(outcome == "busy" for outcome in outcomes) == [False, True]
+    get_db().expire_all()
+    assert len(get_db().execute(select(SVSRun)).all()) == 1
+
+
+#
 # the launcher's calls
 #
 
@@ -412,7 +522,7 @@ def test_a_timer_that_fires_twice_changes_nothing():
 
 def test_a_run_that_fails_to_move_does_not_stop_the_others(monkeypatch):
     first = register(_registration(), LAUNCHER, now=T0)
-    second = register(_registration(), LAUNCHER, now=T0)
+    second = register(_registration(targets=[TargetSpec("anyuser-01")]), LAUNCHER, now=T0)
     failing = first.uuid
 
     real_end = runs._end

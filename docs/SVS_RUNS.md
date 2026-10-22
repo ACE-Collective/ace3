@@ -135,7 +135,7 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 | Call | Does |
 |---|---|
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
-| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). |
+| `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). 409 when another run holds a target's host. |
 | `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
 | `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
@@ -171,6 +171,8 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
   grants nothing (the API key does). **`batch_id`** (optional) is a label shared by runs registered
   together; **`extra`** (optional) is any JSON object the launcher wants kept with the run, at most
   `svs.runs.max_extra_bytes` (16 KiB) serialized. It is stored and shown on the run page.
+- **One run per test host.** A target whose test host another run holds is refused with 409, naming
+  that run (*One run per test host*, below). It creates no alert.
 - A call that doesn't apply to the run's state (starting a run twice, `executed` before `start`)
   answers 409 with the run's current state. Each call, accepted or not, is in the run's event log
   with its payload.
@@ -180,13 +182,14 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
 `POST /api/v2/svs/runs/validate` takes the same body as `POST /api/v2/svs/runs/` and the same
 permission, and answers 200 with what registering it would decide (`docs/SVS_API.md`, *Runs*):
 
-- `decision` is `accepted`, `refused` or `invalid`, and `status_code` is what registering would
-  answer (201, 403 or 422). An invalid registration's `message` is the 422's detail.
+- `decision` is `accepted`, `refused`, `invalid` or `host_busy`, and `status_code` is what
+  registering would answer (201, 403, 422 or 409). An invalid registration's `message` is the 422's
+  detail; each target of a busy one lists the runs holding its host (`held_by`).
 - `targets` judges each target as registering would: whether it is accepted, why not, and the test
   host it names with that host's platform. It is empty when the registration is invalid before its
   targets are judged (a test not in the catalog, too many targets, `extra` too large).
 - An accepted registration also has the run's `platform`, `observation_seconds` with its
-  `observation_source`, and `attribution_seconds`.
+  `observation_source`, `attribution_seconds` and `holds_host`.
 
 It only reads: no run, no event, no refusal row and no alert, so a launcher can check itself
 against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
@@ -223,6 +226,32 @@ markers in file contents, as ASCII or UTF-16 text:
   `signature_dir` is inside a rules repository's checkout, `svs_marker/` shows up there as
   untracked: don't commit a directory of that name to the repository.
 
+## One run per test host
+
+Context attribution needs exactly one run that could have caused an alert, so ACE never lets two
+runs hold one test host at once, whoever registers them. A run **holds** its targets' test hosts:
+
+- from registration until it starts, times out or is canceled (one canceled before it started never
+  held them);
+- once started, in any state, until its **claim** ends: its observation window, or its attribution
+  window when its test **holds the host** (below). It is judged by time, as attribution is, so a
+  run that errored, was canceled or was closed early still holds its hosts until then.
+
+Registering a run, or starting one, on a host another run holds answers **409**,
+`{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, with `until` null for
+a run not started yet. It is a lifecycle conflict, not a refusal: no alert. Registrations and starts
+on a host are decided one at a time, under the host's row lock, so two launchers racing for a host
+get one run between them. `POST /api/v2/svs/runs/validate` reports it as `host_busy`.
+
+A launcher that runs a host's tests one after another therefore waits out each run's observation
+window before it registers the next. An alert caused after that, with its event time after the
+next run started, is the next run's (*Without a marker: context*, below).
+
+**A test that leaves something behind** (persistence, a scheduled task, a service) can cause alerts
+after its observation window. Its test settings say so: `PUT /api/v2/svs/tests/{guid}/settings`
+with `"holds_host": true` (`svs:run_manage`), or the checkbox on the test's page. Each run of it
+registered afterwards holds its hosts for its whole attribution window (`holds_host` on the run).
+
 ## Run states and timers
 
 | State | Reached by | Then |
@@ -258,7 +287,7 @@ A run has two windows, both starting at `start`:
   in this order:
   1. **the test's settings** (`PUT /api/v2/svs/tests/{guid}/settings`, `svs:run_manage`): an
      `observation_minutes` an operator set, used as it is, with no slack and no floor, from 1 minute up
-     to `ceiling_hours`;
+     to `ceiling_hours` (the settings also hold `holds_host`, *One run per test host*);
   2. **its expectations**: the worst-case latency of the slowest signature the test is expected to
      fire on the run's platform (and that isn't ignored), plus `slack_minutes`, within
      `floor_minutes` and `ceiling_hours`;
@@ -416,6 +445,8 @@ guid on a row of the Runs tab) shows one test.
   and dependencies.
 - **Its observation window** (*Windows*, above): computed, or the minutes an operator set. With
   `svs:run_manage` it is set here, or cleared to go back to the computed window.
+- **Whether its runs hold their hosts** until their attribution window ends (*One run per test
+  host*, above). With `svs:run_manage` it is set here.
 - **Expectations:** every decided signature, by platform, with who decided it, when, why and from
   which run. With `svs:run_manage`, *Remove* makes one a candidate again on that platform.
 - **Ignores** that apply to the test: its own, which `svs:run_manage` removes, and the global ones,
@@ -480,9 +511,15 @@ the marker only in the command line should expect file detections to be attribut
 
 An alert with no marker at all is attributed by **context** when exactly one run could have caused
 it: a run whose window covers the alert's event time and one of whose targets the alert involves.
-Context has no per-detection signal, so it attributes every detection. When two runs could claim
-the alert (overlapping runs on one host), nothing is attributed and a WARNING names both
-(`candidate_runs`): attributing to the wrong run would teach the wrong expectation.
+Context has no per-detection signal, so it attributes every detection. When several runs' windows
+cover the alert on its host, the run that started last claims it, as long as every other one's claim
+on the host ended before that run started (*One run per test host*, above): a test that leaves
+nothing behind causes nothing after its claim ends, so the alert is the latest run's. Each earlier
+run's own alerts keep its window: an alert whose event time is inside the earlier run's window and
+before the later run started is still the earlier run's, *late* if it is after its observation
+window. When the claims overlap, which only runs registered before one run per host was enforced
+can do, nothing is attributed and a WARNING names them (`candidate_runs`): attributing to the wrong
+run would teach the wrong expectation.
 
 An alert with no detections is never attributed.
 

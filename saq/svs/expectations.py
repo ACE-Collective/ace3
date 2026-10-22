@@ -275,27 +275,31 @@ def get_test_settings(test_guid: str) -> Optional[SVSTestSettings]:
     return get_db().execute(select(SVSTestSettings).where(SVSTestSettings.test_guid == test.guid)).scalar_one_or_none()
 
 
-def set_test_settings(test_guid: str, user_id: int, *, observation_minutes: int,
-                      actor: Optional[str] = None) -> SVSTestSettings:
-    """Sets the observation window of the test's runs registered from now on: used as it is, with no
-    slack and no floor, up to the configured ceiling. Raises UnknownTest, InvalidDecision."""
+def set_test_settings(test_guid: str, user_id: int, *, observation_minutes: Optional[int] = None,
+                      holds_host: bool = False, actor: Optional[str] = None) -> SVSTestSettings:
+    """Sets the settings of the test's runs registered from now on, replacing what was set: an
+    observation window used as it is, with no slack and no floor, up to the configured ceiling (None
+    for the computed one), and whether a run holds its hosts for its whole attribution window.
+    Raises UnknownTest, InvalidDecision."""
     test = _test(test_guid)
     ceiling = max_observation_minutes()
-    if not isinstance(observation_minutes, int) or not 1 <= observation_minutes <= ceiling:
+    if observation_minutes is not None and (
+            not isinstance(observation_minutes, int) or not 1 <= observation_minutes <= ceiling):
         raise InvalidDecision(f"observation_minutes must be from 1 to {ceiling} (svs.runs.observation_window."
                               "ceiling_hours)")
 
     db = get_db()
-    values = {"observation_minutes": observation_minutes, "set_by_user_id": user_id}
+    values = {"observation_minutes": observation_minutes, "holds_host": bool(holds_host), "set_by_user_id": user_id}
     db.execute(mysql_insert(SVSTestSettings).values(test_guid=test.guid, **values).on_duplicate_key_update(**values))
     db.commit()
-    _audit("svs test settings changed", svs_test=test.guid, observation_minutes=observation_minutes, actor=actor,
-           actor_user_id=user_id)
+    _audit("svs test settings changed", svs_test=test.guid, observation_minutes=observation_minutes,
+           holds_host=bool(holds_host), actor=actor, actor_user_id=user_id)
     return get_test_settings(test.guid)
 
 
 def remove_test_settings(test_guid: str, user_id: int, *, actor: Optional[str] = None) -> None:
-    """Back to the computed window. Raises UnknownTest, UnknownDecision."""
+    """Back to the computed window, and runs that hold their hosts only for their observation window.
+    Raises UnknownTest, UnknownDecision."""
     test = _test(test_guid)
     db = get_db()
     removed = db.execute(delete(SVSTestSettings).where(SVSTestSettings.test_guid == test.guid))
@@ -321,6 +325,12 @@ def expected_signatures(test_guid: str, platform: str) -> set[str]:
     ignored = set(db.execute(select(SVSIgnore.signature_uuid).where(
         SVSIgnore.scope_key.in_([GLOBAL_SCOPE_KEY, test_guid]))).scalars())
     return expected - ignored
+
+
+def test_holds_host(test_guid: str) -> bool:
+    """Whether a run of the test registered now holds its hosts for its whole attribution window."""
+    return bool(get_db().execute(
+        select(SVSTestSettings.holds_host).where(SVSTestSettings.test_guid == test_guid)).scalar())
 
 
 def observation_for_test(test_guid: str, platform: str) -> tuple[timedelta, ObservationSource]:

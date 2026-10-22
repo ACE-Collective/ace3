@@ -19,7 +19,8 @@ from saq.svs import results
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -228,6 +229,13 @@ class TestSettings:
         assert (await client.get(f"/svs/tests/{GUID}/settings")).json()["observation_minutes"] == 45
 
         assert (await client.put(f"/svs/tests/{GUID}/settings", json={"observation_minutes": 0})).status_code == 422
+
+        # a PUT replaces the settings: holds_host alone goes back to the computed window
+        response = await client.put(f"/svs/tests/{GUID}/settings", json={"holds_host": True})
+        assert response.status_code == 200, response.text
+        assert (response.json()["observation_minutes"], response.json()["holds_host"]) == (None, True)
+        assert (await client.get(f"/svs/tests/{GUID}/settings")).json()["holds_host"] is True
+
         assert (await client.delete(f"/svs/tests/{GUID}/settings")).status_code == 204
         assert (await client.delete(f"/svs/tests/{GUID}/settings")).status_code == 404
         unknown = "cccccccc-0000-4000-8000-000000000000"

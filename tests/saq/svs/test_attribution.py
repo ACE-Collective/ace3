@@ -30,6 +30,7 @@ from saq.svs.attribution import (
     alert_hosts,
     analysis_sightings,
     attribution_open,
+    context_claimant,
     evaluate,
     find_markers_in_data,
     record_delta_sightings,
@@ -51,6 +52,7 @@ from saq.svs.constants import (
     ScanPoint,
     SVSStatus,
 )
+from saq.svs.expectations import set_test_settings
 from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import new_marker
 from saq.svs.runs import Registration, TargetSpec, register, start
@@ -257,6 +259,8 @@ class TestEvaluate:
 
         assert evaluate(root, T0).status == SVSStatus.TEST
 
+    # the run whose marker it is and a run context would claim overlap on one host
+    @pytest.mark.usefixtures("overlapping_runs")
     @pytest.mark.parametrize("run,result", [
         (None, MarkerResult.UNKNOWN),
         ({"host": "srv-01"}, MarkerResult.OTHER_HOST),
@@ -321,13 +325,45 @@ class TestEvaluate:
         assert evaluation.status is None
         assert evaluation.attributions == []
 
-    def test_context_with_two_candidates_attributes_nothing(self):
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_context_with_two_overlapping_candidates_attributes_nothing(self):
+        # runs registered before one run per host was enforced
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         first, second = _run(), _run()
 
         evaluation = evaluate(root, T0)
         assert evaluation.status is None
+        assert evaluation.attributions == []
+        assert [r.id for r in evaluation.candidate_runs] == [first.id, second.id]
+
+    def test_context_goes_to_the_run_on_the_host_after_the_one_before_released_it(self):
+        first = _run()
+        # the first run's claim ended with its observation window, at T0 + 1h
+        second = _run(started=T0 + timedelta(hours=2))
+
+        for event_time, run, late in [(T0 + timedelta(minutes=30), first, False),
+                                      (T0 + timedelta(hours=2, minutes=30), second, False),
+                                      # the first run's attribution window still covers it, as late
+                                      (T0 + timedelta(hours=1, minutes=30), first, True)]:
+            root, parent, child, url = _tree()
+            root.add_detection_point("hunt hit")
+            evaluation = evaluate(root, event_time)
+            assert evaluation.status == SVSStatus.TEST_CONTEXT
+            assert {(a.run.id, a.late) for a in evaluation.attributions} == {(run.id, late)}
+            assert evaluation.candidate_runs == []
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_context_refuses_runs_whose_claims_overlap(self):
+        set_test_settings(GUID, None, holds_host=True)
+        first = _run()
+        assert first.holds_host
+        # inside the first run's claim, which a test that holds the host keeps for its attribution window
+        second = _run(started=T0 + timedelta(hours=2))
+
+        root, parent, child, url = _tree()
+        root.add_detection_point("hunt hit")
+        evaluation = evaluate(root, T0 + timedelta(hours=2, minutes=30))
         assert evaluation.attributions == []
         assert [r.id for r in evaluation.candidate_runs] == [first.id, second.id]
 
@@ -429,6 +465,7 @@ class TestDatabase:
         get_db().commit()
         assert attribution_open()
 
+    @pytest.mark.usefixtures("overlapping_runs")
     def test_only_started_runs_are_cached(self):
         from saq.svs.runs import Registration, TargetSpec, register
         from tests.saq.svs.conftest import LAUNCHER
@@ -637,3 +674,32 @@ class TestDatabase:
         assert evaluation.status == SVSStatus.MISMATCH
         assert len(write_attributions(root.uuid, evaluation).removed) == 2
         assert {by for _, _, by, _ in self._rows(root.uuid)} == {ROUTER_ACTOR}
+
+
+@pytest.mark.unit
+class TestContextClaimant:
+    @staticmethod
+    def _snapshot(run_id: int, started: Optional[datetime], hours: int = 1, holds_host: bool = False) -> RunSnapshot:
+        return RunSnapshot(id=run_id, uuid=str(run_id), test_guid=GUID, marker=MARKER, started_at=started,
+                           observation_ends_at=started + timedelta(hours=hours) if started else None,
+                           attribution_ends_at=started + timedelta(hours=hours + 24) if started else None,
+                           holds_host=holds_host)
+
+    def test_none_or_one(self):
+        assert context_claimant([]) is None
+        run = self._snapshot(1, T0)
+        assert context_claimant([run]) is run
+
+    def test_the_latest_run_when_the_others_released_the_host_before_it_started(self):
+        first, second, third = (self._snapshot(1, T0), self._snapshot(2, T0 + timedelta(hours=2)),
+                                self._snapshot(3, T0 + timedelta(hours=4)))
+        assert context_claimant([third, first, second]) is third
+
+    @pytest.mark.parametrize("first", [
+        # its observation window ends as the second starts
+        _snapshot(1, T0, hours=2),
+        # it holds the host for its attribution window
+        _snapshot(1, T0, holds_host=True),
+    ])
+    def test_none_when_claims_overlap(self, first):
+        assert context_claimant([first, self._snapshot(2, T0 + timedelta(hours=2))]) is None

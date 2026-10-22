@@ -14,6 +14,10 @@ record carries the run's svs_run, svs_test and svs_marker fields (docs/SVS.md, *
 Closing a run gives its fully attributed alerts the disposition SIMULATED, and the timers close
 the alerts attributed to a closed run afterwards the same way.
 
+A run holds its test hosts from registration until its claim on them ends, and registration and
+start refuse a host another run holds, so context attribution never has two runs to choose from
+(host_holders).
+
 A launcher can also validate a registration: decide() works out everything registering would
 decide, and only reads, so a dry run creates no run, refusal or alert.
 
@@ -30,20 +34,20 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, case, null, or_, select, update
 
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
-from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget
+from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget, SVSTestHost
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception
 from saq.svs.alert_status import fully_attributed_condition
 from saq.svs.catalog import platform_slugs, supported_platforms
-from saq.svs.expectations import observation_for_test
+from saq.svs.expectations import observation_for_test, test_holds_host
 from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.hosts import InvalidTestHost, TargetMatch, match_target, normalize_username, split_hostname
 from saq.svs.markers import new_marker
@@ -75,6 +79,9 @@ CALL_START = "start"
 CALL_EXECUTED = "executed"
 CALL_CANCEL = "cancel"
 
+# the outcome of a registration or start refused because another run holds a target's host
+OUTCOME_HOST_BUSY = "host busy"
+
 
 class InvalidRegistration(ValueError):
     """The registration can't be accepted as sent; the message says why."""
@@ -91,6 +98,29 @@ class RegistrationRefused(PermissionError):
 
 class UnknownRun(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class HostHolder:
+    """A run holding a test host: registered and not started, or started and inside its claim on the
+    host (docs/SVS_RUNS.md, *One run per test host*)."""
+    host: str
+    run_uuid: str
+    state: str
+    # when its claim ends, None while it hasn't started
+    until: Optional[datetime]
+
+
+class HostBusy(Exception):
+    """A target's test host is held by another run. A lifecycle conflict, not a refusal: nothing
+    alerts."""
+
+    def __init__(self, holders: list[HostHolder]):
+        super().__init__("; ".join(
+            f"test host {holder.host} is held by run {holder.run_uuid} ({holder.state}"
+            + (f", until {holder.until}" if holder.until is not None else ", not started") + ")"
+            for holder in holders))
+        self.holders = holders
 
 
 class ReasonRequired(ValueError):
@@ -319,6 +349,49 @@ def _after_close(run: SVSRun, actor: str = TIMER_ACTOR) -> None:
 
 
 #
+# one run per test host
+#
+
+def claim_ends_at():
+    """When a started run's claim on its hosts ends: its observation window, or its attribution
+    window when its test holds the host."""
+    return case((SVSRun.holds_host, SVSRun.attribution_ends_at), else_=SVSRun.observation_ends_at)
+
+
+def host_holders(hosts: Iterable[str], now: datetime, exclude_run_id: Optional[int] = None) -> list[HostHolder]:
+    """The runs holding any of the test hosts (short names) at now, other than exclude_run_id: a run
+    not started yet holds its hosts until it starts, times out or is canceled; a started run, in any
+    state, until its claim ends. Claims judge by time, like attribution, so a run closed early still
+    holds its hosts until its claim ends."""
+    hosts = sorted(set(hosts))
+    if not hosts:
+        return []
+    claim_end = claim_ends_at()
+    statement = (
+        select(SVSRunTarget.host, SVSRun.uuid, SVSRun.state, case(
+            (SVSRun.started_at.is_(None), null()), else_=claim_end)).distinct()
+        .join(SVSRun, SVSRun.id == SVSRunTarget.run_id)
+        .where(SVSRunTarget.host.in_(hosts),
+               or_(SVSRun.state == RunState.CREATED.value,
+                   # the attribution window bounds every claim, and is indexed
+                   and_(SVSRun.started_at.isnot(None), SVSRun.attribution_ends_at >= now, claim_end >= now)))
+        .order_by(SVSRunTarget.host, SVSRun.uuid))
+    if exclude_run_id is not None:
+        statement = statement.where(SVSRun.id != exclude_run_id)
+    return [HostHolder(host, run_uuid, state, until) for host, run_uuid, state, until in get_db().execute(statement)]
+
+
+def _lock_hosts(host_ids: Iterable[int]) -> None:
+    """Locks the test hosts' rows, in id order, so registrations and starts on a host are decided one
+    at a time. The session is READ COMMITTED, so host_holders after this sees every run another
+    registration committed while it held them."""
+    host_ids = sorted({host_id for host_id in host_ids if host_id is not None})
+    if host_ids:
+        get_db().execute(select(SVSTestHost.id).where(SVSTestHost.id.in_(host_ids)).order_by(SVSTestHost.id)
+                         .with_for_update()).all()
+
+
+#
 # registration
 #
 
@@ -401,13 +474,16 @@ class RegistrationDecision:
     observation: Optional[timedelta] = None
     observation_source: Optional[ObservationSource] = None
     attribution: Optional[timedelta] = None
+    holds_host: bool = False
+    # the runs holding the targets' test hosts: registering would answer 409
+    busy: list[HostHolder] = field(default_factory=list)
 
     @property
     def refused(self) -> list[tuple[TargetSpec, str]]:
         return [(target, match.reason or "not a test host") for target, match in self.matches if not match.matched]
 
 
-def decide(registration: Registration) -> RegistrationDecision:
+def decide(registration: Registration, now: Optional[datetime] = None) -> RegistrationDecision:
     """Decides a registration as register would, in the same order, and only reads."""
     try:
         test, extra = _validate(registration)
@@ -425,18 +501,24 @@ def decide(registration: Registration) -> RegistrationDecision:
         decision.invalid = str(e)
         return decision
 
+    decision.busy = host_holders([match.host.hostname for _, match in decision.matches], now or datetime.now())
+    if decision.busy:
+        return decision
+
     decision.observation, decision.observation_source = observation_for_test(test.guid, decision.platform)
     decision.attribution = attribution_window(decision.observation)
+    decision.holds_host = test_holds_host(test.guid)
     return decision
 
 
 def validate(registration: Registration, caller: Caller) -> RegistrationDecision:
     """A launcher's dry run: what registering would decide, with no run, event, refusal or alert."""
     decision = decide(registration)
-    outcome = "invalid" if decision.invalid else "refused" if decision.refused else "accepted"
+    outcome = ("invalid" if decision.invalid else "refused" if decision.refused else
+               OUTCOME_HOST_BUSY if decision.busy else "accepted")
     _log_call(None, CALL_VALIDATE, registration.launcher, outcome, caller, svs_test=registration.test_guid,
               invalid=decision.invalid, reasons=[reason for _, reason in decision.refused],
-              platform=decision.platform)
+              platform=decision.platform, holding_runs=[holder.run_uuid for holder in decision.busy])
     return decision
 
 
@@ -444,7 +526,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     """Registers a run in state Created and returns it, with its marker. Raises
     InvalidRegistration, and RegistrationRefused after recording each refused target."""
     now = now or datetime.now()
-    decision = decide(registration)
+    decision = decide(registration, now)
     if decision.invalid:
         raise InvalidRegistration(decision.invalid)
 
@@ -458,6 +540,17 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
         _log_call(None, CALL_REGISTER, registration.launcher, "refused", caller, level=logging.WARNING,
                   svs_test=test.guid, reasons=[reason for _, reason in refused])
         raise RegistrationRefused([reason for _, reason in refused])
+
+    # checked again under the hosts' locks: another registration may have taken a host since
+    busy = decision.busy
+    if not busy:
+        _lock_hosts(match.host.id for _, match in decision.matches)
+        busy = host_holders([match.host.hostname for _, match in decision.matches], now)
+    if busy:
+        get_db().rollback()
+        _log_call(None, CALL_REGISTER, registration.launcher, OUTCOME_HOST_BUSY, caller, svs_test=test.guid,
+                  holding_runs=[holder.run_uuid for holder in busy])
+        raise HostBusy(busy)
 
     run = SVSRun(
         uuid=str(uuid.uuid4()),
@@ -473,7 +566,8 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
         registered_by=caller.user_id,
         created_at=now,
         observation_seconds=int(decision.observation.total_seconds()),
-        attribution_seconds=int(decision.attribution.total_seconds()))
+        attribution_seconds=int(decision.attribution.total_seconds()),
+        holds_host=decision.holds_host)
 
     seen = set()
     for target, match in decision.matches:
@@ -490,7 +584,8 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     db.add(run)
     db.flush()
     _add_event(run, RunEventKind.REGISTERED, caller.name, actor_user_id=caller.user_id, to_state=run.state,
-               details={**payload, "platform": run.platform, "observation_source": decision.observation_source.value},
+               details={**payload, "platform": run.platform, "observation_source": decision.observation_source.value,
+                        "holds_host": run.holds_host},
                now=now)
     db.commit()
 
@@ -520,12 +615,32 @@ def _conflict(run: SVSRun, call: str, caller: Caller, payload: Optional[dict] = 
     return RunStateConflict(run.uuid, run.state, call)
 
 
+def _host_busy(run: SVSRun, caller: Caller, busy: list[HostHolder]) -> HostBusy:
+    """Records a start refused because another run holds a target's host and returns the error to
+    raise."""
+    db = get_db()
+    db.rollback()
+    run = get_run(run.uuid)
+    holding_runs = [holder.run_uuid for holder in busy]
+    _launcher_call(run, CALL_START, caller, OUTCOME_HOST_BUSY, {"holding_runs": holding_runs})
+    db.commit()
+    _log_call(run, CALL_START, run.launcher, OUTCOME_HOST_BUSY, caller, holding_runs=holding_runs)
+    return HostBusy(busy)
+
+
 def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
-    """Created -> Started; the windows start now. Raises UnknownRun, RunStateConflict."""
+    """Created -> Started; the windows start now. Raises UnknownRun, RunStateConflict, and HostBusy
+    when another run holds one of its hosts."""
     # the windows are stored to the second, and MySQL rounds a fraction half up: a window stored
     # from the exact time could start after the test fired, so it starts at the whole second instead
     now = (now or datetime.now()).replace(microsecond=0)
     run = get_run(run_uuid)
+    if run.state == RunState.CREATED:
+        _lock_hosts(target.test_host_id for target in run.targets)
+        busy = host_holders([target.host for target in run.targets], now, exclude_run_id=run.id)
+        if busy:
+            raise _host_busy(run, caller, busy)
+
     if run.state != RunState.CREATED or not _transition(
             run, RunState.CREATED, RunState.STARTED, caller.name, actor_user_id=caller.user_id, now=now,
             values={"started_at": now,

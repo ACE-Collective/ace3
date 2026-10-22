@@ -565,7 +565,7 @@ launcher that also reads its runs needs both.
 | Endpoint | Permission | Returns |
 |---|---|---|
 | `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
-| `POST /api/v2/svs/runs/validate`, same body | `svs:run_register` | What registering it would decide, without registering it: `decision` (`accepted`, `refused`, `invalid`), the `status_code` registering would answer, `message`, each target's `accepted`, `reason`, `test_host` and `platform`, and when accepted the run's `platform`, `observation_seconds`, `observation_source` and `attribution_seconds`. Creates no run, refusal or alert (`docs/SVS_RUNS.md`, *Validating a registration*) |
+| `POST /api/v2/svs/runs/validate`, same body | `svs:run_register` | What registering it would decide, without registering it: `decision` (`accepted`, `refused`, `invalid`, `host_busy`), the `status_code` registering would answer, `message`, each target's `accepted`, `reason`, `test_host`, `platform` and `held_by` (the runs holding its host), and when accepted the run's `platform`, `observation_seconds`, `observation_source`, `attribution_seconds` and `holds_host`. Creates no run, refusal or alert (`docs/SVS_RUNS.md`, *Validating a registration*) |
 | `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
 | `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
@@ -581,7 +581,7 @@ launcher that also reads its runs needs both.
 | `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
 
 The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `state`, `test_guid`,
-`platform`, `targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
+`platform`, `targets`, the window lengths and ends, `holds_host`, `created_at`, `started_at`, `error_reason` and
 `close_reason`. Their errors:
 
 | Status | When |
@@ -589,6 +589,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
+| 409 | Registering, or starting, a run on a test host another run holds: `{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, `until` null for a run not started (`docs/SVS_RUNS.md`, *One run per test host*). No alert. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
@@ -602,6 +603,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
 | `test_name`, `technique`, `technique_name` | From the catalog, as it is now. |
 | `platform` | The platform the run is on, an ATT&CK platform slug (`windows`, `linux`, `macos`, `iaas`, …), decided at registration: its targets' test hosts' platform, else the test's only supported platform (`docs/SVS_RUNS.md`, *Registering a run*). |
+| `holds_host` | Lifecycle calls and the run's detail: the run holds its test hosts until its attribution window ends rather than its observation window, from its test's settings at registration (`docs/SVS_RUNS.md`, *One run per test host*). |
 | `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. It is `svs_marker` in ACE's log. |
 | `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
 | `launcher`, `batch_id` | As registered. A batch is a label shared by the runs a launcher registered together, not a resource. |
@@ -921,10 +923,14 @@ ignores/{signature_uuid}` (`svs:run_manage`); a global one with `PUT /api/v2/svs
 
 ## Test settings
 
-`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes"}`, the observation
-window of the test's runs registered from then on, used as it is (no slack, no floor) from 1 minute
-up to `svs.runs.observation_window.ceiling_hours` (`docs/SVS_RUNS.md`, *Windows*). The response adds
-`set_by` (username) and `updated_at`. Reading needs `svs:run_read`, changing `svs:run_manage`.
+`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes", "holds_host"}`, for
+the test's runs registered from then on. `observation_minutes` is their observation window, used as
+it is (no slack, no floor) from 1 minute up to `svs.runs.observation_window.ceiling_hours`, or null
+for the computed one (`docs/SVS_RUNS.md`, *Windows*). `holds_host` (default false) makes each run
+hold its hosts until its attribution window ends rather than its observation window
+(`docs/SVS_RUNS.md`, *One run per test host*). A `PUT` replaces both; `DELETE` goes back to the
+defaults. The response adds `set_by` (username) and `updated_at`. Reading needs `svs:run_read`,
+changing `svs:run_manage`.
 
 ## Coverage
 

@@ -145,14 +145,15 @@ async def get_test_settings(
 
 @router.put("/{guid}/settings", response_model=TestSettings)
 async def set_test_settings(guid: str, body: TestSettingsRequest, auth: ManageAuth) -> TestSettings:
-    """Set the observation window of the test's runs registered from now on; 422 outside 1 minute to
-    the configured ceiling."""
+    """Set the settings of the test's runs registered from now on, replacing what was set: the
+    observation window (null for the computed one; 422 outside 1 minute to the configured ceiling)
+    and holds_host."""
     return await run_db_in_thread(expectations_service.set_test_settings, guid, body, auth.auth_user_id,
                                   auth.auth_name)
 
 
 @router.delete("/{guid}/settings", status_code=204)
 async def remove_test_settings(guid: str, auth: ManageAuth) -> Response:
-    """Back to the computed window; 404 when the test has no settings."""
+    """Back to the computed window and holds_host false; 404 when the test has no settings."""
     await run_db_in_thread(expectations_service.remove_test_settings, guid, auth.auth_user_id, auth.auth_name)
     return Response(status_code=204)

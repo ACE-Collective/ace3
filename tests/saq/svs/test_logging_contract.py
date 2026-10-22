@@ -62,10 +62,11 @@ def test_lifecycle_transitions(caplog):
         first = register(_registration(), LAUNCHER, now=T0)
         start(first.uuid, LAUNCHER, now=T0)
         executed(first.uuid, LAUNCHER, 1, now=T0)
-        second = register(_registration(), LAUNCHER, now=T0)
-        cancel(second.uuid, LAUNCHER, now=T0)
-        third = register(_registration(), LAUNCHER, now=T0)
-        start(third.uuid, LAUNCHER, now=T0)
+        # one run per host: each after the claim of the one before
+        second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        cancel(second.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
+        third = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        start(third.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
         run_timers(T0 + timedelta(days=2))
 
     # the transitions, not the other records about runs (an ended run's result, say)
@@ -181,6 +182,7 @@ def test_a_mismatch(caplog, routed):
     assert decision.decision == "mismatch" and decision.svs_run == run.uuid
 
 
+@pytest.mark.usefixtures("overlapping_runs")
 def test_a_refused_context_attribution(caplog, routed):
     first, second = _started(), _started()
     with caplog.at_level(logging.INFO):
