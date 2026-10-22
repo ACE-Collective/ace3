@@ -10,8 +10,9 @@ anywhere. Every review of a branch is a round, in its own bundle directory
 A round counts as finished once findings.py has written its summary.json; an unfinished
 one is redone in place. The bundle gets:
 
-    target.json        repo, kind, base, merge-base, head, round, delta, rule changes;
-                       printed on stdout as well
+    target.json        repo, kind, base, merge-base, head, round, delta, rule changes, and
+                       the state dir that holds the design flaw ledger; printed on stdout
+                       as well
     diff.patch         the full diff from the merge-base, including uncommitted and
                        untracked work when reviewing the checked-out branch
     stat.txt           git diff --stat
@@ -821,6 +822,7 @@ def main() -> None:
         "rule_changes": rule_names,
         "rule_changes_digest": digest,
         "rule_changes_status": rule_status,
+        "state_dir": os.path.abspath(args.state_dir),
         "integrations": [os.path.basename(i) for i in integrations],
         "changed_files": len(changed),
         "tests_selected": len(tests),

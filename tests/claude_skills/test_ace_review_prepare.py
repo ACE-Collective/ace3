@@ -113,6 +113,8 @@ def test_the_first_round_bundles_committed_uncommitted_and_untracked_work(repo, 
 
     assert target["round"] == 1 and target["previous_round"] is None
     assert target["bundle"].endswith("ace-mw-topic/round-1")
+    # findings.py keeps the design flaw ledger here, beside every branch's rounds
+    assert Path(target["bundle"]).parents[1] == Path(target["state_dir"])
     assert target["delta"] is False and target["unchanged"] is False
     assert bundle_file(target, "files.txt").read_text().splitlines() == ["M\tCLAUDE.md", "A\tsaq/new.py", "M\tsaq/worker.py"]
     assert "+def wait(t):" in bundle_file(target, "diff.patch").read_text()

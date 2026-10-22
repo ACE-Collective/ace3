@@ -8,6 +8,10 @@ counted here, not judged.
     findings.py finish BUNDLE              number ranked.json into verified.json, write summary.json
     findings.py answer BUNDLE ID ANSWER [--note TEXT]
                                            record the user's answer to a finding
+    findings.py flaw ID ANSWER [--note TEXT] [--state STATE_DIR]
+                                           record the user's decision on a design flaw
+    findings.py flaws [--all] [--state STATE_DIR]
+                                           the design flaw ledger, open flaws first
     findings.py stats [STATE_DIR] [--since YYYY-MM-DD]
                                            what became of the findings of every finished round
 
@@ -16,18 +20,27 @@ BLOCKER_VOTES verifiers and stays a blocker only if a majority confirms it at th
 severity; a new fix-first gets one verifier; nits and pre-existing findings share the
 batch verifier, which also rechecks each open finding of earlier rounds (previous.json).
 Verifiers write verify/<cid>-<k>.json, and the batch verifier verify/batch.json.
+collect also numbers the design flaws the reviewers found (flaws-*.json) F<n> into
+flaw-candidates.json; the batch verifier judges those too.
 
 tally writes survivors.json, rejected.json and carried.json (the earlier findings
-rechecked: fixed or open). It stops at missing votes unless --allow-missing, which
+rechecked: fixed or open), and the flaws the batch verifier kept into flaws.json. It stops at missing votes unless --allow-missing, which
 counts only the votes cast.
 
 finish reads ranked.json: the survivors after duplicates are merged, each one that is
 an earlier finding again marked "repeats": "<id>". It drops the repeats, numbers the rest
 R<round>-<n> into verified.json, and writes summary.json, whose verdict_floor counts
 earlier findings still open like new ones. summary.json marks the round finished.
+finish also records each flaw in flaws.json in the design flaw ledger,
+<state-dir>/design-flaws.json, which outlives every review: a flaw the verifier matched
+to a ledger entry ("known": "D<n>") adds this branch as one more workaround of it, any
+other becomes a new entry D<n>, undecided. One branch counts once per flaw, so a later
+round or a rerun of finish replaces what the branch recorded before. A flaw never
+changes the verdict floor.
 
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
-in target.json, it is accepted or rejected.
+in target.json, it is accepted or rejected. A flaw's answer is defer (keep going, fix it
+later), address (stop and fix it first), fixed or wrong.
 
 stats walks STATE_DIR (default $SAQ_HOME/local/ace-review) and gives each new finding one
 outcome, the first that applies: the user's answer; "fixed (rechecked)" when a later
@@ -56,6 +69,10 @@ DIMENSIONS = ("uptime", "logging", "tests", "performance", "correctness", "desig
 ORIGINS = ("new", "pre-existing")
 ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
+FLAW_SIZES = ("small", "medium", "large")
+FLAW_RECOMMENDATIONS = ("stop", "keep going")
+FLAW_ANSWERS = {"defer": "deferred", "address": "addressing", "fixed": "fixed", "wrong": "wrong"}
+OPEN_FLAWS = ("undecided", "addressing", "deferred")
 BLOCKER_VOTES = 3
 STATE_DIR = os.path.join(os.environ.get("SAQ_HOME", "/opt/ace"), "local", "ace-review")
 ACTED_ON = ("fixed", "fixed (rechecked)", "lines changed")
@@ -86,8 +103,19 @@ def problems(finding: dict) -> list[str]:
     return found
 
 
+def flaw_problems(flaw: dict) -> list[str]:
+    found = [f"{field}={flaw.get(field)!r}" for field, allowed in
+             (("fix_size", FLAW_SIZES), ("recommendation", FLAW_RECOMMENDATIONS)) if flaw.get(field) not in allowed]
+    return found + [f"no {field}" for field in ("title", "flaw", "workaround", "file") if not flaw.get(field)]
+
+
 def collect(bundle: str) -> dict:
-    candidates, bad = [], []
+    candidates, flaws, bad = [], [], []
+    for path in sorted(glob.glob(os.path.join(bundle, "flaws-*.json"))):
+        for index, flaw in enumerate(load(path, [])):
+            if issues := flaw_problems(flaw):
+                bad.append(f"{os.path.basename(path)}[{index}]: {', '.join(issues)}")
+            flaws.append({**flaw, "fid": f"F{len(flaws) + 1}", "source": os.path.basename(path)})
     for path in sorted(glob.glob(os.path.join(bundle, "findings-*.json"))):
         for index, finding in enumerate(load(path, [])):
             if issues := problems(finding):
@@ -96,7 +124,8 @@ def collect(bundle: str) -> dict:
     if bad:
         sys.exit("malformed findings, fix them and collect again:\n" + "\n".join(bad))
 
-    plan = {"single": [], "batch": [], "carry": [f["id"] for f in load(os.path.join(bundle, "previous.json"), []) if f["status"] == "open"]}
+    plan = {"single": [], "batch": [], "carry": [f["id"] for f in load(os.path.join(bundle, "previous.json"), []) if f["status"] == "open"],
+            "flaws": [f["fid"] for f in flaws]}
     for candidate in candidates:
         if candidate["origin"] == "new" and candidate["severity"] in ("blocker", "fix-first"):
             votes = BLOCKER_VOTES if candidate["severity"] == "blocker" else 1
@@ -107,6 +136,7 @@ def collect(bundle: str) -> dict:
     shutil.rmtree(os.path.join(bundle, "verify"), ignore_errors=True)
     os.makedirs(os.path.join(bundle, "verify"))
     dump(os.path.join(bundle, "candidates.json"), candidates)
+    dump(os.path.join(bundle, "flaw-candidates.json"), flaws)
     dump(os.path.join(bundle, "plan.json"), plan)
     return plan
 
@@ -160,12 +190,15 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
                 missing.append(f"verify/{item['cid']}-{k}.json")
             else:
                 votes.setdefault(item["cid"], []).append(vote)
-    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] else {}
+    flaw_plan = plan.get("flaws", [])
+    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] or flaw_plan else {}
     for vote in batch.get("candidates", []):
         votes.setdefault(vote.get("cid"), []).append(vote)
     carried = [c for c in batch.get("carried", []) if c.get("status") in ("fixed", "open")]
     missing += [f"verify/batch.json: {cid}" for cid in plan["batch"] if cid not in votes]
     missing += [f"verify/batch.json: carried {fid}" for fid in plan["carry"] if fid not in {c["id"] for c in carried}]
+    flaw_votes = {v.get("fid"): v for v in batch.get("flaws", [])}
+    missing += [f"verify/batch.json: flaw {fid}" for fid in flaw_plan if fid not in flaw_votes]
     if missing and not allow_missing:
         sys.exit("missing votes, relaunch these verifiers (or pass --allow-missing):\n" + "\n".join(missing))
 
@@ -177,10 +210,78 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
         else:
             survivors.append(result)
     survivors.sort(key=rank)
+
+    kept_flaws, rejected_flaws = [], []
+    for flaw in load(os.path.join(bundle, "flaw-candidates.json"), []):
+        result = flaw_votes.get(flaw["fid"], {})
+        if result.get("verdict") not in ("CONFIRMED", "PLAUSIBLE"):
+            rejected_flaws.append({"fid": flaw["fid"], "title": flaw["title"], "reason": result.get("reason", "no verifier vote")})
+            continue
+        # the verifier's judgment of the fix and of whether to stop wins over the reviewer's
+        kept_flaws.append({**flaw, **{k: result[k] for k in ("fix_size", "recommendation", "why", "known") if result.get(k)},
+                           "verdict": result["verdict"], "reason": result.get("reason", "")})
     dump(os.path.join(bundle, "survivors.json"), survivors)
     dump(os.path.join(bundle, "rejected.json"), rejected)
     dump(os.path.join(bundle, "carried.json"), carried)
-    return {"survivors": len(survivors), "rejected": len(rejected), "carried": len(carried), "missing": missing}
+    dump(os.path.join(bundle, "flaws.json"), kept_flaws)
+    dump(os.path.join(bundle, "rejected-flaws.json"), rejected_flaws)
+    return {"survivors": len(survivors), "rejected": len(rejected), "carried": len(carried),
+            "flaws": len(kept_flaws), "rejected_flaws": len(rejected_flaws), "missing": missing}
+
+
+def ledger_path(state: str) -> str:
+    return os.path.join(state, "design-flaws.json")
+
+
+def bundle_state(bundle: str, target: dict) -> str:
+    # a bundle is <state-dir>/<repo>-<branch>/round-<N>
+    return target.get("state_dir") or os.path.dirname(os.path.dirname(os.path.abspath(bundle)))
+
+
+def dump_ledger(path: str, ledger: list[dict]) -> None:
+    # written whole and renamed, so a review that dies mid-write leaves the old ledger
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dump(path + ".tmp", ledger)
+    os.replace(path + ".tmp", path)
+
+
+def flaw_id_number(fid: str) -> int:
+    return int(fid[1:]) if re.fullmatch(r"D\d+", fid) else 0
+
+
+def record_flaws(bundle: str, target: dict, flaws: list[dict]) -> list[dict]:
+    """Add this round's flaws to the ledger and return how each one stands there."""
+    path = ledger_path(bundle_state(bundle, target))
+    ledger = load(path, [])
+    repo, branch = target.get("repo", ""), target.get("branch", "")
+    bundle = os.path.abspath(bundle)
+    # a rerun of finish replaces what it recorded; an entry only it created goes unless answered
+    for entry in ledger:
+        entry["workarounds"] = [w for w in entry["workarounds"] if w.get("bundle") != bundle]
+    ledger = [e for e in ledger if e["workarounds"] or e["status"] != "undecided" or e.get("created_in") != bundle]
+    by_id = {e["id"]: e for e in ledger}
+    today = datetime.date.today().isoformat()
+
+    recorded = []
+    for flaw in flaws:
+        entry = by_id.get(flaw.get("known") or "")
+        if entry is None:
+            entry = next((e for e in ledger if e.get("created_in") == bundle and e["title"] == flaw["title"]), None)
+        new = entry is None
+        if new:
+            entry = {"id": f"D{max(map(flaw_id_number, by_id), default=0) + 1}", "title": flaw["title"], "flaw": flaw["flaw"],
+                     "area": flaw.get("area", ""), "fix_size": flaw["fix_size"], "fix": flaw.get("fix", ""),
+                     "status": "undecided", "first_seen": today, "created_in": bundle, "workarounds": []}
+            ledger.append(entry)
+            by_id[entry["id"]] = entry
+        entry["workarounds"] = [w for w in entry["workarounds"] if (w.get("repo"), w.get("branch")) != (repo, branch)]
+        entry["workarounds"].append({"repo": repo, "branch": branch, "round": target.get("round", 1), "bundle": bundle,
+                                     "file": flaw["file"], "line": flaw.get("line"), "what": flaw["workaround"], "seen": today})
+        recorded.append({"id": entry["id"], "title": entry["title"], "new": new, "status": entry["status"],
+                         "fix_size": flaw["fix_size"], "recommendation": flaw["recommendation"], "why": flaw.get("why", ""),
+                         "workarounds": len(entry["workarounds"])})
+    dump_ledger(path, ledger)
+    return recorded
 
 
 def finish(bundle: str) -> dict:
@@ -212,6 +313,7 @@ def finish(bundle: str) -> dict:
         "not_repeated": repeats,
         "rejected": len(load(os.path.join(bundle, "rejected.json"), [])),
         "verdict_floor": floor,
+        "flaws": record_flaws(bundle, target, load(os.path.join(bundle, "flaws.json"), [])),
         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     dump(os.path.join(bundle, "verified.json"), verified)
@@ -239,6 +341,30 @@ def answer(bundle: str, fid: str, value: str, note: str | None = None) -> dict:
     path = os.path.join(bundle, "answers.json")
     dump(path, [a for a in load(path, []) if a["id"] != fid] + [entry])
     return entry
+
+
+def answer_flaw(state: str, fid: str, value: str, note: str | None = None) -> dict:
+    path = ledger_path(state)
+    ledger = load(path, [])
+    entry = next((e for e in ledger if e["id"] == fid), None)
+    if entry is None:
+        sys.exit(f"no design flaw {fid} in {path}")
+    if value not in FLAW_ANSWERS:
+        sys.exit(f"the answer for a design flaw is one of {', '.join(FLAW_ANSWERS)}")
+    entry["status"] = FLAW_ANSWERS[value]
+    entry["decided"] = datetime.date.today().isoformat()
+    if note:
+        entry["note"] = note
+    dump_ledger(path, ledger)
+    return entry
+
+
+def list_flaws(state: str, everything: bool = False) -> list[dict]:
+    """Open flaws, the ones with the most workarounds first: each workaround is more to undo later."""
+    ledger = load(ledger_path(state), [])
+    shown = [e for e in ledger if everything or e["status"] in OPEN_FLAWS]
+    order = {status: n for n, status in enumerate(OPEN_FLAWS)}
+    return sorted(shown, key=lambda e: (order.get(e["status"], len(order)), -len(e["workarounds"]), flaw_id_number(e["id"])))
 
 
 def tree_of(repo: str, *revs: str | None) -> str | None:
@@ -337,6 +463,7 @@ def stats(state: str = STATE_DIR, since: str | None = None) -> dict:
     return {
         "state_dir": state,
         "since": since,
+        "design_flaws": dict(sorted(collections.Counter(e["status"] for e in load(ledger_path(state), [])).items())),
         **{k: counts[k] for k in ("reviews", "rounds", "pre_existing", "rejected_by_verifiers", "blockers_rejected_by_vote")},
         "new_findings": sum(totals.values()),
         "outcomes": summarize(totals),
@@ -354,6 +481,14 @@ def main() -> None:
     sub.choices["answer"].add_argument("id")
     sub.choices["answer"].add_argument("answer")
     sub.choices["answer"].add_argument("--note")
+    command = sub.add_parser("flaw")
+    command.add_argument("id")
+    command.add_argument("answer", choices=sorted(FLAW_ANSWERS))
+    command.add_argument("--note")
+    command.add_argument("--state", default=STATE_DIR)
+    command = sub.add_parser("flaws")
+    command.add_argument("--all", action="store_true", help="include fixed and wrong flaws")
+    command.add_argument("--state", default=STATE_DIR)
     command = sub.add_parser("stats")
     command.add_argument("state", nargs="?", default=STATE_DIR)
     command.add_argument("--since", help="only rounds finished on or after this date, YYYY-MM-DD")
@@ -367,6 +502,10 @@ def main() -> None:
         result = finish(args.bundle)
     elif args.command == "stats":
         result = stats(args.state, args.since)
+    elif args.command == "flaw":
+        result = answer_flaw(args.state, args.id, args.answer, args.note)
+    elif args.command == "flaws":
+        result = list_flaws(args.state, args.all)
     else:
         result = answer(args.bundle, args.id, args.answer, args.note)
     print(json.dumps(result, indent=2))
