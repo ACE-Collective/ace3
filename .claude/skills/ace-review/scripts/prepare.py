@@ -10,8 +10,8 @@ anywhere. Every review of a branch is a round, in its own bundle directory
 A round counts as finished once findings.py has written its summary.json; an unfinished
 one is redone in place. The bundle gets:
 
-    target.json        repo, kind, base, merge-base, head, round, delta, rule changes, and
-                       flaw_dir, core's docs/design-flaws/; printed on stdout as well
+    target.json        repo, kind, base, merge-base, head, round, delta and rule changes;
+                       printed on stdout as well
     diff.patch         the full diff from the merge-base, including uncommitted and
                        untracked work when reviewing the checked-out branch
     stat.txt           git diff --stat
@@ -58,7 +58,6 @@ RULE_SECTIONS = ("## Engineering values", "## Conventions")
 DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "-M"]
 DISMISSING_ANSWERS = {"wrong", "intentional", "didn't matter"}
 STALE_HITS_PER_REF = 10
-FLAW_DIR = "docs/design-flaws"
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 LOGGER = re.compile(r"(^|_)(log|logger|logging)$", re.IGNORECASE)
 WAIT_METHODS = {"join", "wait", "acquire", "communicate", "result"}
@@ -719,15 +718,13 @@ def main() -> None:
     number, out, previous_dir = next_round(state)
     previous_target = load_json(os.path.join(previous_dir, "target.json"), {}) if previous_dir else {}
 
-    # the design flaws findings.py records in core are the review's own output, not the change
-    paths = ["--", ".", f":(exclude){FLAW_DIR}"] if kind == "core" else []
     # diffing against the snapshot tree takes in uncommitted and untracked work
-    diff = git(repo, "diff", *DIFF_FLAGS, merge_base, tree, *paths)
+    diff = git(repo, "diff", *DIFF_FLAGS, merge_base, tree)
     write(out, "diff.patch", diff)
-    write(out, "stat.txt", git(repo, "diff", *DIFF_FLAGS, "--stat", merge_base, tree, *paths))
+    write(out, "stat.txt", git(repo, "diff", *DIFF_FLAGS, "--stat", merge_base, tree))
     write(out, "log.txt", git(repo, "log", "--no-merges", "--format=--- %h %an%n%B", f"{merge_base}..{head}"))
     changed: list[tuple[str, str, str]] = []
-    for line in git(repo, "diff", *DIFF_FLAGS, "--name-status", merge_base, tree, *paths).splitlines():
+    for line in git(repo, "diff", *DIFF_FLAGS, "--name-status", merge_base, tree).splitlines():
         parts = line.split("\t")
         changed.append((parts[0], parts[1], parts[-1]))
     write(out, "files.txt", "".join(f"{status}\t{path}\n" for status, _, path in changed))
@@ -739,7 +736,7 @@ def main() -> None:
             ["git", "-C", repo, "cat-file", "-e", f"{previous_tree}^{{tree}}"], capture_output=True).returncode
         unchanged = previous_tree == tree or (
             previous_target.get("merge_base") == merge_base and tree_present
-            and not git(repo, "diff", "--name-only", previous_tree, tree, *paths).strip())
+            and not git(repo, "diff", "--name-only", previous_tree, tree).strip())
         if args.full:
             delta_reason = "--full"
         elif previous_target.get("merge_base") != merge_base:
@@ -748,9 +745,9 @@ def main() -> None:
             delta_reason = "the last round's tree is no longer in the object store"
         else:
             delta = True
-            delta_diff = git(repo, "diff", *DIFF_FLAGS, previous_tree, tree, *paths)
+            delta_diff = git(repo, "diff", *DIFF_FLAGS, previous_tree, tree)
             write(out, "delta.patch", delta_diff)
-            write(out, "delta-files.txt", git(repo, "diff", *DIFF_FLAGS, "--name-status", previous_tree, tree, *paths))
+            write(out, "delta-files.txt", git(repo, "diff", *DIFF_FLAGS, "--name-status", previous_tree, tree))
 
     integrations = integration_dirs(repo) if kind == "integration" else []
     tests: list[str] = []
@@ -829,7 +826,6 @@ def main() -> None:
         "rule_changes": rule_names,
         "rule_changes_digest": digest,
         "rule_changes_status": rule_status,
-        "flaw_dir": os.path.join(core, FLAW_DIR),
         "integrations": [os.path.basename(i) for i in integrations],
         "changed_files": len(changed),
         "tests_selected": len(tests),

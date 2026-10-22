@@ -8,10 +8,8 @@ counted here, not judged.
     findings.py finish BUNDLE              number ranked.json into verified.json, write summary.json
     findings.py answer BUNDLE ID ANSWER [--note TEXT]
                                            record the user's answer to a finding
-    findings.py flaw ID ANSWER [--note TEXT] [--dir FLAW_DIR]
-                                           record the user's decision on a design flaw
-    findings.py flaws [--all] [--dir FLAW_DIR]
-                                           the design flaws, open ones first
+    findings.py known BUNDLE               snapshot the design flaw issues into known-flaws.json
+    findings.py file BUNDLE FID            file a new design flaw as a GitHub issue
     findings.py stats [STATE_DIR] [--since YYYY-MM-DD]
                                            what became of the findings of every finished round
 
@@ -31,18 +29,19 @@ finish reads ranked.json: the survivors after duplicates are merged, each one th
 an earlier finding again marked "repeats": "<id>". It drops the repeats, numbers the rest
 R<round>-<n> into verified.json, and writes summary.json, whose verdict_floor counts
 earlier findings still open like new ones. summary.json marks the round finished.
-finish also records each flaw in flaws.json in core's docs/design-flaws/ (target.json's
-flaw_dir), one <id>.yaml per flaw, so the flaws are shared through the repo: a flaw the
-verifier matched to a file there ("known": "<id>") adds this branch as one more
-workaround of it, any other becomes a new file named after its title, undecided. One
-branch counts once per flaw: a rerun of finish replaces what its round recorded, a full
-round everything the branch recorded before, and a delta round the branch's earlier
-workaround of each flaw it finds again. A flaw never changes the
-verdict floor.
+The design flaws are GitHub issues labeled "design flaw" in core's repo, whatever repo is
+reviewed. known writes the ones a reviewer may match a flaw to (open, or closed as not
+planned, which is a flaw found wrong) to known-flaws.json, numbered by issue. finish
+lists each flaw of the round in summary.json with its issue, or none for a new flaw, and
+never writes to GitHub. A flaw never changes the verdict floor.
+
+file files a new flaw (its F<n> in flaws.json) as an issue, once the user has answered
+it: the only write to GitHub the review makes. The issue's body is the flaw, the real
+fix and the workaround that ran into it, and the review never changes the issue again;
+its state is the user's to keep.
 
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
-in target.json, it is accepted or rejected. A flaw's answer is defer (keep going, fix it
-later), address (stop and fix it first), wrong, or fixed, which removes its file.
+in target.json, it is accepted or rejected.
 
 stats walks STATE_DIR (default $SAQ_HOME/local/ace-review) and gives each new finding one
 outcome, the first that applies: the user's answer; "fixed (rechecked)" when a later
@@ -66,8 +65,6 @@ import shutil
 import subprocess
 import sys
 
-import yaml
-
 SEVERITIES = ("blocker", "fix-first", "nit")
 DIMENSIONS = ("uptime", "logging", "tests", "performance", "correctness", "design")
 ORIGINS = ("new", "pre-existing")
@@ -75,14 +72,11 @@ ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
 FLAW_SIZES = ("small", "medium", "large")
 FLAW_RECOMMENDATIONS = ("stop", "keep going")
-# fixed has no status: a fixed flaw's file is removed, and git history keeps it
-FLAW_ANSWERS = {"defer": "deferred", "address": "addressing", "wrong": "wrong", "fixed": None}
-OPEN_FLAWS = ("undecided", "addressing", "deferred")
+FLAW_LABEL = "design flaw"
+GH_TIMEOUT = 60
 BLOCKER_VOTES = 3
 SAQ_HOME = os.environ.get("SAQ_HOME", "/opt/ace")
 STATE_DIR = os.path.join(SAQ_HOME, "local", "ace-review")
-FLAW_DIR = os.path.join(SAQ_HOME, "docs", "design-flaws")
-FLAW_HEADER = "# A flaw in ACE's design that a change had to work around; see README.md in this directory.\n"
 ACTED_ON = ("fixed", "fixed (rechecked)", "lines changed")
 NEARBY = 2
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? ")
@@ -239,70 +233,86 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
             "flaws": len(kept_flaws), "rejected_flaws": len(rejected_flaws), "missing": missing}
 
 
-def flaw_slug(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60].rstrip("-") or "flaw"
+def gh(*args: str, stdin: str | None = None) -> str:
+    """gh run in core, whose GitHub repo holds the design flaws whatever repo is reviewed."""
+    try:
+        result = subprocess.run(["gh", *args], cwd=SAQ_HOME, input=stdin, capture_output=True, text=True, timeout=GH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"gh {' '.join(args)}: {e}") from e
+    if result.returncode:
+        raise RuntimeError(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
 
 
-def load_flaws(directory: str) -> dict[str, dict]:
-    flaws = {}
-    for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
-        with open(path) as fp:
-            flaws[os.path.basename(path)[:-len(".yaml")]] = yaml.safe_load(fp)
-    return flaws
+def known(bundle: str) -> dict:
+    """Write the flaws a reviewer may match one to; a review goes on without them if GitHub is down."""
+    path, error_path = os.path.join(bundle, "known-flaws.json"), os.path.join(bundle, "known-flaws-error.txt")
+    try:
+        issues = json.loads(gh("issue", "list", "--label", FLAW_LABEL, "--state", "all", "--limit", "1000",
+                               "--json", "number,title,body,state,stateReason,url"))
+    except RuntimeError as e:
+        dump(path, [])
+        # kept, so that file refuses a flaw the reviewers could not match to its issue
+        with open(error_path, "w") as fp:
+            fp.write(f"{e}\n")
+        return {"known": 0, "error": str(e)}
+    if os.path.exists(error_path):
+        os.remove(error_path)
+    # a flaw closed as not planned was found wrong, and the reviewers skip it; a fixed one is gone
+    entries = [{"id": i["number"], "title": i["title"], "status": "open" if i["state"] == "OPEN" else "wrong",
+                "url": i["url"], "body": i["body"]}
+               for i in sorted(issues, key=lambda i: i["number"]) if i["state"] == "OPEN" or i.get("stateReason") == "NOT_PLANNED"]
+    dump(path, entries)
+    return {"known": len(entries)}
 
 
-def save_flaw(directory: str, fid: str, entry: dict) -> None:
-    # written whole and renamed, so a review that dies mid-write leaves the old file
-    os.makedirs(directory, exist_ok=True)
-    path = os.path.join(directory, f"{fid}.yaml")
-    with open(path + ".tmp", "w") as fp:
-        fp.write(FLAW_HEADER)
-        yaml.safe_dump(entry, fp, sort_keys=False, allow_unicode=True, width=100)
-    os.replace(path + ".tmp", path)
+def issue_number(value) -> int | None:
+    match = re.fullmatch(r"#?(\d+)", str(value or "").strip())
+    return int(match.group(1)) if match else None
 
 
-def record_flaws(target: dict, flaws: list[dict]) -> list[dict]:
-    """Add this round's flaws to docs/design-flaws/ and return how each one stands there."""
-    directory = target.get("flaw_dir") or FLAW_DIR
-    entries = load_flaws(directory)
-    repo, branch, number = os.path.basename(target.get("repo", "")), target.get("branch", ""), target.get("round", 1)
-    # a rerun of finish replaces what its round recorded. A full round looked at the whole
-    # change, so it also replaces what the branch's earlier rounds recorded; a delta round
-    # never saw the code they found their flaws in
-    def replaced(w: dict) -> bool:
-        return (w["repo"], w["branch"]) == (repo, branch) and (w["round"] == number or not target.get("delta"))
-
-    changed = set()
-    for fid, entry in entries.items():
-        kept = [w for w in entry["workarounds"] if not replaced(w)]
-        if len(kept) != len(entry["workarounds"]):
-            entry["workarounds"] = kept
-            changed.add(fid)
-    today = datetime.date.today().isoformat()
-
+def flaw_issues(bundle: str, flaws: list[dict]) -> list[dict]:
+    """How each of the round's flaws stands: the issue it was matched to or filed as, or none if new."""
+    issues = {f["id"]: f for f in load(os.path.join(bundle, "known-flaws.json"), [])}
+    filed = load(os.path.join(bundle, "filed-flaws.json"), {})
     recorded = []
     for flaw in flaws:
-        fid = flaw["known"] if flaw.get("known") in entries else flaw_slug(flaw["title"])
-        entry = entries.get(fid)
-        new = entry is None or (entry["status"] == "undecided" and not entry["workarounds"])
-        if entry is None:
-            entry = entries[fid] = {"title": flaw["title"], "status": "undecided", "area": flaw.get("area", ""),
-                                    "fix_size": flaw["fix_size"], "flaw": flaw["flaw"], "fix": flaw.get("fix", ""),
-                                    "first_seen": today, "workarounds": []}
-        entry["workarounds"] = [w for w in entry["workarounds"] if (w["repo"], w["branch"]) != (repo, branch)]
-        entry["workarounds"].append({"repo": repo, "branch": branch, "round": number, "file": flaw["file"],
-                                     "line": flaw.get("line"), "what": flaw["workaround"], "seen": today})
-        changed.add(fid)
-        recorded.append({"id": fid, "title": entry["title"], "new": new, "status": entry["status"], "fix_size": flaw["fix_size"],
-                         "recommendation": flaw["recommendation"], "why": flaw.get("why", ""),
-                         "workarounds": len(entry["workarounds"]), "path": os.path.join(directory, f"{fid}.yaml")})
-    for fid in sorted(changed):
-        if entries[fid]["status"] == "undecided" and not entries[fid]["workarounds"]:
-            # only this round's earlier run, or the branch's earlier rounds, had found it
-            os.remove(os.path.join(directory, f"{fid}.yaml"))
-        else:
-            save_flaw(directory, fid, entries[fid])
+        # a known id with no issue behind it is a new flaw
+        issue = filed.get(flaw["fid"]) or issues.get(issue_number(flaw.get("known")), {})
+        recorded.append({"id": flaw["fid"], "issue": issue.get("id"), "url": issue.get("url"), "title": issue.get("title", flaw["title"]),
+                         "new": not issue, "status": issue.get("status", "undecided"), "fix_size": flaw["fix_size"],
+                         "recommendation": flaw["recommendation"], "why": flaw.get("why", "")})
     return recorded
+
+
+def issue_body(target: dict, flaw: dict) -> str:
+    # the repo by name: the checkout's path is different on every machine
+    repo, branch = os.path.basename(target.get("repo", "")), target.get("branch", "")
+    where = f"{flaw['file']}:{flaw['line']}" if flaw.get("line") else flaw["file"]
+    return (f"{flaw['flaw']}\n\n**Real fix** ({flaw['fix_size']}): {flaw.get('fix') or 'not sketched yet'}\n\n"
+            f"**Area:** {flaw.get('area') or 'unknown'}\n\n"
+            f"**Worked around** in `{repo}` branch `{branch}`, `{where}`:\n\n{flaw['workaround']}\n\n"
+            "<sub>Filed by /ace-review.</sub>\n")
+
+
+def file_flaw(bundle: str, fid: str) -> dict:
+    """File a new flaw as an issue. It is the review's only write to GitHub, and the issue is never changed after."""
+    flaw = {f["fid"]: f for f in load(os.path.join(bundle, "flaws.json"), [])}.get(fid)
+    if flaw is None:
+        sys.exit(f"no design flaw {fid} in {bundle}")
+    if os.path.exists(error_path := os.path.join(bundle, "known-flaws-error.txt")):
+        with open(error_path) as fp:
+            sys.exit(f"the reviewers had no known flaws to match {fid} to ({fp.read().strip()}); "
+                     "run known again and check it is not one of them before filing it")
+    [standing] = flaw_issues(bundle, [flaw])
+    if not standing["new"]:
+        return {"id": fid, "issue": standing["issue"], "url": standing["url"], "filed": False}
+    url = gh("issue", "create", "--label", FLAW_LABEL, "--title", flaw["title"], "--body-file", "-",
+             stdin=issue_body(load(os.path.join(bundle, "target.json"), {}), flaw)).strip()
+    issue = {"id": issue_number(url.rsplit("/", 1)[1]), "url": url, "title": flaw["title"], "status": "open"}
+    path = os.path.join(bundle, "filed-flaws.json")
+    dump(path, {**load(path, {}), fid: issue})
+    return {"id": fid, "issue": issue["id"], "url": url, "filed": True}
 
 
 def finish(bundle: str) -> dict:
@@ -334,7 +344,7 @@ def finish(bundle: str) -> dict:
         "not_repeated": repeats,
         "rejected": len(load(os.path.join(bundle, "rejected.json"), [])),
         "verdict_floor": floor,
-        "flaws": record_flaws(target, load(os.path.join(bundle, "flaws.json"), [])),
+        "flaws": flaw_issues(bundle, load(os.path.join(bundle, "flaws.json"), [])),
         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
     }
     dump(os.path.join(bundle, "verified.json"), verified)
@@ -362,30 +372,6 @@ def answer(bundle: str, fid: str, value: str, note: str | None = None) -> dict:
     path = os.path.join(bundle, "answers.json")
     dump(path, [a for a in load(path, []) if a["id"] != fid] + [entry])
     return entry
-
-
-def answer_flaw(directory: str, fid: str, value: str, note: str | None = None) -> dict:
-    entry = load_flaws(directory).get(fid)
-    if entry is None:
-        sys.exit(f"no design flaw {fid} in {directory}")
-    if value not in FLAW_ANSWERS:
-        sys.exit(f"the answer for a design flaw is one of {', '.join(FLAW_ANSWERS)}")
-    if FLAW_ANSWERS[value] is None:
-        os.remove(os.path.join(directory, f"{fid}.yaml"))
-        return {"id": fid, "status": "fixed", "removed": True}
-    entry["status"] = FLAW_ANSWERS[value]
-    entry["decided"] = datetime.date.today().isoformat()
-    if note:
-        entry["note"] = note
-    save_flaw(directory, fid, entry)
-    return {"id": fid, **entry}
-
-
-def list_flaws(directory: str, everything: bool = False) -> list[dict]:
-    """Open flaws, the ones with the most workarounds first: each workaround is more to undo later."""
-    order = {status: n for n, status in enumerate(OPEN_FLAWS)}
-    shown = [{"id": fid, **e} for fid, e in load_flaws(directory).items() if everything or e["status"] in order]
-    return sorted(shown, key=lambda e: (order.get(e["status"], len(order)), -len(e["workarounds"]), e["id"]))
 
 
 def tree_of(repo: str, *revs: str | None) -> str | None:
@@ -494,40 +480,39 @@ def stats(state: str = STATE_DIR, since: str | None = None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("collect", "tally", "finish", "answer"):
+    for name in ("collect", "tally", "finish", "answer", "known"):
         command = sub.add_parser(name)
         command.add_argument("bundle")
     sub.choices["tally"].add_argument("--allow-missing", action="store_true")
     sub.choices["answer"].add_argument("id")
     sub.choices["answer"].add_argument("answer")
     sub.choices["answer"].add_argument("--note")
-    command = sub.add_parser("flaw")
+    command = sub.add_parser("file")
+    command.add_argument("bundle")
     command.add_argument("id")
-    command.add_argument("answer", choices=sorted(FLAW_ANSWERS))
-    command.add_argument("--note")
-    command.add_argument("--dir", default=FLAW_DIR)
-    command = sub.add_parser("flaws")
-    command.add_argument("--all", action="store_true", help="include the flaws marked wrong")
-    command.add_argument("--dir", default=FLAW_DIR)
     command = sub.add_parser("stats")
     command.add_argument("state", nargs="?", default=STATE_DIR)
     command.add_argument("--since", help="only rounds finished on or after this date, YYYY-MM-DD")
     args = parser.parse_args()
 
-    if args.command == "collect":
-        result = collect(args.bundle)
-    elif args.command == "tally":
-        result = tally(args.bundle, args.allow_missing)
-    elif args.command == "finish":
-        result = finish(args.bundle)
-    elif args.command == "stats":
-        result = stats(args.state, args.since)
-    elif args.command == "flaw":
-        result = answer_flaw(args.dir, args.id, args.answer, args.note)
-    elif args.command == "flaws":
-        result = list_flaws(args.dir, args.all)
-    else:
-        result = answer(args.bundle, args.id, args.answer, args.note)
+    try:
+        if args.command == "collect":
+            result = collect(args.bundle)
+        elif args.command == "tally":
+            result = tally(args.bundle, args.allow_missing)
+        elif args.command == "finish":
+            result = finish(args.bundle)
+        elif args.command == "stats":
+            result = stats(args.state, args.since)
+        elif args.command == "known":
+            result = known(args.bundle)
+        elif args.command == "file":
+            result = file_flaw(args.bundle, args.id)
+        else:
+            result = answer(args.bundle, args.id, args.answer, args.note)
+    except RuntimeError as e:
+        # gh failed; its stderr says why, a traceback would not
+        sys.exit(str(e))
     print(json.dumps(result, indent=2))
 
 
