@@ -1,7 +1,6 @@
 import datetime
 import json
 import sys
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,6 +14,8 @@ from saq.collectors.hunter.correlation.schema import (
     CorrelateConfig,
     PredefinedCommandConfig,
 )
+from saq.configuration.config import get_config
+from saq.configuration.encryption import delete_password, encrypt_password
 
 PYTHON = sys.executable
 
@@ -34,16 +35,20 @@ def _clean_registry():
     clear_query_sources()
 
 
-@pytest.fixture(autouse=True)
-def _mock_secrets_and_config():
-    mock_raw = MagicMock()
-    mock_raw._data = {}
-    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
-         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-        yield
+@pytest.fixture
+def store_secret():
+    stored = []
+
+    def _store(key, value):
+        encrypt_password(key, value)
+        stored.append(key)
+
+    yield _store
+    for key in stored:
+        delete_password(key)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestCorrelationIntegration:
 
     def test_full_pipeline_filter_and_alert(self):
@@ -306,18 +311,13 @@ class TestCorrelationIntegration:
         # All events should still become alerts (log doesn't interrupt)
         assert len(result.events) == 3
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_not_bound_in_jinja_condition(self, mock_secrets, mock_config):
+    def test_secrets_not_bound_in_jinja_condition(self, store_secret):
         """_secrets must not be reachable from a correlation condition.
 
         `is undefined` is asserted directly rather than asserting the condition is merely
         false, which any evaluation error would also produce.
         """
-        mock_secrets.return_value = {"api_key": "secret_value"}
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        mock_config.return_value = MagicMock(raw=mock_raw)
+        store_secret("api_key", "secret_value")
 
         config_data = {
             "logic": [
@@ -336,15 +336,8 @@ class TestCorrelationIntegration:
         result = engine.execute(events)
         assert len(result.events) == 0  # filtered because _secrets is undefined
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_config_not_bound_in_jinja_condition(self, mock_secrets, mock_config):
+    def test_config_not_bound_in_jinja_condition(self):
         """_config must not be reachable from a correlation condition: it holds credentials."""
-        mock_secrets.return_value = {}
-        mock_raw = MagicMock()
-        mock_raw._data = {"global": {"environment": "production"}}
-        mock_config.return_value = MagicMock(raw=mock_raw)
-
         config_data = {
             "logic": [
                 {
@@ -362,14 +355,9 @@ class TestCorrelationIntegration:
         result = engine.execute(events)
         assert len(result.events) == 0  # filtered because _config is undefined
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_and_config_not_bound_in_executable_env(self, mock_secrets, mock_config):
+    def test_secrets_and_config_not_bound_in_executable_env(self, store_secret):
         """No hunt template can hand a credential to a script, including `env:`."""
-        mock_secrets.return_value = {"db_pass": "s3cret"}
-        mock_raw = MagicMock()
-        mock_raw._data = {"database_ace": {"password": "s3cret"}}
-        mock_config.return_value = MagicMock(raw=mock_raw)
+        store_secret("db_pass", "s3cret")
 
         config_data = {
             "logic": [
@@ -396,14 +384,9 @@ class TestCorrelationIntegration:
         result = engine.execute([{"id": 1}])
         assert result.events[0]["result"] == "True"
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_not_bound_in_executable_args(self, mock_secrets, mock_config):
+    def test_secrets_not_bound_in_executable_args(self, store_secret):
         """_secrets must not reach `args` -- argv is readable by other users via /proc."""
-        mock_secrets.return_value = {"db_pass": "s3cret"}
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        mock_config.return_value = MagicMock(raw=mock_raw)
+        store_secret("db_pass", "s3cret")
 
         config_data = {
             "logic": [
@@ -429,14 +412,9 @@ class TestCorrelationIntegration:
         result = engine.execute([{"id": 1}])
         assert result.events[0]["result"] == "True"
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
-    def test_secrets_not_bound_in_query_text(self, mock_secrets, mock_config):
+    def test_secrets_not_bound_in_query_text(self, store_secret):
         """_secrets must not reach query text -- it is sent to a third-party data source."""
-        mock_secrets.return_value = {"db_pass": "s3cret"}
-        mock_raw = MagicMock()
-        mock_raw._data = {}
-        mock_config.return_value = MagicMock(raw=mock_raw)
+        store_secret("db_pass", "s3cret")
 
         class _RecordingSource(QuerySource):
             def __init__(self):
@@ -473,18 +451,14 @@ class TestCorrelationIntegration:
         engine.execute([{"id": 1}])
         assert source.queries == ["search probe=True"]
 
-    @patch("saq.collectors.hunter.correlation.engine.get_config")
-    @patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords")
     @pytest.mark.parametrize("template", [
         "{{ _secrets['rapid7.api_key'] }}",
         "{{ _config['rapid7']['api_key'] }}",
     ])
-    def test_env_reading_a_credential_fails_the_step(self, mock_secrets, mock_config, template):
+    def test_env_reading_a_credential_fails_the_step(self, store_secret, monkeypatch, template):
         """A hunt written against the removed bindings errors instead of running the script."""
-        mock_secrets.return_value = {"rapid7.api_key": "REAL_KEY"}
-        mock_raw = MagicMock()
-        mock_raw._data = {"rapid7": {"api_key": "REAL_KEY"}}
-        mock_config.return_value = MagicMock(raw=mock_raw)
+        store_secret("rapid7.api_key", "REAL_KEY")
+        monkeypatch.setitem(get_config().raw._data, "rapid7", {"api_key": "REAL_KEY"})
 
         predefined = [PredefinedCommandConfig.model_validate({
             "name": "get_r7_comments",

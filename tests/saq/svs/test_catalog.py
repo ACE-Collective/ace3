@@ -13,6 +13,7 @@ import yaml
 from saq.cli.commands.svs import cli_catalog_refresh, cli_catalog_status
 from saq.configuration.config import get_config
 from saq.configuration.schema import GitRepoConfig
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE
 from saq.database.model import SVSCatalogRepository, SVSCatalogTest
 from saq.database.pool import get_db
 from saq.svs import catalog
@@ -176,13 +177,14 @@ def test_refresh_reads_again_only_when_the_commit_changes(checkout, monkeypatch)
     assert refresh_repository(REPOSITORY).refreshed
 
     parsed = []
-    monkeypatch.setattr(catalog, "parse_atomics", lambda root: parsed.append(root) or catalog.ParseResult())
+    monkeypatch.setattr(catalog, "parse_atomics", lambda root: parsed.append(root) or parse_atomics(root))
     assert not refresh_repository(REPOSITORY).refreshed
     assert parsed == []
 
-    # --force reads it anyway (and here finds nothing, so the test is removed)
+    # --force reads it anyway
     assert refresh_repository(REPOSITORY, force=True).refreshed
     assert parsed
+    assert _tests()[GUID_A].removed_at is None
 
 
 @pytest.mark.integration
@@ -369,7 +371,7 @@ def test_the_refresher_runs_until_stopped_and_survives_a_failure(checkout, monke
 
     monkeypatch.setattr(svs_service, "refresh_catalog", flaky)
     monkeypatch.setattr(get_config().svs.catalog, "refresh_interval_seconds", 0.05)
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: True)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "1")
     service = SVSService()
     service.start()
     try:
@@ -385,7 +387,7 @@ def test_the_refresher_runs_until_stopped_and_survives_a_failure(checkout, monke
 
 @pytest.mark.integration
 def test_the_refresher_stays_idle_off_the_primary_node(monkeypatch):
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service = SVSService()
     service.start()
     assert service.catalog is None

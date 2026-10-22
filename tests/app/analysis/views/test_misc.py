@@ -508,14 +508,13 @@ class TestUploadFileRecordsTheAnalyst:
 
         assert get_db().query(ObservableComment).count() == before
 
-    def test_lock_is_released_when_the_alert_fails_to_load(self, web_client, monkeypatch):
+    def test_lock_is_released_when_the_alert_fails_to_load(self, web_client):
         alert_uuid = _new_alert_uuid(web_client)
-        monkeypatch.setattr(RootAnalysis, "load", lambda self: False)
+        os.remove(RootAnalysis(storage_dir=get_alert_by_uuid(alert_uuid).storage_dir).json_path)
 
-        result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+        with pytest.raises(FileNotFoundError):
+            _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
 
-        assert result.status_code == 302
-        assert result.location == url_for('analysis.index')
         lock_uuid = str(uuid4())
         assert acquire_lock(alert_uuid, lock_uuid)
         release_lock(alert_uuid, lock_uuid)

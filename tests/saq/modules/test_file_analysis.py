@@ -310,39 +310,30 @@ def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
     assert analysis.observables[0].has_relationship(R_EXTRACTED_FROM)
 
 @pytest.mark.integration
-def test_zipped_jar(datadir, monkeypatch, test_context):
+def test_zipped_jar(datadir, test_context):
     # Create a test alert with file observable
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    #target_path = root.storage_dir, 'zipped.jar')
-    #copyfile(str(datadir / 'zipped.jar'), target_path)
     observable = root.add_file_observable(datadir / 'zipped.jar')
 
-    # add file type analysis
-    file_type_analysis = FileTypeAnalysis()
-    observable.add_analysis(file_type_analysis)
-    file_type_analysis.details = {
-        'type': 'Microsoft Excel 2007+',
-        'mime': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    }
-
-    # mock popen to check params then stop
-    class StopAnalysisException(Exception):
-        pass
-    def popen(params, **kwags):
-        #assert params == ['bin/unjar', 'data/work/14ca0ff2-ff7e-4fa1-a375-160dc072ab02/zipped.jar', '-d', 'data/work/14ca0ff2-ff7e-4fa1-a375-160dc072ab02/zipped.jar.extracted']
-        raise StopAnalysisException()
-    
-    import saq.modules.file_analysis.archive
-    monkeypatch.setattr(saq.modules.file_analysis.archive, "Popen", popen)
+    AnalysisModuleAdapter(FileTypeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE))).execute_analysis(observable)
 
     # run the module
-    get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE).max_jar_file_count = 100
     analyzer = AnalysisModuleAdapter(ArchiveAnalyzer(
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE)))
-    with pytest.raises(StopAnalysisException):
-        analyzer.execute_analysis(observable)
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(ArchiveAnalysis)
+    assert isinstance(analysis, ArchiveAnalysis)
+    assert analysis.file_count == 1
+    assert analysis.extracted_files == ['META-INF/MANIFEST.MF']
+    extracted = analysis.get_observables_by_type(F_FILE)
+    assert len(extracted) == 1
+    assert extracted[0].file_path == 'zipped.jar.extracted/META-INF/MANIFEST.MF'
+    assert extracted[0].has_relationship(R_EXTRACTED_FROM)
 
 
 @pytest.mark.integration
@@ -461,7 +452,7 @@ def test_ocr_analyzer_omp_thread_limit_notset(monkeypatch, datadir, test_context
     ('cv2_None.gif', [], [], AnalysisExecutionResult.COMPLETED),
 ])
 @pytest.mark.integration
-def test_ocr_analyzer(datadir, monkeypatch, test_filename, expected_strings, expected_urls, expected_result, test_context):
+def test_ocr_analyzer(datadir, test_filename, expected_strings, expected_urls, expected_result, test_context):
     # Create a test alert with file observable
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
@@ -500,16 +491,13 @@ def test_ocr_analyzer(datadir, monkeypatch, test_filename, expected_strings, exp
     assert analysis.observables[0].has_directive(DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL)
 
     # Which will kick off the URLExtractionAnalyzer...
-    monkeypatch.setattr("os.path.exists", lambda x: 1 == 1)  # return true that path exists
-    monkeypatch.setattr("os.path.getsize", lambda x: 1)  # arbitrary filesize
-
     text_file_observable = analysis.observables[0]
 
-    # file type analysis is a declared dependency; provide it directly since we
-    # invoke execute_analysis outside the engine (which would normally seed it)
-    file_type_analysis = FileTypeAnalysis()
-    text_file_observable.add_analysis(file_type_analysis)
-    file_type_analysis.details = {"type": "", "mime": f"text/{test_filename[len('sample_'):]}"}
+    # file type analysis is a declared dependency; run it directly since we
+    # invoke execute_analysis outside the engine (which would normally do it)
+    AnalysisModuleAdapter(FileTypeAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE))).execute_analysis(text_file_observable)
 
     analyzer = AnalysisModuleAdapter(URLExtractionAnalyzer(
         context=create_test_context(root=root),
@@ -891,11 +879,9 @@ def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context, monkeyp
 
 
 @pytest.mark.unit
-def test_ocr_negative_records_empty_analysis(tmp_path, test_context, monkeypatch):
+def test_ocr_negative_records_empty_analysis(tmp_path, test_context):
     """OCR passes complete with no text → an empty analysis is recorded
     (cacheable negative), with a None summary."""
-    monkeypatch.setattr("saq.modules.file_analysis.ocr.get_image_text", lambda image: "")
-
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     observable = root.add_file_observable(_make_blank_png(tmp_path))

@@ -201,55 +201,77 @@ def test_common_name_success_unmocked_cert(cert, x509_constants):
     assert x509_constants.NAME_ATTRIBUTES[NameOID.COMMON_NAME] == saq_x509.common_name(cert)
 
 
-class Rfc4514Mock:
-    def __init__(self, rfc4514):
-        self._rfc4514_string = rfc4514
-    def rfc4514_string(self):
-        return self._rfc4514_string
-
-
-class MockCert:
-    def __init__(self, subject):
-        self.subject = Rfc4514Mock(subject)
+def _cert_with_subject(private_key, x509_constants, attributes):
+    name = x509.Name([x509.NameAttribute(oid, value) for oid, value in attributes])
+    return x509.CertificateBuilder()\
+        .subject_name(name)\
+        .issuer_name(name)\
+        .public_key(private_key.public_key())\
+        .serial_number(x509_constants.SERIAL_NUMBER)\
+        .not_valid_before(x509_constants.NOT_VALID_BEFORE)\
+        .not_valid_after(x509_constants.NOT_VALID_AFTER)\
+        .sign(private_key, hashes.SHA256())
 
 
 @pytest.mark.unit
-def test_common_name_success_mocked_cert_long_subject():
+def test_common_name_success_long_subject(private_key, x509_constants):
     """Tests that regex pulls out the domain when the CN is not the only
-    attribute in the subject, but is at the end of the subject."""
+    attribute in the subject."""
 
     # setup
     domain = 'test.local'
-    cert = MockCert(f'C=US,ST=Ohio,L=Cincinnati,O=ACE Ecosystem,CN={domain}')
+    cert = _cert_with_subject(private_key, x509_constants, [
+        (NameOID.COUNTRY_NAME, 'US'),
+        (NameOID.STATE_OR_PROVINCE_NAME, 'Ohio'),
+        (NameOID.LOCALITY_NAME, 'Cincinnati'),
+        (NameOID.ORGANIZATION_NAME, 'ACE, Inc'),
+        (NameOID.COMMON_NAME, domain),
+    ])
 
     # verify
+    assert cert.subject.rfc4514_string() == f'CN={domain},O=ACE\\, Inc,L=Cincinnati,ST=Ohio,C=US'
     assert domain == saq_x509.common_name(cert)
 
 
 @pytest.mark.unit
-def test_common_name_success_mocked_cert_cn_only():
+def test_common_name_success_cn_only(private_key, x509_constants):
     """Tests that regex pulls out the domain when the CN is the only
     attribute in the subject."""
 
     # setup
     domain = 'test.local'
-    cert = MockCert(f'CN={domain}')
+    cert = _cert_with_subject(private_key, x509_constants, [(NameOID.COMMON_NAME, domain)])
 
     # verify
     assert domain == saq_x509.common_name(cert)
 
 
 @pytest.mark.unit
-def test_common_name_failed_subject_doesnt_contain_common_name():
+@pytest.mark.xfail(strict=True, reason="common_name's regex CN=([^,$]+) stops at the backslash of an RFC 4514 escaped comma")
+def test_common_name_with_escaped_comma(private_key, x509_constants):
+    cert = _cert_with_subject(private_key, x509_constants, [
+        (NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
+        (NameOID.COMMON_NAME, 'Example, Inc'),
+    ])
+
+    assert 'Example, Inc' == saq_x509.common_name(cert)
+
+
+@pytest.mark.unit
+def test_common_name_failed_subject_doesnt_contain_common_name(private_key, x509_constants):
     """Test attribute error is handled appropriately when regex doesn't
     match because the CN is missing from the subject."""
 
     # setup
-    subject = f'C=US,ST=Ohio,L=Cincinnati,O=ACE Ecosystem'
-    mock_cert = MockCert(subject)
+    cert = _cert_with_subject(private_key, x509_constants, [
+        (NameOID.COUNTRY_NAME, 'US'),
+        (NameOID.STATE_OR_PROVINCE_NAME, 'Ohio'),
+        (NameOID.LOCALITY_NAME, 'Cincinnati'),
+        (NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
+    ])
 
     # verify
-    assert saq_x509.common_name(mock_cert) is None
+    assert saq_x509.common_name(cert) is None
 
 
 @pytest.mark.unit

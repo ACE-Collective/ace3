@@ -968,56 +968,40 @@ class TestRunGitCommand:
         # exception out of communicate() can't leave the child unreaped
         mock_popen.return_value.__enter__.return_value = mock_process
 
-    @patch("saq.git.subprocess.Popen")
-    def test_successful_command_returns_stdout_stderr(self, mock_popen):
-        mock_process = MagicMock()
-        mock_process.communicate.return_value = ("output\n", "")
-        mock_process.returncode = 0
-        self._install_mock_process(mock_popen, mock_process)
+    def test_successful_command_returns_stdout_stderr(self, tmp_path):
+        repo_path = _make_committed_repo(tmp_path / "repo")
+        (repo_path / "untracked.txt").write_text("new")
 
         repo = self._make_repo()
-        returncode, stdout, stderr = repo._run_git_command(["status"], "failed")
+        returncode, stdout, stderr = repo._run_git_command(
+            ["-C", str(repo_path), "status", "--porcelain"], "failed")
 
         assert returncode == 0
-        assert stdout == "output\n"
+        assert stdout == "?? untracked.txt\n"
         assert stderr == ""
-        mock_process.communicate.assert_called_once_with(timeout=30)
 
-    @patch("saq.git.subprocess.Popen")
-    def test_command_runs_in_its_own_process_group(self, mock_popen):
-        mock_process = MagicMock()
-        mock_process.communicate.return_value = ("", "")
-        mock_process.returncode = 0
-        self._install_mock_process(mock_popen, mock_process)
+    def test_command_runs_in_its_own_process_group(self, tmp_path):
+        repo_path = _make_committed_repo(tmp_path / "repo")
 
-        self._make_repo()._run_git_command(["status"], "failed")
+        with patch("saq.git.subprocess.Popen", wraps=subprocess.Popen) as spy_popen:
+            self._make_repo()._run_git_command(["-C", str(repo_path), "status"], "failed")
 
-        assert mock_popen.call_args.kwargs["start_new_session"] is True
+        assert spy_popen.call_args.kwargs["start_new_session"] is True
 
-    @patch("saq.git.subprocess.Popen")
-    def test_nonzero_return_code_raises_runtime_error(self, mock_popen):
-        mock_process = MagicMock()
-        mock_process.communicate.return_value = ("", "fatal: not a git repository")
-        mock_process.returncode = 1
-        self._install_mock_process(mock_popen, mock_process)
-
+    def test_nonzero_return_code_raises_runtime_error(self, tmp_path):
         repo = self._make_repo()
 
-        with pytest.raises(RuntimeError, match="command failed"):
-            repo._run_git_command(["status"], "command failed")
+        with pytest.raises(RuntimeError, match="command failed: fatal: not a git repository"):
+            repo._run_git_command(["-C", str(tmp_path), "status"], "command failed")
 
-    @patch("saq.git.subprocess.Popen")
-    def test_nonzero_return_code_returned_when_check_is_false(self, mock_popen):
-        mock_process = MagicMock()
-        mock_process.communicate.return_value = ("", "fatal: bad revision")
-        mock_process.returncode = 128
-        self._install_mock_process(mock_popen, mock_process)
+    def test_nonzero_return_code_returned_when_check_is_false(self, tmp_path):
+        repo_path = _make_committed_repo(tmp_path / "repo")
 
         returncode, _, stderr = self._make_repo()._run_git_command(
-            ["rev-list", "--count", "HEAD..origin/main"], "failed", check=False)
+            ["-C", str(repo_path), "rev-list", "--count", "HEAD..origin/main"], "failed", check=False)
 
         assert returncode == 128
-        assert stderr == "fatal: bad revision"
+        assert "unknown revision" in stderr
 
     @patch("saq.git.os.getpgid", return_value=4321)
     @patch("saq.git.os.killpg")
@@ -1278,43 +1262,61 @@ class TestNoDetachOptions:
         assert "gc.autoDetach=false" in argv
         assert "maintenance.autoDetach=false" in argv
 
-    @patch("saq.git.subprocess.Popen")
-    def test_every_gitrepo_command_disables_detach(self, mock_popen):
-        mock_process = MagicMock()
-        mock_process.returncode = 0
-        # clone, rev-parse, checkout, fetch, status, rev-list, pull
-        mock_process.communicate.side_effect = [("", "")] * 5 + [("0\n", "")] + [("", "")]
-        mock_popen.return_value.__enter__.return_value = mock_process
+    def test_every_gitrepo_command_disables_detach(self, tmp_path):
+        origin = tmp_path / "origin.git"
+        subprocess.run(["git", "clone", "--bare", str(_make_committed_repo(tmp_path / "seed")), str(origin)],
+                       check=True, capture_output=True)
+        repo = GitRepo(config=GitRepoConfig(
+            name="test",
+            description="test",
+            local_path=str(tmp_path / "clone"),
+            git_url=str(origin),
+            update_frequency=3600,
+            branch="main",
+        ))
 
-        repo = self._make_repo()
-        with patch.object(GitRepo, "clone_exists", return_value=True):
+        with patch("saq.git.subprocess.Popen", wraps=subprocess.Popen) as spy_popen:
             repo.clone_repo()
-            repo.get_repo_branch()
+            assert repo.get_repo_branch() == "main"
             repo.change_repo_branch("main")
-            repo.repo_is_up_to_date()
+            assert repo.repo_is_up_to_date()
             repo.pull_repo()
 
-        assert len(mock_popen.call_args_list) == 7
-        for call in mock_popen.call_args_list:
+        # clone, rev-parse, checkout, fetch, status, rev-list, pull
+        assert len(spy_popen.call_args_list) == 7
+        for call in spy_popen.call_args_list:
             argv = call.args[0]
             assert argv[0] == "git"
             assert "gc.autoDetach=false" in argv, argv
             assert "maintenance.autoDetach=false" in argv, argv
 
-    @patch("saq.git.subprocess.run")
-    def test_every_module_helper_disables_detach(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="value\n", stderr="")
+    def test_every_module_helper_disables_detach(self, tmp_path):
+        repo_path = _make_committed_repo(tmp_path / "repo")
+        subprocess.run(["git", "-C", str(repo_path), "remote", "add", "origin", "https://example.com/repo.git"],
+                       check=True, capture_output=True)
 
-        get_commit_hash("/path/to/repo")
-        get_repo_root("/path/to/repo")
-        get_remote_url("/path/to/repo")
+        with patch("saq.git.subprocess.run", wraps=subprocess.run) as spy_run:
+            assert get_commit_hash(str(repo_path))
+            assert get_repo_root(str(repo_path)) == str(repo_path)
+            assert get_remote_url(str(repo_path)) == "https://example.com/repo.git"
 
-        assert len(mock_run.call_args_list) == 3
-        for call in mock_run.call_args_list:
+        assert len(spy_run.call_args_list) == 3
+        for call in spy_run.call_args_list:
             argv = call.args[0]
             assert argv[0] == "git"
             assert "gc.autoDetach=false" in argv, argv
             assert "maintenance.autoDetach=false" in argv, argv
+
+
+def _make_committed_repo(path):
+    """Creates a git repo with one commit on main at path and returns path."""
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(path), check=True, capture_output=True)
+    (path / "test.txt").write_text("test content")
+    subprocess.run(["git", "add", "test.txt"], cwd=str(path), check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "Initial commit"],
+                   cwd=str(path), check=True, capture_output=True)
+    return path
 
 
 PR_SET_CHILD_SUBREAPER = 36

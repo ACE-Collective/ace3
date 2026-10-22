@@ -22,16 +22,11 @@ def create_analyzer(root):
 
 
 @pytest.mark.unit
-def test_execute_analysis_value_error(monkeypatch):
+def test_execute_analysis_value_error():
     """When extract_protected_url raises ValueError, execute_analysis returns COMPLETED early."""
     root = RootAnalysis()
     url_obs = root.add_observable_by_spec(F_URL, "not-a-valid-url")
     analyzer = create_analyzer(root)
-
-    monkeypatch.setattr(
-        "saq.modules.url.protected.extract_protected_url",
-        lambda url: (_ for _ in ()).throw(ValueError("bad url")),
-    )
 
     result = analyzer.execute_analysis(url_obs)
 
@@ -42,17 +37,12 @@ def test_execute_analysis_value_error(monkeypatch):
 
 
 @pytest.mark.unit
-def test_execute_analysis_unprotected_url(monkeypatch):
+def test_execute_analysis_unprotected_url():
     """When a URL is unprotected, execute_analysis sets details and returns COMPLETED."""
     test_url = "https://example.com/safe"
     root = RootAnalysis()
     url_obs = root.add_observable_by_spec(F_URL, test_url)
     analyzer = create_analyzer(root)
-
-    monkeypatch.setattr(
-        "saq.modules.url.protected.extract_protected_url",
-        lambda url: (ProtectionType.UNPROTECTED, test_url),
-    )
 
     result = analyzer.execute_analysis(url_obs)
 
@@ -66,18 +56,13 @@ def test_execute_analysis_unprotected_url(monkeypatch):
 
 
 @pytest.mark.unit
-def test_execute_analysis_protected_url(monkeypatch):
+def test_execute_analysis_protected_url():
     """When a URL is protected, execute_analysis adds extracted URL observable and tags the original."""
     original_url = "https://protect.fireeye.com/v1/url?u=https://malicious.com"
     extracted_url = "https://malicious.com"
     root = RootAnalysis()
     url_obs = root.add_observable_by_spec(F_URL, original_url)
     analyzer = create_analyzer(root)
-
-    monkeypatch.setattr(
-        "saq.modules.url.protected.extract_protected_url",
-        lambda url: (ProtectionType.FIREEYE, extracted_url),
-    )
 
     result = analyzer.execute_analysis(url_obs)
 

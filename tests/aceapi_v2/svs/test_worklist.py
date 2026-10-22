@@ -16,12 +16,11 @@ from aceapi_v2.svs.worklist.schemas import ResolutionRequest
 from saq.database.model import SVSTechniqueWorklist, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import coverage, expectations, signatures, windows
+from saq.svs import expectations
 from saq.svs.attack import load_attack_catalog
 from saq.svs.coverage import refresh_coverage
-from saq.svs.signatures import SignatureTags
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test
+from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, write_hunt
 
 pytestmark = pytest.mark.integration
 
@@ -278,12 +277,9 @@ class TestResolutions:
 
 class TestSignature:
     @pytest.mark.asyncio
-    async def test_rows_and_what_is_measured_now(self, client: AsyncClient, attack_catalog, monkeypatch,
+    async def test_rows_and_what_is_measured_now(self, client: AsyncClient, attack_catalog, hunt_dir, yara_dir,
                                                  unittest_user_id):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {})
-        monkeypatch.setattr(coverage, "signature_techniques",
-                            lambda: {SIGNATURE: SignatureTags(SIGNATURE, "hunt", "Hunt", True, ("T1547",), ())})
-        monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+        write_hunt(hunt_dir, SIGNATURE, name="Hunt", tags=["mitre:T1547"])
         add_catalog_test(GUID, name="PowerShell download")
         expectations.set_expectation(GUID, SIGNATURE, "expected", unittest_user_id, platform="windows")
         refresh_coverage("test")

@@ -1,17 +1,77 @@
-import logging
-from unittest.mock import patch, MagicMock, Mock, mock_open
-from flask import url_for
-import pytest
+import glob
+import hashlib
 import io
+import logging
+import os
+from datetime import UTC, datetime
+from unittest.mock import Mock, patch
 
-from saq.constants import F_FILE
+import pytest
+from flask import url_for
+
+from saq.analysis.root import load_root
+from saq.configuration.config import get_config
+from saq.constants import F_FILE, F_IPV4, create_file_location
+from saq.database.model import Alert, Company, Nodes
+from saq.database.pool import get_db
+from saq.environment import get_temp_dir
+from saq.util.uuid import get_storage_dir
+
+
+@pytest.fixture
+def target_node():
+    """A node that accepts any analysis mode, as the form's target_node_data value."""
+    node = Nodes(
+        name="new-alert-node",
+        location="new-alert-location",
+        company_id=get_config().global_settings.company_id,
+        last_update=datetime.now(),
+        any_mode=True)
+    get_db().add(node)
+    get_db().commit()
+    return f"{node.id},{node.location},{node.company_id}"
+
+
+def _form(target_node, **fields):
+    data = {
+        'new_alert_insert_date': '01-01-2024 12:00:00',
+        'timezone': 'UTC',
+        'new_alert_type': 'manual',
+        'new_alert_description': 'Test Alert',
+        'new_alert_queue': 'default',
+        'target_node_data': target_node,
+        'observables_directives_0': 'no_scan',
+        'observable_data_sep_0': 'single',
+        'submit_type': 'single',
+    }
+    data.update(fields)
+    return data
+
+
+def _alert_uuid(response) -> str:
+    assert response.status_code == 302
+    assert 'direct=' in response.location
+    return response.location.split('direct=')[1]
+
+
+def _submitted_root(response):
+    return load_root(get_storage_dir(_alert_uuid(response)))
+
+
+def _alerts() -> list[Alert]:
+    get_db().expire_all()
+    return get_db().query(Alert).all()
+
+
+def _leftover_uploads() -> list[str]:
+    return glob.glob(os.path.join(get_temp_dir(), '*.upload'))
 
 
 @pytest.mark.integration
 def test_new_alert_observable_get(web_client):
     """Test GET request to new_alert_observable returns template with correct data."""
     response = web_client.get(url_for('analysis.new_alert_observable', index='5'))
-    
+
     assert response.status_code == 200
     # Template should be returned successfully
     assert response.data is not None
@@ -30,612 +90,329 @@ def test_new_alert_observable_missing_index(web_client):
 
 
 @pytest.mark.integration
-def test_file_route_get(web_client):
+def test_file_route_get(web_client, target_node):
     """Test GET request to file route returns analyze_file template."""
-    with patch('app.analysis.views.edit.new.get_db_connection') as mock_db:
-        mock_cursor = MagicMock()
-        mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-        mock_db.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-        
-        response = web_client.get(url_for('analysis.file'))
-    
+    response = web_client.get(url_for('analysis.file'))
+
     assert response.status_code == 200
-    assert b'analyze_file.html' in response.data or response.status_code == 200
+    assert f'value="{target_node}"'.encode() in response.data
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.ace_api.submit')
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_single_observable_success(mock_db_conn, mock_api_submit, web_client):
+def test_new_alert_single_observable_success(web_client, mock_api_call, analyst, target_node):
     """Test successful creation of single alert with one observable."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    # Mock API submission response
-    mock_api_submit.return_value = {
-        'result': {'uuid': 'test-alert-uuid-123'}
-    }
-    
-    # Mock database update
-    with patch('app.analysis.views.edit.new.get_db') as mock_db:
-        mock_db.return_value.execute.return_value = None
-        mock_db.return_value.commit.return_value = None
-        
-        response = web_client.post(url_for('analysis.new_alert'), data={
-            'new_alert_insert_date': '01-01-2024 12:00:00',
-            'timezone': 'UTC',
-            'new_alert_type': 'manual',
-            'new_alert_description': 'Test Alert',
-            'new_alert_queue': 'default',
-            'target_node_data': '1,test-location,1',
-            'observables_types_0': 'ipv4',
-            'observables_values_0': '192.168.1.1',
-            'observables_directives_0': 'no_scan',
-            'observable_data_sep_0': 'single',
-            'submit_type': 'single'
-        })
-    
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='Test Alert',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1'))
+
     # Should redirect to analysis index with the new alert UUID
-    assert response.status_code == 302
     assert 'analysis' in response.location
-    assert 'test-alert-uuid-123' in response.location
+    root = _submitted_root(response)
+    assert root.description == 'Test Alert (192.168.1.1)'
+    assert root.tool == 'gui'
+    assert root.queue == 'default'
+    assert root.details['user'] == 'john'
+    assert root.event_time == datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    observable = root.get_observable_by_type(F_IPV4)
+    assert observable.value == '192.168.1.1'
+    assert observable.has_directive('no_scan')
+    assert observable.added_by == 'john'
+    assert observable.added_time
+
+    # the analyst who submitted it owns it
+    alert = get_db().query(Alert).filter(Alert.uuid == root.uuid).one()
+    assert alert.owner_id == analyst
+    assert alert.owner_time is not None
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.ace_api.submit')
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_multiple_observables_multi_submit(mock_db_conn, mock_api_submit, web_client):
+def test_new_alert_multiple_observables_multi_submit(web_client, mock_api_call, analyst, target_node):
     """Test creation of multiple alerts from multi-line observable input."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    # Mock API submission response
-    mock_api_submit.return_value = {
-        'result': {'uuid': 'test-alert-uuid-456'}
-    }
-    
-    with patch('app.analysis.views.edit.new.get_db') as mock_db:
-        mock_db.return_value.execute.return_value = None
-        mock_db.return_value.commit.return_value = None
-        
-        response = web_client.post(url_for('analysis.new_alert'), data={
-            'new_alert_insert_date': '01-01-2024 12:00:00',
-            'timezone': 'UTC',
-            'new_alert_type': 'manual',
-            'new_alert_description': 'Multi Alert',
-            'new_alert_queue': 'default',
-            'target_node_data': '1,test-location,1',
-            'observables_types_0': 'ipv4',
-            'observables_values_0': '192.168.1.1\n192.168.1.2\n192.168.1.3',
-            'observables_directives_0': 'no_scan',
-            'observable_data_sep_0': 'multi',
-            'submit_type': 'multiple'
-        })
-    
-    # Should redirect after processing multiple alerts
-    assert response.status_code == 302
-    assert 'analysis' in response.location
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='Multi Alert',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1\n192.168.1.2\n192.168.1.3',
+        observable_data_sep_0='multi',
+        submit_type='multiple'))
+
+    # one alert per value, each owned by the analyst, and the redirect goes to the last one
+    alerts = _alerts()
+    assert sorted(alert.description for alert in alerts) == [
+        'Multi Alert (192.168.1.1)', 'Multi Alert (192.168.1.2)', 'Multi Alert (192.168.1.3)']
+    assert all(alert.owner_id == analyst for alert in alerts)
+
+    root = _submitted_root(response)
+    assert root.description == 'Multi Alert (192.168.1.3)'
+    assert [o.value for o in root.get_observables_by_type(F_IPV4)] == ['192.168.1.3']
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_invalid_timezone(mock_db_conn, web_client):
+def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node):
     """Test new alert creation with invalid timezone."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    response = web_client.post(url_for('analysis.new_alert'), data={
-        'new_alert_insert_date': '01-01-2024 12:00:00',
-        'timezone': 'Invalid/Timezone',
-        'new_alert_type': 'manual',
-        'new_alert_description': 'Test Alert',
-        'new_alert_queue': 'default',
-        'target_node_data': '1,test-location,1',
-    })
-    
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        timezone='Invalid/Timezone'))
+
     # Should redirect to manage page due to timezone error
     assert response.status_code == 302
     assert 'manage' in response.location
+    assert _alerts() == []
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_email_conversation_observable(mock_db_conn, web_client):
+def test_new_alert_email_conversation_observable(web_client, mock_api_call, target_node):
     """Test creation of alert with email conversation observable."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-email-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'Email Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': 'email_conversation',
-                'observables_values_0_A': 'sender@example.com',
-                'observables_values_0_B': 'recipient@example.com',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0='email_conversation',
+        observables_values_0_A='sender@example.com',
+        observables_values_0_B='recipient@example.com'))
+
+    root = _submitted_root(response)
+    observable = root.get_observable_by_type('email_conversation')
+    assert observable.value == 'sender@example.com|recipient@example.com'
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_ipv4_conversation_observable(mock_db_conn, web_client):
+def test_new_alert_ipv4_conversation_observable(web_client, mock_api_call, target_node):
     """Test creation of alert with IPv4 conversation observable."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-ipv4-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'IPv4 Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': 'ipv4_conversation',
-                'observables_values_0_A': '192.168.1.1',
-                'observables_values_0_B': '192.168.1.2',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0='ipv4_conversation',
+        observables_values_0_A='192.168.1.1',
+        observables_values_0_B='192.168.1.2'))
+
+    root = _submitted_root(response)
+    observable = root.get_observable_by_type('ipv4_conversation')
+    assert observable.value == '192.168.1.1_192.168.1.2'
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_file_location_observable(mock_db_conn, web_client):
+def test_new_alert_file_location_observable(web_client, mock_api_call, target_node):
     """Test creation of alert with file location observable."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-file-location-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            with patch('saq.constants.create_file_location') as mock_create_file_location:
-                mock_create_file_location.return_value = 'host:path/to/file'
-                
-                response = web_client.post(url_for('analysis.new_alert'), data={
-                    'new_alert_insert_date': '01-01-2024 12:00:00',
-                    'timezone': 'UTC',
-                    'new_alert_type': 'manual',
-                    'new_alert_description': 'File Location Alert',
-                    'new_alert_queue': 'default',
-                    'target_node_data': '1,test-location,1',
-                    'observables_types_0': 'file_location',
-                    'observables_values_0_A': 'hostname',
-                    'observables_values_0_B': '/path/to/file',
-                    'observables_directives_0': 'no_scan',
-                    'observable_data_sep_0': 'single',
-                    'submit_type': 'single'
-                })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0='file_location',
+        observables_values_0_A='hostname',
+        observables_values_0_B='/path/to/file'))
+
+    root = _submitted_root(response)
+    observable = root.get_observable_by_type('file_location')
+    assert observable.value == create_file_location('hostname', '/path/to/file')
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_file_upload(mock_db_conn, web_client):
-    """Test creation of alert with file upload."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-file-upload-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            # Test without file upload - should handle gracefully
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'File Upload Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': F_FILE,
-                'observables_values_0': '/path/to/file',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single'
-            })
-    
+def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
+    """A file observable posted without a file is refused."""
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            observables_types_0=F_FILE,
+            observables_values_0='/path/to/file'))
+
     assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert any(r.getMessage().startswith("unable to submit alert") for r in caplog.records)
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.ace_api.submit')
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_api_submission_failure(mock_db_conn, mock_api_submit, web_client):
+def test_new_alert_api_submission_failure(web_client, target_node):
     """Test handling of API submission failure."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
     # Mock API submission to raise exception
-    mock_api_submit.side_effect = Exception("API submission failed")
-    
-    response = web_client.post(url_for('analysis.new_alert'), data={
-        'new_alert_insert_date': '01-01-2024 12:00:00',
-        'timezone': 'UTC',
-        'new_alert_type': 'manual',
-        'new_alert_description': 'Test Alert',
-        'new_alert_queue': 'default',
-        'target_node_data': '1,test-location,1',
-        'observables_types_0': 'ipv4',
-        'observables_values_0': '192.168.1.1',
-        'observables_directives_0': 'no_scan',
-        'observable_data_sep_0': 'single',
-        'submit_type': 'single'
-    })
-    
+    with patch('app.analysis.views.edit.new.ace_api.submit', side_effect=Exception("API submission failed")):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            observables_types_0='ipv4',
+            observables_values_0='192.168.1.1'))
+
     # Should redirect to manage page with error
     assert response.status_code == 302
     assert 'manage' in response.location
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_comma_separated_multi_values(mock_db_conn, web_client):
+def test_new_alert_comma_separated_multi_values(web_client, mock_api_call, target_node):
     """Test parsing of comma-separated multi-value observables."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-comma-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'Comma Separated Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': 'ipv4',
-                'observables_values_0': '192.168.1.1,192.168.1.2,192.168.1.3',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'multi',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='Comma Separated Alert',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1,192.168.1.2,192.168.1.3',
+        observable_data_sep_0='multi'))
+
+    # a single alert carrying all three values
+    root = _submitted_root(response)
+    assert root.description == 'Comma Separated Alert'
+    assert sorted(o.value for o in root.get_observables_by_type(F_IPV4)) == [
+        '192.168.1.1', '192.168.1.2', '192.168.1.3']
+    assert len(_alerts()) == 1
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_observable_with_time(mock_db_conn, web_client):
+def test_new_alert_observable_with_time(web_client, mock_api_call, target_node):
     """Test creation of observable with specific time."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-time-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'Timed Observable Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': 'ipv4',
-                'observables_values_0': '192.168.1.1',
-                'observables_times_0': '01-02-2024 14:30:00',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        timezone='America/New_York',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1',
+        observables_times_0='01-02-2024 14:30:00'))
+
+    # the observable time is read in the submitted timezone
+    root = _submitted_root(response)
+    observable = root.get_observable_by_type(F_IPV4)
+    assert observable.time == datetime(2024, 1, 2, 19, 30, 0, tzinfo=UTC)
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_directive_list_parsing(mock_db_conn, web_client):
+def test_new_alert_directive_list_parsing(web_client, mock_api_call, target_node):
     """Test parsing of directive lists from form."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-directive-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'Directive List Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': 'ipv4',
-                'observables_values_0': '192.168.1.1',
-                'observables_directives_0': 'no_scan,archive',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1',
+        observables_directives_0='no_scan, archive,'))
+
+    root = _submitted_root(response)
+    observable = root.get_observable_by_type(F_IPV4)
+    assert sorted(observable.directives) == ['archive', 'no_scan']
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_file_route_with_secondary_companies(mock_db_conn, web_client):
-    """Test file route with secondary company configuration."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.side_effect = [
-        [(1, 'primary-node', 'primary-location', 1, 'primary-company')],
-        [(2, 'secondary-node', 'secondary-location', 2, 'secondary-company')]
-    ]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('saq.configuration.config.get_config') as mock_config:
-        mock_config.return_value = {
-            'global': {
-                'secondary_company_ids': '2,3'
-            }
-        }
-        
-        response = web_client.get(url_for('analysis.file'))
-    
+def test_file_route_lists_nodes_of_every_company(web_client, target_node):
+    """The node list on the file page covers every company's nodes."""
+    company = Company(name='secondary-company')
+    get_db().add(company)
+    get_db().flush()
+    node = Nodes(name='secondary-node', location='secondary-location', company_id=company.id,
+                 last_update=datetime.now(), any_mode=True)
+    get_db().add(node)
+    get_db().commit()
+
+    response = web_client.get(url_for('analysis.file'))
+
     assert response.status_code == 200
+    assert f'value="{target_node}"'.encode() in response.data
+    assert f'value="{node.id},secondary-location,{company.id}"'.encode() in response.data
+    assert b'secondary-location (secondary-company)' in response.data
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_no_observables(mock_db_conn, web_client):
+def test_new_alert_no_observables(web_client, mock_api_call, analyst, target_node):
     """Test creation of alert with no observables."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-no-obs-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'No Observable Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'submit_type': 'single'
-            })
-    
-    assert response.status_code == 302
+    response = web_client.post(url_for('analysis.new_alert'), data={
+        'new_alert_insert_date': '01-01-2024 12:00:00',
+        'timezone': 'UTC',
+        'new_alert_type': 'manual',
+        'new_alert_description': 'No Observable Alert',
+        'new_alert_queue': 'default',
+        'target_node_data': target_node,
+        'submit_type': 'single'
+    })
+
+    root = _submitted_root(response)
+    assert root.description == 'No Observable Alert'
+    assert root.all_observables == []
+    assert get_db().query(Alert).filter(Alert.uuid == root.uuid).one().owner_id == analyst
+
+
+def _submit_local_file(web_client, target_node, tmp_path):
+    local_file = tmp_path / 'test_file.txt'
+    local_file.write_bytes(b'local file content')
+
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='Local File Alert',
+        observables_types_0=F_FILE,
+        observables_values_0=str(local_file),
+        is_local='true'))
+
+    return _submitted_root(response)
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-@patch('app.analysis.views.edit.new.sha256_file')
-@patch('builtins.open', new_callable=mock_open)
-@patch('os.path.basename')
-def test_new_alert_local_file_path(mock_basename, mock_file_open, mock_sha256, mock_db_conn, web_client):
-    """Test creation of alert with local file path (lines 143-147)."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    # Mock file operations
-    mock_sha256.return_value = 'abc123sha256hash'
-    mock_basename.return_value = 'test_file.txt'
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-local-file-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            response = web_client.post(url_for('analysis.new_alert'), data={
-                'new_alert_insert_date': '01-01-2024 12:00:00',
-                'timezone': 'UTC',
-                'new_alert_type': 'manual',
-                'new_alert_description': 'Local File Alert',
-                'new_alert_queue': 'default',
-                'target_node_data': '1,test-location,1',
-                'observables_types_0': F_FILE,
-                'observables_values_0': '/path/to/local/file.txt',
-                'observables_directives_0': 'no_scan',
-                'observable_data_sep_0': 'single',
-                'submit_type': 'single',
-                'is_local': 'true'  # This triggers the local file path code
-            })
-    
-    assert response.status_code == 302
-    # Verify file operations were called
-    mock_sha256.assert_called_with('/path/to/local/file.txt')
-    mock_basename.assert_called_with('/path/to/local/file.txt')
+def test_new_alert_local_file_path(web_client, mock_api_call, target_node, tmp_path):
+    """Test creation of alert with a file already on this server."""
+    root = _submit_local_file(web_client, target_node, tmp_path)
+    assert root.description == 'Local File Alert (test_file.txt)'
+    observable = root.get_observable_by_type(F_FILE)
+    assert observable.sha256_hash == hashlib.sha256(b'local file content').hexdigest()
+    assert observable.has_directive('no_scan')
+    assert observable.added_by == 'john'
 
 
-@pytest.mark.integration  
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_file_upload_with_actual_file(mock_db_conn, web_client):
-    """Test file upload with actual werkzeug FileStorage object (lines 152-167)."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-upload-real-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            with patch('tempfile.mkstemp') as mock_mkstemp:
-                mock_mkstemp.return_value = (5, '/tmp/test_upload_real')
-                
-                with patch('os.close') as mock_os_close:
-                    with patch('app.analysis.views.edit.new.get_temp_dir') as mock_get_temp_dir:
-                        mock_get_temp_dir.return_value = '/tmp'
-                        
-                        with patch('app.analysis.views.edit.new.sha256_file') as mock_sha256:
-                            mock_sha256.return_value = 'real456sha256hash'
-                            
-                            with patch('builtins.open', mock_open()) as mock_file:
-                                with patch('os.remove'):
-                                    # Create file data
-                                    file_data = b'test file content for upload'
-                                    
-                                    response = web_client.post(
-                                        url_for('analysis.new_alert'),
-                                        data={
-                                            'new_alert_insert_date': '01-01-2024 12:00:00',
-                                            'timezone': 'UTC',
-                                            'new_alert_type': 'manual',
-                                            'new_alert_description': 'Real File Upload Alert',
-                                            'new_alert_queue': 'default',
-                                            'target_node_data': '1,test-location,1',
-                                            'observables_types_0': F_FILE,
-                                            'observables_directives_0': 'no_scan',
-                                            'observable_data_sep_0': 'single',
-                                            'submit_type': 'single',
-                                            'observables_values_0': (io.BytesIO(file_data), 'test_upload.txt')
-                                        },
-                                        content_type='multipart/form-data'
-                                    )
-    
-    assert response.status_code == 302
+# only the file name is wrong; everything else about the submission is pinned by the test above
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason="a local file is submitted under its sha256 as the file name, and the "
+                   "submission's file_path is ignored, so the file observable is named by its hash")
+def test_new_alert_local_file_path_keeps_file_name(web_client, mock_api_call, target_node, tmp_path):
+    root = _submit_local_file(web_client, target_node, tmp_path)
+    assert root.get_observable_by_type(F_FILE).file_name == 'test_file.txt'
 
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_file_upload_with_multipart_form(mock_db_conn, web_client):
-    """Test file upload through multipart form (covers lines 152-167)."""
-    # Mock database connection
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-    
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit:
-        mock_api_submit.return_value = {
-            'result': {'uuid': 'test-multipart-uuid'}
-        }
-        
-        with patch('app.analysis.views.edit.new.get_db') as mock_db:
-            mock_db.return_value.execute.return_value = None
-            mock_db.return_value.commit.return_value = None
-            
-            with patch('tempfile.mkstemp') as mock_mkstemp:
-                mock_mkstemp.return_value = (5, '/tmp/test_multipart')
-                
-                with patch('os.close'):
-                    with patch('app.analysis.views.edit.new.get_temp_dir') as mock_get_temp_dir:
-                        mock_get_temp_dir.return_value = '/tmp'
-                        
-                        with patch('app.analysis.views.edit.new.sha256_file') as mock_sha256:
-                            mock_sha256.return_value = 'multipart456hash'
-                            
-                            with patch('builtins.open', mock_open()):
-                                with patch('os.remove'):
-                                    # Test with actual multipart file upload
-                                    file_data = b'test file for multipart upload'
-                                    
-                                    response = web_client.post(
-                                        url_for('analysis.new_alert'),
-                                        data={
-                                            'new_alert_insert_date': '01-01-2024 12:00:00',
-                                            'timezone': 'UTC',
-                                            'new_alert_type': 'manual',
-                                            'new_alert_description': 'Multipart File Upload',
-                                            'new_alert_queue': 'default',
-                                            'target_node_data': '1,test-location,1',
-                                            'observables_types_0': F_FILE,
-                                            'observables_directives_0': 'no_scan',
-                                            'observable_data_sep_0': 'single',
-                                            'submit_type': 'single',
-                                            'observables_values_0': (io.BytesIO(file_data), 'multipart_test.txt')
-                                        },
-                                        content_type='multipart/form-data'
-                                    )
-    
-    # Should redirect successfully after processing file
-    assert response.status_code == 302
+def test_new_alert_file_upload_with_actual_file(web_client, mock_api_call, target_node):
+    """An uploaded file is submitted as a file observable carrying the form's settings."""
+    file_data = b'test file content for upload'
+
+    response = web_client.post(
+        url_for('analysis.new_alert'),
+        data=_form(
+            target_node,
+            new_alert_description='Real File Upload Alert',
+            observables_types_0=F_FILE,
+            observables_values_0=(io.BytesIO(file_data), 'test_upload.txt')),
+        content_type='multipart/form-data')
+
+    root = _submitted_root(response)
+    assert root.description == 'Real File Upload Alert (test_upload.txt)'
+    observable = root.get_observable_by_type(F_FILE)
+    assert observable.sha256_hash == hashlib.sha256(file_data).hexdigest()
+    assert observable.file_name == 'test_upload.txt'
+    with open(observable.full_path, 'rb') as fp:
+        assert fp.read() == file_data
+    assert observable.has_directive('no_scan')
+    assert observable.added_by == 'john'
+
 
 @pytest.mark.integration
-@patch('app.analysis.views.edit.new.get_db_connection')
-def test_new_alert_file_save_failure_is_reported(mock_db_conn, web_client, monkeypatch, caplog):
+def test_new_alert_file_upload_with_multipart_form(web_client, mock_api_call, target_node):
+    """Each alert of a multiple submission carries only its own uploaded file, and the
+    temporary upload files are removed afterwards."""
+    response = web_client.post(
+        url_for('analysis.new_alert'),
+        data=_form(
+            target_node,
+            new_alert_description='Multipart File Upload',
+            observables_types_0=F_FILE,
+            observables_values_0=(io.BytesIO(b'first upload'), 'first.txt'),
+            observables_types_1=F_FILE,
+            observables_values_1=(io.BytesIO(b'second upload'), 'second.txt'),
+            observables_directives_1='',
+            observable_data_sep_1='single',
+            submit_type='multiple'),
+        content_type='multipart/form-data')
+
+    assert response.status_code == 302
+    files_by_alert = {}
+    for alert in _alerts():
+        root = load_root(get_storage_dir(alert.uuid))
+        files_by_alert[root.description] = [o.sha256_hash for o in root.get_observables_by_type(F_FILE)]
+
+    assert files_by_alert == {
+        'Multipart File Upload (first.txt)': [hashlib.sha256(b'first upload').hexdigest()],
+        'Multipart File Upload (second.txt)': [hashlib.sha256(b'second upload').hexdigest()],
+    }
+    assert _leftover_uploads() == []
+
+@pytest.mark.integration
+def test_new_alert_file_save_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
     """An uploaded file that cannot be saved stops the submission and is reported."""
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = [(1, 'test-node', 'test-location', 1, 'test-company')]
-    mock_db_conn.return_value.__enter__.return_value.cursor.return_value = mock_cursor
-
     def failing_save(self, dst, *args, **kwargs):
         raise OSError("disk full")
 
@@ -643,24 +420,18 @@ def test_new_alert_file_save_failure_is_reported(mock_db_conn, web_client, monke
     write_error_report = Mock()
     monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
 
-    with patch('app.analysis.views.edit.new.ace_api.submit') as mock_api_submit, caplog.at_level(logging.ERROR):
-        response = web_client.post(url_for('analysis.new_alert'), data={
-            'new_alert_insert_date': '01-01-2024 12:00:00',
-            'timezone': 'UTC',
-            'new_alert_type': 'manual',
-            'new_alert_description': 'File Upload Alert',
-            'new_alert_queue': 'default',
-            'target_node_data': '1,test-location,1',
-            'observables_types_0': F_FILE,
-            'observables_values_0': (io.BytesIO(b'uploaded content'), 'upload.txt'),
-            'observables_directives_0': 'no_scan',
-            'observable_data_sep_0': 'single',
-            'submit_type': 'single'
-        }, content_type='multipart/form-data')
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            new_alert_description='File Upload Alert',
+            observables_types_0=F_FILE,
+            observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt')),
+            content_type='multipart/form-data')
 
     assert response.status_code == 302
     assert 'manage' in response.location
-    mock_api_submit.assert_not_called()
+    assert _alerts() == []
+    assert _leftover_uploads() == []
     records = [r for r in caplog.records if r.getMessage().startswith("unable to save")]
     assert len(records) == 1
     write_error_report.assert_called_once()

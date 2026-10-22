@@ -13,6 +13,7 @@ pytest.importorskip("boto3")
 
 import botocore.exceptions
 
+from saq.configuration.config import get_config
 from saq.storage.s3 import S3Storage
 
 pytestmark = pytest.mark.unit
@@ -27,9 +28,8 @@ def _client_error(code: str) -> botocore.exceptions.ClientError:
 @pytest.fixture
 def storage(monkeypatch):
     """An S3Storage whose boto3 client is a mock, with real timeout config."""
-    with patch("saq.storage.s3.boto3") as mock_boto3, \
-            patch("saq.storage.s3.get_config") as mock_get_config:
-        mock_get_config.return_value.s3 = None  # use schema defaults
+    monkeypatch.setattr(get_config(), "s3", None)  # use schema defaults
+    with patch("saq.storage.s3.boto3") as mock_boto3:
         mock_boto3.client.return_value = MagicMock()
         instance = S3Storage(
             host="s3.local", port=9000, access_key="key", secret_key="secret"

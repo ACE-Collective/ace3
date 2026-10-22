@@ -13,7 +13,7 @@ from saq.cli.commands.svs import cli_coverage_status
 from saq.database.model import SVSCoverage, SVSTechniqueWorklist, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import coverage, expectations, signatures, worklist
+from saq.svs import coverage, expectations, windows, worklist
 from saq.svs.attack import load_attack_catalog
 from saq.svs.constants import WorklistKind, WorklistStatus
 from saq.svs.coverage import refresh_coverage, technique_detail
@@ -29,7 +29,7 @@ from saq.svs.worklist import (
     resolve,
     resolve_many,
 )
-from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, add_test_host
+from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, add_test_host, write_hunt
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
@@ -149,11 +149,12 @@ class TestCompute:
 #
 
 @pytest.fixture
-def tags(monkeypatch) -> dict:
-    """The signature tags refresh_coverage reads; empty until a test adds some."""
-    tags: dict = {}
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
-    return tags
+def tag(hunt_dir):
+    """Tags a signature, a hunt, with mitre: techniques (or none) for the next refresh."""
+    def set_tags(uuid: str, *techniques: str):
+        write_hunt(hunt_dir, uuid, tags=[f"mitre:{technique}" for technique in techniques])
+        windows.clear_cache()
+    return set_tags
 
 
 @pytest.fixture
@@ -164,11 +165,9 @@ def use_catalog(monkeypatch):
 
 
 @pytest.fixture
-def refreshable(no_hunts, monkeypatch, attack_catalog, tags, use_catalog):
+def refreshable(hunt_dir, yara_dir, attack_catalog, use_catalog):
     use_catalog(attack_catalog)
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
     add_test_host("win10-01")
-    return tags
 
 
 @pytest.fixture
@@ -201,12 +200,11 @@ def _coverage(technique: str, platform: str = "windows") -> SVSCoverage:
 
 
 @pytest.fixture
-def measured(refreshable, user_id):
+def measured(refreshable, user_id, tag):
     """SIGNATURE is expected of a T1059.001 test, and tagged T1547, which no test measures."""
     add_catalog_test(GUID)
     _expect(GUID, SIGNATURE, user_id)
-    refreshable[SIGNATURE] = _tag(SIGNATURE, "T1547")
-    return refreshable
+    tag(SIGNATURE, "T1547")
 
 
 @pytest.mark.integration
@@ -247,10 +245,10 @@ class TestRefresh:
         refresh_coverage("test")
         assert _coverage("T1547").state == "manual"
 
-    def test_a_confirmed_tag_counts_whatever_its_resolution(self, refreshable, user_id):
+    def test_a_confirmed_tag_counts_whatever_its_resolution(self, refreshable, user_id, tag):
         add_catalog_test(GUID)
         _expect(GUID, SIGNATURE, user_id)
-        refreshable[SIGNATURE] = _tag(SIGNATURE, "T1059")
+        tag(SIGNATURE, "T1059")
         refresh_coverage("test")
         # resolved before measurement confirmed it
         with private_transaction() as session:
@@ -261,16 +259,16 @@ class TestRefresh:
         # the tag still makes T1059 manual where no test runs
         assert _coverage("T1059", "macos").state == "manual"
 
-    def test_the_tag_goes_and_comes_back(self, measured, user_id, caplog):
+    def test_the_tag_goes_and_comes_back(self, measured, user_id, tag, caplog):
         refresh_coverage("test")
         resolve(SIGNATURE, "T1547", "remove", "dropping it", user_id)
 
-        measured[SIGNATURE] = _tag(SIGNATURE)
+        tag(SIGNATURE)
         refresh_coverage("test")
         row = _worklist()[(SIGNATURE, "T1547")]
         assert (row.status, row.tag_present, row.counts, row.resolution) == ("removed", False, False, "remove")
 
-        measured[SIGNATURE] = _tag(SIGNATURE, "T1547")
+        tag(SIGNATURE, "T1547")
         with caplog.at_level(logging.INFO):
             refresh_coverage("test", now=T0)
         row = _worklist()[(SIGNATURE, "T1547")]
@@ -279,9 +277,9 @@ class TestRefresh:
         assert [r for r in caplog.records if "cleared: the tag is back" in r.getMessage()]
         assert _coverage("T1547").state == "manual"
 
-    def test_a_tag_dropped_without_a_resolution_retires(self, measured):
+    def test_a_tag_dropped_without_a_resolution_retires(self, measured, tag):
         refresh_coverage("test")
-        del measured[SIGNATURE]
+        tag(SIGNATURE)
         refresh_coverage("test")
         assert _statuses()[(SIGNATURE, "T1547")] == "retired"
         assert _statuses()[(SIGNATURE, "T1059.001")] == "undeclared"
@@ -305,7 +303,7 @@ class TestRefresh:
         assert _statuses()[(SIGNATURE, "T1547")] == "remove_pending"
 
     def test_an_attack_upgrade_carries_the_resolution(self, refreshable, user_id, use_catalog, attack_catalog,
-                                                      tmp_path, caplog):
+                                                      tag, tmp_path, caplog):
         # in the older release T1086 is still a technique of its own
         older = copy.deepcopy(ATTACK_EXTRACT)
         older["release"] = "v98.0"
@@ -318,7 +316,7 @@ class TestRefresh:
 
         add_catalog_test(GUID, technique="T1547")
         _expect(GUID, SIGNATURE, user_id)
-        refreshable[SIGNATURE] = _tag(SIGNATURE, "T1086")
+        tag(SIGNATURE, "T1086")
         refresh_coverage("test")
         resolve(SIGNATURE, "T1086", "remove", "wrong technique", user_id, reference="https://git.example/pull/1")
 

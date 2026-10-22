@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 
 from saq.configuration.config import get_service_config
-from saq.constants import SERVICE_SVS
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE, SERVICE_SVS
 from saq.database.model import SVSValidation, SVSValidationResult, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
@@ -21,7 +21,7 @@ from saq.svs.service import INTERNAL_ERROR, SVSService, ValidationWorker
 from saq.svs.service_config import SVSServiceConfig
 from saq.svs.validations import claim, request_validation
 from saq.svs.yara.diff import Category
-from saq.svs.yara.replay import ReplayCancelled, ReplayError, ReplayResult, SideReport
+from saq.svs.yara.replay import ReplayCancelled, ReplayResult, SideReport
 from tests.saq.svs.conftest import RULE_UUID
 from tests.saq.svs.yara.conftest import REPOSITORY, rule, stored_sample
 
@@ -88,13 +88,16 @@ def test_the_service_runs_a_queued_validation(svs_repository):
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
 def test_a_replay_error_fails_the_validation_with_its_message(svs_repository):
+    svs_repository.commit({"yara/acme/rules.yar": rule("one", str(uuid.uuid4()), '$a = "evil"')})
+    # neither commit is in the repository
     validation_uuid = _request()
-    with patch.object(svs_service, "run_replay", side_effect=ReplayError("commit x is not in repository")):
-        SVSService().start_single_threaded()
+    SVSService().start_single_threaded()
 
     row = _row(validation_uuid)
-    assert (row.state, row.error, row.active_key) == ("failed", "commit x is not in repository", None)
+    assert (row.state, row.active_key) == ("failed", None)
+    assert row.error.startswith(f"commit {BASE} is not in repository {REPOSITORY}")
 
 
 @pytest.mark.integration
@@ -171,7 +174,7 @@ def _waiting(service: SVSService) -> threading.Thread:
 
 @pytest.mark.integration
 def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch):
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service = SVSService()
     service.start()
     assert service.workers == []
@@ -183,7 +186,7 @@ def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch
 
 @pytest.mark.integration
 def test_the_service_starts_its_workers_and_stops_them(svs_repository, monkeypatch):
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: True)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "1")
     service = SVSService()
     service.start()
     assert [worker.thread.is_alive() for worker in service.workers] == [True]

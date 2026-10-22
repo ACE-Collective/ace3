@@ -15,17 +15,16 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.svs import association, coverage, review, signatures, worklist
+from saq.svs import association, coverage, review, windows, worklist
 from saq.svs.attribution import clear_caches, evaluate, write_attributions
 from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
 
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
-from saq.svs.signatures import SignatureTags
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.svs.conftest import add_catalog_test, write_hunt
 
 pytestmark = pytest.mark.integration
 
@@ -120,9 +119,8 @@ ATTRIBUTION_FIELDS = RUN_FIELDS + ("alert_uuid", "detection", "confidence", "lat
 
 
 @pytest.fixture
-def routed(monkeypatch):
+def routed():
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
     yield
     reset_alert_routers()
 
@@ -276,12 +274,11 @@ def test_a_review(caplog):
 # records that aren't about a run
 #
 
-def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
-    tags = {}
+def test_coverage_refreshes(caplog, monkeypatch, attack_catalog, hunt_dir, yara_dir):
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
     refresh_coverage("unittest")
-    tags["s"] = SignatureTags("s", "hunt", "hunt", True, ("T1547",), ())
+    write_hunt(hunt_dir, "s", tags=["mitre:T1547"])
+    windows.clear_cache()
     caplog.clear()
     with caplog.at_level(logging.INFO):
         refresh_coverage("unittest")
@@ -296,9 +293,8 @@ def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
     _assert_fields(changed, ("technique", "platform", "from_state", "to_state"))
 
 
-def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
+def test_coverage_snapshots(caplog, monkeypatch, attack_catalog, yara_dir):
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: {})
     with caplog.at_level(logging.INFO):
         write_snapshot("unittest", snapshot_date=date(2026, 10, 16))
 
@@ -307,21 +303,21 @@ def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
     _assert_fields(written, ("snapshot_date", "rows", "attack_release", "actor"))
 
 
-def test_worklist_records(caplog, monkeypatch, attack_catalog):
+def test_worklist_records(caplog, monkeypatch, attack_catalog, hunt_dir, yara_dir):
     signature = "22222222-bbbb-4bbb-8bbb-222222222222"
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-    tags = {signature: SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())}
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+    write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
     set_expectation(GUID, signature, "expected", user_id, platform="windows")
     refresh_coverage("unittest")
 
     with caplog.at_level(logging.INFO):
         worklist.resolve(signature, "T1547", "remove", "why", user_id, actor="unittest")
-        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, (), ())
+        write_hunt(hunt_dir, signature)
+        windows.clear_cache()
         refresh_coverage("unittest")
-        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())
+        write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
+        windows.clear_cache()
         refresh_coverage("unittest")
 
     (resolved,) = _records(caplog, "AUDIT: svs worklist resolution set")

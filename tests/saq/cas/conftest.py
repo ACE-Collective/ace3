@@ -7,6 +7,7 @@ from saq.cas import CASPool, get_cas
 from saq.cas import index
 from saq.crypto import CHUNK_SIZE
 from saq.database.model import CASObject
+from saq.monitor import emit_monitor
 
 
 @pytest.fixture
@@ -44,18 +45,26 @@ def backend_path(pool: CASPool, digest: str) -> str:
 
 
 @pytest.fixture
-def cas_emitted(monkeypatch) -> list[tuple[str, dict]]:
-    """Every monitor record the CAS emits, as (path, data), in order."""
+def cas_emitted(monkeypatch):
+    """Every monitor record the CAS emits, as (path, data), in order. Each one still goes
+    through the real emit_monitor; the CAS swallows emit failures, so they fail the test here."""
     records = []
+    failures = []
 
     def emit(monitor, data, identifier=None):
+        try:
+            result = emit_monitor(monitor, data, identifier)
+        except Exception as e:
+            failures.append((monitor.path, e))
+            raise
         records.append((monitor.path, data))
-        return True
+        return result
 
     monkeypatch.setattr("saq.cas.pool.emit_monitor", emit)
     # the CLI imports emit_monitor inside its command functions
     monkeypatch.setattr("saq.monitor.emit_monitor", emit)
-    return records
+    yield records
+    assert not failures, f"emit_monitor rejected CAS monitor records: {failures}"
 
 
 def records_for(records: list[tuple[str, dict]], path: str) -> list[dict]:

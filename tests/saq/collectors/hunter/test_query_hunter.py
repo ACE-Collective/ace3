@@ -42,6 +42,7 @@ from saq.observables.mapping import (
     RelationshipMappingTarget,
 )
 from saq.query.config import SummaryDetailConfig
+from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
 
@@ -442,25 +443,20 @@ _local_time = local_time()
 def mock_local_time():
     return _local_time
 
-class MockManager:
-    @property
-    def hunt_type(self):
-        return "test"
+@pytest.fixture
+def hunt_manager(manager_kwargs):
+    return HuntManager(**manager_kwargs)
 
 
 @pytest.mark.unit
-def test_hunt_builds_submissions_in_its_own_collectors_scratch_dir(tmpdir):
+def test_hunt_builds_submissions_in_its_own_collectors_scratch_dir(hunt_manager):
     """a hunt builds submissions in the scratch dir of the service that will stage them
 
     that directory is purged wholesale at service startup, so building in the shared default
     means another collector service restarting deletes hunt submissions mid-construction"""
-    file_manager = create_submission_file_manager(tmpdir)
+    file_manager = hunt_manager.file_manager
 
-    class ManagerWithFileManager(MockManager):
-        def __init__(self):
-            self.file_manager = file_manager
-
-    hunt = default_hunt(manager=ManagerWithFileManager(), name="test")
+    hunt = default_hunt(manager=hunt_manager, name="test")
     assert hunt.staging_tmp_dir == file_manager.staging_tmp_dir
 
     root = hunt.create_root_analysis({})
@@ -472,15 +468,12 @@ def test_hunt_without_a_file_manager_falls_back_to_the_configured_scratch_dir(mo
     """a hunt loaded outside a collector service (rule validation) still has somewhere to build"""
     monkeypatch.setattr(query_hunter_module, "get_staging_tmp_dir", lambda: str(tmpdir))
 
-    hunt = default_hunt(manager=MockManager(), name="test")
-    assert hunt.staging_tmp_dir == str(tmpdir)
-
     hunt = default_hunt(manager=None, name="test")
     assert hunt.staging_tmp_dir == str(tmpdir)
 
 
 @pytest.mark.unit
-def test_query_hunter_end_time(monkeypatch, tmpdir):
+def test_query_hunter_end_time(monkeypatch, tmpdir, hunt_manager):
 
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
@@ -492,7 +485,7 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
     mock_config.read_string("""[collection]
                             persistence_dir = p
                             """)
-    hunt = default_hunt(manager=MockManager(), name="test")
+    hunt = default_hunt(manager=hunt_manager, name="test")
     assert hunt.end_time
 
     # full coverage end time (on time: exactly one time_range behind)
@@ -528,7 +521,7 @@ def test_query_hunter_end_time(monkeypatch, tmpdir):
     assert hunt.end_time - hunt.last_end_time == timedelta(minutes=11)
 
 @pytest.mark.unit
-def test_query_hunter_ready(monkeypatch, tmpdir):
+def test_query_hunter_ready(monkeypatch, tmpdir, hunt_manager):
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
@@ -537,8 +530,8 @@ def test_query_hunter_ready(monkeypatch, tmpdir):
                             persistence_dir = p
                             """)
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = default_hunt(manager=MockManager(), name="test")
-    #hunt = QueryHunt(manager=MockManager(), config=default_query_hunt_config(name="test"))
+    hunt = default_hunt(manager=hunt_manager, name="test")
+    #hunt = QueryHunt(manager=hunt_manager, config=default_query_hunt_config(name="test"))
 
     # we just ran and our frequency is sent to an hour
     hunt.last_executed_time = mock_local_time()
@@ -565,11 +558,11 @@ def test_query_hunter_ready(monkeypatch, tmpdir):
     #assert hunt.ready
 
 @pytest.mark.unit
-def test_process_query_results(monkeypatch):
+def test_process_query_results(monkeypatch, hunt_manager):
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
-    hunt = default_hunt(manager=MockManager(),
+    hunt = default_hunt(manager=hunt_manager,
         name="test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         alert_type="test-type",
@@ -692,14 +685,14 @@ def test_process_query_results(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_templated_observable_type(monkeypatch):
+def test_process_query_results_templated_observable_type(monkeypatch, hunt_manager):
     """A Jinja-templated observable type resolves per event, with fallback_type
        used (and an error logged) when the rendered type is not defined."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_templated_type",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         observable_mapping=[
@@ -739,14 +732,14 @@ def test_process_query_results_templated_observable_type(monkeypatch):
 
 
 @pytest.mark.unit
-def test_group_value_attached_to_submission(monkeypatch):
+def test_group_value_attached_to_submission(monkeypatch, hunt_manager):
     """Each submission produced by a grouped hunt should carry its group_value
        so the manager can record per-group last_alert_time without re-deriving the grouping."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_group_value",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="src",
@@ -772,14 +765,14 @@ def test_group_value_attached_to_submission(monkeypatch):
 
 
 @pytest.mark.unit
-def test_per_group_suppression_filters_recurring_group(monkeypatch):
+def test_per_group_suppression_filters_recurring_group(monkeypatch, hunt_manager):
     """When a group has alerted within the suppression window, that group's submission
        should be filtered out on the next run while other groups still pass through."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_per_group_supp",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
@@ -805,13 +798,13 @@ def test_per_group_suppression_filters_recurring_group(monkeypatch):
 
 
 @pytest.mark.unit
-def test_per_group_suppression_does_not_block_other_groups(monkeypatch):
+def test_per_group_suppression_does_not_block_other_groups(monkeypatch, hunt_manager):
     """Suppressing one group must not affect any other group."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_per_group_isolated",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
@@ -831,14 +824,14 @@ def test_per_group_suppression_does_not_block_other_groups(monkeypatch):
 
 
 @pytest.mark.unit
-def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog):
+def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog, hunt_manager):
     """A manual hunt (e.g. the validate-hunt API) must ignore suppression so the analyst
        sees the hunt's true output, even when a group alerted within the suppression window."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_per_group_supp_manual",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="00:01:00",
@@ -863,14 +856,14 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_suppressed_property_false_when_group_by_set(monkeypatch):
+def test_suppressed_property_false_when_group_by_set(monkeypatch, hunt_manager):
     """Hunt.suppressed must return False for grouped hunts so HuntManager.execute
        does not gate-skip the entire hunt; per-group filtering happens after the query runs."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_suppressed_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         suppression="01:00:00",
@@ -887,7 +880,7 @@ def test_suppressed_property_false_when_group_by_set(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_captures_original_events(monkeypatch):
+def test_process_query_results_captures_original_events(monkeypatch, hunt_manager):
     """When correlation is configured, the hunter should snapshot the raw event list
     before correlation mutates/filters it. For a normal (non-manual) non-correlate hunt
     the snapshot stays None to avoid an unnecessary deep copy on production runs."""
@@ -898,7 +891,7 @@ def test_process_query_results_captures_original_events(monkeypatch):
 
     # case 1: no correlate -> original_query_results stays None
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="no_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -918,7 +911,7 @@ def test_process_query_results_captures_original_events(monkeypatch):
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="with_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -961,7 +954,7 @@ def test_process_query_results_captures_original_events(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_logs_per_step_timing(monkeypatch, caplog):
+def test_process_query_results_logs_per_step_timing(monkeypatch, caplog, hunt_manager):
     """A correlate run emits one INFO 'correlation step' line per step per event,
     recursing into nested condition branches, plus the per-event duration on the
     existing 'correlation trace' summary line."""
@@ -981,7 +974,7 @@ def test_process_query_results_logs_per_step_timing(monkeypatch, caplog):
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="timing_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1003,29 +996,8 @@ def test_process_query_results_logs_per_step_timing(monkeypatch, caplog):
     assert len(step_lines) == 2  # condition + nested action
 
 
-class _StubCorrelationResult:
-    """Minimal stand-in for CorrelationEngine.execute()'s result so a unit test can
-    exercise the post-correlation submission path without running real queries. The
-    events are returned untouched (already carrying the correlated property)."""
-    def __init__(self, events):
-        self.trace = None
-        self.captured_queries = []
-        self.discarded = False
-        self.events = events
-        self.event_actions = {}
-        self.alert_event_origin_indices = list(range(len(events)))
-
-
-class _StubCorrelationEngine:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    def execute(self, query_results):
-        return _StubCorrelationResult(query_results)
-
-
-@pytest.mark.unit
-def test_process_query_results_records_hunt_provenance(monkeypatch):
+@pytest.mark.integration
+def test_process_query_results_records_hunt_provenance(monkeypatch, hunt_manager):
     """Correlated hunts attach per-observable step provenance to root.details so the GUI
     can group the Analysis Overview by the hunt step that produced each observable.
 
@@ -1037,11 +1009,6 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
     from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    # don't run real correlation queries — events already carry the correlated property
-    monkeypatch.setattr(
-        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
-        _StubCorrelationEngine,
-    )
 
     correlate = CorrelateConfig.model_validate({
         "logic": [
@@ -1059,7 +1026,7 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
     })
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="prov_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1071,14 +1038,16 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
         correlate=correlate,
     )
 
-    event = {
-        "src": "1.2.3.4",
-        "correlate_logs": [
+    # the correlate query is answered from a saved result instead of splunk
+    hunt._correlate_replay_results = [{
+        "source": "splunk",
+        "query": "index=x",
+        "results": [
             {"ip": "1.2.3.4", "host": "host-a"},  # ip shared with initial query
             {"ip": "9.9.9.9", "host": "host-b"},
         ],
-    }
-    submissions = hunt.process_query_results([event])
+    }]
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
     assert len(submissions) == 1
     submission = submissions[0]
 
@@ -1105,13 +1074,13 @@ def test_process_query_results_records_hunt_provenance(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_no_provenance_without_correlate(monkeypatch):
+def test_process_query_results_no_provenance_without_correlate(monkeypatch, hunt_manager):
     """Non-correlated hunts attach no hunt_provenance, so the GUI renders a flat tree."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="no_prov_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1124,7 +1093,7 @@ def test_process_query_results_no_provenance_without_correlate(monkeypatch):
     # the no-correlate hunt produced submissions earlier; verify their details do
     # NOT contain original_events (the key is only attached when correlate ran)
     no_correlate_hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="no_correlate_check",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1137,7 +1106,7 @@ def test_process_query_results_no_provenance_without_correlate(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_captures_original_events_for_manual_non_correlate(monkeypatch):
+def test_process_query_results_captures_original_events_for_manual_non_correlate(monkeypatch, hunt_manager):
     """A manual/validate run of a non-correlate hunt snapshots the raw query results (so the
     validator can report exactly what the data source returned), but does NOT duplicate them
     into every root's details — those events already live in details["events"]."""
@@ -1146,7 +1115,7 @@ def test_process_query_results_captures_original_events_for_manual_non_correlate
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="manual_no_correlate",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1173,7 +1142,7 @@ def test_process_query_results_captures_original_events_for_manual_non_correlate
 
 
 @pytest.mark.unit
-def test_correlated_hunt_auto_tags_alert(monkeypatch):
+def test_correlated_hunt_auto_tags_alert(monkeypatch, hunt_manager):
     """ACE must auto-tag every alert from a correlated hunt with 'correlated'.
     Hunts without a `correlate:` block must not carry that tag.
     Auto-tag must not duplicate when the hunt YAML already lists it."""
@@ -1183,7 +1152,7 @@ def test_correlated_hunt_auto_tags_alert(monkeypatch):
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     base_kwargs = dict(
-        manager=MockManager(),
+        manager=hunt_manager,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
         observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
@@ -1215,59 +1184,34 @@ def test_correlated_hunt_auto_tags_alert(monkeypatch):
         assert "other_tag" in s.root.tags
 
 
-class _StubCorrelationResultWithTrace:
-    """Like _StubCorrelationResult but ships a real CorrelationTrace whose per-event
-    outcomes are caller-controlled. Used to exercise the hunt_error auto-tag path
-    without a real correlation engine run — the tagging logic only inspects the
-    per-alert-scoped trace's EventTrace.outcome values."""
-    def __init__(self, events, outcomes):
-        from saq.collectors.hunter.correlation.trace import CorrelationTrace, EventTrace
-        assert len(outcomes) == len(events)
-        self.trace = CorrelationTrace(
-            event_traces=[
-                EventTrace(event_index=i, outcome=o)
-                for i, o in enumerate(outcomes)
-            ]
-        )
-        self.captured_queries = []
-        self.discarded = False
-        self.events = events
-        self.event_actions = {}
-        self.alert_event_origin_indices = list(range(len(events)))
+def _hunt_error_correlate(outcome: str):
+    """A correlate block that really produces the given per-event outcome."""
+    from saq.collectors.hunter.correlation.schema import CorrelateConfig
+
+    if outcome == "timeout":
+        # a zero budget falls every event through to alert as a timeout
+        return CorrelateConfig.model_validate({"timeout": "0s", "logic": [{"action": "alert"}]})
+    if outcome == "error":
+        return CorrelateConfig.model_validate({"logic": [{"transform": {
+            "method": "property", "property_name": "p", "command": {"type": "missing_type"},
+        }}]})
+    return CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
 
 
-def _stub_correlation_engine_returning(outcomes):
-    """Build a CorrelationEngine stub whose execute() ships a canned trace with the
-    given per-event outcomes."""
-    class _E:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def execute(self, events):
-            return _StubCorrelationResultWithTrace(events, outcomes)
-
-    return _E
-
-
-@pytest.mark.unit
+@pytest.mark.integration
 @pytest.mark.parametrize("outcome", ["error", "timeout"])
-def test_hunt_error_tag_added_on_error_or_timeout_outcome(monkeypatch, outcome):
+def test_hunt_error_tag_added_on_error_or_timeout_outcome(monkeypatch, outcome, hunt_manager):
     """A correlated-hunt event whose trace outcome is `error` (a step raised) or
     `timeout` (correlation timeout fell the event through to alert as a fail-safe)
     should tag the resulting alert with `warning:hunt_error` so it surfaces on
     /ace/manage. Both outcomes route the event to alert, so both must tag."""
     import saq.collectors.hunter.query_hunter
-    from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(
-        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
-        _stub_correlation_engine_returning([outcome]),
-    )
 
-    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    correlate = _hunt_error_correlate(outcome)
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt_error_tag_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1280,23 +1224,18 @@ def test_hunt_error_tag_added_on_error_or_timeout_outcome(monkeypatch, outcome):
         assert "warning:hunt_error" in s.root.tags
 
 
-@pytest.mark.unit
-def test_hunt_error_tag_absent_on_clean_run(monkeypatch):
+@pytest.mark.integration
+def test_hunt_error_tag_absent_on_clean_run(monkeypatch, hunt_manager):
     """A correlated hunt whose events all resolve to `alert` (no error, no timeout)
     must NOT carry the `warning:hunt_error` tag. Verifies the tag is a real signal
     and not applied to every correlated alert."""
     import saq.collectors.hunter.query_hunter
-    from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(
-        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
-        _stub_correlation_engine_returning(["alert"]),
-    )
 
-    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    correlate = _hunt_error_correlate("alert")
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt_error_clean_hunt",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1309,24 +1248,19 @@ def test_hunt_error_tag_absent_on_clean_run(monkeypatch):
         assert "warning:hunt_error" not in s.root.tags
 
 
-@pytest.mark.unit
-def test_hunt_error_tag_deduped_when_predeclared(monkeypatch):
+@pytest.mark.integration
+def test_hunt_error_tag_deduped_when_predeclared(monkeypatch, hunt_manager):
     """When a hunt YAML already declares `warning:hunt_error` in its tags list and
     the correlation trace also reports an error outcome, the tag must appear
     exactly once on the alert — matches the dedup contract enforced for the
     `correlated` auto-tag."""
     import saq.collectors.hunter.query_hunter
-    from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(
-        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
-        _stub_correlation_engine_returning(["error"]),
-    )
 
-    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    correlate = _hunt_error_correlate("error")
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt_error_predeclared",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1341,8 +1275,8 @@ def test_hunt_error_tag_deduped_when_predeclared(monkeypatch):
         assert "other_tag" in s.root.tags
 
 
-@pytest.mark.unit
-def test_hunt_error_tag_scoped_per_alert_no_cross_group_taint(monkeypatch):
+@pytest.mark.integration
+def test_hunt_error_tag_scoped_per_alert_no_cross_group_taint(monkeypatch, hunt_manager):
     """The hunt_error auto-tag must use the per-alert scoped trace, not the
     hunt-wide trace. If two events from different groups produce two alerts and
     only one event errors, only that alert may carry the tag — a timeout/error
@@ -1351,15 +1285,17 @@ def test_hunt_error_tag_scoped_per_alert_no_cross_group_taint(monkeypatch):
     from saq.collectors.hunter.correlation.schema import CorrelateConfig
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    # event 0 (group A) errors, event 1 (group B) alerts cleanly
-    monkeypatch.setattr(
-        "saq.collectors.hunter.correlation.engine.CorrelationEngine",
-        _stub_correlation_engine_returning(["error", "alert"]),
-    )
 
-    correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
+    # event 0 (group A) errors on a command type that does not exist, event 1 (group B)
+    # skips that branch and alerts cleanly
+    correlate = CorrelateConfig.model_validate({"logic": [{
+        "when": "{{ _event.user == 'alice' }}",
+        "execute": [{"transform": {
+            "method": "property", "property_name": "p", "command": {"type": "missing_type"},
+        }}],
+    }]})
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt_error_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
@@ -1378,7 +1314,7 @@ def test_hunt_error_tag_scoped_per_alert_no_cross_group_taint(monkeypatch):
 
 
 @pytest.mark.unit
-def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
+def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch, hunt_manager):
     """Without group_by, two query results become two separate alerts. Each alert's
     correlation_trace should contain only the EventTrace for the event that produced
     that alert — not a copy of the whole hunt run's trace."""
@@ -1391,7 +1327,7 @@ def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
         "logic": [{"action": "alert"}],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_per_alert",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1433,7 +1369,7 @@ def test_correlation_trace_scoped_per_alert_no_grouping(monkeypatch):
 
 
 @pytest.mark.unit
-def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
+def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch, hunt_manager):
     """When events group into one alert, that alert's correlation_trace should
     contain every contributing event's EventTrace; sibling alerts in the same run
     only see their own events."""
@@ -1446,7 +1382,7 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
         "logic": [{"action": "alert"}],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_per_grouped_alert",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
@@ -1490,7 +1426,7 @@ def test_correlation_trace_scoped_per_alert_with_grouping(monkeypatch):
 
 
 @pytest.mark.unit
-def test_hunt_metadata_name_renders_jinja(monkeypatch):
+def test_hunt_metadata_name_renders_jinja(monkeypatch, hunt_manager):
     """When the hunt name is itself a Jinja template, hunt_metadata.name should hold
     the rendered value (consistent with the alert description) rather than the raw
     template text — otherwise the Correlation Trace UI leaks the raw Jinja."""
@@ -1498,7 +1434,7 @@ def test_hunt_metadata_name_renders_jinja(monkeypatch):
 
     # Name depends on an event field
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name='Foo{{- " BAR" if has_x | list | length > 0 else "" -}}',
         group_by=None,
         observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
@@ -1512,13 +1448,13 @@ def test_hunt_metadata_name_renders_jinja(monkeypatch):
 
 
 @pytest.mark.unit
-def test_hunt_metadata_name_plain_name_unchanged(monkeypatch):
+def test_hunt_metadata_name_plain_name_unchanged(monkeypatch, hunt_manager):
     """A hunt name with no Jinja markers passes through _render_name's fast path and
     is stored verbatim in hunt_metadata."""
     monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="Plain Hunt Name",
         group_by=None,
         observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
@@ -1530,7 +1466,7 @@ def test_hunt_metadata_name_plain_name_unchanged(monkeypatch):
 
 
 @pytest.mark.unit
-def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
+def test_event_trace_events_position_indexes_into_alert_events(monkeypatch, hunt_manager):
     """Each scoped EventTrace should carry an `events_position` field that points at
     the entry in this submission's `details["events"]` list whose dict matches the
     trace event. The trace UI uses this to display the untruncated structured value
@@ -1544,7 +1480,7 @@ def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
 
     # Ungrouped: each event becomes its own alert with events_position == 0.
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="events_position_no_group",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1567,7 +1503,7 @@ def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
     # Grouped: a single submission can hold N events. events_position must index into
     # this submission's events list (not the hunt-wide one) and be 1:1 with the trace.
     hunt2 = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="events_position_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
@@ -1604,7 +1540,7 @@ def test_event_trace_events_position_indexes_into_alert_events(monkeypatch):
 
 
 @pytest.mark.unit
-def test_event_summary_auto_derives_from_description_field_then_group_by(monkeypatch):
+def test_event_summary_auto_derives_from_description_field_then_group_by(monkeypatch, hunt_manager):
     """The auto-derived per-event summary should prefer description_field, then group_by,
     then observable values, in that order — and de-duplicate identical strings so the
     line stays short. This is what drives the collapsed-event header line in the trace UI.
@@ -1618,7 +1554,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
         "logic": [{"action": "alert"}],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_derivation",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
@@ -1642,7 +1578,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
     # Description-field-only hunt: summary uses the description value and the observable;
     # group_by is None so it isn't appended.
     hunt2 = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_no_group",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1660,7 +1596,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
     # When description_field value equals the group_by value, the summary
     # de-duplicates so the same string isn't repeated.
     hunt3 = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_dedup",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
@@ -1676,7 +1612,7 @@ def test_event_summary_auto_derives_from_description_field_then_group_by(monkeyp
 
 
 @pytest.mark.unit
-def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
+def test_event_summary_includes_event_time_as_trailing_part(monkeypatch, hunt_manager):
     """The summary should include each event's timestamp as the trailing part so
     sibling events whose user / IP / other fields are identical are still
     distinguishable in the collapsed UI rows. Real-world example: a hunt may
@@ -1690,7 +1626,7 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
     correlate = CorrelateConfig.model_validate({"logic": [{"action": "alert"}]})
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_with_time",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
@@ -1700,11 +1636,8 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
     )
 
     # The base QueryHunt's extract_event_timestamp returns None; subclasses
-    # (e.g. SplunkHunt) parse a real timestamp out of the event. Stub it here.
-    def fake_ts(event):
-        raw = event.get("_time")
-        return datetime.fromisoformat(raw) if raw else None
-    monkeypatch.setattr(hunt, "extract_event_timestamp", fake_ts)
+    # parse a real timestamp out of the event, so use SplunkHunt's parser here.
+    monkeypatch.setattr(hunt, "extract_event_timestamp", splunk_extract_event_timestamp)
 
     submissions = hunt.process_query_results([
         {"user": "alice", "src": "1.1.1.1", "_time": "2026-05-08T15:48:47+00:00"},
@@ -1727,7 +1660,7 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
     # missing _time field), the summary just omits the time tail rather than
     # erroring. Use a fresh hunt; previously-stubbed events have _time set.
     hunt_no_time = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_no_time",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -1743,7 +1676,7 @@ def test_event_summary_includes_event_time_as_trailing_part(monkeypatch):
 
 
 @pytest.mark.unit
-def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
+def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch, hunt_manager):
     """The summary should drop a candidate that is a case-insensitive substring of
     any already-included part. In real hunts the description_field value tends
     to embed the user / email / msg_id that the group_by field and observables
@@ -1762,7 +1695,7 @@ def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
     # userPrincipalName, and observables surface the lowercase email and an IP.
     # Only the IP differs across siblings.
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_substring_dedup",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="userPrincipalName",
@@ -1796,7 +1729,7 @@ def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
     # (e.g. observable is more informative than the group_by value), the longer
     # candidate replaces the shorter so we don't lose information.
     hunt2 = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_summary_supersede",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="user",
@@ -1814,7 +1747,7 @@ def test_event_summary_dedupes_substrings_case_insensitive(monkeypatch):
 
 
 @pytest.mark.unit
-def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkeypatch):
+def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkeypatch, hunt_manager):
     """For grouped hunts, filter-outcome event_traces whose original event shares
     the alert's group_by value SHOULD appear on that alert. This gives analysts the
     rejection context for the same key (e.g., "for this user, here's what was
@@ -1837,7 +1770,7 @@ def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkey
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_filters_attached_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
@@ -1883,7 +1816,7 @@ def test_grouped_alert_includes_filtered_events_with_matching_group_value(monkey
 
 
 @pytest.mark.unit
-def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
+def test_grouped_alert_includes_stop_outcome_events(monkeypatch, hunt_manager):
     """`stop` is another way an event was rejected — analysts should see it on the
     alert for the same group_by value, like filter."""
     import saq.collectors.hunter.query_hunter
@@ -1900,7 +1833,7 @@ def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_stop_attached_grouped",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="msg_id",
@@ -1921,7 +1854,7 @@ def test_grouped_alert_includes_stop_outcome_events(monkeypatch):
 
 
 @pytest.mark.unit
-def test_group_by_all_attaches_every_filtered_event(monkeypatch):
+def test_group_by_all_attaches_every_filtered_event(monkeypatch, hunt_manager):
     """When group_by == "ALL", a hunt run produces a single submission. Every
     filtered event from the run goes on it."""
     import saq.collectors.hunter.query_hunter
@@ -1938,7 +1871,7 @@ def test_group_by_all_attaches_every_filtered_event(monkeypatch):
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_group_by_all",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by="ALL",
@@ -1958,7 +1891,7 @@ def test_group_by_all_attaches_every_filtered_event(monkeypatch):
 
 
 @pytest.mark.unit
-def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypatch):
+def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypatch, hunt_manager):
     """An event that the correlation engine filters out shouldn't appear in any
     alert's correlation_trace, even though it's still in the hunt-level trace."""
     import saq.collectors.hunter.query_hunter
@@ -1975,7 +1908,7 @@ def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypat
         ],
     })
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="trace_filters_excluded",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         group_by=None,
@@ -2003,7 +1936,7 @@ def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypat
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable(monkeypatch, tmpdir):
+def test_process_query_results_file_observable(monkeypatch, tmpdir, hunt_manager):
     """test mapping fields to F_FILE type observables"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2014,7 +1947,7 @@ def test_process_query_results_file_observable(monkeypatch, tmpdir):
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2045,7 +1978,7 @@ def test_process_query_results_file_observable(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_interpolation(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_interpolation(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with interpolated file name"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2054,7 +1987,7 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2082,7 +2015,7 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with base64 decoder"""
     import base64
 
@@ -2094,7 +2027,7 @@ def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2125,7 +2058,7 @@ def test_process_query_results_file_observable_with_base64_decoder(monkeypatch, 
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with ascii hex decoder"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2135,7 +2068,7 @@ def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatc
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2166,7 +2099,7 @@ def test_process_query_results_file_observable_with_ascii_hex_decoder(monkeypatc
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with grouped events"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2175,7 +2108,7 @@ def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by="group_field",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2213,7 +2146,7 @@ def test_process_query_results_file_observable_with_grouping(monkeypatch, tmpdir
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable when required field is missing"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2222,7 +2155,7 @@ def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2247,7 +2180,7 @@ def test_process_query_results_file_observable_missing_field(monkeypatch, tmpdir
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable when content is empty"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2256,7 +2189,7 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2281,7 +2214,7 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_directives(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_directives(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with directives"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
@@ -2290,7 +2223,7 @@ def test_process_query_results_file_observable_with_directives(monkeypatch, tmpd
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2318,7 +2251,7 @@ def test_process_query_results_file_observable_with_directives(monkeypatch, tmpd
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with tags"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2327,7 +2260,7 @@ def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2355,7 +2288,7 @@ def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with volatile property set to False"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2365,7 +2298,7 @@ def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir
 
     # test with volatile=False (the default)
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2393,7 +2326,7 @@ def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_volatile_true(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_volatile_true(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with volatile property set to True"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2402,7 +2335,7 @@ def test_process_query_results_file_observable_with_volatile_true(monkeypatch, t
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2429,7 +2362,7 @@ def test_process_query_results_file_observable_with_volatile_true(monkeypatch, t
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_interpolated_tags(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_interpolated_tags(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with interpolated tags from event fields"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2438,7 +2371,7 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2469,7 +2402,7 @@ def test_process_query_results_file_observable_with_interpolated_tags(monkeypatc
 
 
 @pytest.mark.unit
-def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, tmpdir):
+def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, tmpdir, hunt_manager):
     """tags with unresolved interpolated placeholders should be omitted"""
     import saq.collectors.hunter.query_hunter
 
@@ -2477,7 +2410,7 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_unresolved_tags",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2506,7 +2439,7 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_all_properties(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_all_properties(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with directives, tags, and volatile all set"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
@@ -2515,7 +2448,7 @@ def test_process_query_results_file_observable_with_all_properties(monkeypatch, 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2548,7 +2481,7 @@ def test_process_query_results_file_observable_with_all_properties(monkeypatch, 
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_grouping_and_properties(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_grouping_and_properties(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with directives, tags, and volatile when using group_by"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import DIRECTIVE_SANDBOX, F_FILE
@@ -2557,7 +2490,7 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_hunt",
         group_by="group_field",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2591,14 +2524,14 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
+def test_process_query_results_with_ignored_values(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with ignored_values"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_ignored_values",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2642,14 +2575,14 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, tmpdir):
+def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, tmpdir, hunt_manager):
     """test ignored_values with multiple events, some ignored and some not"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_ignored_values",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2685,14 +2618,14 @@ def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, 
 
 
 @pytest.mark.unit
-def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
+def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with display_type and display_value"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_display_properties",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2722,14 +2655,14 @@ def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
+def test_process_query_results_with_display_type_only(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with only display_type set"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_display_type",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2758,14 +2691,14 @@ def test_process_query_results_with_display_type_only(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_display_value_only(monkeypatch, tmpdir):
+def test_process_query_results_with_display_value_only(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with only display_value set"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_display_value",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2820,7 +2753,7 @@ def test_process_query_results_file_observable_with_display_properties(monkeypat
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_display_type_only(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_display_type_only(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with only display_type set"""
     import saq.collectors.hunter.query_hunter
     from saq.constants import F_FILE
@@ -2829,7 +2762,7 @@ def test_process_query_results_file_observable_with_display_type_only(monkeypatc
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_display_type",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2859,7 +2792,7 @@ def test_process_query_results_file_observable_with_display_type_only(monkeypatc
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_grouped_display_properties(monkeypatch, tmpdir):
+def test_process_query_results_file_observable_with_grouped_display_properties(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with display_type when using group_by
 
     NOTE: display_value cannot be set for file observables due to validation.
@@ -2871,7 +2804,7 @@ def test_process_query_results_file_observable_with_grouped_display_properties(m
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_file_display_grouped",
         group_by="group_field",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2902,14 +2835,14 @@ def test_process_query_results_file_observable_with_grouped_display_properties(m
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdir):
+def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with empty ignored_values list"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_empty_ignored",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -2934,14 +2867,14 @@ def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdi
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir):
+def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir, hunt_manager):
     """test that ignored_values supports regex patterns via re.fullmatch()"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_ignored_values_regex",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3050,14 +2983,14 @@ def test_query_hunt_config_auto_append_custom():
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_mapping(monkeypatch):
+def test_process_query_results_with_relationship_mapping(monkeypatch, hunt_manager):
     """test observable mapping with relationship to another observable"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3110,14 +3043,14 @@ def test_process_query_results_with_relationship_mapping(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_missing_target(monkeypatch):
+def test_process_query_results_with_relationship_missing_target(monkeypatch, hunt_manager):
     """test that relationship is skipped when target observable doesn't exist"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship_missing",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3161,14 +3094,14 @@ def test_process_query_results_with_relationship_missing_target(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_multiple_relationships(monkeypatch):
+def test_process_query_results_with_multiple_relationships(monkeypatch, hunt_manager):
     """test observable with multiple relationships"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_multi_relationship",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3236,14 +3169,14 @@ def test_process_query_results_with_multiple_relationships(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_and_grouping(monkeypatch):
+def test_process_query_results_with_relationship_and_grouping(monkeypatch, hunt_manager):
     """test relationship mapping with grouped events"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship_grouped",
         group_by="hostname",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3331,14 +3264,14 @@ def test_relationship_mapping_model_validation():
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_static_target_value(monkeypatch):
+def test_process_query_results_with_relationship_static_target_value(monkeypatch, hunt_manager):
     """test relationship with a static (non-interpolated) target value"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_static_relationship",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3391,14 +3324,14 @@ def test_process_query_results_with_relationship_static_target_value(monkeypatch
 
 
 @pytest.mark.unit
-def test_description_field_with_grouping(monkeypatch):
+def test_description_field_with_grouping(monkeypatch, hunt_manager):
     """test that description_field overrides group_by value in alert descriptions"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test",
         group_by="alert_id",
         description_field="alert_title",
@@ -3423,14 +3356,14 @@ def test_description_field_with_grouping(monkeypatch):
 
 
 @pytest.mark.unit
-def test_description_field_ungrouped(monkeypatch):
+def test_description_field_ungrouped(monkeypatch, hunt_manager):
     """test that description_field appends to description when no grouping"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test",
         group_by=None,
         description_field="alert_title",
@@ -3448,14 +3381,14 @@ def test_description_field_ungrouped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_description_field_fallback_when_missing(monkeypatch):
+def test_description_field_fallback_when_missing(monkeypatch, hunt_manager):
     """test that when description_field is set but missing from event, falls back to group_by value"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test",
         group_by="alert_id",
         description_field="alert_title",
@@ -3475,14 +3408,14 @@ def test_description_field_fallback_when_missing(monkeypatch):
 
 
 @pytest.mark.unit
-def test_description_field_ignored_for_group_all(monkeypatch):
+def test_description_field_ignored_for_group_all(monkeypatch, hunt_manager):
     """test that description_field is ignored when group_by=ALL"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test",
         group_by="ALL",
         description_field="alert_title",
@@ -3502,14 +3435,14 @@ def test_description_field_ignored_for_group_all(monkeypatch):
 
 
 @pytest.mark.unit
-def test_description_field_backward_compat(monkeypatch):
+def test_description_field_backward_compat(monkeypatch, hunt_manager):
     """test that without description_field, behavior is identical to before"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test",
         group_by="src",
         description_field=None,
@@ -3529,14 +3462,14 @@ def test_description_field_backward_compat(monkeypatch):
 
 
 @pytest.mark.unit
-def test_fields_mode_any_creates_separate_observables(monkeypatch):
+def test_fields_mode_any_creates_separate_observables(monkeypatch, hunt_manager):
     """test that fields_mode=any creates a separate observable for each present field"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_any",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3561,14 +3494,14 @@ def test_fields_mode_any_creates_separate_observables(monkeypatch):
 
 
 @pytest.mark.unit
-def test_fields_mode_any_partial_fields(monkeypatch):
+def test_fields_mode_any_partial_fields(monkeypatch, hunt_manager):
     """test that fields_mode=any creates observables only for present fields"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_any_partial",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3593,14 +3526,14 @@ def test_fields_mode_any_partial_fields(monkeypatch):
 
 
 @pytest.mark.unit
-def test_fields_mode_any_no_fields_present(monkeypatch):
+def test_fields_mode_any_no_fields_present(monkeypatch, hunt_manager):
     """test that fields_mode=any creates no observables when no fields are present"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_any_none",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3637,14 +3570,14 @@ def test_fields_mode_any_with_value_raises_error():
 
 
 @pytest.mark.unit
-def test_fields_mode_any_with_ignored_values(monkeypatch):
+def test_fields_mode_any_with_ignored_values(monkeypatch, hunt_manager):
     """test that fields_mode=any skips ignored field values but creates observable for others"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_any_ignored",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3669,14 +3602,14 @@ def test_fields_mode_any_with_ignored_values(monkeypatch):
 
 
 @pytest.mark.unit
-def test_fields_mode_any_deduplicates(monkeypatch):
+def test_fields_mode_any_deduplicates(monkeypatch, hunt_manager):
     """test that fields_mode=any deduplicates when two fields have the same value"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_any_dedup",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3702,14 +3635,14 @@ def test_fields_mode_any_deduplicates(monkeypatch):
 
 
 @pytest.mark.unit
-def test_fields_mode_all_explicit(monkeypatch):
+def test_fields_mode_all_explicit(monkeypatch, hunt_manager):
     """test that fields_mode=all explicitly set behaves like default"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_fields_mode_all",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3740,14 +3673,14 @@ def test_fields_mode_all_explicit(monkeypatch):
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_missing_field(monkeypatch, caplog):
+def test_process_query_results_with_relationship_missing_field(monkeypatch, caplog, hunt_manager):
     """test that relationship is skipped with warning when target field is missing from event"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship_missing_field",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3797,14 +3730,14 @@ def test_process_query_results_with_relationship_missing_field(monkeypatch, capl
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, caplog):
+def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, caplog, hunt_manager):
     """test that relationship is skipped with warning when $dot{} target field is missing from event"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship_missing_dot_field",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3846,14 +3779,14 @@ def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, 
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_partial_field_resolution(monkeypatch, caplog):
+def test_process_query_results_with_relationship_partial_field_resolution(monkeypatch, caplog, hunt_manager):
     """test that relationship is skipped when composite target has one field missing"""
     import saq.collectors.hunter.query_hunter
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_relationship_partial_resolution",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3939,13 +3872,13 @@ def test_dedup_key_config_default_none():
 
 
 @pytest.mark.unit
-def test_dedup_key_ungrouped(monkeypatch):
+def test_dedup_key_ungrouped(monkeypatch, hunt_manager):
     """test that submission.key is set when dedup_key is configured (ungrouped)"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_dedup",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3963,13 +3896,13 @@ def test_dedup_key_ungrouped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dedup_key_ungrouped_composite(monkeypatch):
+def test_dedup_key_ungrouped_composite(monkeypatch, hunt_manager):
     """test that dedup_key works with composite interpolation templates"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_dedup_composite",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -3987,13 +3920,13 @@ def test_dedup_key_ungrouped_composite(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dedup_key_grouped(monkeypatch):
+def test_dedup_key_grouped(monkeypatch, hunt_manager):
     """test that submission.key is set when dedup_key is configured (grouped)"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_dedup_grouped",
         group_by="id",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4017,13 +3950,13 @@ def test_dedup_key_grouped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dedup_key_none_when_not_set(monkeypatch):
+def test_dedup_key_none_when_not_set(monkeypatch, hunt_manager):
     """test that submission.key is None when dedup_key is not configured"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_no_dedup",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4040,13 +3973,13 @@ def test_dedup_key_none_when_not_set(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
+def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch, hunt_manager):
     """test that dedup key always includes the hunt UUID as prefix"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_dedup_prefix",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4066,13 +3999,13 @@ def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch):
 
 
 @pytest.mark.unit
-def test_dedup_key_missing_field_returns_none(monkeypatch):
+def test_dedup_key_missing_field_returns_none(monkeypatch, hunt_manager):
     """test that submission.key is None when dedup_key references a missing field"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_dedup_missing",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4122,10 +4055,10 @@ def test_summary_detail_config_valid_formats(fmt):
 
 
 @pytest.mark.unit
-def test_hunt_config_with_summary_details():
+def test_hunt_config_with_summary_details(hunt_manager):
     """test that summary_details field is accepted on QueryHuntConfig"""
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_config",
         summary_details=[
             SummaryDetailConfig(content="test {{ field }}"),
@@ -4136,13 +4069,13 @@ def test_hunt_config_with_summary_details():
 
 
 @pytest.mark.unit
-def test_summary_details_empty_list(monkeypatch):
+def test_summary_details_empty_list(monkeypatch, hunt_manager):
     """test backward compatibility - empty summary_details does nothing"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_empty",
         group_by=None,
         summary_details=[],
@@ -4153,13 +4086,13 @@ def test_summary_details_empty_list(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_basic(monkeypatch):
+def test_summary_details_ungrouped_basic(monkeypatch, hunt_manager):
     """test ungrouped summary detail with single event"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_basic",
         group_by=None,
         summary_details=[
@@ -4176,13 +4109,13 @@ def test_summary_details_ungrouped_basic(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_multiple_events(monkeypatch):
+def test_summary_details_ungrouped_multiple_events(monkeypatch, hunt_manager):
     """test ungrouped - multiple events without group_by, each gets own detail"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_multi",
         group_by=None,
         summary_details=[
@@ -4199,13 +4132,13 @@ def test_summary_details_ungrouped_multiple_events(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
+def test_summary_details_ungrouped_missing_field_skipped(monkeypatch, hunt_manager):
     """test that events with missing fields are silently skipped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_missing",
         group_by=None,
         summary_details=[
@@ -4218,13 +4151,13 @@ def test_summary_details_ungrouped_missing_field_skipped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_unrenderable_header_keeps_content(monkeypatch):
+def test_summary_details_unrenderable_header_keeps_content(monkeypatch, hunt_manager):
     """A header that cannot render must not cost the analyst content that rendered fine."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_header_failure",
         group_by=None,
         summary_details=[
@@ -4240,13 +4173,13 @@ def test_summary_details_unrenderable_header_keeps_content(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_limit(monkeypatch, caplog):
+def test_summary_details_ungrouped_limit(monkeypatch, caplog, hunt_manager):
     """test that limit is enforced and warning is logged"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_limit",
         group_by="ALL",
         summary_details=[
@@ -4265,13 +4198,13 @@ def test_summary_details_ungrouped_limit(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_no_header(monkeypatch):
+def test_summary_details_ungrouped_no_header(monkeypatch, hunt_manager):
     """test that header=None passes through correctly"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_no_header",
         group_by=None,
         summary_details=[
@@ -4285,13 +4218,13 @@ def test_summary_details_ungrouped_no_header(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_ungrouped_multiple_definitions(monkeypatch):
+def test_summary_details_ungrouped_multiple_definitions(monkeypatch, hunt_manager):
     """test that two definitions produce independent details"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_multi_def",
         group_by=None,
         summary_details=[
@@ -4310,13 +4243,13 @@ def test_summary_details_ungrouped_multiple_definitions(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_with_group_by(monkeypatch):
+def test_summary_details_grouped_with_group_by(monkeypatch, hunt_manager):
     """test grouped summary detail - multiple events combined with newline"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped",
         group_by="group_field",
         summary_details=[
@@ -4341,13 +4274,13 @@ def test_summary_details_grouped_with_group_by(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_missing_field_skipped(monkeypatch):
+def test_summary_details_grouped_missing_field_skipped(monkeypatch, hunt_manager):
     """test grouped - events with missing fields are skipped, others still contribute"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_missing",
         group_by="ALL",
         summary_details=[
@@ -4366,13 +4299,13 @@ def test_summary_details_grouped_missing_field_skipped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_limit(monkeypatch, caplog):
+def test_summary_details_grouped_limit(monkeypatch, caplog, hunt_manager):
     """test grouped limit caps collected lines and logs warning"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_limit",
         group_by="ALL",
         summary_details=[
@@ -4390,13 +4323,13 @@ def test_summary_details_grouped_limit(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_no_matching_events(monkeypatch):
+def test_summary_details_grouped_no_matching_events(monkeypatch, hunt_manager):
     """test grouped - no summary detail added when all events are skipped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_none",
         group_by="ALL",
         summary_details=[
@@ -4412,13 +4345,13 @@ def test_summary_details_grouped_no_matching_events(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch):
+def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch, hunt_manager):
     """test two definitions, one grouped and one ungrouped"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_mixed",
         group_by="ALL",
         summary_details=[
@@ -4504,13 +4437,13 @@ def test_load_hunt_yaml_with_summary_details(rules_dir, manager_kwargs):
 
 
 @pytest.mark.unit
-def test_summary_details_jinja_basic(monkeypatch):
+def test_summary_details_jinja_basic(monkeypatch, hunt_manager):
     """Test Jinja format rendering through process_query_results."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_jinja",
         group_by=None,
         summary_details=[
@@ -4526,13 +4459,13 @@ def test_summary_details_jinja_basic(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_jinja_missing_field_strict_skipped(monkeypatch):
+def test_summary_details_jinja_missing_field_strict_skipped(monkeypatch, hunt_manager):
     """Test Jinja format with missing field in strict mode — event is skipped."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_jinja_strict",
         group_by=None,
         summary_details=[
@@ -4548,13 +4481,13 @@ def test_summary_details_jinja_missing_field_strict_skipped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_dedup_with_group_by(monkeypatch):
+def test_summary_details_dedup_with_group_by(monkeypatch, hunt_manager):
     """Test dedup with group_by — per-submission dedup."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_dedup",
         group_by="group_field",
         summary_details=[
@@ -4575,13 +4508,13 @@ def test_summary_details_dedup_with_group_by(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_dedup_grouped(monkeypatch):
+def test_summary_details_dedup_grouped(monkeypatch, hunt_manager):
     """Test dedup with grouped summary details."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_dedup_grouped",
         group_by="ALL",
         summary_details=[
@@ -4603,13 +4536,13 @@ def test_summary_details_dedup_grouped(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_required_fields(monkeypatch):
+def test_summary_details_required_fields(monkeypatch, hunt_manager):
     """Test required_fields through process_query_results."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_required",
         group_by=None,
         summary_details=[
@@ -4683,13 +4616,13 @@ def test_load_hunt_yaml_with_jinja_and_new_fields(rules_dir, manager_kwargs):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_jinja_renders_per_submission(monkeypatch):
+def test_summary_details_grouped_jinja_renders_per_submission(monkeypatch, hunt_manager):
     """Test grouped + Jinja renders per-submission with events list."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_jinja",
         group_by="ALL",
         summary_details=[
@@ -4718,13 +4651,13 @@ def test_summary_details_grouped_jinja_renders_per_submission(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_jinja_dedup_per_submission(monkeypatch):
+def test_summary_details_grouped_jinja_dedup_per_submission(monkeypatch, hunt_manager):
     """Test grouped + Jinja with dedup per-submission."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_jinja_dedup",
         group_by="ALL",
         summary_details=[
@@ -4751,7 +4684,7 @@ def test_summary_details_grouped_jinja_dedup_per_submission(monkeypatch):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_jinja_missing_field_does_not_kill_alert(monkeypatch):
+def test_summary_details_grouped_jinja_missing_field_does_not_kill_alert(monkeypatch, hunt_manager):
     """A missing field in a grouped Jinja summary detail (strict mode) must drop just that
     block and still produce the alert — not raise out of process_query_results.
 
@@ -4763,7 +4696,7 @@ def test_summary_details_grouped_jinja_missing_field_does_not_kill_alert(monkeyp
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="test_sd_grouped_jinja_missing",
         group_by="ALL",
         summary_details=[
@@ -4830,13 +4763,13 @@ def test_query_with_empty_string_prefix_and_suffix():
 
 
 @pytest.mark.unit
-def test_name_jinja_plain_name_unchanged(monkeypatch):
+def test_name_jinja_plain_name_unchanged(monkeypatch, hunt_manager):
     """plain (non-jinja) names render through unchanged — regression check"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="static name",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4849,13 +4782,13 @@ def test_name_jinja_plain_name_unchanged(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_per_event_no_group(monkeypatch):
+def test_name_jinja_per_event_no_group(monkeypatch, hunt_manager):
     """jinja name interpolates per-event when group_by is None"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="dns lookup of {{ query }} from {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4875,13 +4808,13 @@ def test_name_jinja_per_event_no_group(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_with_group_by_field(monkeypatch):
+def test_name_jinja_with_group_by_field(monkeypatch, hunt_manager):
     """jinja name + group_by=<field> still gets the ': <group_value> (N events)' suffix"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="lookup of {{ query }}",
         group_by="src",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4902,13 +4835,13 @@ def test_name_jinja_with_group_by_field(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_with_group_by_all(monkeypatch):
+def test_name_jinja_with_group_by_all(monkeypatch, hunt_manager):
     """jinja name + group_by=ALL renders from the first event and gets the count suffix only"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt for {{ tag }}",
         group_by="ALL",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4924,13 +4857,13 @@ def test_name_jinja_with_group_by_all(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_with_description_field(monkeypatch):
+def test_name_jinja_with_description_field(monkeypatch, hunt_manager):
     """jinja name + description_field still appends ': <description_field_value>'"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt for {{ src }}",
         group_by=None,
         description_field="alert_title",
@@ -4946,13 +4879,13 @@ def test_name_jinja_with_description_field(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_missing_field_renders_empty(monkeypatch):
+def test_name_jinja_missing_field_renders_empty(monkeypatch, hunt_manager):
     """missing fields referenced in the name template render as empty (permissive mode)"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="lookup of [{{ no_such_field }}] from {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4965,14 +4898,14 @@ def test_name_jinja_missing_field_renders_empty(monkeypatch):
 
 
 @pytest.mark.unit
-def test_name_jinja_syntax_error_falls_back_to_raw(monkeypatch, caplog):
+def test_name_jinja_syntax_error_falls_back_to_raw(monkeypatch, caplog, hunt_manager):
     """a malformed jinja template falls back to the raw config name and logs a warning"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     raw_name = "broken {{ unterminated"
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name=raw_name,
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -4988,13 +4921,13 @@ def test_name_jinja_syntax_error_falls_back_to_raw(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_name_jinja_signature_id_display_value_matches(monkeypatch):
+def test_name_jinja_signature_id_display_value_matches(monkeypatch, hunt_manager):
     """signature_id observable display_value uses the same rendered name"""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="hunt for {{ src }}",
         group_by=None,
         analysis_mode=ANALYSIS_MODE_CORRELATION,
@@ -5008,14 +4941,14 @@ def test_name_jinja_signature_id_display_value_matches(monkeypatch):
 
 
 @pytest.mark.unit
-def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir):
+def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir, hunt_manager):
     """pivot_link url+text referencing the same multi-valued field stay paired."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="pivot_pair_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         pivot_links=[{
@@ -5034,14 +4967,14 @@ def test_create_root_analysis_pivot_links_pair_same_field(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir):
+def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir, hunt_manager):
     """pivot_links with unresolved ${...} in url or text are dropped."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="pivot_unresolved_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         pivot_links=[
@@ -5072,7 +5005,7 @@ def test_create_root_analysis_skips_unresolved_pivot_links(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir):
+def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir, hunt_manager):
     """playbook_url with unresolved {{ }} is not written to the alert extensions."""
     import saq.collectors.hunter.query_hunter
     from saq.analysis.root import KEY_PLAYBOOK_URL
@@ -5080,7 +5013,7 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="playbook_unresolved_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
         playbook_url="https://playbooks.example.com/{{ playbook_id }}",
@@ -5096,7 +5029,7 @@ def test_create_root_analysis_skips_unresolved_playbook_url(monkeypatch, tmpdir)
 
 
 @pytest.mark.unit
-def test_create_root_analysis_records_transaction_id(monkeypatch, tmpdir):
+def test_create_root_analysis_records_transaction_id(monkeypatch, tmpdir, hunt_manager):
     """the transaction id of the hunt execution is recorded on the root so the resulting
     alert can be correlated back to the log lines for that run"""
     import saq.collectors.hunter.query_hunter
@@ -5104,7 +5037,7 @@ def test_create_root_analysis_records_transaction_id(monkeypatch, tmpdir):
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="transaction_id_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
     )
@@ -5116,7 +5049,7 @@ def test_create_root_analysis_records_transaction_id(monkeypatch, tmpdir):
 
 
 @pytest.mark.unit
-def test_create_root_analysis_skips_default_transaction_id(monkeypatch, tmpdir):
+def test_create_root_analysis_skips_default_transaction_id(monkeypatch, tmpdir, hunt_manager):
     """running outside of a transaction context leaves the transaction id off of the root
     rather than recording the meaningless all-zeros sentinel"""
     import saq.collectors.hunter.query_hunter
@@ -5125,7 +5058,7 @@ def test_create_root_analysis_skips_default_transaction_id(monkeypatch, tmpdir):
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
-        manager=MockManager(),
+        manager=hunt_manager,
         name="transaction_id_default_test",
         analysis_mode=ANALYSIS_MODE_CORRELATION,
     )
@@ -5137,7 +5070,8 @@ def test_create_root_analysis_skips_default_transaction_id(monkeypatch, tmpdir):
     assert root.transaction_id is None
 
 
-def test_process_query_results_correlate_capture_and_replay(monkeypatch):
+@pytest.mark.integration
+def test_process_query_results_correlate_capture_and_replay(monkeypatch, hunt_manager):
     """A correlate query's results are captured on a live run (exposed via
     hunt.correlate_query_results) and replayed offline when _correlate_replay_results
     is seeded, so the data source is never hit."""
@@ -5190,7 +5124,7 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
         source = _Source(results=[{"found": True}])
         register_query_source("test_source", source)
         hunt = default_hunt(
-            manager=MockManager(),
+            manager=hunt_manager,
             name="capture",
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             group_by=None,
@@ -5212,7 +5146,7 @@ def test_process_query_results_correlate_capture_and_replay(monkeypatch):
         clear_query_sources()
         register_query_source("test_source", replay_source)
         hunt2 = default_hunt(
-            manager=MockManager(),
+            manager=hunt_manager,
             name="replay",
             analysis_mode=ANALYSIS_MODE_CORRELATION,
             group_by=None,

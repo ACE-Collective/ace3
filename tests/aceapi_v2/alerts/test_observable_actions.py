@@ -6,11 +6,13 @@ import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from httpx import AsyncClient
 
 from saq.analysis.root import load_root
+from saq.configuration.config import get_analysis_module_config, get_splunk_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
@@ -195,17 +197,30 @@ class TestRequests:
 
 class TestClickerSearches:
     @pytest.mark.asyncio
-    async def test_the_searches_for_the_observable(self, client: AsyncClient, alert):
-        with patch("aceapi_v2.alerts.service.get_analysis_module_config",
-                   return_value=SimpleNamespace(config_path="unused", api_name="default")), \
-             patch("aceapi_v2.alerts.service.load_clicker_config", return_value={}), \
-             patch("aceapi_v2.alerts.service.build_splunk_clicker_search_urls",
-                   return_value=[{"name": "proxy", "url": "https://splunk.example/en-US/app/search/search?q=x"}]) as build:
-            response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
+    async def test_the_searches_for_the_observable(self, client: AsyncClient, alert, tmp_path, monkeypatch):
+        clicker_config = tmp_path / "clicker_detection.yaml"
+        clicker_config.write_text(
+            "splunk:\n"
+            "  enabled: true\n"
+            "  searches:\n"
+            "    proxy:\n"
+            "      observable_types: [url]\n"
+            "      query: 'index=proxy <O_VALUE>'\n"
+            "    hosts_only:\n"
+            "      observable_types: [fqdn]\n"
+            "      query: 'index=dns <O_VALUE>'\n"
+        )
+        monkeypatch.setattr(get_analysis_module_config("clicker_detection_splunk"), "config_path", str(clicker_config))
+
+        response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
 
         assert response.status_code == 200
-        assert response.json()["data"] == [{"name": "proxy", "url": "https://splunk.example/en-US/app/search/search?q=x"}]
-        assert build.call_args.args[1].value == "https://evil.example/login"
+        data = response.json()["data"]
+        assert [search["name"] for search in data] == ["proxy"]
+        url = urlparse(data[0]["url"])
+        assert url.scheme == "https"
+        assert url.hostname == get_splunk_config("default").host
+        assert '"https://evil.example/login"' in parse_qs(url.query)["q"][0]
 
     @pytest.mark.asyncio
     async def test_none_when_the_splunk_module_is_not_configured(self, client: AsyncClient, alert):

@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import MagicMock, patch
 
+from saq.configuration.config import get_config
 from saq.configuration.schema import RemediatorConfig
 from saq.constants import F_TEST
 from saq.remediation.collector import RemediationCollector
@@ -96,59 +96,52 @@ def test_add_multiple_workers(manager, test_worker, another_test_worker):
     assert manager.workers["another_worker"] == another_test_worker
 
 
+@pytest.fixture
+def remediator_sections(monkeypatch):
+    """Replaces the remediator_* sections of the real config with the given ones and reloads them."""
+    raw = get_config().raw._data
+    for key in [key for key in raw if key.startswith("remediator_")]:
+        monkeypatch.delitem(raw, key)
+
+    def _load(sections: dict):
+        for key, value in sections.items():
+            monkeypatch.setitem(raw, key, value)
+        get_config().load_remediator_configs()
+
+    return _load
+
+
+def _remediator_section(name: str) -> dict:
+    return {
+        "name": name,
+        "display_name": name.replace("_", " ").title(),
+        "description": f"{name} for testing",
+        "observable_type": F_TEST,
+        "python_module": "tests.saq.remediation.test_remediator",
+        "python_class": "TestRemediator",
+    }
+
+
 @pytest.mark.unit
-@patch("saq.remediation.manager.get_config")
-def test_load_workers(mock_get_config, manager):
+def test_load_workers(manager, remediator_sections):
     """Test loading workers from configuration."""
-    # create mock remediator configs
-    config1 = RemediatorConfig(
-        name="config_worker_1",
-        display_name="Config Worker 1",
-        description="First config worker for testing",
-        observable_type=F_TEST,
-        python_module="tests.saq.remediation.test_remediator",
-        python_class="TestRemediator"
-    )
-    config2 = RemediatorConfig(
-        name="config_worker_2",
-        display_name="Config Worker 2",
-        description="Second config worker for testing",
-        observable_type=F_TEST,
-        python_module="tests.saq.remediation.test_remediator",
-        python_class="TestRemediator"
-    )
+    remediator_sections({
+        "remediator_config_worker_1": _remediator_section("config_worker_1"),
+        "remediator_config_worker_2": _remediator_section("config_worker_2"),
+    })
 
-    # mock the config to return two remediator configs
-    mock_config = MagicMock()
-    mock_config.remediators = [config1, config2]
-    mock_get_config.return_value = mock_config
-
-    # call load_workers
     manager.load_workers()
 
-    # verify get_config was called
-    mock_get_config.assert_called_once()
-
-    # verify workers were added to manager
-    assert len(manager.workers) == 2
-    assert "config_worker_1" in manager.workers
-    assert "config_worker_2" in manager.workers
+    assert set(manager.workers) == {"config_worker_1", "config_worker_2"}
+    assert all(isinstance(worker.remediator, TestRemediator) for worker in manager.workers.values())
+    assert set(manager.collector.listeners) == {"config_worker_1", "config_worker_2"}
 
 
 @pytest.mark.unit
-@patch("saq.remediation.manager.get_config")
-def test_load_workers_empty_config(mock_get_config, manager):
+def test_load_workers_empty_config(manager, remediator_sections):
     """Test loading workers when configuration has no remediators."""
-    # mock the config to return empty list
-    mock_config = MagicMock()
-    mock_config.remediators = []
-    mock_get_config.return_value = mock_config
+    remediator_sections({})
 
-    # call load_workers
     manager.load_workers()
 
-    # verify get_config was called
-    mock_get_config.assert_called_once()
-
-    # verify no workers were added
     assert len(manager.workers) == 0

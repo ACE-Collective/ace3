@@ -246,18 +246,20 @@ def test_set_disposition_session_not_cleared_on_analysis(web_client):
         assert sess['checked'] == ['uuid1', 'uuid2', 'uuid3']
 
 
+@pytest.mark.integration
 @patch('app.analysis.views.edit.disposition.set_dispositions')
-def test_set_disposition_database_error_handling(mock_set_dispositions, web_client):
+def test_set_disposition_database_error_handling(mock_set_dispositions, web_client, caplog):
     """Test error handling when database operation fails."""
     # Mock the set_dispositions function to raise an exception
     mock_set_dispositions.side_effect = Exception("Database connection failed")
     
     alert = insert_alert()
     
-    response = web_client.post(url_for("analysis.set_disposition"), data={
-        "disposition": DISPOSITION_FALSE_POSITIVE,
-        "alert_uuid": alert.uuid
-    })
+    with caplog.at_level('ERROR'):
+        response = web_client.post(url_for("analysis.set_disposition"), data={
+            "disposition": DISPOSITION_FALSE_POSITIVE,
+            "alert_uuid": alert.uuid
+        })
     
     # Should still redirect but with error flash message
     assert response.status_code == 302
@@ -265,6 +267,8 @@ def test_set_disposition_database_error_handling(mock_set_dispositions, web_clie
     
     # Verify the function was called
     mock_set_dispositions.assert_called_once()
+    assert any(record.getMessage().startswith("unable to set disposition for 1 alerts") and record.exc_info
+               for record in caplog.records)
 
 
 @pytest.mark.integration
@@ -342,6 +346,7 @@ def test_set_disposition_all_valid_dispositions(web_client):
         assert alert.disposition == disposition
 
 
+@pytest.mark.integration
 @patch('saq.error.reporting.write_error_report')
 def test_set_disposition_exception_reporting(mock_write_error_report, web_client):
     """Test that exceptions are properly reported."""

@@ -3,11 +3,12 @@
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from requests.exceptions import ChunkedEncodingError
 
+from saq.configuration.config import get_config
+from saq.configuration.schema import NRDConfig, NRDURLList
 from saq.nrd import refresh as refresh_mod
 from saq.nrd import util as util_mod
 from saq.nrd.refresh import (
@@ -22,8 +23,8 @@ from saq.nrd.refresh import (
 # ---------------------------------------------------------------------------
 
 
-def _make_url_list(url: str, *backups: str):
-    return SimpleNamespace(url=url, backups=list(backups))
+def _make_url_list(url: str, *backups: str) -> NRDURLList:
+    return NRDURLList(url=url, backups=list(backups))
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def nrd_env(tmp_path, monkeypatch):
     """Provide an isolated tmp database path and a config-stub helper.
 
     Returns ``(db_path, configure)`` where ``configure(url_lists, check_interval_hours=24)``
-    monkeypatches ``get_config`` so the refresh module sees the desired config.
+    sets the fields of the real ``get_config().nrd``.
     """
     db_path = tmp_path / "nrd_index.db"
 
@@ -39,15 +40,12 @@ def nrd_env(tmp_path, monkeypatch):
     monkeypatch.setattr(refresh_mod, "get_database_path", lambda: db_path)
 
     def configure(url_lists, check_interval_hours: int = 24, enabled: bool = True):
-        nrd_cfg = SimpleNamespace(
+        monkeypatch.setattr(get_config(), "nrd", NRDConfig(
             enabled=enabled,
             database_path=str(db_path),
             check_interval_hours=check_interval_hours,
             url_lists=list(url_lists),
-        )
-        config_obj = SimpleNamespace(nrd=nrd_cfg)
-        monkeypatch.setattr(refresh_mod, "get_config", lambda: config_obj)
-        return config_obj
+        ))
 
     return db_path, configure
 

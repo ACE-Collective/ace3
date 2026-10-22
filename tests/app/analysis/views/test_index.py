@@ -14,7 +14,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
 from saq.database.model import Alert
 from saq.database.pool import get_db
@@ -706,31 +706,23 @@ def test_index_does_not_query_per_observable_for_actions(
 
 @pytest.mark.integration
 def test_index_renders_detection_and_interesting_actions(
-    web_client, root_analysis, test_context, monkeypatch,
+    web_client, root_analysis, test_context,
 ):
-    """The batched values drive the action menu. Force both to True and check the
+    """The batched lookup drives the action menu: with a detection on every observable the
     'already enabled' variants render."""
-    import app.analysis.views.index as index_module
-    from saq.database.util.observable_detection import ObservableDetectionSummary
+    from saq.database.util.observable_detection import create_observable_detection
 
-    _run_basic_analyzer(root_analysis, test_context)
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
     root_analysis.save()
     ALERT(root_analysis)
 
-    def _all_detected(alert):
-        return {
-            observable.uuid: ObservableDetectionSummary(
-                observable_uuid=observable.uuid,
-                for_detection=True,
-                detection_modified_by="tester",
-                detection_context="enabled by tester",
-                detection_id=4242,
-                expires_on=datetime(2099, 1, 2, 3, 4, 5),
-            )
-            for observable in alert.all_observables
-        }
-
-    monkeypatch.setattr(index_module, "get_all_observable_detections", _all_detected)
+    detections = {
+        observable.uuid: create_observable_detection(
+            observable.type, observable.value, get_config().global_settings.automation_user_id,
+            detection_context="enabled by tester", expires_on=datetime(2099, 1, 2, 3, 4, 5))
+        for observable in root_analysis.all_observables
+    }
+    detection_id = detections[test_observable.uuid].id
 
     result = web_client.get(
         url_for("analysis.index"),
@@ -744,8 +736,8 @@ def test_index_renders_detection_and_interesting_actions(
 
     # disable and adjust-expiration address the detection by id through /api/v2/detection, and the
     # expiration dialog opens with the detection's current expiration
-    assert 'aceApi.del("/detection/4242")' in body
-    assert re.search(r'show_detection_expiration_modal_for\(\s*4242,\s*"2099-01-02 03:04:05"\)', body)
+    assert f'aceApi.del("/detection/{detection_id}")' in body
+    assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection_id},\s*"2099-01-02 03:04:05"\)', body)
 
 
 @pytest.mark.integration
@@ -1148,13 +1140,11 @@ def test_index_without_alert_actions(web_client, root_analysis, toolbar_actions)
     assert b"alert_action_" not in result.data
 
 
-@pytest.mark.integration
-def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analysis, monkeypatch):
-    """A tree node that starts collapsed hides its children with hidden="until-found", which
-    find-in-page still searches, not display: none, which it skips."""
-    monkeypatch.setattr(TreeNode, "default_collapsed", property(lambda node: node.is_analysis and not node.is_root_analysis))
+def _render_collapsible_tree(web_client, root_analysis):
+    from saq.modules.test import BasicTestAnalysis
+
     observable = root_analysis.add_observable_by_spec(F_TEST, "parent")
-    analysis = observable.add_analysis(VerdictTestAnalysis())
+    analysis = observable.add_analysis(BasicTestAnalysis())
     analysis.add_observable_by_spec(F_TEST, "found by searching")
     root_analysis.save()
     ALERT(root_analysis)
@@ -1164,10 +1154,33 @@ def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analys
         sess['prune_volatile'] = False
     result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
     assert result.status_code == 200
-    body = result.data.decode()
+    return result.data.decode()
+
+
+@pytest.mark.integration
+def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analysis, monkeypatch):
+    """A tree node that starts collapsed hides its children with hidden="until-found", which
+    find-in-page still searches, not display: none, which it skips."""
+    from saq.modules.test import BasicTestAnalysis
+
+    # the module config the tree looks the analysis up by
+    config = get_config().get_analysis_module_config_by_module_path(MODULE_PATH(BasicTestAnalysis))
+    monkeypatch.setattr(config, "default_collapsed", True)
+    body = _render_collapsible_tree(web_client, root_analysis)
 
     # only the analysis starts collapsed; the observable above it stays open
     assert body.count('<ul hidden="until-found">') == 1
     assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)
     assert 'class="toggle-icon bi bi-chevron-right"' in body
     assert '<ul style="display: none;">' not in body
+
+
+@pytest.mark.integration
+@pytest.mark.xfail(strict=True, reason="get_analysis_module_config_by_module_path ignores the class name, so every "
+                   "analysis of a python module that hosts several modules gets the last-registered module's config")
+def test_alert_page_collapses_by_the_analysis_modules_own_config(web_client, root_analysis, monkeypatch):
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST), "default_collapsed", True)
+
+    body = _render_collapsible_tree(web_client, root_analysis)
+
+    assert body.count('<ul hidden="until-found">') == 1

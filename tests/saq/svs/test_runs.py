@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from saq.configuration.config import get_config
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE
 from saq.database.model import SVSRegistrationRefusal, SVSRun, SVSRunEvent
 from saq.database.pool import get_db
 from saq.svs import runs
@@ -55,16 +56,19 @@ def setup(no_hunts, monkeypatch):
     create_host(build_spec("anyuser-01"), None)
     create_host(build_spec("ubuntu-01", platform="linux"), None)
     create_host(build_spec("mac-01", platform="macos"), None)
-    monkeypatch.setattr(runs, "close_run_alerts", _record("closed"))
-    monkeypatch.setattr(runs, "on_run_ended", _record("ended"))
+    monkeypatch.setattr(runs, "close_run_alerts", _record("closed", runs.close_run_alerts))
+    monkeypatch.setattr(runs, "on_run_ended", _record("ended", runs.on_run_ended))
     HOOKS.clear()
 
 
 HOOKS: list[tuple[str, str]] = []
 
 
-def _record(name: str):
-    return lambda run, *args: HOOKS.append((name, run.uuid))
+def _record(name: str, hook):
+    def record(run, *args, **kwargs):
+        HOOKS.append((name, run.uuid))
+        return hook(run, *args, **kwargs)
+    return record
 
 
 def _registration(**values) -> Registration:
@@ -385,7 +389,7 @@ def test_the_run_timer_runs_until_stopped_and_survives_a_failure(monkeypatch):
     monkeypatch.setattr(svs_service, "run_timers", flaky)
     monkeypatch.setattr(svs_service, "refresh_catalog", lambda **kwargs: [])
     monkeypatch.setattr(get_config().svs.runs, "timer_interval_seconds", 0.05)
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: True)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "1")
     service = SVSService()
     service.start()
     try:
@@ -400,7 +404,7 @@ def test_the_run_timer_runs_until_stopped_and_survives_a_failure(monkeypatch):
 
 
 def test_the_run_timer_stays_idle_off_the_primary_node(monkeypatch):
-    monkeypatch.setattr(svs_service, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service = SVSService()
     service.start()
     assert service.runs is None

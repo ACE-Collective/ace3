@@ -3,6 +3,8 @@
 import hashlib
 import json
 import logging
+import os
+import shutil
 import zipfile
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -12,6 +14,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from aceapi_v2.application import app
+from saq.analysis.root import RootAnalysis, load_root
+from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.database import get_db
 from saq.database.model import (
     Alert,
@@ -21,43 +25,53 @@ from saq.database.model import (
     ObservableMapping,
     User,
 )
+from saq.database.util.locking import acquire_lock, release_lock
+from saq.environment import get_base_dir
+from saq.search.tasks import submit_index_task
 from tests.saq.helpers import insert_alert, make_simulated, workload_count
 
 pytestmark = pytest.mark.integration
 
 
-def _make_mock_alert(uuid: str):
-    """Create a mock GUIAlert with the necessary attributes."""
-    alert = MagicMock()
-    alert.uuid = uuid
-    alert.lock_uuid = None
-    alert.root_analysis = MagicMock()
-    # the observable does not already exist in the alert by default
-    alert.root_analysis.get_observable_by_spec = MagicMock(return_value=None)
-    alert.root_analysis.add_observable_by_spec = MagicMock(return_value=MagicMock())
-    alert.root_analysis.analysis_mode = None
-    return alert
-
-
 VALID_UUID = "11111111-2222-3333-4444-555555555555"
 
 
-def _make_storage_alert(uuid: str, storage_dir: str, archived: bool = False):
-    """Create a mock alert with a storage_dir attribute pointing at a real path."""
-    alert = MagicMock()
-    alert.uuid = uuid
-    alert.storage_dir = storage_dir  # absolute path; os.path.join will discard get_base_dir()
-    alert.archived = archived
+def _storage_path(alert: Alert) -> str:
+    return os.path.join(get_base_dir(), alert.storage_dir)
+
+
+def _load_alert_root(alert: Alert) -> RootAnalysis:
+    """The alert's analysis as the endpoint left it on disk."""
+    return load_root(_storage_path(alert))
+
+
+def _assert_unlocked(alert_uuid: str):
+    """The request released its lock: anyone can take the alert again."""
+    lock_uuid = str(uuid4())
+    assert acquire_lock(alert_uuid, lock_uuid)
+    release_lock(alert_uuid, lock_uuid)
+
+
+def _archive(alert: Alert):
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update({"archived": True})
+    db.commit()
+
+
+def _insert_alert_row(alert_uuid: str, storage_dir: str) -> Alert:
+    """An alert row (no analysis) whose storage directory is ``storage_dir``."""
+    db = get_db()
+    alert = Alert(
+        uuid=alert_uuid,
+        location="test-location",
+        storage_dir=storage_dir,  # absolute; os.path.join discards get_base_dir()
+        tool="test-tool",
+        tool_instance="test-tool-instance",
+        alert_type="test",
+    )
+    db.add(alert)
+    db.commit()
     return alert
-
-
-def _wire_get_db(mock_get_db, alert):
-    """Wire the chained .query().filter().one_or_none() to return `alert`."""
-    mock_query = MagicMock()
-    mock_filter = MagicMock()
-    mock_get_db.return_value.query.return_value = mock_query
-    mock_query.filter.return_value = mock_filter
-    mock_filter.one_or_none.return_value = alert
 
 
 class TestBulkAddObservable:
@@ -148,26 +162,14 @@ class TestBulkAddObservable:
         assert workload_count(simulated.uuid) == 0
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_invalid_value_is_reported_as_a_failure(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_invalid_value_is_reported_as_a_failure(self, client: AsyncClient):
         """add_observable_by_spec returns None for a value that is impossible for its type.
         That is reported as a per-alert failure and does not schedule a correlation pass."""
-        alert = _make_mock_alert("uuid-1")
-        alert.root_analysis.add_observable_by_spec = MagicMock(return_value=None)
-        _wire_get_db(mock_get_db, alert)
+        alert = insert_alert()
+        version = alert.version
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "ipv4",
             "observable_value": "not-an-ip",
         })
@@ -176,38 +178,24 @@ class TestBulkAddObservable:
         data = response.json()
         assert data["success_count"] == 0
         assert data["failed_count"] == 1
-        assert data["failed_uuids"] == ["uuid-1"]
-        assert "not a valid value for observable type ipv4" in data["failed_details"]["uuid-1"]
+        assert data["failed_uuids"] == [alert.uuid]
+        assert "not a valid value for observable type ipv4" in data["failed_details"][alert.uuid]
 
         # nothing was written and no analysis was scheduled
-        assert not alert.sync.called
-        assert not mock_add_workload.called
+        assert _load_alert_root(alert).get_observables_by_type("ipv4") == []
+        get_db().expire_all()
+        assert get_db().query(Alert.version).filter(Alert.id == alert.id).scalar() == version
+        assert workload_count(alert.uuid) == 0
+        _assert_unlocked(alert.uuid)
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_success(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_success(self, client: AsyncClient):
         """Successfully adding an observable to multiple alerts."""
-        alert1 = _make_mock_alert("uuid-1")
-        alert2 = _make_mock_alert("uuid-2")
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.side_effect = [alert1, alert2]
+        alert1, alert2 = insert_alert(), insert_alert()
+        versions = {alert1.id: alert1.version, alert2.id: alert2.version}
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1", "uuid-2"],
+            "alert_uuids": [alert1.uuid, alert2.uuid],
             "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
@@ -218,40 +206,30 @@ class TestBulkAddObservable:
         assert data["failed_count"] == 0
         assert data["failed_uuids"] == []
 
-        # Verify observables were added to both alerts
-        alert1.root_analysis.add_observable_by_spec.assert_called_once_with(
-            "fqdn", "evil.example.com", None
-        )
-        alert2.root_analysis.add_observable_by_spec.assert_called_once_with(
-            "fqdn", "evil.example.com", None
-        )
-        assert alert1.sync.called
-        assert alert2.sync.called
+        # each alert got the observable, was put back into correlation and queued for analysis
+        for alert in (alert1, alert2):
+            root = _load_alert_root(alert)
+            assert root.get_observable_by_spec("fqdn", "evil.example.com") is not None
+            assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
+            assert workload_count(alert.uuid) == 1
+            _assert_unlocked(alert.uuid)
+
+            # sync() wrote the row and indexed the new observable
+            get_db().expire_all()
+            assert get_db().query(Alert.version).filter(Alert.id == alert.id).scalar() != versions[alert.id]
+            assert get_db().query(Observable).join(
+                ObservableMapping, ObservableMapping.observable_id == Observable.id).filter(
+                ObservableMapping.alert_id == alert.id,
+                Observable.type == "fqdn",
+                Observable.value == b"evil.example.com").count() == 1
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_with_time(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
-        """Observable time should be parsed and passed to add_observable_by_spec."""
-        alert = _make_mock_alert("uuid-1")
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
+    async def test_bulk_add_observable_with_time(self, client: AsyncClient):
+        """Observable time should be parsed and set on the added observable."""
+        alert = insert_alert()
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "ipv4",
             "observable_value": "10.0.0.1",
             "observable_time": "2026-03-31 12:00:00",
@@ -261,36 +239,18 @@ class TestBulkAddObservable:
         data = response.json()
         assert data["success_count"] == 1
 
-        # Verify time was passed
-        call_args = alert.root_analysis.add_observable_by_spec.call_args
-        assert call_args[0][2] is not None  # o_time should be a datetime
+        (observable,) = _load_alert_root(alert).get_observables_by_type("ipv4")
+        assert observable.value == "10.0.0.1"
+        assert isinstance(observable.time, datetime)
+        assert observable.time.strftime("%Y-%m-%d %H:%M:%S") == "2026-03-31 12:00:00"
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_with_directives(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_with_directives(self, client: AsyncClient):
         """Directives should be applied to the created observable."""
-        alert = _make_mock_alert("uuid-1")
-        mock_observable = MagicMock()
-        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
+        alert = insert_alert()
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "url",
             "observable_value": "https://bad.example.com",
             "directives": ["crawl", "sandbox"],
@@ -300,59 +260,44 @@ class TestBulkAddObservable:
         data = response.json()
         assert data["success_count"] == 1
 
-        # Verify directives were applied
-        mock_observable.add_directive.assert_any_call("crawl")
-        mock_observable.add_directive.assert_any_call("sandbox")
+        observable = _load_alert_root(alert).get_observable_by_spec("url", "https://bad.example.com")
+        assert observable.has_directive("crawl")
+        assert observable.has_directive("sandbox")
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=False)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_lock_failure(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_lock_failure(self, client: AsyncClient):
         """Alerts that can't be locked should be reported as failed."""
-        alert = _make_mock_alert("uuid-1")
+        alert = insert_alert()
+        engine_lock = str(uuid4())
+        assert acquire_lock(alert.uuid, engine_lock)
+        try:
+            response = await client.post("/alerts/bulk-add-observable", json={
+                "alert_uuids": [alert.uuid],
+                "observable_type": "ipv4",
+                "observable_value": "1.2.3.4",
+            })
 
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
-
-        response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
-            "observable_type": "ipv4",
-            "observable_value": "1.2.3.4",
-        })
+            # the request did not take over or release the lock somebody else holds
+            assert not acquire_lock(alert.uuid, str(uuid4()))
+        finally:
+            release_lock(alert.uuid, engine_lock)
 
         assert response.status_code == 200
         data = response.json()
         assert data["success_count"] == 0
         assert data["failed_count"] == 1
-        assert data["failed_uuids"] == ["uuid-1"]
-        assert data["failed_details"]["uuid-1"] == "alert is currently locked"
+        assert data["failed_uuids"] == [alert.uuid]
+        assert data["failed_details"][alert.uuid] == "alert is currently locked"
+        assert _load_alert_root(alert).get_observables_by_type("ipv4") == []
+        assert workload_count(alert.uuid) == 0
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_nonexistent_alert(
-        self,
-        mock_get_db,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_nonexistent_alert(self, client: AsyncClient):
         """Nonexistent alerts should be reported as failed."""
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = None
+        missing = str(uuid4())
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["nonexistent-uuid"],
+            "alert_uuids": [missing],
             "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
@@ -361,34 +306,17 @@ class TestBulkAddObservable:
         data = response.json()
         assert data["success_count"] == 0
         assert data["failed_count"] == 1
-        assert data["failed_uuids"] == ["nonexistent-uuid"]
-        assert data["failed_details"]["nonexistent-uuid"] == "alert not found"
+        assert data["failed_uuids"] == [missing]
+        assert data["failed_details"][missing] == "alert not found"
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_partial_failure(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_partial_failure(self, client: AsyncClient):
         """Mix of successful and failed alerts should be reported correctly."""
-        alert1 = _make_mock_alert("uuid-1")
-        # alert2 doesn't exist
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.side_effect = [alert1, None]
+        alert = insert_alert()
+        missing = str(uuid4())
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1", "uuid-2"],
+            "alert_uuids": [alert.uuid, missing],
             "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
@@ -397,35 +325,18 @@ class TestBulkAddObservable:
         data = response.json()
         assert data["success_count"] == 1
         assert data["failed_count"] == 1
-        assert data["failed_uuids"] == ["uuid-2"]
-        assert data["failed_details"]["uuid-2"] == "alert not found"
+        assert data["failed_uuids"] == [missing]
+        assert data["failed_details"][missing] == "alert not found"
+        assert _load_alert_root(alert).get_observable_by_spec("fqdn", "evil.example.com") is not None
+        assert workload_count(alert.uuid) == 1
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_invalid_directives_filtered(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_invalid_directives_filtered(self, client: AsyncClient):
         """Invalid directives should be silently filtered out."""
-        alert = _make_mock_alert("uuid-1")
-        mock_observable = MagicMock()
-        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
+        alert = insert_alert()
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "ipv4",
             "observable_value": "1.2.3.4",
             "directives": ["sandbox", "totally_fake_directive"],
@@ -436,34 +347,16 @@ class TestBulkAddObservable:
         assert data["success_count"] == 1
 
         # Only valid directive should be applied
-        mock_observable.add_directive.assert_called_once_with("sandbox")
+        observable = _load_alert_root(alert).get_observable_by_spec("ipv4", "1.2.3.4")
+        assert observable.directives == ["sandbox"]
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_stamps_added_by(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_stamps_added_by(self, client: AsyncClient):
         """A newly added observable should be stamped with the auth user and time."""
-        alert = _make_mock_alert("uuid-1")
-        mock_observable = MagicMock()
-        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
+        alert = insert_alert()
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
@@ -472,39 +365,21 @@ class TestBulkAddObservable:
         assert response.json()["success_count"] == 1
 
         # the api auth fixture authenticates as the unittest user
-        assert mock_observable.added_by == "unittest"
-        assert isinstance(mock_observable.added_time, datetime)
+        observable = _load_alert_root(alert).get_observable_by_spec("fqdn", "evil.example.com")
+        assert observable.added_by == "unittest"
+        assert isinstance(observable.added_time, datetime)
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.add_workload")
-    @patch("aceapi_v2.alerts.service.release_lock")
-    @patch("aceapi_v2.alerts.service.acquire_lock", return_value=True)
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_bulk_add_observable_existing_not_stamped(
-        self,
-        mock_get_db,
-        mock_acquire_lock,
-        mock_release_lock,
-        mock_add_workload,
-        client: AsyncClient,
-    ):
+    async def test_bulk_add_observable_existing_not_stamped(self, client: AsyncClient):
         """An observable that already existed in the alert should not be stamped."""
-        alert = _make_mock_alert("uuid-1")
-        mock_observable = MagicMock()
-        mock_observable.added_by = None
-        mock_observable.added_time = None
+        alert = insert_alert()
         # the observable already exists in the alert (e.g. added by the engine)
-        alert.root_analysis.get_observable_by_spec.return_value = mock_observable
-        alert.root_analysis.add_observable_by_spec.return_value = mock_observable
-
-        mock_query = MagicMock()
-        mock_filter = MagicMock()
-        mock_get_db.return_value.query.return_value = mock_query
-        mock_query.filter.return_value = mock_filter
-        mock_filter.one_or_none.return_value = alert
+        root = _load_alert_root(alert)
+        existing = root.add_observable_by_spec("fqdn", "evil.example.com")
+        root.save()
 
         response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": ["uuid-1"],
+            "alert_uuids": [alert.uuid],
             "observable_type": "fqdn",
             "observable_value": "evil.example.com",
         })
@@ -512,30 +387,24 @@ class TestBulkAddObservable:
         assert response.status_code == 200
         assert response.json()["success_count"] == 1
 
-        assert mock_observable.added_by is None
-        assert mock_observable.added_time is None
+        observable = _load_alert_root(alert).get_observable_by_spec("fqdn", "evil.example.com")
+        assert observable.uuid == existing.uuid
+        assert observable.added_by is None
+        assert observable.added_time is None
 
     @pytest.mark.asyncio
     async def test_valid_time_format(self, client: AsyncClient):
         """Valid time format should be accepted (regression check)."""
-        # This will fail at the service level since we're not mocking,
-        # but should NOT return 400 for time format
-        with patch("aceapi_v2.alerts.service.get_db") as mock_get_db:
-            mock_query = MagicMock()
-            mock_filter = MagicMock()
-            mock_get_db.return_value.query.return_value = mock_query
-            mock_query.filter.return_value = mock_filter
-            mock_filter.one_or_none.return_value = None
+        response = await client.post("/alerts/bulk-add-observable", json={
+            "alert_uuids": [str(uuid4())],
+            "observable_type": "ipv4",
+            "observable_value": "1.2.3.4",
+            "observable_time": "2026-03-31 14:30:00",
+        })
 
-            response = await client.post("/alerts/bulk-add-observable", json={
-                "alert_uuids": ["uuid-1"],
-                "observable_type": "ipv4",
-                "observable_value": "1.2.3.4",
-                "observable_time": "2026-03-31 14:30:00",
-            })
-
-            # Should not be a 400 for time format
-            assert response.status_code == 200
+        # the unknown alert is a per-alert failure, not a 400 for the time format
+        assert response.status_code == 200
+        assert response.json()["failed_details"] != {}
 
 
 class TestDownloadAlert:
@@ -553,43 +422,40 @@ class TestDownloadAlert:
         assert "invalid alert UUID" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_alert_not_found(self, mock_get_db, client: AsyncClient):
-        _wire_get_db(mock_get_db, None)
-        response = await client.get(f"/alerts/{VALID_UUID}/download")
+    async def test_alert_not_found(self, client: AsyncClient):
+        response = await client.get(f"/alerts/{uuid4()}/download")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_archived_alert(self, mock_get_db, client: AsyncClient, tmp_path):
-        alert = _make_storage_alert(VALID_UUID, str(tmp_path), archived=True)
-        _wire_get_db(mock_get_db, alert)
-        response = await client.get(f"/alerts/{VALID_UUID}/download")
+    async def test_archived_alert(self, client: AsyncClient):
+        alert = insert_alert()
+        _archive(alert)
+        response = await client.get(f"/alerts/{alert.uuid}/download")
         assert response.status_code == 410
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_missing_storage_dir(self, mock_get_db, client: AsyncClient, tmp_path):
-        alert = _make_storage_alert(VALID_UUID, str(tmp_path / "does-not-exist"))
-        _wire_get_db(mock_get_db, alert)
-        response = await client.get(f"/alerts/{VALID_UUID}/download")
+    async def test_missing_storage_dir(self, client: AsyncClient):
+        alert = insert_alert()
+        shutil.rmtree(_storage_path(alert))
+        response = await client.get(f"/alerts/{alert.uuid}/download")
         assert response.status_code == 410
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_download_happy_path(self, mock_get_db, client: AsyncClient, tmp_path):
-        storage_dir = tmp_path / VALID_UUID
-        storage_dir.mkdir()
-        (storage_dir / "saq.log").write_text("log line one\nlog line two\n")
-        (storage_dir / "data.json").write_text('{"hello": "world"}')
+    async def test_download_happy_path(self, client: AsyncClient, tmp_path):
+        alert = insert_alert()
+        alert_uuid = alert.uuid
+        storage_dir = _storage_path(alert)
+        with open(os.path.join(storage_dir, "saq.log"), "w") as fp:
+            fp.write("log line one\nlog line two\n")
 
-        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
-        _wire_get_db(mock_get_db, alert)
+        db = get_db()
+        db.add(Comment(uuid=alert_uuid, user_id=_unittest_user_id(), comment="looks bad"))
+        db.commit()
 
-        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        response = await client.get(f"/alerts/{alert_uuid}/download")
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
-        assert f"{VALID_UUID}.zip" in response.headers["content-disposition"]
+        assert f"{alert_uuid}.zip" in response.headers["content-disposition"]
 
         # Verify the zip is real and encrypted with 'infected'.
         zip_bytes = response.content
@@ -599,11 +465,10 @@ class TestDownloadAlert:
         # Every entry must be nested under a "<uuid>/" subdirectory.
         with zipfile.ZipFile(zip_path) as zf:
             names = zf.namelist()
-            assert all(n.startswith(f"{VALID_UUID}/") for n in names)
-            assert f"{VALID_UUID}/saq.log" in names
-            assert f"{VALID_UUID}/data.json" in names
-            # the comments file is always present, even with no comments
-            assert f"{VALID_UUID}/comments.json" in names
+            assert all(n.startswith(f"{alert_uuid}/") for n in names)
+            assert f"{alert_uuid}/saq.log" in names
+            assert f"{alert_uuid}/data.json" in names
+            assert f"{alert_uuid}/comments.json" in names
 
         # The `unzip` binary can decrypt ZipCrypto; Python's stdlib zipfile can too
         # when given the right password.
@@ -612,19 +477,20 @@ class TestDownloadAlert:
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(extract_dir, pwd=b"infected")
         # The alert's files extract into the "<uuid>/" subdirectory.
-        extracted_log = extract_dir / VALID_UUID / "saq.log"
+        extracted_log = extract_dir / alert_uuid / "saq.log"
         assert extracted_log.is_file()
         assert extracted_log.read_text() == "log line one\nlog line two\n"
+        assert load_root(str(extract_dir / alert_uuid)).uuid == alert_uuid
 
-        comments = json.loads((extract_dir / VALID_UUID / "comments.json").read_text())
-        assert comments == {
-            "alert_uuid": VALID_UUID,
-            "alert_comments": [],
-            "observable_comments": [],
-        }
+        comments = json.loads((extract_dir / alert_uuid / "comments.json").read_text())
+        assert comments["alert_uuid"] == alert_uuid
+        assert [(c["comment"], c["user"]["username"]) for c in comments["alert_comments"]] == [
+            ("looks bad", "unittest"),
+        ]
+        assert comments["observable_comments"] == []
 
         # the comments file was staged in a temp dir, never written into the alert
-        assert not (storage_dir / "comments.json").exists()
+        assert not os.path.exists(os.path.join(storage_dir, "comments.json"))
 
     @pytest.mark.asyncio
     async def test_download_includes_comments(self, client: AsyncClient, tmp_path):
@@ -635,19 +501,9 @@ class TestDownloadAlert:
         storage_dir.mkdir()
         (storage_dir / "data.json").write_text("{}")
 
+        alert = _insert_alert_row(alert_uuid, str(storage_dir))
         db = get_db()
         user = db.query(User).filter(User.username == "unittest").one()
-
-        alert = Alert(
-            uuid=alert_uuid,
-            location="test-location",
-            storage_dir=str(storage_dir),  # absolute; os.path.join discards get_base_dir()
-            tool="test-tool",
-            tool_instance="test-tool-instance",
-            alert_type="test",
-        )
-        db.add(alert)
-        db.flush()
 
         # a comment on a different alert must not leak in
         db.add(Comment(uuid=str(uuid4()), user_id=user.id, comment="other alert"))
@@ -701,16 +557,12 @@ class TestDownloadAlert:
         }
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_storage_dir_basename_mismatch(
-        self, mock_get_db, client: AsyncClient, tmp_path
-    ):
+    async def test_storage_dir_basename_mismatch(self, client: AsyncClient, tmp_path):
         # A storage directory not named after the alert UUID trips the guard.
         storage_dir = tmp_path / "not-the-uuid"
         storage_dir.mkdir()
-        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
-        _wire_get_db(mock_get_db, alert)
-        response = await client.get(f"/alerts/{VALID_UUID}/download")
+        alert = _insert_alert_row(str(uuid4()), str(storage_dir))
+        response = await client.get(f"/alerts/{alert.uuid}/download")
         assert response.status_code == 500
 
 
@@ -773,44 +625,34 @@ class TestViewAlertLogs:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_alert_not_found(self, mock_get_db, client: AsyncClient):
-        _wire_get_db(mock_get_db, None)
-        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+    async def test_alert_not_found(self, client: AsyncClient):
+        response = await client.get(f"/alerts/{uuid4()}/logs")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_archived_alert(self, mock_get_db, client: AsyncClient, tmp_path):
-        alert = _make_storage_alert(VALID_UUID, str(tmp_path), archived=True)
-        _wire_get_db(mock_get_db, alert)
-        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+    async def test_archived_alert(self, client: AsyncClient):
+        alert = insert_alert()
+        _archive(alert)
+        response = await client.get(f"/alerts/{alert.uuid}/logs")
         assert response.status_code == 410
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_log_missing(self, mock_get_db, client: AsyncClient, tmp_path):
+    async def test_log_missing(self, client: AsyncClient):
         # storage_dir exists, but saq.log is not in it
-        storage_dir = tmp_path / "alert"
-        storage_dir.mkdir()
-        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
-        _wire_get_db(mock_get_db, alert)
-        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        alert = insert_alert()
+        assert not os.path.exists(os.path.join(_storage_path(alert), "saq.log"))
+        response = await client.get(f"/alerts/{alert.uuid}/logs")
         assert response.status_code == 404
         assert "saq.log not present" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_view_logs_inline(self, mock_get_db, client: AsyncClient, tmp_path):
-        storage_dir = tmp_path / "alert"
-        storage_dir.mkdir()
+    async def test_view_logs_inline(self, client: AsyncClient):
+        alert = insert_alert()
         log_content = "2026-05-13 12:00:00 INFO module - hello\n"
-        (storage_dir / "saq.log").write_text(log_content)
+        with open(os.path.join(_storage_path(alert), "saq.log"), "w") as fp:
+            fp.write(log_content)
 
-        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
-        _wire_get_db(mock_get_db, alert)
-
-        response = await client.get(f"/alerts/{VALID_UUID}/logs")
+        response = await client.get(f"/alerts/{alert.uuid}/logs")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
         # Inline disposition: either no disposition header or one containing 'inline'
@@ -819,21 +661,17 @@ class TestViewAlertLogs:
         assert response.text == log_content
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.get_db")
-    async def test_view_logs_download(self, mock_get_db, client: AsyncClient, tmp_path):
-        storage_dir = tmp_path / "alert"
-        storage_dir.mkdir()
+    async def test_view_logs_download(self, client: AsyncClient):
+        alert = insert_alert()
         log_content = "downloadable log content\n"
-        (storage_dir / "saq.log").write_text(log_content)
+        with open(os.path.join(_storage_path(alert), "saq.log"), "w") as fp:
+            fp.write(log_content)
 
-        alert = _make_storage_alert(VALID_UUID, str(storage_dir))
-        _wire_get_db(mock_get_db, alert)
-
-        response = await client.get(f"/alerts/{VALID_UUID}/logs?download=true")
+        response = await client.get(f"/alerts/{alert.uuid}/logs?download=true")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
         assert "attachment" in response.headers["content-disposition"]
-        assert f"{VALID_UUID}-saq.log" in response.headers["content-disposition"]
+        assert f"{alert.uuid}-saq.log" in response.headers["content-disposition"]
         assert response.text == log_content
 
 
@@ -959,7 +797,7 @@ class TestUpdateAlertComment:
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.submit_index_task")
+    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
     async def test_update_comment(self, mock_submit_index_task, client: AsyncClient):
         user_id = _unittest_user_id()
         alert_uuid, comment_id = _insert_commented_alert(user_id)
@@ -980,7 +818,7 @@ class TestUpdateAlertComment:
         mock_submit_index_task.assert_called_once_with(alert_uuid)
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.submit_index_task")
+    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
     async def test_unchanged_comment_is_not_a_change(self, mock_submit_index_task, client: AsyncClient):
         alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
         version = _alert_version(alert_uuid)
@@ -992,7 +830,7 @@ class TestUpdateAlertComment:
         mock_submit_index_task.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("aceapi_v2.alerts.service.submit_index_task")
+    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
     async def test_line_endings_alone_are_not_a_change(self, mock_submit_index_task, client: AsyncClient):
         # the GUI's add form stores CRLF; the edit modal's textarea sends LF
         alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), "first line\r\nsecond line")

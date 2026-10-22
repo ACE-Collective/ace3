@@ -10,6 +10,8 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
 
+`docs/design-flaws/` lists known flaws in ACE's design that changes have had to work around, one `<id>.yaml` each (see its README.md). Before you write a workaround, check whether it is for one of them, and if so, follow the workarounds that file lists rather than inventing another.
+
 ## Environment
 
 Development happens **inside the `dev` container** (this is where Claude Code normally runs — check with `ls /.dockerenv`). `SAQ_HOME=/opt/ace`, Python 3.14 in `/venv`, user `ace`.
@@ -299,7 +301,7 @@ js_deobfuscator has its own CLAUDE.md file available at `js_deobfuscator/CLAUDE.
 
 ## Engineering values
 
-What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section, so a rule that is not written here is not enforced.
+What a change is judged on, in priority order: **uptime, logging, tests, performance**. A bug ranks by what it does to one of those. A change does what its description says, and a bug fix removes the cause, not the symptom. Software-engineering polish matters only as far as it keeps the code understandable, and GUI implementation style does not matter at all. The `/ace-review` skill (`.claude/skills/ace-review/`) reviews a branch against this section as it is on the base branch, so a rule that is not written there is not enforced, and a branch that edits this section is still judged by the old text until the maintainer accepts the edit.
 
 ### Uptime
 
@@ -326,6 +328,7 @@ The goal is that a production failure can be diagnosed from the logs alone, with
 The target is close to full coverage. CI does not run the suite, so the PR is the only place tests are checked.
 
 - New and changed code comes with tests, and the failure paths get tested too: the exception raised, the log record emitted (`caplog`, `search_log`, `wait_for_log_count`), and the fallback taken.
+- A bug fix comes with a test that fails on the code before the fix.
 - Every test carries a `unit`, `integration` or `system` marker. A test without one is silently never run.
 - Wait with `wait_for_condition` / `wait_for_log_count` (`tests/saq/helpers.py`), never with `time.sleep`.
 - New module-level state (caches, registries, singletons) is reset in `global_function_setup` (`tests/conftest.py`). The suite runs in random order.
@@ -348,6 +351,7 @@ The analyst's experience comes first.
 - Comments and docstrings say *why*, not what the code says. Skip the module docstring that retells the design doc.
 - No new module, base class, exception class or config knob without a second caller or a concrete need. A plain function in an existing module is the default.
 - Remove dead code you replace. Don't leave shims for callers that no longer exist.
+- A change that removes or renames a path, function or config key also updates the lines of CLAUDE.md, `docs/` and the skills that name it.
 
 ### GUI
 

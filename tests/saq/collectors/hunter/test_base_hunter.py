@@ -825,12 +825,8 @@ def test_hunt_suppression(rules_dir, manager_kwargs):
     assert not hunter.hunts[0].ready
 
 @pytest.mark.unit
-def test_initialize_last_execution_time(monkeypatch, tmpdir):
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
+def test_initialize_last_execution_time(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -838,19 +834,15 @@ def test_initialize_last_execution_time(monkeypatch, tmpdir):
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="00:00:10"))
+    hunt = Hunt(manager=manager, config=default_hunt_config(name="test", frequency="00:00:10"))
     #hunt.frequency = timedelta(seconds=10)
     # shoule be ready
     assert hunt.next_execution_time <= local_time()
     assert hunt.ready
 
 @pytest.mark.unit
-def test_last_alert_times_persistence(monkeypatch, tmpdir):
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
+def test_last_alert_times_persistence(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -858,7 +850,7 @@ def test_last_alert_times_persistence(monkeypatch, tmpdir):
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
 
-    hunt = Hunt(manager=MockManager(),
+    hunt = Hunt(manager=manager,
                 config=default_hunt_config(name="test_persist", suppression="00:01:00"))
     now = local_time()
 
@@ -868,7 +860,7 @@ def test_last_alert_times_persistence(monkeypatch, tmpdir):
     hunt.save_last_alert_times()
 
     # rehydrate from disk by constructing a fresh Hunt with the same name
-    fresh = Hunt(manager=MockManager(),
+    fresh = Hunt(manager=manager,
                  config=default_hunt_config(name="test_persist", suppression="00:01:00"))
 
     bob_time = fresh.get_last_alert_time("bob")
@@ -883,12 +875,8 @@ def test_last_alert_times_persistence(monkeypatch, tmpdir):
     assert fresh.get_last_alert_time("never_seen") is None
 
 @pytest.mark.unit
-def test_prune_expired_last_alert_times(monkeypatch, tmpdir):
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
+def test_prune_expired_last_alert_times(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -896,7 +884,7 @@ def test_prune_expired_last_alert_times(monkeypatch, tmpdir):
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
 
-    hunt = Hunt(manager=MockManager(),
+    hunt = Hunt(manager=manager,
                 config=default_hunt_config(name="test_prune", suppression="00:01:00"))
     now = local_time()
 
@@ -909,18 +897,14 @@ def test_prune_expired_last_alert_times(monkeypatch, tmpdir):
     hunt.save_last_alert_times()
 
     # rehydrate to confirm the prune was persisted to disk
-    fresh = Hunt(manager=MockManager(),
+    fresh = Hunt(manager=manager,
                  config=default_hunt_config(name="test_prune", suppression="00:01:00"))
     assert fresh.get_last_alert_time("expired") is None
     assert fresh.get_last_alert_time("current") is not None
 
 @pytest.mark.unit
-def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
+def test_initialize_last_execution_time_cron(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -928,25 +912,21 @@ def test_initialize_last_execution_time_cron(monkeypatch, tmpdir):
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
     #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="*/10 * * * *"))
+    hunt = Hunt(manager=manager, config=default_hunt_config(name="test", frequency="*/10 * * * *"))
     # shoule be ready
     assert hunt.next_execution_time <= local_time()
     assert hunt.ready
 
 @pytest.mark.unit
-def test_next_execution_time_cron_with_previous_execution(monkeypatch, tmpdir):
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
+def test_next_execution_time_cron_with_previous_execution(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
     p_dir.mkdir()
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
-    hunt = Hunt(manager=MockManager(), config=default_hunt_config(name="test", frequency="*/10 * * * *"))
+    hunt = Hunt(manager=manager, config=default_hunt_config(name="test", frequency="*/10 * * * *"))
 
     # set a previous execution time
     previous_execution = local_time() - timedelta(minutes=15)
@@ -1318,13 +1298,9 @@ def test_execute_threaded_hunt_writes_last_alert_times_once_per_run(manager_kwar
     assert set(persisted.keys()) == set(group_values)
 
 @pytest.mark.unit
-def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir):
+def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     """set_last_alert_time records in memory only - the write is an explicit flush"""
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -1334,7 +1310,7 @@ def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir):
 
     writes = _count_persistence_writes(monkeypatch)
 
-    hunt = Hunt(manager=MockManager(),
+    hunt = Hunt(manager=manager,
                 config=default_hunt_config(name="test_no_write", suppression="00:01:00"))
     now = local_time()
 
@@ -1353,16 +1329,12 @@ def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir):
     assert writes[0] == 1
 
 @pytest.mark.unit
-def test_prune_expired_last_alert_times_preserves_concurrent_inserts(monkeypatch, tmpdir):
+def test_prune_expired_last_alert_times_preserves_concurrent_inserts(monkeypatch, tmpdir, manager_kwargs):
+    manager = HuntManager(**manager_kwargs)
     """pruning removes expired keys in place rather than assigning a rebuilt dict
 
     a hunt can be re-dispatched while the previous run is still post-processing, so a rebuilt
     dict would silently drop entries the other run inserted after the snapshot was taken"""
-    class MockManager:
-        @property
-        def hunt_type(self):
-            return "test"
-
     data_dir = tmpdir / "data"
     data_dir.mkdir()
     p_dir = data_dir / "p"
@@ -1370,7 +1342,7 @@ def test_prune_expired_last_alert_times_preserves_concurrent_inserts(monkeypatch
     monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
     monkeypatch.setattr(get_config().collection, "persistence_dir", "p")
 
-    hunt = Hunt(manager=MockManager(),
+    hunt = Hunt(manager=manager,
                 config=default_hunt_config(name="test_prune_concurrent", suppression="00:01:00"))
     now = local_time()
 

@@ -1,6 +1,6 @@
 import datetime
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -24,16 +24,7 @@ def _make_config(logic_data, timeout="15m"):
     })
 
 
-@pytest.fixture(autouse=True)
-def _mock_secrets_and_config():
-    mock_raw = MagicMock()
-    mock_raw._data = {}
-    with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords", return_value={}), \
-         patch("saq.collectors.hunter.correlation.engine.get_config", return_value=MagicMock(raw=mock_raw)):
-        yield
-
-
-@pytest.mark.unit
+@pytest.mark.integration
 class TestCorrelationEngine:
 
     def test_no_logic_all_alert(self):
@@ -266,7 +257,7 @@ def _clean_registry():
         clear_query_sources()
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestSourceAwareTimeDefaults:
     """Verify that the engine threads hunt_source_type into query commands so
     relative_time_field/format can be omitted on YAML when the source declares defaults."""
@@ -495,7 +486,7 @@ class TestSourceAwareTimeDefaults:
         assert engine._resolve_command_source(defined_exec) is None
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestTransformTraceQueryTimespec:
     """The Correlation Trace UI needs to display the time window each query ran
     against, so analysts can rerun the same query in the underlying data source.
@@ -616,7 +607,7 @@ class TestTransformTraceQueryTimespec:
         assert transform.query_end_time == event_time
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestCorrelateReplay:
     """Capture-and-replay of follow-up correlate query results (validate.py
     --save-correlate-results / --correlate-results-file)."""
@@ -721,7 +712,7 @@ class _ClockAdvancingSource(QuerySource):
         return list(self.results)
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestTransformThenFilterAndTimeout:
     """Regression coverage for the azure_sspr_spray production incident: a transform
     followed by a filtering `when` inside a condition's execute list, and the correlate
@@ -824,17 +815,13 @@ class TestTransformThenFilterAndTimeout:
         assert len(slow.calls) == 1
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestSecretLoadFailure:
     """Secrets are loaded only to scrub output, so a degraded store does not stop correlation."""
 
     def test_secret_export_failure_does_not_fail_steps(self):
-        mock_raw = MagicMock()
-        mock_raw._data = {}
         with patch("saq.collectors.hunter.correlation.engine.export_encrypted_passwords",
-                   side_effect=RuntimeError("no encryption key")), \
-             patch("saq.collectors.hunter.correlation.engine.get_config",
-                   return_value=MagicMock(raw=mock_raw)):
+                   side_effect=RuntimeError("no encryption key")):
             config = _make_config([
                 {
                     "transform": {

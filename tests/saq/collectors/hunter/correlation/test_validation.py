@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -7,7 +7,9 @@ from pydantic import BaseModel
 from saq.collectors.hunter.correlation.command_types import (
     CorrelationCommand,
     clear_command_types,
+    load_command_types_from_config,
     register_command_type,
+    reset_command_types_loaded_flag,
 )
 from saq.collectors.hunter.correlation.schema import CorrelateConfig, PredefinedCommandConfig
 from saq.collectors.hunter.correlation.validation import (
@@ -15,6 +17,11 @@ from saq.collectors.hunter.correlation.validation import (
     check_templates_for_removed_names,
     iter_correlate_commands,
 )
+from saq.configuration import get_config
+from saq.configuration.schema import CommandTypeConfig, CorrelationConfig, HunterConfig
+
+THIS_MODULE = "tests.saq.collectors.hunter.correlation.test_validation"
+
 
 def _correlate(*commands) -> CorrelateConfig:
     return CorrelateConfig.model_validate({
@@ -185,6 +192,14 @@ class _LiveCommand(CorrelationCommand):
         return ""
 
 
+class _BrokenCommand(CorrelationCommand):
+    def __init__(self):
+        raise RuntimeError("no api key")
+
+    def execute(self, context, options):
+        return ""
+
+
 @pytest.fixture
 def custom_types():
     clear_command_types()
@@ -214,10 +229,15 @@ class TestCheckCustomCommandTypes:
         assert "unknown command type 'lookpu'" in errors[0]
         assert "live, lookup" in errors[0]
 
-    def test_load_failure_is_reported(self, custom_types):
-        with patch("saq.collectors.hunter.correlation.validation.get_command_type_load_errors",
-                   return_value={"broken": "RuntimeError: no api key"}):
+    def test_load_failure_is_reported(self, custom_types, monkeypatch):
+        monkeypatch.setattr(get_config(), "hunter", HunterConfig(correlation=CorrelationConfig(command_types=[
+            CommandTypeConfig(name="broken", python_module=THIS_MODULE, python_class="_BrokenCommand"),
+        ])))
+        try:
+            load_command_types_from_config(force=True)
             errors = check_custom_command_types(_correlate({"type": "broken"}))
+        finally:
+            reset_command_types_loaded_flag()
         assert errors == ["command 'broken': command type 'broken' failed to load on this node: RuntimeError: no api key"]
 
     def test_bad_options_are_reported(self, custom_types):

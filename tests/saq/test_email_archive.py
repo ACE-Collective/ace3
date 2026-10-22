@@ -1,6 +1,7 @@
 import os
 import pytest
 
+from saq.configuration.config import get_config
 from saq.database import get_db_connection
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.email_archive import (
@@ -22,7 +23,7 @@ from saq.util.time import local_time
 
 @pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.LOCAL])
 def patch_email_archive_target_type(monkeypatch, request):
-    monkeypatch.setattr("saq.email_archive.factory.get_email_archive_type", lambda: request.param)
+    monkeypatch.setattr(get_config().email_archive, "target", request.param.value)
     return request.param
 
 @pytest.mark.integration
