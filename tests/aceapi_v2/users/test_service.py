@@ -14,7 +14,13 @@ from saq.database.model import (
     User,
 )
 from aceapi_v2.auth.schemas import ApiAuthResult
-from aceapi_v2.auth.utils import API_AUTH_TYPE_CONFIG, API_AUTH_TYPE_USER
+from aceapi_v2.auth.utils import (
+    API_AUTH_TYPE_CONFIG,
+    API_AUTH_TYPE_USER,
+    API_CREDENTIAL_CONFIG_KEY,
+    API_CREDENTIAL_SESSION,
+    API_CREDENTIAL_USER_KEY,
+)
 from aceapi_v2.database import create_engine_for
 from aceapi_v2.users import service
 from aceapi_v2.users.schemas import ApiKeyScope, PermissionInput, UserUpdate
@@ -459,7 +465,8 @@ async def _make_analyst(session: AsyncSession, username: str) -> User:
 
 def _session_of(user: User) -> ApiAuthResult:
     """The credential a user's GUI session authenticates as."""
-    return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=user.username, auth_user_id=user.id)
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_USER, auth_name=user.username, auth_user_id=user.id, credential=API_CREDENTIAL_SESSION)
 
 
 async def _stored_scope(session: AsyncSession, key_id: int) -> list[tuple[str, str]]:
@@ -647,8 +654,11 @@ class TestSelfServiceApiKeys:
         owner = await _make_analyst(session, "svc_audit_owner")
         admin = await _make_user(session, "svc_audit_admin")
         by_admin_key = ApiAuthResult(
-            auth_type=API_AUTH_TYPE_USER, auth_name=admin.username, auth_user_id=admin.id, key_id=99, key_name="ops")
-        by_config_key = ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="automation", key_name="automation")
+            auth_type=API_AUTH_TYPE_USER, auth_name=admin.username, auth_user_id=admin.id, key_id=99, key_name="ops",
+            credential=API_CREDENTIAL_USER_KEY)
+        by_config_key = ApiAuthResult(
+            auth_type=API_AUTH_TYPE_CONFIG, auth_name="automation", key_name="automation",
+            credential=API_CREDENTIAL_CONFIG_KEY)
 
         key, plaintext = await service.create_user_api_key(
             session, owner.id, name="audited", inherit=False, scope=key_scope("alert:read"), actor=by_admin_key)

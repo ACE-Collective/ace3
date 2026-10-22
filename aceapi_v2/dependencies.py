@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.auth import (
     API_AUTH_TYPE_CONFIG,
     API_AUTH_TYPE_USER,
+    API_CREDENTIAL_SESSION,
     API_HEADER_NAME,
     ApiAuthResult,
     verify_api_key,
@@ -161,7 +162,7 @@ async def check_permission(session: AsyncSession, auth: ApiAuthResult, major: st
     The 403 says which half refused, the account's grants or the key's scope, so its reader knows
     whether they can fix it themselves or need an administrator (_refusal_detail)."""
 
-    if (major, minor) in SESSION_ONLY_PAIRS and (auth.auth_type == API_AUTH_TYPE_CONFIG or auth.key_id is not None):
+    if (major, minor) in SESSION_ONLY_PAIRS and auth.credential != API_CREDENTIAL_SESSION:
         logging.warning(
             f"api key '{auth.auth_name}' ({auth.auth_type}, key {auth.key_id}) can never hold "
             f"{major}.{minor}; only a GUI session can"
@@ -307,7 +308,7 @@ def require_self_service(auth_dependency: Callable | None = None, session_only: 
             raise HTTPException(
                 status_code=403, detail="this route acts on your own account, which no API key with a scope can do")
 
-        if session_only and auth.key_id is not None:
+        if session_only and auth.credential != API_CREDENTIAL_SESSION:
             logging.warning(
                 f"api key {auth.key_id} of '{auth.auth_name}' refused; this route needs a GUI session"
             )

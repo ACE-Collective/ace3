@@ -9,8 +9,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
-from aceapi_v2.auth import API_AUTH_TYPE_CONFIG, API_AUTH_TYPE_USER, ApiAuthResult
-from aceapi_v2.dependencies import check_permission
+from aceapi_v2.auth import (
+    API_AUTH_TYPE_CONFIG,
+    API_AUTH_TYPE_USER,
+    API_CREDENTIAL_CONFIG_KEY,
+    API_CREDENTIAL_SESSION,
+    API_CREDENTIAL_USER_KEY,
+    ApiAuthResult,
+)
+from aceapi_v2.dependencies import check_permission, require_self_service
 from aceapi_v2.users.service import create_user_api_key, list_user_api_keys
 from saq.configuration import get_config
 from saq.configuration.schema import ConfigApiKey
@@ -671,18 +678,24 @@ class TestSelfServiceApiKeyRoutes:
         assert [k.id for k in await list_user_api_keys(session, user.id) if k.name == "target"] == [own.id]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("credential", ["inheriting key", "*:* key", "user:* key", "config key"])
+    @pytest.mark.parametrize("credential", ["inheriting key", "*:* key", "user:* key", "config key", "not a session"])
     async def test_no_api_key_ever_holds_user_self(self, session: AsyncSession, caplog, credential):
         """Whatever the key's scope says, so it holds even on a route that asks for user:self but
-        forgets to ask for a GUI session too. Nothing else the key may do changes."""
+        forgets to ask for a GUI session too. Nothing else the key may do changes. "not a session"
+        is a user credential with no key id that is not a GUI session either, which a gate that
+        inferred a session from key_id would let through."""
         caplog.set_level(logging.WARNING)
         user, _ = await _make_analyst(session, "rtr_self_never")
         as_user = {"auth_type": API_AUTH_TYPE_USER, "auth_name": user.username, "auth_user_id": user.id}
+        as_user_key = {**as_user, "key_id": 1, "key_name": "k", "credential": API_CREDENTIAL_USER_KEY}
         key = {
-            "inheriting key": ApiAuthResult(**as_user, key_id=1, key_name="k"),
-            "*:* key": ApiAuthResult(**as_user, key_id=1, key_name="k", key_scope=[("*", "*")]),
-            "user:* key": ApiAuthResult(**as_user, key_id=1, key_name="k", key_scope=[("user", "*"), ("alert", "read")]),
-            "config key": ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="ops", key_name="ops", key_scope=[("*", "*")]),
+            "inheriting key": ApiAuthResult(**as_user_key),
+            "*:* key": ApiAuthResult(**as_user_key, key_scope=[("*", "*")]),
+            "user:* key": ApiAuthResult(**as_user_key, key_scope=[("user", "*"), ("alert", "read")]),
+            "config key": ApiAuthResult(
+                auth_type=API_AUTH_TYPE_CONFIG, auth_name="ops", key_name="ops", key_scope=[("*", "*")],
+                credential=API_CREDENTIAL_CONFIG_KEY),
+            "not a session": ApiAuthResult(**as_user),
         }[credential]
 
         with pytest.raises(HTTPException) as denied:
@@ -693,7 +706,23 @@ class TestSelfServiceApiKeyRoutes:
 
         await check_permission(session, key, "alert", "read")
         # the same user's GUI session does hold it
-        await check_permission(session, ApiAuthResult(**as_user), "user", "self")
+        await check_permission(session, ApiAuthResult(**as_user, credential=API_CREDENTIAL_SESSION), "user", "self")
+
+    @pytest.mark.asyncio
+    async def test_a_session_only_route_refuses_a_credential_that_is_not_a_session(self, caplog):
+        """A user credential with no key id is not thereby a GUI session; only the session passes."""
+        caplog.set_level(logging.WARNING)
+        gate = require_self_service(session_only=True)
+        as_user = {"auth_type": API_AUTH_TYPE_USER, "auth_name": "rtr_not_session", "auth_user_id": 1}
+
+        with pytest.raises(HTTPException) as denied:
+            await gate(auth=ApiAuthResult(**as_user))
+        assert denied.value.status_code == 403
+        assert denied.value.detail == "this route is only available in the GUI, never to an API key"
+        assert _warned(caplog, "this route needs a GUI session")
+
+        session_auth = ApiAuthResult(**as_user, credential=API_CREDENTIAL_SESSION)
+        assert await gate(auth=session_auth) is session_auth
 
     @pytest.mark.asyncio
     async def test_a_config_key_is_refused(self, _override_db_session, monkeypatch):
