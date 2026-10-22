@@ -1406,7 +1406,8 @@ pcap:
   # (about 1 kB a packet) must fit under sandbox.max_output_bytes
   max_field_packets: 50000
   max_extracted_files: 100
-  max_observables_per_type: 100
+  # per capture, counted across all its pcap nodes (hosts, DNS, TLS, HTTP, files, decryption)
+  max_observables_per_type: 50
   excluded_fqdn_suffixes:
     - .arpa
     - .local

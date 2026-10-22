@@ -56,9 +56,10 @@ sslkeylog.txt
 - Not added: multicast, broadcast, unspecified, link-local, loopback and reserved IPs; group
   (broadcast/multicast) and all-zero MACs; names ending in `excluded_fqdn_suffixes` (`.arpa`,
   `.local` by default).
-- Each node adds at most `max_observables_per_type` observables of one type and keeps at most
-  `max_table_rows` rows per table; the analysis details and its page say how many were left out.
-  The root-wide `maximum_observable_count` still applies on top of this.
+- One capture adds at most `max_observables_per_type` (50) observables of one type, counted across
+  all its nodes (hosts, DNS, TLS, HTTP, files, decryption), whichever adds them first. Each node
+  keeps at most `max_table_rows` rows per table. The analysis details and the page say how many
+  were left out. The root-wide `maximum_observable_count` still applies on top of this.
 - At most `max_extracted_files` files are carved out of one capture: the exported objects first, then
   the certificates with what is left, so a payload is never crowded out by a capture's handshakes.
   A file over the limit is still listed, with no observable.
@@ -174,7 +175,9 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   writes them when saving a capture taken with a key log, or `editcap --inject-secrets` adds them).
   tshark decrypts with them on its own, so the plaintext pass already sees inside TLS: the HTTPS
   URLs and files appear under PCAP HTTP and PCAP Files, not under PCAP TLS Decryption.
-  `read_embedded_secrets()` finds the blocks by reading only block headers, and the capture is
+  `read_embedded_secrets()` finds the blocks by reading only block headers, at most the first
+  1,000,000 of them (about a second; Wireshark writes the secrets before the packets they decrypt),
+  stopping when the engine does, and the capture is
   called out for the analyst: the pcap gets a tag per kind of secret (`pcap_embedded_tls_keys`,
   `pcap_embedded_ssh_keys`, `pcap_embedded_wireguard_keys`, ...), PCAP Analysis says
   "decryption keys embedded (TLS keys for N sessions)" and lists the secret types, and PCAP TLS
@@ -192,8 +195,11 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   JA4+ family is under the FoxIO license and not implemented.
 - No auto-crawl of certificate names: a certificate in a capture was only observed, not fetched, so
   the carved certificate files carry `DIRECTIVE_NO_CRAWL`. `x509_analyzer` still extracts their
-  CN/SAN FQDNs, SAN IPs, sha256 and the X509 detail tree, but does not add the `crawl` URLs that
-  would otherwise send every certificate name (every SAN, and CA certificates) to phishkit. The HTTP
+  CN FQDN, SAN IPs, sha256 and the X509 detail tree, but does not add the `crawl` URLs that
+  would otherwise send every certificate name (every SAN, and CA certificates) to phishkit. Of their
+  SAN names it adds only the first 10 as FQDN observables (`MAX_NO_CRAWL_SAN_FQDNS`), since a CDN
+  certificate can carry hundreds and every FQDN is resolved; all of them stay listed in the X509
+  analysis. The HTTP
   URLs actually seen in the capture are added normally; an analyst can still crawl any URL by hand.
 - No analysis caching (`cache_ttl` unset): `tls_keylog` changes another observable's analysis,
   which the cache cannot replay.

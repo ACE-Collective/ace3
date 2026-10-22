@@ -26,6 +26,11 @@ KEY_SAN_DNS_NAMES = 'san_dns_names'
 KEY_SHA256_HASH = 'sha256_hash'
 KEY_EXTENSIONS_TREE = 'extensions'
 
+# a certificate only observed in captured traffic (DIRECTIVE_NO_CRAWL) adds at most this many SAN
+# names as fqdn observables: a CDN certificate can carry hundreds, and a capture hundreds of
+# certificates, each name then resolved. Every name is still listed in the analysis.
+MAX_NO_CRAWL_SAN_FQDNS = 10
+
 
 class X509Analysis(Analysis):
     """Is this document an x509 certificate?"""
@@ -241,8 +246,11 @@ class X509Analyzer(AnalysisModule):
             if san_ip:
                 san_ip.display_type = "Certificate SAN IP Address"
 
-        for dns_name in x509.san_dns_names(cert):
+        no_crawl = _file.has_directive(DIRECTIVE_NO_CRAWL)
+        for index, dns_name in enumerate(x509.san_dns_names(cert)):
             analysis.add_san_dns_name(dns_name)
+            if no_crawl and index >= MAX_NO_CRAWL_SAN_FQDNS:
+                continue
             # Some certs have wildcards, make sure we submit the nearest FQDN (strip the wildcard)
             dns_name = x509.remove_wildcard(dns_name)
             san_fqdn = analysis.add_observable_by_spec(F_FQDN, dns_name)

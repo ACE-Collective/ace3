@@ -160,6 +160,7 @@ RE_IO_STAT_TOTAL = re.compile(r"^\|\s*[\d.]+\s*<>\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*(
 
 KEY_ERROR = "error"
 KEY_CLIENT_RANDOMS = "tls_client_randoms"
+KEY_CARVED_SHA256 = "carved_sha256"
 KEY_INDEX = "index"
 KEY_ADDED = "added"
 KEY_OMITTED = "omitted"
@@ -254,11 +255,19 @@ PCAPNG_SECRETS_TYPES = {
 }
 
 
-def read_embedded_secrets(path: str, max_tls_bytes: int) -> Optional[dict]:
+# each block header costs about a microsecond in python: a capture of tiny blocks must not hold
+# the worker, so the scan stops after this many (Wireshark writes the secrets before the packets
+# they decrypt, near the start of the file)
+EMBEDDED_SECRETS_MAX_BLOCKS = 1_000_000
+EMBEDDED_SECRETS_STOP_CHECK_BLOCKS = 10_000
+
+
+def read_embedded_secrets(path: str, max_tls_bytes: int, stopping: Callable[[], bool] = lambda: False) -> Optional[dict]:
     """The Decryption Secrets Blocks of a pcapng, which tshark decrypts with on its own. Returns
     {"types": {name: blocks}, "label_counts": {...}, "client_randoms": set} or None when there are
-    none. Only block headers are read (the rest is skipped by seeking), and only up to max_tls_bytes
-    of TLS secrets are parsed. The secrets themselves are not returned."""
+    none. Only block headers are read (the rest is skipped by seeking), at most
+    EMBEDDED_SECRETS_MAX_BLOCKS of them, and only up to max_tls_bytes of TLS secrets are parsed. The
+    secrets themselves are not returned. Raises SandboxCancelled once stopping() says so."""
     types: dict[str, int] = {}
     tls_lines: list[str] = []
     tls_bytes = 0
@@ -267,7 +276,15 @@ def read_embedded_secrets(path: str, max_tls_bytes: int) -> Optional[dict]:
             return None
         fp.seek(0)
         endian = "<"
+        blocks = 0
         while True:
+            blocks += 1
+            if blocks > EMBEDDED_SECRETS_MAX_BLOCKS:
+                logging.info("stopped looking for decryption secrets in pcap %s after %s blocks", path,
+                             EMBEDDED_SECRETS_MAX_BLOCKS, extra={"pcap_path": path})
+                break
+            if blocks % EMBEDDED_SECRETS_STOP_CHECK_BLOCKS == 0 and stopping():
+                raise SandboxCancelled(f"stopped reading pcap {path}: the analysis was stopped")
             block_start = fp.tell()
             header = fp.read(12)
             if len(header) < 12:
@@ -633,6 +650,8 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
         CATEGORY_TLS: list(tls.values()),
         # key logs are matched against every session, not only the ones the table keeps
         KEY_CLIENT_RANDOMS: sorted({s["client_random"] for s in tls.values() if s.get("client_random")}),
+        # and a later decryption knows every file this run carved or listed, not only the rows kept
+        KEY_CARVED_SHA256: sorted({o["sha256"] for o in objects} | {c["sha256"] for c in certificates}),
         CATEGORY_HTTP: list(http.values()),
         "hostnames": list(hostnames.values()),
         "objects": objects,
@@ -664,6 +683,7 @@ def merge_index(previous: Optional[dict], new: dict, max_rows: int) -> dict:
         return new
 
     merged = dict(new)
+    merged[KEY_CARVED_SHA256] = sorted(set(previous.get(KEY_CARVED_SHA256, [])) | set(new.get(KEY_CARVED_SHA256, [])))
     for key, row_key in INDEX_ROW_KEYS.items():
         old_rows = previous.get(key, [])
         new_rows = new.get(key, [])
@@ -782,6 +802,7 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
             try:
                 der = bytes.fromhex(der_hex)
             except ValueError:
+                # tshark printed something that is not a certificate's bytes; there is nothing to carve
                 continue
             sha256 = sha256_bytes(der)
             entry = {"sha256": sha256, "der_hex": der_hex, "path": None, **certificate_names(der)}
@@ -1066,14 +1087,17 @@ def _observable_key(observable: Observable) -> tuple[str, str]:
 
 def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: list[PcapObservable],
                          max_per_type: int) -> tuple[dict[str, int], dict[str, int]]:
-    """Adds the observables to the analysis, at most max_per_type of each type (counting the ones it
-    already has). Returns (added, omitted) counts by type."""
+    """Adds the observables to the analysis, at most max_per_type of each type for the whole capture:
+    the ones every pcap node of pcap_file already has count, so one capture never puts more than
+    max_per_type nodes of a type in the tree. Returns (added, omitted) counts by type."""
     added: dict[str, int] = {}
     omitted: dict[str, int] = {}
     present = {_observable_key(o) for o in analysis.observables}
     per_type: dict[str, int] = {}
-    for o in analysis.observables:
-        per_type[o.type] = per_type.get(o.type, 0) + 1
+    for node in pcap_file.all_analysis:
+        if isinstance(node, PCAP_ANALYSIS_TYPES):
+            for o in node.observables:
+                per_type[o.type] = per_type.get(o.type, 0) + 1
 
     for item in items:
         if item.key in present:
@@ -1273,7 +1297,7 @@ class PcapAnalyzer(AnalysisModule):
 
         try:
             index = dissect(config, path, f"{path}.pcap_objects", stopping=_stopping(self))
-            embedded = read_embedded_secrets(path, config.max_keylog_size)
+            embedded = read_embedded_secrets(path, config.max_keylog_size, stopping=_stopping(self))
         except SandboxCancelled as e:
             # no analysis yet, so the capture is dissected again when the work item is picked up again
             logging.info("%s", e, extra={"pcap_sha256": _file.sha256_hash})
@@ -1371,7 +1395,26 @@ class PcapCategoryAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         self.wait_for_analysis(_file, PcapAnalysis)
+        return self._add_category(_file, final=False)
+
+    def execute_final_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
+        # only reached when execute_analysis left the capture INCOMPLETE
+        if not os.path.isfile(_file.full_path) or not is_pcap_file(_file.full_path):
+            return AnalysisExecutionResult.COMPLETED
+        return self._add_category(_file, final=True)
+
+    def _add_category(self, _file: FileObservable, final: bool) -> AnalysisExecutionResult:
+        if not _file.get_analysis(PcapAnalysis):
+            # pcap_analyzer was stopped (the engine shutting down) or has not run in this pass yet,
+            # e.g. after a dependency on it failed when it stopped. INCOMPLETE records nothing, so this
+            # runs again in final analysis, or when the work item is picked up again, instead of
+            # recording that the capture has nothing in this category.
+            if not final or _stopping(self)():
+                return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
+
         pcap_analysis = _get_pcap_analysis(_file)
+        # the dissection failed: its error is on the PCAP Analysis node
         if pcap_analysis is None:
             return AnalysisExecutionResult.COMPLETED
 
@@ -1483,8 +1526,9 @@ def apply_keylogs(config: PcapConfig, pcap_file: FileObservable, pcap_analysis: 
         analysis.details["keylogs"] = all_keylogs
         return
 
-    known_sha256 = {o["sha256"] for o in plaintext_index.get("objects", [])}
-    known_sha256 |= {c["sha256"] for c in plaintext_index.get("certificates", [])}
+    # whatever the plaintext pass or an earlier decryption already found is not carved again
+    known_sha256 = set(plaintext_index.get(KEY_CARVED_SHA256, []))
+    known_sha256 |= set((analysis.details.get(KEY_INDEX) or {}).get(KEY_CARVED_SHA256, []))
     known_sha256 |= {o.sha256_hash for o in analysis.observables if isinstance(o, FileObservable)}
     # a SandboxCancelled passes through before the key logs are recorded as applied, so they are
     # applied again when the work item is picked up again
@@ -1887,3 +1931,6 @@ class PcapAnalysisPresenter(AnalysisPresenter):
 
 for _analysis_class in (PcapAnalysis, PcapCategoryAnalysis, PcapTlsDecryptionAnalysis, TlsKeylogAnalysis):
     register_analysis_presenter(_analysis_class, PcapAnalysisPresenter)
+
+# the analyses whose observables share one capture's max_observables_per_type
+PCAP_ANALYSIS_TYPES = (PcapAnalysis, PcapCategoryAnalysis, PcapTlsDecryptionAnalysis)
