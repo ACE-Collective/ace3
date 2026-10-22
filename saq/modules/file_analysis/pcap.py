@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import struct
 import time
 from dataclasses import dataclass
@@ -326,13 +327,25 @@ class PcapCategoryConfig(AnalysisModuleConfig):
     category: Literal["dns", "tls", "http", "files"] = Field(..., description="which part of the capture index this instance turns into observables")
 
 
-def _run_tshark(config: PcapConfig, pcap_path: str, workdir: str, args: list[str]) -> str:
+class _StopWhen:
+    """The cancel event run_sandboxed polls, set when stopping() says so: the engine shutting down
+    (or the analysis being cancelled) stops a run in the middle, not only before the next one."""
+
+    def __init__(self, stopping: Callable[[], bool]):
+        self.is_set = stopping
+
+
+def _run_tshark(config: PcapConfig, pcap_path: str, workdir: str, args: list[str],
+                stopping: Callable[[], bool]) -> str:
     """Runs tshark on <workdir>/input (the copy of pcap_path) in the sandbox and returns its stdout."""
-    return _run_tool(config, pcap_path, workdir, [config.tshark_path, "-n", "-r", "input", *args], config.tshark_timeout)
+    return _run_tool(config, pcap_path, workdir, [config.tshark_path, "-n", "-r", "input", *args], config.tshark_timeout,
+                     stopping)
 
 
-def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[str], timeout_seconds: int) -> str:
-    """Runs a Wireshark tool on <workdir>/input (the copy of pcap_path) in the sandbox and returns its stdout."""
+def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[str], timeout_seconds: int,
+              stopping: Callable[[], bool]) -> str:
+    """Runs a Wireshark tool on <workdir>/input (the copy of pcap_path) in the sandbox and returns its
+    stdout. Raises SandboxCancelled once stopping() says so, killing the tool if it is running."""
     if not landlock_available():
         raise PcapNodeError("the Landlock sandbox is not available on this node; tshark is never run unsandboxed")
 
@@ -342,7 +355,11 @@ def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[st
     # never os.environ: Landlock does not filter the environment and ACE's carries secrets
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": workdir}
     try:
-        result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes)
+        result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes,
+                               cancel=_StopWhen(stopping))
+    except SandboxCancelled as e:
+        # a RuntimeError too, but not the capture's failure: nothing is recorded, so it runs again
+        raise SandboxCancelled(f"stopped {tool} on pcap {pcap_path}: the analysis was stopped") from e
     except RuntimeError as e:
         raise PcapError(f"{tool} failed: {e}") from e
 
@@ -706,6 +723,16 @@ def describe_certificate(entry: dict) -> str:
     return text
 
 
+def _real_directory(path: str) -> bool:
+    """True if path is a directory itself, not a symlink to one. tshark may create symlinks in its
+    workdir, and following one would let it point ACE, which is not sandboxed, anywhere."""
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        # tshark exported nothing there
+        return False
+
+
 def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], max_files: int,
                           known_sha256: set[str]) -> tuple[list[dict], list[dict]]:
     """Moves the objects tshark exported and the certificates seen in the handshakes out of the
@@ -718,22 +745,26 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
     base_dir = os.path.dirname(target_dir)
 
     # what crossed the wire first: a payload matters more than the certificates of the handshakes
+    # everything in the workdir is tshark's, so nothing is followed out of it: no symlinked directory
+    # and no file that is a symlink or a hard link to one elsewhere. The launcher killed whatever
+    # tshark started before run_sandboxed returned, so nothing can swap a path after it is checked.
     seen_sha256: set[str] = set()
     objects_dir = os.path.join(workdir, "objects")
     for protocol in EXPORT_OBJECT_PROTOCOLS:
         protocol_dir = os.path.join(objects_dir, protocol)
-        if not os.path.isdir(protocol_dir):
+        if not _real_directory(objects_dir) or not _real_directory(protocol_dir):
             continue
         for file_name in sorted(os.listdir(protocol_dir)):
             source = os.path.join(protocol_dir, file_name)
-            if not os.path.isfile(source) or os.path.islink(source):
+            source_stat = os.lstat(source)
+            if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1:
                 continue
             sha256 = sha256_file(source)
             if sha256 in known_sha256 or sha256 in seen_sha256:
                 continue
             seen_sha256.add(sha256)
             entry = {"protocol": protocol, "file_name": file_name, "sha256": sha256,
-                     "size": os.path.getsize(source), "path": None}
+                     "size": source_stat.st_size, "path": None}
             if remaining > 0:
                 target = _unique_path(os.path.join(target_dir, protocol, file_name))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -799,7 +830,7 @@ def dissect(config: PcapConfig, pcap_path: str, target_dir: str, keylog_lines: O
             known_sha256: Optional[set[str]] = None, statistics: bool = True,
             stopping: Callable[[], bool] = lambda: False) -> dict:
     """Runs tshark over the capture and returns its index. Carved files land in target_dir. Raises
-    SandboxCancelled, before the next run, once stopping() says the engine is shutting down."""
+    SandboxCancelled once stopping() says the engine is shutting down, stopping a run in progress."""
 
     def _check_stopping():
         if stopping():
@@ -814,21 +845,29 @@ def dissect(config: PcapConfig, pcap_path: str, target_dir: str, keylog_lines: O
         os.mkdir(os.path.join(workdir, "objects"))
 
         index_stats = {}
+        statistics_error = None
         capture = None
         if statistics:
             capinfos = os.path.join(os.path.dirname(config.tshark_path), "capinfos")
             _check_stopping()
             try:
                 capture = parse_capinfos(_run_tool(config, pcap_path, workdir, [capinfos, "-M", "-S", "input"],
-                                                   CAPINFOS_TIMEOUT_SECONDS))
+                                                   CAPINFOS_TIMEOUT_SECONDS, stopping))
             except PcapError as e:
                 # only the page header needs it; the dissection does not
                 logging.info("no capture metadata for pcap %s: %s", pcap_path, e)
             _check_stopping()
-            output = _run_tshark(config, pcap_path, workdir, ["-q", "-z", "io,stat,0", "-z", "endpoints,eth", "-z", "endpoints,ip",
-                                                              "-z", "endpoints,ipv6", "-z", "conv,tcp", "-z", "conv,udp"])
-            index_stats = _parse_statistics(output, config.max_table_rows)
-            if index_stats["packets"] > config.max_field_packets:
+            try:
+                output = _run_tshark(config, pcap_path, workdir, ["-q", "-z", "io,stat,0", "-z", "endpoints,eth",
+                                                                  "-z", "endpoints,ip", "-z", "endpoints,ipv6",
+                                                                  "-z", "conv,tcp", "-z", "conv,udp"], stopping)
+                index_stats = _parse_statistics(output, config.max_table_rows)
+            except PcapError as e:
+                # a line per conversation can outgrow the output cap (a scan, heavy DNS); only the
+                # endpoint and flow tables need it, so the field pass still runs
+                statistics_error = str(e)
+                logging.info("no packet statistics for pcap %s: %s", pcap_path, e, extra={"pcap_path": pcap_path})
+            if index_stats.get("packets", 0) > config.max_field_packets:
                 logging.info("pcap %s has %s packets: DNS, TLS and HTTP are read from the first %s", pcap_path,
                              index_stats["packets"], config.max_field_packets, extra={"pcap_path": pcap_path})
 
@@ -846,7 +885,7 @@ def dissect(config: PcapConfig, pcap_path: str, target_dir: str, keylog_lines: O
             args.extend(["-o", "tls.keylog_file:keylog"])
 
         _check_stopping()
-        packets = _parse_fields(_run_tshark(config, pcap_path, workdir, args))
+        packets = _parse_fields(_run_tshark(config, pcap_path, workdir, args, stopping))
         objects, certificates = _collect_carved_files(workdir, target_dir, packets, config.max_extracted_files,
                                                       known_sha256 or set())
 
@@ -855,6 +894,7 @@ def dissect(config: PcapConfig, pcap_path: str, target_dir: str, keylog_lines: O
     _link_http_objects(index)
     if statistics:
         index["statistics"] = index_stats
+        index["statistics_error"] = statistics_error
         index["capture"] = capture
     return index
 
@@ -1101,6 +1141,11 @@ def _time_left(module: AnalysisModule, started: float) -> float:
     return left
 
 
+def _stopping(module: AnalysisModule) -> Callable[[], bool]:
+    """When a pcap module's tshark run should stop: the engine is shutting down, or the analysis was cancelled."""
+    return lambda: module.shutdown or module.is_canceled_analysis()
+
+
 def _run_seconds(config: PcapConfig) -> int:
     """The most one tshark run can take, with the work around it."""
     return config.tshark_timeout + RUN_MARGIN_SECONDS
@@ -1184,8 +1229,11 @@ class PcapAnalysis(Analysis):
             return None
 
         statistics = self.index.get("statistics", {})
-        summary = (f"PCAP Analysis: {statistics.get('packets', 0)} packets, {statistics.get('flows_total', 0)} flows, "
-                   f"{self.index.get(f'{CATEGORY_TLS}_total', len(self.index.get(CATEGORY_TLS, [])))} TLS sessions")
+        if self.index.get("statistics_error"):
+            summary = f"PCAP Analysis: no packet statistics ({self.index['statistics_error']}), "
+        else:
+            summary = f"PCAP Analysis: {statistics.get('packets', 0)} packets, {statistics.get('flows_total', 0)} flows, "
+        summary += f"{self.index.get(f'{CATEGORY_TLS}_total', len(self.index.get(CATEGORY_TLS, [])))} TLS sessions"
         embedded = self.index.get("embedded_secrets")
         if embedded:
             summary += f", decryption keys embedded ({_describe_embedded(embedded)})"
@@ -1226,7 +1274,7 @@ class PcapAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         try:
-            index = dissect(config, path, f"{path}.pcap_objects", stopping=lambda: self.shutdown)
+            index = dissect(config, path, f"{path}.pcap_objects", stopping=_stopping(self))
             embedded = read_embedded_secrets(path, config.max_keylog_size)
         except SandboxCancelled as e:
             # no analysis yet, so the capture is dissected again when the work item is picked up again
@@ -1512,7 +1560,7 @@ class PcapTlsDecryptor(AnalysisModule):
 
         keylogs = find_keylog_observables(self.get_root(), config.max_keylog_size)
         try:
-            apply_keylogs(config, _file, pcap_analysis, analysis, keylogs, stopping=lambda: self.shutdown)
+            apply_keylogs(config, _file, pcap_analysis, analysis, keylogs, stopping=_stopping(self))
         except SandboxCancelled as e:
             # without the analysis this runs again when the work item is picked up again
             _file.delete_analysis(analysis)
@@ -1602,7 +1650,7 @@ class TlsKeylogAnalyzer(AnalysisModule):
                          extra={"keylog_sha256": _file.sha256_hash, "pcap_sha256": pcap_file.sha256_hash})
             try:
                 apply_keylogs(config, pcap_file, pcap_analysis, decryption, find_keylog_observables(root, config.max_keylog_size),
-                              stopping=lambda: self.shutdown)
+                              stopping=_stopping(self))
             except SandboxCancelled as e:
                 # without this analysis the key log is applied again, to the pcaps it was not applied
                 # to yet, when the work item is picked up again
@@ -1778,6 +1826,14 @@ class PcapAnalysisPresenter(AnalysisPresenter):
     @property
     def capture_summary(self) -> list[str]:
         return capture_summary(self.capture)
+
+    @property
+    def notice(self) -> Optional[str]:
+        """What the page is missing although the analysis did not fail."""
+        if isinstance(self._analysis, PcapAnalysis) and (self._analysis.index or {}).get("statistics_error"):
+            return (f"No endpoint or flow tables: the packet statistics pass failed "
+                    f"({self._analysis.index['statistics_error']}).")
+        return None
 
     @property
     def tables(self) -> list[dict]:

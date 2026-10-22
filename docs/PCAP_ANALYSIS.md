@@ -122,20 +122,33 @@ tshark's dissectors parse hostile bytes, so tshark only ever runs through
 link, so tshark cannot change the evidence), nothing
 of ACE readable, no network (`sandbox.allowed_tcp_ports` stays empty), rlimits, a `tshark_timeout`
 and an output cap. On a node without Landlock the module refuses to run tshark and records an
-error rather than running it unsandboxed. A failure is recorded in the analysis `error` and shown
+error rather than running it unsandboxed.
+
+Whatever tshark leaves in its working directory is read back as hostile, since ACE moves the carved
+files out unsandboxed and tshark may create symlinks there. A carved file is taken only from a
+directory that is itself a directory (`objects/`, `objects/<protocol>`), never a symlink to one,
+and only if it is a regular file with a single link (not a symlink, not a hard link to a file
+elsewhere). The launcher has killed everything tshark started before ACE looks, so nothing can
+change a path after it is checked.
+
+A failure is recorded in the analysis `error` and shown
 in its summary, for the analyst:
 
 - A failure of the capture itself (tshark cannot read it, a timeout, too much output) is the
-  analyst's to see and is logged at INFO only.
+  analyst's to see and is logged at INFO only. A failed statistics pass (its line per conversation
+  can outgrow the output cap on a scan or heavy DNS) loses only the endpoint and flow tables: the
+  field pass still runs, and the page and summary say the statistics are missing.
 - A node that cannot dissect any capture (no Landlock, or a tshark the sandbox cannot start: a
   missing binary, a wrong `tshark_path`) raises `PcapNodeError`, which is logged at ERROR with an
   error report through `log_loop_exception`.
 - Anything unexpected (a bug) is left to the engine, which writes a crash report holding the
   capture (`docs/CRASH_REPORTS.md`).
 
-A capture cut short mid-packet is dissected as far as it goes. When the engine shuts down, the
-module stops before its next tshark run and records nothing, so the capture is dissected (or the
-key log applied) again when the work item is picked up again.
+A capture cut short mid-packet is dissected as far as it goes. When the engine shuts down (or the
+analysis is cancelled), the module stops the tshark run in progress through the sandbox's cancel
+and records nothing, so the capture is dissected (or the key log applied) again when the work item
+is picked up again, rather than the worker being killed at the shutdown deadline and the capture
+recorded as failed.
 
 ## TLS decryption
 

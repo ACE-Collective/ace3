@@ -1,8 +1,10 @@
 import datetime
+import inspect
 import logging
 import os
 import shutil
 import struct
+import time
 import zipfile
 
 import pytest
@@ -70,7 +72,9 @@ from saq.modules.file_analysis.pcap import (
     is_keylog_file,
     read_keylog,
 )
-from saq.sandbox.runner import SandboxResult
+from saq.sandbox import launcher
+from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
+from saq.sandbox.runner import SandboxCancelled, SandboxResult
 from saq.util.hashing import sha256_bytes
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
@@ -142,6 +146,10 @@ def _config(name: str = ANALYSIS_MODULE_PCAP_ANALYZER, **overrides):
 def _pcap_config(**overrides):
     config = get_config().pcap
     return config.model_copy(update=overrides) if overrides else config
+
+
+def _never() -> bool:
+    return False
 
 
 def _new_root():
@@ -512,7 +520,7 @@ def test_run_tshark_refuses_without_landlock(monkeypatch, tmp_path):
     monkeypatch.setattr(pcap, "landlock_available", lambda: False)
     # not a PcapError: a node that cannot dissect anything is an operator's problem, logged at ERROR
     with pytest.raises(pcap.PcapNodeError, match="Landlock"):
-        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [])
+        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
 
 
 @pytest.mark.unit
@@ -520,7 +528,7 @@ def test_run_tshark_failure_without_output(monkeypatch, tmp_path):
     monkeypatch.setattr(pcap, "landlock_available", lambda: True)
     monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(2, "", "file is damaged"))
     with pytest.raises(PcapError, match="file is damaged"):
-        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [])
+        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
 
 
 @pytest.mark.unit
@@ -531,7 +539,7 @@ def test_run_tshark_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(pcap, "landlock_available", lambda: True)
     monkeypatch.setattr(pcap, "run_sandboxed", _timeout)
     with pytest.raises(PcapError, match="timed out"):
-        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [])
+        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
 
 
 @pytest.mark.unit
@@ -539,7 +547,7 @@ def test_run_tshark_keeps_output_of_a_truncated_capture(monkeypatch, tmp_path, c
     monkeypatch.setattr(pcap, "landlock_available", lambda: True)
     monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(2, "[]", "cut short"))
     with caplog.at_level(logging.INFO):
-        assert pcap._run_tshark(_pcap_config(), "/storage/capture.pcap", str(tmp_path), []) == "[]"
+        assert pcap._run_tshark(_pcap_config(), "/storage/capture.pcap", str(tmp_path), [], _never) == "[]"
     (record,) = [r for r in caplog.records if "cut short" in r.getMessage()]
     assert "/storage/capture.pcap" in record.getMessage()
     assert record.pcap_path == "/storage/capture.pcap"
@@ -1073,7 +1081,7 @@ def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
     inodes = []
     timeouts = {}
 
-    def _fake_tool(config, pcap_path, workdir, command, timeout_seconds):
+    def _fake_tool(config, pcap_path, workdir, command, timeout_seconds, stopping):
         assert pcap_path == str(evidence)
         inodes.append(os.stat(os.path.join(workdir, "input")).st_ino)
         tool = os.path.basename(command[0])
@@ -1461,7 +1469,7 @@ def test_display_type_never_replaces_another_modules():
 
 @pytest.mark.unit
 def test_capture_metadata_is_optional(monkeypatch, tmp_path, caplog):
-    def _no_capinfos(config, pcap_path, workdir, command, timeout_seconds):
+    def _no_capinfos(config, pcap_path, workdir, command, timeout_seconds, stopping):
         if os.path.basename(command[0]) == "capinfos":
             raise PcapError("capinfos exited with 2: damaged")
         return "" if "-T" in command else STATISTICS_OUTPUT
@@ -1928,3 +1936,104 @@ def test_keylog_analyzer_records_nothing_when_the_engine_stops(monkeypatch):
     # the key log is applied again when the work item is picked up again
     assert keylog.get_analysis(TlsKeylogAnalysis) is None
     assert decryption.details["keylogs"] == []
+
+
+def _carving_workdir(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "secret.txt").write_bytes(b"not tshark's to take")
+    return workdir, victim
+
+
+@pytest.mark.unit
+def test_carving_never_follows_a_symlinked_directory(tmp_path):
+    # tshark may create symlinks in its workdir; ACE moves the carved files out unsandboxed
+    workdir, victim = _carving_workdir(tmp_path)
+    (workdir / "objects").mkdir()
+    (workdir / "objects" / "http").symlink_to(victim)
+    objects, _ = pcap._collect_carved_files(str(workdir), str(tmp_path / "out"), [], max_files=10, known_sha256=set())
+    assert objects == []
+    assert (victim / "secret.txt").read_bytes() == b"not tshark's to take"
+
+    # the objects directory itself replaced by a link
+    workdir, victim = _carving_workdir(tmp_path / "second")
+    (victim / "http").mkdir()
+    (victim / "http" / "secret.txt").write_bytes(b"not tshark's to take")
+    (workdir / "objects").symlink_to(victim)
+    objects, _ = pcap._collect_carved_files(str(workdir), str(tmp_path / "out2"), [], max_files=10, known_sha256=set())
+    assert objects == []
+    assert (victim / "http" / "secret.txt").exists()
+
+
+@pytest.mark.unit
+def test_carving_never_takes_a_linked_file(tmp_path):
+    workdir, victim = _carving_workdir(tmp_path)
+    http = workdir / "objects" / "http"
+    http.mkdir(parents=True)
+    (http / "symlinked.txt").symlink_to(victim / "secret.txt")
+    os.link(victim / "secret.txt", http / "hardlinked.txt")
+    (http / "carved.txt").write_bytes(b"carved")
+    objects, _ = pcap._collect_carved_files(str(workdir), str(tmp_path / "out"), [], max_files=10, known_sha256=set())
+    assert [o["file_name"] for o in objects] == ["carved.txt"]
+    assert (victim / "secret.txt").read_bytes() == b"not tshark's to take"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stderr,error", [
+    # the launcher could not set the sandbox up: no capture can be dissected on this node
+    ("sandbox: cannot become a child subreaper: [Errno 1] Operation not permitted", pcap.PcapNodeError),
+    # the launcher's verdict on a run that did start: this capture's problem
+    ("sandbox: the command started more than 64 processes", PcapError),
+    ("sandbox: the command ran past its deadline", PcapError),
+])
+def test_launcher_failure_is_told_from_a_capture_failure(monkeypatch, tmp_path, stderr, error):
+    monkeypatch.setattr(pcap, "landlock_available", lambda: True)
+    monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(EXIT_SANDBOX_FAILURE, "", stderr))
+    with pytest.raises(error) as raised:
+        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
+    assert type(raised.value) is error
+
+
+@pytest.mark.unit
+def test_launcher_still_says_what_its_run_verdicts_are():
+    # _run_tool tells a launcher verdict from a setup failure by the launcher's own wording
+    source = inspect.getsource(launcher)
+    assert all(verdict in source for verdict in pcap.LAUNCHER_RUN_VERDICTS)
+
+
+@pytest.mark.integration
+def test_a_running_tool_stops_when_the_engine_stops(tmp_path):
+    started = time.monotonic()
+    with pytest.raises(SandboxCancelled, match="the analysis was stopped"):
+        pcap._run_tool(_pcap_config(), "capture.pcap", str(tmp_path), ["/usr/bin/sleep", "60"], 120,
+                       lambda: time.monotonic() - started > 1)
+    # stopped in the middle of the run, not at its timeout
+    assert time.monotonic() - started < 30
+
+
+@pytest.mark.integration
+def test_a_failed_statistics_pass_keeps_the_rest(monkeypatch, caplog):
+    run_tool = pcap._run_tool
+
+    def _statistics_over_the_cap(config, pcap_path, workdir, command, timeout_seconds, stopping):
+        if "io,stat,0" in command:
+            raise PcapError("tshark failed: command wrote more than 67108864 bytes of output")
+        return run_tool(config, pcap_path, workdir, command, timeout_seconds, stopping)
+
+    monkeypatch.setattr(pcap, "_run_tool", _statistics_over_the_cap)
+    root = _new_root()
+    observable = root.add_file_observable(NETWORK_PCAP)
+    with caplog.at_level(logging.INFO):
+        assert _adapter(PcapAnalyzer, root).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    core = observable.get_analysis(PcapAnalysis)
+    assert core.error is None
+    # the field pass still ran
+    assert {r["name"] for r in core.index[CATEGORY_DNS]} >= {"www.pcap-dns.example"}
+    assert core.index["capture"]["packets"] == 5
+    assert core.generate_summary().startswith("PCAP Analysis: no packet statistics (tshark failed: command wrote more")
+    assert "No endpoint or flow tables" in PcapAnalysisPresenter(core).notice
+    (record,) = [r for r in caplog.records if "no packet statistics for pcap" in r.getMessage()]
+    assert record.levelno == logging.INFO

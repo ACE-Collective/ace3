@@ -3,6 +3,9 @@
 {% if details.error %}
 <div class="alert alert-danger">{{ details.error }}</div>
 {% endif %}
+{% if analysis_presenter.notice %}
+<div class="alert alert-warning">{{ analysis_presenter.notice }}</div>
+{% endif %}
 {% if details.omitted %}
 <div class="alert alert-warning">
     Not added (over the limit or invalid):
