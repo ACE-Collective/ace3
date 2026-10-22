@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, selectinload, undefer
 
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
@@ -424,7 +424,8 @@ def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
 #
 
 def get_detail(run_id: str) -> RunDetail:
-    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))).one_or_none()
+    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))
+                           .options(undefer(SVSRun.launcher_output))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 

@@ -2171,8 +2171,9 @@ class SVSRun(Base):
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # what the test printed (stdout and stderr), as executed reported it, at most
-    # saq.svs.runs.MAX_OUTPUT_BYTES
-    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    # saq.svs.runs.MAX_OUTPUT_BYTES; deferred, since only the run's detail reads it and the
+    # listing and attribution load whole runs
+    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

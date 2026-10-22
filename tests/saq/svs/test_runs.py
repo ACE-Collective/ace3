@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from saq.configuration.config import get_config
 from saq.constants import ENV_ACE_IS_PRIMARY_NODE
@@ -413,16 +413,21 @@ def test_executed_records_a_success():
         "call": "executed", "outcome": "recorded", "payload": {"exit_code": 0, "error": None}}
 
 
-def test_executed_keeps_what_the_test_printed():
+def test_executed_keeps_what_the_test_printed(caplog):
     run = register(_registration(), LAUNCHER)
     start(run.uuid, LAUNCHER)
+    caplog.set_level(logging.INFO)
     executed(run.uuid, LAUNCHER, 1, output="Executing test: T1059.001-1\nAccess is denied.\n", now=T0)
 
     run = _state(run.uuid)
+    # loading a run doesn't load its output, only reading it does
+    assert "launcher_output" in inspect(run).unloaded
     assert (run.state, run.launcher_output) == (RunState.ERROR, "Executing test: T1059.001-1\nAccess is denied.\n")
-    # the event log says how much, not what
+    # the event log and the log record say how much, not what
     assert json.loads(_events(run.uuid)[-1].details)["payload"] == {
         "exit_code": 1, "error": None, "output_bytes": 46, "output_truncated": False}
+    (record,) = [r for r in caplog.records if getattr(r, "call", None) == "executed"]
+    assert (record.svs_run, record.output_bytes, record.output_truncated) == (run.uuid, 46, False)
 
 
 def test_long_output_keeps_its_start_and_its_end():
@@ -432,6 +437,11 @@ def test_long_output_keeps_its_start_and_its_end():
     assert len(kept.encode("utf-8")) <= runs.MAX_OUTPUT_BYTES
     assert kept.startswith("a" * 1000) and kept.endswith("z" * 1000 + "the error")
     assert re.search(r"\[\.\.\. svs: \d+ bytes of output left out \.\.\.\]", kept)
+
+    # a cut inside a multibyte character drops that character: both cuts split a 3-byte "€"
+    kept, size, truncated = runs.truncate_output("€" * 30_000)
+    assert truncated and size == 90_000 and len(kept.encode("utf-8")) <= runs.MAX_OUTPUT_BYTES
+    assert kept.startswith("€") and kept.endswith("€")
 
     # whole when it fits, and only valid text is kept
     assert runs.truncate_output("ok\n") == ("ok\n", 3, False)
