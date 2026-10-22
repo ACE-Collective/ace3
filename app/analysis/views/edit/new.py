@@ -78,7 +78,6 @@ ORDER BY
     tool_instance = get_config().global_settings.instance_name
     alert_type = ANALYSIS_TYPE_MANUAL
     description = request.form.get('new_alert_description', 'Manual Alert')
-    is_local = request.form.get('is_local', None)
     queue = request.form.get('new_alert_queue', 'default')
     node_data = request.form.get('target_node_data', f'{available_nodes[0][0]},{available_nodes[0][2]},{available_nodes[0][3]}').split(',')
     node_id = node_data[0]
@@ -152,32 +151,24 @@ ORDER BY
                 observable_files = []
 
                 if o_type == F_FILE:
-                    if is_local:
-                        local_path = request.form.get(f'observables_values_{index}')
-                        #observable['value'] = os.path.basename(local_path)
-                        observable["value"] = sha256_file(local_path)
-                        observable["file_path"] = os.path.basename(local_path)
-                        observable_files.append((observable['value'], open(local_path, 'rb')))
+                    upload_file = request.files.get(f'observables_values_{index}', None)
+                    if upload_file:
+                        fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))
+                        os.close(fp)
 
-                    else:
-                        upload_file = request.files.get(f'observables_values_{index}', None)
-                        if upload_file:
-                            fp, save_path = tempfile.mkstemp(suffix='.upload', dir=os.path.join(get_temp_dir()))
-                            os.close(fp)
+                        temp_file_paths.append(save_path)
 
-                            temp_file_paths.append(save_path)
+                        try:
+                            upload_file.save(save_path)
+                        except Exception as e:
+                            logging.exception(f"unable to save {save_path}: {e}")
+                            flash(f"unable to save {save_path}: {e}")
+                            return redirect(url_for('analysis.manage'))
 
-                            try:
-                                upload_file.save(save_path)
-                            except Exception as e:
-                                logging.exception(f"unable to save {save_path}: {e}")
-                                flash(f"unable to save {save_path}: {e}")
-                                return redirect(url_for('analysis.manage'))
+                        observable_files.append((upload_file.filename, open(save_path, 'rb')))
 
-                            observable_files.append((upload_file.filename, open(save_path, 'rb')))
-
-                            observable['value'] = sha256_file(save_path)
-                            observable['file_path'] = upload_file.filename
+                        observable['value'] = sha256_file(save_path)
+                        observable['file_path'] = upload_file.filename
 
                 # multi fields add multiple observables of the same type
                 # (only text observables can be "multi"; they never carry files)
