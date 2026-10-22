@@ -19,6 +19,10 @@ class ApiAuthResult:
     # of (major, minor) patterns the request must also match, intersected with the owner's
     # permissions for a user key and evaluated alone for a config key.
     key_scope: list[tuple[str, str]] | None = None
+    # what was presented: API_CREDENTIAL_SESSION, _USER_KEY or _CONFIG_KEY (aceapi_v2.auth.utils).
+    # auth_type says whose permissions apply, and a session and a user key share it, so a check
+    # that must tell a GUI session from a key tests this rather than inferring it from key_id.
+    credential: str | None = None
 
     def __bool__(self) -> bool:
         # Empty sentinel (returned for unmatched credentials) must be falsy so
