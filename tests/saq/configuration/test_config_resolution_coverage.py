@@ -148,10 +148,17 @@ def test_every_analysis_module_config_is_found_by_its_module_path(resolved_confi
     failures = []
 
     for config in resolved_config.analysis_modules:
+        module_class = getattr(importlib.import_module(config.python_module), config.python_class)
         if not config.enabled or config.name in MODULES_REQUIRING_CREDENTIALS:
+            # these cannot be constructed here, but the lookup still probes them, so reading
+            # the property from an uninitialized instance must at least work
+            try:
+                module_class.__new__(module_class).generated_analysis_type
+            except Exception as e:
+                failures.append(f"{config.name}: generated_analysis_type needs __init__: {e!r}")
             continue
 
-        module = getattr(importlib.import_module(config.python_module), config.python_class)(config)
+        module = module_class(config)
         if module.generated_analysis_type is None:
             continue
 

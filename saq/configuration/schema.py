@@ -1278,6 +1278,7 @@ class ACEConfig(BaseModel):
         return self.get_analysis_module_config(name)
 
     def _find_analysis_module_config_name(self, module_path: str) -> Optional[str]:
+        # local: saq.analysis imports saq.configuration, so a module-level import is circular
         from saq.analysis.module_path import SPLIT_MODULE_PATH
         try:
             module_name, class_name, instance = SPLIT_MODULE_PATH(module_path)
