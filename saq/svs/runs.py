@@ -77,6 +77,7 @@ CALL_REGISTER = "register"
 CALL_VALIDATE = "validate"
 CALL_START = "start"
 CALL_EXECUTED = "executed"
+CALL_CLEANUP = "cleanup"
 CALL_CANCEL = "cancel"
 
 # the outcome of a registration or start refused because another run holds a target's host
@@ -692,6 +693,26 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     if failed:
         log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
     _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code)
+    return run
+
+
+def cleanup(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
+    """Records, once, that the test's cleanup begins now on a Started run: detections whose event
+    time is at or after it are the cleanup's, still the run's alerts but left out of what it
+    teaches (docs/SVS_RUNS.md, *Cleanup*). Raises UnknownRun, RunStateConflict."""
+    now = now or datetime.now()
+    run = get_run(run_uuid)
+    if run.state != RunState.STARTED or run.cleanup_at is not None or get_db().execute(
+            update(SVSRun)
+            .where(SVSRun.id == run.id, SVSRun.state == RunState.STARTED.value, SVSRun.cleanup_at.is_(None))
+            .values(cleanup_at=now)
+            .execution_options(synchronize_session=False)).rowcount != 1:
+        raise _conflict(run, CALL_CLEANUP, caller, {"cleanup_at": run.cleanup_at.isoformat()} if run.cleanup_at else None)
+
+    run.cleanup_at = now
+    _launcher_call(run, CALL_CLEANUP, caller, "recorded", {"cleanup_at": now.isoformat()}, now=now)
+    get_db().commit()
+    _log_call(run, CALL_CLEANUP, run.launcher, "recorded", caller, cleanup_at=now.isoformat())
     return run
 
 

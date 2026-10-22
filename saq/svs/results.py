@@ -8,6 +8,9 @@ Each signature that fired is, in this order of precedence:
 - rejected: decided, for the run's platform, not to be what the test is about;
 - candidate: nobody has decided about it yet.
 
+A signature that fired only in the test's cleanup (docs/SVS_RUNS.md, *Cleanup*) is cleanup, unless
+it is expected, when it is missing: it is neither a hit nor a candidate.
+
 Each expected signature that did not fire (and is not ignored) is missing, or possibly suppressed
 when it is a hunt with a suppression period and the hunt alerted within that period before the
 run's window closed, on an alert not attributed to the run [ART-8]. For a hunt that groups or
@@ -24,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import Integer, case, cast, func, or_, select, update
+from sqlalchemy import Integer, and_, case, cast, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.database.model import (
@@ -86,6 +89,8 @@ class Fired:
     alert_count: int
     late_only: bool
     context_only: bool
+    # every attribution of it is the test's cleanup's: it neither hits nor is a candidate
+    cleanup: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,19 +138,35 @@ class ComputedResult:
 # reading
 #
 
+def cleanup_condition():
+    """An attribution of its run's cleanup: its event time is at or after the run's cleanup_at
+    (docs/SVS_RUNS.md, *Cleanup*). Needs svs_runs joined."""
+    return and_(SVSRun.cleanup_at.is_not(None), SVSAttribution.event_time.is_not(None),
+                SVSAttribution.event_time >= SVSRun.cleanup_at)
+
+
 def fired_signatures(session, run_id: int) -> dict[str, Fired]:
-    """The signatures the run's attributions that hold carry, but those a result never counts."""
+    """The signatures the run's attributions that hold carry, but those a result never counts. A
+    signature the test fired outside its cleanup is counted by those attributions alone."""
+    is_cleanup = case((cleanup_condition(), 1), else_=0)
     statement = (
         select(SVSAttribution.signature_uuid,
+               is_cleanup,
                func.max(SVSAttribution.signature_family),
                func.count(SVSAttribution.alert_uuid.distinct()),
                func.min(cast(SVSAttribution.late, Integer)),
                func.min(case((SVSAttribution.confidence == AttributionConfidence.CONTEXT.value, 1), else_=0)))
+        .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
         .where(SVSAttribution.run_id == run_id, SVSAttribution.removed_at.is_(None),
                SVSAttribution.signature_uuid != "", SVSAttribution.signature_uuid.not_in(UNTRACKED_SIGNATURES))
-        .group_by(SVSAttribution.signature_uuid))
-    return {uuid: Fired(uuid, family, int(alerts), bool(late_only), bool(context_only))
-            for uuid, family, alerts, late_only, context_only in session.execute(statement)}
+        .group_by(SVSAttribution.signature_uuid, is_cleanup))
+    result: dict[str, Fired] = {}
+    # the cleanup's group (1) after the test's own (0), which it never replaces
+    for uuid, cleanup, family, alerts, late_only, context_only in sorted(
+            session.execute(statement), key=lambda row: (row[0], row[1])):
+        if uuid not in result:
+            result[uuid] = Fired(uuid, family, int(alerts), bool(late_only), bool(context_only), bool(cleanup))
+    return result
 
 
 def test_decisions(session, test_guid: str, platform: str) -> Decisions:
@@ -195,7 +216,9 @@ def suppressing_alert(session, run: SVSRun, hunt: HuntInfo, now: datetime) -> Op
 
 def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
           known: dict[str, SVSRunResult], now: datetime) -> list[ResultRow]:
-    missing = [uuid for uuid in decisions.expected if uuid not in fired and uuid not in decisions.ignored]
+    # what fired only in the test's cleanup is not what the test fires
+    missing = [uuid for uuid in decisions.expected
+               if (uuid not in fired or fired[uuid].cleanup) and uuid not in decisions.ignored]
     info = describe_signatures(set(fired) | set(missing))
     hunts = windows.hunt_info() if missing else {}
 
@@ -213,7 +236,11 @@ def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
 
     rows = []
     for uuid, signature in sorted(fired.items()):
-        if uuid in decisions.ignored:
+        if signature.cleanup and uuid in missing:
+            continue
+        if signature.cleanup:
+            status = ResultStatus.CLEANUP
+        elif uuid in decisions.ignored:
             status = ResultStatus.IGNORED
         elif uuid in decisions.expected:
             status = ResultStatus.HIT

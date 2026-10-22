@@ -1,12 +1,15 @@
 """POST /api/v2/svs/runs, the launcher's lifecycle calls (docs/SVS_API.md, *Runs*)."""
 
+from datetime import datetime, timedelta
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import Alert, SVSRun
+from saq.database.model import Alert, SVSAttribution, SVSRun
 from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import MARKER_REGEX
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
@@ -16,6 +19,7 @@ pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 LINUX_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
+SIGNATURE = "5c1a9e57-0000-4000-8000-00000000a7a7"
 
 REGISTRATION = {"test_guid": GUID, "targets": [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art"}],
                 "launcher": "art", "batch_id": "nightly", "extra": {"ticket": 42}}
@@ -189,6 +193,34 @@ async def test_start_answers_409_when_another_run_holds_the_host(client: AsyncCl
     assert response.status_code == 409, response.text
     (holder,) = response.json()["detail"]["holders"]
     assert (holder["run_id"], holder["state"]) == (first["run_id"], "started") and holder["until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup(client: AsyncClient):
+    run = await _register(client)
+    assert (await client.post(f"/svs/runs/{run['run_id']}/cleanup")).status_code == 409
+    await client.post(f"/svs/runs/{run['run_id']}/start")
+
+    response = await client.post(f"/svs/runs/{run['run_id']}/cleanup")
+    assert response.status_code == 200, response.text
+    cleanup_at = datetime.fromisoformat(response.json()["cleanup_at"])
+    assert (await client.post(f"/svs/runs/{run['run_id']}/cleanup")).status_code == 409
+
+    # an attribution of the cleanup, and one of the test
+    run_db_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == run["run_id"])).scalar_one()
+    with private_transaction() as session:
+        for alert_uuid, event_time in (("aaaaaaaa-0000-4000-8000-000000000001", cleanup_at + timedelta(seconds=5)),
+                                       ("aaaaaaaa-0000-4000-8000-000000000002", cleanup_at - timedelta(seconds=5))):
+            session.add(SVSAttribution(run_id=run_db_id, alert_uuid=alert_uuid, content_hash="0" * 64,
+                                       signature_uuid=SIGNATURE, confidence="marker", source="router", actor="svs",
+                                       created_at=datetime.now(), event_time=event_time))
+
+    attributions = (await client.get(f"/svs/runs/{run['run_id']}/attributions")).json()["data"]
+    assert [(a["alert_uuid"][-1], a["cleanup"]) for a in attributions] == [("1", True), ("2", False)]
+    assert attributions[0]["event_time"] is not None
+    alerts = (await client.get(f"/svs/runs/{run['run_id']}/alerts")).json()["data"]
+    assert [(a["alert_uuid"][-1], a["cleanup"]) for a in alerts] == [("1", True), ("2", False)]
+    assert (await client.get(f"/svs/runs/{run['run_id']}")).json()["cleanup_at"] == response.json()["cleanup_at"]
 
 
 @pytest.mark.asyncio

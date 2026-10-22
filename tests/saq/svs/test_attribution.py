@@ -556,6 +556,22 @@ class TestDatabase:
         assert len(result.written) == 1
         assert [removed for _, removed, _, _ in self._rows(root.uuid)] == [False, False]
 
+    def test_the_event_time_is_kept(self):
+        run = started_run(GUID)
+        root = self._root(run)
+        event_time = _soon().replace(microsecond=0)
+        write_attributions(root.uuid, evaluate(root, event_time))
+        with private_transaction() as session:
+            assert set(session.execute(select(SVSAttribution.event_time).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars()) == {event_time}
+
+        # a pass that judges it by another event time moves it
+        later = event_time + timedelta(minutes=2)
+        assert len(write_attributions(root.uuid, evaluate(root, later)).written) == 2
+        with private_transaction() as session:
+            assert set(session.execute(select(SVSAttribution.event_time).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars()) == {later}
+
     def _reviewed_run(self):
         run = started_run(GUID)
         get_db().execute(SVSRun.__table__.update().where(SVSRun.id == run.id).values(
