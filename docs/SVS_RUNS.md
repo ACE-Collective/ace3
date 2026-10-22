@@ -312,17 +312,23 @@ expectations. A launcher opens a **maintenance window** on the test host for tha
   window, that carries **no marker** and that no person associated with a run:
   - is routed to `svs.queue` by the `svs_marker` router (decision `maintenance`) and tagged
     `svs:maintenance`;
-  - once its correlation pass has judged it the same way, is closed by the timers as `IGNORE` by the
-    automation user, with the comment *closed: SVS maintenance window … on test host …: <reason>*.
-    `IGNORE` records nothing about its detections, so nothing reaches any run's result.
+  - once a correlation pass that leaves no analysis delayed has judged it the same way, is closed by
+    the timers as `IGNORE` by the automation user, with the comment *closed: SVS maintenance window
+    … on test host …: <reason>*. `IGNORE` records nothing about its detections, so nothing reaches
+    any run's result.
 
   It is kept, searchable and auditable, never dropped: find them by the `svs:maintenance` tag. An
-  analyst who takes one before it is closed keeps it. An alert with a marker is judged as any other,
+  analyst who takes one, or associates it with a run, before it is closed keeps it. An alert with a marker is judged as any other,
   so a marker mismatch stays in triage, and one whose correlation pass finds a marker goes back to
   the queue it came from.
 - **Over a run's late attribution.** A run's attribution window may still cover the window (its
   claim ended before the window opened). What happens in the window is the window's: its alerts are
-  not attributed to the run by context.
+  not attributed to the run by context, and a grouped hunt keys their suppression by the window
+  (`svs_maintenance:<window uuid>:<group value>`, *Hunt suppression during runs*, below) and never
+  records a match it drops there for the run (*Results*, above).
+- **Alongside a run on another host.** An alert that also involves another test host, which a run
+  holds at its event time, is the run's: the run is on its own host, and the window's host can only
+  be the other end of what it did.
 - **Time.** A window expires at its end; the timers (`svs.runs.timer_interval_seconds`) record it.
   Its alerts may arrive as late as a run's (`svs.runs.attribution_extra_hours`), which is how long
   attribution keeps looking after a window ends.
@@ -852,7 +858,10 @@ keys the suppression of each group by the run (`QueryHunt.key_suppression`):
 - **Which groups.** A group whose alert involves one of the run's test hosts (its `hostname`, `fqdn`
   or test host `ipv4` observables, as attribution reads them) with its event time inside the run's
   attribution window. Several runs' windows can cover it: the run context attribution would choose
-  is the one (*Without a marker: context*, above).
+  is the one (*Without a marker: context*, above). A group whose alert context attribution gives
+  to a maintenance window is keyed by the window instead (`svs_maintenance:<window uuid>:<group
+  value>`), so a host's staging never suppresses production or a run (*Maintenance windows*,
+  above).
 - **What it does.** The group's suppression is recorded and checked under a key of its own for the
   run (`svs_run:<run uuid>:<group value>`), so each run's first match alerts and the rest of that
   run's are suppressed as usual. An alert before the run (production, or another run) doesn't hide

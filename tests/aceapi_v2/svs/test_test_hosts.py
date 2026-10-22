@@ -161,6 +161,30 @@ async def test_maintenance_windows(client: AsyncClient, no_hunts):
 
 
 @pytest.mark.asyncio
+async def test_maintenance_listing_pages_by_window(client: AsyncClient, no_hunts):
+    host = (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).json()
+    ids = []
+    for _ in range(3):
+        ids.append((await client.post("/svs/test-hosts/win10-01/maintenance",
+                                      json={"minutes": 5, "reason": "staging"})).json()["id"])
+        assert (await client.delete("/svs/test-hosts/win10-01/maintenance")).status_code == 200
+
+    path = f"/svs/test-hosts/{host['id']}/maintenance"
+    first = (await client.get(path, params={"limit": 2})).json()
+    assert [w["id"] for w in first["data"]] == [ids[2], ids[1]] and first["next_cursor"] is not None
+    second = (await client.get(path, params={"limit": 2, "cursor": first["next_cursor"]})).json()
+    assert [w["id"] for w in second["data"]] == [ids[0]] and second["next_cursor"] is None
+
+    assert (await client.get(path, params={"cursor": "garbage"})).status_code == 400
+    assert (await client.get("/svs/test-hosts/999999/maintenance")).status_code == 404
+    assert (await client.get("/svs/test-hosts/win10%2001/maintenance")).status_code == 404
+    # reading never alerts
+    db = get_db()
+    db.expire_all()
+    assert db.query(Alert).all() == []
+
+
+@pytest.mark.asyncio
 async def test_maintenance_permissions(_override_db_session, session: AsyncSession, test_user):
     hosts.create_host(hosts.build_spec("win10-01"), None)
     reader = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])

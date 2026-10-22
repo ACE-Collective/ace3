@@ -629,7 +629,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
-| 409 | Registering, or starting, a run on a test host another run holds: `{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, `until` null for a run not started (`docs/SVS_RUNS.md`, *One run per test host*). No alert. |
+| 409 | Registering, or starting, a run on a test host another run or a maintenance window holds: `{"detail": {"message", "holders": [{"host", "run_id", "maintenance_id", "state", "until"}]}}`. A run holder has `run_id` and its state, with `until` null while it hasn't started (`docs/SVS_RUNS.md`, *One run per test host*); a window holder has `maintenance_id`, `run_id` null and the state `maintenance`, with `until` when it ends (*Maintenance windows*). No alert. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.

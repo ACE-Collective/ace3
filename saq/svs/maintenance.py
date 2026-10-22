@@ -19,17 +19,17 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_IGNORE, DISPOSITION_OPEN
-from saq.database.model import Alert, SVSMaintenanceAlert, SVSMaintenanceWindow, SVSTestHost
+from saq.database.model import Alert, SVSAttribution, SVSMaintenanceAlert, SVSMaintenanceWindow, SVSTestHost
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception
-from saq.svs.hosts import InvalidTestHost, get_host, split_hostname
+from saq.svs.hosts import InvalidTestHost, get_host, match_target, split_hostname
 from saq.svs.refusals import Caller, refuse
 from saq.svs.runs import TIMER_ACTOR, HostBusy, host_holders, lock_hosts
 
@@ -79,20 +79,13 @@ def _resolve(host_ref: str, caller: Caller, what: str, payload: dict, now: datet
         except LookupError:
             raise UnknownMaintenance(f"test host {host_ref} not found") from None
 
-    try:
-        short, qualified = split_hostname(host_ref)
-        host = get_db().execute(select(SVSTestHost).where(SVSTestHost.hostname == short)).scalar_one_or_none()
-        if host is None:
-            reason = f"{short} is not a test host"
-        elif qualified is not None and host.fqdn is not None and qualified != host.fqdn:
-            reason = f"{qualified} is not test host {host.fqdn}"
-        else:
-            return host
-    except InvalidTestHost:
-        reason = f"{host_ref!r} is not a host name"
+    # a host that lists its users matches without one: a window is on the host, not a user
+    match = match_target(host_ref)
+    if match.host is not None:
+        return match.host
 
-    refuse(caller, host_ref, None, f"{what}: {reason}", payload=payload, now=now)
-    raise MaintenanceRefused(reason)
+    refuse(caller, host_ref, None, f"{what}: {match.reason}", payload=payload, now=now)
+    raise MaintenanceRefused(match.reason)
 
 
 def open_window(host_ref: str, minutes: int, reason: str, caller: Caller,
@@ -243,8 +236,8 @@ def expire_windows(now: Optional[datetime] = None) -> int:
 
 def close_alerts() -> int:
     """Closes, as IGNORE, the open alerts nobody has taken that the router confirmed for a
-    maintenance window. An alert an analyst took or dispositioned meanwhile is left alone. Either
-    way its record is closed, so it isn't looked at again. Returns how many alerts it closed."""
+    maintenance window. An alert an analyst took, dispositioned or associated with a run meanwhile
+    is left alone. Either way its record is closed, so it isn't looked at again. Returns how many alerts it closed."""
     db = get_db()
     automation_user_id = get_config().global_settings.automation_user_id
     rows = db.execute(
@@ -272,33 +265,43 @@ def close_alerts() -> int:
     return count
 
 
+def _still_in_maintenance(alert_uuids: list[str]) -> set[str]:
+    """Those of the alerts whose record still stands (confirmed, neither removed nor closed) and
+    that no person associated with a run. A private transaction, so it reads what is committed now:
+    set_dispositions calls it under the alerts' row locks, which associating takes too."""
+    with private_transaction() as session:
+        return set(session.execute(
+            select(SVSMaintenanceAlert.alert_uuid)
+            .where(SVSMaintenanceAlert.alert_uuid.in_(alert_uuids), SVSMaintenanceAlert.confirmed_at.isnot(None),
+                   SVSMaintenanceAlert.removed_at.is_(None), SVSMaintenanceAlert.closed_at.is_(None),
+                   ~exists().where(SVSAttribution.alert_uuid == SVSMaintenanceAlert.alert_uuid,
+                                   SVSAttribution.removed_at.is_(None)))).scalars())
+
+
 def _close_window_alerts(window: SVSMaintenanceWindow, records: list[tuple[int, str]], automation_user_id) -> int:
     db = get_db()
     alert_uuids = [alert_uuid for _, alert_uuid in records]
-    # only those still open and nobody else's: set_dispositions leaves the others alone
-    open_alerts = list(db.execute(
-        select(Alert.uuid).where(Alert.uuid.in_(alert_uuids), Alert.disposition == DISPOSITION_OPEN,
-                                 or_(Alert.owner_id.is_(None), Alert.owner_id == automation_user_id))).scalars())
-    closed = []
-    if open_alerts:
-        result = set_dispositions(
-            open_alerts, DISPOSITION_IGNORE, automation_user_id, system=True,
-            expected_dispositions={DISPOSITION_OPEN},
-            user_comment=f"closed: SVS maintenance window {window.uuid} on test host {window.host}: {window.reason}")
-        closed = result.permitted
+    result = set_dispositions(
+        alert_uuids, DISPOSITION_IGNORE, automation_user_id, system=True,
+        expected_dispositions={DISPOSITION_OPEN}, eligible=_still_in_maintenance,
+        user_comment=f"closed: SVS maintenance window {window.uuid} on test host {window.host}: {window.reason}")
+    closed = result.permitted
 
+    # a record the router removed meanwhile stays open to it
     db.execute(update(SVSMaintenanceAlert)
-               .where(SVSMaintenanceAlert.id.in_([row_id for row_id, _ in records]))
+               .where(SVSMaintenanceAlert.id.in_([row_id for row_id, _ in records]),
+                      SVSMaintenanceAlert.removed_at.is_(None))
                .values(closed_at=datetime.now()))
     db.commit()
 
     for alert_uuid in closed:
         logging.info("svs maintenance window %s: alert %s closed as %s", window.uuid, alert_uuid, DISPOSITION_IGNORE,
                      extra={**_log_fields(window), "alert_uuid": alert_uuid})
-    left_alone = sorted(set(alert_uuids) - set(closed))
+    left_alone = sorted(set(result.skipped) | set(result.unexpected) | set(result.ineligible))
     if left_alone:
-        logging.info("svs maintenance window %s: %d alerts left alone (taken or dispositioned by an analyst)",
-                     window.uuid, len(left_alone), extra={**_log_fields(window), "alert_uuids": left_alone})
+        logging.info("svs maintenance window %s: %d alerts left alone (taken, dispositioned or associated with a "
+                     "run by an analyst, or no longer judged maintenance)", window.uuid, len(left_alone),
+                     extra={**_log_fields(window), "alert_uuids": left_alone})
     return len(closed)
 
 
