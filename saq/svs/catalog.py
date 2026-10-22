@@ -414,6 +414,8 @@ def repository_status() -> list[RepositoryStatus]:
         try:
             repo_config = get_config().get_git_repo_config(name)
         except ValueError:
+            # no git_repo section: normal for a retired repository, and for a misconfigured one the
+            # refresh already put it in the row's error, which this status shows
             repo_config = None
         error = row.error if row is not None else None
         retired = error == RETIRED_ERROR
