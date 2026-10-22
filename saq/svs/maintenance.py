@@ -5,7 +5,7 @@ bundle there, and ends it afterwards; the timers expire a window it never ends. 
 never hold one host at once (saq.svs.runs.host_holders), so what happens in a window is nobody's
 test. An alert without a marker that involves the host, with its event time inside the window, is
 routed to the test queue by the svs_marker router, which records it in svs_maintenance_alerts and
-confirms it at the alert's correlation pass; the timers then close it as IGNORE, with a comment
+confirms it on the alert's last pass; the timers then close it as IGNORE, with a comment
 naming the window. It is kept, never dropped. An alert with a marker is judged as any other, so a
 marker mismatch stays in triage.
 
@@ -178,8 +178,8 @@ def list_windows(host_ref: str, limit: int, before_id: Optional[int] = None) -> 
 
 def record_alert(alert_uuid: str, window_id: Optional[int], *, confirmed: bool, now: Optional[datetime] = None) -> None:
     """Brings the alert's maintenance record in line with the router's judgement: recorded for the
-    window (window_id) while it is judged maintenance (confirmed at its correlation pass, which may
-    close it), else (None) removed so the timers leave it alone. A record the timers closed is never
+    window (window_id) while it is judged maintenance (confirmed on the alert's last pass, after
+    which the timers may close it), else (None) removed so the timers leave it alone. A record the timers closed is never
     changed."""
     now = now or datetime.now()
     with private_transaction() as session:
