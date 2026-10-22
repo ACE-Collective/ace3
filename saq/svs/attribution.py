@@ -844,6 +844,8 @@ class RemovedAttribution:
 class WriteResult:
     written: list[Attribution] = field(default_factory=list)
     removed: list[RemovedAttribution] = field(default_factory=list)
+    # the alert had no rows of the router before this write: its first attribution
+    first: bool = False
 
 
 def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[datetime] = None) -> WriteResult:
@@ -943,6 +945,7 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             actor=ROUTER_ACTOR, created_at=now))
         if inserted.rowcount == 1:
             result.written.append(attribution)
+    result.first = bool(result.written) and all(row.source != AttributionSource.ROUTER for row in rows.values())
 
     removed_runs = {row.run_id for row in result.removed} - set(runs)
     if removed_runs:

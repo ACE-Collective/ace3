@@ -95,7 +95,7 @@ class MarkerRouter(AlertRouter):
         evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
         written = write_attributions(root.uuid, evaluation)
-        self._warn_fallback_time(root, stage, evaluation, bool(written.written))
+        self._warn_fallback_time(root, stage, evaluation, written.first)
         # confirmed by the alert's last pass: until then a delayed module may still find a marker
         # in its analysis details
         maintenance.record_alert(root.uuid, evaluation.maintenance.id if evaluation.maintenance else None,
@@ -124,15 +124,15 @@ class MarkerRouter(AlertRouter):
         self._log(root.uuid, stage, evaluation, outcome, decision, alert)
         return decision
 
-    def _warn_fallback_time(self, root, stage: RouteStage, evaluation: Evaluation, written: bool) -> None:
+    def _warn_fallback_time(self, root, stage: RouteStage, evaluation: Evaluation, first_attributed: bool) -> None:
         """A hunt that alerted on a test host, inside a run's or a maintenance window, without the
         event's own time: it was judged by the time the hunt ran its query, which can put it in the
-        wrong window, so the hunt's timestamp extraction wants fixing. Once per alert: as it is
-        created, or when a later pass first attributes it."""
+        wrong window, so the hunt's timestamp extraction wants fixing. As it is created, or at the later
+        pass that first attributes it, not on every pass that changes its attributions."""
         if evaluation.event_time_source != EventTimeSource.QUERY_TIME:
             return
         concerned = evaluation.attributions or evaluation.maintenance is not None or evaluation.candidate_runs
-        if not ((stage == RouteStage.PRE_INSERT and concerned) or written):
+        if not ((stage == RouteStage.PRE_INSERT and concerned) or first_attributed):
             return
         hunt_uuids = sorted({d.signature_uuid for d in evaluation.detections if d.signature_uuid})
         logging.warning("hunt %s alerted on an svs test host without the event's own time: alert %s was judged by "

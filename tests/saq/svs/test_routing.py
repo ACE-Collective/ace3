@@ -26,7 +26,7 @@ from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.svs import routing
+from saq.svs import maintenance, routing
 from saq.svs.attribution import saved_sightings
 from saq.svs.constants import ScanPoint
 from saq.svs.refusals import Caller, refuse
@@ -133,6 +133,54 @@ class TestFallbackEventTime:
         assert _attributions(root.uuid) == [("context", False)]
         (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
         assert (warning.alert_uuid, warning.svs_run, warning.stage) == (root.uuid, run_uuid, "post_analysis")
+
+    def test_a_later_pass_that_changes_its_attributions_is_not_warned_about_again(self, run, caplog):
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert _attributions(root.uuid) == [("context", False)]
+
+        # analysis finds the run's marker, which updates the attribution
+        root.details = {"events": [{"command_line": f"whoami & REM {run.marker}"}]}
+        root.save()
+        sync_alert(root)
+        assert _attributions(root.uuid) == [("marker", False)]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert warning.stage == "pre_insert"
+
+    def test_a_hunt_inside_a_maintenance_window_is_warned_about(self, caplog):
+        maintenance.open_window("win10-01", 30, "staging", CALLER, now=datetime.now() - timedelta(minutes=10))
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        assert _attributions(root.uuid) == []
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.levelno, warning.hunt, warning.alert_uuid, warning.stage) == (
+            logging.WARNING, "suspicious powershell", root.uuid, "pre_insert")
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_a_hunt_that_several_runs_could_claim_is_warned_about(self, caplog):
+        started_run(GUID)
+        started_run(GUID)
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+
+        assert _attributions(root.uuid) == []
+        assert [r for r in caplog.records if "context attribution of alert" in r.getMessage()]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.levelno, warning.hunt, warning.alert_uuid, warning.stage) == (
+            logging.WARNING, "suspicious powershell", root.uuid, "pre_insert")
 
     def test_the_events_own_time_is_not_warned_about(self, run, caplog):
         root = _root()

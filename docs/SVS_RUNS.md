@@ -611,8 +611,9 @@ Either can put an alert in the wrong run's window, or in none. Each attribution 
 it was judged by (`event_time_source`: `event`, `query_time` or `insert_time`), a result row says
 when any of its signature's attributions rests on a fallback (`fallback_time`), and the run page
 says so next to *late*, on the alert, its detections and the result row. A hunt that alerted on a
-test host, inside a run's or a maintenance window, by its query's time is logged at WARNING once
-per alert, naming the hunt, so its timestamp extraction can be fixed:
+test host, inside a run's or a maintenance window, by its query's time is logged at WARNING as the
+alert is created, or at the later pass that first attributes it, naming the hunt, so its timestamp
+extraction can be fixed:
 `hunt … alerted on an svs test host without the event's own time` (`hunt`, `hunt_uuids`, `tool`,
 `tool_instance`, `alert_uuid`, `svs_run`, `event_time_source`).
 
