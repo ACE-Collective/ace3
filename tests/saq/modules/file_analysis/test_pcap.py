@@ -1031,13 +1031,13 @@ def test_collect_carved_files(tmp_path):
 
     # what crossed the wire is carved first; the certificate gets what is left, which is nothing
     assert [(o["protocol"], o["file_name"], o["path"]) for o in objects] == [
-        ("http", "a.bin", "capture.pcap.pcap_objects/http/a_1.bin"),
+        ("http", "a.bin", "capture.pcap.pcap_objects/http/a_000.bin"),
         ("http", "late.bin", "capture.pcap.pcap_objects/http/late.bin"),
         ("smb", "a.bin", "capture.pcap.pcap_objects/smb/a.bin"),
     ]
     assert len(certificates) == 1
     assert certificates[0]["path"] is None
-    assert (target / "http" / "a_1.bin").read_bytes() == b"first"
+    assert (target / "http" / "a_000.bin").read_bytes() == b"first"
 
     # with room left, the certificate is carved too
     second = tmp_path / "second_work"
@@ -2145,3 +2145,69 @@ def test_decryption_knows_every_file_found_before(monkeypatch):
     pcap.apply_keylogs(_pcap_config(), capture, core, decryption, [keylog])
     assert seen["known"] == {"11" * 32, "22" * 32, "33" * 32, "44" * 32}
     assert decryption.details[pcap.KEY_INDEX][pcap.KEY_CARVED_SHA256] == ["44" * 32]
+
+
+def _carved(root, pcap_file, category: str, name: str, no_crawl: bool = False) -> PcapObservable:
+    path = os.path.join(os.path.dirname(pcap_file.full_path), name)
+    with open(path, "wb") as fp:
+        fp.write(name.encode())
+    return PcapObservable(category, F_FILE, sha256_bytes(name.encode()), path=name, no_crawl=no_crawl)
+
+
+@pytest.mark.unit
+def test_payload_files_come_before_certificates():
+    root = _new_root()
+    pcap_file = root.add_file_observable(HTTP_TLS_PCAPNG)
+    certificates = [_carved(root, pcap_file, CATEGORY_TLS, f"c{i}.der", no_crawl=True) for i in range(3)]
+    payloads = [_carved(root, pcap_file, CATEGORY_FILES, f"p{i}.bin") for i in range(2)]
+
+    # one call, certificates listed first (as collect_observables lists them for decryption)
+    decryption = PcapTlsDecryptionAnalysis()
+    pcap_file.add_analysis(decryption)
+    added, omitted = add_pcap_observables(decryption, pcap_file, certificates + payloads, max_per_type=3)
+    assert (added, omitted) == ({F_FILE: 3}, {F_FILE: 2})
+    assert {o.file_name for o in decryption.get_observables_by_type(F_FILE)} == {"p0.bin", "p1.bin", "c0.der"}
+
+
+@pytest.mark.unit
+def test_tls_node_keeps_room_for_the_files_nodes_payloads():
+    root = _new_root()
+    pcap_file = root.add_file_observable(HTTP_TLS_PCAPNG)
+    certificates = [_carved(root, pcap_file, CATEGORY_TLS, f"c{i}.der", no_crawl=True) for i in range(3)]
+    payloads = [_carved(root, pcap_file, CATEGORY_FILES, f"p{i}.bin") for i in range(2)]
+
+    # the TLS node runs first and leaves the payloads their room
+    tls = PcapCategoryAnalysis()
+    tls.instance = CATEGORY_TLS
+    pcap_file.add_analysis(tls)
+    added, omitted = add_pcap_observables(tls, pcap_file, certificates, max_per_type=3, reserved=payloads)
+    assert (added, omitted) == ({F_FILE: 1}, {F_FILE: 2})
+
+    files = PcapCategoryAnalysis()
+    files.instance = CATEGORY_FILES
+    pcap_file.add_analysis(files)
+    added, omitted = add_pcap_observables(files, pcap_file, payloads, max_per_type=3)
+    assert (added, omitted) == ({F_FILE: 2}, {})
+
+
+@pytest.mark.integration
+def test_category_analyzer_reserves_the_payloads(monkeypatch):
+    monkeypatch.setattr(get_config().pcap, "max_observables_per_type", 2)
+    root = _new_root()
+    capture = root.add_file_observable(HTTP_TLS_PCAPNG)
+    assert _adapter(PcapAnalyzer, root).execute_analysis(capture) == AnalysisExecutionResult.COMPLETED
+    core = capture.get_analysis(PcapAnalysis)
+    core.completed = True
+    index = core.index
+    # two more payloads than the capture really carved, beside it like the real one
+    pcap_dir = os.path.dirname(capture.full_path)
+    for name in ("extra0.bin", "extra1.bin"):
+        with open(os.path.join(pcap_dir, name), "wb") as fp:
+            fp.write(name.encode())
+        index["objects"].append({"protocol": "http", "file_name": name, "sha256": sha256_bytes(name.encode()),
+                                 "size": len(name), "path": name})
+
+    tls = _adapter(pcap.PcapCategoryAnalyzer, root, ANALYSIS_MODULE_PCAP_TLS)
+    assert tls.execute_analysis(capture) == AnalysisExecutionResult.COMPLETED
+    # three payloads reserve the whole budget of two: no certificate takes a payload's room
+    assert _category(capture, CATEGORY_TLS).get_observables_by_type(F_FILE) == []
