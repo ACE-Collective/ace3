@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, selectinload, undefer
 
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
@@ -79,6 +79,7 @@ from saq.svs import review, run_comments, runs
 from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
+from saq.svs.results import cleanup_condition
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries, suppression_share
 from saq.svs.samples import to_utc_naive
@@ -246,7 +247,8 @@ def _summary_values(summary: RunSummary) -> dict:
         result_hit=summary.hit, result_expected=summary.expected,
         result_missing=summary.missing + summary.possibly_suppressed,
         result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
-        result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        result_rejected=summary.rejected, result_ignored=summary.ignored, result_cleanup=summary.cleanup,
+        result_stale=summary.result_stale,
         reviewed_hit=summary.reviewed_hit, reviewed_expected=summary.reviewed_expected,
         reviewed_missing=summary.reviewed_missing + summary.reviewed_possibly_suppressed,
         reviewed_possibly_suppressed=summary.reviewed_possibly_suppressed,
@@ -425,7 +427,8 @@ def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
 #
 
 def get_detail(run_id: str) -> RunDetail:
-    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))).one_or_none()
+    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))
+                           .options(undefer(SVSRun.launcher_output))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
@@ -662,7 +665,8 @@ def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> 
 
 def _attributions_statement() -> Select:
     actor, remover, keeper = aliased(User), aliased(User), aliased(User)
-    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username, SVSRun.cleanup_at)
+    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username,
+                   cleanup_condition().label("cleanup"))
             .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
             .outerjoin(actor, actor.id == SVSAttribution.actor_user_id)
             .outerjoin(remover, remover.id == SVSAttribution.removed_by_user_id)
@@ -670,15 +674,12 @@ def _attributions_statement() -> Select:
 
 
 def _attribution(row) -> Attribution:
-    attribution, run_uuid, actor_user, removed_by_user, kept_by_user, cleanup_at = row
+    attribution, run_uuid, actor_user, removed_by_user, kept_by_user, cleanup = row
     return Attribution(
         id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
         signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
         confidence=attribution.confidence, late=attribution.late, event_time=attribution.event_time,
-        # as saq.svs.results.cleanup_condition judges it
-        cleanup=(cleanup_at is not None and attribution.event_time is not None
-                 and attribution.event_time >= cleanup_at),
-        source=attribution.source,
+        cleanup=bool(cleanup), source=attribution.source,
         scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
         created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
         removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,

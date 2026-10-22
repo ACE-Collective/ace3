@@ -2171,8 +2171,9 @@ class SVSRun(Base):
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # what the test printed (stdout and stderr), as executed reported it, at most
-    # saq.svs.runs.MAX_OUTPUT_BYTES
-    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    # saq.svs.runs.MAX_OUTPUT_BYTES; deferred, since only the run's detail reads it and the
+    # listing and attribution load whole runs
+    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -2610,7 +2611,8 @@ class SVSRunResult(Base):
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
     # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
-    # the hunt groups or deduplicates its alerts, so that alert may not have suppressed this one
+    # the hunt deduplicates its alerts, so that alert may not have suppressed this one. Neither for
+    # a hunt with group_by, whose suppression the hunter records (svs_suppressed_matches)
     suppressing_alert_uuid: Mapped[Optional[str]] = mapped_column(CHAR(36), nullable=True)
     suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
@@ -2625,6 +2627,32 @@ class SVSRunResult(Base):
         index=True,
         server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
         server_onupdate=FetchedValue())
+
+
+class SVSSuppressedMatch(Base):
+    """A hunt with group_by dropped a match for its suppression inside a run's attribution window,
+    on one of the run's test hosts (docs/SVS_RUNS.md, *Results*). One row per run and hunt, for the
+    first such match: a run's result reads it to tell a suppressed hunt from a missing one, so it
+    lives as long as the run. Only saq/svs/attribution.py writes this table."""
+
+    __tablename__ = 'svs_suppressed_matches'
+    __table_args__ = (
+        UniqueConstraint('run_id', 'hunt_uuid', name='uq_svs_suppressed_matches_run_hunt'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    hunt_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the match's group_value, which keys its suppression by itself or with the run
+    # (QueryHunt.key_suppression)
+    group_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # the match's event time, as runs record time (naive, local)
+    event_time: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        MYSQL_DATETIME(fsp=6), nullable=False, server_default=text('CURRENT_TIMESTAMP(6)'))
 
 
 class SVSRunResultState(Base):

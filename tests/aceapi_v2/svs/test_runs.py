@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from saq.database.model import Alert, SVSAttribution, SVSRun
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
+from saq.svs import results
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import MARKER_REGEX
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
@@ -20,6 +21,7 @@ pytestmark = pytest.mark.integration
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 LINUX_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 SIGNATURE = "5c1a9e57-0000-4000-8000-00000000a7a7"
+CLEANUP_SIGNATURE = "5c1a9e57-0000-4000-8000-00000000c1ea"
 
 REGISTRATION = {"test_guid": GUID, "targets": [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art"}],
                 "launcher": "art", "batch_id": "nightly", "extra": {"ticket": 42}}
@@ -223,6 +225,21 @@ async def test_cleanup(client: AsyncClient):
     alerts = (await client.get(f"/svs/runs/{run['run_id']}/alerts")).json()["data"]
     assert [(a["alert_uuid"][-1], a["cleanup"]) for a in alerts] == [("1", True), ("2", False)]
     assert (await client.get(f"/svs/runs/{run['run_id']}")).json()["cleanup_at"] == response.json()["cleanup_at"]
+
+    # a signature only the cleanup fired: the run's summaries count it as cleanup
+    with private_transaction() as session:
+        session.add(SVSAttribution(run_id=run_db_id, alert_uuid="aaaaaaaa-0000-4000-8000-000000000001",
+                                   content_hash="1" * 64, signature_uuid=CLEANUP_SIGNATURE, confidence="marker",
+                                   source="router", actor="svs", created_at=datetime.now(),
+                                   event_time=cleanup_at + timedelta(seconds=5)))
+    assert results.compute_result(run_db_id).counts == {"candidate": 1, "cleanup": 1}
+
+    (row,) = [r for r in (await client.get("/svs/runs/")).json()["data"] if r["run_id"] == run["run_id"]]
+    assert (row["result_candidate"], row["result_cleanup"]) == (1, 1)
+    detail = (await client.get(f"/svs/runs/{run['run_id']}")).json()
+    assert (detail["result_candidate"], detail["result_cleanup"]) == (1, 1)
+    response = await client.get("/svs/runs/batches")
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.asyncio
