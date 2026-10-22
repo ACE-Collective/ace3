@@ -149,6 +149,8 @@ SIGHTINGS_EXTENSION = "svs_sightings"
 # the tags the svs_alert_tagger module puts on the root
 TAG_SVS_TEST = "svs_test"
 TAG_MARKER_MISMATCH = "svs:marker_mismatch"
+# an alert of a test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)
+TAG_MAINTENANCE = "svs:maintenance"
 
 # the actor of what the marker router writes
 ROUTER_ACTOR = "svs"

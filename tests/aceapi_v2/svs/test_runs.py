@@ -166,7 +166,8 @@ async def test_a_host_held_by_another_run_is_409(client: AsyncClient):
     response = await client.post("/svs/runs/", json=REGISTRATION)
     assert response.status_code == 409, response.text
     detail = response.json()["detail"]
-    assert detail["holders"] == [{"host": "win10-01", "run_id": first["run_id"], "state": "created", "until": None}]
+    assert detail["holders"] == [{"host": "win10-01", "run_id": first["run_id"], "state": "created", "until": None,
+                                 "maintenance_id": None}]
     assert first["run_id"] in detail["message"]
 
     response = await client.post("/svs/runs/validate", json=REGISTRATION)

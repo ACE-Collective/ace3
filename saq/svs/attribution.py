@@ -52,7 +52,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
-from saq.database.model import SVSAttribution, SVSRun, SVSTestHost
+from saq.database.model import SVSAttribution, SVSMaintenanceWindow, SVSRun, SVSTestHost
 from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_local_timezone
 from saq.observables.file import FileObservable
@@ -332,8 +332,9 @@ def clear_caches() -> None:
 
 
 def attribution_open(now: Optional[datetime] = None) -> bool:
-    """True when some run is registered and not started yet, or is inside its attribution window:
-    only then can an alert be attributed, so only then is anything scanned. Each process trusts its
+    """True when some run is registered and not started yet, or is inside its attribution window, or
+    a maintenance window was open within svs.runs.attribution_extra_hours: only then can an alert
+    be attributed or closed for maintenance, so only then is anything scanned. Each process trusts its
     answer for svs.attribution.gate_cache_seconds. A registered run opens the gate before its test
     fires, so the cache never hides the start of a run."""
     ttl = get_config().svs.attribution.gate_cache_seconds
@@ -342,11 +343,16 @@ def attribution_open(now: Optional[datetime] = None) -> bool:
             return _caches.gate[1]
 
     now = now or datetime.now()
+    # an alert of a maintenance window may come as late as a run's
+    window_horizon = now - timedelta(hours=get_config().svs.runs.attribution_extra_hours)
     with private_transaction() as session:
         value = bool(session.execute(select(or_(
             exists().where(SVSRun.state == RunState.CREATED.value),
             exists().where(SVSRun.state.in_([state.value for state in RunState if state != RunState.CREATED]),
-                           SVSRun.attribution_ends_at >= now)))).scalar())
+                           SVSRun.attribution_ends_at >= now),
+            exists().where(SVSMaintenanceWindow.ends_at >= window_horizon,
+                           or_(SVSMaintenanceWindow.ended_at.is_(None),
+                               SVSMaintenanceWindow.ended_at >= window_horizon))))).scalar())
 
     with _caches.lock:
         _caches.gate = (time.monotonic() + ttl, value)
@@ -395,6 +401,37 @@ def runs_in_window(when: datetime) -> list[RunSnapshot]:
             select(SVSRun).where(SVSRun.started_at <= when, SVSRun.attribution_ends_at >= when)
             .order_by(SVSRun.id)).scalars())
         return _snapshots(session, runs)
+
+
+@dataclass(frozen=True)
+class MaintenanceSnapshot:
+    """What attribution needs of a maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)."""
+    id: int
+    uuid: str
+    target: TargetSnapshot
+    opened_at: datetime
+    # when it ended, or ends
+    ends_at: datetime
+
+    def log_fields(self) -> dict:
+        return {"svs_maintenance": self.uuid, "host": self.target.host}
+
+
+def maintenance_windows_at(when: datetime) -> list[MaintenanceSnapshot]:
+    """The maintenance windows open at when, on any host. Never cached: a window ends early."""
+    with private_transaction() as session:
+        rows = session.execute(
+            select(SVSMaintenanceWindow, SVSTestHost)
+            .outerjoin(SVSTestHost, SVSTestHost.id == SVSMaintenanceWindow.test_host_id)
+            # the planned end bounds the window, and is indexed
+            .where(SVSMaintenanceWindow.ends_at >= when, SVSMaintenanceWindow.opened_at <= when,
+                   or_(SVSMaintenanceWindow.ended_at.is_(None), SVSMaintenanceWindow.ended_at >= when))
+            .order_by(SVSMaintenanceWindow.id)).all()
+        return [MaintenanceSnapshot(
+            id=window.id, uuid=window.uuid,
+            target=TargetSnapshot(window.host, window.fqdn, frozenset(host_ips(host)) if host else frozenset()),
+            opened_at=window.opened_at, ends_at=window.ended_at or window.ends_at)
+            for window, host in rows]
 
 
 def runs_overlapping(start: datetime, end: datetime) -> list[RunSnapshot]:
@@ -514,6 +551,9 @@ class Evaluation:
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
     # the alert's event time it was judged by, kept on each attribution
     event_time: Optional[datetime] = None
+    # it has no marker and no attribution, and its event time is in a maintenance window on one of
+    # its hosts: it is routed to the test queue and closed (docs/SVS_RUNS.md, *Maintenance windows*)
+    maintenance: Optional[MaintenanceSnapshot] = None
 
     @property
     def mismatches(self) -> list[MarkerJudgement]:
@@ -707,6 +747,16 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                             run, detection.content_hash, AttributionConfidence.MARKER, run.is_late(event_time),
                             sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
+        windows = [window for window in maintenance_windows_at(event_time) if hosts.involves(window.target)]
+        # a person's association still holds
+        if windows and all(row.removed for row in evaluation.existing):
+            # no run holds a host while a window on it is open (saq.svs.runs.host_holders), and a
+            # run whose late attribution window still covers the event ended its claim before the
+            # window opened: what happened in the window is the window's
+            evaluation.maintenance = windows[0]
+            evaluation.status = None
+            return evaluation
+
         candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
         run = context_claimant(candidates)
         if run is not None and run.id not in disassociated:

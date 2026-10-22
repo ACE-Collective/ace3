@@ -103,10 +103,11 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
 
 
 def _holder(holder: runs.HostHolder) -> HostHolder:
-    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until)
+    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until,
+                      maintenance_id=holder.maintenance_uuid)
 
 
-def _host_busy(e: runs.HostBusy) -> HTTPException:
+def host_busy_error(e: runs.HostBusy) -> HTTPException:
     return HTTPException(status_code=409, detail={
         "message": str(e), "holders": [_holder(holder).model_dump(mode="json") for holder in e.holders]})
 
@@ -119,7 +120,7 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
     except runs.RunStateConflict as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
     except runs.HostBusy as e:
-        raise _host_busy(e)
+        raise host_busy_error(e)
 
 
 def _registration(body: RunRegistrationRequest) -> runs.Registration:
@@ -137,7 +138,7 @@ def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
     except runs.HostBusy as e:
-        raise _host_busy(e)
+        raise host_busy_error(e)
 
 
 def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:

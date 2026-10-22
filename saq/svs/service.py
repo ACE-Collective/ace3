@@ -12,7 +12,8 @@ The catalog refresher looks for a new commit of each svs.catalog.repositories ch
 svs.catalog.refresh_interval_seconds, also on the primary node only (saq.svs.catalog).
 
 The run timer moves test runs whose start timeout or windows have passed every
-svs.runs.timer_interval_seconds (saq.svs.runs.run_timers), on the primary node only. Every move is
+svs.runs.timer_interval_seconds (saq.svs.runs.run_timers), and expires test hosts' maintenance
+windows and closes their alerts (saq.svs.maintenance.run_timers), on the primary node only. Every move is
 conditional on the run's state, so a second timer somewhere would change nothing [FR-13].
 
 The coverage refresher recomputes ATT&CK coverage every svs.coverage.refresh_interval_seconds, on the
@@ -36,6 +37,7 @@ from saq.svs.actions import retired_pairs
 from saq.svs.catalog import refresh_catalog
 from saq.svs.constants import COVERAGE_ACTOR
 from saq.svs.coverage import refresh_coverage
+from saq.svs import maintenance
 from saq.svs.runs import run_timers
 from saq.svs.service_config import SVSServiceConfig
 from saq.svs.validations import (
@@ -207,6 +209,13 @@ class RunTimer:
             run_timers()
         except Exception as e:
             log_loop_exception(e, "svs run timers failed")
+        finally:
+            remove_all_sessions()
+
+        try:
+            maintenance.run_timers()
+        except Exception as e:
+            log_loop_exception(e, "svs maintenance timers failed")
         finally:
             remove_all_sessions()
 
