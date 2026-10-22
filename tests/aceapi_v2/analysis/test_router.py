@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import uuid as uuidlib
 from datetime import datetime
 
 import pytest
@@ -170,6 +171,121 @@ class TestSubmit:
         response = await client.post("/analysis/", data={"analysis": json.dumps(_submission(), cls=_JSONEncoder)})
 
         assert response.status_code == 201
+
+
+def _file_observables(root: RootAnalysis) -> list:
+    return [o for o in root.all_observables if o.type == F_FILE]
+
+
+class TestUploadNames:
+    """The upload's file name is the client's: it may name a subdirectory of the root's files
+    directory, but never a place outside it."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["../../{name}", "sub/../../{name}", ".."])
+    async def test_a_name_outside_the_root_is_refused(self, client: AsyncClient, name, caplog):
+        file_name = f"escaped-{uuidlib.uuid4().hex}.txt"
+        name = name.format(name=file_name)
+        before = _stored_roots()
+
+        response = await _submit(client, _submission(), [(name, b"escaped")])
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == f"invalid file name {name!r}"
+        assert _stored_roots() == before
+        assert not any(file_name in files for _, _, files in os.walk(get_data_dir()))
+        assert [r.path for r in caplog.records if r.getMessage().startswith("refusing file path")] == [name]
+
+    @pytest.mark.asyncio
+    async def test_an_absolute_name_is_refused(self, client: AsyncClient, tmp_path):
+        target = tmp_path / "escaped.txt"
+        before = _stored_roots()
+
+        response = await _submit(client, _submission(), [(str(target), b"escaped")])
+
+        assert response.status_code == 400
+        assert _stored_roots() == before
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_subdirectory_is_kept(self, client: AsyncClient):
+        """ace_api's relative_storage_path places a file in a subdirectory of the root."""
+        response = await _submit(client, _submission(), [("dest/test.txt", b"content")])
+
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == "dest/test.txt"
+        assert os.path.realpath(file_observable.full_path) == os.path.realpath(os.path.join(root.file_dir, "dest", "test.txt"))
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"content"
+
+    @pytest.mark.asyncio
+    async def test_the_observable_file_path_is_not_used(self, client: AsyncClient):
+        """The submission's description of the file names it too; only the upload's own name counts."""
+        name = f"escaped-{uuidlib.uuid4().hex}.txt"
+        file_sha256 = hashlib.sha256(b"escaped").hexdigest()
+
+        response = await _submit(client, _submission(observables=[
+            {"type": F_FILE, "value": file_sha256, "file_path": f"../../{name}", "tags": ["described"]},
+        ]), [("upload.txt", b"escaped")])
+
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == "upload.txt"
+        assert file_observable.has_tag("described")
+        assert not os.path.exists(os.path.join(root.file_dir, "..", "..", name))
+
+    @pytest.mark.asyncio
+    async def test_a_name_with_spaces_and_unicode_is_kept(self, client: AsyncClient):
+        response = await _submit(client, _submission(), [("Quarterly Report é.pdf", b"content")])
+
+        assert response.status_code == 201
+        (file_observable,) = _file_observables(_load(response.json()["uuid"]))
+        assert file_observable.file_path == "Quarterly Report é.pdf"
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"content"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_name(self, client: AsyncClient):
+        """httpx leaves an empty file name out, which makes the part a plain field, so the body is
+        written out to send filename=""."""
+        boundary = "unittestboundary"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="analysis"\r\n\r\n'
+                f'{json.dumps(_submission(), cls=_JSONEncoder)}\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename=""\r\n'
+                f'Content-Type: application/octet-stream\r\n\r\ncontent\r\n--{boundary}--\r\n').encode()
+
+        response = await client.post("/analysis/", content=body,
+                                     headers={"content-type": f"multipart/form-data; boundary={boundary}"})
+
+        assert response.status_code == 201
+        (file_observable,) = _file_observables(_load(response.json()["uuid"]))
+        assert file_observable.file_path == "upload"
+
+
+    @pytest.mark.asyncio
+    async def test_uploads_with_the_same_name_are_kept_apart(self, client: AsyncClient):
+        """Every unnamed upload is stored as "upload", and two files can share a basename. The
+        second must not be written over the first, whose hardcopy is the same file."""
+        boundary = "unittestboundary"
+        parts = "".join(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename=""\r\n'
+                        f'Content-Type: application/octet-stream\r\n\r\n{content}\r\n'
+                        for content in ("first", "second"))
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="analysis"\r\n\r\n'
+                f'{json.dumps(_submission(), cls=_JSONEncoder)}\r\n{parts}--{boundary}--\r\n').encode()
+
+        response = await client.post("/analysis/", content=body,
+                                     headers={"content-type": f"multipart/form-data; boundary={boundary}"})
+
+        assert response.status_code == 201
+        file_observables = _file_observables(_load(response.json()["uuid"]))
+        assert sorted(o.file_path for o in file_observables) == ["upload", "upload_000"]
+        for file_observable in file_observables:
+            with open(file_observable.full_path, "rb") as fp:
+                assert hashlib.sha256(fp.read()).hexdigest() == file_observable.value
+        assert {o.value for o in file_observables} == {hashlib.sha256(c).hexdigest() for c in (b"first", b"second")}
 
 
 class TestInvalid:

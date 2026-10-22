@@ -39,11 +39,7 @@ def load_integrations() -> bool:
                 logging.debug(f"integration {get_integration_name_from_path(dir_path)} is disabled, skipping")
                 continue
 
-            if load_integration_from_directory(dir_path):
-                pass
-            else:
-                logging.error(f"failed to load integration from {dir_path}")
-                result = False
+            load_integration_from_directory(dir_path)
         except Exception as e:
             logging.exception(f"failed to load integration from {dir_path}: {e}")
             result = False
@@ -51,14 +47,11 @@ def load_integrations() -> bool:
     #initialize_integrations()
     return result
 
-def load_integration_component_src(dir_path: str) -> bool:
+def load_integration_component_src(dir_path: str):
     """Loads the source code for a component of an integration.
 
     Args:
         dir_path: The path to the integration directory.
-
-    Returns:
-        True if the source code was loaded successfully, False otherwise.
     """
     src_path = os.path.join(dir_path, "src")
     if os.path.exists(src_path):
@@ -67,16 +60,11 @@ def load_integration_component_src(dir_path: str) -> bool:
             # NOTE we append rather than prepend here
             sys.path.append(src_path)
 
-    return True
-
-def load_integration_component_bin(dir_path: str) -> bool:
+def load_integration_component_bin(dir_path: str):
     """Loads the binary for a component of an integration.
 
     Args:
         dir_path: The path to the integration directory.
-
-    Returns:
-        True if the binary was loaded successfully, False otherwise.
     """
     bin_path = os.path.join(dir_path, "bin")
     if os.path.exists(bin_path):
@@ -84,16 +72,11 @@ def load_integration_component_bin(dir_path: str) -> bool:
         if bin_path not in os.environ["PATH"]:
             os.environ["PATH"] = f"{os.environ['PATH']}:{bin_path}"
 
-    return True
-
-def load_integration_component_etc(dir_path: str) -> bool:
+def load_integration_component_etc(dir_path: str):
     """Loads the configuration files for a component of an integration.
 
     Args:
         dir_path: The path to the integration directory.
-
-    Returns:
-        True if the configuration files were loaded successfully, False otherwise.
     """
     etc_path = os.path.join(dir_path, "etc")
 
@@ -104,8 +87,6 @@ def load_integration_component_etc(dir_path: str) -> bool:
             logging.debug(f"auto loading integration configuration file {auto_load_config_file}")
             get_global_runtime_settings().integration_config_paths.append(auto_load_config_file)
             #get_config().load_file(auto_load_config_file)
-
-    return True
 
 def initialize_integrations():
     """Initializes all integrations. 
@@ -168,18 +149,14 @@ def _warn_about_undeclared_integrations(imported: set[str]):
             # DEFERRED_INTEGRATION_WARNINGS above
             sys.stderr.write(f"WARNING: {message}\n")
 
-def load_integration_from_directory(dir_path: str) -> bool:
+def load_integration_from_directory(dir_path: str):
     """Loads an ACE integration from a local directory.
 
     Args:
         dir_path: The path to the integration directory.
-
-    Returns:
-        True if the integration was loaded successfully, False otherwise.
     """
-    result = load_integration_component_src(dir_path)
-    result |= load_integration_component_bin(dir_path)
-    result |= load_integration_component_etc(dir_path)
+    load_integration_component_src(dir_path)
+    load_integration_component_bin(dir_path)
+    load_integration_component_etc(dir_path)
 
     # NOTE right now we are not calling verify() on the config
-    return result

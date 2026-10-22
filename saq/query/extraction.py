@@ -26,6 +26,7 @@ from saq.query.template_rendering import (
     render_event_template,
     render_event_template_multi,
 )
+from saq.util.filesystem import safe_file_name
 
 
 def _is_blank_value(value) -> bool:
@@ -272,7 +273,9 @@ def _process_mapping_values(
                             interpolated_tags.append(tag_value)
 
                 file_contents.append(FileContent(
-                    file_name=target_file_name,
+                    # interpolated from the event, which can carry an attacker's file names, and
+                    # the file is stored under this name in the root's files directory
+                    file_name=safe_file_name(target_file_name),
                     content=decoded_observed_value,
                     directives=interpolated_directives,
                     tags=interpolated_tags,

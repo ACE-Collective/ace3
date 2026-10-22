@@ -972,12 +972,6 @@ CONFIG_LDAP_BIND_PASSWORD = "ldap_bind_password"
 CONFIG_LDAP_BASE_DN = "ldap_base_dn"
 CONFIG_LDAP_TOP_USER = "top_user"
 
-# smtp
-CONFIG_SMTP = "smtp"
-CONFIG_SMTP_ENABLED = "enabled"
-CONFIG_SMTP_MAIL_FROM = "mail_from"
-CONFIG_SMTP_SERVER = "server"
-
 # asset tracking
 CONFIG_ASSET_TRACKING = "asset_tracking"
 CONFIG_ASSET_TRACKING_REQUIRE_ALL_TOOLS = "require_all_tools"

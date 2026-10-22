@@ -70,9 +70,10 @@ def test_submit_failure_does_not_fail_the_work_item(monkeypatch, caplog):
     with patch("saq.search.tasks.get_redis_connection", side_effect=RuntimeError("redis down")):
         assert worker.execute(root) is True
 
+    # submit_index_task logs the failure itself and returns, so it is reported exactly once
     errors = [record for record in caplog.records if record.levelno == logging.ERROR and record.exc_info]
     assert len(errors) == 1
-    assert root.uuid in errors[0].getMessage()
+    assert errors[0].getMessage().startswith(f"error submitting search index task for {root.uuid}")
 
 
 def test_stalled_redis_times_out_and_is_logged_at_error(monkeypatch, caplog):

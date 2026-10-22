@@ -19,6 +19,10 @@ API_AUTH_TYPE_CONFIG = "config"
 API_AUTH_TYPE_USER = "user"
 API_HEADER_NAME = "x-ace-auth"
 
+API_CREDENTIAL_SESSION = "session"
+API_CREDENTIAL_USER_KEY = "user_key"
+API_CREDENTIAL_CONFIG_KEY = "config_key"
+
 
 # =============================================================================
 # API Key Authentication
@@ -33,7 +37,13 @@ def _get_config_api_key_match(auth_sha256: str) -> ApiAuthResult:
 
     name, scope = match
     logging.info(f"valid config API key for {name}")
-    return ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name=name, key_scope=scope, key_name=name)
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_CONFIG,
+        auth_name=name,
+        key_scope=scope,
+        key_name=name,
+        credential=API_CREDENTIAL_CONFIG_KEY,
+    )
 
 
 async def _get_user_api_key_match(
@@ -66,6 +76,7 @@ async def _get_user_api_key_match(
         key_scope=scope,
         key_id=api_key.id,
         key_name=api_key.name,
+        credential=API_CREDENTIAL_USER_KEY,
     )
 
 
@@ -121,4 +132,5 @@ async def verify_flask_session(
         auth_type=API_AUTH_TYPE_USER,
         auth_name=row.username,
         auth_user_id=row.id,
+        credential=API_CREDENTIAL_SESSION,
     )

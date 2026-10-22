@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from io import BytesIO
@@ -14,6 +15,7 @@ from saq.database.model import Alert, ObservableComment
 from saq.database.pool import get_db
 from saq.database.util.alert import get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
+from saq.environment import get_temp_dir
 
 
 @pytest.mark.integration
@@ -106,6 +108,30 @@ class TestUploadFile:
         with open(file_observable.full_path, 'rb') as f:
             assert f.read() == test_content
     
+    @pytest.mark.parametrize("path_in_name", [False, True])
+    def test_upload_file_name_is_not_a_path(self, web_client, tmp_path, path_in_name):
+        """The client's file name is stored as a plain file name in the alert, never as a path."""
+        # in a directory of its own, so that what the name points at is not the temporary copy
+        name = os.path.join(f"escaped-{uuid4().hex}", "escaped.txt")
+        client_name = f"../../{name}" if path_in_name else str(tmp_path / name)
+        data = {
+            'file_path': (BytesIO(b'escaped'), client_name),
+            'comment': '',
+            'alert_uuid': ''
+        }
+
+        result = web_client.post(url_for('analysis.upload_file'), data=data, content_type='multipart/form-data')
+
+        assert result.status_code == 302
+        alert = get_alert_by_uuid(parse_qs(urlparse(result.location).query)['direct'][0])
+        alert.load()
+        (file_observable,) = [o for o in alert.root_analysis.observables if o.type == 'file']
+        assert "/" not in file_observable.file_path
+        assert file_observable.file_path.endswith("_" + name.replace("/", "_"))
+        assert os.path.dirname(os.path.realpath(file_observable.full_path)) == os.path.realpath(alert.root_analysis.file_dir)
+        assert not (tmp_path / name).parent.exists()
+        assert not os.path.exists(os.path.dirname(os.path.join(alert.root_analysis.file_dir, "..", "..", name)))
+
     def test_upload_file_existing_alert_success(self, web_client):
         """Test successful file upload to existing alert."""
         from saq.database.util.alert import get_alert_by_uuid
@@ -156,6 +182,53 @@ class TestUploadFile:
         assert 'initial_file.txt' in file_names
         assert 'test_file.txt' in file_names
     
+    def test_a_later_upload_by_the_same_name_leaves_an_alert_alone(self, web_client):
+        """The alert's copy of an upload is a hardlink to the temporary file it was saved to, so
+        that file is the request's own and is gone afterwards."""
+        temp_files_before = set(os.listdir(get_temp_dir()))
+        alerts = []
+        for content in (b'first content', b'second content'):
+            data = {'file_path': (BytesIO(content), 'same.txt'), 'comment': '', 'alert_uuid': ''}
+            result = web_client.post(url_for('analysis.upload_file'), data=data, content_type='multipart/form-data')
+            alert = get_alert_by_uuid(parse_qs(urlparse(result.location).query)['direct'][0])
+            alert.load()
+            alerts.append(alert)
+
+        for alert, content in zip(alerts, (b'first content', b'second content')):
+            (file_observable,) = [o for o in alert.root_analysis.observables if o.type == 'file']
+            with open(file_observable.full_path, 'rb') as f:
+                assert f.read() == content
+        assert not os.path.exists(os.path.join(get_temp_dir(), 'same.txt'))
+        assert not [name for name in set(os.listdir(get_temp_dir())) - temp_files_before
+                    if os.path.isfile(os.path.join(get_temp_dir(), name))]
+
+    def test_upload_file_existing_alert_same_name_other_content(self, web_client):
+        """An alert that already has a file by the uploaded name gets the upload under a name of
+        its own, not an observable whose path serves the other file's bytes."""
+        initial_data = {
+            'file_path': (BytesIO(b'initial content'), 'report.txt'),
+            'comment': '',
+            'alert_uuid': ''
+        }
+        initial_result = web_client.post(url_for('analysis.upload_file'), data=initial_data, content_type='multipart/form-data')
+        alert_uuid = parse_qs(urlparse(initial_result.location).query)['direct'][0]
+
+        data = {
+            'file_path': (BytesIO(b'other content'), 'report.txt'),
+            'comment': '',
+            'alert_uuid': alert_uuid
+        }
+        result = web_client.post(url_for('analysis.upload_file'), data=data, content_type='multipart/form-data')
+
+        assert result.status_code == 302
+        alert = get_alert_by_uuid(alert_uuid)
+        alert.load()
+        file_observables = [o for o in alert.root_analysis.observables if o.type == 'file']
+        assert sorted(o.file_path for o in file_observables) == ['report.txt', 'report_000.txt']
+        for file_observable in file_observables:
+            with open(file_observable.full_path, 'rb') as f:
+                assert hashlib.sha256(f.read()).hexdigest() == file_observable.value
+
     def test_upload_file_nonexistent_alert(self, web_client):
         """Test upload_file with non-existent alert UUID."""
         test_content = b'test file content'

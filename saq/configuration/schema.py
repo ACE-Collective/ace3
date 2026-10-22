@@ -301,7 +301,6 @@ class GUIConfig(BaseModel):
     upload_vxstream: bool = Field(..., description="enable VxStream upload")
     view_in_vx: bool = Field(..., description="enable view in VxStream")
     show_total_alert_count: bool = Field(..., description="show the total alerts resulting from the current filter")
-    matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
     hide_intel: bool = Field(..., description="hide intel if we don't want to let people see it")
     default_company_id: int = Field(..., description="default company for manual analysis")
@@ -321,11 +320,6 @@ class WikiConfig(BaseModel):
     base_url: str = Field(..., description="base URL for wiki (designed to work with Confluence)")
     alert_reference_enabled: bool = Field(..., description="enable alert reference links to wiki documentation")
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
-
-class SMTPConfig(BaseModel):
-    enabled: bool = Field(..., description="enable SMTP email sending")
-    server: str = Field(..., description="SMTP server address")
-    mail_from: str = Field(..., description="from email address")
 
 class EmailArchiveConfig(BaseModel):
     target: str = Field(..., description="possible values: local, s3")
@@ -956,7 +950,6 @@ class ACEConfig(BaseModel):
     gui_favicons: Optional[dict[str, str]] = None
     network_configuration: Optional[NetworkConfigurationConfig] = None
     wiki: Optional[WikiConfig] = None
-    smtp: Optional[SMTPConfig] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
     ldap: Optional[LDAPConfig] = None

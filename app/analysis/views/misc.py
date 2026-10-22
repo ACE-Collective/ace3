@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 import os
+import tempfile
 from uuid import uuid4
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
@@ -16,7 +17,7 @@ from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_a
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
 from saq.environment import get_temp_dir
-from saq.util import local_time
+from saq.util import local_time, safe_file_name
 
 
 def _mark_added_by_current_user(file_observable):
@@ -52,14 +53,21 @@ def upload_file():
 
     file_name = file_path.filename
 
-    # securely save the file to a temporary location
-    from werkzeug.utils import secure_filename
+    # the client's name is stored in the alert, so it is made a plain file name, but one that
+    # keeps spaces and non-ascii characters
+    target_name = safe_file_name(file_name)
 
-    # Use secure_filename to sanitize the uploaded file name
-    safe_file_name = secure_filename(file_name)
-    temp_dir = get_temp_dir()
-    temp_path = os.path.join(temp_dir, safe_file_name)
+    # a temporary file of the request's own: the alert's copy is a hardlink to it, so a temporary
+    # path named after the upload would let the next upload by that name rewrite this one's bytes
+    fd, temp_path = tempfile.mkstemp(dir=get_temp_dir())
+    os.close(fd)
+    try:
+        return _store_upload(file_path, temp_path, file_name, target_name, comment, alert_uuid)
+    finally:
+        os.unlink(temp_path)
 
+
+def _store_upload(file_path, temp_path: str, file_name: str, target_name: str, comment: str, alert_uuid: str):
     try:
         file_path.save(temp_path)
     except Exception as e:
@@ -76,7 +84,7 @@ def upload_file():
         root.event_time = datetime.now()
         root.details = {'user': current_user.username, 'comment': comment}
 
-        file_observable = root.add_file_observable(temp_path, file_name)
+        file_observable = root.add_file_observable(temp_path, target_name)
         if file_observable:
             _mark_added_by_current_user(file_observable)
         root.save()
@@ -110,7 +118,7 @@ def upload_file():
             # the same file at the same path is the observable already in the tree, which the engine
             # may have added, so only a new observable is marked as the analyst's
             existing_uuids = {o.uuid for o in alert.root_analysis.all_observables}
-            file_observable = alert.root_analysis.add_file_observable(temp_path, file_name)
+            file_observable = alert.root_analysis.add_file_observable(temp_path, target_name)
             if file_observable and file_observable.uuid not in existing_uuids:
                 _mark_added_by_current_user(file_observable)
 
