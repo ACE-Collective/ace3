@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
 KEY_TRANSACTION_ID = 'transaction_id'
+# set when the root's event_time is not the event's own: a hunt that couldn't extract the event's
+# timestamp used the time it processed the results (EVENT_TIME_FALLBACK_QUERY_TIME)
+KEY_EVENT_TIME_FALLBACK = 'event_time_fallback'
+EVENT_TIME_FALLBACK_QUERY_TIME = 'query_time'
 # collector-layer submission metadata. these live on the root (rather than on Submission) because
 # a staged submission is reconstructed from disk after a restart, and only the root is serialized.
 KEY_SUBMISSION_KEY = 'submission_key'

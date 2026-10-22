@@ -38,7 +38,7 @@ from saq.svs.attribution import (
     write_attributions,
 )
 from saq.svs import maintenance
-from saq.svs.constants import SVS_MANUAL_ROUTER, SVSStatus
+from saq.svs.constants import SVS_MANUAL_ROUTER, EventTimeSource, SVSStatus
 
 REASON_ROUTED = "every detection is attributed to SVS test run {run}"
 REASON_NO_LONGER_ATTRIBUTED = "no longer attributed to an SVS test run"
@@ -94,7 +94,8 @@ class MarkerRouter(AlertRouter):
 
         evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
-        write_attributions(root.uuid, evaluation)
+        written = write_attributions(root.uuid, evaluation)
+        self._warn_fallback_time(root, stage, evaluation, bool(written.written))
         # confirmed after the correlation pass, which may still find a marker in analysis details
         maintenance.record_alert(root.uuid, evaluation.maintenance.id if evaluation.maintenance else None,
                                  confirmed=stage == RouteStage.POST_ANALYSIS)
@@ -121,6 +122,23 @@ class MarkerRouter(AlertRouter):
 
         self._log(root.uuid, stage, evaluation, outcome, decision, alert)
         return decision
+
+    def _warn_fallback_time(self, root, stage: RouteStage, evaluation: Evaluation, written: bool) -> None:
+        """A hunt that alerted on a test host, inside a run's or a maintenance window, without the
+        event's own time: it was judged by the time the hunt ran its query, which can put it in the
+        wrong window, so the hunt's timestamp extraction wants fixing. Once per alert: as it is
+        created, or when a later pass first attributes it."""
+        if evaluation.event_time_source != EventTimeSource.QUERY_TIME:
+            return
+        concerned = evaluation.attributions or evaluation.maintenance is not None or evaluation.candidate_runs
+        if not ((stage == RouteStage.PRE_INSERT and concerned) or written):
+            return
+        hunt_uuids = sorted({d.signature_uuid for d in evaluation.detections if d.signature_uuid})
+        logging.warning("hunt %s alerted on an svs test host without the event's own time: alert %s was judged by "
+                        "the time the hunt ran its query", root.description, root.uuid,
+                        extra={**self._run_fields(evaluation), "alert_uuid": root.uuid, "stage": stage.value,
+                               "hunt": root.description, "tool": root.tool, "tool_instance": root.tool_instance,
+                               "hunt_uuids": hunt_uuids, "event_time_source": evaluation.event_time_source.value})
 
     def _routed_here(self, alert: _AlertRow, queue: str) -> bool:
         """The alert is in the test queue because this router put it there."""

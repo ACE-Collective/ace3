@@ -793,6 +793,9 @@
                 tr.appendChild(status);
                 tr.appendChild(append(el("td"), signature_node(row)));
                 const alerts = append(el("td", "small"), String(row.alert_count));
+                if (row.fallback_time) {
+                    alerts.appendChild(el("div", "text-warning-emphasis", "by a fallback time"));
+                }
                 if (row.late_only) {
                     alerts.appendChild(el("div", "text-muted", "late only"));
                 }
@@ -1004,6 +1007,9 @@
             if (alert.cleanup) {
                 parts.push("cleanup");
             }
+            if (alert.fallback_time) {
+                parts.push("judged by a fallback time");
+            }
             if (alert.kept) {
                 parts.push("kept");
             }
@@ -1036,6 +1042,12 @@
                 }
                 if (a && a.cleanup && !a.removed_at) {
                     item.appendChild(muted(" · cleanup"));
+                }
+                if (a && a.fallback_time && !a.removed_at) {
+                    const fallback = el("span", "text-warning-emphasis", " · " + (a.event_time_source === "query_time"
+                        ? "the hunt's query time" : "the alert's insert time"));
+                    fallback.title = "not the event's own time: it may have put the alert in the wrong window";
+                    item.appendChild(fallback);
                 }
                 list.appendChild(item);
             });

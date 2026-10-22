@@ -1,6 +1,7 @@
 """The SVS marker router (saq.svs.routing, docs/SVS_RUNS.md, *Attribution*) in use: ALERT() at
 PRE_INSERT, and the engine's POST_ANALYSIS stage."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import Mock
@@ -9,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from saq.alert_routing import get_alert_routers, load_alert_routers, reset_alert_routers
-from saq.analysis.root import RootAnalysis, load_root
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis, load_root
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
@@ -91,6 +92,35 @@ def test_the_router_is_configured_ahead_of_the_detection_queue_router():
     load_alert_routers()
     names = [router.name for router in get_alert_routers()]
     assert names.index("svs_marker") < names.index("detection_queue")
+
+
+class TestFallbackEventTime:
+    def test_a_hunt_that_fell_back_on_a_test_host_is_warned_about_once(self, run, caplog):
+        run_uuid = run.uuid
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["query_time"]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert warning.levelno == logging.WARNING
+        assert (warning.hunt, warning.alert_uuid, warning.svs_run, warning.stage) == (
+            "suspicious powershell", root.uuid, run_uuid, "pre_insert")
+
+    def test_the_events_own_time_is_not_warned_about(self, run, caplog):
+        root = _root()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["event"]
 
 
 class TestPreInsert:

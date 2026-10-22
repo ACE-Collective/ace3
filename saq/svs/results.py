@@ -49,6 +49,7 @@ from saq.signatures.builtin import (
     YARA_RULE_MATCH,
 )
 from saq.svs.constants import (
+    FALLBACK_EVENT_TIME_SOURCES,
     GLOBAL_SCOPE_KEY,
     RUN_SIGNATURES,
     AttributionConfidence,
@@ -91,6 +92,8 @@ class Fired:
     context_only: bool
     # every attribution of it is the test's cleanup's: it neither hits nor is a candidate
     cleanup: bool = False
+    # some attribution of it was judged by a fallback event time
+    fallback_time: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +114,7 @@ class ResultRow:
     alert_count: int = 0
     late_only: bool = False
     context_only: bool = False
+    fallback_time: bool = False
     content_hash: Optional[str] = None
     suppressing_alert_uuid: Optional[str] = None
     suppression_imprecise: bool = False
@@ -118,6 +122,7 @@ class ResultRow:
     def values(self) -> dict:
         return {"status": self.status.value, "signature_family": self.family, "signature_name": self.name,
                 "alert_count": self.alert_count, "late_only": self.late_only, "context_only": self.context_only,
+                "fallback_time": self.fallback_time,
                 "content_hash": self.content_hash, "suppressing_alert_uuid": self.suppressing_alert_uuid,
                 "suppression_imprecise": self.suppression_imprecise}
 
@@ -155,17 +160,19 @@ def fired_signatures(session, run_id: int) -> dict[str, Fired]:
                func.max(SVSAttribution.signature_family),
                func.count(SVSAttribution.alert_uuid.distinct()),
                func.min(cast(SVSAttribution.late, Integer)),
-               func.min(case((SVSAttribution.confidence == AttributionConfidence.CONTEXT.value, 1), else_=0)))
+               func.min(case((SVSAttribution.confidence == AttributionConfidence.CONTEXT.value, 1), else_=0)),
+               func.max(case((SVSAttribution.event_time_source.in_(FALLBACK_EVENT_TIME_SOURCES), 1), else_=0)))
         .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
         .where(SVSAttribution.run_id == run_id, SVSAttribution.removed_at.is_(None),
                SVSAttribution.signature_uuid != "", SVSAttribution.signature_uuid.not_in(UNTRACKED_SIGNATURES))
         .group_by(SVSAttribution.signature_uuid, is_cleanup))
     result: dict[str, Fired] = {}
     # the cleanup's group (1) after the test's own (0), which it never replaces
-    for uuid, cleanup, family, alerts, late_only, context_only in sorted(
+    for uuid, cleanup, family, alerts, late_only, context_only, fallback_time in sorted(
             session.execute(statement), key=lambda row: (row[0], row[1])):
         if uuid not in result:
-            result[uuid] = Fired(uuid, family, int(alerts), bool(late_only), bool(context_only), bool(cleanup))
+            result[uuid] = Fired(uuid, family, int(alerts), bool(late_only), bool(context_only), bool(cleanup),
+                                 bool(fallback_time))
     return result
 
 
@@ -249,7 +256,8 @@ def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
         else:
             status = ResultStatus.CANDIDATE
         rows.append(ResultRow(uuid, status, alert_count=signature.alert_count, late_only=signature.late_only,
-                              context_only=signature.context_only, **described(uuid, signature.family)))
+                              context_only=signature.context_only, fallback_time=signature.fallback_time,
+                              **described(uuid, signature.family)))
 
     for uuid in sorted(missing):
         hunt = hunts.get(uuid)

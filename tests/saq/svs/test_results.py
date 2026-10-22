@@ -84,13 +84,13 @@ def _run(test_guid: str = GUID, *, ended: bool = True, started_at: timedelta = t
 
 
 def _attribute(run: SVSRun, signature_uuid: str, *, alert_uuid=None, late=False, confidence="marker",
-               removed=False, event_time: Optional[datetime] = None) -> str:
+               removed=False, event_time: Optional[datetime] = None, event_time_source: Optional[str] = None) -> str:
     alert_uuid = alert_uuid or str(uuid.uuid4())
     with private_transaction() as session:
         session.add(SVSAttribution(
             run_id=run.id, alert_uuid=alert_uuid, content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             signature_uuid=signature_uuid, signature_family="yara", confidence=confidence, late=late,
-            event_time=event_time,
+            event_time=event_time, event_time_source=event_time_source,
             source="router", actor="svs", created_at=datetime.now(),
             removed_at=datetime.now() if removed else None, removed_by="svs" if removed else None))
     return alert_uuid
@@ -181,6 +181,19 @@ class TestStatuses:
         # nothing the cleanup fired stands in the way of a review
         assert review.review_blockers(get_db(), get_db().get(SVSRun, run.id), lock=False)["candidates"] == sorted(
             [HUNT, NOISE])
+
+    def test_a_signature_judged_by_a_fallback_time_says_so(self):
+        run = _run()
+        _attribute(run, HUNT, event_time_source="event")
+        _attribute(run, HUNT, event_time_source="query_time")
+        _attribute(run, YARA, event_time_source="event")
+        _attribute(run, OTHER, event_time_source="insert_time")
+        # from before the source was kept
+        _attribute(run, NOISE)
+
+        results.compute_result(run.id)
+        assert {uuid: _row(run, uuid).fallback_time for uuid in (HUNT, YARA, OTHER, NOISE)} == {
+            HUNT: True, YARA: False, OTHER: True, NOISE: False}
 
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()

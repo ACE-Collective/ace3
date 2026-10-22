@@ -266,6 +266,8 @@ class RunResult(BaseModel):
     alert_count: int = Field(description="the run's attributed alerts that carry the signature")
     late_only: bool = Field(description="every attribution of it is late")
     context_only: bool = Field(description="every attribution of it is by context alone")
+    fallback_time: bool = Field(default=False, description="some attribution of it was judged by a fallback event time "
+                                                           "(a hunt's query time, or the alert's insert time)")
     content_hash: Optional[str] = Field(default=None, description="the rule's own content hash when the result was computed")
     suppressing_alert_uuid: Optional[str] = Field(
         default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period")
@@ -304,6 +306,12 @@ class Attribution(BaseModel):
                                                                      "for attributions written before it was kept")
     cleanup: bool = Field(description="its event time is at or after the run's cleanup_at: the test's cleanup caused it, "
                                       "so it is left out of the run's candidates and expectations")
+    event_time_source: Optional[str] = Field(
+        default=None, description="where event_time came from: event (the event's own), query_time (a hunt couldn't "
+                                  "extract it) or insert_time (the alert has none); null for attributions written "
+                                  "before it was kept")
+    fallback_time: bool = Field(description="event_time is a fallback (query_time or insert_time), which may have put "
+                                            "the alert in the wrong window")
     source: str = Field(description="router (the marker router) or manual (a person associated the alert)")
     scan_point: Optional[str] = Field(default=None, description="where the agreeing marker was found; null for context or manual")
     actor: str = Field(description="who attributed it: svs for the router, else the person")
@@ -344,6 +352,7 @@ class RunAlert(BaseModel):
         default=None, description="of those that hold: marker when any is (a person's association is marker), else context")
     late: bool = Field(description="an attribution that holds is late")
     cleanup: bool = Field(description="every attribution that holds is the test's cleanup's")
+    fallback_time: bool = Field(description="an attribution that holds was judged by a fallback event time")
     manual: bool = Field(description="an attribution that holds was made by a person")
     kept: bool = Field(description="a person kept its context attributions")
     undecided_context: bool = Field(

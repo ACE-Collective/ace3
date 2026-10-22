@@ -123,6 +123,7 @@ class TestAssociate:
             "manual", "marker", None, False, ACTOR, user_id)
         # stored to the second
         assert abs(row.event_time - root.event_time) <= timedelta(seconds=1)
+        assert row.event_time_source == "event"
         assert _last_change(root.uuid) == (QUEUE_DEFAULT, get_config().svs.queue, SVS_MANUAL_ROUTER)
         (event,) = _events(run, RunEventKind.ASSOCIATED)
         assert event["alert_uuid"] == root.uuid and event["reason"] == "seen on the test VM's console"

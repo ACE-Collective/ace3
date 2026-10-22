@@ -16,7 +16,14 @@ import pytz
 from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
-from saq.analysis.root import KEY_PLAYBOOK_URL, KEY_TRANSACTION_ID, RootAnalysis, Submission
+from saq.analysis.root import (
+    EVENT_TIME_FALLBACK_QUERY_TIME,
+    KEY_EVENT_TIME_FALLBACK,
+    KEY_PLAYBOOK_URL,
+    KEY_TRANSACTION_ID,
+    RootAnalysis,
+    Submission,
+)
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
@@ -983,7 +990,8 @@ class QueryHunt(Hunt):
 
         # map results to observables
         for event_index, event in enumerate(query_results):
-            event_time = self.extract_event_timestamp(event) or local_time()
+            extracted_time = self.extract_event_timestamp(event)
+            event_time = extracted_time or local_time()
             event = self.wrap_event(event)
 
             # use shared extraction pipeline
@@ -1035,6 +1043,9 @@ class QueryHunt(Hunt):
                 submission = _create_submission(event)
                 submission.key = _compute_dedup_key(event)
                 submission.root.event_time = event_time
+                # SVS attribution judges windows by it, and says when it rests on the query's time
+                submission.root.set_optional_extension(
+                    KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
 
                 # Apply correlation overrides
                 if event_index in event_action_overrides:
@@ -1122,10 +1133,12 @@ class QueryHunt(Hunt):
 
                     # for grouped events, the overall event time is the earliest event time in the group
                     # this won't really matter if the observables are temporal
-                    if event_grouping[grouping_target].root.event_time is None:
-                        event_grouping[grouping_target].root.event_time = event_time
-                    elif event_time < event_grouping[grouping_target].root.event_time:
-                        event_grouping[grouping_target].root.event_time = event_time
+                    group_root = event_grouping[grouping_target].root
+                    if group_root.event_time is None or event_time < group_root.event_time:
+                        group_root.event_time = event_time
+                        # the group's time is its earliest event's: whether that one's is its own
+                        group_root.set_optional_extension(
+                            KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
 
             # apply relationships to the observables
             for submission in submissions:
