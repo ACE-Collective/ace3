@@ -88,18 +88,20 @@ def cleanup_ignored_alerts(days: int, dry_run: bool):
             dry_run_count += 1
             continue
 
-        # delete the files backing the alert
-        try:
-            target_path = os.path.join(get_base_dir(), storage_dir)
-            logging.info(f"deleting files {target_path}")
-            shutil.rmtree(target_path)
-        except Exception as e:
-            logging.error(f"unable to delete alert storage directory {storage_dir}: {e}")
-
-        # delete the alert from the database
+        # the row goes before the files, so that nothing reading the alerts table finds an alert
+        # whose storage is already gone; a failure in between leaves an orphaned directory
+        # rather than an alert that cannot be loaded
         logging.info(f"deleting database entry {alert_id}")
         retry_sql_on_deadlock(delete(Alert).where(Alert.id == alert_id), commit=True)
         submit_delete_task(alert_uuid)
+
+        target_path = os.path.join(get_base_dir(), storage_dir)
+        try:
+            logging.info(f"deleting files {target_path}")
+            shutil.rmtree(target_path)
+        except Exception as e:
+            logging.exception(f"unable to delete storage directory {target_path} of deleted alert {alert_uuid}: {e}",
+                              extra={"alert_uuid": alert_uuid, "storage_dir": target_path})
 
     if dry_run:
         logging.info(f"{dry_run_count} ignored alerts would be deleted")
