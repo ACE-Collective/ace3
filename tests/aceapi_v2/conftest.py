@@ -1,7 +1,9 @@
+import hashlib
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -12,8 +14,14 @@ from sqlalchemy.ext.asyncio import (
 
 from aceapi_v2.application import app
 from aceapi_v2.database import build_database_url, get_async_session
+from aceapi_v2.users.schemas import ApiKeyScope
 from aceapi_v2.users.service import create_user_api_key
-from saq.database.model import User
+from saq.configuration import get_config
+from saq.database.model import AuthGroup, AuthGroupPermission, AuthGroupUser, User
+
+# A typical analyst group: everything except the CLI, secrets and user administration, so its
+# members hold user:self but not user:write.
+ANALYST_GRANTS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
 
 
 async def make_api_key(session: AsyncSession, user_id: int, *, inherit: bool = True, scope=None) -> str:
@@ -24,14 +32,39 @@ async def make_api_key(session: AsyncSession, user_id: int, *, inherit: bool = T
     ApiKeyScope-like objects to test scoped keys. Flushed onto the shared test connection so the
     app's auth session sees it.
     """
-    from aceapi_v2.users.schemas import ApiKeyScope
-
     scope_objs = [ApiKeyScope(major=m, minor=n) for (m, n) in (scope or [])]
     _, plaintext = await create_user_api_key(
         session, user_id, name="test", inherit=inherit, scope=scope_objs
     )
     await session.flush()
     return plaintext
+
+
+def key_scope(*patterns: str) -> list[ApiKeyScope]:
+    """An API key scope from "major:minor" patterns."""
+    return [ApiKeyScope(major=p.split(":")[0], minor=p.split(":")[1]) for p in patterns]
+
+
+async def add_analyst_group(session: AsyncSession, user: User) -> AuthGroup:
+    """Put the user in a new group granted ANALYST_GRANTS."""
+    group = AuthGroup(name=f"{user.username}_grp")
+    session.add(group)
+    await session.flush()
+    session.add(AuthGroupUser(group_id=group.id, user_id=user.id))
+    for major, minor, effect in ANALYST_GRANTS:
+        session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
+    await session.flush()
+    return group
+
+
+def make_flask_session_cookie(user_id) -> str:
+    """A Flask GUI session cookie for the given user id: what the browser sends to aceapi_v2."""
+    s = URLSafeTimedSerializer(
+        get_config().gui.secret_key,
+        salt="cookie-session",
+        signer_kwargs={"key_derivation": "hmac", "digest_method": hashlib.sha1},
+    )
+    return s.dumps({"_user_id": str(user_id)})
 
 
 def api_key_client(api_key: str) -> AsyncClient:

@@ -753,7 +753,7 @@ Compare each started run's `observation_ends_at` with the current time: a run pa
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Registration answers 403 `Permission denied` | The key's user lacks `svs:run_register`, or the key's scope doesn't include it. `data/logs/ace-api-v2` says `does not have permission svs.run_register` or `scope does not permit`. | `ace perm user add art-launcher svs:run_register`; create a key with `--scope svs:run_register` |
+| Registration answers 403 | The key's user lacks `svs:run_register`, or the key's scope doesn't include it; the `detail` says which. `data/logs/ace-api-v2` says `does not have permission svs.run_register` or `scope does not permit`. | `ace perm user add art-launcher svs:run_register`; create a key with `--scope svs:run_register` |
 | Registration answers 403 `registration refused` with reasons | A target isn't a test host, its FQDN doesn't match the host's, the user isn't listed, or no user was given for a host that lists users. A refusal alert is raised. | Fix the test host or the launcher's target ([Refused registrations](#refused-registrations)) |
 | Registration answers 422 | The test isn't in the catalog or was removed; the test doesn't support a host's platform; the hosts' platforms differ or none is set; `launcher` missing; `extra` too large; too many targets | Read the `detail`; check `ace svs catalog status`; set the hosts' platform |
 | `start` or `executed` answers 409 | The call doesn't fit the run's state: started twice, executed before start, or the run already timed out | Read the `state` in the answer; register a new run |

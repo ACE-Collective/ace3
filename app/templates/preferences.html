@@ -82,10 +82,87 @@
         </div>
     </div>
 </div>
+
+<div class="row">
+    <div class="col-md-11">
+        {# filled and changed through /api/v2/users/me/apikeys by preferences_api_keys.js #}
+        <div class="card mb-4" id="api_keys_card" data-api-url="/api/v2/users/me/apikeys" data-can-manage="{{ 'true' if can_manage_keys else 'false' }}">
+            <div class="card-header d-flex align-items-center">
+                <h5 class="card-title mb-0">API Keys</h5>
+                {% if can_manage_keys %}
+                <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="btn_new_my_api_key"><i class="bi bi-shield-lock me-1"></i>New API key</button>
+                {% endif %}
+            </div>
+            <div class="card-body">
+                <p class="text-muted">A key is shown once, when it is created. It can only do what both its scope and your own permissions allow, so a permission you lose stops working for your keys too.</p>
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Name</th><th>Scope</th><th>Created</th><th></th></tr></thead>
+                    <tbody id="my_api_keys_list"><tr><td colspan="4" class="text-muted">Loading…</td></tr></tbody>
+                </table>
+                {% if not can_manage_keys %}
+                <div class="form-text mt-2">Ask an administrator to create or change your API keys.</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% if can_manage_keys %}
+<div class="modal fade" id="my_api_key_modal" tabindex="-1" aria-labelledby="my_api_key_modal_label" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <form class="modal-content" id="my_api_key_form">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="my_api_key_modal_label">New API key</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label fw-bold" for="my_api_key_name">Name</label>
+                    <input type="text" class="form-control" id="my_api_key_name" maxlength="255" placeholder="What uses this key" required>
+                </div>
+                <label class="form-label fw-bold d-block">Scope</label>
+                <ul class="list-unstyled mb-2" id="my_api_key_scope_list"></ul>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn_my_api_key_add_scope">Add permission</button>
+                <div class="form-text">Only permissions you hold are offered. A custom pattern such as <code>signature:*</code> may cover only permissions you hold.</div>
+                <div class="alert alert-danger mt-3 mb-0 d-none" id="my_api_key_error" role="alert"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="btn_save_my_api_key">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="my_api_key_reveal_modal" tabindex="-1" aria-labelledby="my_api_key_reveal_modal_label" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h1 class="modal-title fs-5" id="my_api_key_reveal_modal_label">Your new API key</h1>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>Copy the key now. It is not stored and cannot be shown again.</p>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="my_api_key_value" readonly>
+                    <button type="button" class="btn btn-outline-primary" id="btn_copy_my_api_key">Copy</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# the permissions this user holds, the only ones the scope picker offers #}
+<script id="my_api_key_catalog_json" type="application/json">{{ key_catalog | tojson }}</script>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/manage_columns.js') }}"></script>
 <script src="{{ url_for('static', filename='js/preferences.js') }}"></script>
+<script src="{{ url_for('static', filename='js/preferences_api_keys.js') }}"></script>
 {% endblock %}

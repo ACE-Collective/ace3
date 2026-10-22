@@ -1,7 +1,12 @@
 """The analyst preferences page (main.preferences)."""
 
+import json
+import re
+
 import pytest
 from flask import url_for
+
+from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
@@ -34,3 +39,44 @@ def test_preferences_page_renders_profile_and_columns(web_client, analyst):
 def test_navbar_links_to_preferences(web_client, analyst):
     html = web_client.get(url_for("analysis.manage")).data.decode()
     assert url_for("main.preferences") in html
+
+
+def _key_catalog(html: str) -> set[tuple[str, str]]:
+    """The (major, minor) pairs the API key scope picker offers."""
+    match = re.search(r'<script id="my_api_key_catalog_json" type="application/json">(.*?)</script>', html, re.S)
+    assert match, "no scope picker catalog on the page"
+    return {(entry["major"], entry["minor"]) for entry in json.loads(match.group(1))}
+
+
+def test_api_keys_card_lets_a_user_with_user_self_manage_their_keys(web_client, analyst):
+    html = web_client.get(url_for("main.preferences")).data.decode()
+
+    assert 'data-api-url="/api/v2/users/me/apikeys"' in html
+    assert 'data-can-manage="true"' in html
+    assert 'id="btn_new_my_api_key"' in html
+    assert 'js/preferences_api_keys.js' in html
+
+    offered = _key_catalog(html)
+    # the config-derived ai:<backend> entries are offered too
+    assert {("signature", "read"), ("signature", "download"), ("ai", "fake")} <= offered
+    # no API key ever holds user:self (SESSION_ONLY_PAIRS)
+    assert ("user", "self") not in offered
+
+
+def test_api_keys_card_only_lists_keys_without_user_self(web_client, analyst):
+    add_user_permission(analyst, "user", "self", "DENY")
+
+    html = web_client.get(url_for("main.preferences")).data.decode()
+    assert 'data-api-url="/api/v2/users/me/apikeys"' in html
+    assert 'data-can-manage="false"' in html
+    assert 'id="btn_new_my_api_key"' not in html
+    assert 'id="my_api_key_catalog_json"' not in html
+    assert "Ask an administrator" in html
+
+
+def test_scope_picker_offers_only_what_the_user_holds(web_client, analyst):
+    add_user_permission(analyst, "secret", "*", "DENY")
+
+    offered = _key_catalog(web_client.get(url_for("main.preferences")).data.decode())
+    assert ("alert", "read") in offered
+    assert not {pair for pair in offered if pair[0] == "secret"}
