@@ -283,19 +283,18 @@ class TestLoadIntegrationComponentBin:
         # Restore original PATH
         os.environ["PATH"] = original_path
 
-    def test_load_integration_component_bin_already_in_path(self, tmpdir):
+    def test_load_integration_component_bin_already_in_path(self, monkeypatch, tmpdir):
         """Test loading bin component when bin directory already in PATH."""
         bin_dir = tmpdir.mkdir("bin")
         bin_path = str(bin_dir)
-        
-        # Add to PATH first
-        original_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = f"{original_path}:{bin_path}"
-        
+
+        # monkeypatch restores PATH even when the assertion fails
+        path_with_bin = f"{os.environ['PATH']}:{bin_path}"
+        monkeypatch.setenv("PATH", path_with_bin)
+
         load_integration_component_bin(str(tmpdir))
-        
-        # Restore original PATH
-        os.environ["PATH"] = original_path
+        # Should not be added again
+        assert os.environ["PATH"] == path_with_bin
 
 
 @pytest.mark.unit
