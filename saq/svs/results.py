@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import Integer, case, cast, func, select, update
+from sqlalchemy import Integer, case, cast, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.database.model import (
@@ -166,13 +166,18 @@ def test_decisions(session, test_guid: str, platform: str) -> Decisions:
 
 def suppressing_alert(session, run: SVSRun, hunt: HuntInfo, now: datetime) -> Optional[str]:
     """The latest alert of the hunt (one carrying a detection of it) inserted within its suppression
-    period before the run's window closed, and not attributed to the run; None if there is none.
+    period before the run's window closed, and not attributed to the run (for a hunt with group_by, to
+    any run); None if there is none.
     A hunt checks its suppression each time it runs, and the run that would have caught the test
     comes up to its latency after the start, so the period reaches back from the run's end."""
     if hunt.suppression is None or run.started_at is None:
         return None
 
     attributed = select(SVSAttribution.alert_uuid).where(SVSAttribution.run_id == run.id)
+    if hunt.per_group:
+        # an alert of another run's was suppressed under that run's key (QueryHunt.key_suppression)
+        attributed = select(SVSAttribution.alert_uuid).where(
+            or_(SVSAttribution.run_id == run.id, SVSAttribution.removed_at.is_(None)))
     return session.execute(
         select(Alert.uuid)
         .join(DetectionPoint, DetectionPoint.alert_id == Alert.id)

@@ -381,8 +381,8 @@ the number of runs that need attention, when any do.
     the owner and reviewer.
   - Above the list, once a run is reviewed, is the share of missing expected signatures that were
     possibly suppressed, over every reviewed run's signed-off result. Past 50 reviewed runs or 90
-    days since the first review, a share above 10% says that keeping the hunter from suppressing
-    test targets is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
+    days since the first review, a share above 10% says that the suppression runs don't key by
+    themselves is worth reconsidering (*Results*, below; `docs/SVS.md`, Part 3).
 - **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
   attention, and the expected hits and missing signatures. The filters carry over between the two
   views, and opening a batch lists its runs.
@@ -719,9 +719,11 @@ below), each signature is:
   and not attributed to this run. The latest one is named (`suppressing_alert_uuid`).
   - For a hunt with `group_by` or `dedup_key` the answer is imprecise: that alert may have been for
     another group or key. The row says so (`suppression_imprecise`).
+  - For a hunt with `group_by`, an alert attributed to another run doesn't count: it was suppressed
+    under that run's key (*Hunt suppression during runs*, below).
   - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
-  - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
-    show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
+  - What runs don't key by themselves is revisited once reviewed runs show how often a missing
+    signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
 - **Kept current.** The result is computed when the run ends. Anything that would change it marks
   it stale and the timers recompute it on their next pass (`svs.runs.timer_interval_seconds`):
@@ -737,6 +739,31 @@ below), each signature is:
 |---|---|---|
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
 | `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
+
+### Hunt suppression during runs
+
+A hunt with a `suppression` period stays silent for a group after it alerted on it, which would
+make a test re-run inside that period read *missing*. So while a run is open, a hunt with `group_by`
+keys the suppression of each group by the run (`QueryHunt.key_suppression`):
+
+- **Which groups.** A group whose alert involves one of the run's test hosts (its `hostname`, `fqdn`
+  or test host `ipv4` observables, as attribution reads them) with its event time inside the run's
+  attribution window. Several runs' windows can cover it: the run context attribution would choose
+  is the one (*Without a marker: context*, above).
+- **What it does.** The group's suppression is recorded and checked under a key of its own for the
+  run (`svs_run:<run uuid>:<group value>`), so each run's first match alerts and the rest of that
+  run's are suppressed as usual. An alert before the run (production, or another run) doesn't hide
+  the test, and the test doesn't suppress the group for production or for the next run.
+- **What it doesn't reach.** A hunt without `group_by`, whose suppression stops the whole hunt from
+  running, and whose catch-up after suppression must not lose production alerts; a group whose
+  alert doesn't carry the test host (a `group_by` field other than the host, with no host
+  observable); and `dedup_key`. Those can still hide a test, which the result reads as *possibly
+  suppressed* (*Results*, above).
+- **Cost.** Nothing while no run is open (the attribution gate, *Cost*, above); otherwise one query
+  per hunt execution.
+- **Logs.** Each group keyed by a run is logged at INFO, `hunt … group_value …: suppression keyed by
+  svs run …`, with the run's `svs_run`, `svs_test` and `svs_marker`, `hunt_uuid` and `group_value`.
+  A failure to look the runs up is logged at ERROR, and the hunt suppresses by group as before.
 
 ## Expectations and ignores
 

@@ -700,12 +700,18 @@ and keeps the router from attributing the alert to that run again. Every move it
 with the router name `svs_manual`, and while that is an alert's latest move the SVS router holds
 the alert where it is. [ART-13]
 
-**Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
-`suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
-imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
-deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
-results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
-results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
+**Hunt suppression.** Re-running a test inside a hunt's `suppression` period is the normal case, so
+a hunt with `group_by` keys its suppression of a group by the run while a run's window covers the
+group's event time on one of the run's test hosts: each run's first match alerts, the rest of that
+run's are suppressed, and a test never suppresses production or another run, nor production a test
+(`docs/SVS_RUNS.md`, *Hunt suppression during runs*). What that doesn't reach (a hunt without
+`group_by`, whose suppression stops the whole hunt, a group whose alert doesn't carry the test host,
+`dedup_key`) can still hide a test: when an expected hunt signature is *missing* and that hunt
+alerted within its `suppression` period before the run started, the result reads *missing, possibly
+suppressed*. It is imprecise for `group_by` and `dedup_key`, and says so. The revisit trigger is 50
+Reviewed runs or 3 months: if more than about 10% of *missing* results are *possibly suppressed*,
+reconsider the rest. The Runs tab shows that share, read from the results as signed off
+(`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
 
 ### The Atomic Red Team catalog
 
@@ -1321,6 +1327,7 @@ probably suppressed.
 
 - The dynamic case of YARA regression: re-deriving a sample with the current tool before scanning.
   [YR-10]
-- Preventing hunt suppression for test targets, with the revisit trigger above. [ART-8]
+- Preventing hunt suppression for test targets beyond hunts with `group_by`, with the revisit
+  trigger above. [ART-8]
 - Moving other byte stores onto the CAS (`docs/CAS.md`, Consumers). [CAS-8]
 - Per-company coverage. [COV-1]

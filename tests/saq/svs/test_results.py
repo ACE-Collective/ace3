@@ -259,6 +259,28 @@ class TestSuppression:
         results.compute_result(run.id)
         assert _row(run, HUNT).suppression_imprecise is True
 
+    def test_another_runs_alert_of_a_grouped_hunt_does_not_suppress(self, hunt_dir):
+        # it was suppressed under that run's key (QueryHunt.key_suppression)
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        other = _run(started_at=timedelta(hours=30))
+        _attribute(other, YARA, alert_uuid=_hunt_alert(run.started_at - timedelta(hours=3)))
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "missing"
+
+        # an alert no run holds still may have
+        production = _hunt_alert(run.started_at - timedelta(hours=2))
+        results.compute_result(run.id)
+        assert (_row(run, HUNT).status, _row(run, HUNT).suppressing_alert_uuid) == ("possibly_suppressed", production)
+
+    def test_another_runs_alert_of_an_ungrouped_hunt_still_suppresses(self, hunt_dir):
+        _hunt(hunt_dir)
+        run = _run()
+        other = _run(started_at=timedelta(hours=30))
+        _attribute(other, YARA, alert_uuid=_hunt_alert(run.started_at - timedelta(hours=3)))
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "possibly_suppressed"
+
     @pytest.mark.parametrize("hunt, offset", [
         ({}, timedelta(days=-2)),                     # before the suppression period
         ({"suppression": None}, timedelta(hours=-3)),  # the hunt doesn't suppress

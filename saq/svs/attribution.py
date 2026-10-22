@@ -397,6 +397,15 @@ def runs_in_window(when: datetime) -> list[RunSnapshot]:
         return _snapshots(session, runs)
 
 
+def runs_overlapping(start: datetime, end: datetime) -> list[RunSnapshot]:
+    """The runs whose attribution window overlaps start to end."""
+    with private_transaction() as session:
+        runs = list(session.execute(
+            select(SVSRun).where(SVSRun.started_at <= end, SVSRun.attribution_ends_at >= start)
+            .order_by(SVSRun.id)).scalars())
+        return _snapshots(session, runs)
+
+
 #
 # the alert's hosts
 #
@@ -615,6 +624,32 @@ def context_claimant(candidates: list[RunSnapshot]) -> Optional[RunSnapshot]:
            for run in candidates if run is not latest):
         return latest
     return None
+
+
+def suppression_runs(roots: list[RootAnalysis], now: Optional[datetime] = None) -> list[Optional[RunSnapshot]]:
+    """For each root a grouped hunt is about to submit, the run that keys its suppression: the run
+    context attribution would give it to, by its hosts and event time, or the latest started of the
+    runs that could claim it when their claims overlap. None when no run's window covers it on one
+    of its hosts, as for every root while no run is open. One query for all the roots."""
+    if not roots or not attribution_open():
+        return [None] * len(roots)
+
+    now = now or datetime.now()
+    times = [alert_event_time(root, now) for root in roots]
+    runs = runs_overlapping(min(times), max(times))
+    result = []
+    for root, event_time in zip(roots, times):
+        hosts = alert_hosts(root)
+        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
+        result.append(context_claimant(candidates)
+                      or max(candidates, key=lambda run: (run.started_at, run.id), default=None))
+    return result
+
+
+def run_suppression_key(run_uuid: str, group_value: str) -> str:
+    """The key a grouped hunt's suppression of group_value is recorded under during a run: the first
+    match for each run alerts, and a test never suppresses production or another run."""
+    return f"svs_run:{run_uuid}:{group_value}"
 
 
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:

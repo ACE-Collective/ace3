@@ -686,8 +686,8 @@ row's `updated_at` and you never miss a run.
 
 ### Suppression share
 
-Keeping the hunter from suppressing test targets is deferred, with a revisit trigger (`docs/SVS.md`,
-Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
+Suppression a run doesn't key by itself (`docs/SVS_RUNS.md`, *Hunt suppression during runs*) is
+judged by a revisit trigger (`docs/SVS.md`, Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
 result as signed off, and the Runs tab shows it above the list:
 
 | Field | Meaning |

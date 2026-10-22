@@ -444,7 +444,7 @@
                     : "Possibly suppressed: " + share.possibly_suppressed + " of the " + share.missing +
                       " missing expected signatures (" + percent + "%) over " + plural(share.reviewed_runs, "reviewed run") + ".";
                 if (share.reconsider) {
-                    text += " That is more than 10%: keeping the hunter from suppressing test targets is worth reconsidering.";
+                    text += " That is more than 10%: suppression a run doesn't key by itself (hunts without group_by, or groups that don't carry the test host) is worth reconsidering.";
                 } else if (!share.trigger_reached) {
                     text += " Judged after 50 reviewed runs or 90 days.";
                 }
