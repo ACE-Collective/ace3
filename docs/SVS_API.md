@@ -567,7 +567,7 @@ launcher that also reads its runs needs both.
 | `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
 | `POST /api/v2/svs/runs/validate`, same body | `svs:run_register` | What registering it would decide, without registering it: `decision` (`accepted`, `refused`, `invalid`, `host_busy`), the `status_code` registering would answer, `message`, each target's `accepted`, `reason`, `test_host`, `platform` and `held_by` (the runs holding its host), and when accepted the run's `platform`, `observation_seconds`, `observation_source`, `attribution_seconds` and `holds_host`. Creates no run, refusal or alert (`docs/SVS_RUNS.md`, *Validating a registration*) |
 | `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
-| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
+| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?, output?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error`. `output` (what the test printed) is kept as the run's `launcher_output`, at most 64 KiB (`docs/SVS_RUNS.md`, *The test's output*) |
 | `POST /api/v2/svs/runs/{run_id}/cleanup` | `svs:run_register` | The run, with `cleanup_at`: the test's cleanup begins now (a started run, once) |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
 | `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
@@ -629,6 +629,8 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 `GET …/{run_id}` adds:
 - `extra`, the object the launcher sent;
 - `launcher_error`, the error `executed` reported;
+- `launcher_output`, what the test printed, as `executed` reported it (at most 64 KiB, longer output
+  truncated around a marker);
 - `test_content_hash` and `catalog_commit`, the test as it was registered (a later catalog change
   doesn't change them);
 - `observation_seconds` and `attribution_seconds`, the window lengths fixed at registration

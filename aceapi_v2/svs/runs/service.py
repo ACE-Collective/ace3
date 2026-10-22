@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, selectinload, undefer
 
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
@@ -169,7 +169,7 @@ def start(run_id: str, caller: Caller) -> RunLifecycle:
 
 
 def executed(run_id: str, body: RunExecutedRequest, caller: Caller) -> RunLifecycle:
-    return _call(runs.executed, run_id, caller, body.exit_code, body.error)
+    return _call(runs.executed, run_id, caller, body.exit_code, body.error, output=body.output)
 
 
 def cleanup(run_id: str, caller: Caller) -> RunLifecycle:
@@ -426,7 +426,8 @@ def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
 #
 
 def get_detail(run_id: str) -> RunDetail:
-    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))).one_or_none()
+    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))
+                           .options(undefer(SVSRun.launcher_output))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
@@ -440,6 +441,7 @@ def get_detail(run_id: str) -> RunDetail:
                                   context_alerts=found.get("context_alerts", []))
     return RunDetail(
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
+        launcher_output=run.launcher_output,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
         holds_host=run.holds_host, registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,

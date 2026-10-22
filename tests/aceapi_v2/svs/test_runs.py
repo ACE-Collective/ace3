@@ -54,8 +54,9 @@ async def test_the_lifecycle(client: AsyncClient):
     started = response.json()
     assert started["state"] == "started" and started["observation_ends_at"] is not None
 
-    response = await client.post(f"/svs/runs/{run['run_id']}/executed", json={"exit_code": 0})
+    response = await client.post(f"/svs/runs/{run['run_id']}/executed", json={"exit_code": 0, "output": "done\n"})
     assert response.status_code == 200 and response.json()["state"] == "started"
+    assert (await client.get(f"/svs/runs/{run['run_id']}")).json()["launcher_output"] == "done\n"
 
     response = await client.post(f"/svs/runs/{run['run_id']}/cancel")
     assert response.status_code == 200 and response.json()["state"] == "canceled"
