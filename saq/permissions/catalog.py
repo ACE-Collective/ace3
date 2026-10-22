@@ -83,12 +83,20 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("svs", "validate", "Request SVS YARA validations of a rule repository's commits and read their status (counts, rule names and uuids only; the CI key's permission)."),
     CatalogEntry("system", "read", "Read system metadata and supported types via API."),
     CatalogEntry("user", "read", "View users, groups, and their permissions."),
+    CatalogEntry("user", "self", "Create, edit and revoke your own scoped API keys, limited to permissions you already hold."),
     CatalogEntry("user", "write", "Create/modify users, groups, memberships, and permission grants."),
 )
 
 # Convenience lookups for validation and guard tests. These cover the STATIC entries only; use
 # get_catalog_pairs() where the config-derived ai:<backend> entries must be included.
 CATALOG_PAIRS: frozenset[tuple[str, str]] = frozenset((e.major, e.minor) for e in PERMISSION_CATALOG)
+
+# Permissions no API key ever holds, whatever its scope says and whether or not it inherits its
+# owner's: only a GUI session does. user:self changes the user's own API keys, so a key holding it
+# could widen its own scope up to everything its owner holds, or mint keys that outlive its
+# revocation. The routes that need it also refuse every API key (require_self_service(
+# session_only=True)); this holds even where a route forgets to.
+SESSION_ONLY_PAIRS: frozenset[tuple[str, str]] = frozenset({("user", "self")})
 CATALOG_MAJORS: frozenset[str] = frozenset(e.major for e in PERMISSION_CATALOG)
 
 

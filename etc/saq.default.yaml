@@ -463,6 +463,10 @@ redis:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  # (in seconds) without these a stalled redis blocks the caller forever; the reply timeout
+  # must be longer than the search indexer's 1 second BLPOP
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 redis-local:
   name: local
@@ -472,6 +476,8 @@ redis-local:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 qdrant:
   url: https://qdrant:6333

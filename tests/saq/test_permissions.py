@@ -8,6 +8,8 @@ from saq.database.model import (
     User
 )
 from saq.database.pool import get_db
+from saq.permissions.catalog import CATALOG_PAIRS
+from saq.permissions.logic import held_catalog_pairs
 from saq.permissions import (
     create_auth_group,
     delete_auth_group,
@@ -876,3 +878,30 @@ class TestWildcardPermissionMatching:
         assert user_has_permission(user.id, "testa", "read") is False
         assert user_has_permission(user.id, "test", "read") is False
         assert user_has_permission(user.id, "test10", "read") is False
+
+# A typical analyst group: everything except the CLI, secrets and user administration.
+ANALYST_ROWS = [("*", "*", "ALLOW"), ("cli", "*", "DENY"), ("secret", "*", "DENY"), ("user", "write", "DENY")]
+
+
+@pytest.mark.unit
+class TestHeldCatalogPairs:
+    """held_catalog_pairs() turns grant patterns into the concrete catalog pairs they allow."""
+
+    def test_allow_everything_but_the_denied(self):
+        held = held_catalog_pairs([], ANALYST_ROWS, CATALOG_PAIRS)
+        denied = {pair for pair in CATALOG_PAIRS if pair[0] in ("cli", "secret") or pair == ("user", "write")}
+        assert denied  # the catalog has entries under every denied pattern
+        assert held == CATALOG_PAIRS - denied
+        assert {("signature", "read"), ("signature", "download"), ("user", "self"), ("user", "read")} <= held
+
+    def test_a_user_deny_beats_a_group_allow(self):
+        held = held_catalog_pairs([("signature", "download", "DENY")], [("signature", "*", "ALLOW")], CATALOG_PAIRS)
+        signature = {pair for pair in CATALOG_PAIRS if pair[0] == "signature"}
+        assert ("signature", "read") in held
+        assert held == signature - {("signature", "download")}
+
+    def test_grants_match_case_sensitively(self):
+        assert held_catalog_pairs([("Signature", "read", "ALLOW")], [], CATALOG_PAIRS) == frozenset()
+
+    def test_no_grants_hold_nothing(self):
+        assert held_catalog_pairs([], [], CATALOG_PAIRS) == frozenset()

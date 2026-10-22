@@ -710,6 +710,8 @@ An observable should be set to volatile if you're adding it for the purposes of 
 
 This is required if the `type` is set to `file`. This controls the name of the file used to store the contents of the data. See the section [Event Fields as File Content](#event-fields-as-file-content).
 
+The file is always stored directly in the alert's files directory: path separators (`/`, `\`), `../` and `~` in the interpolated name are replaced with `_`, so an event field that holds a path (or an attacker's file name) cannot place the file anywhere else.
+
 ### `file_decoder` (string, optional)
 
 This is optional if the type is set to file. This controls how the contents of the field are decoded into bytes to be written to file. The following decoders are available to be used.

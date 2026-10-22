@@ -1,12 +1,15 @@
 # tests for the hand-off between the orchestrator's "index this alert" decision and the
 # worker's submission of the task AFTER the lock on the work item is released
 import logging
+import socket
+import threading
 import uuid
 from unittest.mock import Mock, patch
 
 import pytest
+import redis
 
-from saq.configuration.config import get_service_config
+from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, SERVICE_SEARCH_INDEXER
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker import Worker
@@ -71,3 +74,42 @@ def test_submit_failure_does_not_fail_the_work_item(monkeypatch, caplog):
     errors = [record for record in caplog.records if record.levelno == logging.ERROR and record.exc_info]
     assert len(errors) == 1
     assert errors[0].getMessage().startswith(f"error submitting search index task for {root.uuid}")
+
+
+def test_stalled_redis_times_out_and_is_logged_at_error(monkeypatch, caplog):
+    """The submission runs after the lock is released, where no module deadline guards the worker,
+    so only the redis socket timeout stops a stalled redis from blocking it forever."""
+    monkeypatch.setattr(get_service_config(SERVICE_SEARCH_INDEXER), "enabled", True)
+
+    # the kernel completes the handshake for a listening socket nobody accepts on, so the
+    # client connects and then never gets a reply
+    stalled = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    stalled.bind(("127.0.0.1", 0))
+    stalled.listen(8)
+    redis_config = get_config().redis
+    monkeypatch.setattr(redis_config, "host", "127.0.0.1")
+    monkeypatch.setattr(redis_config, "port", stalled.getsockname()[1])
+    monkeypatch.setattr(redis_config, "use_ssl", False)
+    monkeypatch.setattr(redis_config, "ssl_ca_path", None)
+    monkeypatch.setattr(redis_config, "socket_connect_timeout", 0.2)
+    monkeypatch.setattr(redis_config, "socket_timeout", 0.2)
+
+    worker = _worker(requested=True)
+    root = _root()
+    results = []
+    thread = threading.Thread(target=lambda: results.append(worker.execute(root)), daemon=True)
+    try:
+        thread.start()
+        # bounds the test rather than the code: without the timeout, execute() never returns
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the worker blocked on a stalled redis"
+    finally:
+        # resets the queued connection, which also releases a thread still blocked on it
+        stalled.close()
+        thread.join(timeout=10)
+
+    assert results == [True]
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR and record.exc_info]
+    assert len(errors) == 1
+    assert errors[0].getMessage().startswith(f"error submitting search index task for {root.uuid}")
+    assert isinstance(errors[0].exc_info[1], redis.TimeoutError)

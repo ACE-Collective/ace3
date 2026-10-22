@@ -185,6 +185,9 @@ class RedisConfig(BaseModel):
     password: str = Field(..., description="redis password")
     use_ssl: bool = Field(..., description="use SSL for redis connection")
     ssl_ca_path: Optional[str] = Field(default=None, description="path to SSL CA certificate")
+    socket_connect_timeout: float = Field(default=5, gt=0, description="how long (in seconds) to wait for the TCP connection to redis")
+    # must outlast the longest blocking command, the search indexer's 1 second BLPOP, which would otherwise always time out
+    socket_timeout: float = Field(default=10, gt=1, description="how long (in seconds) to wait for a reply from redis before raising redis.TimeoutError")
 
 class QdrantConfig(BaseModel):
     url: str = Field(..., description="qdrant URL")

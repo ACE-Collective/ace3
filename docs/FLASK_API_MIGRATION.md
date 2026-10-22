@@ -252,7 +252,7 @@ The `app/auth/` user-management routes moved to `aceapi_v2/users/`; the pages th
 | `POST /auth/permission/add`    | `POST /api/v2/users/permissions`      |
 | `POST /auth/permission/delete` | `POST /api/v2/users/permissions/delete` |
 
-Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET /users/me/apikeys`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`.
+Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET`/`POST /users/me/apikeys`, `PUT`/`DELETE /users/me/apikeys/{key_id}`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`; the ones that change the caller's own keys also need `user:self` and a GUI session (`docs/USER_PREFERENCES.md`).
 
 Module: `aceapi_v2/users/{router,service,schemas}.py`. Tests: `tests/aceapi_v2/users/{test_router,test_service}.py`.
 
@@ -579,7 +579,7 @@ No candidates left, in either tier; see the appendix entries for where they went
 - **`svs`** — 10 GET pages behind an `svs:run_read` `before_request` gate (`app/svs/views/access.py`), and `/svs/`, which redirects to the Runs tab; data from `/api/v2/svs/runs`, `/tests`, `/coverage`, `/worklist` and `/test-hosts`. `tests/app/svs/test_svs_smoke.py::TestSVSIsPagesOnly::test_svs_blueprint_serves_only_get_pages` enforces it. The list pages write default saved filters on render.
 - **`remediation`**, **`file_collection`** — one GET page each (`/remediation/manage`, `remediation:read`; `/file_collection/manage`, `file_collection:read`), shells over `/api/v2/remediation` and `/api/v2/file-collections` like the Signatures pages. `tests/app/remediation/test_manage.py` and `tests/app/file_collection/test_manage.py` enforce it. Both write default saved filters on render.
 - **`help`** — the training guides, for any logged-in user: 2 GET pages (`/help/`, `/help/<set>/<guide>`), `/help/<set>/`, which redirects to the set's first guide, and `/help/<set>/images/<file>`, which serves the guides' own images through `send_from_directory`. That last one is static content the pages embed, not API surface. No pages-only test; `tests/app/help/test_help_content.py` covers the content.
-- **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me` and `/api/v2/users/me/preferences`. No pages-only test.
+- **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me`, `/api/v2/users/me/preferences` and `/api/v2/users/me/apikeys`. No pages-only test.
 - **`auth`** — `/login`, `/logout`, `/login/change`: Flask-Login session flow, stays in Flask.
 
 This is the shape every GUI blueprint should converge on: Flask renders GET pages, the browser talks to v2. Copy the pages-only test into the next blueprint that finishes. The tests check only that a route's methods are `{GET}`, so a GET route that returns JSON still passes them.

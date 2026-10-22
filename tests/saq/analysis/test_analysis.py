@@ -6,6 +6,20 @@ from saq.configuration.config import get_config
 from saq.observables.file import FileObservable
 
 @pytest.mark.unit
+def test_add_file_observable_skips_a_refused_file(root_analysis, tmp_path):
+    """A file the file manager refuses (here a link out of the files directory, as an archive can
+    contain) is skipped, not raised, so the module adding it keeps going."""
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("secret")
+    os.makedirs(root_analysis.file_dir, exist_ok=True)
+    link = os.path.join(root_analysis.file_dir, "secret.lnk")
+    os.symlink(outside_file, link)
+
+    assert root_analysis.add_file_observable(link) is None
+    assert not [o for o in root_analysis.all_observables if o.type == "file"]
+    assert not os.path.exists(root_analysis.hardcopy_dir) or not os.listdir(root_analysis.hardcopy_dir)
+
+@pytest.mark.unit
 def test_add_file_observable(root_analysis, tmpdir):
     # file must exist
     assert root_analysis.add_file_observable("does_not_exist") is None

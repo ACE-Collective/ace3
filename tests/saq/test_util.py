@@ -165,6 +165,12 @@ def test_is_nt_path(path: str, expected: bool):
     (r'/some/path/test.txt', '_some_path_test.txt'),
     (r'//////test.txt', '_test.txt'),
     (r'~john/test', '_john_test'),
+    ('.', '_'),
+    ('..', '_'),
+    ('...', '...'),
+    ('a\0b', 'a_b'),
+    ('', ''),
+    ('Quarterly Report é.pdf', 'Quarterly Report é.pdf'),
 ])
 @pytest.mark.unit
 def test_safe_file_name(input: str, expected: str):

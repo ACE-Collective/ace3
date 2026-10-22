@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import update
 
 from app.analysis.views.index import TreeNode, _prune, _recurse
+from app.application import b64escape
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
@@ -807,6 +808,35 @@ def test_index_renders_unmark_interesting_for_interesting_observable(
 
     body = result.data.decode("utf-8")
     assert "Unmark as interesting" in body
+
+
+@pytest.mark.integration
+def test_index_mark_interesting_inserts_display_value_as_text(
+    web_client, root_analysis, test_context,
+):
+    """Marking an observable interesting adds it to the summary card client-side. The display
+    value is analyzed data (e.g. an attachment filename), so it must reach the DOM as a text
+    node: concatenating it into the HTML string given to append() was a stored XSS (#815)."""
+    payload = '"/><img src=x onerror=alert(1)><b>'
+    root_analysis.add_observable_by_spec(F_TEST, payload)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "Mark as interesting" in body
+    assert b64escape(payload) in body
+    assert "<img src=x onerror=alert(1)>" not in body
+
+    assert "document.createTextNode(displayValue)" in body
+    assert "$('<b>').text(displayType)" in body
+    assert not re.search(r"\+\s*displayValue\b|\bdisplayValue\s*\+", body), \
+        "the decoded display value is concatenated into an HTML string"
 
 
 @pytest.mark.unit

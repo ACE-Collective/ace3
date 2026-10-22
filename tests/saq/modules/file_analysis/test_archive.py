@@ -1,3 +1,4 @@
+import hashlib
 import os
 import stat
 import zipfile
@@ -227,3 +228,44 @@ def test_unreadable_extracted_members(root_analysis, tmp_path):
 
     extracted_names = {observable.file_name for observable in analysis.get_observables_by_type(F_FILE)}
     assert {os.path.basename(name) for name in expected} <= extracted_names
+
+
+@pytest.mark.integration
+def test_a_symlink_member_is_skipped(root_analysis, tmp_path, caplog):
+    """unzip recreates a symlink member as a symlink. The link out of the root is refused, and
+    only that one member: a .lnk sorts first, so failing the module would hide every member."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    xlsx_path = tmp_path / "report.xlsx"
+    with zipfile.ZipFile(xlsx_path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", "<workbook/>")
+        _add_member_with_mode(archive, "a.lnk", stat.S_IFLNK | 0o777, str(secret))
+
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(xlsx_path))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    existing_crash_reports = _enum_crash_reports()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_FILE_TYPE, "test_groups")
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_ARCHIVE, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    assert _enum_crash_reports() == existing_crash_reports
+    assert any(r.getMessage().startswith("refusing file path") and r.path.endswith("a.lnk")
+               and r.resolved_path == os.path.realpath(secret) for r in caplog.records)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(ArchiveAnalysis)
+    assert analysis
+    assert {"[Content_Types].xml", "xl/workbook.xml"} <= set(analysis.extracted_files)
+    assert "a.lnk" not in analysis.extracted_files
+
+    extracted_names = {observable.file_name for observable in analysis.get_observables_by_type(F_FILE)}
+    assert {"[Content_Types].xml", "workbook.xml"} <= extracted_names
+    assert "a.lnk" not in extracted_names
+    assert hashlib.sha256(b"secret").hexdigest() not in os.listdir(root_analysis.hardcopy_dir)
+

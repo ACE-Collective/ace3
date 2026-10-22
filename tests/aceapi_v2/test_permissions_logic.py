@@ -17,7 +17,7 @@ from saq.database.model import (
     AuthUserPermission,
     User,
 )
-from saq.permissions.logic import user_has_permission_async
+from saq.permissions.logic import get_permission_rows_async, user_has_permission_async
 
 pytestmark = pytest.mark.integration
 
@@ -115,3 +115,25 @@ async def test_wildcard_minor(session: AsyncSession):
     assert await user_has_permission_async(session, user.id, "test", "blah") is True
     assert await user_has_permission_async(session, user.id, "test", "anything") is True
     assert await user_has_permission_async(session, user.id, "other", "blah") is False
+
+
+@pytest.mark.asyncio
+async def test_permission_rows_are_the_users_own_and_their_groups(session: AsyncSession):
+    user = await _make_user(session, "async_perm_rows")
+    await _add_user_perm(session, user.id, "alert", "read", "ALLOW")
+    group = await _add_group_with_user(session, "async_perm_rows_grp", user.id)
+    await _add_group_perm(session, group.id, "signature", "*", "DENY")
+
+    user_rows, group_rows = await get_permission_rows_async(session, user.id)
+    assert [tuple(row) for row in user_rows] == [("alert", "read", "ALLOW")]
+    assert [tuple(row) for row in group_rows] == [("signature", "*", "DENY")]
+
+
+@pytest.mark.asyncio
+async def test_permission_rows_of_a_user_in_no_group(session: AsyncSession):
+    user = await _make_user(session, "async_perm_rows_nogroup")
+    await _add_user_perm(session, user.id, "alert", "read", "ALLOW")
+
+    user_rows, group_rows = await get_permission_rows_async(session, user.id)
+    assert [tuple(row) for row in user_rows] == [("alert", "read", "ALLOW")]
+    assert group_rows == []

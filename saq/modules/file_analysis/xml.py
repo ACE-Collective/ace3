@@ -139,8 +139,10 @@ class _XMLParser(object):
     def start(self, tag, attrib):
         if tag == PART_TAG:
             if PART_NAME in attrib:
-                file_name = safe_filename(attrib[PART_NAME])
-                self.output_path = os.path.join(self.output_dir, file_name[1:])
+                # part names are absolute within the package (/word/media/image1.png), and only
+                # the leading / of an absolute path would get past safe_filename
+                file_name = safe_filename(attrib[PART_NAME]).lstrip('/')
+                self.output_path = os.path.join(self.output_dir, file_name) if file_name else None
 
         if tag == DATA_TAG:
             self._data.clear()
