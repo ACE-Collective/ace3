@@ -37,7 +37,7 @@ def earlier(fid, status, **fields):
 def bundle(tmp_path):
     path = tmp_path / "round-2"
     path.mkdir()
-    (path / "target.json").write_text(json.dumps({"round": 2, "rule_changes_digest": "d1", "state_dir": str(tmp_path / "state"),
+    (path / "target.json").write_text(json.dumps({"round": 2, "rule_changes_digest": "d1", "flaw_dir": str(tmp_path / "flaws"),
                                                   "repo": "/opt/ace", "branch": "mw/topic"}))
     return path
 
@@ -332,8 +332,8 @@ def flaws_through_tally(bundle, flaws, votes):
     return plan
 
 
-def ledger(bundle):
-    return read_json(Path(read_json(bundle / "target.json")["state_dir"]) / "design-flaws.json")
+def flaw_files(bundle):
+    return findings.load_flaws(read_json(bundle / "target.json")["flaw_dir"])
 
 
 def finish_with_flaws(bundle, flaws):
@@ -383,39 +383,50 @@ def test_tally_waits_for_the_flaw_votes(bundle):
     assert findings.tally(str(bundle), allow_missing=True)["rejected_flaws"] == 1
 
 
-def test_finish_adds_new_flaws_to_the_ledger_undecided(bundle):
+HOOK = "the-tree-has-no-hook-for-x"
+
+
+def test_finish_writes_each_new_flaw_to_its_own_file_undecided(bundle, tmp_path):
     summary = finish_with_flaws(bundle, [flaw()])
 
     assert summary["verdict_floor"] == "ship"
-    assert summary["flaws"] == [{"id": "D1", "title": "the tree has no hook for X", "new": True, "status": "undecided", "fix_size": "large",
-                                 "recommendation": "keep going", "why": "contained", "workarounds": 1}]
-    [entry] = ledger(bundle)
-    assert {k: entry[k] for k in ("id", "flaw", "area", "fix_size", "fix", "status")} == {
-        "id": "D1", "flaw": "saq/analysis/root.py has no event for X", "area": "analysis tree", "fix_size": "large",
-        "fix": "add the hook", "status": "undecided",
+    assert summary["flaws"] == [{"id": HOOK, "title": "the tree has no hook for X", "new": True, "status": "undecided", "fix_size": "large",
+                                 "recommendation": "keep going", "why": "contained", "workarounds": 1,
+                                 "path": str(tmp_path / "flaws" / f"{HOOK}.yaml")}]
+    text = (tmp_path / "flaws" / f"{HOOK}.yaml").read_text()
+    assert text.startswith("# A flaw in ACE's design")
+    entry = flaw_files(bundle)[HOOK]
+    assert {k: entry[k] for k in ("title", "status", "area", "fix_size", "flaw", "fix")} == {
+        "title": "the tree has no hook for X", "status": "undecided", "area": "analysis tree", "fix_size": "large",
+        "flaw": "saq/analysis/root.py has no event for X", "fix": "add the hook",
     }
+    # the repo by name: the files are shared, and the checkout's path is different on every machine
     assert [(w["repo"], w["branch"], w["round"], w["file"], w["line"], w["what"]) for w in entry["workarounds"]] == [
-        ("/opt/ace", "mw/topic", 2, "saq/y.py", 7, "polls the root for X"),
+        ("ace", "mw/topic", 2, "saq/y.py", 7, "polls the root for X"),
     ]
 
 
 def test_a_known_flaw_counts_one_workaround_per_branch(bundle, tmp_path):
     finish_with_flaws(bundle, [flaw()])
-    findings.answer_flaw(str(tmp_path / "state"), "D1", "defer")
-    # the same branch's next round finds it again, and so does another branch
+    findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "defer")
+    # the same branch's next round finds it again, and so does another branch, in other words
     later = tmp_path / "round-3"
-    later.mkdir()
     write_json(later / "target.json", {**read_json(bundle / "target.json"), "round": 3})
     other = tmp_path / "other" / "round-1"
     write_json(other / "target.json", {**read_json(bundle / "target.json"), "round": 1, "branch": "jd/other"})
 
-    finish_with_flaws(later, [flaw(known="D1", workaround="polls again", line=9)])
-    summary = finish_with_flaws(other, [flaw(known="D1", title="worded differently")])
+    finish_with_flaws(later, [flaw(known=HOOK, workaround="polls again", line=9)])
+    summary = finish_with_flaws(other, [flaw(known=HOOK, title="worded differently")])
 
-    assert summary["flaws"] == [{"id": "D1", "title": "the tree has no hook for X", "new": False, "status": "deferred",
-                                 "fix_size": "large", "recommendation": "keep going", "why": "contained", "workarounds": 2}]
-    [entry] = ledger(bundle)
-    assert [(w["branch"], w["round"], w["line"]) for w in entry["workarounds"]] == [("mw/topic", 3, 9), ("jd/other", 1, 7)]
+    assert [(f["id"], f["new"], f["status"], f["workarounds"]) for f in summary["flaws"]] == [(HOOK, False, "deferred", 2)]
+    assert list(flaw_files(bundle)) == [HOOK]
+    assert [(w["branch"], w["round"], w["line"]) for w in flaw_files(bundle)[HOOK]["workarounds"]] == [("mw/topic", 3, 9), ("jd/other", 1, 7)]
+
+
+def test_a_known_id_that_has_no_file_is_a_new_flaw(bundle):
+    summary = finish_with_flaws(bundle, [flaw(known="gone")])
+
+    assert [(f["id"], f["new"]) for f in summary["flaws"]] == [(HOOK, True)]
 
 
 def test_rerunning_finish_replaces_what_the_round_recorded(bundle):
@@ -423,44 +434,53 @@ def test_rerunning_finish_replaces_what_the_round_recorded(bundle):
 
     summary = finish_with_flaws(bundle, [flaw()])
 
-    assert [f["id"] for f in summary["flaws"]] == ["D1"]
-    assert [(e["id"], len(e["workarounds"])) for e in ledger(bundle)] == [("D1", 1)]
+    assert [(f["id"], f["new"]) for f in summary["flaws"]] == [(HOOK, True)]
+    assert {fid: len(e["workarounds"]) for fid, e in flaw_files(bundle).items()} == {HOOK: 1}
 
 
 def test_rerunning_finish_keeps_an_answered_flaw(bundle, tmp_path):
+    finish_with_flaws(bundle, [flaw(title="dropped on the rerun")])
+    findings.answer_flaw(str(tmp_path / "flaws"), "dropped-on-the-rerun", "address", note="small after all")
+
+    summary = finish_with_flaws(bundle, [])
+
+    assert summary["flaws"] == []
+    entry = flaw_files(bundle)["dropped-on-the-rerun"]
+    assert (entry["status"], entry["note"], entry["workarounds"]) == ("addressing", "small after all", [])
+
+
+def test_a_fixed_flaw_loses_its_file(bundle, tmp_path):
     finish_with_flaws(bundle, [flaw()])
-    findings.answer_flaw(str(tmp_path / "state"), "D1", "address", note="small after all")
 
-    summary = finish_with_flaws(bundle, [flaw()])
-
-    assert summary["flaws"][0]["status"] == "addressing" and not summary["flaws"][0]["new"]
-    [entry] = ledger(bundle)
-    assert (entry["status"], entry["note"], len(entry["workarounds"])) == ("addressing", "small after all", 1)
+    assert findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "fixed") == {"id": HOOK, "status": "fixed", "removed": True}
+    assert flaw_files(bundle) == {}
 
 
 def test_answer_flaw_refuses_what_it_cannot_record(bundle, tmp_path):
     finish_with_flaws(bundle, [flaw()])
 
-    with pytest.raises(SystemExit, match="no design flaw D9"):
-        findings.answer_flaw(str(tmp_path / "state"), "D9", "defer")
-    with pytest.raises(SystemExit, match="one of defer, address, fixed, wrong"):
-        findings.answer_flaw(str(tmp_path / "state"), "D1", "later")
-    assert ledger(bundle)[0]["status"] == "undecided"
+    with pytest.raises(SystemExit, match="no design flaw nope"):
+        findings.answer_flaw(str(tmp_path / "flaws"), "nope", "defer")
+    with pytest.raises(SystemExit, match="one of defer, address, wrong, fixed"):
+        findings.answer_flaw(str(tmp_path / "flaws"), HOOK, "later")
+    assert flaw_files(bundle)[HOOK]["status"] == "undecided"
+
+
+def test_flaw_slugs_are_file_names():
+    assert findings.flaw_slug("RootAnalysis can't say: is it loaded?") == "rootanalysis-can-t-say-is-it-loaded"
+    assert len(findings.flaw_slug("x " * 100)) <= 60 and not findings.flaw_slug("x " * 100).endswith("-")
+    assert findings.flaw_slug("!!!") == "flaw"
 
 
 def test_the_flaw_list_puts_open_flaws_with_the_most_workarounds_first(tmp_path, monkeypatch, capsys):
-    def entry(fid, status, workarounds):
-        return {"id": fid, "title": fid, "status": status, "workarounds": [{"branch": f"b{n}"} for n in range(workarounds)]}
+    directory = tmp_path / "flaws"
+    for fid, status, workarounds in (("a", "deferred", 1), ("b", "deferred", 3), ("c", "undecided", 1), ("d", "addressing", 1), ("e", "wrong", 1)):
+        findings.save_flaw(str(directory), fid, {"title": fid, "status": status, "workarounds": [{"branch": f"b{n}"} for n in range(workarounds)]})
 
-    state = tmp_path / "state"
-    write_json(state / "design-flaws.json", [entry("D1", "deferred", 1), entry("D2", "fixed", 5), entry("D3", "deferred", 3),
-                                            entry("D4", "undecided", 1), entry("D5", "addressing", 1), entry("D6", "wrong", 1)])
-
-    assert [e["id"] for e in findings.list_flaws(str(state))] == ["D4", "D5", "D3", "D1"]
-    monkeypatch.setattr(sys, "argv", ["findings.py", "flaws", "--all", "--state", str(state)])
+    assert [e["id"] for e in findings.list_flaws(str(directory))] == ["c", "d", "b", "a"]
+    monkeypatch.setattr(sys, "argv", ["findings.py", "flaws", "--all", "--dir", str(directory)])
     findings.main()
-    assert [e["id"] for e in json.loads(capsys.readouterr().out)] == ["D4", "D5", "D3", "D1", "D2", "D6"]
-    assert findings.stats(str(state))["design_flaws"] == {"addressing": 1, "deferred": 2, "fixed": 1, "undecided": 1, "wrong": 1}
+    assert [e["id"] for e in json.loads(capsys.readouterr().out)] == ["c", "d", "b", "a", "e"]
 
 
 @pytest.mark.parametrize("step, message", [(findings.tally, "run collect first"), (findings.finish, "no ranked.json")])

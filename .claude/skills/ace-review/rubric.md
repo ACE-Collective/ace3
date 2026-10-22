@@ -41,7 +41,7 @@ When the tests weren't run (lock held, range not checked out), the verdict may n
 
 ## Design flaws worked around
 
-Sometimes a change is shaped by a flaw in ACE's design rather than by a mistake of its own: it has to work around how ACE already is. The maintainer must hear about every such flaw. They decide whether to stop and fix the flaw first or keep going, and when they keep going, the flaw goes in a ledger to fix later. They are moving fast, so a flaw is never a reason to hold the change up by itself.
+Sometimes a change is shaped by a flaw in ACE's design rather than by a mistake of its own: it has to work around how ACE already is. The maintainer must hear about every such flaw. They decide whether to stop and fix the flaw first or keep going, and either way the flaw is kept in `docs/design-flaws/` in core, shared through the repo, to fix later. They are moving fast, so a flaw is never a reason to hold the change up by itself.
 
 A design flaw is in the code on the base branch, not in the change, and fixing it is a piece of work of its own, beyond what this change should take on. Signs of one:
 - The change special-cases a type, mode, module or caller because a shared abstraction doesn't fit it.
@@ -64,10 +64,10 @@ For each flaw, size the real fix:
 - **large**: cross-cutting, many callers, or migrating existing data.
 
 Then recommend **stop** or **keep going**:
-- Recommend stop when the fix is small, when the workaround would spread (other code will copy it, it is a pattern other authors will follow), when it writes data in a shape that is costly to migrate later, or when the ledger already holds two or more workarounds of the same flaw.
+- Recommend stop when the fix is small, when the workaround would spread (other code will copy it, it is a pattern other authors will follow), when it writes data in a shape that is costly to migrate later, or when the flaw's file already lists two or more workarounds.
 - Recommend keep going when the fix is medium or large and the workaround is contained and easy to remove once the flaw is fixed.
 
-Read the ledger, `<state_dir>/design-flaws.json` (`state_dir` is in `target.json`), before reporting a flaw. A flaw already in it is reported again with its id in `known`, so the ledger counts one more workaround of it. Skip a flaw the ledger marks `wrong`.
+Read the known flaws before reporting one: one `<id>.yaml` per flaw in `flaw_dir` (from `target.json`, core's `docs/design-flaws/`). A flaw already there is reported again with its id in `known`, so its file counts one more workaround. Skip a flaw marked `wrong`.
 
 Report only flaws that this change actually works around, with the code that does it. A flaw you happen to notice in code nearby, which the change doesn't depend on, isn't one.
 
@@ -125,7 +125,7 @@ A reviewer that finds a design flaw also writes `$B/flaws-<dim>.json`, an array 
     "fix": "a sketch of the real fix",
     "recommendation": "stop | keep going",
     "why": "one line: why stop or keep going",
-    "known": "D<n> when the ledger already has it, else omit"
+    "known": "the id (file name without .yaml) when docs/design-flaws/ already has it, else omit"
   }
 ]
 ```
@@ -142,9 +142,9 @@ Write no file when there are none.
 
 ## Design flaws: your decision
 <one entry per flaw in summary.json whose status is undecided:>
-- **<D id>: <title>** (<fix_size> fix, <n> workaround(s) so far): <the flaw, one or two lines>. *Here:* <what the change does around it, `file:line`>. *Real fix:* <fix>. *Recommend:* **<stop | keep going>**, <why>.
-<then one line per flaw already decided: "Also works around D<n> (<status>), now <n> workarounds." When a deferred flaw now meets the stop rule in rubric.md, say so.>
-<end with: "Answer each with defer (keep going, fix later) or address (stop and fix it first).">
+- **<id>: <title>** (<fix_size> fix, <n> workaround(s) so far): <the flaw, one or two lines>. *Here:* <what the change does around it, `file:line`>. *Real fix:* <fix>. *Recommend:* **<stop | keep going>**, <why>.
+<then one line per flaw already decided: "Also works around <id> (<status>), now <n> workarounds." When a deferred flaw now meets the stop rule in rubric.md, say so.>
+<end with: "Answer each with defer (keep going, fix later) or address (stop and fix it first).", and the flaw files this round wrote or changed, which are uncommitted (see step 6 of SKILL.md).>
 
 **Verdict: <SHIP | FIX-FIRST | REWORK>**: <2-4 sentences: the one or two things that decide it>
 

@@ -1,6 +1,6 @@
 ---
 name: ace-review
-description: Review an ACE branch, PR or commit range against the project's engineering values (uptime, logging, tests, performance, keeping it lean) and give a ship / fix-first / rework verdict. Flags where a change works around a flaw in ACE's design and keeps a ledger of those flaws. Works for ACE core, signatures/ and integration repos on any git host. Use when asked to review a PR, a branch, or "my changes" in this project.
+description: Review an ACE branch, PR or commit range against the project's engineering values (uptime, logging, tests, performance, keeping it lean) and give a ship / fix-first / rework verdict. Flags where a change works around a flaw in ACE's design and records those flaws in docs/design-flaws/. Works for ACE core, signatures/ and integration repos on any git host. Use when asked to review a PR, a branch, or "my changes" in this project.
 argument-hint: "[<repo path>] [PR# | branch | A..B] [--base REF] [--full]"
 ---
 
@@ -85,7 +85,7 @@ Each finding is judged in a fresh context by a verifier that tries to disprove i
    If `batch`, `carry` or `flaws` is non-empty, one more:
    > You are the batch verifier for /ace-review. Read `$S/rubric.md` and `$S/dimensions/verify.md`, then follow its "Batch" section for the bundle in `$B`: candidates `<batch>`, earlier findings `<carry>`, design flaws `<flaws>`.
 3. Run `findings.py tally $B`. If it lists missing votes, relaunch those verifiers once, then tally with `--allow-missing`.
-4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. It records the flaws in the design flaw ledger, `<state_dir>/design-flaws.json`, which outlives every review.
+4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. It records each flaw in core's `docs/design-flaws/<id>.yaml` (see its README.md), where the flaws are shared through the repo; `summary.json` lists the files it wrote.
 
 ## 5. Report
 
@@ -99,13 +99,16 @@ Don't post anything anywhere. The user decides what goes on the PR.
 
 When the user answers a finding, record it, so the next round neither repeats nor rechecks it: `findings.py answer $B <id> fixed|wrong|intentional|"didn't matter" [--note TEXT]`. A decision on the rule changes is `findings.py answer $B rules accepted|rejected`.
 
-A decision on a design flaw goes in the ledger: `findings.py flaw D<n> defer|address|fixed|wrong [--note TEXT]`.
-- `defer`: keep going with the change as it is. The flaw stays in the ledger to fix later.
+A decision on a design flaw goes in its file: `findings.py flaw <id> defer|address|wrong|fixed [--note TEXT]`.
+- `defer`: keep going with the change as it is. The flaw stays in `docs/design-flaws/` to fix later.
 - `address`: stop and fix the flaw first. That fix is its own PR (one concern per PR); afterwards this branch drops its workaround.
-- `fixed` once a merged change removes the flaw, and `wrong` when it isn't one, so later reviews skip it.
+- `wrong` when it isn't a flaw, so later reviews skip it.
+- `fixed` removes the file. It belongs in the PR that fixes the flaw.
 
-`findings.py flaws [--all]` lists the ledger: open flaws first, the ones with the most workarounds first, each with the branches and lines that work around it. Offer it when the user asks what to fix next.
+The flaw files are written in core's working tree and never committed by the review. When the review is of the core branch that is checked out, they belong in that branch: tell the user to commit them with the change, so the flaw reaches `main` with its workaround. When core has some other branch checked out (an integration, signatures or range review), they go in a core PR of their own. Say which in the report. Since prepare.py leaves `docs/design-flaws/` out of the diff, committing them doesn't make the next round review them.
 
-When the user asks how the review is doing, for instance before and after an edit to this skill, run `findings.py stats [--since YYYY-MM-DD]` (it also counts the ledger's flaws by status). Present `lines changed` and `unchanged` as hints: they are inferred from whether the code moved, not answered.
+`findings.py flaws [--all]` lists the flaws: open ones first, the ones with the most workarounds first, each with the branches and lines that work around it. Offer it when the user asks what to fix next.
+
+When the user asks how the review is doing, for instance before and after an edit to this skill, run `findings.py stats [--since YYYY-MM-DD]`. Present `lines changed` and `unchanged` as hints: they are inferred from whether the code moved, not answered.
 
 When they reject a finding because the rule is wrong, or name a rule the review missed, offer a small edit to the **Engineering values** section of `/opt/ace/CLAUDE.md` (or to a dimension file, if it is only a review heuristic) so the next review and the next author both follow it. Make the edit only once they agree.

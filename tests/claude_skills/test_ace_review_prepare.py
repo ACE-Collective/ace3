@@ -113,8 +113,7 @@ def test_the_first_round_bundles_committed_uncommitted_and_untracked_work(repo, 
 
     assert target["round"] == 1 and target["previous_round"] is None
     assert target["bundle"].endswith("ace-mw-topic/round-1")
-    # findings.py keeps the design flaw ledger here, beside every branch's rounds
-    assert Path(target["bundle"]).parents[1] == Path(target["state_dir"])
+    assert target["flaw_dir"] == str(repo / "docs" / "design-flaws")
     assert target["delta"] is False and target["unchanged"] is False
     assert bundle_file(target, "files.txt").read_text().splitlines() == ["M\tCLAUDE.md", "A\tsaq/new.py", "M\tsaq/worker.py"]
     assert "+def wait(t):" in bundle_file(target, "diff.patch").read_text()
@@ -351,6 +350,27 @@ def test_a_round_with_nothing_new_says_so(repo, review):
 
     assert second["round"] == 2 and second["unchanged"] is True
     assert bundle_file(second, "delta.patch").read_text() == ""
+
+
+def test_the_design_flaws_a_round_records_are_not_part_of_the_change(repo, review):
+    write(repo, "saq/new.py", "X = 1\n")
+    first = review()
+    bundle_file(first, "flaws.json").write_text(json.dumps([{
+        "title": "no hook", "flaw": "saq/worker.py has no hook", "workaround": "polls", "file": "saq/new.py", "line": 1,
+        "fix_size": "large", "recommendation": "keep going",
+    }]))
+    finish_round(first)
+    assert (repo / "docs" / "design-flaws" / "no-hook.yaml").exists()
+
+    second = review()
+
+    assert second["unchanged"] is True and second["delta"] is True
+    assert bundle_file(second, "delta.patch").read_text() == ""
+    # committed with the branch, as the skill asks, it is still left out of the review
+    commit(repo)
+    third = review("--full")
+    assert "design-flaws" not in bundle_file(third, "diff.patch").read_text()
+    assert bundle_file(third, "files.txt").read_text().splitlines() == ["A\tsaq/new.py"]
 
 
 def test_a_moved_merge_base_means_a_full_review(repo, review):
