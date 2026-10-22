@@ -1,6 +1,6 @@
 ---
 name: ace-review
-description: Review an ACE branch, PR or commit range against the project's engineering values (uptime, logging, tests, performance, keeping it lean) and give a ship / fix-first / rework verdict. Flags where a change works around a flaw in ACE's design and records those flaws in docs/design-flaws/. Works for ACE core, signatures/ and integration repos on any git host. Use when asked to review a PR, a branch, or "my changes" in this project.
+description: Review an ACE branch, PR or commit range against the project's engineering values (uptime, logging, tests, performance, keeping it lean) and give a ship / fix-first / rework verdict. Flags where a change works around a flaw in ACE's design and tracks those flaws as GitHub issues labeled "design flaw". Works for ACE core, signatures/ and integration repos on any git host. Use when asked to review a PR, a branch, or "my changes" in this project.
 argument-hint: "[<repo path>] [PR# | branch | A..B] [--base REF] [--full]"
 ---
 
@@ -29,6 +29,8 @@ It prints `target.json`; its `bundle` is the bundle directory, called `$B` below
 - `unchanged`: nothing changed since the last round. Say so and stop, unless the user wants the review anyway (`--full`).
 - `delta`: this round reviews `delta.patch`, what changed since the last round. Otherwise `delta_reason` says why it is a full review. Pass `--full` when the user asks to review the whole change again.
 - `rule_changes`: the change edits the rules it is reviewed by (`rule-changes.patch`). Until the user accepts them (step 6), the report opens with them, the verdict waits on them, and the change is judged by the base rules; once `rule_changes_status` is `accepted`, `rules/` holds the edited copy.
+
+Then run `/venv/bin/python $S/scripts/findings.py known $B`, which writes the known design flaws to `$B/known-flaws.json` (see step 6). If it reports an `error`, GitHub couldn't be reached: go on with no known flaws, and say so in the report.
 
 **A change that spans repos** (e.g. a core hook plus the integration that uses it): prepare a bundle per repo, review each repo separately, and give each its own verdict. Cross-reference the bundles in the report.
 
@@ -85,7 +87,7 @@ Each finding is judged in a fresh context by a verifier that tries to disprove i
    If `batch`, `carry` or `flaws` is non-empty, one more:
    > You are the batch verifier for /ace-review. Read `$S/rubric.md` and `$S/dimensions/verify.md`, then follow its "Batch" section for the bundle in `$B`: candidates `<batch>`, earlier findings `<carry>`, design flaws `<flaws>`.
 3. Run `findings.py tally $B`. If it lists missing votes, relaunch those verifiers once, then tally with `--allow-missing`.
-4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. It records each flaw in core's `docs/design-flaws/<id>.yaml` (see its README.md), where the flaws are shared through the repo; `summary.json` lists the files it wrote.
+4. Read `$B/survivors.json` and `$B/previous.json`. Merge duplicates across dimensions: keep the most severe, add the other's evidence (a hang that is also a silent `except` is one uptime finding). Mark a survivor that is an earlier finding again with `"repeats": "<its id>"`. Keep at most about 5 nits. Write the rest, ranked, to `$B/ranked.json`. In `$B/flaws.json`, merge flaws that two reviewers both found into one entry, then run `findings.py finish $B`. A flaw that already has an issue gets this branch's workaround as a comment on it, but only in a review of core; every other flaw waits for the user's answer (step 6). `summary.json` lists each flaw with its `issue` (null for a new one), and `flaws_error` says why, if GitHub couldn't be reached.
 
 ## 5. Report
 
@@ -99,13 +101,15 @@ Don't post anything anywhere. The user decides what goes on the PR.
 
 When the user answers a finding, record it, so the next round neither repeats nor rechecks it: `findings.py answer $B <id> fixed|wrong|intentional|"didn't matter" [--note TEXT]`. A decision on the rule changes is `findings.py answer $B rules accepted|rejected`.
 
-A decision on a design flaw goes in its file: `findings.py flaw <id> defer|address|wrong|fixed [--note TEXT]`.
-- `defer`: keep going with the change as it is. The flaw stays in `docs/design-flaws/` to fix later.
-- `address`: stop and fix the flaw first. That fix is its own PR (one concern per PR); afterwards this branch drops its workaround.
-- `wrong` when it isn't a flaw, so later reviews skip it.
-- `fixed` removes the file. It belongs in the PR that fixes the flaw.
+Design flaws are tracked as GitHub issues labeled `design flaw` in core's repo (ACE-Collective/ace3), whatever repo is reviewed. Each workaround is one comment on its issue, one per repo and branch, which later rounds of that branch edit or delete. The issue's state is the flaw's status: open is deferred, open and assigned is addressing, closed as not planned is wrong, and closed as completed is fixed.
 
-The flaw files are written in core's working tree and never committed by the review. When the review is of the core branch that is checked out, they belong in that branch: tell the user to commit them with the change, so the flaw reaches `main` with its workaround. When core has some other branch checked out (an integration, signatures or range review), they go in a core PR of their own. Say which in the report. Since prepare.py leaves `docs/design-flaws/` out of the diff, committing them doesn't make the next round review them.
+A decision on a design flaw goes to its issue: `findings.py flaw <id> defer|address|wrong|fixed [--bundle $B] [--note TEXT]`, where `<id>` is the issue number, or a flaw's `F<n>` from `summary.json` with `--bundle`. A new flaw has no issue until the user answers it: the answer files the issue and posts the workaround, and answering it again changes the same issue.
+- `defer`: keep going with the change as it is. The issue stays open to fix later.
+- `address`: stop and fix the flaw first, which assigns the issue to the user. That fix is its own PR (one concern per PR), which closes the issue with `Fixes #<n>`; afterwards this branch drops its workaround.
+- `wrong` when it isn't a flaw. The issue is closed as not planned, and later reviews skip it.
+- `fixed` closes the issue as completed, for a fix that didn't close it itself.
+
+The repo is public, so the review writes to GitHub only what the user has chosen to track there or what is going there anyway: the review files no issue itself, and posts comments by itself only in a review of core. Before you answer a flaw found in an integration or signatures review, show the user the title, the flaw and the workaround it will publish, and file it only once they agree that it reveals nothing private.
 
 `findings.py flaws [--all]` lists the flaws: open ones first, the ones with the most workarounds first, each with the branches and lines that work around it. Offer it when the user asks what to fix next.
 
