@@ -331,6 +331,7 @@ its own `transactionId`, so a single worker's lines can be followed end to end.
 | `search_indexer_starting` | INFO | service start, before forking | `worker_count`, `model`, `collection` |
 | `search_indexer_loading_model` / `search_indexer_worker_ready` | INFO | once per worker | `model`, `collection`, `model_load_ms`, `elapsed_ms` |
 | `search_index_task_complete` | INFO | once per task | `op`, `alert_uuid`, `documents`, `points`, `updated`, `skipped`, `elapsed_ms`, `queue_depth` |
+| `search_index_alert_storage_missing` | WARNING | the alert is in the database but its storage directory (or `data.json`) is gone; the task completes with `skipped` rather than retrying | `alert_uuid`, `storage_dir`, `path` |
 | `search_index_task_deferred` | INFO | the alert was locked | `deferrals`, `max_deferrals` |
 | `search_index_task_requeued` | WARNING | the task errored and will retry | `attempt`, `max_attempts` |
 | `search_index_task_error` | ERROR | what actually went wrong | `error`, `attempt` |

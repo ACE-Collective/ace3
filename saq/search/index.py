@@ -20,7 +20,7 @@ from typing import Optional
 from qdrant_client import QdrantClient, models
 
 from saq.configuration.config import get_config
-from saq.database.model import Alert, Comment, load_alert
+from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.qdrant_client import get_qdrant_client
 from saq.search.chunking import chunk_text
@@ -256,20 +256,24 @@ def index_loaded_alert(alert: Alert, *, client: Optional[QdrantClient] = None, m
 
 def index_alert(alert_uuid: str, *, client: Optional[QdrantClient] = None, model=None) -> IndexResult:
     """Loads and indexes one alert. A missing alert (or storage directory) is skipped, not an error."""
-    alert = load_alert(alert_uuid)
+    alert = get_db().query(Alert).filter(Alert.uuid == alert_uuid).one_or_none()
     if alert is None:
         # DEBUG: surfaced to operators as the `skipped` field on search_index_task_complete
         logging.debug(f"alert {alert_uuid} not found, nothing to index")
         return IndexResult(alert_uuid=alert_uuid, skipped="alert not found")
 
     try:
-        root = alert.root_analysis
-    except Exception as e:
-        logging.debug(f"unable to load alert {alert_uuid} for indexing: {e}")
-        return IndexResult(alert_uuid=alert_uuid, skipped=f"unable to load: {e}")
-
-    if root is None:
-        return IndexResult(alert_uuid=alert_uuid, skipped="root analysis unavailable")
+        alert.load()
+    except FileNotFoundError as e:
+        # retrying cannot bring the files back, so this is a skip rather than an error that
+        # requeues until it is dead-lettered. WARNING, not DEBUG: an alert still in the database
+        # without its storage is either mid-deletion (cleanup removes the files before the row)
+        # or lost data. Anything else (a corrupt data.json, a permission error) still raises
+        logging.warning(
+            "search_index_alert_storage_missing",
+            extra={"alert_uuid": alert_uuid, "storage_dir": alert.storage_dir, "path": e.filename},
+        )
+        return IndexResult(alert_uuid=alert_uuid, skipped="alert storage missing")
 
     return index_loaded_alert(alert, client=client, model=model)
 
