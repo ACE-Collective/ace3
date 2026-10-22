@@ -168,7 +168,7 @@ def start(run_id: str, caller: Caller) -> RunLifecycle:
 
 
 def executed(run_id: str, body: RunExecutedRequest, caller: Caller) -> RunLifecycle:
-    return _call(runs.executed, run_id, caller, body.exit_code, body.error)
+    return _call(runs.executed, run_id, caller, body.exit_code, body.error, output=body.output)
 
 
 def cleanup(run_id: str, caller: Caller) -> RunLifecycle:
@@ -438,6 +438,7 @@ def get_detail(run_id: str) -> RunDetail:
                                   context_alerts=found.get("context_alerts", []))
     return RunDetail(
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
+        launcher_output=run.launcher_output,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
         holds_host=run.holds_host, registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,

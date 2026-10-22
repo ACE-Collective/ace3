@@ -413,6 +413,31 @@ def test_executed_records_a_success():
         "call": "executed", "outcome": "recorded", "payload": {"exit_code": 0, "error": None}}
 
 
+def test_executed_keeps_what_the_test_printed():
+    run = register(_registration(), LAUNCHER)
+    start(run.uuid, LAUNCHER)
+    executed(run.uuid, LAUNCHER, 1, output="Executing test: T1059.001-1\nAccess is denied.\n", now=T0)
+
+    run = _state(run.uuid)
+    assert (run.state, run.launcher_output) == (RunState.ERROR, "Executing test: T1059.001-1\nAccess is denied.\n")
+    # the event log says how much, not what
+    assert json.loads(_events(run.uuid)[-1].details)["payload"] == {
+        "exit_code": 1, "error": None, "output_bytes": 46, "output_truncated": False}
+
+
+def test_long_output_keeps_its_start_and_its_end():
+    output = "a" * 100_000 + "é" + "z" * 20_000 + "the error"
+    kept, size, truncated = runs.truncate_output(output)
+    assert truncated and size == len(output.encode("utf-8"))
+    assert len(kept.encode("utf-8")) <= runs.MAX_OUTPUT_BYTES
+    assert kept.startswith("a" * 1000) and kept.endswith("z" * 1000 + "the error")
+    assert re.search(r"\[\.\.\. svs: \d+ bytes of output left out \.\.\.\]", kept)
+
+    # whole when it fits, and only valid text is kept
+    assert runs.truncate_output("ok\n") == ("ok\n", 3, False)
+    assert runs.truncate_output("bad \ud800 surrogate")[0] == "bad ? surrogate"
+
+
 @pytest.mark.parametrize("exit_code, error", [(1, None), (0, "Invoke-AtomicTest failed")])
 def test_executed_with_a_failure_moves_the_run_to_error(exit_code, error):
     run = register(_registration(), LAUNCHER)

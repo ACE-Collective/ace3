@@ -83,6 +83,12 @@ CALL_CANCEL = "cancel"
 # the outcome of a registration or start refused because another run holds a target's host
 OUTCOME_HOST_BUSY = "host busy"
 
+# the test's output kept with the run; longer output keeps its start and its end, where errors are
+MAX_OUTPUT_BYTES = 64 * 1024
+OUTPUT_TAIL_BYTES = 16 * 1024
+# room for the marker between them
+OUTPUT_MARKER_BYTES = 100
+
 
 class InvalidRegistration(ValueError):
     """The registration can't be accepted as sent; the message says why."""
@@ -656,14 +662,34 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
     return run
 
 
+def truncate_output(output: str) -> tuple[str, int, bool]:
+    """The output as kept with a run: whole when it fits MAX_OUTPUT_BYTES as UTF-8, else its start and
+    its last OUTPUT_TAIL_BYTES around a marker saying how much was left out. Returns it, the size the
+    launcher sent in bytes, and whether it was truncated. Anything that isn't valid text (a lone
+    surrogate) is replaced, which the database's utf8mb4 requires."""
+    data = output.encode("utf-8", errors="replace")
+    if len(data) <= MAX_OUTPUT_BYTES:
+        return data.decode("utf-8"), len(data), False
+    head = data[:MAX_OUTPUT_BYTES - OUTPUT_TAIL_BYTES - OUTPUT_MARKER_BYTES]
+    tail = data[-OUTPUT_TAIL_BYTES:]
+    marker = f"\n[... svs: {len(data) - len(head) - len(tail)} bytes of output left out ...]\n"
+    # a cut inside a multibyte character drops that character
+    return head.decode("utf-8", errors="ignore") + marker + tail.decode("utf-8", errors="ignore"), len(data), True
+
+
 def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str] = None,
-             now: Optional[datetime] = None) -> SVSRun:
-    """Records how the test executed on a Started run. A non-zero exit code or an error is a
-    launcher-reported failure, which moves the run to Error. Raises UnknownRun, RunStateConflict."""
+             now: Optional[datetime] = None, output: Optional[str] = None) -> SVSRun:
+    """Records how the test executed on a Started run, and what it printed. A non-zero exit code or
+    an error is a launcher-reported failure, which moves the run to Error. Raises UnknownRun,
+    RunStateConflict."""
     now = now or datetime.now()
     payload = {"exit_code": exit_code, "error": error}
+    if output is not None:
+        # the output itself is on the run, not repeated in its event log
+        output, output_bytes, truncated = truncate_output(output)
+        payload.update(output_bytes=output_bytes, output_truncated=truncated)
     run = get_run(run_uuid)
-    values = {"executed_at": now, "exit_code": exit_code, "launcher_error": error}
+    values = {"executed_at": now, "exit_code": exit_code, "launcher_error": error, "launcher_output": output}
     failed = exit_code != 0 or bool(error)
 
     if run.state != RunState.STARTED:
@@ -692,7 +718,8 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     get_db().commit()
     if failed:
         log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
-    _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code)
+    _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code,
+              output_bytes=payload.get("output_bytes"), output_truncated=payload.get("output_truncated"))
     return run
 
 

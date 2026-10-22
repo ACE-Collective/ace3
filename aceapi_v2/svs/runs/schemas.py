@@ -25,6 +25,9 @@ class RunRegistrationRequest(BaseModel):
 class RunExecutedRequest(BaseModel):
     exit_code: int = Field(description="the test's exit code; anything but 0 moves the run to error")
     error: Optional[str] = Field(default=None, max_length=8192, description="what went wrong, when the launcher knows; moves the run to error")
+    output: Optional[str] = Field(default=None, max_length=4 * 1024 * 1024,
+                                  description="what the test printed (stdout and stderr); kept up to 64 KiB, longer "
+                                              "output as its start and its last 16 KiB around a marker")
 
 
 class RunTarget(BaseModel):
@@ -166,6 +169,8 @@ class ReviewBlockers(BaseModel):
 class RunDetail(RunRow):
     extra: Optional[dict[str, Any]] = Field(default=None, description="what the launcher sent with the registration")
     launcher_error: Optional[str] = Field(default=None, description="the error the launcher reported through executed")
+    launcher_output: Optional[str] = Field(default=None, description="what the test printed, as executed reported it "
+                                                                     "(at most 64 KiB, longer output truncated with a marker)")
     test_content_hash: str = Field(description="the test's content_hash when the run was registered")
     catalog_commit: str = Field(description="the catalog repository's commit when the run was registered")
     observation_seconds: int

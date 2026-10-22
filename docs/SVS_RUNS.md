@@ -136,7 +136,7 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 |---|---|
 | `POST /api/v2/svs/runs/` | Registers a run for one catalog test against one or more test hosts. Answers 201 with `run_id` and the run's **marker**. |
 | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). 409 when another run holds a target's host. |
-| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
+| `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. `output` is what the test printed (*The test's output*, below). |
 | `POST /api/v2/svs/runs/{run_id}/cleanup` | Optional. The test's cleanup begins now (*Cleanup*, below). |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
 | `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
@@ -196,6 +196,14 @@ It only reads: no run, no event, no refusal row and no alert, so a launcher can 
 against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
 `validate`, `outcome`, `reasons`). What it reads can change before the launcher registers (a test
 host edited, an expectation decided), so registering still decides for itself.
+
+### The test's output
+
+`executed` takes `output`, what the executor printed (stdout and stderr), so a reviewer can see why
+an expected detection is missing. It is kept with the run (`launcher_output`) and shown on the run
+page, folded, under *Output*. Up to 64 KiB is kept as sent; longer output keeps its start and its
+last 16 KiB, where errors usually are, around a marker saying how many bytes were left out. The
+event log records the size the launcher sent and whether it was truncated, not the text.
 
 ### Cleanup
 
@@ -431,7 +439,7 @@ to watch it on while it runs. It reloads itself while the run is `created` or `s
 its result is being recomputed.
 - **The header** has the test, the run's state, and a timeline of its observation and attribution
   windows. Below it are the marker, targets, platform, launcher and batch (which opens the batch's runs),
-  the windows' lengths, the owner, and the launcher's exit code, errors and `extra`.
+  the windows' lengths, the owner, and the launcher's exit code, errors, the test's output and `extra`.
 - **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
   *Mark reviewed* (*Review again* on a reviewed run).
   - The page lists what still stands in the way of a review: candidates to decide, context-only

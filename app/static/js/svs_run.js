@@ -602,6 +602,14 @@
                 fact("Exit code", String(run.exit_code));
             }
             fact("Launcher error", run.launcher_error ? el("span", "text-danger", run.launcher_error) : null);
+            if (run.launcher_output) {
+                // what the test printed, folded: it can be 64 KiB
+                const output = el("details");
+                output.appendChild(el("summary", "small", run.launcher_output.split("\n").length + " lines"));
+                output.appendChild(el("pre", "small mb-0 text-break-all bg-body-tertiary p-2", run.launcher_output));
+                output.open = !!run.exit_code || !!run.launcher_error;
+                fact("Output", output);
+            }
             fact("Error", run.error_reason ? el("span", "text-danger", run.error_reason) : null);
             fact("Close reason", run.close_reason);
             if (run.extra && Object.keys(run.extra).length) {
