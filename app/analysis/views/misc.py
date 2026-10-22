@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 import os
+import tempfile
 from uuid import uuid4
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
@@ -52,17 +53,21 @@ def upload_file():
 
     file_name = file_path.filename
 
-    # securely save the file to a temporary location
-    from werkzeug.utils import secure_filename
-
-    # Use secure_filename to sanitize the uploaded file name
-    temp_dir = get_temp_dir()
-    temp_path = os.path.join(temp_dir, secure_filename(file_name))
-
-    # the client's name is stored in the alert too, so it gets the same treatment, but one that
+    # the client's name is stored in the alert, so it is made a plain file name, but one that
     # keeps spaces and non-ascii characters
     target_name = safe_file_name(file_name)
 
+    # a temporary file of the request's own: the alert's copy is a hardlink to it, so a temporary
+    # path named after the upload would let the next upload by that name rewrite this one's bytes
+    fd, temp_path = tempfile.mkstemp(dir=get_temp_dir())
+    os.close(fd)
+    try:
+        return _store_upload(file_path, temp_path, file_name, target_name, comment, alert_uuid)
+    finally:
+        os.unlink(temp_path)
+
+
+def _store_upload(file_path, temp_path: str, file_name: str, target_name: str, comment: str, alert_uuid: str):
     try:
         file_path.save(temp_path)
     except Exception as e:

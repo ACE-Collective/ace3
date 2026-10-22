@@ -29,6 +29,7 @@ from saq.database.util.node import get_node_status
 from saq.environment import get_global_runtime_settings, get_local_timezone
 from saq.observables.generator import create_observable_from_dict
 from saq.util import parse_event_time, storage_dir_from_uuid
+from saq.util.filesystem import unique_file_path
 from saq.util.hashing import sha256_file
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,10 @@ def _add_file(root: RootAnalysis, file_name: str | None, fp: IO[bytes], file_obs
         full_path = root.create_file_path(file_name or DEFAULT_UPLOAD_NAME)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"invalid file name {file_name!r}") from e
+
+    # two uploads can share a name (every unnamed one, or two files with the same basename), and
+    # writing over the first would also rewrite its hardcopy, which is the same file
+    full_path = unique_file_path(full_path)
 
     with open(full_path, "wb") as out:
         shutil.copyfileobj(fp, out)

@@ -340,8 +340,13 @@ class Analysis(BaseNode):
 
         try:
             # Use file manager to store the file
-            sha256_hash, relative_path = self.file_manager.store_file(path, target_path, move)
-            
+            try:
+                sha256_hash, relative_path = self.file_manager.store_file(path, target_path, move)
+            except ValueError:
+                # refused (and logged) by the file manager: a name or link out of the files
+                # directory, such as an archive's symlink member, costs only this one file
+                return None
+
             # Create and add the file observable
             return self.analysis_tree_manager.add_observable(
                 self,

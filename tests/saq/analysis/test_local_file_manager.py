@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 import shutil
@@ -311,6 +312,52 @@ def test_store_file_refuses_a_symlink_out_of_the_file_dir(contained_file_manager
 
     assert sorted(os.listdir(outside_dir)) == ["secret.txt"]
     assert not os.path.exists(contained_file_manager.hardcopy_dir)
+
+
+@pytest.mark.unit
+def test_a_refused_symlink_logs_where_it_leads(contained_file_manager, outside_dir, caplog):
+    """The name of a refused link looks like it is inside the files directory, so the record says
+    what it resolves to."""
+    outside_file = outside_dir / "secret.txt"
+    outside_file.write_text("secret")
+    linked_source = os.path.join(contained_file_manager.file_dir, "secret.txt")
+    os.symlink(outside_file, linked_source)
+    with pytest.raises(ValueError):
+        contained_file_manager.store_file(linked_source)
+
+    (record,) = _refused_record(caplog, linked_source)
+    assert record.resolved_path == os.path.realpath(outside_file)
+    assert os.path.realpath(outside_file) in record.getMessage()
+
+
+@pytest.mark.unit
+def test_store_file_does_not_reuse_a_name_holding_other_bytes(contained_file_manager, tmp_path):
+    first = tmp_path / "first" / "report.pdf"
+    first.parent.mkdir()
+    first.write_bytes(b"first")
+    second = tmp_path / "second" / "report.pdf"
+    second.parent.mkdir()
+    second.write_bytes(b"second")
+
+    first_hash, first_path = contained_file_manager.store_file(str(first))
+    second_hash, second_path = contained_file_manager.store_file(str(second))
+
+    assert first_path == "report.pdf"
+    assert second_path == "report_000.pdf"
+    for file_hash, path, content in ((first_hash, first_path, b"first"), (second_hash, second_path, b"second")):
+        with open(os.path.join(contained_file_manager.file_dir, path), "rb") as fp:
+            assert fp.read() == content
+        assert hashlib.sha256(content).hexdigest() == file_hash
+
+
+@pytest.mark.unit
+def test_store_file_reuses_a_name_holding_the_same_bytes(contained_file_manager, tmp_path, test_file):
+    copy = tmp_path / "copy" / os.path.basename(test_file)
+    copy.parent.mkdir()
+    shutil.copy(test_file, copy)
+
+    assert contained_file_manager.store_file(test_file) == contained_file_manager.store_file(str(copy))
+    assert os.listdir(contained_file_manager.file_dir) == [os.path.basename(test_file)]
 
 
 @pytest.mark.unit

@@ -265,6 +265,29 @@ class TestUploadNames:
         assert file_observable.file_path == "upload"
 
 
+    @pytest.mark.asyncio
+    async def test_uploads_with_the_same_name_are_kept_apart(self, client: AsyncClient):
+        """Every unnamed upload is stored as "upload", and two files can share a basename. The
+        second must not be written over the first, whose hardcopy is the same file."""
+        boundary = "unittestboundary"
+        parts = "".join(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename=""\r\n'
+                        f'Content-Type: application/octet-stream\r\n\r\n{content}\r\n'
+                        for content in ("first", "second"))
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="analysis"\r\n\r\n'
+                f'{json.dumps(_submission(), cls=_JSONEncoder)}\r\n{parts}--{boundary}--\r\n').encode()
+
+        response = await client.post("/analysis/", content=body,
+                                     headers={"content-type": f"multipart/form-data; boundary={boundary}"})
+
+        assert response.status_code == 201
+        file_observables = _file_observables(_load(response.json()["uuid"]))
+        assert sorted(o.file_path for o in file_observables) == ["upload", "upload_000"]
+        for file_observable in file_observables:
+            with open(file_observable.full_path, "rb") as fp:
+                assert hashlib.sha256(fp.read()).hexdigest() == file_observable.value
+        assert {o.value for o in file_observables} == {hashlib.sha256(c).hexdigest() for c in (b"first", b"second")}
+
+
 class TestInvalid:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("submission, status, detail", [

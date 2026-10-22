@@ -6,7 +6,7 @@ from typing import Any, Optional
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
-from saq.util.filesystem import abs_path
+from saq.util.filesystem import abs_path, is_path_under, unique_file_path
 from saq.util.hashing import sha256_file
 
 
@@ -80,13 +80,12 @@ class LocalFileManager(FileManagerInterface):
         """Raises ValueError when target_path is not a file inside the files directory. Names come
         from submitters and from analyzed content (upload, attachment and archive member names), so
         an absolute name, a ../ or a symlink out of the files directory must never be written to."""
-        file_dir = os.path.realpath(self.file_dir)
         resolved = os.path.realpath(target_path)
-        if resolved != file_dir and os.path.commonpath([file_dir, resolved]) == file_dir:
+        if resolved != os.path.realpath(self.file_dir) and is_path_under(resolved, self.file_dir):
             return
 
-        logging.warning("refusing file path %r outside of the files directory of %s", name, self._storage_dir,
-                        extra={"storage_dir": self._storage_dir, "path": name})
+        logging.warning("refusing file path %r (resolves to %s) outside of the files directory of %s", name, resolved,
+                        self._storage_dir, extra={"storage_dir": self._storage_dir, "path": name, "resolved_path": resolved})
         raise ValueError(f"file path {name!r} is outside of the files directory {self.file_dir}")
 
     def create_file_path(self, relative_path: str) -> str:
@@ -183,6 +182,11 @@ class LocalFileManager(FileManagerInterface):
                 
         # Create reference link
         if not os.path.exists(target_path):
+            os.link(hardcopy_path, target_path)
+        elif target_path != source_path and sha256_file(target_path) != sha256_hash:
+            # another file already has this name, and reusing it would give this observable the
+            # other file's bytes
+            target_path = unique_file_path(target_path)
             os.link(hardcopy_path, target_path)
             
         # Return hash and relative path

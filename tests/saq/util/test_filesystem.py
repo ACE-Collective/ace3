@@ -1,6 +1,8 @@
+import os
+
 import pytest
 
-from saq.util.filesystem import NAME_MAX_BYTES, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_for_suffix, unique_file_path
 
 
 class TestShortenBasenameForSuffix:
@@ -64,3 +66,50 @@ class TestShortenBasenameForSuffix:
         # Round-trip — confirms no broken codepoint snuck through.
         result.encode("utf-8").decode("utf-8")
         assert result.endswith(".headers")
+
+
+class TestIsPathUnder:
+
+    @pytest.mark.unit
+    def test_inside_and_the_root_itself(self, tmp_path):
+        assert is_path_under(str(tmp_path / "a" / "b.txt"), str(tmp_path))
+        assert is_path_under(str(tmp_path), str(tmp_path))
+        assert is_path_under(str(tmp_path / "a" / ".." / "b.txt"), str(tmp_path))
+
+    @pytest.mark.unit
+    def test_outside(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        assert not is_path_under(str(root / ".." / "b.txt"), str(root))
+        assert not is_path_under(str(tmp_path / "rootx"), str(root))
+        assert not is_path_under("/etc/passwd", str(root))
+
+    @pytest.mark.unit
+    def test_a_symlink_out_is_followed(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        os.symlink(tmp_path, root / "link")
+        assert not is_path_under(str(root / "link" / "b.txt"), str(root))
+        # and a symlinked root still contains what is inside it
+        os.symlink(root, tmp_path / "root_link")
+        assert is_path_under(str(root / "b.txt"), str(tmp_path / "root_link"))
+
+
+class TestUniqueFilePath:
+
+    @pytest.mark.unit
+    def test_a_free_path_is_unchanged(self, tmp_path):
+        assert unique_file_path(str(tmp_path / "a.txt")) == str(tmp_path / "a.txt")
+
+    @pytest.mark.unit
+    def test_a_taken_path_gets_the_next_free_index(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a")
+        assert unique_file_path(str(tmp_path / "a.txt")) == str(tmp_path / "a_000.txt")
+
+        (tmp_path / "a_000.txt").write_text("a")
+        assert unique_file_path(str(tmp_path / "a.txt")) == str(tmp_path / "a_001.txt")
+
+    @pytest.mark.unit
+    def test_no_extension_and_a_dangling_symlink(self, tmp_path):
+        os.symlink(tmp_path / "missing", tmp_path / "upload")
+        assert unique_file_path(str(tmp_path / "upload")) == str(tmp_path / "upload_000")
