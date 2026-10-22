@@ -258,6 +258,21 @@ class ExecutableSandboxConfig(SandboxConfig):
     work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
+class PcapConfig(BaseModel):
+    """pcap/pcapng dissection with tshark in the Landlock sandbox, shared by every pcap module (docs/PCAP_ANALYSIS.md)"""
+    model_config = ConfigDict(extra="forbid")
+    tshark_path: str = Field(default="/usr/bin/tshark", description="the tshark binary; capinfos is taken from the same directory")
+    tshark_timeout: int = Field(default=240, gt=0, description="seconds one tshark run may take")
+    work_dir: str = Field(default="var/pcap_sandbox", description="where each tshark run gets its private working directory (relative to DATA_DIR)")
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed tshark process; allowed_tcp_ports stays empty (no network)")
+    max_file_size: int = Field(default=1024 ** 3, gt=0, description="largest capture dissected, in bytes")
+    max_keylog_size: int = Field(default=10 * 1024 ** 2, gt=0, description="largest file considered as a TLS key log, in bytes")
+    max_table_rows: int = Field(default=500, gt=0, description="most rows kept in each table of the analysis details")
+    max_field_packets: int = Field(default=50_000, gt=0, description="DNS, TLS, HTTP, DHCP and NBNS are read from this many packets at the start of the capture (tshark's JSON for them must fit under sandbox.max_output_bytes); endpoints, flows and carved files cover the whole capture")
+    max_extracted_files: int = Field(default=100, ge=0, description="most files carved out of one capture (objects and certificates)")
+    max_observables_per_type: int = Field(default=100, ge=0, description="most observables of one type one pcap analysis node adds")
+    excluded_fqdn_suffixes: list[str] = Field(default_factory=lambda: [".arpa", ".local"], description="names ending in one of these are never added as fqdn observables")
+
 class CorrelationConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query_sources: list[QuerySourceConfig] = Field(default_factory=list, description="query sources to register at hunter startup")
@@ -920,6 +935,7 @@ class ACEConfig(BaseModel):
     rabbitmq: Optional[RabbitMQConfig] = None
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
     js_deobfuscator: JsDeobfuscatorConfig = Field(default_factory=JsDeobfuscatorConfig, description="js-deobfuscator subsystem configuration")
+    pcap: PcapConfig = Field(default_factory=PcapConfig, description="pcap/pcapng dissection shared by every pcap analysis module")
     storage: Optional[StorageConfig] = None
     s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None

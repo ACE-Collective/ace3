@@ -1392,28 +1392,35 @@ analysis_module_har_extraction:
   # most response bodies extracted from one .har file, pages first, then scripts in request order
   max_extracted_files: 50
 
-# pcap/pcapng dissection with tshark in the Landlock sandbox (see docs/PCAP_ANALYSIS.md)
-# every pcap module takes these optional settings (defaults shown on pcap_analyzer):
-#   tshark_timeout (seconds per tshark run), work_dir (relative to DATA_DIR), sandbox (rlimits),
-#   max_file_size, max_keylog_size, max_table_rows, max_extracted_files,
-#   max_observables_per_type, excluded_fqdn_suffixes
+# pcap/pcapng dissection with tshark in the Landlock sandbox (see docs/PCAP_ANALYSIS.md); every
+# pcap module reads these, so they are set once here
+pcap:
+  tshark_path: /usr/bin/tshark
+  # seconds one tshark run may take
+  tshark_timeout: 240
+  # relative to DATA_DIR
+  work_dir: var/pcap_sandbox
+  max_file_size: 1073741824
+  max_keylog_size: 10485760
+  max_table_rows: 500
+  # DNS, TLS, HTTP, DHCP and NBNS come from the first this many packets: tshark's JSON for them
+  # (about 1 kB a packet) must fit under sandbox.max_output_bytes
+  max_field_packets: 50000
+  max_extracted_files: 100
+  max_observables_per_type: 100
+  excluded_fqdn_suffixes:
+    - .arpa
+    - .local
+
 analysis_module_pcap_analyzer:
   name: pcap_analyzer
   python_module: saq.modules.file_analysis.pcap
   python_class: PcapAnalyzer
   enabled: true
   default_collapsed: true
-  # two tshark runs (statistics, then fields and carved files) of up to tshark_timeout each
+  # capinfos (30 s at most), then two tshark runs (statistics, then fields and carved files) of up
+  # to pcap.tshark_timeout each
   maximum_analysis_time: 600
-  tshark_timeout: 240
-  work_dir: var/pcap_sandbox
-  max_file_size: 1073741824
-  max_table_rows: 500
-  max_extracted_files: 100
-  max_observables_per_type: 100
-  excluded_fqdn_suffixes:
-    - .arpa
-    - .local
 
 # one instance per category of the capture; each adds its observables under its own node
 analysis_module_pcap_dns:
@@ -1467,6 +1474,7 @@ analysis_module_tls_keylog:
   python_module: saq.modules.file_analysis.pcap
   python_class: TlsKeylogAnalyzer
   enabled: true
+  # one tshark run per pcap the key log has new keys for; a pcap that no longer fits in this is skipped
   maximum_analysis_time: 600
 
 analysis_module_html_js_extraction:

@@ -73,16 +73,31 @@ sslkeylog.txt
 ## How it runs
 
 `pcap_analyzer` recognizes a capture by its magic number (`is_pcap_file()`), never by its name,
-and runs tshark twice in the Landlock sandbox:
+and runs three tools in the Landlock sandbox:
 
-1. `-q -z io,stat,0 -z endpoints,... -z conv,...` for the packet count, the endpoints and the flows;
-2. `-T json -Y <filter> -e <fields> --export-objects ...` for DNS, TLS handshakes, HTTP(/2) headers,
-   DHCP and NBNS, plus the exported objects. Certificates are taken from the handshake bytes.
+1. `capinfos -M -S` for the capture metadata on every table page, bounded by a fixed 30 s since it
+   only reads record headers (a failure only loses the page header);
+2. tshark `-q -z io,stat,0 -z endpoints,... -z conv,...` for the packet count, the endpoints and the flows;
+3. tshark `-T json -Y <filter> -e <fields> --export-objects ...` for DNS, TLS handshakes, HTTP(/2)
+   headers, DHCP and NBNS, plus the exported objects. Certificates are taken from the handshake bytes.
+
+Each tshark run is bounded by `tshark_timeout` (240 s), so the three fit in `pcap_analyzer`'s
+`maximum_analysis_time` (600 s).
+
+The JSON of the third run is about 1 kB per matching packet and has to fit under the sandbox's output
+cap (`sandbox.max_output_bytes`, 64 MiB), so its display filter also takes only the first
+`max_field_packets` (50,000) packets of the capture (`frame.number <= N`). tshark still reads every
+packet, so the endpoints, the flows and the carved files cover the whole capture; only the DNS, TLS,
+HTTP and hostname tables (and their observables) come from the start of it. When the capture is
+longer, those tables say "Read from the first 50,000 of the capture's N packets only" and the module
+logs it at INFO.
 
 Carved files and certificates are written beside the capture in the alert's storage, in
 `<capture>.pcap_objects/` (and `<capture>.pcap_decrypted/` for decryption), never `<capture>.extracted/`,
 which belongs to `archive`. `archive` skips anything `is_pcap_file()` recognizes: libmagic calls a pcapng
 `application/octet-stream`, which its mime exclusions cannot catch, and 7z "extracts" junk from one.
+`hidden_mime` skips captures too: an email in the capture is carved as an IMF object, while a MIME
+body found in the raw capture bytes is broken up by packet headers.
 
 The result is the capture *index*, kept in `PcapAnalysis.details`. The category instances
 (`pcap_dns`, `pcap_tls`, `pcap_http`, `pcap_files`: one class, `PcapCategoryAnalyzer`, configured
@@ -93,10 +108,12 @@ tshark's dissectors parse hostile bytes, so tshark only ever runs through
 link, so tshark cannot change the evidence), nothing
 of ACE readable, no network (`sandbox.allowed_tcp_ports` stays empty), rlimits, a `tshark_timeout`
 and an output cap. On a node without Landlock the module refuses to run tshark and records an
-error rather than running it unsandboxed. Every failure (no Landlock, a timeout, too much output, a
-corrupt capture) is recorded in the analysis `error`, shown in its summary, and logged at ERROR
-with an error report through `log_loop_exception`. A capture cut short mid-packet is dissected as
-far as it goes.
+error rather than running it unsandboxed. Every failure is recorded in the analysis `error` and
+shown in its summary, for the analyst. A failure of the capture itself (tshark cannot read it, a
+timeout, too much output) is the analyst's to see and is logged at INFO only. Anything else,
+including a node without Landlock, which cannot dissect any capture, is logged at ERROR with an
+error report through `log_loop_exception`. A capture cut short mid-packet is dissected as far as
+it goes.
 
 ## TLS decryption
 
@@ -115,8 +132,13 @@ Decryption needs the session secrets in the NSS key log format that browsers and
   matched by client random.
 - **A key log added later.** When an analyst adds a key log to an alert whose decryption analysis
   already completed, `tls_keylog` sees a completed `PcapTlsDecryptionAnalysis` that has not used
-  it and decrypts that capture again with every key log in the tree, adding to the existing node.
-  Applying the same key logs twice adds nothing.
+  it and, if the new key log has keys for sessions in that capture that were not decrypted yet,
+  decrypts the capture again with every key log in the tree. The result is added to the existing
+  node, never in place of it: the rows of its tables are kept and the new ones are appended, so the
+  files an earlier key log carved stay listed. Applying the same key logs twice adds nothing.
+  There is one tshark run per capture, all inside `tls_keylog`'s `maximum_analysis_time`. A capture
+  whose run would no longer fit is skipped rather than risking the worker. The key log's summary
+  says "not applied to N pcaps (out of time)" and the module logs it at INFO.
 - **Embedded secrets.** A pcapng can carry its own keys in Decryption Secrets Blocks (Wireshark
   writes them when saving a capture taken with a key log, or `editcap --inject-secrets` adds them).
   tshark decrypts with them on its own, so the plaintext pass already sees inside TLS: the HTTPS
@@ -149,11 +171,16 @@ Decryption needs the session secrets in the NSS key log format that browsers and
 
 ## Configuration
 
-Every pcap module takes the same optional settings (`PcapModuleConfig`), set on
-`analysis_module_pcap_analyzer` in `etc/saq.default.yaml`: `tshark_path`, `tshark_timeout`,
-`work_dir`, `sandbox`, `max_file_size`, `max_keylog_size`, `max_table_rows`,
-`max_extracted_files`, `max_observables_per_type`, `excluded_fqdn_suffixes`. The category instances
-also take `category`. The modules are in the `file` module group.
+The settings every pcap module shares are set once, in the top-level `pcap:` section of
+`etc/saq.default.yaml` (`PcapConfig` in `saq/configuration/schema.py`): `tshark_path`,
+`tshark_timeout`, `work_dir`, `sandbox`, `max_file_size`, `max_keylog_size`, `max_table_rows`,
+`max_field_packets`, `max_extracted_files`, `max_observables_per_type`, `excluded_fqdn_suffixes`.
+A module's own block (`analysis_module_pcap_*`, `analysis_module_tls_keylog`) holds only what is
+its own: `maximum_analysis_time`, and `category` for the category instances. The modules are in
+the `file` module group.
+
+`max_table_rows` only limits the rows kept for display. Key logs are matched against every TLS
+session in the capture, from the full list of client randoms kept in `PcapAnalysis.details`.
 
 The `tshark` package is installed in the image (`Dockerfile`).
 
