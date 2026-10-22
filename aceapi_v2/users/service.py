@@ -544,6 +544,14 @@ def _audit_actor(actor: ApiAuthResult | None) -> dict:
     return {"actor": actor.auth_name, "actor_id": actor.auth_user_id, "actor_key_id": actor.key_id}
 
 
+def _warn_foreign_key(action: str, key_id: int, key_owner_id: int, owner_id: int) -> None:
+    # the caller only sees a missing key, so that a key's existence is not revealed; this record is
+    # the only trace of someone trying another user's key id
+    logging.warning(
+        "user %s tried to %s api key %s, which belongs to user %s", owner_id, action, key_id, key_owner_id,
+        extra={"api_key_id": key_id, "user_id": key_owner_id, "actor_id": owner_id})
+
+
 def _reject_self_service_inherit(inherit: bool) -> None:
     if inherit:
         raise InvalidPermissionError(
@@ -552,7 +560,8 @@ def _reject_self_service_inherit(inherit: bool) -> None:
 
 
 async def _check_scope_within_grants(
-    session: AsyncSession, user_id: int, key_name: str, rows: list[AuthApiKeyPermission]
+    session: AsyncSession, user_id: int, key_name: str, rows: list[AuthApiKeyPermission],
+    key_id: int | None = None,
 ) -> None:
     """Raise InvalidPermissionError unless every pattern in a self-service key's scope covers at
     least one permission ACE enforces, and every permission it covers is one the owner holds.
@@ -582,8 +591,8 @@ async def _check_scope_within_grants(
     if problems:
         detail = "; ".join(problems)
         logging.warning(
-            "user %s cannot give api key %r that scope: %s", user_id, key_name, detail,
-            extra={"user_id": user_id, "api_key_name": key_name})
+            "user %s cannot give api key %s (%r) that scope: %s", user_id, key_id, key_name, detail,
+            extra={"user_id": user_id, "api_key_id": key_id, "api_key_name": key_name})
         raise InvalidPermissionError(detail)
 
 
@@ -675,10 +684,16 @@ async def update_user_api_key(
         stmt = stmt.where(AuthApiKey.user_id == owner_id)
     key = (await session.execute(stmt)).scalar_one_or_none()
     if key is None:
+        if owner_id is not None:
+            # looked up only now, so that a refused edit never locks another user's key
+            key_owner_id = (await session.execute(
+                select(AuthApiKey.user_id).where(AuthApiKey.id == key_id))).scalar_one_or_none()
+            if key_owner_id is not None:
+                _warn_foreign_key("edit", key_id, key_owner_id, owner_id)
         return None
 
     if owner_id is not None:
-        await _check_scope_within_grants(session, owner_id, name, rows)
+        await _check_scope_within_grants(session, owner_id, name, rows, key_id=key.id)
 
     key.name = name
     key.inherit_user_scope = inherit
@@ -714,7 +729,10 @@ async def revoke_user_api_key(
     """Delete an API key by id. Returns False if no such key existed -- or, with `owner_id` (a
     user revoking their own key), if the key belongs to someone else. This is not reversible."""
     key = await session.get(AuthApiKey, key_id)
-    if key is None or (owner_id is not None and key.user_id != owner_id):
+    if key is None:
+        return False
+    if owner_id is not None and key.user_id != owner_id:
+        _warn_foreign_key("revoke", key_id, key.user_id, owner_id)
         return False
 
     name, user_id = key.name, key.user_id

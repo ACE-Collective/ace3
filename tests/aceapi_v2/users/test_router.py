@@ -291,6 +291,15 @@ class TestHappyPath:
         assert r.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_create_rejects_a_pattern_too_long_to_store(self, client: AsyncClient, session: AsyncSession):
+        user = await _make_user(session, "rtr_apikey_long", perms=[])
+        r = await client.post(
+            f"/users/{user.id}/apikeys",
+            json={"name": "x", "inherit": False, "scope": [{"major": "alert", "minor": "*" * 513}]},
+        )
+        assert r.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_update_key_scope_and_name(self, client: AsyncClient, session: AsyncSession):
         user = await _make_user(session, "rtr_apikey_update", perms=[])
         r = await client.post(
@@ -749,9 +758,13 @@ class TestSelfServiceApiKeyRoutes:
         {"name": "  ", "scope": [{"major": "alert", "minor": "read"}]},
         {"name": "k", "scope": []},
         {"name": "x" * 256, "scope": [{"major": "alert", "minor": "read"}]},
+        # both match every signature permission, and neither fits the String(512) ascii column
+        {"name": "k", "scope": [{"major": "signature", "minor": "*" * 600}]},
+        {"name": "k", "scope": [{"major": "signature", "minor": "[r\u00e9]ead"}]},
     ])
     async def test_the_request_body_is_validated(self, _override_db_session, session: AsyncSession, body):
-        """There is no inherit field to set; a name and at least one permission are required."""
+        """There is no inherit field to set; a name and at least one permission are required, and
+        each pattern must fit the column it is stored in."""
         user, _ = await _make_analyst(session, "rtr_self_body")
         async with _browser_for(user) as c:
             assert (await c.post("/users/me/apikeys", json=body)).status_code == 422

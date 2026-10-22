@@ -469,6 +469,12 @@ def _session_of(user: User) -> ApiAuthResult:
         auth_type=API_AUTH_TYPE_USER, auth_name=user.username, auth_user_id=user.id, credential=API_CREDENTIAL_SESSION)
 
 
+def _assert_foreign_key_warned(caplog, action: str, key_id: int, key_owner_id: int, actor_id: int) -> None:
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and f"tried to {action} api key" in r.getMessage()]
+    assert len(warned) == 1
+    assert (warned[0].api_key_id, warned[0].user_id, warned[0].actor_id) == (key_id, key_owner_id, actor_id)
+
+
 async def _stored_scope(session: AsyncSession, key_id: int) -> list[tuple[str, str]]:
     rows = (await session.execute(
         select(AuthApiKeyPermission).where(AuthApiKeyPermission.api_key_id == key_id)
@@ -524,6 +530,22 @@ class TestSelfServiceApiKeys:
         refusals = [r for r in caplog.records if r.levelno == logging.WARNING and "cannot give api key" in r.getMessage()]
         assert len(refusals) == 1
         assert refusals[0].user_id == user.id and refusals[0].api_key_name == "too wide"
+        assert refusals[0].api_key_id is None  # not minted
+
+    @pytest.mark.asyncio
+    async def test_a_refused_edit_names_the_key(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_unheld_edit")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="narrow", inherit=False, scope=key_scope("alert:read"), self_service=True)
+
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(
+                session, key.id, name="wide", inherit=False, scope=key_scope("*:*"), owner_id=user.id)
+
+        refusals = [r for r in caplog.records if r.levelno == logging.WARNING and "cannot give api key" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].api_key_id == key.id and refusals[0].api_key_name == "wide"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pattern", ["signature:wrte", "Signature:read", "nosuch:*"])
@@ -620,7 +642,8 @@ class TestSelfServiceApiKeys:
         assert await _stored_scope(session, key.id) == [("alert", "read")]
 
     @pytest.mark.asyncio
-    async def test_self_update_of_another_users_key_is_not_found(self, session: AsyncSession):
+    async def test_self_update_of_another_users_key_is_not_found(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
         user = await _make_analyst(session, "svc_self_update_me")
         other = await _make_analyst(session, "svc_self_update_other")
         key, _ = await service.create_user_api_key(
@@ -632,9 +655,17 @@ class TestSelfServiceApiKeys:
         await session.refresh(key)
         assert key.name == "theirs"
         assert await _stored_scope(session, key.id) == [("alert", "read")]
+        _assert_foreign_key_warned(caplog, "edit", key.id, other.id, user.id)
+
+        # a key id that doesn't exist is only missing: nobody else's key was tried
+        caplog.clear()
+        assert await service.update_user_api_key(
+            session, 999999, name="k", inherit=False, scope=key_scope("alert:read"), owner_id=user.id) is None
+        assert not [r for r in caplog.records if "tried to" in r.getMessage()]
 
     @pytest.mark.asyncio
-    async def test_self_revoke_only_reaches_the_users_own_keys(self, session: AsyncSession):
+    async def test_self_revoke_only_reaches_the_users_own_keys(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
         user = await _make_analyst(session, "svc_self_revoke_me")
         other = await _make_analyst(session, "svc_self_revoke_other")
         mine, _ = await service.create_user_api_key(session, user.id, name="mine", inherit=False, scope=key_scope("alert:read"))
@@ -642,6 +673,11 @@ class TestSelfServiceApiKeys:
 
         assert await service.revoke_user_api_key(session, theirs.id, owner_id=user.id) is False
         assert [k.id for k in await service.list_user_api_keys(session, other.id)] == [theirs.id]
+        _assert_foreign_key_warned(caplog, "revoke", theirs.id, other.id, user.id)
+
+        caplog.clear()
+        assert await service.revoke_user_api_key(session, 999999, owner_id=user.id) is False
+        assert not [r for r in caplog.records if "tried to" in r.getMessage()]
 
         assert await service.revoke_user_api_key(session, mine.id, owner_id=user.id) is True
         assert await service.list_user_api_keys(session, user.id) == []

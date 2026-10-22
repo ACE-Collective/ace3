@@ -41,8 +41,17 @@ class ApiKeyCreated(BaseModel):
 
 
 class ApiKeyScope(BaseModel):
-    major: str
-    minor: str
+    # the auth_api_key_permission columns are String(512) ascii; a value that doesn't fit can still
+    # match the catalog (a run of `*`, a non-ascii char in a [] class) and would 500 on the insert
+    major: str = Field(max_length=512)
+    minor: str = Field(max_length=512)
+
+    @field_validator("major", "minor")
+    @classmethod
+    def ascii_only(cls, value: str) -> str:
+        if not value.isascii():
+            raise ValueError("must be ASCII")
+        return value
 
 
 class ApiKeyRead(BaseModel):

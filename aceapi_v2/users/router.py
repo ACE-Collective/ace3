@@ -219,9 +219,9 @@ async def create_my_api_key(
             self_service=True,
         )
     except service.UserNotFoundForApiKeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except service.InvalidPermissionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     # a credential must not be cached by the browser or any intermediary
     response.headers["Cache-Control"] = "no-store"
@@ -245,7 +245,7 @@ async def update_my_api_key(
             owner_id=user_id, actor=auth,
         )
     except service.InvalidPermissionError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if key is None:
         raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
     return service._api_key_read(key)
