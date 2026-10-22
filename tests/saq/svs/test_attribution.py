@@ -23,6 +23,7 @@ from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 from saq.svs import attribution
 from saq.svs.attribution import (
     AlertHosts,
+    ContextOwner,
     RunSnapshot,
     Sighting,
     TargetSnapshot,
@@ -31,13 +32,15 @@ from saq.svs.attribution import (
     analysis_sightings,
     attribution_open,
     context_claimant,
+    context_owners,
     evaluate,
     find_markers_in_data,
     record_delta_sightings,
     record_suppressed_matches,
     resolve_markers,
-    runs_in_window,
+    runs_overlapping,
     save_sightings,
+    suppression_owners,
     saved_sightings,
     tree_sightings,
     write_attributions,
@@ -502,12 +505,13 @@ class TestDatabase:
         assert record_delta_sightings(root, parent, Delta(), "module_x") == 0
         assert not (root.extensions or {}).get(SIGHTINGS_EXTENSION)
 
-    def test_runs_in_window(self):
+    def test_runs_overlapping(self):
         run = started_run(GUID)
-        assert [r.uuid for r in runs_in_window(_soon())] == [run.uuid]
-        assert runs_in_window(datetime.now() - timedelta(hours=1)) == []
+        assert [r.uuid for r in runs_overlapping(_soon(), _soon())] == [run.uuid]
+        an_hour_ago = datetime.now() - timedelta(hours=1)
+        assert runs_overlapping(an_hour_ago, an_hour_ago) == []
         # a span that reaches into its window
-        assert [r.uuid for r in runs_in_window(datetime.now() - timedelta(hours=1), _soon())] == [run.uuid]
+        assert [r.uuid for r in runs_overlapping(an_hour_ago, _soon())] == [run.uuid]
 
     def test_evaluate_by_ip(self):
         run = started_run(GUID)
@@ -841,6 +845,50 @@ class TestSuppressedMatches:
         assert _suppressed() == [(run.id, "bob", started + timedelta(minutes=5))]
         assert _generation(run.id) is None
         assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
+
+
+def _hosts(*names: str) -> AlertHosts:
+    return AlertHosts(names={(name, None) for name in names})
+
+
+@pytest.mark.integration
+class TestContextOwners:
+    @pytest.fixture(autouse=True)
+    def setup(self, no_hunts):
+        add_catalog_test(GUID)
+        add_test_host("win10-01")
+        add_test_host("win10-02")
+
+    def test_each_event_by_its_hosts_and_time(self):
+        run = _run()
+        before, inside = T0 - timedelta(minutes=10), T0 + timedelta(minutes=10)
+        owners = context_owners([(_hosts("win10-01"), inside), (_hosts("win10-02"), inside),
+                                 (_hosts("win10-01"), before)])
+        assert owners == [ContextOwner(run, (run,)), ContextOwner(), ContextOwner()]
+        assert context_owners([]) == []
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_no_owner_but_every_candidate_when_claims_overlap(self):
+        first, second = _run(), _run(started=T0 + timedelta(minutes=5))
+        (owner,) = context_owners([(_hosts("win10-01"), T0 + timedelta(minutes=10))])
+        assert owner.run is None
+        assert owner.candidates == (first, second)
+
+    def test_attribution_and_the_hunter_all_ask_it(self, monkeypatch):
+        """Ownership is decided in one place: the alert's context attribution, a grouped hunt's
+        suppression key and its suppressed matches all follow context_owners."""
+        started = (datetime.now() - timedelta(hours=2)).replace(microsecond=0)
+        started_run(GUID, now=started)
+        other = resolve_markers([started_run(GUID, "win10-02", now=started).marker])
+        other = next(iter(other.values()))
+        monkeypatch.setattr(attribution, "context_owners",
+                            lambda events: [ContextOwner(other, (other,)) for _ in events])
+
+        root, group_value = _match(started + timedelta(minutes=10))
+        root.add_detection_point("hunt hit")
+        assert {a.run.id for a in evaluate(root, started + timedelta(minutes=10)).attributions} == {other.id}
+        assert suppression_owners([root]) == [other]
+        assert [run.id for run, _ in record_suppressed_matches(HUNT_UUID, [(root, group_value)])] == [other.id]
 
 
 @pytest.mark.unit
