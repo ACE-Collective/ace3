@@ -11,6 +11,7 @@ from httpx import AsyncClient
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth import API_AUTH_TYPE_USER, API_CREDENTIAL_SESSION, verify_flask_session
 from saq.configuration import get_config
 from saq.database.model import User
 
@@ -39,6 +40,15 @@ class TestFlaskSessionAuth:
         unauth_client.cookies.set("session", cookie)
         response = await unauth_client.get("/observable-types/")
         assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_flask_session_is_a_session_credential(self, session: AsyncSession, test_user: User):
+        # a session shares auth_type "user" with a user API key and, like a config key, has no key_id,
+        # so only credential tells a GUI session apart from a key
+        result = await verify_flask_session(_make_flask_session_cookie(test_user.id), session)
+        assert result.auth_type == API_AUTH_TYPE_USER
+        assert result.key_id is None
+        assert result.credential == API_CREDENTIAL_SESSION
 
     @pytest.mark.asyncio
     async def test_invalid_flask_session_cookie(self, unauth_client: AsyncClient):
