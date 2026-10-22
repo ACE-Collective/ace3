@@ -27,6 +27,7 @@ from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.signatures.model import SignatureType
+from saq.svs.attribution import record_suppressed_matches
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -1297,6 +1298,7 @@ class QueryHunt(Hunt):
             )
         elif self.group_by is not None and self.suppression is not None:
             kept = []
+            suppressed = []
             for submission in submissions:
                 group_value = getattr(submission, "group_value", None)
                 if group_value is not None and self.is_group_suppressed(group_value):
@@ -1304,8 +1306,21 @@ class QueryHunt(Hunt):
                         "suppressed alert for hunt %s (uuid=%s, type=%s) group_by=%s group_value=%s",
                         self.name, self.uuid, self.type, self.group_by, group_value,
                     )
+                    suppressed.append((submission.root, group_value))
                     continue
                 kept.append(submission)
             submissions = kept
+            self.record_suppressed(suppressed)
 
         return submissions
+
+    def record_suppressed(self, suppressed: list[tuple[RootAnalysis, str]]):
+        """Records the suppressed matches that fall in an svs run on one of its test hosts, so the
+        run's result can tell this hunt was suppressed rather than missing (docs/SVS_RUNS.md,
+        *Results*). A failure loses only that record, never the suppression."""
+        try:
+            record_suppressed_matches(self.uuid, suppressed)
+        except Exception as e:
+            logging.exception("unable to record the suppressed matches of hunt %s (uuid=%s, type=%s) for svs: %s",
+                              self.name, self.uuid, self.type, e,
+                              extra={"hunt_uuid": self.uuid, "group_values": [value for _, value in suppressed]})

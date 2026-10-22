@@ -699,7 +699,7 @@ below), each signature is:
 |---|---|
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
-| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunt alerted within that period before the run's window closed (below) |
+| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunter dropped a match of it during the run for that suppression, or (without `group_by`) the hunt alerted within that period before the run's window closed (below) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
 | `ignored` | It fired, and it is ignored for the test or globally |
@@ -717,13 +717,24 @@ below), each signature is:
   - the signature's family and name;
   - the content hash of the rule itself as it was when the result was computed. A missing row has
     one too: coverage uses it to tell when an expected rule changed.
-- **Possibly suppressed.** A hunt checks its `suppression` each time it runs, and the run that would
-  have caught the test comes up to its latency after the start. So ACE looks for an alert carrying
-  a detection of the hunt, inserted from `suppression` before the run started until the run ended,
-  and not attributed to this run. The latest one is named (`suppressing_alert_uuid`).
-  - For a hunt with `group_by` or `dedup_key` the answer is imprecise: that alert may have been for
-    another group or key. The row says so (`suppression_imprecise`).
-  - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
+- **Possibly suppressed.**
+  - **A hunt with `group_by`** suppresses each group on its own, inside its query results. When it
+    drops a match for its suppression and the match's event time falls in a run's attribution
+    window, on one of the run's test hosts (its `hostname`, `fqdn` or test-host `ipv4` observables,
+    as attribution reads them), the hunter records it in `svs_suppressed_matches`: one row per run
+    and hunt, for the first such match, and the run's result goes stale. Every run that could claim
+    the match by context gets it. The hunt is `possibly_suppressed` in that run's result exactly
+    when it has such a row, so that is not a guess, and no alert is named: the hunt's latest alert
+    may have been another group's. Nothing is recorded while no run is open, as for alerts, and a
+    failure to record is logged at ERROR and keeps the suppression.
+  - **Any other hunt** suppresses as a whole and doesn't run at all while suppressed, so there is no
+    match to record. A hunt checks its `suppression` each time it runs, and the run that would have
+    caught the test comes up to its latency after the start. So ACE looks for an alert carrying a
+    detection of the hunt, inserted from `suppression` before the run started until the run ended,
+    and not attributed to this run. The latest one is named (`suppressing_alert_uuid`). Only hunts in
+    correlation mode put their detection on their alerts, so only theirs can be found.
+  - For a hunt with `dedup_key` and no `group_by` that answer is imprecise: that alert may have been
+    for another key. The row says so (`suppression_imprecise`).
   - Keeping the hunter from suppressing test targets is deferred: it is revisited once reviewed runs
     show how often a missing signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
@@ -739,6 +750,7 @@ below), each signature is:
 
 | Record | Level | Fields |
 |---|---|---|
+| `svs run …: hunt … suppressed a match for group_value …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value` |
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
 | `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
 

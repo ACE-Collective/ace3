@@ -115,6 +115,9 @@ class HuntInfo:
     # it groups (group_by) or deduplicates (dedup_key) its alerts, so its suppression is per group
     # or key and an earlier alert need not have suppressed the run's
     grouped: bool
+    # it groups by group_by, so the hunter records the runs it suppressed a match for
+    # (svs_suppressed_matches) and its suppression need not be inferred from its alerts
+    per_group: bool
     # the content hash of its file, as the signature inventory computes it
     content_hash: str
     # its tags, as the signature inventory reads them (mitre: tags map it to ATT&CK techniques)
@@ -167,6 +170,7 @@ def _read_hunts() -> dict[str, HuntInfo]:
             uuid = str(rule["uuid"]).strip()
             info = HuntInfo(uuid=uuid, name=str(rule.get("name") or "unnamed"), enabled=enabled, latency=latency,
                             suppression=suppression, grouped=bool(rule.get("group_by") or rule.get("dedup_key")),
+                            per_group=bool(rule.get("group_by")),
                             content_hash=content_hash(source), tags=normalize_tags(rule.get("tags")))
             # one uuid in two files: the enabled one counts, then the slower
             previous = result.get(uuid)

@@ -16,7 +16,7 @@ from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.svs import association, coverage, review, windows, worklist
-from saq.svs.attribution import clear_caches, evaluate, write_attributions
+from saq.svs.attribution import clear_caches, evaluate, record_suppressed_matches, write_attributions
 from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
 
@@ -240,6 +240,20 @@ def test_a_result(caplog):
     (record,) = _records(caplog, f"svs run {run.uuid} is missing expected signature")
     assert record.levelno == logging.INFO and record.signature_uuid == missing
     _assert_fields(record, RUN_FIELDS + ("signature_uuid", "signature_family", "possibly_suppressed"))
+
+
+def test_a_suppressed_match(caplog):
+    run = _started()
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, "alice")])
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} suppressed a match")
+    assert record.levelno == logging.INFO and (record.hunt_uuid, record.group_value) == (hunt_uuid, "alice")
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "group_value"))
 
 
 def test_a_persons_association_changes(caplog, routed):

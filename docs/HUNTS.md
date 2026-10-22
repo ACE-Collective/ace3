@@ -374,6 +374,8 @@ If set, triggers a suppression of future alerts for this hunt every time an aler
 
 This setting is rarely used.
 
+A hunt with `group_by` suppresses each group on its own. During an SVS test run, a match it drops for its suppression on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt was suppressed rather than blind (`docs/SVS_RUNS.md`, *Results*).
+
 ### `query_timeout` (string, optional) [HH:MM:SS]
 
 Sets a query timeout for this hunt. If the hunt does not complete within the given amount of time, it is considered failed and ACE tries again later.

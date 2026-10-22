@@ -702,7 +702,9 @@ the alert where it is. [ART-13]
 
 **Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
 `suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
-imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
+imprecise for `dedup_key`, and says so. A hunt with `group_by` records each run it dropped a match
+for (`svs_suppressed_matches`), so for it the result is never a guess (`docs/SVS_RUNS.md`,
+*Results*). Preventing suppression for test targets is
 deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
 results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
 results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
@@ -930,6 +932,7 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | A reviewed run changed since review | INFO | `alert_uuid` |
 | A run's alerts closed as `SIMULATED` | INFO | `alert_uuids`, `left_alone`, `late`, `actor` |
+| A hunt with `group_by` suppressed a match on the run's test host, the first per hunt | INFO | `hunt_uuid`, `group_value` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
@@ -1097,6 +1100,7 @@ tables are on the main chain.
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_test_settings` | Per test: an observation window that replaces the computed one |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
+| `svs_suppressed_matches` | Per `(run, hunt)`: a hunt with `group_by` dropped a match for its suppression on one of the run's test hosts inside its window; the first match's group value and event time |
 | `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
 | `svs_technique_worklist` | The declared-vs-measured worklist: one row per signature × technique; the resolution is stored, the status derived on each coverage refresh |
 | `svs_run_events` | Append-only run event log (Part 5) |
