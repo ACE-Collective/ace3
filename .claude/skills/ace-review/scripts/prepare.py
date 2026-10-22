@@ -735,15 +735,16 @@ def main() -> None:
     delta, delta_reason, delta_diff, unchanged = False, None, "", False
     if previous_target:
         previous_tree = previous_target.get("tree", "")
+        tree_present = bool(previous_tree) and not subprocess.run(
+            ["git", "-C", repo, "cat-file", "-e", f"{previous_tree}^{{tree}}"], capture_output=True).returncode
         unchanged = previous_tree == tree or (
-            previous_target.get("merge_base") == merge_base
-            and not subprocess.run(["git", "-C", repo, "cat-file", "-e", f"{previous_tree}^{{tree}}"], capture_output=True).returncode
+            previous_target.get("merge_base") == merge_base and tree_present
             and not git(repo, "diff", "--name-only", previous_tree, tree, *paths).strip())
         if args.full:
             delta_reason = "--full"
         elif previous_target.get("merge_base") != merge_base:
             delta_reason = "the merge-base moved since the last round (a rebase, or a merge from the base)"
-        elif subprocess.run(["git", "-C", repo, "cat-file", "-e", f"{previous_tree}^{{tree}}"], capture_output=True).returncode:
+        elif not tree_present:
             delta_reason = "the last round's tree is no longer in the object store"
         else:
             delta = True

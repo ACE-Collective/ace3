@@ -35,8 +35,9 @@ finish also records each flaw in flaws.json in core's docs/design-flaws/ (target
 flaw_dir), one <id>.yaml per flaw, so the flaws are shared through the repo: a flaw the
 verifier matched to a file there ("known": "<id>") adds this branch as one more
 workaround of it, any other becomes a new file named after its title, undecided. One
-branch counts once per flaw, so a later round replaces what the branch recorded before,
-and a rerun of finish replaces what its round recorded. A flaw never changes the
+branch counts once per flaw: a rerun of finish replaces what its round recorded, a full
+round everything the branch recorded before, and a delta round the branch's earlier
+workaround of each flaw it finds again. A flaw never changes the
 verdict floor.
 
 ANSWER is fixed, wrong, intentional or "didn't matter"; for ID "rules", the rule changes
@@ -224,8 +225,10 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
         if result.get("verdict") not in ("CONFIRMED", "PLAUSIBLE"):
             rejected_flaws.append({"fid": flaw["fid"], "title": flaw["title"], "reason": result.get("reason", "no verifier vote")})
             continue
-        # the verifier's judgment of the fix and of whether to stop wins over the reviewer's
-        kept_flaws.append({**flaw, **{k: result[k] for k in ("fix_size", "recommendation", "why", "known") if result.get(k)},
+        # the verifier's judgment of the fix and of whether to stop wins over the reviewer's,
+        # and so does its known, even null: that is the verifier saying it is no known flaw
+        kept_flaws.append({**flaw, **{k: result[k] for k in ("fix_size", "recommendation", "why") if result.get(k)},
+                           **({"known": result["known"]} if "known" in result else {}),
                            "verdict": result["verdict"], "reason": result.get("reason", "")})
     dump(os.path.join(bundle, "survivors.json"), survivors)
     dump(os.path.join(bundle, "rejected.json"), rejected)
@@ -263,10 +266,15 @@ def record_flaws(target: dict, flaws: list[dict]) -> list[dict]:
     directory = target.get("flaw_dir") or FLAW_DIR
     entries = load_flaws(directory)
     repo, branch, number = os.path.basename(target.get("repo", "")), target.get("branch", ""), target.get("round", 1)
-    # a rerun of finish replaces what its round recorded
+    # a rerun of finish replaces what its round recorded. A full round looked at the whole
+    # change, so it also replaces what the branch's earlier rounds recorded; a delta round
+    # never saw the code they found their flaws in
+    def replaced(w: dict) -> bool:
+        return (w["repo"], w["branch"]) == (repo, branch) and (w["round"] == number or not target.get("delta"))
+
     changed = set()
     for fid, entry in entries.items():
-        kept = [w for w in entry["workarounds"] if (w["repo"], w["branch"], w["round"]) != (repo, branch, number)]
+        kept = [w for w in entry["workarounds"] if not replaced(w)]
         if len(kept) != len(entry["workarounds"]):
             entry["workarounds"] = kept
             changed.add(fid)
@@ -290,7 +298,7 @@ def record_flaws(target: dict, flaws: list[dict]) -> list[dict]:
                          "workarounds": len(entry["workarounds"]), "path": os.path.join(directory, f"{fid}.yaml")})
     for fid in sorted(changed):
         if entries[fid]["status"] == "undecided" and not entries[fid]["workarounds"]:
-            # only this round's earlier run had found it
+            # only this round's earlier run, or the branch's earlier rounds, had found it
             os.remove(os.path.join(directory, f"{fid}.yaml"))
         else:
             save_flaw(directory, fid, entries[fid])

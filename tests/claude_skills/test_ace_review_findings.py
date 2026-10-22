@@ -374,6 +374,18 @@ def test_tally_keeps_the_flaws_the_verifier_found_real_with_its_judgment(bundle)
     assert read_json(bundle / "rejected-flaws.json") == [{"fid": "F2", "title": "not a flaw", "reason": "the change could fix it itself"}]
 
 
+def test_a_verifier_that_finds_no_known_flaw_overrides_the_reviewers_match(bundle):
+    findings.save_flaw(read_json(bundle / "target.json")["flaw_dir"], "something-else", {"title": "something else", "status": "deferred", "workarounds": []})
+    flaws_through_tally(bundle, [flaw(known="something-else")], [
+        {"fid": "F1", "verdict": "CONFIRMED", "known": None, "reason": "a different flaw"},
+    ])
+
+    assert read_json(bundle / "flaws.json")[0]["known"] is None
+    summary = finish_with_flaws(bundle, read_json(bundle / "flaws.json"))
+    assert [(f["id"], f["new"], f["status"]) for f in summary["flaws"]] == [(HOOK, True, "undecided")]
+    assert flaw_files(bundle)["something-else"]["workarounds"] == []
+
+
 def test_tally_waits_for_the_flaw_votes(bundle):
     write_json(bundle / "flaws-design.json", [flaw()])
     findings.collect(str(bundle))
@@ -436,6 +448,19 @@ def test_rerunning_finish_replaces_what_the_round_recorded(bundle):
 
     assert [(f["id"], f["new"]) for f in summary["flaws"]] == [(HOOK, True)]
     assert {fid: len(e["workarounds"]) for fid, e in flaw_files(bundle).items()} == {HOOK: 1}
+
+
+@pytest.mark.parametrize("delta, left", [(False, {"kept": 0}), (True, {"kept": 1, HOOK: 1})])
+def test_a_full_round_drops_the_workarounds_the_branch_no_longer_has(bundle, tmp_path, delta, left):
+    finish_with_flaws(bundle, [flaw(), flaw(title="kept")])
+    findings.answer_flaw(str(tmp_path / "flaws"), "kept", "defer")
+    later = tmp_path / "round-3"
+    write_json(later / "target.json", {**read_json(bundle / "target.json"), "round": 3, "delta": delta})
+
+    finish_with_flaws(later, [])
+
+    # a full round looked at all of the change; a delta round only at what changed since
+    assert {fid: len(e["workarounds"]) for fid, e in flaw_files(bundle).items()} == left
 
 
 def test_rerunning_finish_keeps_an_answered_flaw(bundle, tmp_path):
