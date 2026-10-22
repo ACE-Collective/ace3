@@ -12,6 +12,8 @@ import pymysql
 import pytest
 from sqlalchemy.exc import DBAPIError
 
+from saq.database.model import Company
+from saq.database.pool import get_db
 from saq.database.retry import (
     CONNECTION_LOST_ERROR_CODES,
     get_dbapi_error_code,
@@ -59,44 +61,54 @@ def test_error_code_survives_a_non_numeric_first_arg():
     assert get_dbapi_error_code(_dbapi_error("not a code")) is None
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_deadlock_respects_the_attempts_limit():
     """The condition used to read `a == 1213 or a == 1205 and attempt < attempts`, which
     python groups as `a == 1213 or (a == 1205 and ...)`. A 1213 therefore ignored the
     limit and retried forever."""
     target = MagicMock(side_effect=_dbapi_error(1213, "deadlock"))
 
-    with patch("saq.database.retry.get_db") as mock_get_db:
-        mock_get_db.return_value = MagicMock()
-        with pytest.raises(DBAPIError):
-            retry_on_deadlock(target, attempts=3)
+    with pytest.raises(DBAPIError):
+        retry_on_deadlock(target, attempts=3)
 
     # the initial attempt plus 3 retries, then it gives up rather than looping forever
     assert target.call_count == 4
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_deadlock_retries_then_succeeds():
-    target = MagicMock(side_effect=[_dbapi_error(1213, "deadlock"), "ok"])
+    """the retry rolls back the real session and runs the target again on it"""
+    def insert_then_deadlock():
+        get_db().add(Company(name="deadlocked company"))
+        get_db().flush()
+        raise _dbapi_error(1213, "deadlock")
 
-    with patch("saq.database.retry.get_db") as mock_get_db:
-        mock_get_db.return_value = MagicMock()
-        assert retry_on_deadlock(target, attempts=5) == "ok"
+    def insert():
+        get_db().add(Company(name="retried company"))
+        return "ok"
 
-    assert target.call_count == 2
+    attempts = [insert_then_deadlock, insert]
+
+    def target():
+        return attempts.pop(0)()
+
+    assert retry_on_deadlock(target, attempts=5, commit=True) == "ok"
+    assert attempts == []
+
+    names = {name for (name,) in get_db().query(Company.name)}
+    # the rollback discarded the first attempt's write, the commit kept the second's
+    assert "deadlocked company" not in names
+    assert "retried company" in names
 
 
-@pytest.mark.unit
+@pytest.mark.integration
 def test_failed_rollback_preserves_the_original_exception():
     """The rollback handler rebound `e`, so a failure while rolling back re-raised the
     rollback error and hid the deadlock that caused it."""
     original = _dbapi_error(1213, "the real problem")
     target = MagicMock(side_effect=original)
 
-    session = MagicMock()
-    session.rollback.side_effect = RuntimeError("rollback also failed")
-
-    with patch("saq.database.retry.get_db", return_value=session), \
+    with patch.object(get_db(), "rollback", side_effect=RuntimeError("rollback also failed")), \
             patch("saq.error.reporting.write_error_report"):
         with pytest.raises(DBAPIError) as exc_info:
             retry_on_deadlock(target, attempts=3)
@@ -111,9 +123,8 @@ def test_connection_loss_is_not_reported_as_a_deadlock(caplog):
     deadlocks that never happened."""
     target = MagicMock(side_effect=_dbapi_error(2006, "MySQL server has gone away"))
 
-    with patch("saq.database.retry.get_db", return_value=MagicMock()):
-        with pytest.raises(DBAPIError):
-            retry_on_deadlock(target, attempts=3)
+    with pytest.raises(DBAPIError):
+        retry_on_deadlock(target, attempts=3)
 
     assert "DEADLOCK" not in caplog.text
     # and it is only tried once -- a dead connection is not worth retrying 15 times
@@ -130,7 +141,7 @@ def test_connection_loss_is_quiet_while_shutting_down(caplog):
     try:
         get_shutdown_coordinator(deadline_seconds=5).request_shutdown("test")
 
-        with caplog.at_level("DEBUG"), patch("saq.database.retry.get_db", return_value=MagicMock()):
+        with caplog.at_level("DEBUG"):
             with pytest.raises(DBAPIError):
                 retry_on_deadlock(target, attempts=3)
 

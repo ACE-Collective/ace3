@@ -25,7 +25,7 @@ This doc tracks three surfaces:
 
 **Legacy endpoints remaining: 0.** `aceapi/`, `api_uwsgi.py`, the `http-api` container and its nginx `/api` location are deleted.
 
-GUI routes (`app/`): **no API-shaped candidates left** out of 82 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
+GUI routes (`app/`): **no API-shaped candidates left** out of 81 routes; see [the GUI section](#flask-gui-routes-app--non-template-migration-candidates).
 
 Integration blueprints: the example integration's one data route is migrated (see [its appendix entry](#integration-routes--apiv2integrationsname)). Integrations kept in other repositories migrate in their own; the playbook is [Integration routes](#integration-routes).
 
@@ -252,7 +252,7 @@ The `app/auth/` user-management routes moved to `aceapi_v2/users/`; the pages th
 | `POST /auth/permission/add`    | `POST /api/v2/users/permissions`      |
 | `POST /auth/permission/delete` | `POST /api/v2/users/permissions/delete` |
 
-Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET /users/me/apikeys`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`.
+Plus net-new surface with no Flask ancestor: `GET /users/management-view`, `GET /users/catalog` (the permission catalog that drives the UI dropdowns), `GET`/`PATCH /users/me`, `GET`/`POST /users/me/apikeys`, `PUT`/`DELETE /users/me/apikeys/{key_id}`, `GET`/`POST /users/{id}/apikeys`, `PUT`/`DELETE /users/apikeys/{key_id}`, and the preferences routes under `/users/me/preferences` (`aceapi_v2/user_preferences/`). The `/users/me` routes are gated by `require_self_service()`; the ones that change the caller's own keys also need `user:self` and a GUI session (`docs/USER_PREFERENCES.md`).
 
 Module: `aceapi_v2/users/{router,service,schemas}.py`. Tests: `tests/aceapi_v2/users/{test_router,test_service}.py`.
 
@@ -529,7 +529,7 @@ Notes:
 
 ## Flask GUI routes (`app/`) — non-template migration candidates
 
-The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 82** `@blueprint.route` handlers across the ten `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
+The `/events` migration established the precedent that a Flask route returning a **machine-readable payload rather than a rendered template** belongs on the FastAPI side, even when it lives in an `app/` GUI blueprint. This section applies that lens to **all 81** `@blueprint.route` handlers across the ten `app/` blueprints (`app/blueprints.py::register_blueprints` imports every view module, so all of them are live). URLs below include the blueprint's `url_prefix` but not the `/ace` application root.
 
 These GUI routes differ from the `aceapi/` API in one important way: **their callers are JavaScript and templates, not `ace_api.py`.** Migrating one means repointing a `fetch`/`$.ajax` call or a `url_for` link to `/api/v2/...`; there is no Python client to update. Auth maps cleanly: every candidate already uses `@require_permission(...)` over the Flask session cookie, which `aceapi_v2`'s `get_current_auth` accepts.
 
@@ -548,7 +548,7 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 
 | Blueprint         | Total | Template | Candidate (A)        | Excluded (B/C/flow) |
 |-------------------|------:|---------:|---------------------:|--------------------:|
-| `analysis`        |    37 |        9 |                    0 | 28 (16 B + 12 C)    |
+| `analysis`        |    36 |        9 |                    0 | 27 (15 B + 12 C)    |
 | `events`          |    13 |        5 |                    0 |              8 (B)  |
 | `remediation`     |     1 |        1 |                    0 |                   0 |
 | `file_collection` |     1 |        1 |                    0 |                   0 |
@@ -558,13 +558,13 @@ These GUI routes differ from the `aceapi/` API in one important way: **their cal
 | `svs`             |    11 |       10 |                    0 |              1 (B)  |
 | `help`            |     4 |        2 |                    0 | 2 (1 B + 1 static)  |
 | `main`            |     2 |        1 |                    0 |              1 (B)  |
-| **Total**         | **82**|   **39** |                **0** |              **43** |
+| **Total**         | **81**|   **39** |                **0** |              **42** |
 
-New since the previous survey: the `svs` and `help` blueprints, and `/search/include_tests` (a session setter, C). Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), `/download_file` (see the file views appendix entry), and `/observable_action`, `/observable_action_check_for_clickers` and `/observable_action_open_clicker_search_splunk` (see the observable actions appendix entry).
+New since the previous survey: the `svs` and `help` blueprints, and `/search/include_tests` (a session setter, C). Gone since the previous survey: `/json`, `/mark_suspect`, `/download_archive`, `/<uuid>/event_name_candidate` and `/events/close_event` (deleted rather than migrated, see the `/email` appendix entry for the last three), the six `/saved_filters*` routes (migrated, see the appendix), `/observable_action_set_for_detection` and `/observable_action_adjust_expiration` (the alert page calls `/api/v2/detection`, see the `/intel` appendix entry), `/get_alert_meta`, `/image`, `/resolve_date_range` and `/reset_filter_alert_count` (migrated, see the GUI reads appendix entry), `/export_alerts_to_csv` (the button uses the API export, see its appendix entry), `/set_owner` and `/assign_ownership` (see the alert owner appendix entry), `/remediation_targets` (see the remediation dialog appendix entry), every `remediation` and `file_collection` route but the two pages (see the Remediations and File Collections appendix entry), `/html_details`, `/observable_action_whitelist` and `/observable_action_un_whitelist` (deleted, see their appendix entry), `/download_file` (see the file views appendix entry), `/observable_action`, `/observable_action_check_for_clickers` and `/observable_action_open_clicker_search_splunk` (see the observable actions appendix entry), and `/email_file` (deleted: it could not find the file and let any `alert:read` user mail an alert's file anywhere).
 
 ### `analysis` blueprint
 
-37 routes total: 9 template, 16 redirect (B), 12 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
+36 routes total: 9 template, 15 redirect (B), 12 session (C). All files are under `app/analysis/views/`; templates under `app/templates/`, JS under `app/static/js/`.
 
 No candidates left, in either tier; see the appendix entries for where they went.
 
@@ -579,7 +579,7 @@ No candidates left, in either tier; see the appendix entries for where they went
 - **`svs`** — 10 GET pages behind an `svs:run_read` `before_request` gate (`app/svs/views/access.py`), and `/svs/`, which redirects to the Runs tab; data from `/api/v2/svs/runs`, `/tests`, `/coverage`, `/worklist` and `/test-hosts`. `tests/app/svs/test_svs_smoke.py::TestSVSIsPagesOnly::test_svs_blueprint_serves_only_get_pages` enforces it. The list pages write default saved filters on render.
 - **`remediation`**, **`file_collection`** — one GET page each (`/remediation/manage`, `remediation:read`; `/file_collection/manage`, `file_collection:read`), shells over `/api/v2/remediation` and `/api/v2/file-collections` like the Signatures pages. `tests/app/remediation/test_manage.py` and `tests/app/file_collection/test_manage.py` enforce it. Both write default saved filters on render.
 - **`help`** — the training guides, for any logged-in user: 2 GET pages (`/help/`, `/help/<set>/<guide>`), `/help/<set>/`, which redirects to the set's first guide, and `/help/<set>/images/<file>`, which serves the guides' own images through `send_from_directory`. That last one is static content the pages embed, not API surface. No pages-only test; `tests/app/help/test_help_content.py` covers the content.
-- **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me` and `/api/v2/users/me/preferences`. No pages-only test.
+- **`main`** — `/` redirects (B); `/preferences` is a GET page whose saves go to `PATCH /api/v2/users/me`, `/api/v2/users/me/preferences` and `/api/v2/users/me/apikeys`. No pages-only test.
 - **`auth`** — `/login`, `/logout`, `/login/change`: Flask-Login session flow, stays in Flask.
 
 This is the shape every GUI blueprint should converge on: Flask renders GET pages, the browser talks to v2. Copy the pages-only test into the next blueprint that finishes. The tests check only that a route's methods are `{GET}`, so a GET route that returns JSON still passes them.

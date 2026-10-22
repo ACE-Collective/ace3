@@ -28,13 +28,14 @@ from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user
 from saq.detection_verdicts.store import set_verdicts
-from saq.svs import association, expectations, results, review, run_comments, runs, signatures
+from saq.svs import association, expectations, results, review, run_comments, runs
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 ACTOR = "unittest"
@@ -43,11 +44,8 @@ NOISE = "33333333-cccc-4ccc-8ccc-333333333333"
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
+def setup(no_hunts, yara_dir):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield
@@ -380,14 +378,14 @@ class TestReview:
         def down(*args, **kwargs):
             raise RuntimeError("database down")
 
+        close_reviewed_run_alerts = runs.close_reviewed_run_alerts
         monkeypatch.setattr(runs, "close_reviewed_run_alerts", down)
         review.review(run.uuid, user_id, ACTOR)
         assert _run_row(run).state == RunState.REVIEWED
         assert _row(alert_uuid).disposition == DISPOSITION_OPEN
 
         # reviewing again finishes the job
-        monkeypatch.undo()
-        monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+        monkeypatch.setattr(runs, "close_reviewed_run_alerts", close_reviewed_run_alerts)
         assert review.review(run.uuid, user_id, ACTOR).alerts_closed == 1
 
 

@@ -1,10 +1,13 @@
+import logging
 from datetime import datetime, timezone
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from qdrant_client import models
 
 from saq.configuration.config import get_config
+from saq.database.model import Alert
+from saq.database.pool import get_db
 from saq.search import index, query
 from saq.search.query import SemanticLane
 from saq.search.syntax import parse_search_query
@@ -21,6 +24,7 @@ from saq.search.types import (
     SearchRequest,
     SearchResponse,
 )
+from tests.saq.helpers import insert_alert
 
 pytestmark = pytest.mark.unit
 
@@ -97,6 +101,9 @@ class TestTiers:
         assert query.assign_tier(self._result({LANE_SEMANTIC}, dense=0.31)) == TIER_GOOD
 
 
+# search_alerts reads the database (_any_test_alerts decides whether a counting pass runs), so
+# these need the per-test reset that integration gives them
+@pytest.mark.integration
 class TestSearchAlerts:
     @pytest.fixture
     def lanes(self, monkeypatch):
@@ -178,22 +185,22 @@ class TestSearchAlerts:
         response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT))
         assert response.alert_uuids == ["a"]
 
-    def test_missing_model_is_reported(self, monkeypatch):
+    def test_missing_model_is_reported(self, monkeypatch, caplog):
         monkeypatch.setattr(query, "lexical_search", lambda *a, **k: [("a", [_hit(LANE_LEXICAL)])])
         error = FileNotFoundError("embedding model all-MiniLM-L6-v2 has not been downloaded")
 
         def missing(*args, **kwargs):
             raise error
 
-        reported = []
         monkeypatch.setattr(query, "semantic_search", missing)
-        monkeypatch.setattr(query, "log_loop_exception", lambda e, context: reported.append((e, context)))
-        response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT))
+        with patch("saq.error.reporting.write_error_report"):
+            response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT))
 
         assert response.alert_uuids == ["a"]
+        reported = [r for r in caplog.records if "embedding model unavailable" in r.getMessage()]
         assert len(reported) == 1
-        assert reported[0][0] is error
-        assert "embedding model unavailable" in reported[0][1]
+        assert reported[0].levelno == logging.ERROR
+        assert reported[0].exc_info[1] is error
 
     def test_max_results_cap(self, monkeypatch):
         monkeypatch.setattr(get_config().search, "max_results", 2)
@@ -202,6 +209,7 @@ class TestSearchAlerts:
         assert query.search_alerts(SearchRequest(query="some free text")).total == 2
 
 
+@pytest.mark.integration
 class TestFilterListing:
     """A request with filters and no query is a listing: newest first, no ranking, no tier."""
 
@@ -328,12 +336,14 @@ class TestQdrantCalls:
         assert kwargs["score_threshold"] == 0.3
         assert kwargs["query_filter"].must_not[0].match.any == ["alert-1"]
 
+    @pytest.mark.integration
     def test_similar_search_unindexed_alert(self, mock_qdrant):
         assert query.similar_search("alert-1", SearchFilters(), limit=5, group_size=2).dense == []
         response = query.similar_alerts("alert-1")
         assert response.total == 0 and response.query == "similar:alert-1"
 
 
+@pytest.mark.integration
 class TestTestAlerts:
     """Test-run alerts (svs.queue) are left out of a search that says nothing about queues, and
     counted (docs/SVS_RUNS.md, RPT-7)."""
@@ -351,8 +361,15 @@ class TestTestAlerts:
 
         monkeypatch.setattr(query, "semantic_search", semantic)
         monkeypatch.setattr(query, "lexical_search", lambda *a, **k: [])
-        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
         return seen
+
+    @pytest.fixture
+    def test_alert(self):
+        """An alert in the test queue, which is what makes a search run the counting pass."""
+        alert = insert_alert()
+        get_db().execute(Alert.__table__.update().where(Alert.id == alert.id).values(queue=get_config().svs.queue))
+        get_db().commit()
+        return alert
 
     def test_leave_out_test_alerts(self):
         filters, test_filters = query.leave_out_test_alerts(SearchFilters(dispositions=("OPEN",)), include=False)
@@ -378,15 +395,16 @@ class TestTestAlerts:
         filters, _ = query.leave_out_test_alerts(SearchFilters(), include=False)
         assert filters.queues == ("atomic",)
 
-    def test_search_leaves_them_out_and_counts_them(self, calls):
+    def test_search_leaves_them_out_and_counts_them(self, calls, test_alert):
         response = query.search_alerts(SearchRequest(query="mimikatz"))
         assert response.alert_uuids == ["a", "b"]
         assert response.excluded_test_alerts == 1
         assert [(f.queues, f.queues_inverted) for f in calls] == [(("svs",), True), (("svs",), False)]
         assert "excluded_test_alerts" in response.timings_ms
 
-    def test_no_counting_pass_while_no_test_alert_exists(self, calls, monkeypatch):
-        monkeypatch.setattr(query, "_any_test_alerts", lambda: False)
+    def test_no_counting_pass_while_no_test_alert_exists(self, calls):
+        # an alert in any other queue does not count
+        insert_alert()
         response = query.search_alerts(SearchRequest(query="mimikatz"))
         assert response.excluded_test_alerts == 0
         assert len(calls) == 1
@@ -402,12 +420,12 @@ class TestTestAlerts:
         assert response.excluded_test_alerts is None
         assert calls[0].queues == ()
 
-    def test_the_count_respects_the_post_filter(self, calls):
+    def test_the_count_respects_the_post_filter(self, calls, test_alert):
         """Node scoping applies to the count too: an alert this node can't show isn't counted."""
         response = query.search_alerts(SearchRequest(query="mimikatz"), post_filter=lambda uuids: [u for u in uuids if u != "t"])
         assert response.excluded_test_alerts == 0
 
-    def test_a_listing_counts_them_too(self, monkeypatch):
+    def test_a_listing_counts_them_too(self, monkeypatch, test_alert):
         seen = []
 
         def fake_listing(filters, *, limit, offset, post_filter=None, timings=None):
@@ -416,12 +434,11 @@ class TestTestAlerts:
             return SearchResponse(query="", total=total, offset=offset, limit=limit)
 
         monkeypatch.setattr(query, "filter_listing", fake_listing)
-        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
         response = query.search_alerts(SearchRequest(query="disposition:OPEN", limit=20))
         assert response.total == 9 and response.excluded_test_alerts == 4
         assert seen == [(("svs",), True, 20), (("svs",), False, 0)]
 
-    def test_similar_alerts(self, monkeypatch):
+    def test_similar_alerts(self, monkeypatch, test_alert):
         seen = []
 
         def similar(alert_uuid, filters, **kwargs):
@@ -431,7 +448,6 @@ class TestTestAlerts:
             return SemanticLane(dense=[("a", [])])
 
         monkeypatch.setattr(query, "similar_search", similar)
-        monkeypatch.setattr(query, "_any_test_alerts", lambda: True)
         response = query.similar_alerts("x")
         assert response.alert_uuids == ["a"] and response.excluded_test_alerts == 2
 

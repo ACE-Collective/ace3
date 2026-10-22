@@ -12,12 +12,13 @@ import uuid
 import psutil
 import pytest
 
+from saq.configuration.config import get_service_config
+from saq.constants import SERVICE_YARA_SCANNER
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.marker_rule import MARKER_RULE_DIR, MARKER_RULE_NAME
 from saq.svs.markers import find_markers_in_match, new_marker
 from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
-from saq.yara_scanning import service as service_module
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
 from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork
@@ -224,10 +225,16 @@ def test_scan_file(make_server, rules_dir, target):
 
 
 @pytest.mark.integration
-def test_the_service_loads_the_marker_rule(scanner_settings, signature_dir, tmp_path, monkeypatch):
+def test_the_service_loads_the_marker_rule(socket_dir, signature_dir, tmp_path, monkeypatch):
     """The service writes the svs marker rule before its server starts, so the first generation
     compiles it and the manager watches its directory (docs/SVS.md, FR-25)."""
-    monkeypatch.setattr(service_module, "get_scanner_settings", lambda: scanner_settings())
+    config = get_service_config(SERVICE_YARA_SCANNER)
+    # an absolute socket_dir survives the join with the data dir
+    monkeypatch.setattr(config, "socket_dir", socket_dir)
+    monkeypatch.setattr(config, "signature_dir", signature_dir)
+    monkeypatch.setattr(config, "git_repo_dirs", [])
+    monkeypatch.setattr(config, "worker_count", 2)
+    monkeypatch.setattr(config, "update_frequency", 1)
     marker = new_marker()
     dropped = str(tmp_path / "dropped.ps1")
     with open(dropped, "wb") as fp:

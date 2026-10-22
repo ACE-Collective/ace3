@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from aceapi_v2.application import app as v2_app
 from saq.configuration.config import get_config
 from saq.database.model import AuthGroupPermission, AuthPermissionCatalog, AuthUserPermission
 from saq.database.pool import get_db
 from saq.permissions.catalog import (
+    CATALOG_PAIRS,
     PERMISSION_CATALOG,
+    SESSION_ONLY_PAIRS,
     get_catalog_pairs,
     get_permission_catalog,
     is_grantable,
@@ -67,6 +70,9 @@ class TestCatalogGuard:
         assert not missing, (
             f"these enforced permissions are missing from the permission catalog: {sorted(missing)}"
         )
+
+    def test_session_only_permissions_are_in_the_catalog(self):
+        assert SESSION_ONLY_PAIRS and SESSION_ONLY_PAIRS <= CATALOG_PAIRS
 
     def test_user_edit_is_not_enforced_anymore(self):
         # The normalization dropped user:edit; nothing should still enforce it.
@@ -153,6 +159,9 @@ _SELF_SERVICE_ROUTES = {
     ("GET", "/users/me"),
     ("PATCH", "/users/me"),
     ("GET", "/users/me/apikeys"),
+    ("POST", "/users/me/apikeys"),
+    ("PUT", "/users/me/apikeys/{key_id}"),
+    ("DELETE", "/users/me/apikeys/{key_id}"),
     ("GET", "/users/me/preferences"),
     ("GET", "/users/me/preferences/{key}"),
     ("PUT", "/users/me/preferences/{key}"),
@@ -220,8 +229,6 @@ _AI_PUBLIC_PATHS = {
 
 
 def _fastapi_apps():
-    from aceapi_v2.application import app as v2_app
-
     # imported lazily: the AI app builds its backend registry from the loaded configuration
     import aceapi_ai.application
 
@@ -265,8 +272,6 @@ class TestRouteCoverage:
         but consults no permission grant, so it is only ever correct on a route whose entire
         subject is the caller's own account. Assert both directions -- nothing else may use it,
         and every route that should use it does (rather than carrying no gate at all)."""
-        from aceapi_v2.application import app as v2_app
-
         gated = {
             (method, path)
             for path, methods, dependant in _iter_effective_routes(v2_app)
@@ -275,6 +280,18 @@ class TestRouteCoverage:
             and _dependant_has_gate(dependant, {"self_service_dependency"})
         }
         assert gated == _SELF_SERVICE_ROUTES
+
+    def test_changing_your_own_keys_requires_user_self(self):
+        """The self-service gate checks no grant, so on the routes that create or change the
+        caller's own keys it is user:self that keeps a user an admin denied it from doing so."""
+        key_routes = {("POST", "/users/me/apikeys"), ("PUT", "/users/me/apikeys/{key_id}"), ("DELETE", "/users/me/apikeys/{key_id}")}
+        pairs = {
+            (method, path): _dependant_permission_pairs(dependant)
+            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for method in methods
+            if (method, path) in key_routes
+        }
+        assert pairs == {route: {("user", "self")} for route in key_routes}
 
     def test_ai_query_routes_gate_exactly_their_backend(self):
         """POST /query/<name> must require exactly ai:<name> -- for every enabled backend."""

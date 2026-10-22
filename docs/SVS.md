@@ -491,9 +491,12 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
   `context`. Context-only attribution also routes. [ART-5] An alert whose marker disagreed never
   reaches this fallback. It has no per-detection signal, so it
   attributes **every** detection on the alert: a context-only alert is always `TEST?`, never
-  `PARTIAL TEST`. It also requires exactly one candidate run. When two runs on the same target
-  have overlapping windows, nothing is attributed and a WARNING record names both run UUIDs,
-  because attributing to the wrong run teaches the wrong expectation. [FR-9]
+  `PARTIAL TEST`. It also requires exactly one candidate run. Registration keeps two runs from
+  holding one host at once (`docs/SVS_RUNS.md`, *One run per test host*), so when several runs'
+  windows cover the alert, the one that started last claims it if every other one's claim on the
+  host had ended by then. Otherwise (claims that overlap, which only runs registered before that
+  rule can have) nothing is attributed and a WARNING record names the run UUIDs, because
+  attributing to the wrong run teaches the wrong expectation. [FR-9]
 
 The launcher's contract is to put the marker where the technique's process telemetry will show it:
 an input argument, a file name, or a trailing shell comment on the executor command.
@@ -697,12 +700,18 @@ and keeps the router from attributing the alert to that run again. Every move it
 with the router name `svs_manual`, and while that is an alert's latest move the SVS router holds
 the alert where it is. [ART-13]
 
-**Hunt suppression.** When an expected hunt signature is *missing* and that hunt alerted within its
-`suppression` period before the run started, the result reads *missing, possibly suppressed*. It is
-imprecise for `group_by` and `dedup_key`, and says so. Preventing suppression for test targets is
-deferred. The revisit trigger is 50 Reviewed runs or 3 months: if more than about 10% of *missing*
-results are *possibly suppressed*, reconsider. The Runs tab shows that share, read from the
-results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
+**Hunt suppression.** Re-running a test inside a hunt's `suppression` period is the normal case, so
+a hunt with `group_by` keys its suppression of a group by the run while a run's window covers the
+group's event time on one of the run's test hosts: each run's first match alerts, the rest of that
+run's are suppressed, and a test never suppresses production or another run, nor production a test
+(`docs/SVS_RUNS.md`, *Hunt suppression during runs*). A match it still drops there is recorded for
+the run (`svs_suppressed_matches`), so for a hunt with `group_by` the result is never a guess
+(`docs/SVS_RUNS.md`, *Results*). A hunt without `group_by` suppresses as a whole and can still hide
+a test: when an expected hunt signature is *missing* and that hunt alerted within its `suppression`
+period before the run started, the result reads *missing, possibly suppressed*. It is imprecise for
+`dedup_key`, and says so. The revisit trigger is 50 Reviewed runs or 3 months: if more than about
+10% of *missing* results are *possibly suppressed*, reconsider the rest. The Runs tab shows that
+share, read from the results as signed off (`GET /api/v2/svs/runs/suppression-share`). [D-19, ART-8]
 
 ### The Atomic Red Team catalog
 
@@ -927,6 +936,7 @@ carries `svs_run`**, plus `svs_test` and `svs_marker` wherever they are known, s
 | Attribution written or removed | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | A reviewed run changed since review | INFO | `alert_uuid` |
 | A run's alerts closed as `SIMULATED` | INFO | `alert_uuids`, `left_alone`, `late`, `actor` |
+| A hunt with `group_by` suppressed a match on the run's test host, the first per hunt | INFO | `hunt_uuid`, `group_value` |
 | Result computed | INFO, plus DEBUG per signature | per-status counts |
 | Missing expected signature | INFO | `signature_uuid`, `signature_family`, `possibly_suppressed` |
 
@@ -1094,6 +1104,7 @@ tables are on the main chain.
 | `svs_ignores` | `(scope: global/test, test guid?, signature uuid)` |
 | `svs_test_settings` | Per test: an observation window that replaces the computed one |
 | `svs_run_results` | Per `(run, signature)`: hit / missing / possibly suppressed / candidate / rejected / ignored, with the rule's content hash; live and as reviewed |
+| `svs_suppressed_matches` | Per `(run, hunt)`: a hunt with `group_by` dropped a match for its suppression on one of the run's test hosts inside its window; the first match's group value and event time |
 | `svs_run_result_state` | Whether a run's live result is stale: a generation each change bumps, so a computation that raced a change leaves it stale |
 | `svs_technique_worklist` | The declared-vs-measured worklist: one row per signature × technique; the resolution is stored, the status derived on each coverage refresh |
 | `svs_run_events` | Append-only run event log (Part 5) |
@@ -1318,6 +1329,7 @@ probably suppressed.
 
 - The dynamic case of YARA regression: re-deriving a sample with the current tool before scanning.
   [YR-10]
-- Preventing hunt suppression for test targets, with the revisit trigger above. [ART-8]
+- Preventing hunt suppression for test targets beyond hunts with `group_by`, with the revisit
+  trigger above. [ART-8]
 - Moving other byte stores onto the CAS (`docs/CAS.md`, Consumers). [CAS-8]
 - Per-company coverage. [COV-1]

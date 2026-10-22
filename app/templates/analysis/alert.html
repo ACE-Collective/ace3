@@ -190,31 +190,6 @@
 
 {% include 'analysis/observable_modifier_rules.html' %}
 
-{% if observable_open_event_counts %}
-{% set matching_open_events = observable_open_event_counts|dictsort(false, 'value') %}
-{% set matching_open_events_summary %}{{ matching_open_events | length }} event(s) | {{ matching_open_events[-1][1] }}/{{ num_observables_in_alert }} matching observables | {{ matching_open_events[-1][0].name }}{% endset %}
-{% call alert_section('matching_open_events', 'Matching Open Events', default_open=not ace_config.gui.matching_open_events_collapsed, summary=matching_open_events_summary) %}
-        <table class="table table-bordered table-condensed">
-            <tr>
-                <th>Event</th>
-                <th>Match</th>
-                <th>Threat Names</th>
-                <th>Tags</th>
-            </tr>
-
-            {% for item in observable_open_event_counts|dictsort(false, 'value')|reverse %}
-            <tr>
-                <td style="white-space: nowrap;"><a href="{{url_for('events.index', direct=item[0].id)}}" target="_blank">{{ item[0].name }}</a></td>
-                <td style="white-space: nowrap;">{{ ((item[1] / num_observables_in_alert) * 100)|round|int }}% ({{ item[1] }})</td>
-                <td style="white-space: nowrap;">{{ item[0].malware_names|join(', ') }}</td>
-                <td style="width: 100%;">{{ item[0].sorted_tags|join(', ') }}</td>
-            </tr>
-            {% endfor %}
-
-        </table>
-{% endcall %}
-{% endif %}
-
 {% if remediation_timeline_events or (external_check_footer and external_check_footer.entries) %}
 {# pending rows (still remediating / still being watched) are not events #}
 {% set timeline_event_count = remediation_timeline_events | rejectattr('pending') | list | length %}

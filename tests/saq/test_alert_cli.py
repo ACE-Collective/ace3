@@ -53,7 +53,6 @@ def test_delete_removes_the_row_and_the_storage_directory(root_analysis, monkeyp
 
 @pytest.mark.integration
 def test_delete_of_an_unknown_alert_is_not_an_error(monkeypatch):
-    monkeypatch.setattr("saq.cli.commands.alerts.submit_delete_task", lambda uuid: True)
 
     with pytest.raises(SystemExit) as e:
         delete_alerts(Namespace(uuids=["00000000-0000-4000-8000-000000000000"]))
@@ -177,13 +176,25 @@ def _run(command, **overrides) -> int:
     return e.value.code
 
 
+def _record_rebuilds(monkeypatch) -> list[str]:
+    """The uuids of the alerts the sweep rebuilds, in order; each is still rebuilt for real."""
+    rebuilt = []
+    original = Alert.rebuild_index
+
+    def _rebuild_index(self):
+        rebuilt.append(self.uuid)
+        return original(self)
+
+    monkeypatch.setattr(Alert, "rebuild_index", _rebuild_index)
+    return rebuilt
+
+
 @pytest.mark.integration
 def test_rebuild_all_narrowed_by_insert_date(monkeypatch):
     recent = _alert_inserted_days_ago(10)
     old = _alert_inserted_days_ago(200)
     # patched only now: ALERT() rebuilds the index of the alert it creates
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     assert _run(rebuild_index, insert_date="-90d") == 0
     assert recent in rebuilt
@@ -200,8 +211,7 @@ def test_rebuild_all_narrowed_by_insert_date(monkeypatch):
 ])
 def test_rebuild_rejects_bad_arguments(overrides, monkeypatch):
     _alert_inserted_days_ago(1)
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     assert _run(rebuild_index, **overrides) == 1
     assert rebuilt == []
@@ -210,8 +220,7 @@ def test_rebuild_rejects_bad_arguments(overrides, monkeypatch):
 @pytest.mark.integration
 def test_rebuild_all_pages_through_every_alert(monkeypatch):
     uuids = [_alert_inserted_days_ago(1) for _ in range(3)]
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     # one alert per page: every page boundary is crossed
     assert _run(rebuild_index, batch_size=1) == 0
@@ -221,8 +230,7 @@ def test_rebuild_all_pages_through_every_alert(monkeypatch):
 @pytest.mark.integration
 def test_rebuild_all_resumes_after_an_id(monkeypatch):
     first, second, third = [_alert_inserted_days_ago(1) for _ in range(3)]
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     assert _run(rebuild_index, after_id=_alert_id(first), batch_size=1) == 0
     assert rebuilt == [second, third]
@@ -234,8 +242,7 @@ def test_rebuild_all_skips_alerts_of_other_nodes(monkeypatch):
     remote = _alert_inserted_days_ago(1)
     get_db().execute(Alert.__table__.update().where(Alert.uuid == remote).values(location="some-other-node"))
     get_db().commit()
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     assert _run(rebuild_index) == 0
     assert rebuilt == [local]
@@ -245,12 +252,14 @@ def test_rebuild_all_skips_alerts_of_other_nodes(monkeypatch):
 def test_rebuild_failure_does_not_stop_the_run(monkeypatch):
     broken, healthy = _alert_inserted_days_ago(1), _alert_inserted_days_ago(1)
     rebuilt = []
+    original = Alert.rebuild_index
 
     def _rebuild_index(self):
         if self.uuid == broken:
             raise RuntimeError("broken")
 
         rebuilt.append(self.uuid)
+        return original(self)
 
     monkeypatch.setattr(Alert, "rebuild_index", _rebuild_index)
 
@@ -261,8 +270,7 @@ def test_rebuild_failure_does_not_stop_the_run(monkeypatch):
 @pytest.mark.integration
 def test_rebuild_of_a_missing_directory_fails(monkeypatch):
     root_uuid = _alert_inserted_days_ago(1)
-    rebuilt = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: rebuilt.append(self.uuid))
+    rebuilt = _record_rebuilds(monkeypatch)
 
     assert _run(rebuild_index, resync_all=False, dirs=[storage_dir_from_uuid(root_uuid), "does/not/exist"]) == 1
     assert rebuilt == [root_uuid]
@@ -303,12 +311,14 @@ def test_backfill_icons_all():
 def test_interrupted_sweep_reports_where_to_resume(monkeypatch):
     first, second, third = [_alert_inserted_days_ago(1) for _ in range(3)]
     rebuilt = []
+    original = Alert.rebuild_index
 
     def _rebuild_index(self):
         if self.uuid == third:
             raise KeyboardInterrupt()
 
         rebuilt.append(self.uuid)
+        return original(self)
 
     monkeypatch.setattr(Alert, "rebuild_index", _rebuild_index)
 
@@ -319,7 +329,7 @@ def test_interrupted_sweep_reports_where_to_resume(monkeypatch):
     # everything at or below the resume point is done; the interrupted alert is not
     assert result.resume_after_id == _alert_id(second)
 
-    resumed = []
-    monkeypatch.setattr(Alert, "rebuild_index", lambda self: resumed.append(self.uuid))
+    monkeypatch.setattr(Alert, "rebuild_index", original)
+    resumed = _record_rebuilds(monkeypatch)
     assert _run(rebuild_index, after_id=result.resume_after_id) == 0
     assert resumed == [third]

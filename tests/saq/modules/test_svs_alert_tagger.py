@@ -32,7 +32,6 @@ def setup(monkeypatch):
     monkeypatch.setattr(windows, "hunt_info", lambda: {})
     attribution.clear_caches()
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield

@@ -463,6 +463,10 @@ redis:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  # (in seconds) without these a stalled redis blocks the caller forever; the reply timeout
+  # must be longer than the search indexer's 1 second BLPOP
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 redis-local:
   name: local
@@ -472,6 +476,8 @@ redis-local:
   password: file:/auth/passwords/redis
   use_ssl: false
   #ssl_ca_path: /opt/ace/ssl/ca-chain.cert.pem
+  socket_connect_timeout: 5
+  socket_timeout: 10
 
 qdrant:
   url: https://qdrant:6333
@@ -676,8 +682,6 @@ gui:
   # Show the total alerts resulting from the current filter.
   #  Ex: "Alert (22)" would say there are 22 alerts matching the filter.
   show_total_alert_count: true
-  # Default Matching Open Events toggle position
-  matching_open_events_collapsed: false
   # Default Alert Details toggle position
   alert_details_collapsed: false
   # Hide intel if we don't want to let people see it (public/internet ace)
@@ -798,12 +802,6 @@ wiki:
   alert_reference_enabled: false
   # If you want the a wiki link next to the event names on the manage events page
   event_link_enabled: false
-
-smtp:
-  # smtp information for sending emails
-  enabled: false
-  server: localhost
-  mail_from: ace@localhost
 
 nrd:
   # kill switch for the refresh script. When false, `ace nrd refresh`

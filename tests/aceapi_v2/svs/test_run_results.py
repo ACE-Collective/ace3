@@ -15,11 +15,12 @@ from aceapi_v2.svs.runs import service
 from saq.database.model import SVSAttribution, SVSRun
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.svs import results, signatures, windows
+from saq.svs import results
 from saq.svs.result_state import mark_runs_stale
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -28,9 +29,7 @@ NOISE = "33333333-cccc-4ccc-8ccc-333333333333"
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+def setup(no_hunts, yara_dir):
     add_catalog_test(GUID)
     add_catalog_test(OTHER_GUID)
     add_test_host("win10-01")

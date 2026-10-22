@@ -1,13 +1,18 @@
 import json
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import pytest
+import yaml
 from sqlalchemy import select, update
 
 from saq.analysis.root import RootAnalysis
 from saq.cas import CASPool, get_cas
+from saq.configuration.config import get_config, get_service_config
+from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
+from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSYaraCapture, load_alert
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
@@ -16,8 +21,10 @@ from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import YARA_RULE_MATCH
 from saq.signatures.model import SignatureType
+from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.database.private_session import private_transaction
-from saq.svs import attribution, windows
+from saq.engine.execution_context import EngineExecutionContext
+from saq.svs import attribution, runs, windows
 from saq.svs.attack import AttackCatalog, load_attack_catalog
 from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
@@ -25,7 +32,7 @@ from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller
 from saq.svs.runs import Registration, TargetSpec, register, start
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator
 
 @pytest.fixture(autouse=True)
 def clear_attribution_caches():
@@ -218,15 +225,74 @@ def add_catalog_test(guid: str, *, platforms=("windows",), removed: bool = False
 
 
 @pytest.fixture
-def no_hunts(monkeypatch):
-    """No enabled hunts: a run's observation window is the floor (60 minutes by default)."""
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
+def hunt_dir(tmp_path) -> Path:
+    """The rule_dir of the only schedulable hunt type, empty until write_hunt adds a hunt."""
+    directory = tmp_path / "hunts"
+    directory.mkdir()
+    get_config().clear_hunt_type_configs()
+    get_config().add_hunt_type_config("unittest", HuntTypeConfig(
+        name="unittest", python_module="saq.collectors.query_hunter", python_class="QueryHunt",
+        rule_dirs=[HuntRuleDirConfig(rule_dir=str(directory))], update_frequency=60))
+    windows.clear_cache()
+    yield directory
+    windows.clear_cache()
+
+
+@pytest.fixture
+def no_hunts(hunt_dir) -> Path:
+    """No hunts: a run's observation window is the floor (60 minutes by default)."""
+    return hunt_dir
+
+
+def write_hunt(directory: Path, uuid: str, *, enabled: bool = True, frequency: str = "00:05:00", **rule) -> Path:
+    """A hunt file with the rule fields svs reads; its name is its uuid unless given. windows caches
+    the hunts it has read, so a test that writes one after a read calls windows.clear_cache()."""
+    path = directory / f"{uuid}.yaml"
+    path.write_text(yaml.safe_dump({"rule": {"uuid": uuid, "name": uuid, "enabled": enabled, "frequency": frequency,
+                                             **rule}}))
+    return path
+
+
+@pytest.fixture
+def yara_dir(tmp_path, monkeypatch) -> Path:
+    """service_yara.signature_dir, outside any git repo, with no rules until write_yara_rule adds one."""
+    root = tmp_path / "yara"
+    (root / "unittest").mkdir(parents=True)
+    config = get_service_config(SERVICE_YARA_SCANNER)
+    monkeypatch.setattr(config, "signature_dir", str(root))
+    monkeypatch.setattr(config, "git_repo_dirs", [])
+    reset_yara_inventory()
+    yield root
+    reset_yara_inventory()
+
+
+def yara_rule_source(name: str, uuid: str, **meta: str) -> str:
+    """One rule, whose meta is its uuid plus meta (mitre_attack, modifiers, enabled)."""
+    lines = "\n".join(f'        {key} = "{value}"' for key, value in {"uuid": uuid, **meta}.items())
+    return (f'rule {name}\n{{\n    meta:\n{lines}\n    strings:\n        $a = "{name}"\n'
+            f'    condition:\n        $a\n}}\n')
+
+
+def write_yara_rule(signature_dir: Path, name: str, uuid: str, **meta: str) -> Path:
+    """A rule file holding yara_rule_source(name, uuid, **meta). The inventory is cached, so a test
+    that writes one after a read calls reset_yara_inventory()."""
+    path = signature_dir / "unittest" / f"{name}.yar"
+    path.write_text(yara_rule_source(name, uuid, **meta))
+    return path
 
 
 LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
 
 # the signature of the detections attribute_to_run attributes
 SIGNATURE_UUID = "5c1a9e57-0000-4000-8000-00000000a7a7"
+
+
+@pytest.fixture
+def overlapping_runs(monkeypatch):
+    """Lets runs on one test host overlap, as runs registered before one run per host was enforced
+    (saq.svs.runs.host_holders) could: for tests that use several runs on one host as fixtures, and
+    whose subject isn't the host's claim."""
+    monkeypatch.setattr(runs, "host_holders", lambda *args, **kwargs: [])
 
 
 def add_test_host(hostname: str = "win10-01", **values):
@@ -261,3 +327,8 @@ def attribute_to_run(alert_uuid: str, state: str = "started", content_hash: str 
                                    signature_uuid=signature_uuid, confidence="marker", source="router", actor="svs", created_at=datetime.now()))
         session.expunge(run)
     return run
+
+
+def sync_alert(root: RootAnalysis) -> None:
+    """The engine's POST_ANALYSIS sync of an existing alert."""
+    create_test_orchestrator()._sync_alert_to_database(EngineExecutionContext(root))

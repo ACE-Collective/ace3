@@ -6,9 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
-from aceapi_v2.secrets import service
 from saq.configuration.encryption import delete_password, list_encrypted_password_keys
 from saq.database.model import AuthUserPermission, User
+from saq.environment import get_global_runtime_settings
 
 pytestmark = pytest.mark.integration
 
@@ -111,6 +111,7 @@ class TestHappyPath:
 
     @pytest.mark.asyncio
     async def test_locked_returns_409(self, client: AsyncClient, monkeypatch):
-        monkeypatch.setattr(service, "encryption_unlocked", lambda: False)
+        monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
         r = await client.put("/secrets/test.k", json={"value": "v"})
         assert r.status_code == 409
+        assert "test.k" not in list_encrypted_password_keys()

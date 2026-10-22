@@ -486,6 +486,7 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
 | `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
 | `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
+| `GET /api/v2/svs/catalog/repositories` | `svs:run_read` | Each catalog repository and the commit the catalog reflects (*Catalog repositories*, below) |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test's runs on the platform, or remove the decision |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs on every platform, or stop |
 | `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
@@ -555,6 +556,24 @@ platform: `{"platform", "test_state", "last_reviewed_run_id", "last_reviewed_at"
 With `changed_since`, a test is returned when it was added, changed, removed or came back at or
 after that time.
 
+### Catalog repositories
+
+`GET /api/v2/svs/catalog/repositories` lists every repository in `svs.catalog.repositories`, and
+any other that still has a row, by name: what `ace svs catalog status` prints. A launcher checks out
+`commit` to run the tests, `src/` files included, as the catalog has them.
+
+| Field | Meaning |
+|---|---|
+| `name` | The `name` of its `git_repo_*` section. |
+| `configured` | It is in `svs.catalog.repositories`. |
+| `git_url`, `branch` | From its `git_repo_*` section, `null` without one. `git_url` never carries a user or password. |
+| `commit` | The commit the catalog's tests were last read from; `null` until the first read succeeds. |
+| `refreshed_at` | When that commit was read. |
+| `test_count`, `skipped_count` | The tests read from that commit, and the tests and files that read couldn't use. |
+| `removed_count` | Its tests removed from the catalog. |
+| `error` | Why the last refresh failed, `null` when it succeeded. The catalog keeps the tests of the commit it last read, so a launcher should treat `commit` as behind. |
+| `retired` | Taken out of `svs.catalog.repositories`, so its tests were removed. |
+
 ## Runs
 
 A run is one Atomic Red Team test a launcher outside ACE runs against test hosts, from
@@ -565,8 +584,10 @@ launcher that also reads its runs needs both.
 | Endpoint | Permission | Returns |
 |---|---|---|
 | `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
+| `POST /api/v2/svs/runs/validate`, same body | `svs:run_register` | What registering it would decide, without registering it: `decision` (`accepted`, `refused`, `invalid`, `host_busy`), the `status_code` registering would answer, `message`, each target's `accepted`, `reason`, `test_host`, `platform` and `held_by` (the runs holding its host), and when accepted the run's `platform`, `observation_seconds`, `observation_source`, `attribution_seconds` and `holds_host`. Creates no run, refusal or alert (`docs/SVS_RUNS.md`, *Validating a registration*) |
 | `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
-| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
+| `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?, output?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error`. `output` (what the test printed) is kept as the run's `launcher_output`, at most 64 KiB (`docs/SVS_RUNS.md`, *The test's output*) |
+| `POST /api/v2/svs/runs/{run_id}/cleanup` | `svs:run_register` | The run, with `cleanup_at`: the test's cleanup begins now (a started run, once) |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
 | `GET /api/v2/svs/runs` | `svs:run_read` | Runs, newest first, filtered and paged |
 | `GET /api/v2/svs/runs/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed. The CSV joins `targets` with `,`, each as `hostname` or `hostname/username` |
@@ -580,7 +601,7 @@ launcher that also reads its runs needs both.
 | `GET /api/v2/svs/runs/events` (and `/export/ndjson`, `/export/csv`) | `svs:run_read` | The event feed: the events of every run the filters match, in `(updated_at, id)` order |
 
 The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `state`, `test_guid`,
-`platform`, `targets`, the window lengths and ends, `created_at`, `started_at`, `error_reason` and
+`platform`, `targets`, the window lengths and ends, `holds_host`, `created_at`, `started_at`, `cleanup_at`, `error_reason` and
 `close_reason`. Their errors:
 
 | Status | When |
@@ -588,6 +609,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
+| 409 | Registering, or starting, a run on a test host another run holds: `{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, `until` null for a run not started (`docs/SVS_RUNS.md`, *One run per test host*). No alert. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
@@ -601,6 +623,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `test_guid` | The catalog test (`GET /api/v2/svs/tests/{guid}`). |
 | `test_name`, `technique`, `technique_name` | From the catalog, as it is now. |
 | `platform` | The platform the run is on, an ATT&CK platform slug (`windows`, `linux`, `macos`, `iaas`, …), decided at registration: its targets' test hosts' platform, else the test's only supported platform (`docs/SVS_RUNS.md`, *Registering a run*). |
+| `holds_host` | Lifecycle calls and the run's detail: the run holds its test hosts until its attribution window ends rather than its observation window, from its test's settings at registration (`docs/SVS_RUNS.md`, *One run per test host*). |
 | `marker` | `svs-` and 26 base32 characters. Put it where the test's process telemetry shows it. It is `svs_marker` in ACE's log. |
 | `targets` | As registered (`hostname`, `username`) and normalized (`host`, the short name; `fqdn`; `user`, the bare user name), all lower case when normalized. |
 | `launcher`, `batch_id` | As registered. A batch is a label shared by the runs a launcher registered together, not a resource. |
@@ -616,6 +639,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `result_hit`, `result_expected` | Its result's hits out of the expected signatures it judged (*expected hits n/m*): `result_expected` counts hit, missing and possibly suppressed (*Results*, below). |
 | `result_missing`, `result_possibly_suppressed` | Expected signatures it missed (possibly suppressed ones included), and of those the possibly suppressed. |
 | `result_candidate`, `result_rejected`, `result_ignored` | Signatures that fired and nobody decided, were rejected, or are ignored. |
+| `result_cleanup` | Signatures that fired only during the test's cleanup (`docs/SVS_RUNS.md`, *Cleanup*). |
 | `result_stale` | Its result is about to be recomputed. |
 | `reviewed_hit`, `reviewed_expected`, `reviewed_missing`, `reviewed_possibly_suppressed` | The same counts of the result as signed off at its latest review (`reviewed_status`); 0 until it is reviewed. |
 | `alerts`, `marker_alerts`, `context_alerts`, `late_alerts` | The alerts attributed to it; of those, by a marker, by context alone (`TEST?`), and late. |
@@ -624,6 +648,8 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 `GET …/{run_id}` adds:
 - `extra`, the object the launcher sent;
 - `launcher_error`, the error `executed` reported;
+- `launcher_output`, what the test printed, as `executed` reported it (at most 64 KiB, longer output
+  truncated around a marker);
 - `test_content_hash` and `catalog_commit`, the test as it was registered (a later catalog change
   doesn't change them);
 - `observation_seconds` and `attribution_seconds`, the window lengths fixed at registration
@@ -683,8 +709,8 @@ row's `updated_at` and you never miss a run.
 
 ### Suppression share
 
-Keeping the hunter from suppressing test targets is deferred, with a revisit trigger (`docs/SVS.md`,
-Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
+Suppression a run doesn't key by itself (`docs/SVS_RUNS.md`, *Hunt suppression during runs*) is
+judged by a revisit trigger (`docs/SVS.md`, Part 3, *Hunt suppression*). `GET /api/v2/svs/runs/suppression-share` reads it from every run's
 result as signed off, and the Runs tab shows it above the list:
 
 | Field | Meaning |
@@ -797,11 +823,11 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 |---|---|
 | `run_id`, `signature_uuid` | The run and the signature; together they are unique. |
 | `signature_family`, `signature_name` | `yara`, `hunt`, `builtin`, ...; and its name, from the rule inventory, or as last known when the rule is gone. |
-| `status` | `hit`, `missing`, `possibly_suppressed`, `candidate`, `rejected` or `ignored`; null once the signature left the live result and the row holds only the reviewed one. |
-| `alert_count` | The run's attributed alerts that carry the signature (0 when missing). |
+| `status` | `hit`, `missing`, `possibly_suppressed`, `candidate`, `rejected`, `ignored` or `cleanup` (it fired only during the test's cleanup and isn't expected); null once the signature left the live result and the row holds only the reviewed one. |
+| `alert_count` | The run's attributed alerts that carry the signature (0 when missing). A signature the test fired outside its cleanup counts only those alerts. |
 | `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
 | `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
-| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
+| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt deduplicates its alerts, so it may not have suppressed the run's. Both are empty for a hunt with `group_by`, whose suppression the hunter recorded (`docs/SVS_RUNS.md`, *Results*). |
 | `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
 | `updated_at` | The row's last change; the feed's `changed_since` key. |
 
@@ -823,6 +849,7 @@ alerts by hand*), one row per (alert, detection), removed ones included, read wi
 | `run_id`, `alert_uuid`, `detection` | The run, the alert, and the detection's `content_hash`; together they are unique. |
 | `signature_uuid`, `signature_family` | The detection's signature. |
 | `confidence`, `late` | `marker` or `context` (a person's association is `marker`), and whether the alert's event came after the observation window. |
+| `event_time`, `cleanup` | The alert's event time the attribution was judged by (null for attributions written before it was kept), and whether it is at or after the run's `cleanup_at`: the test's cleanup caused it (`docs/SVS_RUNS.md`, *Cleanup*). |
 | `source` | `router` (the `svs_marker` router) or `manual` (a person associated the alert). |
 | `scan_point` | Where the agreeing marker was found; null for context and for a person's association. |
 | `actor`, `actor_user`, `created_at` | Who attributed it (`svs` for the router) and when. |
@@ -856,6 +883,7 @@ paged with `cursor`. Its NDJSON export streams every row. The rows nest, so ther
 | `holds` | An attribution of it to this run holds. A row whose attributions were all removed (disassociated, *not a test*, or the router found they no longer apply) has `false`. |
 | `confidence` | Of the attributions that hold: `marker` when any is (a person's association counts as one), else `context`; null when none holds. |
 | `late`, `manual` | An attribution that holds is late, or was made by a person. |
+| `cleanup` | Every attribution that holds is the test's cleanup's. |
 | `kept` | A person kept its context attributions. |
 | `undecided_context` | It has a context attribution that holds and that nobody kept: a review waits for *keep* or *not a test* (`review_blockers.context_alerts`). |
 | `detections` | Every detection of the alert, then any attributed one it no longer has: `{"detection", "description", "signature_uuid", "signature_family", "attribution"}`, where `detection` is the `content_hash`, `description` is null for one it no longer has, and `attribution` is its attribution to this run (as in *Attributions*), or null when it never had one. |
@@ -920,10 +948,14 @@ ignores/{signature_uuid}` (`svs:run_manage`); a global one with `PUT /api/v2/svs
 
 ## Test settings
 
-`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes"}`, the observation
-window of the test's runs registered from then on, used as it is (no slack, no floor) from 1 minute
-up to `svs.runs.observation_window.ceiling_hours` (`docs/SVS_RUNS.md`, *Windows*). The response adds
-`set_by` (username) and `updated_at`. Reading needs `svs:run_read`, changing `svs:run_manage`.
+`GET`, `PUT`, `DELETE /api/v2/svs/tests/{guid}/settings`: `{"observation_minutes", "holds_host"}`, for
+the test's runs registered from then on. `observation_minutes` is their observation window, used as
+it is (no slack, no floor) from 1 minute up to `svs.runs.observation_window.ceiling_hours`, or null
+for the computed one (`docs/SVS_RUNS.md`, *Windows*). `holds_host` (default false) makes each run
+hold its hosts until its attribution window ends rather than its observation window
+(`docs/SVS_RUNS.md`, *One run per test host*). A `PUT` replaces both; `DELETE` goes back to the
+defaults. The response adds `set_by` (username) and `updated_at`. Reading needs `svs:run_read`,
+changing `svs:run_manage`.
 
 ## Coverage
 

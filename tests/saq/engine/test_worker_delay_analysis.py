@@ -13,15 +13,18 @@ real ``AnalysisModule`` on the other side of ``DelayedAnalysisAdapter`` must
 close the analysis out instead of leaving it delayed.
 """
 from datetime import timedelta
-from unittest.mock import MagicMock, Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from saq.analysis.adapter import RootAnalysisAdapter
 from saq.analysis.root import RootAnalysis
-from saq.constants import AnalysisExecutionResult, F_FQDN, LockManagerType, WorkloadManagerType
+from saq.constants import AnalysisExecutionResult, F_FQDN
+from saq.database.pool import get_db_connection
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.delayed_analysis_adapter import DelayedAnalysisAdapter
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.modules.base_module import AnalysisModule
@@ -32,31 +35,18 @@ from saq.modules.rdap import RdapAnalysis
 from saq.util.time import local_time
 
 
-@pytest.fixture
-def worker() -> Worker:
-    """A real Worker with its collaborators replaced.
-
-    ``Worker`` builds its lock manager, workload manager and orchestrator in
-    ``__init__`` with no injection point, so they are reassigned afterwards.
-    """
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.single_threaded_mode = True
-    configuration_manager.config.auto_refresh_frequency = 0
-
-    worker = Worker(
+def make_worker(engine_type: EngineType) -> Worker:
+    return Worker(
         name="test_worker",
-        configuration_manager=configuration_manager,
+        configuration_manager=ConfigurationManager(EngineConfiguration(engine_type=engine_type, single_threaded_mode=True)),
         node_manager=Mock(spec=NodeManagerInterface),
     )
 
-    worker.lock_manager = MagicMock()
-    worker.workload_manager = MagicMock()
-    worker.workload_manager.add_delayed_analysis_request.return_value = True
-    return worker
+
+@pytest.fixture
+def worker() -> Worker:
+    """A real Worker with its in-memory workload manager."""
+    return make_worker(EngineType.LOCAL)
 
 
 @pytest.fixture
@@ -81,12 +71,33 @@ def test_delay_accepted_marks_the_analysis_delayed(worker, target):
     root, observable, analysis = target
 
     result = worker.delay_analysis(
-        root, observable, analysis, make_analysis_module(), seconds=10, timeout_seconds=60
+        root, observable, analysis, make_analysis_module(), hours=0, minutes=0, seconds=10, timeout_seconds=60
     )
 
     assert result is True
     assert analysis.delayed is True
-    worker.workload_manager.add_delayed_analysis_request.assert_called_once()
+    assert worker.workload_manager.delayed_analysis_queue_size == 1
+
+
+@pytest.mark.integration
+def test_delay_accepted_records_the_delayed_analysis_row(target):
+    """The same against the database workload manager: the row that brings the analysis back exists."""
+    root, observable, analysis = target
+    worker = make_worker(EngineType.DISTRIBUTED)
+
+    result = worker.delay_analysis(
+        root, observable, analysis, make_analysis_module(), hours=0, minutes=0, seconds=10, timeout_seconds=60
+    )
+
+    assert result is True
+    assert analysis.delayed is True
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT analysis_module, storage_dir, delayed_until > NOW() FROM delayed_analysis WHERE uuid = %s AND observable_uuid = %s",
+            (root.uuid, observable.uuid),
+        )
+        assert cursor.fetchall() == (("test_module", root.storage_dir, 1),)
 
 
 @pytest.mark.unit
@@ -94,26 +105,11 @@ def test_delay_refused_when_request_is_not_recorded(worker, target):
     """Nothing recorded the request, so nothing will ever resume the analysis:
     the delay has to be refused rather than reported as scheduled."""
     root, observable, analysis = target
-    worker.workload_manager.add_delayed_analysis_request.return_value = False
 
-    result = worker.delay_analysis(
-        root, observable, analysis, make_analysis_module(), seconds=10, timeout_seconds=60
-    )
-
-    assert result is False
-    assert analysis.delayed is False
-
-
-@pytest.mark.unit
-def test_delay_refused_when_request_returns_none(worker, target):
-    """Same for a workload manager that reports nothing at all -- only a
-    positive answer counts as recorded."""
-    root, observable, analysis = target
-    worker.workload_manager.add_delayed_analysis_request.return_value = None
-
-    result = worker.delay_analysis(
-        root, observable, analysis, make_analysis_module(), seconds=10, timeout_seconds=60
-    )
+    with patch.object(worker.workload_manager, "add_delayed_analysis_request", return_value=False):
+        result = worker.delay_analysis(
+            root, observable, analysis, make_analysis_module(), hours=0, minutes=0, seconds=10, timeout_seconds=60
+        )
 
     assert result is False
     assert analysis.delayed is False
@@ -131,12 +127,12 @@ def test_delay_refused_when_deadline_expired(worker, target):
     root.delayed_analysis_tracking[key] = local_time() - timedelta(seconds=60)
 
     result = worker.delay_analysis(
-        root, observable, analysis, analysis_module, seconds=10, timeout_seconds=1
+        root, observable, analysis, analysis_module, hours=0, minutes=0, seconds=10, timeout_seconds=1
     )
 
     assert result is False
     assert analysis.delayed is False
-    worker.workload_manager.add_delayed_analysis_request.assert_not_called()
+    assert worker.workload_manager.delayed_analysis_queue_is_empty
 
 
 class TestDelayRefusalReachesTheModule:
@@ -160,10 +156,10 @@ class TestDelayRefusalReachesTheModule:
     @pytest.mark.unit
     def test_failed_insert_does_not_leave_the_analysis_delayed(self, worker, target):
         root, observable, analysis = target
-        worker.workload_manager.add_delayed_analysis_request.return_value = False
         module = self.make_module(worker, root)
 
-        result = module.delay_analysis(observable, analysis, seconds=10, timeout_seconds=60)
+        with patch.object(worker.workload_manager, "add_delayed_analysis_request", return_value=False):
+            result = module.delay_analysis(observable, analysis, seconds=10, timeout_seconds=60)
 
         assert result == AnalysisExecutionResult.COMPLETED
         assert analysis.delayed is False
@@ -182,3 +178,4 @@ class TestDelayRefusalReachesTheModule:
         assert result == AnalysisExecutionResult.INCOMPLETE
         assert analysis.delayed is True
         assert root.delayed
+        assert worker.workload_manager.delayed_analysis_queue_size == 1

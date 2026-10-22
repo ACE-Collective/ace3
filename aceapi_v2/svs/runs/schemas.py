@@ -1,12 +1,12 @@
 """Wire schemas for SVS test runs."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from aceapi_v2.alerts.schemas import AlertRow
-from saq.svs.constants import RUN_STATES, RunState
+from saq.svs.constants import RUN_STATES, ObservationSource, RunState
 
 
 class RunTargetRequest(BaseModel):
@@ -25,6 +25,9 @@ class RunRegistrationRequest(BaseModel):
 class RunExecutedRequest(BaseModel):
     exit_code: int = Field(description="the test's exit code; anything but 0 moves the run to error")
     error: Optional[str] = Field(default=None, max_length=8192, description="what went wrong, when the launcher knows; moves the run to error")
+    output: Optional[str] = Field(default=None, max_length=4 * 1024 * 1024,
+                                  description="what the test printed (stdout and stderr); kept up to 64 KiB, longer "
+                                              "output as its start and its last 16 KiB around a marker")
 
 
 class RunTarget(BaseModel):
@@ -48,12 +51,53 @@ class RunLifecycle(BaseModel):
     targets: list[RunTarget]
     observation_seconds: int = Field(description="how long after start the run waits for its alerts before it ends")
     attribution_seconds: int = Field(description="how long after start its alerts are still attributed to it")
+    holds_host: bool = Field(description="the run holds its hosts until its attribution window ends, not its "
+                                         "observation window (its test's settings)")
     created_at: datetime
     started_at: Optional[datetime] = None
+    cleanup_at: Optional[datetime] = Field(default=None, description="when the launcher said the test's cleanup began")
     observation_ends_at: Optional[datetime] = None
     attribution_ends_at: Optional[datetime] = None
     error_reason: Optional[str] = None
     close_reason: Optional[str] = None
+
+
+class HostHolder(BaseModel):
+    """A run holding a test host (docs/SVS_RUNS.md, *One run per test host*)."""
+
+    host: str = Field(description="the test host, by its short name")
+    run_id: str = Field(description="the run holding it")
+    state: RunState
+    until: Optional[datetime] = Field(default=None, description="when its claim on the host ends; null while it hasn't started")
+
+
+class RunValidationTarget(BaseModel):
+    hostname: str = Field(description="as sent")
+    username: Optional[str] = Field(default=None, description="as sent")
+    accepted: bool = Field(description="the target is a test host and a user it lists")
+    reason: Optional[str] = Field(default=None, description="why the target would be refused")
+    test_host: Optional[str] = Field(default=None, description="the test host it names, by its short name")
+    platform: Optional[str] = Field(default=None, description="that test host's platform")
+    held_by: list[HostHolder] = Field(default_factory=list, description="the runs holding that test host")
+
+
+
+class RunValidation(BaseModel):
+    """What POST /api/v2/svs/runs/ would decide for the same body, decided without changing anything."""
+
+    decision: Literal["accepted", "refused", "invalid", "host_busy"]
+    status_code: int = Field(description="what registering would answer: 201, 403, 409 or 422")
+    message: Optional[str] = Field(default=None, description="why the registration is invalid: the 422's detail")
+    targets: list[RunValidationTarget] = Field(
+        description="every target, judged as registering would; empty when the registration is invalid before its "
+                    "targets are judged")
+    platform: Optional[str] = Field(default=None, description="the platform the run would be on, when accepted")
+    observation_seconds: Optional[int] = Field(default=None, description="when accepted")
+    observation_source: Optional[ObservationSource] = Field(
+        default=None, description="where the observation window comes from: override, expected or all_hunts")
+    attribution_seconds: Optional[int] = Field(default=None, description="when accepted")
+    holds_host: Optional[bool] = Field(default=None, description="when accepted: the run would hold its hosts until "
+                                                                 "its attribution window ends")
 
 
 #
@@ -80,6 +124,8 @@ class RunRow(BaseModel):
     started_at: Optional[datetime] = None
     executed_at: Optional[datetime] = Field(default=None, description="when the launcher reported how the test executed")
     exit_code: Optional[int] = None
+    cleanup_at: Optional[datetime] = Field(default=None, description="when the launcher said the test's cleanup began: "
+                                                                     "detections after it are the cleanup's")
     ended_at: Optional[datetime] = None
     canceled_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
@@ -99,6 +145,7 @@ class RunRow(BaseModel):
     result_candidate: int = Field(default=0, description="signatures that fired and nobody has decided about")
     result_rejected: int = Field(default=0)
     result_ignored: int = Field(default=0)
+    result_cleanup: int = Field(default=0, description="signatures that fired only during the test's cleanup")
     result_stale: bool = Field(default=False, description="the result is about to be recomputed")
     reviewed_hit: int = Field(default=0, description="result_hit as signed off at the run's latest review; 0 until it is reviewed")
     reviewed_expected: int = Field(default=0, description="result_expected as signed off")
@@ -123,10 +170,14 @@ class ReviewBlockers(BaseModel):
 class RunDetail(RunRow):
     extra: Optional[dict[str, Any]] = Field(default=None, description="what the launcher sent with the registration")
     launcher_error: Optional[str] = Field(default=None, description="the error the launcher reported through executed")
+    launcher_output: Optional[str] = Field(default=None, description="what the test printed, as executed reported it "
+                                                                     "(at most 64 KiB, longer output truncated with a marker)")
     test_content_hash: str = Field(description="the test's content_hash when the run was registered")
     catalog_commit: str = Field(description="the catalog repository's commit when the run was registered")
     observation_seconds: int
     attribution_seconds: int
+    holds_host: bool = Field(description="the run holds its hosts until its attribution window ends, not its "
+                                         "observation window (its test's settings)")
     registered_by: Optional[str] = Field(default=None, description="the username of the key that registered it")
     review_blockers: Optional[ReviewBlockers] = Field(
         default=None, description="ended and reviewed runs: what stands in the way of a review; null for other states")
@@ -209,16 +260,18 @@ class RunResult(BaseModel):
     signature_name: Optional[str] = None
     status: Optional[str] = Field(
         default=None,
-        description="hit, missing, possibly_suppressed, candidate, rejected or ignored; null once the signature "
-                    "left the live result and the row holds only the reviewed result")
+        description="hit, missing, possibly_suppressed, candidate, rejected, ignored or cleanup; null once the "
+                    "signature left the live result and the row holds only the reviewed result")
     alert_count: int = Field(description="the run's attributed alerts that carry the signature")
     late_only: bool = Field(description="every attribution of it is late")
     context_only: bool = Field(description="every attribution of it is by context alone")
     content_hash: Optional[str] = Field(default=None, description="the rule's own content hash when the result was computed")
     suppressing_alert_uuid: Optional[str] = Field(
-        default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period")
+        default=None, description="possibly_suppressed: the hunt's latest alert within its suppression period; "
+                                  "null for a hunt with group_by, whose suppression the hunter recorded")
     suppression_imprecise: bool = Field(
-        description="the hunt groups or deduplicates its alerts, so that alert may not have suppressed the run's")
+        description="the hunt deduplicates its alerts (dedup_key without group_by), so that alert may not have "
+                    "suppressed the run's")
     reviewed_status: Optional[str] = Field(default=None, description="the status as signed off; null until the run is reviewed")
     reviewed_alert_count: Optional[int] = None
     reviewed_late_only: Optional[bool] = None
@@ -248,6 +301,10 @@ class Attribution(BaseModel):
     signature_family: Optional[str] = None
     confidence: str = Field(description="marker or context; a person's association is marker")
     late: bool = Field(description="the alert's event came after the run's observation window")
+    event_time: Optional[datetime] = Field(default=None, description="the alert's event time it was judged by; null "
+                                                                     "for attributions written before it was kept")
+    cleanup: bool = Field(description="its event time is at or after the run's cleanup_at: the test's cleanup caused it, "
+                                      "so it is left out of the run's candidates and expectations")
     source: str = Field(description="router (the marker router) or manual (a person associated the alert)")
     scan_point: Optional[str] = Field(default=None, description="where the agreeing marker was found; null for context or manual")
     actor: str = Field(description="who attributed it: svs for the router, else the person")
@@ -287,6 +344,7 @@ class RunAlert(BaseModel):
     confidence: Optional[str] = Field(
         default=None, description="of those that hold: marker when any is (a person's association is marker), else context")
     late: bool = Field(description="an attribution that holds is late")
+    cleanup: bool = Field(description="every attribution that holds is the test's cleanup's")
     manual: bool = Field(description="an attribution that holds was made by a person")
     kept: bool = Field(description="a person kept its context attributions")
     undecided_context: bool = Field(

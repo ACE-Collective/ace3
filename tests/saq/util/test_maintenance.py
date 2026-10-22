@@ -1,15 +1,16 @@
-import configparser
-
 from datetime import datetime, timedelta
+import logging
+import os.path
 
 from saq.analysis import RootAnalysis
 from saq.database import ALERT, Alert, Event, get_db
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_SIMULATED
+from saq.constants import DISPOSITION_IGNORE, DISPOSITION_SIMULATED, ENV_ACE_IS_PRIMARY_NODE
 from saq.database.model import DetectionPoint
+from saq.environment import get_base_dir
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
-from saq.util.maintenance import archive_simulated_alerts, cleanup_alerts, distribute_old_alerts
-from tests.saq.helpers import insert_alert_with_detections, make_simulated
+from saq.util.maintenance import archive_simulated_alerts, cleanup_alerts, cleanup_ignored_alerts, distribute_old_alerts
+from tests.saq.helpers import insert_alert, insert_alert_with_detections, make_simulated
 
 import saq.util.maintenance
 
@@ -30,6 +31,8 @@ import pytest
 @pytest.mark.integration
 def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_to_event, expected_raises, upload_failure, non_success, expected_count, alert_still_exists, dry_run, monkeypatch, tmpdir):
     def mock_upload(*args, **kwargs):
+        assert kwargs["remote_host"] == target
+        assert kwargs["api_key"] == "key"
         if upload_failure:
             raise RuntimeError("upload failure")
         if non_success:
@@ -37,20 +40,8 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
         else:
             return { "result": True }
 
-    mock_config = configparser.ConfigParser()
-    mock_config.read_string("""
-    [global]
-    node = localhost
-    [api]
-    api_key = key
-    """)
-    def mock_get_config():
-        return mock_config
-
-    import saq.util.maintenance
     monkeypatch.setattr(saq.util.maintenance, "upload", mock_upload)
-    import saq.configuration
-    monkeypatch.setattr(saq.configuration, "get_config", mock_get_config)
+    monkeypatch.setattr(get_config().api, "api_key", "key")
 
     if insert_alert:
         storage_dir = tmpdir / "alert"
@@ -117,7 +108,7 @@ def test_cache_stats_skips_when_not_primary(monkeypatch, caplog):
     must skip it (no cache_stats line emitted)."""
     import logging as _logging
     import saq.util.maintenance as maintenance
-    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     with caplog.at_level(_logging.INFO):
         maintenance.emit_cache_stats()
     assert not [r for r in caplog.records if "cache_stats" in r.getMessage()]
@@ -127,7 +118,7 @@ def test_cache_stats_skips_when_not_primary(monkeypatch, caplog):
 def test_gc_durable_blobs_skips_when_not_primary(monkeypatch):
     """Durable blob GC is global maintenance — non-primary nodes must skip it."""
     import saq.util.maintenance as maintenance
-    monkeypatch.setattr(maintenance, "is_primary_node", lambda: False)
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     stats = maintenance.gc_durable_blobs()
     assert stats.blobs_scanned == 0
     assert stats.blobs_deleted == 0
@@ -214,3 +205,77 @@ def test_simulated_dry_run_archives_nothing(caplog):
 
     assert not _reloaded(alert).archived
     assert "1 SIMULATED alerts would be archived" in caplog.text
+
+
+#
+# IGNORE alerts are deleted after ignore_days
+#
+
+def _ignored_alert(days_ago: int) -> tuple[int, str, str]:
+    """Returns the id, uuid and full storage path of a new IGNORE alert (plain values, since the
+    row is deleted under the test)."""
+    alert = insert_alert()
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update(
+        {Alert.disposition: DISPOSITION_IGNORE, Alert.disposition_time: datetime.now() - timedelta(days=days_ago)})
+    db.commit()
+    return alert.id, alert.uuid, os.path.join(get_base_dir(), alert.storage_dir)
+
+
+def _alert_row_exists(alert_id: int) -> bool:
+    db = get_db()
+    db.expire_all()
+    return db.get(Alert, alert_id) is not None
+
+
+@pytest.mark.integration
+def test_ignored_alert_row_is_deleted_before_its_storage(monkeypatch):
+    alert_id, alert_uuid, storage_dir = _ignored_alert(days_ago=2)
+    deleted_tasks = []
+    monkeypatch.setattr(saq.util.maintenance, "submit_delete_task", deleted_tasks.append)
+    real_rmtree = saq.util.maintenance.shutil.rmtree
+    row_exists_at_rmtree = []
+
+    def _rmtree(path):
+        row_exists_at_rmtree.append(_alert_row_exists(alert_id))
+        real_rmtree(path)
+
+    monkeypatch.setattr(saq.util.maintenance.shutil, "rmtree", _rmtree)
+
+    cleanup_ignored_alerts(1, dry_run=False)
+
+    # a reader of the alerts table never finds the alert without its files
+    assert row_exists_at_rmtree == [False]
+    assert deleted_tasks == [alert_uuid]
+    assert not _alert_row_exists(alert_id)
+    assert not os.path.exists(storage_dir)
+
+
+@pytest.mark.integration
+def test_ignored_alert_storage_delete_failure_is_logged_and_cleanup_continues(monkeypatch, caplog):
+    failing_id, failing_uuid, failing_dir = _ignored_alert(days_ago=2)
+    other_id, _, other_dir = _ignored_alert(days_ago=2)
+    monkeypatch.setattr(saq.util.maintenance, "submit_delete_task", lambda alert_uuid: True)
+    real_rmtree = saq.util.maintenance.shutil.rmtree
+
+    def _rmtree(path):
+        if path == failing_dir:
+            raise PermissionError(f"permission denied: {path}")
+        real_rmtree(path)
+
+    monkeypatch.setattr(saq.util.maintenance.shutil, "rmtree", _rmtree)
+
+    with caplog.at_level(logging.ERROR):
+        cleanup_ignored_alerts(1, dry_run=False)
+
+    # the row is gone and the directory is left behind as an orphan
+    assert not _alert_row_exists(failing_id)
+    assert os.path.exists(failing_dir)
+    assert not _alert_row_exists(other_id)
+    assert not os.path.exists(other_dir)
+
+    records = [r for r in caplog.records if getattr(r, "alert_uuid", None) == failing_uuid]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    assert records[0].storage_dir == failing_dir

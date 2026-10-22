@@ -7,6 +7,7 @@ manager, delayed analysis interface, tracking message manager, work
 stacks) and is deliberately deferred. These tests focus on the helper
 ``_apply_cached_delta`` and the dataclass plumbing that supports it.
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -22,11 +23,15 @@ from saq.analysis.module_execution_delta import (
 )
 from saq.analysis.root import RootAnalysis
 from saq.constants import AnalysisExecutionResult, F_FILE, F_FQDN, F_URL
+from saq.database.model import SVSRun
+from saq.database.pool import get_db
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.modules.rdap import RdapAnalysis
+from saq.svs import attribution
 from saq.svs.attribution import Sighting, saved_sightings
-from saq.svs.constants import ScanPoint
+from saq.svs.constants import RunState, ScanPoint
+from saq.svs.markers import new_marker
 
 
 def _make_executor() -> AnalysisExecutor:
@@ -601,9 +606,21 @@ class TestSVSMarkersOnReplay:
 
     MARKER = "svs-" + "c" * 26
 
-    @pytest.mark.unit
-    def test_markers_in_replayed_details_are_saved(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("saq.svs.attribution.attribution_open", lambda now=None: True)
+    @pytest.fixture
+    def registered_run(self):
+        """A registered run that has not started yet, which opens the attribution gate."""
+        get_db().add(SVSRun(uuid=str(uuid.uuid4()), test_guid=str(uuid.uuid4()), test_content_hash="0" * 64,
+                            catalog_commit="a" * 40, platform="windows", state=RunState.CREATED.value,
+                            marker=new_marker(), launcher="art", extra="{}", created_at=datetime.now(),
+                            observation_seconds=3600, attribution_seconds=3600))
+        get_db().commit()
+        # the gate caches its answer per process
+        attribution.clear_caches()
+        yield
+        attribution.clear_caches()
+
+    @pytest.mark.integration
+    def test_markers_in_replayed_details_are_saved(self, tmp_path, registered_run):
         executor = _make_executor()
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")

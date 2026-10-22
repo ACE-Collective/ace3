@@ -1,3 +1,4 @@
+import importlib
 import logging
 import re
 import string
@@ -184,6 +185,9 @@ class RedisConfig(BaseModel):
     password: str = Field(..., description="redis password")
     use_ssl: bool = Field(..., description="use SSL for redis connection")
     ssl_ca_path: Optional[str] = Field(default=None, description="path to SSL CA certificate")
+    socket_connect_timeout: float = Field(default=5, gt=0, description="how long (in seconds) to wait for the TCP connection to redis")
+    # must outlast the longest blocking command, the search indexer's 1 second BLPOP, which would otherwise always time out
+    socket_timeout: float = Field(default=10, gt=1, description="how long (in seconds) to wait for a reply from redis before raising redis.TimeoutError")
 
 class QdrantConfig(BaseModel):
     url: str = Field(..., description="qdrant URL")
@@ -312,7 +316,6 @@ class GUIConfig(BaseModel):
     upload_vxstream: bool = Field(..., description="enable VxStream upload")
     view_in_vx: bool = Field(..., description="enable view in VxStream")
     show_total_alert_count: bool = Field(..., description="show the total alerts resulting from the current filter")
-    matching_open_events_collapsed: bool = Field(..., description="default matching open events toggle position")
     alert_details_collapsed: bool = Field(..., description="default alert details toggle position")
     hide_intel: bool = Field(..., description="hide intel if we don't want to let people see it")
     default_company_id: int = Field(..., description="default company for manual analysis")
@@ -332,11 +335,6 @@ class WikiConfig(BaseModel):
     base_url: str = Field(..., description="base URL for wiki (designed to work with Confluence)")
     alert_reference_enabled: bool = Field(..., description="enable alert reference links to wiki documentation")
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
-
-class SMTPConfig(BaseModel):
-    enabled: bool = Field(..., description="enable SMTP email sending")
-    server: str = Field(..., description="SMTP server address")
-    mail_from: str = Field(..., description="from email address")
 
 class EmailArchiveConfig(BaseModel):
     target: str = Field(..., description="possible values: local, s3")
@@ -968,7 +966,6 @@ class ACEConfig(BaseModel):
     gui_favicons: Optional[dict[str, str]] = None
     network_configuration: Optional[NetworkConfigurationConfig] = None
     wiki: Optional[WikiConfig] = None
-    smtp: Optional[SMTPConfig] = None
     email_archive: Optional[EmailArchiveConfig] = None
     memcached: Optional[MemcachedConfig] = None
     ldap: Optional[LDAPConfig] = None
@@ -1066,10 +1063,17 @@ class ACEConfig(BaseModel):
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
         self.__observable_exports: Optional[LazyConfigRegistry["ObservableExportConfig"]] = None
-        # (python_module, instance) -> analysis module config *name*; storing the name rather
-        # than the config object keeps this in step with add_analysis_module_config() and
-        # avoids forcing resolution of every module just to build the index
-        self.__module_config_by_python_module: dict[tuple[str, Optional[str]], str] = {}
+        # (python_module, instance) -> the names of the analysis module configs in that python
+        # module; storing names rather than config objects keeps this in step with
+        # add_analysis_module_config() and avoids forcing resolution of every module just to
+        # build the index. One python module can host several analysis modules, so the class
+        # a module path names is matched against these in
+        # get_analysis_module_config_by_module_path()
+        self.__module_configs_by_python_module: dict[tuple[str, Optional[str]], list[str]] = {}
+        # module_path -> analysis module config name (None when no config generates it), filled
+        # on first lookup: telling the modules of one python module apart reads their
+        # generated_analysis_type, and the alert page looks this up for every tree node
+        self.__module_config_name_by_module_path: dict[str, Optional[str]] = {}
 
     def resolve_all_values(self):
         self.__raw.resolve_all_values()
@@ -1234,13 +1238,23 @@ class ACEConfig(BaseModel):
             self._raise_raw_data_error()
 
         self.__analysis_modules.add_resolved(name, analysis_module_config)
+        self._index_analysis_module_config(name, analysis_module_config)
+
+    def _index_analysis_module_config(self, name: str, analysis_module_config: "AnalysisModuleConfig"):
+        # both fields are on the base model so this does not require the plugin subclass
         lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
-        self.__module_config_by_python_module[lookup_key] = name
+        names = self.__module_configs_by_python_module.setdefault(lookup_key, [])
+        if name not in names:
+            names.append(name)
+
+        # a new module can be the one a module path that resolved to nothing refers to
+        self.__module_config_name_by_module_path.clear()
 
     def load_analysis_module_configs(self):
         from saq.modules.config import AnalysisModuleConfig
         self.__analysis_modules = LazyConfigRegistry(AnalysisModuleConfig, "analysis module config")
-        self.__module_config_by_python_module = {}
+        self.__module_configs_by_python_module = {}
+        self.__module_config_name_by_module_path = {}
 
         for key, value in self.raw._data.items():
             if not key.startswith("analysis_module_"):
@@ -1249,11 +1263,7 @@ class ACEConfig(BaseModel):
             # the analysis module class (and therefore the config class it declares) is
             # not loaded here -- see saq.configuration.lazy_registry
             analysis_module_config = self.__analysis_modules.add_raw(key, value)
-
-            # build lookup for module_path -> config resolution. both fields are on the
-            # base model so this does not require the plugin subclass
-            lookup_key = (analysis_module_config.python_module, analysis_module_config.instance)
-            self.__module_config_by_python_module[lookup_key] = analysis_module_config.name
+            self._index_analysis_module_config(analysis_module_config.name, analysis_module_config)
 
     def get_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
         if self.__analysis_modules is None:
@@ -1265,18 +1275,50 @@ class ACEConfig(BaseModel):
         return self.__analysis_modules.get(name)
 
     def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
-        """Look up an analysis module config by a module_path string (e.g. 'saq.modules.x:AnalysisClass:instance')."""
-        from saq.analysis.module_path import SPLIT_MODULE_PATH
+        """Look up the config of the analysis module that generates the analysis a module_path
+        string names (e.g. 'saq.modules.x:AnalysisClass:instance'), or None if no configured
+        module generates it."""
         try:
-            module_name, _class_name, instance = SPLIT_MODULE_PATH(module_path)
-        except ValueError:
-            return None
+            name = self.__module_config_name_by_module_path[module_path]
+        except KeyError:
+            name = self._find_analysis_module_config_name(module_path)
+            self.__module_config_name_by_module_path[module_path] = name
 
-        name = self.__module_config_by_python_module.get((module_name, instance))
         if name is None:
             return None
 
         return self.get_analysis_module_config(name)
+
+    def _find_analysis_module_config_name(self, module_path: str) -> Optional[str]:
+        # local: saq.analysis imports saq.configuration, so a module-level import is circular
+        from saq.analysis.module_path import SPLIT_MODULE_PATH
+        try:
+            module_name, class_name, instance = SPLIT_MODULE_PATH(module_path)
+        except ValueError:
+            return None
+
+        # a module path names the generated Analysis class, not the module class, so each
+        # candidate in that python module is asked which Analysis class it generates
+        for name in self.__module_configs_by_python_module.get((module_name, instance), []):
+            try:
+                config = self.get_analysis_module_config(name)
+                module_class = getattr(importlib.import_module(config.python_module), config.python_class)
+                # generated_analysis_type is an instance property, and instantiating a module
+                # runs its __init__, which can create directories or open clients; every module
+                # returns a class from it without reading instance state, so an instance that
+                # was never initialized answers it
+                analysis_type = module_class.__new__(module_class).generated_analysis_type
+            except Exception:
+                logging.exception("unable to read the generated analysis type of analysis module %s "
+                                  "while looking up the config for module path %s", name, module_path,
+                                  extra={"analysis_module": name, "module_path": module_path})
+                continue
+
+            if analysis_type is not None and analysis_type.__module__ == module_name \
+                    and analysis_type.__name__ == class_name:
+                return name
+
+        return None
 
     # 
     # analysis modes

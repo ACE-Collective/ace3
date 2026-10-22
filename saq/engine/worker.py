@@ -659,20 +659,14 @@ class Worker:
 
             # clear_work_target() released the lock on the work item, so only now is it safe to
             # hand the alert to the search indexer: submitting earlier guaranteed the indexer's
-            # first attempt would find the alert locked by us
+            # first attempt would find the alert locked by us (a failure to queue is logged by
+            # submit_index_task, which never raises)
             if execution_context.search_index_requested:
-                self._submit_search_index(execution_context)
+                submit_index_task(execution_context.work_item.uuid)
 
             # we consumed a work item, even if the analysis of it failed or raised
             # (both of which are handled above)
             return True
-
-    def _submit_search_index(self, execution_context: EngineExecutionContext):
-        """Queues the work item for search indexing; a failure to queue is logged, never raised."""
-        try:
-            submit_index_task(execution_context.work_item.uuid)
-        except Exception as e:
-            logging.exception(f"unable to submit {execution_context.work_item} for search indexing: {e}")
 
     def analysis_has_timed_out(self, record: Optional[TrackingRecord]) -> bool:
         """Returns True if the current analysis has timed out (is stuck).

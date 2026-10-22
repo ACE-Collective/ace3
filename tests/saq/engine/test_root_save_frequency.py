@@ -12,12 +12,12 @@ watching an individual root and the O(tree) serialize per module is pure cost.
     N    -> write at most once every N seconds
 """
 from datetime import datetime, timedelta
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import RootAnalysis, load_root
+from saq.configuration.config import get_config
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 
@@ -37,12 +37,15 @@ def _make_context(tmp_path, analysis_mode="test_groups"):
     return EngineExecutionContext(root), root
 
 
-def _config(mode_value, global_value):
-    """Stand-in for get_config() covering only what _get_root_save_frequency reads."""
-    config = MagicMock()
-    config.get_analysis_mode_config.return_value = SimpleNamespace(root_save_frequency=mode_value)
-    config.global_settings = SimpleNamespace(root_save_frequency=global_value)
-    return config
+def _set_root_save_frequency(monkeypatch, mode_value, global_value=None, analysis_mode="test_groups"):
+    """Sets root_save_frequency on the real analysis mode config and global_settings."""
+    monkeypatch.setattr(get_config().get_analysis_mode_config(analysis_mode), "root_save_frequency", mode_value)
+    monkeypatch.setattr(get_config().global_settings, "root_save_frequency", global_value)
+
+
+def _spy_on_save(root: RootAnalysis) -> Mock:
+    root.save = Mock(wraps=root.save)
+    return root.save
 
 
 @pytest.mark.unit
@@ -56,98 +59,98 @@ def _config(mode_value, global_value):
     (None, 0, 0),
     (None, None, None),
 ])
-def test_get_root_save_frequency_resolution(mode_value, global_value, expected):
+def test_get_root_save_frequency_resolution(monkeypatch, mode_value, global_value, expected):
     executor = _make_executor()
-    with patch("saq.engine.executor.get_config", return_value=_config(mode_value, global_value)):
-        assert executor._get_root_save_frequency("test_groups") == expected
+    _set_root_save_frequency(monkeypatch, mode_value, global_value)
+    assert executor._get_root_save_frequency("test_groups") == expected
 
 
 @pytest.mark.unit
-def test_save_root_never_when_unset(tmp_path):
+def test_save_root_never_when_unset(tmp_path, monkeypatch):
     """An unset frequency means detection-mode behavior: no mid-pass writes at all."""
     executor = _make_executor()
     context, root = _make_context(tmp_path)
-    root.save = MagicMock()
+    save = _spy_on_save(root)
+    _set_root_save_frequency(monkeypatch, None)
 
-    with patch.object(executor, "_get_root_save_frequency", return_value=None):
-        for _ in range(10):
-            assert executor._save_root(context, root) is False
+    for _ in range(10):
+        assert executor._save_root(context, root) is False
 
-    root.save.assert_not_called()
+    save.assert_not_called()
 
 
 @pytest.mark.unit
-def test_save_root_every_invocation_when_zero(tmp_path):
+def test_save_root_every_invocation_when_zero(tmp_path, monkeypatch):
     """0 preserves the pre-throttle behavior exactly."""
     executor = _make_executor()
     context, root = _make_context(tmp_path)
-    root.save = MagicMock()
+    save = _spy_on_save(root)
+    _set_root_save_frequency(monkeypatch, 0)
 
-    with patch.object(executor, "_get_root_save_frequency", return_value=0):
-        for _ in range(10):
-            assert executor._save_root(context, root) is True
+    for _ in range(10):
+        assert executor._save_root(context, root) is True
 
-    assert root.save.call_count == 10
+    assert save.call_count == 10
+    assert load_root(str(tmp_path)).uuid == root.uuid
 
 
 @pytest.mark.unit
-def test_save_root_throttled_within_window(tmp_path):
+def test_save_root_throttled_within_window(tmp_path, monkeypatch):
     """Several invocations inside one window produce exactly one write."""
     executor = _make_executor()
     context, root = _make_context(tmp_path)
-    root.save = MagicMock()
+    save = _spy_on_save(root)
+    _set_root_save_frequency(monkeypatch, 5)
 
     # the context starts with last_root_save = now, so the window is already open
-    with patch.object(executor, "_get_root_save_frequency", return_value=5):
-        for _ in range(10):
-            assert executor._save_root(context, root) is False
+    for _ in range(10):
+        assert executor._save_root(context, root) is False
 
-    root.save.assert_not_called()
+    save.assert_not_called()
 
 
 @pytest.mark.unit
-def test_save_root_writes_once_window_elapses(tmp_path):
+def test_save_root_writes_once_window_elapses(tmp_path, monkeypatch):
     """Once the window closes a single write happens and the window reopens."""
     executor = _make_executor()
     context, root = _make_context(tmp_path)
-    root.save = MagicMock()
+    save = _spy_on_save(root)
+    _set_root_save_frequency(monkeypatch, 5)
 
-    with patch.object(executor, "_get_root_save_frequency", return_value=5):
-        # push the last save far enough into the past that the window has closed
-        context.last_root_save = datetime.now() - timedelta(seconds=6)
-        assert executor._save_root(context, root) is True
-        assert root.save.call_count == 1
+    # push the last save far enough into the past that the window has closed
+    context.last_root_save = datetime.now() - timedelta(seconds=6)
+    assert executor._save_root(context, root) is True
+    assert save.call_count == 1
 
-        # and the window is closed again immediately afterwards
-        for _ in range(5):
-            assert executor._save_root(context, root) is False
-        assert root.save.call_count == 1
+    # and the window is closed again immediately afterwards
+    for _ in range(5):
+        assert executor._save_root(context, root) is False
+    assert save.call_count == 1
 
-        # ...until it elapses once more
-        context.last_root_save = datetime.now() - timedelta(seconds=6)
-        assert executor._save_root(context, root) is True
-        assert root.save.call_count == 2
+    # ...until it elapses once more
+    context.last_root_save = datetime.now() - timedelta(seconds=6)
+    assert executor._save_root(context, root) is True
+    assert save.call_count == 2
 
 
 @pytest.mark.unit
-def test_save_root_uses_the_roots_analysis_mode(tmp_path):
+def test_save_root_uses_the_roots_analysis_mode(tmp_path, monkeypatch):
     """The policy is looked up against the mode of the root actually being analyzed."""
     executor = _make_executor()
-    context, root = _make_context(tmp_path, analysis_mode="correlation")
-    root.save = MagicMock()
+    _set_root_save_frequency(monkeypatch, None, analysis_mode="test_groups")
+    _set_root_save_frequency(monkeypatch, 0, analysis_mode="correlation")
 
-    with patch.object(executor, "_get_root_save_frequency", return_value=0) as mock_lookup:
-        executor._save_root(context, root)
+    context, root = _make_context(tmp_path / "correlation", analysis_mode="correlation")
+    assert executor._save_root(context, root) is True
 
-    mock_lookup.assert_called_once_with("correlation")
+    context, root = _make_context(tmp_path / "test_groups", analysis_mode="test_groups")
+    assert executor._save_root(context, root) is False
 
 
 #
 # integration coverage: a real engine pass under each policy
 #
 
-from saq.analysis.root import load_root
-from saq.configuration.config import get_config
 from saq.constants import F_TEST
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode

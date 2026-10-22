@@ -24,9 +24,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from saq.constants import LockManagerType, WorkloadManagerType
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.enums import EngineExecutionMode, WorkerStatus
+from saq.engine.engine_configuration import EngineConfiguration
+from saq.engine.enums import EngineExecutionMode, EngineType, WorkerStatus
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.engine.worker_manager import WorkerManager
@@ -76,17 +76,12 @@ class FakeWorker:
 
 @pytest.fixture
 def configuration_manager() -> ConfigurationManager:
-    configuration_manager = Mock(spec=ConfigurationManager)
-    configuration_manager.config = Mock()
-    configuration_manager.config.single_threaded_mode = False
-    configuration_manager.config.analysis_pools = {"correlation": 2}
-    configuration_manager.config.pool_size_limit = None
-    configuration_manager.config.analysis_mode_priority = None
-    configuration_manager.config.lock_manager_type = LockManagerType.LOCAL
-    configuration_manager.config.workload_manager_type = WorkloadManagerType.MEMORY
-    configuration_manager.config.auto_refresh_frequency = 0
-    configuration_manager.config.memory_limit_warning = 1024 * 1024 * 1024
-    configuration_manager.config.memory_limit_kill = 2 * 1024 * 1024 * 1024
+    configuration_manager = ConfigurationManager(EngineConfiguration(
+        engine_type=EngineType.LOCAL,
+        analysis_pools={"correlation": 2},
+        pool_size_limit=2,
+        single_threaded_mode=False,
+    ))
     return configuration_manager
 
 

@@ -24,8 +24,6 @@ from pydantic import BaseModel, ValidationError
 from hunt_compiler import CompiledHunt, load_compiled_hunt
 from aceapi_v2.hunt.audit import ValidationOutcome
 from saq.analysis.root import RootAnalysis
-from saq.collectors.hunter.correlation.command_types import load_command_types_from_config
-from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.correlation.validation import (
     check_custom_command_types,
     check_templates_for_removed_names,
@@ -108,12 +106,6 @@ def _validate_and_execute(target_file_path: str, package_dir: str, request_json:
     Returns:
         (response body, status code).
     """
-    # ensure correlation query sources and custom command types are registered before any hunt
-    # execution. mocking HunterService in tests bypasses load_hunt_managers (the other call
-    # site), so the validation API needs its own explicit trigger.
-    load_query_sources_from_config()
-    load_command_types_from_config()
-
     try:
         # the hunt is client-supplied: check that every file it names is part of its own package
         # before anything parses it for real

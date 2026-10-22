@@ -15,17 +15,16 @@ from saq.constants import F_HOSTNAME
 from saq.database.model import SVSRun, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.svs import association, coverage, review, signatures, worklist
-from saq.svs.attribution import clear_caches, evaluate, write_attributions
+from saq.svs import association, coverage, review, windows, worklist
+from saq.svs.attribution import clear_caches, evaluate, record_suppressed_matches, write_attributions
 from saq.svs.coverage import refresh_coverage, write_snapshot
 from saq.svs.expectations import set_expectation
 
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
-from saq.svs.signatures import SignatureTags
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.svs.conftest import add_catalog_test, write_hunt
 
 pytestmark = pytest.mark.integration
 
@@ -63,10 +62,11 @@ def test_lifecycle_transitions(caplog):
         first = register(_registration(), LAUNCHER, now=T0)
         start(first.uuid, LAUNCHER, now=T0)
         executed(first.uuid, LAUNCHER, 1, now=T0)
-        second = register(_registration(), LAUNCHER, now=T0)
-        cancel(second.uuid, LAUNCHER, now=T0)
-        third = register(_registration(), LAUNCHER, now=T0)
-        start(third.uuid, LAUNCHER, now=T0)
+        # one run per host: each after the claim of the one before
+        second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        cancel(second.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
+        third = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+        start(third.uuid, LAUNCHER, now=T0 + timedelta(hours=2))
         run_timers(T0 + timedelta(days=2))
 
     # the transitions, not the other records about runs (an ended run's result, say)
@@ -120,9 +120,8 @@ ATTRIBUTION_FIELDS = RUN_FIELDS + ("alert_uuid", "detection", "confidence", "lat
 
 
 @pytest.fixture
-def routed(monkeypatch):
+def routed():
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
     yield
     reset_alert_routers()
 
@@ -183,6 +182,7 @@ def test_a_mismatch(caplog, routed):
     assert decision.decision == "mismatch" and decision.svs_run == run.uuid
 
 
+@pytest.mark.usefixtures("overlapping_runs")
 def test_a_refused_context_attribution(caplog, routed):
     first, second = _started(), _started()
     with caplog.at_level(logging.INFO):
@@ -242,6 +242,20 @@ def test_a_result(caplog):
     _assert_fields(record, RUN_FIELDS + ("signature_uuid", "signature_family", "possibly_suppressed"))
 
 
+def test_a_suppressed_match(caplog):
+    run = _started()
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, "alice")])
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} suppressed a match")
+    assert record.levelno == logging.INFO and (record.hunt_uuid, record.group_value) == (hunt_uuid, "alice")
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "group_value"))
+
+
 def test_a_persons_association_changes(caplog, routed):
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     run = _started()
@@ -276,12 +290,11 @@ def test_a_review(caplog):
 # records that aren't about a run
 #
 
-def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
-    tags = {}
+def test_coverage_refreshes(caplog, monkeypatch, attack_catalog, hunt_dir, yara_dir):
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
     refresh_coverage("unittest")
-    tags["s"] = SignatureTags("s", "hunt", "hunt", True, ("T1547",), ())
+    write_hunt(hunt_dir, "s", tags=["mitre:T1547"])
+    windows.clear_cache()
     caplog.clear()
     with caplog.at_level(logging.INFO):
         refresh_coverage("unittest")
@@ -296,9 +309,8 @@ def test_coverage_refreshes(caplog, monkeypatch, attack_catalog):
     _assert_fields(changed, ("technique", "platform", "from_state", "to_state"))
 
 
-def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
+def test_coverage_snapshots(caplog, monkeypatch, attack_catalog, yara_dir):
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: {})
     with caplog.at_level(logging.INFO):
         write_snapshot("unittest", snapshot_date=date(2026, 10, 16))
 
@@ -307,21 +319,21 @@ def test_coverage_snapshots(caplog, monkeypatch, attack_catalog):
     _assert_fields(written, ("snapshot_date", "rows", "attack_release", "actor"))
 
 
-def test_worklist_records(caplog, monkeypatch, attack_catalog):
+def test_worklist_records(caplog, monkeypatch, attack_catalog, hunt_dir, yara_dir):
     signature = "22222222-bbbb-4bbb-8bbb-222222222222"
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-    tags = {signature: SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())}
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+    write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
     set_expectation(GUID, signature, "expected", user_id, platform="windows")
     refresh_coverage("unittest")
 
     with caplog.at_level(logging.INFO):
         worklist.resolve(signature, "T1547", "remove", "why", user_id, actor="unittest")
-        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, (), ())
+        write_hunt(hunt_dir, signature)
+        windows.clear_cache()
         refresh_coverage("unittest")
-        tags[signature] = SignatureTags(signature, "hunt", "hunt", True, ("T1547",), ())
+        write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
+        windows.clear_cache()
         refresh_coverage("unittest")
 
     (resolved,) = _records(caplog, "AUDIT: svs worklist resolution set")

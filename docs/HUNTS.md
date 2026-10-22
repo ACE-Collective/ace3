@@ -374,6 +374,8 @@ If set, triggers a suppression of future alerts for this hunt every time an aler
 
 This setting is rarely used.
 
+With `group_by`, suppression is per group value. While an SVS test run is open on a test host, a group whose alert involves that host is suppressed under a key of the run's own, so a test re-run inside the suppression period still alerts (`docs/SVS_RUNS.md`, *Hunt suppression during runs*). A match the hunt still drops for its suppression on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt was suppressed rather than blind (`docs/SVS_RUNS.md`, *Results*).
+
 ### `query_timeout` (string, optional) [HH:MM:SS]
 
 Sets a query timeout for this hunt. If the hunt does not complete within the given amount of time, it is considered failed and ACE tries again later.
@@ -709,6 +711,8 @@ An observable should be set to volatile if you're adding it for the purposes of 
 ### `file_name` (string, interpolated)
 
 This is required if the `type` is set to `file`. This controls the name of the file used to store the contents of the data. See the section [Event Fields as File Content](#event-fields-as-file-content).
+
+The file is always stored directly in the alert's files directory: path separators (`/`, `\`), `../` and `~` in the interpolated name are replaced with `_`, so an event field that holds a path (or an attacker's file name) cannot place the file anywhere else.
 
 ### `file_decoder` (string, optional)
 

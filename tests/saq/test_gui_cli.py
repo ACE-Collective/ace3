@@ -1,7 +1,9 @@
 """Tests for `ace gui start --api-v2`, which runs a private API v2 server next to the GUI."""
 
 import os
+import signal
 import socket
+import subprocess
 import sys
 from argparse import Namespace
 from unittest.mock import MagicMock
@@ -102,13 +104,16 @@ def test_start_gui_without_api_v2(gui_mocks):
 
 @pytest.mark.unit
 def test_stop_api_v2_server():
-    process = MagicMock()
-    process.poll.return_value = None
-    gui_api.stop_api_v2_server(process)
-    process.terminate.assert_called_once()
-    process.wait.assert_called_once()
+    process = subprocess.Popen(["sleep", "60"])
+    try:
+        gui_api.stop_api_v2_server(process)
+        assert process.poll() == -signal.SIGTERM
+    finally:
+        process.kill()
+        process.wait(timeout=10)
 
-    exited = MagicMock()
-    exited.poll.return_value = 0
+    # an already exited server is left alone
+    exited = subprocess.Popen(["true"])
+    exited.wait(timeout=10)
     gui_api.stop_api_v2_server(exited)
-    exited.terminate.assert_not_called()
+    assert exited.returncode == 0

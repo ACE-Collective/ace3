@@ -1,7 +1,7 @@
 import logging
 import time
 from datetime import timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from ace_api import sha256_str
@@ -9,36 +9,12 @@ from ace_api import sha256_str
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.duplicate_filter import DuplicateSubmissionFilter
 from saq.database import get_db
+from saq.database.model import Persistence
 from saq.persistence import Persistable
 
 
 # ---------------------------------------------------------------------------
-# Unit test fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def mock_persistence_manager():
-    manager = MagicMock(spec=Persistable)
-    manager.persistence_source = MagicMock()
-    return manager
-
-
-@pytest.fixture
-def mock_service_config():
-    config = MagicMock(spec=CollectorServiceConfiguration)
-    config.persistence_clear_seconds = 60
-    config.persistence_expiration_seconds = 86400
-    config.persistence_unmodified_expiration_seconds = 14400
-    return config
-
-
-@pytest.fixture
-def duplicate_filter(mock_persistence_manager, mock_service_config):
-    return DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
-
-
-# ---------------------------------------------------------------------------
-# Integration test fixtures
+# Fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -70,164 +46,131 @@ def integration_filter(persistence_manager, service_config):
     return DuplicateSubmissionFilter(persistence_manager, service_config)
 
 
-# ===========================================================================
-# Unit tests
-# ===========================================================================
+@pytest.mark.integration
+class TestDuplicateSubmissionFilterKeys:
+
+    def test_init_keeps_manager_and_config(self, integration_filter, persistence_manager, service_config):
+        assert integration_filter.persistence_manager is persistence_manager
+        assert integration_filter.service_config is service_config
+        assert isinstance(integration_filter.persistent_clear_time, float)
+
+    def test_key_is_stored_as_its_sha256(self, integration_filter, persistence_manager):
+        integration_filter.mark_as_processed("test_key")
+        get_db().close()
+        assert persistence_manager.persistent_data_exists(sha256_str("test_key")) is True
+        assert persistence_manager.persistent_data_exists("test_key") is False
+
+    @pytest.mark.parametrize("key", [None, ""])
+    def test_empty_key_is_never_stored_or_duplicate(self, integration_filter, persistence_manager, key):
+        integration_filter.mark_as_processed(key)
+        get_db().close()
+        assert integration_filter.is_duplicate(key) is False
+        assert get_db().query(Persistence).filter(
+            Persistence.source_id == persistence_manager.persistence_source.id).count() == 0
 
 
-@pytest.mark.unit
-class TestDuplicateSubmissionFilterUnit:
+@pytest.mark.integration
+class TestDuplicateSubmissionFilterClearInterval:
 
-    def test_init_with_valid_persistence_source(self, duplicate_filter, mock_persistence_manager, mock_service_config):
-        assert duplicate_filter.persistence_manager is mock_persistence_manager
-        assert duplicate_filter.service_config is mock_service_config
-        assert isinstance(duplicate_filter.persistent_clear_time, float)
-
-    def test_init_raises_runtime_error_when_persistence_source_not_set(self, mock_service_config):
-        manager = MagicMock(spec=Persistable)
-        manager.persistence_source = None
-        with pytest.raises(RuntimeError):
-            DuplicateSubmissionFilter(manager, mock_service_config)
-
-    @pytest.mark.parametrize("falsy_value", [0, "", False])
-    def test_init_raises_runtime_error_when_persistence_source_is_falsy(self, falsy_value, mock_service_config):
-        manager = MagicMock(spec=Persistable)
-        manager.persistence_source = falsy_value
-        with pytest.raises(RuntimeError):
-            DuplicateSubmissionFilter(manager, mock_service_config)
-
-    def test_is_duplicate_returns_false_for_new_key(self, duplicate_filter):
-        duplicate_filter.persistence_manager.persistent_data_exists.return_value = False
-        assert duplicate_filter.is_duplicate("new_key") is False
-
-    def test_is_duplicate_returns_true_for_existing_key(self, duplicate_filter):
-        duplicate_filter.persistence_manager.persistent_data_exists.return_value = True
-        assert duplicate_filter.is_duplicate("existing_key") is True
-
-    def test_is_duplicate_returns_false_for_none_key(self, duplicate_filter):
-        assert duplicate_filter.is_duplicate(None) is False
-        duplicate_filter.persistence_manager.persistent_data_exists.assert_not_called()
-
-    def test_is_duplicate_returns_false_for_empty_string(self, duplicate_filter):
-        assert duplicate_filter.is_duplicate("") is False
-        duplicate_filter.persistence_manager.persistent_data_exists.assert_not_called()
-
-    def test_is_duplicate_hashes_key_with_sha256(self, duplicate_filter):
-        duplicate_filter.persistence_manager.persistent_data_exists.return_value = False
-        duplicate_filter.is_duplicate("test_key")
-        expected_hash = sha256_str("test_key")
-        duplicate_filter.persistence_manager.persistent_data_exists.assert_called_once_with(expected_hash)
-
-    def test_mark_as_processed_saves_hashed_key(self, duplicate_filter):
-        duplicate_filter.mark_as_processed("test_key")
-        expected_hash = sha256_str("test_key")
-        duplicate_filter.persistence_manager.save_persistent_key.assert_called_once_with(expected_hash)
-
-    def test_mark_as_processed_does_nothing_for_none_key(self, duplicate_filter):
-        duplicate_filter.mark_as_processed(None)
-        duplicate_filter.persistence_manager.save_persistent_key.assert_not_called()
-
-    def test_mark_as_processed_does_nothing_for_empty_string(self, duplicate_filter):
-        duplicate_filter.mark_as_processed("")
-        duplicate_filter.persistence_manager.save_persistent_key.assert_not_called()
-
-    def test_clear_expired_data_does_not_run_before_interval(self, duplicate_filter):
-        # just created, so interval has not elapsed
-        duplicate_filter.clear_expired_data()
-        duplicate_filter.persistence_manager.delete_expired_persistent_keys.assert_not_called()
+    @pytest.fixture
+    def expire_everything(self, service_config):
+        service_config.persistence_expiration_seconds = 0
+        service_config.persistence_unmodified_expiration_seconds = 0
 
     @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_runs_after_interval_elapsed(self, mock_time, mock_persistence_manager, mock_service_config):
+    def test_clear_expired_data_runs_after_interval_elapsed(self, mock_time, persistence_manager, service_config, expire_everything):
         mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
+        df.mark_as_processed("old_key")
+        get_db().close()
 
-        # advance time past the 60-second interval
-        mock_time.time.return_value = 1061.0
+        # not yet: the 60-second interval has not elapsed
+        mock_time.time.return_value = 1059.0
         df.clear_expired_data()
-        mock_persistence_manager.delete_expired_persistent_keys.assert_called_once()
-
-    @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_passes_correct_timedelta_arguments(self, mock_time, mock_persistence_manager, mock_service_config):
-        mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
+        get_db().close()
+        assert df.is_duplicate("old_key") is True
 
         mock_time.time.return_value = 1061.0
         df.clear_expired_data()
-
-        expected_expiration = timedelta(seconds=86400)
-        expected_unmodified = timedelta(seconds=14400)
-        mock_persistence_manager.delete_expired_persistent_keys.assert_called_once_with(
-            expected_expiration, expected_unmodified
-        )
+        get_db().close()
+        assert df.is_duplicate("old_key") is False
 
     @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_resets_timer_on_success(self, mock_time, mock_persistence_manager, mock_service_config):
+    def test_clear_expired_data_passes_configured_timedeltas(self, mock_time, persistence_manager, service_config):
         mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
+        df.mark_as_processed("fresh_key")
+        get_db().close()
 
-        # first call - interval elapsed
+        mock_time.time.return_value = 1061.0
+        with patch.object(persistence_manager, "delete_expired_persistent_keys",
+                          wraps=persistence_manager.delete_expired_persistent_keys) as delete_expired:
+            df.clear_expired_data()
+        get_db().close()
+
+        delete_expired.assert_called_once_with(timedelta(seconds=86400), timedelta(seconds=14400))
+        # a key saved just now is inside both windows
+        assert df.is_duplicate("fresh_key") is True
+
+    @patch("saq.collectors.duplicate_filter.time")
+    def test_clear_expired_data_resets_timer_on_success(self, mock_time, persistence_manager, service_config, expire_everything):
+        mock_time.time.return_value = 1000.0
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
+
         mock_time.time.return_value = 1061.0
         df.clear_expired_data()
-        assert mock_persistence_manager.delete_expired_persistent_keys.call_count == 1
+        assert df.persistent_clear_time == 1061.0
 
-        # second call immediately after - should NOT run again
+        # a key saved after the clear survives a call made before the next interval
+        df.mark_as_processed("new_key")
+        get_db().close()
         mock_time.time.return_value = 1062.0
         df.clear_expired_data()
-        assert mock_persistence_manager.delete_expired_persistent_keys.call_count == 1
+        get_db().close()
+        assert df.is_duplicate("new_key") is True
 
     @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_resets_timer_even_on_exception(self, mock_time, mock_persistence_manager, mock_service_config):
+    def test_clear_expired_data_resets_timer_even_on_exception(self, mock_time, persistence_manager, service_config):
         mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
 
-        mock_persistence_manager.delete_expired_persistent_keys.side_effect = Exception("db error")
+        with patch.object(persistence_manager, "delete_expired_persistent_keys",
+                          side_effect=Exception("db error")) as delete_expired:
+            # first call - interval elapsed, exception occurs
+            mock_time.time.return_value = 1061.0
+            df.clear_expired_data()
 
-        # first call - interval elapsed, exception occurs
-        mock_time.time.return_value = 1061.0
-        df.clear_expired_data()
+            # second call immediately after - timer was reset so should NOT run again
+            mock_time.time.return_value = 1062.0
+            df.clear_expired_data()
 
-        # second call immediately after - timer was reset so should NOT run again
-        mock_time.time.return_value = 1062.0
-        df.clear_expired_data()
-        assert mock_persistence_manager.delete_expired_persistent_keys.call_count == 1
+        assert delete_expired.call_count == 1
 
     @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_logs_warning_on_exception(self, mock_time, mock_persistence_manager, mock_service_config, caplog):
+    def test_clear_expired_data_logs_warning_on_exception(self, mock_time, persistence_manager, service_config, caplog):
         mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
-
-        mock_persistence_manager.delete_expired_persistent_keys.side_effect = Exception("db error")
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
 
         mock_time.time.return_value = 1061.0
-        with caplog.at_level(logging.WARNING):
+        with patch.object(persistence_manager, "delete_expired_persistent_keys", side_effect=Exception("db error")), \
+             caplog.at_level(logging.WARNING):
             df.clear_expired_data()
 
         assert any("unable to delete expired persistent keys" in r.message for r in caplog.records)
 
     @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_with_zero_interval(self, mock_time, mock_persistence_manager, mock_service_config):
-        mock_service_config.persistence_clear_seconds = 0
+    def test_clear_expired_data_with_zero_interval(self, mock_time, persistence_manager, service_config, expire_everything):
+        service_config.persistence_clear_seconds = 0
         mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(mock_persistence_manager, mock_service_config)
+        df = DuplicateSubmissionFilter(persistence_manager, service_config)
+        df.mark_as_processed("old_key")
+        get_db().close()
 
-        # even at the same time, 0 interval means any elapsed time > 0 should trigger
-        # but time.time() - persistent_clear_time == 0, which is NOT > 0
-        # so we advance by the smallest amount
+        # time.time() - persistent_clear_time == 0 is NOT > 0, so advance by the smallest amount
         mock_time.time.return_value = 1000.001
         df.clear_expired_data()
-        mock_persistence_manager.delete_expired_persistent_keys.assert_called_once()
-
-    def test_is_duplicate_and_mark_as_processed_use_same_hash(self, duplicate_filter):
-        key = "consistent_hash_key"
-        duplicate_filter.persistence_manager.persistent_data_exists.return_value = False
-
-        duplicate_filter.is_duplicate(key)
-        duplicate_filter.mark_as_processed(key)
-
-        exists_hash = duplicate_filter.persistence_manager.persistent_data_exists.call_args[0][0]
-        save_hash = duplicate_filter.persistence_manager.save_persistent_key.call_args[0][0]
-        assert exists_hash == save_hash
-        assert exists_hash == sha256_str(key)
+        get_db().close()
+        assert df.is_duplicate("old_key") is False
 
 
 # ===========================================================================

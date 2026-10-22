@@ -3,12 +3,15 @@
 import json
 from argparse import Namespace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
 
 from saq.cli.commands.svs import cli_coverage_refresh, cli_coverage_snapshot, cli_coverage_status
+from saq.configuration.config import get_service_config
+from saq.constants import ENV_ACE_IS_PRIMARY_NODE, SERVICE_YARA_SCANNER
 from saq.database.model import (
     SVSCatalogTest,
     SVSCoverage,
@@ -20,9 +23,9 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.database.util import node
-from saq.signatures.model import YaraInventory
-from saq.svs import coverage, expectations, signatures, windows
+from saq.signatures.locations import LOCATION_RESOLVERS
+from saq.signatures.model import SignatureType
+from saq.svs import coverage, expectations
 from saq.svs.constants import CoverageState
 from saq.svs.coverage import (
     STATE_ID,
@@ -34,8 +37,7 @@ from saq.svs.coverage import (
 from saq.svs.service import CoverageRefresher, SVSService
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
 from saq.svs.test_state import Evaluation, TestState
-from saq.svs.windows import HuntInfo
-from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, write_hunt, write_yara_rule
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -206,66 +208,43 @@ class TestComputeRows:
 # signature_techniques
 #
 
-@pytest.mark.unit
+@pytest.mark.integration
 class TestSignatureTechniques:
-    @pytest.fixture
-    def yara(self, monkeypatch):
-        """{uuid: rule} the yara inventory holds; one yara location is configured."""
-        rules = {}
-        monkeypatch.setattr("saq.signatures.locations.get_signature_locations", lambda signature_type: ["rules"])
-        monkeypatch.setattr("saq.signatures.yara_inventory.get_yara_inventory",
-                            lambda max_age: YaraInventory(by_uuid=rules))
-        return rules
-
-    @staticmethod
-    def _hunts(monkeypatch, **hunts):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {
-            uuid: HuntInfo(uuid=uuid, name=f"hunt {uuid}", enabled=enabled, latency=None, suppression=None,
-                           grouped=False, content_hash="0" * 64, tags=tags)
-            for uuid, (enabled, tags) in hunts.items()})
-
-    @staticmethod
-    def _rule(*tags, enabled=True, modifiers=()):
-        return SimpleNamespace(name="Rule", tags=tags, enabled=enabled, modifiers=modifiers)
-
-    def test_hunt_tags(self, monkeypatch, yara):
-        self._hunts(monkeypatch, h1=(False, ("mitre:t1059.001", "MITRE:T1547", "mitre:TA0002",
-                                             "mitre:{{ technique }}", "phishing")),
-                    h2=(True, ("phishing",)))
+    def test_hunt_tags(self, hunt_dir, yara_dir):
+        write_hunt(hunt_dir, "h1", enabled=False, name="hunt h1",
+                   tags=["mitre:t1059.001", "MITRE:T1547", "mitre:TA0002", "mitre:{{ technique }}", "phishing"])
+        write_hunt(hunt_dir, "h2", tags=["phishing"])
         result = signature_techniques()
         assert list(result) == ["h1"]
         assert result["h1"] == SignatureTags("h1", "hunt", "hunt h1", False, ("T1059.001", "T1547"),
                                              ("mitre:TA0002", "mitre:{{ technique }}"))
 
-    def test_yara_tags(self, monkeypatch, yara):
-        self._hunts(monkeypatch, shared=(True, ("mitre:T1059",)))
-        yara.update({
-            "on": self._rule("mitre:T1059.001"),
-            "off": self._rule("mitre:T1059.001", enabled=False),
-            "qa": self._rule("mitre:T1059.001", modifiers=("qa",)),
-            "untagged": self._rule("ioc"),
-            "shared": self._rule("mitre:T1547"),
-        })
+    def test_yara_tags(self, hunt_dir, yara_dir):
+        write_hunt(hunt_dir, "shared", tags=["mitre:T1059"])
+        write_yara_rule(yara_dir, "on_rule", "on", mitre_attack="T1059.001")
+        write_yara_rule(yara_dir, "off_rule", "off", mitre_attack="T1059.001", enabled="false")
+        write_yara_rule(yara_dir, "qa_rule", "qa", mitre_attack="T1059.001", modifiers="qa")
+        write_yara_rule(yara_dir, "untagged_rule", "untagged")
+        write_yara_rule(yara_dir, "shared_rule", "shared", mitre_attack="T1547")
         result = signature_techniques()
-        assert {uuid: (tags.family, tags.counts, tags.declared) for uuid, tags in result.items()} == {
-            "on": ("yara", True, ("T1059.001",)),
-            "off": ("yara", False, ("T1059.001",)),
-            "qa": ("yara", False, ("T1059.001",)),
+        assert {uuid: (tags.family, tags.name, tags.counts, tags.declared) for uuid, tags in result.items()} == {
+            "on": ("yara", "on_rule", True, ("T1059.001",)),
+            "off": ("yara", "off_rule", False, ("T1059.001",)),
+            "qa": ("yara", "qa_rule", False, ("T1059.001",)),
             # a uuid both use is the hunt's
-            "shared": ("hunt", True, ("T1059",)),
+            "shared": ("hunt", "shared", True, ("T1059",)),
         }
 
-    def test_an_inventory_error_raises(self, monkeypatch):
-        self._hunts(monkeypatch)
-        monkeypatch.setattr("saq.signatures.locations.get_signature_locations", lambda signature_type: ["rules"])
-        monkeypatch.setattr("saq.signatures.yara_inventory.get_yara_inventory",
-                            lambda max_age: YaraInventory(error="unable to load yara signatures from rules: boom"))
-        with pytest.raises(SignatureTagsUnavailable, match="boom"):
+    def test_an_inventory_error_raises(self, hunt_dir, yara_dir, monkeypatch):
+        missing = str(yara_dir / "missing")
+        monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", missing)
+        with pytest.raises(SignatureTagsUnavailable, match=f"{missing} is not a directory"):
             signature_techniques()
 
-    def test_no_yara_location_is_not_an_error(self, monkeypatch):
-        self._hunts(monkeypatch, h1=(True, ("mitre:T1059",)))
-        monkeypatch.setattr("saq.signatures.locations.get_signature_locations", lambda signature_type: [])
+    def test_no_yara_location_is_not_an_error(self, hunt_dir, monkeypatch):
+        write_hunt(hunt_dir, "h1", tags=["mitre:T1059"])
+        # no service_yara configuration at all, which leaves no yara location
+        monkeypatch.setitem(LOCATION_RESOLVERS, SignatureType.YARA, lambda: [])
         assert list(signature_techniques()) == ["h1"]
 
 
@@ -274,19 +253,11 @@ class TestSignatureTechniques:
 #
 
 @pytest.fixture
-def tags(monkeypatch) -> dict:
-    """The signature tags refresh_coverage reads; empty until a test adds some."""
-    tags: dict = {}
-    monkeypatch.setattr(coverage, "signature_techniques", lambda: dict(tags))
-    return tags
-
-
-@pytest.fixture
-def refreshable(no_hunts, monkeypatch, attack_catalog, tags):
+def refreshable(hunt_dir, yara_dir, monkeypatch, attack_catalog) -> Path:
+    """The hunt rule dir; there are no signatures until a test writes one."""
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
     add_test_host("win10-01")
-    return tags
+    return hunt_dir
 
 
 @pytest.fixture
@@ -370,7 +341,7 @@ class TestRefresh:
         assert _rows()[("T1234.001", "windows")].retired_at is None
 
     def test_tags_count(self, refreshable):
-        refreshable[SIGNATURE] = _tag(SIGNATURE, "T1547", "T9999", ignored=("mitre:TA0002",))
+        write_hunt(refreshable, SIGNATURE, tags=["mitre:T1547", "mitre:T9999", "mitre:TA0002"])
         refresh_coverage("test")
         assert _rows()[("T1547", "windows")].state == "manual"
         state = _state()
@@ -387,7 +358,7 @@ class TestRefresh:
         state = _state()
         assert (state.refreshed_at, state.error) == (None, "unable to load yara signatures from rules: boom")
 
-        monkeypatch.setattr(coverage, "signature_techniques", lambda: {})
+        monkeypatch.setattr(coverage, "signature_techniques", signature_techniques)
         refresh_coverage("test")
         assert _state().error is None
 
@@ -402,7 +373,7 @@ class TestRefresh:
         assert len(_rows()) == 5
 
     def test_cli(self, refreshable, monkeypatch, capsys):
-        monkeypatch.setattr(node, "is_primary_node", lambda: False)
+        monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
         assert cli_coverage_status(Namespace()) == 0
         assert "never been refreshed" in capsys.readouterr().out
 
@@ -419,7 +390,7 @@ class TestRefresh:
         assert "windows: 3 none" in out
 
     def test_cli_reports_a_failure(self, refreshable, monkeypatch, capsys):
-        monkeypatch.setattr(node, "is_primary_node", lambda: True)
+        monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "1")
         monkeypatch.setattr(coverage, "signature_techniques",
                             lambda: (_ for _ in ()).throw(SignatureTagsUnavailable("boom")))
         assert cli_coverage_refresh(Namespace(force=False)) == 1
@@ -487,7 +458,7 @@ class TestSnapshot:
         assert _snapshots() == {}
 
     def test_cli(self, refreshable, monkeypatch, capsys):
-        monkeypatch.setattr(node, "is_primary_node", lambda: False)
+        monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
         assert cli_coverage_snapshot(Namespace(force=False)) == 0
         assert "not the primary node" in capsys.readouterr().out
         assert _snapshots() == {}

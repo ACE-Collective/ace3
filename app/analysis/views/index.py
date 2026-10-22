@@ -757,8 +757,6 @@ def index():
         analysis=analysis,
         analysis_presenter=create_analysis_presenter(analysis) if analysis else None,
         ace_config=get_config(),
-        User=User,
-        db=get_db(),
         current_time=datetime.now(),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
         display_tree=display_tree,
@@ -777,9 +775,6 @@ def index():
         domain_list=domain_list,
         domain_summary_str=domain_summary_str,
         CONSTANTS=saq.constants,
-        observable_open_event_counts=alert.observable_open_event_counts,
-        # Skip file observables. The calculations will include their hash observables instead.
-        num_observables_in_alert=len([o for o in alert.root_analysis.observable_store.values() if o.type != F_FILE]),
         observable_detections=observable_detections,
         observable_disposition_history=observable_disposition_history,
         observable_comments=observable_comments,

@@ -5,6 +5,8 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
 
 import pytest
 from sqlalchemy import select, update
@@ -17,20 +19,30 @@ from saq.database.model import (
     SVSRunEvent,
     SVSRunResult,
     SVSRunResultState,
+    SVSSuppressedMatch,
     User,
 )
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.signatures.builtin import GENERIC, OBSERVABLE_FLAGGED
-from saq.svs import expectations, results, runs, signatures, windows
+from saq.signatures.loaders.util import content_hash
+from saq.svs import expectations, results, review, runs, windows
 from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.runs import Registration, TargetSpec
-from saq.svs.windows import HuntInfo
 from tests.saq.helpers import insert_alert
-from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import (
+    LAUNCHER,
+    add_catalog_test,
+    add_test_host,
+    started_run,
+    write_hunt,
+    write_yara_rule,
+    yara_rule_source,
+)
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -49,9 +61,7 @@ def _multi_platform_test():
 
 
 @pytest.fixture(autouse=True)
-def setup(no_hunts, monkeypatch):
-    # no YARA rule files in the unit test environment: tests that need one patch the inventory
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+def setup(no_hunts, yara_dir):
     add_catalog_test(GUID)
     add_catalog_test(OTHER_GUID)
     add_test_host("win10-01")
@@ -75,12 +85,13 @@ def _run(test_guid: str = GUID, *, ended: bool = True, started_at: timedelta = t
 
 
 def _attribute(run: SVSRun, signature_uuid: str, *, alert_uuid=None, late=False, confidence="marker",
-               removed=False) -> str:
+               removed=False, event_time: Optional[datetime] = None) -> str:
     alert_uuid = alert_uuid or str(uuid.uuid4())
     with private_transaction() as session:
         session.add(SVSAttribution(
             run_id=run.id, alert_uuid=alert_uuid, content_hash=uuid.uuid4().hex + uuid.uuid4().hex,
             signature_uuid=signature_uuid, signature_family="yara", confidence=confidence, late=late,
+            event_time=event_time,
             source="router", actor="svs", created_at=datetime.now(),
             removed_at=datetime.now() if removed else None, removed_by="svs" if removed else None))
     return alert_uuid
@@ -106,9 +117,26 @@ def _state(run: SVSRun) -> SVSRunResultState:
     return db.get(SVSRunResultState, run.id)
 
 
-def _hunt(*, suppression=timedelta(days=1), grouped=False, latency=timedelta(hours=1)) -> HuntInfo:
-    return HuntInfo(uuid=HUNT, name="suspicious powershell", enabled=True, latency=latency, suppression=suppression,
-                    grouped=grouped, content_hash="c" * 64)
+def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=False, dedup=False,
+          latency="01:00:00") -> Path:
+    """HUNT's file: a hunt whose latency is its frequency."""
+    rule = {"name": "suspicious powershell"}
+    if suppression:
+        rule["suppression"] = suppression
+    if grouped:
+        rule["group_by"] = "hostname"
+    if dedup:
+        rule["dedup_key"] = "{{ hostname }}"
+    path = write_hunt(hunt_dir, HUNT, frequency=latency, **rule)
+    windows.clear_cache()
+    return path
+
+
+def _suppressed_match(run: SVSRun, hunt_uuid: str = HUNT) -> None:
+    """The hunter's record that the hunt dropped a match for its suppression during the run."""
+    with private_transaction() as session:
+        session.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid, group_value="win10-01",
+                                       event_time=run.started_at + timedelta(minutes=5)))
 
 
 def _hunt_alert(inserted_at: datetime) -> str:
@@ -137,6 +165,33 @@ class TestStatuses:
         results.compute_result(run.id)
         assert _statuses(run) == {HUNT: "hit", YARA: "rejected", NOISE: "ignored", OTHER: "candidate",
                                   missing: "missing"}
+
+    def test_what_fired_only_in_the_cleanup(self, user_id):
+        run = _run()
+        cleanup_at = run.started_at + timedelta(minutes=10)
+        db = get_db()
+        db.execute(update(SVSRun).where(SVSRun.id == run.id).values(cleanup_at=cleanup_at))
+        db.commit()
+        before, after = cleanup_at - timedelta(minutes=1), cleanup_at
+        # fired by the test and again by its cleanup: counted by the test's alerts alone
+        _attribute(run, HUNT, event_time=before)
+        _attribute(run, HUNT, event_time=after)
+        _attribute(run, HUNT, event_time=after)
+        # fired only by the cleanup: not a candidate
+        _attribute(run, OTHER, event_time=after)
+        # expected, and fired only by the cleanup: missing
+        _attribute(run, YARA, event_time=after + timedelta(minutes=1))
+        expectations.set_expectation(GUID, YARA, "expected", user_id, platform="windows")
+        # an attribution from before event times were kept is the test's
+        _attribute(run, NOISE)
+
+        results.compute_result(run.id)
+        assert _statuses(run) == {HUNT: "candidate", OTHER: "cleanup", YARA: "missing", NOISE: "candidate"}
+        assert _row(run, HUNT).alert_count == 1
+        assert _row(run, OTHER).alert_count == 1
+        # nothing the cleanup fired stands in the way of a review
+        assert review.review_blockers(get_db(), get_db().get(SVSRun, run.id), lock=False)["candidates"] == sorted(
+            [HUNT, NOISE])
 
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()
@@ -196,20 +251,20 @@ class TestStatuses:
         # a removed attribution doesn't count
         assert OTHER not in _statuses(run)
 
-    def test_names_and_rule_hashes(self, monkeypatch, user_id):
+    def test_names_and_rule_hashes(self, hunt_dir, yara_dir, user_id):
         run = _run()
         _attribute(run, YARA)
-        monkeypatch.setattr(signatures, "_yara_signatures", lambda: {YARA: type("Signature", (), {
-            "name": "Suspicious_Macro", "content_hash": "a" * 64})()})
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt()})
+        write_yara_rule(yara_dir, "Suspicious_Macro", YARA)
+        hunt_file = _hunt(hunt_dir)
         expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
 
         results.compute_result(run.id)
         yara, hunt = _row(run, YARA), _row(run, HUNT)
-        assert (yara.signature_name, yara.signature_family, yara.content_hash) == ("Suspicious_Macro", "yara", "a" * 64)
+        assert (yara.signature_name, yara.signature_family, yara.content_hash) == (
+            "Suspicious_Macro", "yara", content_hash(yara_rule_source("Suspicious_Macro", YARA)))
         # a missing signature records its rule hash too: coverage needs it
         assert (hunt.signature_name, hunt.signature_family, hunt.content_hash) == (
-            "suspicious powershell", "hunt", "c" * 64)
+            "suspicious powershell", "hunt", content_hash(hunt_file.read_text()))
 
     def test_an_unknown_signature_keeps_what_was_known(self):
         run = _run()
@@ -224,8 +279,8 @@ class TestSuppression:
     def expected_hunt(self, user_id):
         expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
 
-    def test_a_hunt_alert_within_its_suppression_period(self, monkeypatch):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt()})
+    def test_a_hunt_alert_within_its_suppression_period(self, hunt_dir):
+        _hunt(hunt_dir)
         run = _run()
         before = _hunt_alert(run.started_at - timedelta(hours=3))
         during = _hunt_alert(run.started_at + timedelta(minutes=10))
@@ -236,26 +291,68 @@ class TestSuppression:
         assert row.suppressing_alert_uuid == during != before
         assert row.suppression_imprecise is False
 
-    def test_a_grouped_hunt_is_imprecise(self, monkeypatch):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(grouped=True)})
+    def test_a_deduplicating_hunt_is_imprecise(self, hunt_dir):
+        _hunt(hunt_dir, dedup=True)
         run = _run()
         _hunt_alert(run.started_at - timedelta(hours=3))
         results.compute_result(run.id)
-        assert _row(run, HUNT).suppression_imprecise is True
+        row = _row(run, HUNT)
+        assert (row.status, row.suppression_imprecise) == ("possibly_suppressed", True)
+
+    def test_a_grouped_hunt_the_hunter_recorded_as_suppressed(self, hunt_dir, caplog):
+        """Certain, whatever its alerts: none is named, since the latest may be another group's."""
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(run)
+
+        with caplog.at_level(logging.INFO):
+            results.compute_result(run.id)
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid, row.suppression_imprecise) == (
+            "possibly_suppressed", None, False)
+        record = next(r for r in caplog.records if "is missing expected signature" in r.getMessage())
+        assert record.getMessage().endswith(", possibly suppressed") and record.possibly_suppressed
+
+    def test_a_grouped_hunt_the_hunter_did_not_suppress_is_missing(self, hunt_dir):
+        """An alert of the hunt within its suppression period, of another group, or a record of
+        another run, does not make it suppressed."""
+        _hunt(hunt_dir, grouped=True)
+        run = _run()
+        _hunt_alert(run.started_at + timedelta(minutes=10))
+        _suppressed_match(_run(OTHER_GUID))
+
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "missing"
+
+    def test_a_grouped_hunt_without_suppression_is_missing(self, hunt_dir):
+        _hunt(hunt_dir, grouped=True, suppression=None)
+        run = _run()
+        _suppressed_match(run)
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "missing"
+
+    def test_another_runs_alert_of_an_ungrouped_hunt_still_suppresses(self, hunt_dir):
+        _hunt(hunt_dir)
+        run = _run()
+        other = _run(started_at=timedelta(hours=30))
+        _attribute(other, YARA, alert_uuid=_hunt_alert(run.started_at - timedelta(hours=3)))
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "possibly_suppressed"
 
     @pytest.mark.parametrize("hunt, offset", [
-        (_hunt(), timedelta(days=-2)),                  # before the suppression period
-        (_hunt(suppression=None), timedelta(hours=-3)),  # the hunt doesn't suppress
+        ({}, timedelta(days=-2)),                     # before the suppression period
+        ({"suppression": None}, timedelta(hours=-3)),  # the hunt doesn't suppress
     ])
-    def test_missing(self, monkeypatch, hunt, offset):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: hunt})
+    def test_missing(self, hunt_dir, hunt, offset):
+        _hunt(hunt_dir, **hunt)
         run = _run()
         _hunt_alert(run.started_at + offset)
         results.compute_result(run.id)
         assert _row(run, HUNT).status == "missing"
 
-    def test_an_alert_after_the_window_or_of_the_run_itself_does_not_suppress(self, monkeypatch):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt()})
+    def test_an_alert_after_the_window_or_of_the_run_itself_does_not_suppress(self, hunt_dir):
+        _hunt(hunt_dir)
         run = _run()
         _hunt_alert(run.ended_at + timedelta(minutes=1))
         own = _hunt_alert(run.started_at + timedelta(minutes=5))
@@ -283,8 +380,7 @@ class TestKeepingRows:
         assert _statuses(run) == {YARA: None}
         assert _row(run, YARA).reviewed_status == "candidate"
 
-    def test_an_event_and_a_record_only_when_the_result_changes(self, user_id, caplog, monkeypatch):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {})
+    def test_an_event_and_a_record_only_when_the_result_changes(self, user_id, caplog):
         run = _run()
         _attribute(run, YARA)
         expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
@@ -335,7 +431,7 @@ class TestStaleness:
         assert results.compute_result(run.id).current is False
         assert (_state(run).stale, _state(run).generation) == (True, 2)
 
-        monkeypatch.undo()
+        monkeypatch.setattr(results, "fired_signatures", fired)
         assert results.recompute_stale_results() == 1
         assert _state(run).stale is False
 
@@ -490,16 +586,15 @@ class TestWindows:
             SVSRunEvent.run_id == run.id, SVSRunEvent.kind == RunEventKind.REGISTERED.value)).scalars()
         return json.loads(event.details)["observation_source"]
 
-    def test_all_hunts_without_expectations(self, monkeypatch):
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(latency=timedelta(hours=10))})
+    def test_all_hunts_without_expectations(self, hunt_dir):
+        _hunt(hunt_dir, latency="10:00:00")
         run = self._register()
         assert self._source(run) == ObservationSource.ALL_HUNTS
         assert run.observation_seconds == int(timedelta(hours=10, minutes=30).total_seconds())
 
-    def test_the_expected_signatures(self, monkeypatch, user_id):
-        slow = HuntInfo(uuid=OTHER, name="slow", enabled=True, latency=timedelta(hours=20), suppression=None,
-                        grouped=False, content_hash="d" * 64)
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(latency=timedelta(hours=2)), OTHER: slow})
+    def test_the_expected_signatures(self, hunt_dir, user_id):
+        write_hunt(hunt_dir, OTHER, name="slow", frequency="20:00:00")
+        _hunt(hunt_dir, latency="02:00:00")
         expectations.set_expectation(GUID, HUNT, "expected", user_id, platform="windows")
         expectations.set_expectation(GUID, OTHER, "expected", user_id, platform="windows")
         # an ignored expectation doesn't hold the window open
@@ -509,9 +604,9 @@ class TestWindows:
         assert self._source(run) == ObservationSource.EXPECTED
         assert run.observation_seconds == int(timedelta(hours=2, minutes=30).total_seconds())
 
-    def test_only_the_runs_platforms_expected_signatures(self, monkeypatch, user_id):
+    def test_only_the_runs_platforms_expected_signatures(self, hunt_dir, user_id):
         _multi_platform_test()
-        monkeypatch.setattr(windows, "hunt_info", lambda: {HUNT: _hunt(latency=timedelta(hours=2))})
+        _hunt(hunt_dir, latency="02:00:00")
         expectations.set_expectation(MULTI, HUNT, "expected", user_id, platform="linux")
 
         def register(hostname: str) -> SVSRun:

@@ -127,8 +127,6 @@ class Alert(Base):
         # when we lock the Alert this is the UUID we used to lock it with
         self.lock_uuid = str(uuid.uuid4())
 
-        self._observable_open_event_counts = None
-
         # this is the RootAnalysis object that this Alert is associated with
         self._root_analysis: Optional[RootAnalysis] = None
 
@@ -384,32 +382,6 @@ class Alert(Base):
     @property
     def wiki(self) -> str:
         return ''
-
-    @property
-    def observable_open_event_counts(self):
-        """
-        Returns a dictionary containing the open events as the keys and the number of observables in this alert
-        that are also in alerts in the event.
-
-        {<event>: # of observables in this alert that are also in the event}
-        """
-        return {}
-
-        if self._observable_open_event_counts is None:
-            results = {}
-
-            # Skip file observables. The calculations will consider their hash observables instead.
-            for observable in [o for o in self.root_analysis.observable_store.values() if o.type != F_FILE]:
-                if 'OPEN' in observable.matching_events_by_status:
-                    for event in observable.matching_events_by_status['OPEN']:
-                        if event not in results:
-                            results[event] = 0
-
-                        results[event] += 1
-
-            self._observable_open_event_counts = results
-
-        return self._observable_open_event_counts
 
     @property
     def all_email_analysis(self) -> list[Analysis]:
@@ -2193,8 +2165,15 @@ class SVSRun(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # what the launcher reported through executed
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # when the launcher said the test's cleanup began: detections whose event time is at or after
+    # it are the cleanup's, left out of what the run teaches (docs/SVS_RUNS.md, *Cleanup*)
+    cleanup_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     exit_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     launcher_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # what the test printed (stdout and stderr), as executed reported it, at most
+    # saq.svs.runs.MAX_OUTPUT_BYTES; deferred, since only the run's detail reads it and the
+    # listing and attribution load whole runs
+    launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -2205,6 +2184,9 @@ class SVSRun(Base):
     attribution_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     observation_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     attribution_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the test's holds_host setting at registration: the run holds its hosts until its attribution
+    # window ends rather than its observation window (docs/SVS_RUNS.md, *One run per test host*)
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     owner_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
@@ -2360,6 +2342,9 @@ class SVSAttribution(Base):
     confidence: Mapped[str] = mapped_column(Enum('marker', 'context'), nullable=False)
     # the alert's event time was past the run's observation window
     late: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # the alert's event time the attribution was judged by, as runs record time; NULL for rows
+    # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
+    event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
@@ -2499,8 +2484,9 @@ class SVSIgnore(Base):
 
 
 class SVSTestSettings(Base):
-    """Per-test settings (docs/SVS_RUNS.md, *Windows*): an observation window that replaces the
-    computed one for every run registered afterwards. Only saq/svs/expectations.py writes this
+    """Per-test settings (docs/SVS_RUNS.md, *Windows*, *One run per test host*): an observation
+    window that replaces the computed one, and whether a run holds its hosts for its whole attribution
+    window, for every run registered afterwards. Only saq/svs/expectations.py writes this
     table."""
 
     __tablename__ = 'svs_test_settings'
@@ -2508,6 +2494,9 @@ class SVSTestSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     test_guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
     observation_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # the test leaves something behind on its hosts, so a run of it holds them for its whole
+    # attribution window
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     set_by_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
@@ -2544,7 +2533,7 @@ class SVSRunResult(Base):
     signature_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # saq.svs.constants.ResultStatus; NULL once the signature left the live result
     status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     # the alerts attributed to the run that carry the signature
     alert_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text('0'))
     # every one of its attributions is late, or by context alone
@@ -2553,12 +2542,13 @@ class SVSRunResult(Base):
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
     # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
-    # the hunt groups or deduplicates its alerts, so that alert may not have suppressed this one
+    # the hunt deduplicates its alerts, so that alert may not have suppressed this one. Neither for
+    # a hunt with group_by, whose suppression the hunter records (svs_suppressed_matches)
     suppressing_alert_uuid: Mapped[Optional[str]] = mapped_column(CHAR(36), nullable=True)
     suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
     reviewed_status: Mapped[Optional[str]] = mapped_column(
-        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored'), nullable=True)
+        Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
     reviewed_alert_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     reviewed_late_only: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     reviewed_content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
@@ -2568,6 +2558,32 @@ class SVSRunResult(Base):
         index=True,
         server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
         server_onupdate=FetchedValue())
+
+
+class SVSSuppressedMatch(Base):
+    """A hunt with group_by dropped a match for its suppression inside a run's attribution window,
+    on one of the run's test hosts (docs/SVS_RUNS.md, *Results*). One row per run and hunt, for the
+    first such match: a run's result reads it to tell a suppressed hunt from a missing one, so it
+    lives as long as the run. Only saq/svs/attribution.py writes this table."""
+
+    __tablename__ = 'svs_suppressed_matches'
+    __table_args__ = (
+        UniqueConstraint('run_id', 'hunt_uuid', name='uq_svs_suppressed_matches_run_hunt'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_runs.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    hunt_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
+    # the match's group_value, which keys its suppression by itself or with the run
+    # (QueryHunt.key_suppression)
+    group_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # the match's event time, as runs record time (naive, local)
+    event_time: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        MYSQL_DATETIME(fsp=6), nullable=False, server_default=text('CURRENT_TIMESTAMP(6)'))
 
 
 class SVSRunResultState(Base):

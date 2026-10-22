@@ -13,6 +13,7 @@ They also cover the work item's analysis mode, which the transfer must carry: a
 ran in the ``correlation`` mode saved on disk (FR-5 in docs/SVS_FINAL_REVIEW.md).
 """
 
+import logging
 import os
 import uuid as uuidlib
 from unittest.mock import Mock
@@ -23,8 +24,10 @@ import requests
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, NODE_STATUS_RUNNING
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
+from saq.database.util.node import set_node_status
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
+from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.engine.lock_manager.distributed import DistributedLockManager
@@ -91,11 +94,7 @@ def lock_row(uuid: str):
 
 
 def make_manager(lock_manager: DistributedLockManager) -> DatabaseWorkloadManager:
-    config_manager = Mock(spec=ConfigurationManager)
-    config_manager.config = Mock()
-    # get_work_target filters on these, and a bare Mock attribute is truthy
-    config_manager.config.local_analysis_modes = []
-    config_manager.config.excluded_analysis_modes = []
+    config_manager = ConfigurationManager(EngineConfiguration(local_analysis_modes=[], excluded_analysis_modes=[]))
     node_manager = Mock(spec=NodeManagerInterface)
     node_manager.target_nodes = []
     return DatabaseWorkloadManager(
@@ -134,7 +133,7 @@ def item(monkeypatch):
     return uuid, remote_id
 
 
-def test_transfer_survives_benign_clear_failure(item, monkeypatch):
+def test_transfer_survives_benign_clear_failure(item, monkeypatch, caplog):
     """A 400 from the remote clear must not fail the transfer, delete the local
     copy, report an exception, or release the (now-owned) lock."""
     import ace_api
@@ -145,8 +144,6 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
         raise requests.exceptions.HTTPError("400 Client Error: BAD REQUEST")
 
     monkeypatch.setattr(ace_api, "clear", fake_clear)
-    write_error_report_mock = Mock()
-    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report_mock)
 
     manager = make_manager(DistributedLockManager())
     result = manager.transfer_work_target(uuid, workload_node_id(uuid))
@@ -157,7 +154,7 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch):
     # the downloaded local copy is retained (the database points at it)
     assert os.path.isdir(abs_target(uuid))
     # a benign clear failure must not be reported as an exception
-    write_error_report_mock.assert_not_called()
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
     # the workload row has moved to the local node
     assert workload_node_id(uuid) == local_node_id()
     # on success we keep the lock so the engine can process the item
@@ -248,14 +245,12 @@ def test_transfer_carries_the_work_item_mode(dispositioned_item):
     assert result.original_analysis_mode == ANALYSIS_MODE_DISPOSITIONED
 
 
-def test_get_work_target_transfers_with_the_row_mode(dispositioned_item, monkeypatch):
+def test_get_work_target_transfers_with_the_row_mode(dispositioned_item):
     """A dispositioned item pulled from another node runs in dispositioned mode, not in the
     correlation mode saved on disk, and clearing it removes its own workload row."""
-    from saq.engine.workload_manager import database as db_module
-
     uuid, _ = dispositioned_item
     # only a running node pulls work from other nodes
-    monkeypatch.setattr(db_module, "get_node_status_cached", lambda: NODE_STATUS_RUNNING)
+    set_node_status(local_node_id(), NODE_STATUS_RUNNING)
 
     manager = make_manager(DistributedLockManager())
     result = manager.get_work_target(priority=False, local=False)

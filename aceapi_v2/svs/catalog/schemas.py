@@ -62,3 +62,20 @@ class CatalogTestPage(BaseModel):
 
 
 CATALOG_TEST_CSV_FIELDS = tuple(CatalogTest.model_fields)
+
+
+class CatalogRepository(BaseModel):
+    """A catalog repository and the commit the catalog reflects (docs/SVS_RUNS.md, *The Atomic Red
+    Team catalog*)."""
+
+    name: str = Field(description="the name of its git_repo_* section")
+    configured: bool = Field(description="it is in svs.catalog.repositories; one that isn't is listed while it has a row")
+    git_url: Optional[str] = Field(default=None, description="from its git_repo_* section, without credentials; null without one")
+    branch: Optional[str] = Field(default=None, description="from its git_repo_* section")
+    commit: Optional[str] = Field(default=None, description="the commit the catalog's tests were last read from; null until it is first read")
+    refreshed_at: Optional[datetime] = Field(default=None, description="when that commit was read")
+    test_count: int = Field(description="the tests read from that commit")
+    skipped_count: int = Field(description="tests and files that read could not use")
+    removed_count: int = Field(description="its tests removed from the catalog")
+    error: Optional[str] = Field(default=None, description="why the last refresh failed; null when it succeeded. The catalog keeps the tests of the commit it last read")
+    retired: bool = Field(description="taken out of svs.catalog.repositories, so its tests were removed")

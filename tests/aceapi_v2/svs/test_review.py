@@ -18,7 +18,7 @@ from saq.database.model import SVSRun
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user
-from saq.svs import runs, signatures, windows
+from saq.svs import runs
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
@@ -30,12 +30,8 @@ RULE = "22222222-bbbb-4bbb-8bbb-222222222222"
 
 
 @pytest.fixture(autouse=True)
-def setup(monkeypatch):
-    monkeypatch.setattr(windows, "hunt_info", lambda: {})
-    monkeypatch.setattr(signatures, "_yara_signatures", lambda: {})
+def setup(no_hunts, yara_dir):
     reset_alert_routers()
-    monkeypatch.setattr("saq.database.util.alert.submit_payload_task", lambda alert_uuid: None)
-    monkeypatch.setattr("saq.database.util.alert.submit_index_task", lambda alert_uuid: None)
     add_catalog_test(GUID)
     add_test_host("win10-01")
     yield

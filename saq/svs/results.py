@@ -8,10 +8,16 @@ Each signature that fired is, in this order of precedence:
 - rejected: decided, for the run's platform, not to be what the test is about;
 - candidate: nobody has decided about it yet.
 
+A signature that fired only in the test's cleanup (docs/SVS_RUNS.md, *Cleanup*) is cleanup, unless
+it is expected, when it is missing: it is neither a hit nor a candidate.
+
 Each expected signature that did not fire (and is not ignored) is missing, or possibly suppressed
-when it is a hunt with a suppression period and the hunt alerted within that period before the
-run's window closed, on an alert not attributed to the run [ART-8]. For a hunt that groups or
-deduplicates its alerts that can't be told for certain, and the row says so.
+when it is a hunt with a suppression period and [ART-8]:
+- it has group_by, and the hunter recorded that it dropped a match for its suppression during the
+  run, on one of the run's test hosts (svs_suppressed_matches);
+- otherwise, the hunt alerted within that period before the run's window closed, on an alert not
+  attributed to the run. For a hunt that deduplicates its alerts that can't be told for certain,
+  and the row says so.
 
 The result is computed when the run ends, and again by the timers whenever it is stale
 (saq/svs/result_state.py). Each computation runs in a transaction of its own and clears the stale
@@ -24,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import Integer, case, cast, func, select, update
+from sqlalchemy import Integer, and_, case, cast, func, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.database.model import (
@@ -36,6 +42,7 @@ from saq.database.model import (
     SVSRun,
     SVSRunResult,
     SVSRunResultState,
+    SVSSuppressedMatch,
 )
 from saq.database.private_session import private_transaction
 from saq.error.reporting import log_loop_exception
@@ -86,6 +93,8 @@ class Fired:
     alert_count: int
     late_only: bool
     context_only: bool
+    # every attribution of it is the test's cleanup's: it neither hits nor is a candidate
+    cleanup: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,19 +142,35 @@ class ComputedResult:
 # reading
 #
 
+def cleanup_condition():
+    """An attribution of its run's cleanup: its event time is at or after the run's cleanup_at
+    (docs/SVS_RUNS.md, *Cleanup*). Needs svs_runs joined."""
+    return and_(SVSRun.cleanup_at.is_not(None), SVSAttribution.event_time.is_not(None),
+                SVSAttribution.event_time >= SVSRun.cleanup_at)
+
+
 def fired_signatures(session, run_id: int) -> dict[str, Fired]:
-    """The signatures the run's attributions that hold carry, but those a result never counts."""
+    """The signatures the run's attributions that hold carry, but those a result never counts. A
+    signature the test fired outside its cleanup is counted by those attributions alone."""
+    is_cleanup = case((cleanup_condition(), 1), else_=0)
     statement = (
         select(SVSAttribution.signature_uuid,
+               is_cleanup,
                func.max(SVSAttribution.signature_family),
                func.count(SVSAttribution.alert_uuid.distinct()),
                func.min(cast(SVSAttribution.late, Integer)),
                func.min(case((SVSAttribution.confidence == AttributionConfidence.CONTEXT.value, 1), else_=0)))
+        .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
         .where(SVSAttribution.run_id == run_id, SVSAttribution.removed_at.is_(None),
                SVSAttribution.signature_uuid != "", SVSAttribution.signature_uuid.not_in(UNTRACKED_SIGNATURES))
-        .group_by(SVSAttribution.signature_uuid))
-    return {uuid: Fired(uuid, family, int(alerts), bool(late_only), bool(context_only))
-            for uuid, family, alerts, late_only, context_only in session.execute(statement)}
+        .group_by(SVSAttribution.signature_uuid, is_cleanup))
+    result: dict[str, Fired] = {}
+    # the cleanup's group (1) after the test's own (0), which it never replaces
+    for uuid, cleanup, family, alerts, late_only, context_only in sorted(
+            session.execute(statement), key=lambda row: (row[0], row[1])):
+        if uuid not in result:
+            result[uuid] = Fired(uuid, family, int(alerts), bool(late_only), bool(context_only), bool(cleanup))
+    return result
 
 
 def test_decisions(session, test_guid: str, platform: str) -> Decisions:
@@ -184,13 +209,22 @@ def suppressing_alert(session, run: SVSRun, hunt: HuntInfo, now: datetime) -> Op
         .limit(1)).scalar()
 
 
+def suppressed_hunts(session, run_id: int) -> set[str]:
+    """The hunts with group_by that dropped a match for their suppression during the run, on one
+    of its test hosts (saq.svs.attribution.record_suppressed_matches)."""
+    return set(session.execute(
+        select(SVSSuppressedMatch.hunt_uuid).where(SVSSuppressedMatch.run_id == run_id)).scalars())
+
+
 #
 # computing
 #
 
 def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
           known: dict[str, SVSRunResult], now: datetime) -> list[ResultRow]:
-    missing = [uuid for uuid in decisions.expected if uuid not in fired and uuid not in decisions.ignored]
+    # what fired only in the test's cleanup is not what the test fires
+    missing = [uuid for uuid in decisions.expected
+               if (uuid not in fired or fired[uuid].cleanup) and uuid not in decisions.ignored]
     info = describe_signatures(set(fired) | set(missing))
     hunts = windows.hunt_info() if missing else {}
 
@@ -208,7 +242,11 @@ def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
 
     rows = []
     for uuid, signature in sorted(fired.items()):
-        if uuid in decisions.ignored:
+        if signature.cleanup and uuid in missing:
+            continue
+        if signature.cleanup:
+            status = ResultStatus.CLEANUP
+        elif uuid in decisions.ignored:
             status = ResultStatus.IGNORED
         elif uuid in decisions.expected:
             status = ResultStatus.HIT
@@ -219,8 +257,19 @@ def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
         rows.append(ResultRow(uuid, status, alert_count=signature.alert_count, late_only=signature.late_only,
                               context_only=signature.context_only, **described(uuid, signature.family)))
 
+    suppressed = suppressed_hunts(session, run.id) if any(
+        uuid in hunts and hunts[uuid].per_group for uuid in missing) else set()
     for uuid in sorted(missing):
         hunt = hunts.get(uuid)
+        if hunt is not None and hunt.per_group and hunt.suppression is not None:
+            # the hunter's record says it was suppressed but not by which alert, and the hunt's latest
+            # alert may be another group's, so none is named
+            if uuid in suppressed:
+                rows.append(ResultRow(uuid, ResultStatus.POSSIBLY_SUPPRESSED, **described(uuid)))
+            else:
+                rows.append(ResultRow(uuid, ResultStatus.MISSING, **described(uuid)))
+            continue
+
         alert_uuid = suppressing_alert(session, run, hunt, now) if hunt is not None else None
         if alert_uuid is not None:
             rows.append(ResultRow(uuid, ResultStatus.POSSIBLY_SUPPRESSED, suppressing_alert_uuid=alert_uuid,
@@ -314,7 +363,8 @@ def _log(fields: dict, result: ComputedResult) -> None:
     for row, previous in result.changed:
         if row.status in MISSING_STATUSES and previous not in MISSING_STATUSES:
             logging.info("svs run %s is missing expected signature %s (%s)%s", fields["svs_run"], row.signature_uuid,
-                         row.name or "unknown", ", possibly suppressed" if row.suppressing_alert_uuid else "",
+                         row.name or "unknown",
+                         ", possibly suppressed" if row.status == ResultStatus.POSSIBLY_SUPPRESSED else "",
                          extra={**fields, "signature_uuid": row.signature_uuid, "signature_family": row.family,
                                 "possibly_suppressed": row.status == ResultStatus.POSSIBLY_SUPPRESSED,
                                 "suppressing_alert_uuid": row.suppressing_alert_uuid,

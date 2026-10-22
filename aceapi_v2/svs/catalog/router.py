@@ -1,5 +1,5 @@
 """Atomic Red Team test catalog router for ACE API v2, at /svs/tests (docs/SVS_RUNS.md,
-docs/SVS_API.md).
+docs/SVS_API.md), and its repositories, at /svs/catalog/repositories.
 
 The tests runs may be registered for, as service_svs reads them from the catalog repositories,
 with each test's state and run history. Read with svs:run_read.
@@ -21,7 +21,7 @@ from aceapi_v2.common.listing import LISTING_MAX_PAGE_SIZE, csv_response, ndjson
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.svs.catalog import service
-from aceapi_v2.svs.catalog.schemas import CatalogTestDetail, CatalogTestPage
+from aceapi_v2.svs.catalog.schemas import CatalogRepository, CatalogTestDetail, CatalogTestPage
 from aceapi_v2.svs.expectations import service as expectations_service
 from aceapi_v2.svs.expectations.schemas import Expectation, ExpectationRequest, TestSettings, TestSettingsRequest
 from aceapi_v2.svs.ignores import service as ignores_service
@@ -32,6 +32,7 @@ from aceapi_v2.sync import run_db_in_thread
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
+repositories_router = APIRouter(dependencies=[Security(get_current_auth)])
 
 ManageAuth = Annotated[ApiAuthResult, Depends(require_permission("svs", "run_manage"))]
 
@@ -145,14 +146,25 @@ async def get_test_settings(
 
 @router.put("/{guid}/settings", response_model=TestSettings)
 async def set_test_settings(guid: str, body: TestSettingsRequest, auth: ManageAuth) -> TestSettings:
-    """Set the observation window of the test's runs registered from now on; 422 outside 1 minute to
-    the configured ceiling."""
+    """Set the settings of the test's runs registered from now on, replacing what was set: the
+    observation window (null for the computed one; 422 outside 1 minute to the configured ceiling)
+    and holds_host."""
     return await run_db_in_thread(expectations_service.set_test_settings, guid, body, auth.auth_user_id,
                                   auth.auth_name)
 
 
 @router.delete("/{guid}/settings", status_code=204)
 async def remove_test_settings(guid: str, auth: ManageAuth) -> Response:
-    """Back to the computed window; 404 when the test has no settings."""
+    """Back to the computed window and holds_host false; 404 when the test has no settings."""
     await run_db_in_thread(expectations_service.remove_test_settings, guid, auth.auth_user_id, auth.auth_name)
     return Response(status_code=204)
+
+
+@repositories_router.get("/repositories", response_model=list[CatalogRepository])
+async def list_repositories(
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "run_read"))],
+) -> list[CatalogRepository]:
+    """Each catalog repository with the commit the catalog reflects, when it was read, its test
+    count and its last error: what `ace svs catalog status` prints. A launcher checks out that
+    commit to run the tests as the catalog has them."""
+    return await run_db_in_thread(service.list_repositories)

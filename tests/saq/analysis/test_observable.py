@@ -3,7 +3,7 @@ import datetime
 import pytest
 
 from saq.configuration import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
+from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
 from saq.observables import create_observable
 from tests.saq.helpers import create_root_analysis
@@ -343,6 +343,31 @@ def test_display_properties_persist_through_serialization():
     # verify custom display persisted
     assert observable.display_type == f"Malicious URL ({F_URL})"
     assert observable.display_value == "Known Phishing Site (http://evil.com/malware.exe)"
+
+@pytest.mark.unit
+def test_file_observable_display_value():
+    root = create_root_analysis()
+    root.initialize_storage()
+    file_path = root.create_file_path("payload.bin")
+    with open(file_path, "wb") as fp:
+        fp.write(b"test")
+
+    observable = root.add_file_observable(file_path)
+    # the value is the sha256, which is not what an analyst should read
+    assert observable.display_value == observable.file_path == "payload.bin"
+
+    observable.display_value = "decoded payload"
+    assert observable.display_value == "decoded payload (payload.bin)"
+    assert observable.value == observable.sha256_hash
+
+    root.save()
+    root = create_root_analysis()
+    root.load()
+    observable = root.get_observable_by_type(F_FILE)
+    assert observable.display_value == "decoded payload (payload.bin)"
+
+    observable.display_value = None
+    assert observable.display_value == "payload.bin"
 
 @pytest.mark.unit
 def test_display_properties_reset_to_none():

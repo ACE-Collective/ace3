@@ -5,6 +5,7 @@ import pytest
 
 from saq.collectors.hunter.correlation.registry import clear_query_sources
 from saq.collectors.hunter.correlation.sources.splunk import SplunkQuerySource
+from saq.configuration.config import get_splunk_config
 
 
 @pytest.fixture(autouse=True)
@@ -137,29 +138,26 @@ class TestSplunkSourceTimespecFormatting:
     analysts can paste them back into the data source. For Splunk that means
     `earliest=MM/DD/YYYY:HH:MM:SS latest=…` rendered in the configured TZ."""
 
-    def test_format_timespec_uses_configured_timezone(self):
+    def test_format_timespec_uses_configured_timezone(self, monkeypatch):
         # UTC 12:26-12:31 → EDT (UTC-4) 08:26-08:31 on 2026-05-18
         start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
         end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
-        mock_config = MagicMock(timezone="America/New_York")
-        with patch(
-            "saq.collectors.hunter.correlation.sources.splunk.get_splunk_config",
-            return_value=mock_config,
-        ):
-            source = SplunkQuerySource("default")
-            assert source.format_timespec_for_display(start, end) == (
-                "earliest=05/18/2026:08:26:32 latest=05/18/2026:08:31:32"
-            )
+        monkeypatch.setattr(get_splunk_config("default"), "timezone", "America/New_York")
+        source = SplunkQuerySource("default")
+        assert source.format_timespec_for_display(start, end) == (
+            "earliest=05/18/2026:08:26:32 latest=05/18/2026:08:31:32"
+        )
 
-    def test_format_timespec_in_utc_config(self):
+    def test_format_timespec_in_utc_config(self, monkeypatch):
         start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
         end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
-        mock_config = MagicMock(timezone="UTC")
-        with patch(
-            "saq.collectors.hunter.correlation.sources.splunk.get_splunk_config",
-            return_value=mock_config,
-        ):
-            source = SplunkQuerySource("utc_splunk")
-            assert source.format_timespec_for_display(start, end) == (
-                "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
-            )
+        monkeypatch.setattr(get_splunk_config("test_api"), "timezone", "UTC")
+        source = SplunkQuerySource("test_api")
+        assert source.format_timespec_for_display(start, end) == (
+            "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
+        )
+
+    def test_format_timespec_unknown_config_raises(self):
+        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
+        with pytest.raises(ValueError, match="splunk config for no_such_splunk not found"):
+            SplunkQuerySource("no_such_splunk").format_timespec_for_display(start, start)

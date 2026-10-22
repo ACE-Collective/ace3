@@ -165,6 +165,12 @@ def test_is_nt_path(path: str, expected: bool):
     (r'/some/path/test.txt', '_some_path_test.txt'),
     (r'//////test.txt', '_test.txt'),
     (r'~john/test', '_john_test'),
+    ('.', '_'),
+    ('..', '_'),
+    ('...', '...'),
+    ('a\0b', 'a_b'),
+    ('', ''),
+    ('Quarterly Report é.pdf', 'Quarterly Report é.pdf'),
 ])
 @pytest.mark.unit
 def test_safe_file_name(input: str, expected: str):
@@ -178,11 +184,11 @@ def test_safe_file_name(input: str, expected: str):
 def test_extract_windows_filepaths(input: str, expected: str):
     extract_windows_filepaths(input) == expected
 
-def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None):
+def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None, delayed_analysis_interface=None):
     from saq.modules.state_repository import StateRepositoryFactory
     root_analysis = root or RootAnalysis()
     return AnalysisModuleContext(
-        delayed_analysis_interface=None,
+        delayed_analysis_interface=delayed_analysis_interface,
         configuration_manager=configuration_manager or ConfigurationManager(config=EngineConfiguration()),
         root=RootAnalysisAdapter(root_analysis),
         filesystem=FileSystemAdapter(),

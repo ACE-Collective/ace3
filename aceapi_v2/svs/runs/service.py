@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
-from sqlalchemy.orm import aliased, selectinload
+from sqlalchemy.orm import aliased, selectinload, undefer
 
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
@@ -34,6 +34,7 @@ from aceapi_v2.svs.runs.schemas import (
     AssociationRequest,
     AssociationResult,
     Attribution,
+    HostHolder,
     BulkRunRequest,
     BulkRunResult,
     HistoryRun,
@@ -55,6 +56,8 @@ from aceapi_v2.svs.runs.schemas import (
     RunResult,
     RunRow,
     RunTarget,
+    RunValidation,
+    RunValidationTarget,
     SignatureHistory,
     SuppressionShare,
 )
@@ -76,6 +79,7 @@ from saq.svs import review, run_comments, runs
 from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
+from saq.svs.results import cleanup_condition
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.run_summary import RunSummary, batch_result_summaries, run_summaries, suppression_share
 from saq.svs.samples import to_utc_naive
@@ -94,8 +98,18 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
         run_id=run.uuid, marker=run.marker, state=run.state, test_guid=run.test_guid, platform=run.platform,
         targets=[_target(t) for t in run.targets],
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        created_at=run.created_at, started_at=run.started_at, observation_ends_at=run.observation_ends_at,
+        holds_host=run.holds_host, created_at=run.created_at, started_at=run.started_at,
+        cleanup_at=run.cleanup_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason)
+
+
+def _holder(holder: runs.HostHolder) -> HostHolder:
+    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until)
+
+
+def _host_busy(e: runs.HostBusy) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "message": str(e), "holders": [_holder(holder).model_dump(mode="json") for holder in e.holders]})
 
 
 def _call(fn, *args, **kwargs) -> RunLifecycle:
@@ -105,19 +119,49 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
         raise HTTPException(status_code=404, detail=str(e))
     except runs.RunStateConflict as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
+    except runs.HostBusy as e:
+        raise _host_busy(e)
 
 
-def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
-    registration = runs.Registration(
+def _registration(body: RunRegistrationRequest) -> runs.Registration:
+    return runs.Registration(
         test_guid=body.test_guid,
         targets=[runs.TargetSpec(hostname=t.hostname, username=t.username) for t in body.targets],
         launcher=body.launcher, batch_id=body.batch_id, extra=body.extra)
+
+
+def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
     try:
-        return _lifecycle(runs.register(registration, caller))
+        return _lifecycle(runs.register(_registration(body), caller))
     except runs.InvalidRegistration as e:
         raise HTTPException(status_code=422, detail=str(e))
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
+    except runs.HostBusy as e:
+        raise _host_busy(e)
+
+
+def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
+    decision = runs.validate(_registration(body), caller)
+    targets = [
+        RunValidationTarget(hostname=target.hostname, username=target.username, accepted=match.matched,
+                            reason=match.reason,
+                            test_host=match.host.hostname if match.host is not None else None,
+                            platform=match.host.platform if match.host is not None else None,
+                            held_by=[_holder(holder) for holder in decision.busy
+                                     if match.host is not None and holder.host == match.host.hostname])
+        for target, match in decision.matches]
+    if decision.invalid:
+        return RunValidation(decision="invalid", status_code=422, message=decision.invalid, targets=targets)
+    if decision.refused:
+        return RunValidation(decision="refused", status_code=403, targets=targets)
+    if decision.busy:
+        return RunValidation(decision="host_busy", status_code=409, targets=targets, platform=decision.platform)
+    return RunValidation(
+        decision="accepted", status_code=201, targets=targets, platform=decision.platform,
+        observation_seconds=int(decision.observation.total_seconds()),
+        observation_source=decision.observation_source,
+        attribution_seconds=int(decision.attribution.total_seconds()), holds_host=decision.holds_host)
 
 
 def start(run_id: str, caller: Caller) -> RunLifecycle:
@@ -125,7 +169,11 @@ def start(run_id: str, caller: Caller) -> RunLifecycle:
 
 
 def executed(run_id: str, body: RunExecutedRequest, caller: Caller) -> RunLifecycle:
-    return _call(runs.executed, run_id, caller, body.exit_code, body.error)
+    return _call(runs.executed, run_id, caller, body.exit_code, body.error, output=body.output)
+
+
+def cleanup(run_id: str, caller: Caller) -> RunLifecycle:
+    return _call(runs.cleanup, run_id, caller)
 
 
 def cancel(run_id: str, caller: Caller) -> RunLifecycle:
@@ -185,7 +233,8 @@ def _row_values(row) -> dict:
         run_id=run.uuid, state=run.state, test_guid=run.test_guid, test_name=test_name, technique=technique,
         technique_name=technique_name, platform=run.platform, marker=run.marker, targets=[_target(t) for t in run.targets],
         launcher=run.launcher, batch_id=run.batch_id, created_at=run.created_at, started_at=run.started_at,
-        executed_at=run.executed_at, exit_code=run.exit_code, ended_at=run.ended_at, canceled_at=run.canceled_at,
+        executed_at=run.executed_at, exit_code=run.exit_code, cleanup_at=run.cleanup_at, ended_at=run.ended_at,
+        canceled_at=run.canceled_at,
         closed_at=run.closed_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason,
         owner=owner, reviewer=reviewer, reviewed_at=run.reviewed_at, changed_since_review=run.changed_since_review,
@@ -197,7 +246,8 @@ def _summary_values(summary: RunSummary) -> dict:
         result_hit=summary.hit, result_expected=summary.expected,
         result_missing=summary.missing + summary.possibly_suppressed,
         result_possibly_suppressed=summary.possibly_suppressed, result_candidate=summary.candidate,
-        result_rejected=summary.rejected, result_ignored=summary.ignored, result_stale=summary.result_stale,
+        result_rejected=summary.rejected, result_ignored=summary.ignored, result_cleanup=summary.cleanup,
+        result_stale=summary.result_stale,
         reviewed_hit=summary.reviewed_hit, reviewed_expected=summary.reviewed_expected,
         reviewed_missing=summary.reviewed_missing + summary.reviewed_possibly_suppressed,
         reviewed_possibly_suppressed=summary.reviewed_possibly_suppressed,
@@ -376,7 +426,8 @@ def run_batches_to_csv(rows: list[RunBatch], *, header: bool) -> str:
 #
 
 def get_detail(run_id: str) -> RunDetail:
-    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))).one_or_none()
+    row = get_db().execute(_runs_statement().where(SVSRun.uuid == _validate_run_id(run_id))
+                           .options(undefer(SVSRun.launcher_output))).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
@@ -390,9 +441,10 @@ def get_detail(run_id: str) -> RunDetail:
                                   context_alerts=found.get("context_alerts", []))
     return RunDetail(
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
+        launcher_output=run.launcher_output,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
+        holds_host=run.holds_host, registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
         log_search_url=log_search_url(run))
 
 
@@ -612,7 +664,8 @@ def fetch_result_feed_page(feed: ResultFeed, cursor: str | None, limit: int) -> 
 
 def _attributions_statement() -> Select:
     actor, remover, keeper = aliased(User), aliased(User), aliased(User)
-    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username)
+    return (select(SVSAttribution, SVSRun.uuid, actor.username, remover.username, keeper.username,
+                   cleanup_condition().label("cleanup"))
             .join(SVSRun, SVSRun.id == SVSAttribution.run_id)
             .outerjoin(actor, actor.id == SVSAttribution.actor_user_id)
             .outerjoin(remover, remover.id == SVSAttribution.removed_by_user_id)
@@ -620,11 +673,12 @@ def _attributions_statement() -> Select:
 
 
 def _attribution(row) -> Attribution:
-    attribution, run_uuid, actor_user, removed_by_user, kept_by_user = row
+    attribution, run_uuid, actor_user, removed_by_user, kept_by_user, cleanup = row
     return Attribution(
         id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
         signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
-        confidence=attribution.confidence, late=attribution.late, source=attribution.source,
+        confidence=attribution.confidence, late=attribution.late, event_time=attribution.event_time,
+        cleanup=bool(cleanup), source=attribution.source,
         scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
         created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
         removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,
@@ -677,7 +731,8 @@ def _run_alert(alert_uuid: str, alert, attributions: list[Attribution], detectio
                                   signature_family=a.signature_family, attribution=a) for a in by_hash.values())
     return RunAlert(
         alert_uuid=alert_uuid, alert=alert, holds=bool(holding), confidence=confidence,
-        late=any(a.late for a in holding), manual=any(a.source == "manual" for a in holding),
+        late=any(a.late for a in holding), cleanup=bool(holding) and all(a.cleanup for a in holding),
+        manual=any(a.source == "manual" for a in holding),
         kept=any(a.kept_at is not None for a in context),
         undecided_context=any(a.kept_at is None for a in context), detections=rows)
 

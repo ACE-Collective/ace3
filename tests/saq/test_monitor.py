@@ -337,7 +337,7 @@ def test_glob_pattern_matching(capsys):
 
 
 @pytest.mark.unit
-def test_multiple_pattern_conflict_logs_warning(capsys):
+def test_multiple_pattern_conflict_logs_warning(caplog):
     """when multiple patterns match a monitor path, a warning is logged and no definition is applied"""
     from saq.monitor import Monitor
     import logging
@@ -350,13 +350,13 @@ def test_multiple_pattern_conflict_logs_warning(capsys):
 
     monitor = Monitor(path="database.pool.available_count", data_type=int, description="test")
 
-    with patch("saq.monitor.logging") as mock_logging:
+    with caplog.at_level(logging.WARNING):
         result = emit_monitor(monitor, 5)
-        # no definition applied, so emission goes through
-        assert result is True
-        mock_logging.warning.assert_called_once()
-        warning_args = mock_logging.warning.call_args[0]
-        assert "database.pool.available_count" in warning_args[1]
+    # no definition applied, so emission goes through
+    assert result is True
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage().startswith("monitor path database.pool.available_count matched multiple definition patterns")
 
 
 @pytest.mark.unit

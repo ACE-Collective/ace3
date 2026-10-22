@@ -1,12 +1,30 @@
 """Tests for the aceapi_v2 users/roles management service."""
 
+import logging
+
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import AuthGroupUser, AuthUserPermission, User
+from saq.database.model import (
+    AuthApiKeyPermission,
+    AuthGroupUser,
+    AuthUserPermission,
+    User,
+)
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import (
+    API_AUTH_TYPE_CONFIG,
+    API_AUTH_TYPE_USER,
+    API_CREDENTIAL_CONFIG_KEY,
+    API_CREDENTIAL_SESSION,
+    API_CREDENTIAL_USER_KEY,
+)
+from aceapi_v2.database import create_engine_for
 from aceapi_v2.users import service
-from aceapi_v2.users.schemas import PermissionInput, UserUpdate
+from aceapi_v2.users.schemas import ApiKeyScope, PermissionInput, UserUpdate
+from tests.aceapi_v2.conftest import add_analyst_group, key_scope
 
 pytestmark = pytest.mark.integration
 
@@ -436,3 +454,325 @@ class TestManagementViewAndCatalog:
         assert d.username == "svc_detail_user"
         assert {(p.major, p.minor) for p in d.permissions} == {("alert", "read")}
         assert group.id in {g.id for g in d.groups}
+
+
+async def _make_analyst(session: AsyncSession, username: str) -> User:
+    """A user whose only grants come from an analyst group."""
+    user = await _make_user(session, username)
+    await add_analyst_group(session, user)
+    return user
+
+
+def _session_of(user: User) -> ApiAuthResult:
+    """The credential a user's GUI session authenticates as."""
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_USER, auth_name=user.username, auth_user_id=user.id, credential=API_CREDENTIAL_SESSION)
+
+
+def _assert_foreign_key_warned(caplog, action: str, key_id: int, key_owner_id: int, actor_id: int) -> None:
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and f"tried to {action} api key" in r.getMessage()]
+    assert len(warned) == 1
+    assert (warned[0].api_key_id, warned[0].user_id, warned[0].actor_id) == (key_id, key_owner_id, actor_id)
+
+
+async def _stored_scope(session: AsyncSession, key_id: int) -> list[tuple[str, str]]:
+    rows = (await session.execute(
+        select(AuthApiKeyPermission).where(AuthApiKeyPermission.api_key_id == key_id)
+    )).scalars().all()
+    return sorted((row.major, row.minor) for row in rows)
+
+
+class TestSelfServiceApiKeys:
+    """A user with user:self managing their own keys: scoped only, and only to what they hold."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", ["signature:*", "signature:read", "ai:fake"])
+    async def test_create_within_grants(self, session: AsyncSession, pattern):
+        # ai:fake is derived from the unittest config's ai_query_backend_fake, not the static catalog
+        user = await _make_analyst(session, "svc_self_ok")
+        key, plaintext = await service.create_user_api_key(
+            session, user.id, name="mine", inherit=False, scope=key_scope(pattern),
+            actor=_session_of(user), self_service=True,
+        )
+        assert plaintext
+        assert key.created_by == user.id and key.inherit_user_scope is False
+        assert await _stored_scope(session, key.id) == [tuple(pattern.split(":"))]
+
+    @pytest.mark.asyncio
+    async def test_create_refuses_inherit(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_inherit")
+        with pytest.raises(service.InvalidPermissionError, match="administrator"):
+            await service.create_user_api_key(
+                session, user.id, name="mine", inherit=True, scope=[], self_service=True)
+        assert await service.list_user_api_keys(session, user.id) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern, unheld", [
+        ("*:*", "user:write"),
+        ("user:*", "user:write"),
+        ("*:read", "secret:read"),
+        ("cli:execute", "cli:execute"),
+    ])
+    async def test_create_refuses_a_pattern_covering_what_the_user_lacks(
+        self, session: AsyncSession, caplog, pattern, unheld
+    ):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_unheld")
+        with pytest.raises(service.InvalidPermissionError) as error:
+            await service.create_user_api_key(
+                session, user.id, name="too wide", inherit=False, scope=key_scope("signature:read", pattern),
+                self_service=True,
+            )
+        assert f"{pattern} covers" in str(error.value) and unheld in str(error.value)
+        assert "signature:read" not in str(error.value)  # only the offending pattern is reported
+        assert await service.list_user_api_keys(session, user.id) == []
+
+        refusals = [r for r in caplog.records if r.levelno == logging.WARNING and "cannot give api key" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].user_id == user.id and refusals[0].api_key_name == "too wide"
+        assert refusals[0].api_key_id is None  # not minted
+
+    @pytest.mark.asyncio
+    async def test_a_refused_edit_names_the_key(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_unheld_edit")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="narrow", inherit=False, scope=key_scope("alert:read"), self_service=True)
+
+        with pytest.raises(service.InvalidPermissionError):
+            await service.update_user_api_key(
+                session, key.id, name="wide", inherit=False, scope=key_scope("*:*"), owner_id=user.id)
+
+        refusals = [r for r in caplog.records if r.levelno == logging.WARNING and "cannot give api key" in r.getMessage()]
+        assert len(refusals) == 1
+        assert refusals[0].api_key_id == key.id and refusals[0].api_key_name == "wide"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", ["signature:wrte", "Signature:read", "nosuch:*"])
+    async def test_create_refuses_a_pattern_matching_no_permission(self, session: AsyncSession, pattern):
+        user = await _make_analyst(session, "svc_self_nothing")
+        with pytest.raises(service.InvalidPermissionError, match="matches no permission ACE enforces"):
+            await service.create_user_api_key(
+                session, user.id, name="typo", inherit=False, scope=key_scope(pattern), self_service=True)
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_grants_can_mint_nothing(self, session: AsyncSession):
+        user = await _make_user(session, "svc_self_nogrants")
+        with pytest.raises(service.InvalidPermissionError, match="which you do not hold"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=key_scope("alert:read"), self_service=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
+    async def test_a_repeated_pattern_is_stored_once(self, session: AsyncSession, self_service):
+        user = await _make_analyst(session, "svc_self_dupe")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="k", inherit=False, scope=key_scope("signature:read", "signature:read"),
+            self_service=self_service,
+        )
+        assert await _stored_scope(session, key.id) == [("signature", "read")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
+    @pytest.mark.parametrize("pattern", ["user:self", "User:Self"])
+    async def test_user_self_is_never_put_on_a_key(self, session: AsyncSession, self_service, pattern):
+        """No API key can use it (check_permission refuses), so an entry naming it would only mislead."""
+        user = await _make_analyst(session, "svc_self_on_key")
+        with pytest.raises(service.InvalidPermissionError, match="never given to an API key"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=key_scope("alert:read", pattern),
+                self_service=self_service,
+            )
+
+        key, _ = await service.create_user_api_key(session, user.id, name="k", inherit=False, scope=key_scope("alert:read"))
+        with pytest.raises(service.InvalidPermissionError, match="never given to an API key"):
+            await service.update_user_api_key(
+                session, key.id, name="k", inherit=False, scope=key_scope(pattern),
+                owner_id=user.id if self_service else None,
+            )
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("self_service", [True, False])
+    async def test_patterns_differing_only_in_case_are_refused(self, session: AsyncSession, self_service):
+        """The unique index is case-insensitive, so storing both would fail the INSERT (a 500)."""
+        user = await _make_analyst(session, "svc_self_case")
+        with pytest.raises(service.InvalidPermissionError, match="differ only in case"):
+            await service.create_user_api_key(
+                session, user.id, name="k", inherit=False, scope=key_scope("signature:read", "Signature:Read"),
+                self_service=self_service,
+            )
+
+    @pytest.mark.asyncio
+    async def test_self_update_holds_the_whole_scope_to_the_rules(self, session: AsyncSession):
+        """An admin may have put a pattern on the key that the user could not; the user's own edit
+        must leave a scope they could have minted, and a refused edit changes nothing."""
+        user = await _make_analyst(session, "svc_self_update")
+        key, _ = await service.create_user_api_key(
+            session, user.id, name="from admin", inherit=False, scope=key_scope("*:*"))
+
+        with pytest.raises(service.InvalidPermissionError, match=r"\*:\* covers"):
+            await service.update_user_api_key(
+                session, key.id, name="renamed", inherit=False, scope=key_scope("*:*", "alert:read"),
+                owner_id=user.id, actor=_session_of(user),
+            )
+        await session.refresh(key)
+        assert key.name == "from admin"
+        assert await _stored_scope(session, key.id) == [("*", "*")]
+
+        updated = await service.update_user_api_key(
+            session, key.id, name="renamed", inherit=False, scope=key_scope("signature:*"),
+            owner_id=user.id, actor=_session_of(user),
+        )
+        assert updated is not None and updated.name == "renamed"
+        assert await _stored_scope(session, key.id) == [("signature", "*")]
+
+    @pytest.mark.asyncio
+    async def test_self_update_turns_an_inherit_key_into_a_scoped_one(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_convert")
+        key, _ = await service.create_user_api_key(session, user.id, name="full", inherit=True, scope=[])
+
+        with pytest.raises(service.InvalidPermissionError, match="administrator"):
+            await service.update_user_api_key(
+                session, key.id, name="full", inherit=True, scope=[], owner_id=user.id)
+
+        updated = await service.update_user_api_key(
+            session, key.id, name="narrow", inherit=False, scope=key_scope("alert:read"), owner_id=user.id)
+        assert updated.inherit_user_scope is False
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+
+    @pytest.mark.asyncio
+    async def test_self_update_of_another_users_key_is_not_found(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_update_me")
+        other = await _make_analyst(session, "svc_self_update_other")
+        key, _ = await service.create_user_api_key(
+            session, other.id, name="theirs", inherit=False, scope=key_scope("alert:read"))
+
+        assert await service.update_user_api_key(
+            session, key.id, name="mine now", inherit=False, scope=key_scope("signature:read"), owner_id=user.id,
+        ) is None
+        await session.refresh(key)
+        assert key.name == "theirs"
+        assert await _stored_scope(session, key.id) == [("alert", "read")]
+        _assert_foreign_key_warned(caplog, "edit", key.id, other.id, user.id)
+
+        # a key id that doesn't exist is only missing: nobody else's key was tried
+        caplog.clear()
+        assert await service.update_user_api_key(
+            session, 999999, name="k", inherit=False, scope=key_scope("alert:read"), owner_id=user.id) is None
+        assert not [r for r in caplog.records if "tried to" in r.getMessage()]
+
+    @pytest.mark.asyncio
+    async def test_self_revoke_only_reaches_the_users_own_keys(self, session: AsyncSession, caplog):
+        caplog.set_level(logging.WARNING)
+        user = await _make_analyst(session, "svc_self_revoke_me")
+        other = await _make_analyst(session, "svc_self_revoke_other")
+        mine, _ = await service.create_user_api_key(session, user.id, name="mine", inherit=False, scope=key_scope("alert:read"))
+        theirs, _ = await service.create_user_api_key(session, other.id, name="theirs", inherit=False, scope=key_scope("alert:read"))
+
+        assert await service.revoke_user_api_key(session, theirs.id, owner_id=user.id) is False
+        assert [k.id for k in await service.list_user_api_keys(session, other.id)] == [theirs.id]
+        _assert_foreign_key_warned(caplog, "revoke", theirs.id, other.id, user.id)
+
+        caplog.clear()
+        assert await service.revoke_user_api_key(session, 999999, owner_id=user.id) is False
+        assert not [r for r in caplog.records if "tried to" in r.getMessage()]
+
+        assert await service.revoke_user_api_key(session, mine.id, owner_id=user.id) is True
+        assert await service.list_user_api_keys(session, user.id) == []
+
+    @pytest.mark.asyncio
+    async def test_key_changes_are_audited_without_the_secret(self, session: AsyncSession, caplog):
+        """Each record names the key's owner and, separately, who changed it: the account and the
+        API key it used, or a config key, which has no account."""
+        caplog.set_level(logging.INFO)
+        owner = await _make_analyst(session, "svc_audit_owner")
+        admin = await _make_user(session, "svc_audit_admin")
+        by_admin_key = ApiAuthResult(
+            auth_type=API_AUTH_TYPE_USER, auth_name=admin.username, auth_user_id=admin.id, key_id=99, key_name="ops",
+            credential=API_CREDENTIAL_USER_KEY)
+        by_config_key = ApiAuthResult(
+            auth_type=API_AUTH_TYPE_CONFIG, auth_name="automation", key_name="automation",
+            credential=API_CREDENTIAL_CONFIG_KEY)
+
+        key, plaintext = await service.create_user_api_key(
+            session, owner.id, name="audited", inherit=False, scope=key_scope("alert:read"), actor=by_admin_key)
+        assert key.created_by == admin.id
+        await service.update_user_api_key(
+            session, key.id, name="audited", inherit=False, scope=key_scope("signature:read"), actor=by_config_key)
+        await service.revoke_user_api_key(session, key.id, actor=by_admin_key)
+
+        audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key.id]
+        assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
+        assert all(r.levelno == logging.INFO and r.user_id == owner.id for r in audits)
+        assert [(r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+            ("svc_audit_admin", admin.id, 99), ("automation", None, None), ("svc_audit_admin", admin.id, 99)]
+        assert audits[1].getMessage().startswith("AUDIT: user automation updated")
+        assert "alert:read" in audits[0].getMessage() and "signature:read" in audits[1].getMessage()
+        assert plaintext not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_an_edit_waits_for_a_concurrent_edit_of_the_same_key(self, monkeypatch):
+        """The owner's edit has read the key when an admin's edit of it arrives. The admin's must
+        wait for the owner's to commit: if both replace the scope the owner read, the key ends up
+        with both scopes, or the second insert fails u_api_key_perm (a 500).
+
+        Real transactions on their own connections, so neither sees the other's uncommitted rows;
+        the integration reset clears what they commit.
+        """
+        engine = create_engine_for()
+        try:
+            async with AsyncSession(engine, expire_on_commit=False) as setup:
+                owner = await _make_analyst(setup, "svc_concurrent_owner")
+                key, _ = await service.create_user_api_key(
+                    setup, owner.id, name="k", inherit=False, scope=key_scope("alert:read"))
+                await setup.commit()
+
+            admin_waited: list[OperationalError] = []
+            check_scope_within_grants = service._check_scope_within_grants
+
+            async def admin_edits_meanwhile(*args, **kwargs):
+                # only the owner's edit gets here, after it has read the key and before it writes
+                async with AsyncSession(engine) as admin:
+                    # 1 second, the minimum: the owner's edit is paused here, so it cannot commit
+                    await admin.execute(text("SET SESSION innodb_lock_wait_timeout = 1"))
+                    try:
+                        await service.update_user_api_key(
+                            admin, key.id, name="k", inherit=False, scope=key_scope("signature:read"))
+                        await admin.commit()
+                    except OperationalError as e:
+                        admin_waited.append(e)
+                await check_scope_within_grants(*args, **kwargs)
+
+            monkeypatch.setattr(service, "_check_scope_within_grants", admin_edits_meanwhile)
+            async with AsyncSession(engine) as owner_session:
+                await service.update_user_api_key(
+                    owner_session, key.id, name="k", inherit=False, scope=key_scope("observable:read"),
+                    owner_id=owner.id)
+                await owner_session.commit()
+
+            assert len(admin_waited) == 1 and admin_waited[0].orig.args[0] == 1205  # lock wait timeout
+            async with AsyncSession(engine) as check:
+                assert await _stored_scope(check, key.id) == [("observable", "read")]
+
+            # and once the owner's edit has committed, the admin's goes through on top of it
+            async with AsyncSession(engine) as admin:
+                await service.update_user_api_key(
+                    admin, key.id, name="k", inherit=False, scope=key_scope("signature:read"))
+                await admin.commit()
+            async with AsyncSession(engine) as check:
+                assert await _stored_scope(check, key.id) == [("signature", "read")]
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_held_catalog_lists_only_what_the_user_holds(self, session: AsyncSession):
+        user = await _make_analyst(session, "svc_self_catalog")
+        held = await service.list_held_catalog(session, user.id)
+        pairs = [(e.major, e.minor) for e in held]
+
+        assert pairs == sorted(pairs)
+        assert {("signature", "read"), ("user", "self"), ("ai", "fake")} <= set(pairs)
+        assert not {("user", "write"), ("cli", "execute"), ("secret", "read")} & set(pairs)
+        assert all(e.description for e in held)

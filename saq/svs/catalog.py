@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import yaml
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 
 from saq.configuration.config import get_config
@@ -36,6 +36,7 @@ from saq.database.pool import get_db
 from saq.git import get_commit_hash
 from saq.svs.attack import normalize_platform
 from saq.util import abs_path
+from saq.util.url import strip_url_credentials
 
 ATOMICS_GLOB = os.path.join("atomics", "T*", "T*.yaml")
 
@@ -373,6 +374,62 @@ def refresh_catalog(*, force: bool = False) -> list[RefreshResult]:
                           extra={"repository": repository}, exc_info=True)
             results.append(RefreshResult(repository=repository, retired=True, error=f"retire failed: {e}"))
     return results
+
+
+@dataclass
+class RepositoryStatus:
+    """A catalog repository as `ace svs catalog status` and GET /api/v2/svs/catalog/repositories
+    show it: every repository in svs.catalog.repositories, and every one that has a row."""
+
+    name: str
+    # it is in svs.catalog.repositories
+    configured: bool
+    # from its git_repo_* section, None without one; git_url never carries credentials
+    git_url: Optional[str]
+    branch: Optional[str]
+    # the commit the catalog holds and when it was read, None until it is first read
+    commit: Optional[str]
+    refreshed_at: Optional[datetime]
+    test_count: int
+    skipped_count: int
+    # tests of the repository removed from the catalog since they were first read
+    removed_count: int
+    # why the last refresh failed, None when it succeeded or the repository is retired
+    error: Optional[str]
+    # taken out of svs.catalog.repositories, so its tests were removed
+    retired: bool
+
+
+def repository_status() -> list[RepositoryStatus]:
+    """Every catalog repository's status, by name."""
+    configured = get_config().svs.catalog.repositories
+    db = get_db()
+    rows = {row.name: row for row in db.query(SVSCatalogRepository)}
+    removed = dict(db.query(SVSCatalogTest.repository, func.count(SVSCatalogTest.id))
+                   .filter(SVSCatalogTest.removed_at.isnot(None)).group_by(SVSCatalogTest.repository))
+
+    result = []
+    for name in sorted(set(configured) | set(rows)):
+        row = rows.get(name)
+        try:
+            repo_config = get_config().get_git_repo_config(name)
+        except ValueError:
+            # no git_repo section: normal for a retired repository, and for a misconfigured one the
+            # refresh already put it in the row's error, which this status shows
+            repo_config = None
+        error = row.error if row is not None else None
+        retired = error == RETIRED_ERROR
+        result.append(RepositoryStatus(
+            name=name, configured=name in configured,
+            git_url=strip_url_credentials(repo_config.git_url) if repo_config is not None else None,
+            branch=repo_config.branch if repo_config is not None else None,
+            commit=row.commit if row is not None else None,
+            refreshed_at=row.refreshed_at if row is not None else None,
+            test_count=row.test_count if row is not None else 0,
+            skipped_count=row.skipped_count if row is not None else 0,
+            removed_count=removed.get(name, 0),
+            error=None if retired else error, retired=retired))
+    return result
 
 
 def supported_platforms(test: SVSCatalogTest) -> list[str]:

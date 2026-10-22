@@ -421,14 +421,16 @@ class HuntManager:
                         # record last_alert_time per-group so each group_by value gets its own
                         # suppression window. dedupe so we only write once per group even if
                         # multiple submissions somehow share a group_value.
+                        # suppression_key is the group_value, keyed by the svs run during a test
+                        # run on a test host (QueryHunt.key_suppression)
                         now = local_time()
                         seen_groups = set()
                         for submission in submissions:
-                            group_value = getattr(submission, "group_value", None)
-                            if group_value is None or group_value in seen_groups:
+                            key = getattr(submission, "suppression_key", None) or getattr(submission, "group_value", None)
+                            if key is None or key in seen_groups:
                                 continue
-                            seen_groups.add(group_value)
-                            hunt.set_last_alert_time(now, group_value)
+                            seen_groups.add(key)
+                            hunt.set_last_alert_time(now, key)
 
                 # explicit maintenance pass: keep last_alert_times bounded for hunts with
                 # high-cardinality group_by (e.g. src_ip). intentionally not folded into the
