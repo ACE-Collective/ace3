@@ -8,9 +8,10 @@ import pytest
 from sqlalchemy import update
 
 from saq.alert_routing import AlertRouter, RouteDecision, RouteStage, register_alert_router
+from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, QUEUE_DEFAULT
+from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, F_TEST, QUEUE_DEFAULT
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
@@ -30,7 +31,7 @@ class StageRouter(AlertRouter):
         self.queue = queue
         self.stage = stage
 
-    def route(self, root, stage):
+    def route(self, root, stage, final):
         if stage != self.stage:
             return None
         return RouteDecision(queue=self.queue, reason="test routing")
@@ -101,7 +102,7 @@ class TestPreInsert:
 
     def test_a_raising_router_never_breaks_the_insert(self, monkeypatch):
         class Broken(AlertRouter):
-            def route(self, root, stage):
+            def route(self, root, stage, final):
                 raise RuntimeError("broken router")
 
         monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
@@ -252,6 +253,63 @@ class TestReconcile:
 
         create_test_orchestrator()._check_disposition(_context(root))
         assert root.queue == "elsewhere"
+
+
+class DelayedAnalysis(Analysis):
+    pass
+
+
+class FinalRouter(AlertRouter):
+    """Records the final flag of every call, and decides nothing."""
+
+    def __init__(self, name: str = "final", priority: int = 100):
+        super().__init__(name=name, priority=priority)
+        self.calls: list[tuple[RouteStage, bool]] = []
+
+    def route(self, root, stage, final):
+        self.calls.append((stage, final))
+        return None
+
+
+class TestFinalPass:
+    """Routers are told the alert's last analysis pass (AlertRouter.route)."""
+
+    @pytest.fixture
+    def router(self) -> FinalRouter:
+        router = FinalRouter()
+        register_alert_router(router)
+        return router
+
+    @pytest.fixture
+    def delayed_root(self, router) -> RootAnalysis:
+        root = _saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION)
+        analysis = DelayedAnalysis()
+        analysis.delayed = True
+        root.add_observable_by_spec(F_TEST, "sandbox").add_analysis(analysis)
+        root.save()
+        ALERT(root)
+        return root
+
+    def test_never_at_insert(self, router):
+        ALERT(_saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION))
+        assert router.calls == [(RouteStage.PRE_INSERT, False)]
+
+    def test_a_pass_with_nothing_delayed_is_final(self, router):
+        root = _saved_root(analysis_mode=ANALYSIS_MODE_CORRELATION)
+        ALERT(root)
+        create_test_orchestrator()._sync_alert_to_database(_context(root))
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, True)
+
+    def test_a_pass_with_delayed_analysis_is_not(self, router, delayed_root):
+        create_test_orchestrator()._sync_alert_to_database(_context(delayed_root))
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, False)
+
+    def test_an_aborted_pass_is_final_although_its_analysis_still_reads_delayed(self, router, delayed_root):
+        context = _context(delayed_root)
+        context.analysis_aborted = True
+        create_test_orchestrator()._sync_alert_to_database(context)
+        assert delayed_root.delayed
+        assert router.calls[-1] == (RouteStage.POST_ANALYSIS, True)
 
 
 class TestEngine:
