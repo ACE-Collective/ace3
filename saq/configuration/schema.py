@@ -270,7 +270,7 @@ class PcapConfig(BaseModel):
     max_table_rows: int = Field(default=500, gt=0, description="most rows kept in each table of the analysis details")
     max_field_packets: int = Field(default=50_000, gt=0, description="DNS, TLS, HTTP, DHCP and NBNS are read from this many packets at the start of the capture (tshark's JSON for them must fit under sandbox.max_output_bytes); endpoints, flows and carved files cover the whole capture")
     max_extracted_files: int = Field(default=100, ge=0, description="most files carved out of one capture (objects and certificates)")
-    max_observables_per_type: int = Field(default=100, ge=0, description="most observables of one type one pcap analysis node adds")
+    max_observables_per_type: int = Field(default=50, ge=0, description="most observables of one type one capture adds, across all its pcap analysis nodes")
     excluded_fqdn_suffixes: list[str] = Field(default_factory=lambda: [".arpa", ".local"], description="names ending in one of these are never added as fqdn observables")
 
 class CorrelationConfig(BaseModel):

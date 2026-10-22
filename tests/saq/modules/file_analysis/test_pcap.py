@@ -48,7 +48,7 @@ from saq.modules.adapter import AnalysisModuleAdapter
 from saq.mime_extractor import parse_mime
 from saq.modules.file_analysis.archive import ArchiveAnalysis
 from saq.modules.file_analysis.mime import HiddenMIMEAnalysis, HiddenMIMEAnalyzer
-from saq.modules.x509 import X509Analysis
+from saq.modules.x509 import MAX_NO_CRAWL_SAN_FQDNS, X509Analysis
 from saq.modules.file_analysis import pcap
 from saq.modules.file_analysis.is_file_type import is_pcap_file
 from saq.modules.file_analysis.pcap import (
@@ -1336,7 +1336,8 @@ def test_carved_certificates_are_marked_no_crawl():
 @pytest.mark.parametrize("suppress", [False, True])
 def test_x509_analyzer_honors_no_crawl(root_analysis, tmp_path, suppress):
     cert_path = tmp_path / "leaf.der"
-    cert_path.write_bytes(_certificate_der("leaf.example.com", "Example CA", ["alt.example.com"]))
+    sans = [f"alt{i}.example.com" for i in range(15)]
+    cert_path.write_bytes(_certificate_der("leaf.example.com", "Example CA", sans))
 
     root_analysis.analysis_mode = "test_groups"
     cert = root_analysis.add_file_observable(str(cert_path))
@@ -1353,9 +1354,11 @@ def test_x509_analyzer_honors_no_crawl(root_analysis, tmp_path, suppress):
     root = load_root(get_storage_dir(root_analysis.uuid))
     analysis = root.get_observable(cert.uuid).get_and_load_analysis(X509Analysis)
     assert analysis is not None
-    # the names are always extracted
+    # the names are always extracted; a certificate only observed adds the first few as observables
     assert "leaf.example.com" in _values(analysis, F_FQDN)
-    assert "alt.example.com" in _values(analysis, F_FQDN)
+    assert analysis.san_dns_names == sans
+    expected = sans[:MAX_NO_CRAWL_SAN_FQDNS] if suppress else sans
+    assert _values(analysis, F_FQDN) - {"leaf.example.com"} == set(expected)
     crawl_urls = [o for o in analysis.get_observables_by_type(F_URL) if o.has_directive(DIRECTIVE_CRAWL)]
     assert (crawl_urls == []) is suppress
 
@@ -2037,3 +2040,108 @@ def test_a_failed_statistics_pass_keeps_the_rest(monkeypatch, caplog):
     assert "No endpoint or flow tables" in PcapAnalysisPresenter(core).notice
     (record,) = [r for r in caplog.records if "no packet statistics for pcap" in r.getMessage()]
     assert record.levelno == logging.INFO
+
+
+@pytest.mark.unit
+def test_observable_limit_is_per_capture_across_its_nodes():
+    root = _new_root()
+    pcap_file = root.add_file_observable(HTTP_TLS_PCAPNG)
+    core = PcapAnalysis()
+    pcap_file.add_analysis(core)
+    added, _ = add_pcap_observables(core, pcap_file, [PcapObservable(CATEGORY_HOSTS, F_FQDN, f"a{i}.example") for i in range(2)],
+                                    max_per_type=3)
+    assert added == {F_FQDN: 2}
+
+    # another node of the same capture gets what is left of the capture's limit
+    decryption = PcapTlsDecryptionAnalysis()
+    pcap_file.add_analysis(decryption)
+    added, omitted = add_pcap_observables(decryption, pcap_file,
+                                          [PcapObservable(CATEGORY_TLS, F_FQDN, f"b{i}.example") for i in range(2)],
+                                          max_per_type=3)
+    assert (added, omitted) == ({F_FQDN: 1}, {F_FQDN: 1})
+
+
+def _secrets_pcapng(tmp_path) -> str:
+    # the secrets come third, after the section header and one other block
+    path = tmp_path / "late_secrets.pcapng"
+    path.write_bytes(_pcapng("<", _block("<", 0x00000001, b"\x01\x00\x00\x00\xff\xff\x00\x00"),
+                             _dsb("<", 0x544C534B, f"CLIENT_RANDOM {CLIENT_RANDOM_12} {'b' * 96}\n".encode())))
+    return str(path)
+
+
+@pytest.mark.unit
+def test_embedded_secrets_scan_is_bounded(monkeypatch, tmp_path, caplog):
+    path = _secrets_pcapng(tmp_path)
+    assert pcap.read_embedded_secrets(path, max_tls_bytes=1024)["types"] == {"TLS": 1}
+
+    monkeypatch.setattr(pcap, "EMBEDDED_SECRETS_MAX_BLOCKS", 2)
+    with caplog.at_level(logging.INFO):
+        assert pcap.read_embedded_secrets(path, max_tls_bytes=1024) is None
+    assert "stopped looking for decryption secrets" in caplog.text
+
+
+@pytest.mark.unit
+def test_embedded_secrets_scan_stops_with_the_engine(monkeypatch, tmp_path):
+    monkeypatch.setattr(pcap, "EMBEDDED_SECRETS_STOP_CHECK_BLOCKS", 1)
+    with pytest.raises(SandboxCancelled):
+        pcap.read_embedded_secrets(_secrets_pcapng(tmp_path), max_tls_bytes=1024, stopping=lambda: True)
+
+
+@pytest.mark.unit
+def test_category_without_pcap_analysis_records_nothing(monkeypatch):
+    # pcap_analyzer stopped as the engine shut down: the dependency on it failed, so the wait
+    # returns nothing, and no "no analysis" marker may be left for the requeued work item
+    monkeypatch.setattr(pcap.PcapCategoryAnalyzer, "wait_for_analysis", lambda self, *args, **kwargs: None)
+    root = _new_root()
+    capture = root.add_file_observable(NETWORK_PCAP)
+    analyzer = _adapter(pcap.PcapCategoryAnalyzer, root, ANALYSIS_MODULE_PCAP_DNS)
+    assert analyzer.execute_analysis(capture) == AnalysisExecutionResult.INCOMPLETE
+    assert not capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
+
+    # in final analysis: still stopping, still nothing; otherwise the category has nothing to add
+    _shutting_down(monkeypatch, pcap.PcapCategoryAnalyzer)
+    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.INCOMPLETE
+    monkeypatch.setattr(pcap.PcapCategoryAnalyzer, "shutdown", property(lambda self: False))
+    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.COMPLETED
+    assert not capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
+
+
+@pytest.mark.integration
+def test_category_runs_in_final_analysis_once_the_capture_is_dissected():
+    root = _new_root()
+    capture = root.add_file_observable(NETWORK_PCAP)
+    assert _adapter(PcapAnalyzer, root).execute_analysis(capture) == AnalysisExecutionResult.COMPLETED
+    capture.get_analysis(PcapAnalysis).completed = True
+
+    analyzer = _adapter(pcap.PcapCategoryAnalyzer, root, ANALYSIS_MODULE_PCAP_DNS)
+    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.COMPLETED
+    dns = capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
+    assert "www.pcap-dns.example" in _values(dns, F_FQDN)
+
+
+@pytest.mark.unit
+def test_decryption_knows_every_file_found_before(monkeypatch):
+    seen = {}
+
+    def _dissect(config, pcap_path, target_dir, keylog_lines=None, known_sha256=None, statistics=True, stopping=None):
+        seen["known"] = set(known_sha256)
+        return build_index([], [], [], max_rows=500)
+
+    monkeypatch.setattr(pcap, "dissect", _dissect)
+    root = _new_root()
+    capture = root.add_file_observable(HTTP_TLS_PCAPNG)
+    keylog = root.add_file_observable(SSLKEYLOG)
+    core = PcapAnalysis()
+    # the plaintext tables kept one object row of three carved files
+    core.details[pcap.KEY_INDEX] = {CATEGORY_TLS: [{"client_random": CLIENT_RANDOM_12}],
+                                    pcap.KEY_CLIENT_RANDOMS: [CLIENT_RANDOM_12],
+                                    "objects": [{"sha256": "11" * 32}],
+                                    pcap.KEY_CARVED_SHA256: ["11" * 32, "22" * 32, "33" * 32]}
+    decryption = PcapTlsDecryptionAnalysis()
+    # an earlier key log's run listed a file it did not carve
+    decryption.details[pcap.KEY_INDEX] = {"objects": [], pcap.KEY_CARVED_SHA256: ["44" * 32]}
+    capture.add_analysis(decryption)
+
+    pcap.apply_keylogs(_pcap_config(), capture, core, decryption, [keylog])
+    assert seen["known"] == {"11" * 32, "22" * 32, "33" * 32, "44" * 32}
+    assert decryption.details[pcap.KEY_INDEX][pcap.KEY_CARVED_SHA256] == ["44" * 32]
