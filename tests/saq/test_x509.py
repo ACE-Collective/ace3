@@ -305,6 +305,29 @@ def test_common_name_failed_subject_doesnt_contain_common_name(private_key, x509
 
 
 @pytest.mark.unit
+def test_common_name_empty(private_key, x509_constants):
+    """An empty CN is treated as no CN."""
+    # cryptography warns about (but, unvalidated, allows) a CN shorter than 1 character, both building and parsing it
+    with pytest.warns(UserWarning, match="length must be >= 1"):
+        name = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, '', _validate=False),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
+        ])
+        cert = x509.CertificateBuilder()\
+            .subject_name(name)\
+            .issuer_name(name)\
+            .public_key(private_key.public_key())\
+            .serial_number(x509_constants.SERIAL_NUMBER)\
+            .not_valid_before(x509_constants.NOT_VALID_BEFORE)\
+            .not_valid_after(x509_constants.NOT_VALID_AFTER)\
+            .sign(private_key, hashes.SHA256())
+        cert = saq_x509.load_cert(cert.public_bytes(serialization.Encoding.DER))
+
+        assert cert.subject.rfc4514_string() == 'O=ACE Ecosystem,CN='
+        assert saq_x509.common_name(cert) is None
+
+
+@pytest.mark.unit
 def test_remove_wildcard_when_wildcard_exists():
     """Make sure prepending wildcards are removed. Specifically used
     for DNS domains / wildcard certificates."""

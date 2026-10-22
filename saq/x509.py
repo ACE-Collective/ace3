@@ -119,7 +119,8 @@ def common_name(cert: x509.Certificate) -> str | None:
     """Return the common name from the subject, or None if it has none."""
     # read the parsed attribute rather than the RFC 4514 string, whose escaping (\, \+ ...) a regex can't undo
     common_names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    if not common_names:
+    # a parsed certificate can carry an empty CN, which would otherwise become the URL http://
+    if not common_names or not common_names[-1].value:
         return None
 
     # with more than one CN, use the last (most specific) RDN, which is the first one subject() shows
