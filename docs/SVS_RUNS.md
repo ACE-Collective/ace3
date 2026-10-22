@@ -138,6 +138,7 @@ person with `curl`) drives each run through `/api/v2/svs/runs` with an API key h
 | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire: the windows start now, at the whole second (a stored time has no fraction, so the window never starts after the call). |
 | `POST /api/v2/svs/runs/{run_id}/executed` | Optional. How the test executed: a non-zero `exit_code` or an `error` moves the run to *error*. |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | Stops the run. |
+| `POST /api/v2/svs/runs/validate` | Optional, a dry run. Takes the registration's body and answers what registering it would decide, without registering it (*Validating a registration*, below). |
 
 ```bash
 curl -X POST https://ace.example/api/v2/svs/runs/ -H "x-ace-auth: $KEY" -H 'Content-Type: application/json' \
@@ -173,6 +174,24 @@ curl -X POST https://ace.example/api/v2/svs/runs/$RUN/start -H "x-ace-auth: $KEY
 - A call that doesn't apply to the run's state (starting a run twice, `executed` before `start`)
   answers 409 with the run's current state. Each call, accepted or not, is in the run's event log
   with its payload.
+
+### Validating a registration
+
+`POST /api/v2/svs/runs/validate` takes the same body as `POST /api/v2/svs/runs/` and the same
+permission, and answers 200 with what registering it would decide (`docs/SVS_API.md`, *Runs*):
+
+- `decision` is `accepted`, `refused` or `invalid`, and `status_code` is what registering would
+  answer (201, 403 or 422). An invalid registration's `message` is the 422's detail.
+- `targets` judges each target as registering would: whether it is accepted, why not, and the test
+  host it names with that host's platform. It is empty when the registration is invalid before its
+  targets are judged (a test not in the catalog, too many targets, `extra` too large).
+- An accepted registration also has the run's `platform`, `observation_seconds` with its
+  `observation_source`, and `attribution_seconds`.
+
+It only reads: no run, no event, no refusal row and no alert, so a launcher can check itself
+against production ACE and triage sees nothing. Each call is logged at INFO with the caller (`call`
+`validate`, `outcome`, `reasons`). What it reads can change before the launcher registers (a test
+host edited, an expectation decided), so registering still decides for itself.
 
 ### The marker
 

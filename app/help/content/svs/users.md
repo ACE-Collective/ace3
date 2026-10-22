@@ -50,6 +50,7 @@ Every call uses the launcher's API key in the `x-ace-auth` header. The key needs
 
 | Step | Call | What it does |
 |---|---|---|
+| — | `POST /api/v2/svs/runs/validate` | Optional. Takes the register body and answers what registering would decide, without creating a run or raising a refusal alert. For a launcher's dry run |
 | 1. Register | `POST /api/v2/svs/runs/` | Creates a run for one catalog test against one or more test hosts. Answers 201 with the `run_id` and the run's **marker** |
 | 2. Mark | (on the test host) | The launcher puts the marker where the test's process telemetry shows it |
 | 3. Start | `POST /api/v2/svs/runs/{run_id}/start` | The test is about to fire. The run's windows start now |

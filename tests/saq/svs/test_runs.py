@@ -1,6 +1,8 @@
 """SVS test runs (saq.svs.runs, docs/SVS_RUNS.md): registration, the launcher's calls, the timers."""
 
 import json
+import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -10,11 +12,11 @@ from sqlalchemy import select
 
 from saq.configuration.config import get_config
 from saq.constants import ENV_ACE_IS_PRIMARY_NODE
-from saq.database.model import SVSRegistrationRefusal, SVSRun, SVSRunEvent
+from saq.database.model import Alert, SVSRegistrationRefusal, SVSRun, SVSRunEvent
 from saq.database.pool import get_db
 from saq.svs import runs
 from saq.svs import service as svs_service
-from saq.svs.constants import RunEventKind, RunState
+from saq.svs.constants import ObservationSource, RunEventKind, RunState
 from saq.svs.hosts import build_spec, create_host
 from saq.svs.markers import MARKER_REGEX
 from saq.svs.refusals import Caller
@@ -30,6 +32,7 @@ from saq.svs.runs import (
     register,
     run_timers,
     start,
+    validate,
 )
 from saq.svs.service import SVSService
 from tests.saq.svs.conftest import add_catalog_test
@@ -172,6 +175,69 @@ def test_register_refuses_a_target_that_is_not_a_test_host(target, reason):
     assert len(error.value.reasons) == 1 and reason in error.value.reasons[0]
     assert get_db().execute(select(SVSRun)).first() is None
     assert get_db().execute(select(SVSRegistrationRefusal.host)).scalars().all() == [target.hostname.lower()]
+
+
+def _nothing_written():
+    db = get_db()
+    db.expire_all()
+    assert db.execute(select(SVSRun)).first() is None
+    assert db.execute(select(SVSRunEvent)).first() is None
+    assert db.execute(select(SVSRegistrationRefusal)).first() is None
+    assert db.execute(select(Alert)).first() is None
+
+
+def test_validate_decides_an_accepted_registration_as_register_would(caplog):
+    caplog.set_level(logging.INFO)
+    decision = validate(_registration(), LAUNCHER)
+
+    assert decision.invalid is None and decision.refused == []
+    assert (decision.platform, decision.observation_source) == ("windows", ObservationSource.ALL_HUNTS)
+    assert (decision.observation, decision.attribution) == (timedelta(hours=1), timedelta(hours=25))
+    ((target, match),) = decision.matches
+    assert target == TargetSpec("WIN10-01", "svc_art@lab.example") and match.host.hostname == "win10-01"
+    _nothing_written()
+
+    (record,) = [r for r in caplog.records if getattr(r, "call", None) == "validate"]
+    assert (record.levelno, record.outcome, record.caller, record.svs_test) == (
+        logging.INFO, "accepted", "art-launcher", GUID)
+
+    run = _state(register(_registration(), LAUNCHER).uuid)
+    assert (run.platform, run.observation_seconds, run.attribution_seconds) == ("windows", 3600, 25 * 3600)
+
+
+def test_validate_refuses_without_recording_or_alerting(caplog):
+    caplog.set_level(logging.INFO)
+    decision = validate(_registration(targets=[TargetSpec("anyuser-01"), TargetSpec("prod-dc-01"),
+                                               TargetSpec("win10-01", "administrator")]), LAUNCHER)
+
+    assert decision.invalid is None and decision.platform is None
+    assert [reason for _, reason in decision.refused] == [
+        "prod-dc-01 is not a test host", "administrator is not a user of test host win10-01"]
+    assert [match.matched for _, match in decision.matches] == [True, False, False]
+    _nothing_written()
+
+    (record,) = [r for r in caplog.records if getattr(r, "call", None) == "validate"]
+    assert (record.levelno, record.outcome) == (logging.INFO, "refused")
+    assert record.reasons == ["prod-dc-01 is not a test host", "administrator is not a user of test host win10-01"]
+
+
+@pytest.mark.parametrize("values, message, judged", [
+    # invalid before the targets are judged
+    ({"test_guid": "dddddddd-4444-4444-8444-444444444444"}, "is not in the catalog", False),
+    ({"extra": {"blob": "x" * 20000}}, "larger than 16384 bytes", False),
+    # invalid after
+    ({"test_guid": LINUX_GUID}, "test host win10-01 is windows", True),
+    ({"test_guid": LINUX_GUID, "targets": [TargetSpec("ubuntu-01"), TargetSpec("mac-01")]},
+     r"different platforms \(linux, macos\)", True),
+])
+def test_validate_an_invalid_registration(values, message, judged):
+    decision = validate(_registration(**values), LAUNCHER)
+    assert re.search(message, decision.invalid)
+    assert bool(decision.matches) == judged and decision.refused == []
+    _nothing_written()
+
+    with pytest.raises(InvalidRegistration, match=message):
+        register(_registration(**values), LAUNCHER)
 
 
 #

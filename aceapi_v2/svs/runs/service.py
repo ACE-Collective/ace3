@@ -55,6 +55,8 @@ from aceapi_v2.svs.runs.schemas import (
     RunResult,
     RunRow,
     RunTarget,
+    RunValidation,
+    RunValidationTarget,
     SignatureHistory,
     SuppressionShare,
 )
@@ -107,17 +109,39 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
 
 
-def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
-    registration = runs.Registration(
+def _registration(body: RunRegistrationRequest) -> runs.Registration:
+    return runs.Registration(
         test_guid=body.test_guid,
         targets=[runs.TargetSpec(hostname=t.hostname, username=t.username) for t in body.targets],
         launcher=body.launcher, batch_id=body.batch_id, extra=body.extra)
+
+
+def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
     try:
-        return _lifecycle(runs.register(registration, caller))
+        return _lifecycle(runs.register(_registration(body), caller))
     except runs.InvalidRegistration as e:
         raise HTTPException(status_code=422, detail=str(e))
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
+
+
+def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
+    decision = runs.validate(_registration(body), caller)
+    targets = [
+        RunValidationTarget(hostname=target.hostname, username=target.username, accepted=match.matched,
+                            reason=match.reason,
+                            test_host=match.host.hostname if match.host is not None else None,
+                            platform=match.host.platform if match.host is not None else None)
+        for target, match in decision.matches]
+    if decision.invalid:
+        return RunValidation(decision="invalid", status_code=422, message=decision.invalid, targets=targets)
+    if decision.refused:
+        return RunValidation(decision="refused", status_code=403, targets=targets)
+    return RunValidation(
+        decision="accepted", status_code=201, targets=targets, platform=decision.platform,
+        observation_seconds=int(decision.observation.total_seconds()),
+        observation_source=decision.observation_source,
+        attribution_seconds=int(decision.attribution.total_seconds()))
 
 
 def start(run_id: str, caller: Caller) -> RunLifecycle:

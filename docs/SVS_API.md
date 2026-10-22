@@ -565,6 +565,7 @@ launcher that also reads its runs needs both.
 | Endpoint | Permission | Returns |
 |---|---|---|
 | `POST /api/v2/svs/runs` `{test_guid, targets: [{hostname, username?}], launcher, batch_id?, extra?}` | `svs:run_register` | 201 and the run in state `created`, with its `marker` |
+| `POST /api/v2/svs/runs/validate`, same body | `svs:run_register` | What registering it would decide, without registering it: `decision` (`accepted`, `refused`, `invalid`), the `status_code` registering would answer, `message`, each target's `accepted`, `reason`, `test_host` and `platform`, and when accepted the run's `platform`, `observation_seconds`, `observation_source` and `attribution_seconds`. Creates no run, refusal or alert (`docs/SVS_RUNS.md`, *Validating a registration*) |
 | `POST /api/v2/svs/runs/{run_id}/start` | `svs:run_register` | The run in state `started`, with its window ends |
 | `POST /api/v2/svs/runs/{run_id}/executed` `{exit_code, error?}` | `svs:run_register` | The run; a non-zero `exit_code` or an `error` moves it to `error` |
 | `POST /api/v2/svs/runs/{run_id}/cancel` | `svs:run_register` | The run in state `canceled`, or `closed` when it was never started |
