@@ -312,10 +312,10 @@ expectations. A launcher opens a **maintenance window** on the test host for tha
   window, that carries **no marker** and that no person associated with a run:
   - is routed to `svs.queue` by the `svs_marker` router (decision `maintenance`) and tagged
     `svs:maintenance`;
-  - once a correlation pass that leaves no analysis delayed has judged it the same way, is closed by
-    the timers as `IGNORE` by the automation user, with the comment *closed: SVS maintenance window
-    … on test host …: <reason>*. `IGNORE` records nothing about its detections, so nothing reaches
-    any run's result.
+  - once its last correlation pass (no analysis left delayed, or the analysis aborted) has judged
+    it the same way, is closed by the timers as `IGNORE` by the automation user, with the comment
+    *closed: SVS maintenance window … on test host …: <reason>*. `IGNORE` records nothing about its
+    detections, so nothing reaches any run's result.
 
   It is kept, searchable and auditable, never dropped: find them by the `svs:maintenance` tag. An
   analyst who takes one, or associates it with a run, before it is closed keeps it. An alert with a marker is judged as any other,

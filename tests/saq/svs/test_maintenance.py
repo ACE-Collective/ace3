@@ -22,14 +22,16 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
+from saq.engine.execution_context import EngineExecutionContext
 from saq.svs import attribution, maintenance, service
+from saq.svs.association import associate, disassociate
 from saq.svs.attribution import attribution_open, evaluate, record_suppressed_matches, suppression_key, suppression_owners
 from saq.svs.constants import SVSStatus
 from saq.svs.maintenance import InvalidMaintenance, MaintenanceRefused, UnknownMaintenance
 from saq.svs.refusals import Caller
 from saq.svs.runs import HOLDER_MAINTENANCE, HostBusy, Registration, TargetSpec, register, start
 from saq.svs.service import RunTimer
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, attribute_to_run, started_run, sync_alert
 
 pytestmark = pytest.mark.integration
@@ -330,6 +332,22 @@ class TestEvaluate:
         # what involves only the window's host is still the window's
         assert evaluate(_root(event_time=datetime.now()), datetime.now()).maintenance.uuid == window.uuid
 
+    def test_a_persons_association_holds_over_the_window(self, window):
+        """An analyst associated the alert with a run by hand: it stays the run's while the
+        association stands, and is the window's again once a person removes it."""
+        run = started_run(GUID, "srv-01", now=datetime.now().replace(microsecond=0) - timedelta(minutes=5))
+        root = _root(event_time=datetime.now())
+        ALERT(root)
+        analyst = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+
+        associate(run.uuid, root.uuid, analyst, "unittest")
+        evaluation = evaluate(root, datetime.now())
+        assert evaluation.maintenance is None
+        assert {row.run_id for row in evaluation.existing if not row.removed} == {run.id}
+
+        disassociate(run.uuid, root.uuid, analyst, "unittest")
+        assert evaluate(root, datetime.now()).maintenance.uuid == window.uuid
+
     def test_a_window_ended_early_ends_there(self, window):
         ended = datetime.now().replace(microsecond=0) - timedelta(minutes=5)
         maintenance.end_window("win10-01", LAUNCHER, now=ended)
@@ -426,6 +444,25 @@ def test_an_alert_is_confirmed_only_once_no_analysis_is_delayed():
     delayed.delayed = False
     root.save()
     sync_alert(root)
+    assert _records(root.uuid)[0].confirmed_at is not None
+    assert maintenance.close_alerts() == 1
+
+
+def test_an_alert_whose_analysis_was_aborted_is_confirmed():
+    """An aborted pass abandons what was delayed, so it is the alert's last, although its analysis
+    still reads delayed."""
+    maintenance.open_window("win10-01", 30, "staging", LAUNCHER, now=datetime.now() - timedelta(minutes=10))
+    root = _root(event_time=datetime.now())
+    delayed = DelayedAnalysis()
+    delayed.delayed = True
+    root.add_observable_by_spec(F_TEST, "sandbox").add_analysis(delayed)
+    root.save()
+    ALERT(root)
+
+    context = EngineExecutionContext(root)
+    context.analysis_aborted = True
+    create_test_orchestrator()._sync_alert_to_database(context)
+    assert root.delayed
     assert _records(root.uuid)[0].confirmed_at is not None
     assert maintenance.close_alerts() == 1
 

@@ -95,10 +95,10 @@ class MarkerRouter(AlertRouter):
         evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
         write_attributions(root.uuid, evaluation)
-        # confirmed by the correlation pass that leaves no analysis delayed: until then a module may
-        # still find a marker in the alert's analysis details
+        # confirmed by the alert's last pass: until then a delayed module may still find a marker
+        # in its analysis details
         maintenance.record_alert(root.uuid, evaluation.maintenance.id if evaluation.maintenance else None,
-                                 confirmed=stage == RouteStage.POST_ANALYSIS and not root.delayed)
+                                 confirmed=final)
 
         queue = get_config().svs.queue
         if alert is not None and alert.last_change is not None and alert.last_change[0] == SVS_MANUAL_ROUTER:
