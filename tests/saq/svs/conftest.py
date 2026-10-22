@@ -24,7 +24,7 @@ from saq.signatures.model import SignatureType
 from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.database.private_session import private_transaction
 from saq.engine.execution_context import EngineExecutionContext
-from saq.svs import attribution, windows
+from saq.svs import attribution, runs, windows
 from saq.svs.attack import AttackCatalog, load_attack_catalog
 from saq.svs.catalog import content_hash as catalog_content_hash
 from saq.svs.constants import CaptureState
@@ -285,6 +285,14 @@ LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
 
 # the signature of the detections attribute_to_run attributes
 SIGNATURE_UUID = "5c1a9e57-0000-4000-8000-00000000a7a7"
+
+
+@pytest.fixture
+def overlapping_runs(monkeypatch):
+    """Lets runs on one test host overlap, as runs registered before one run per host was enforced
+    (saq.svs.runs.host_holders) could: for tests that use several runs on one host as fixtures, and
+    whose subject isn't the host's claim."""
+    monkeypatch.setattr(runs, "host_holders", lambda *args, **kwargs: [])
 
 
 def add_test_host(hostname: str = "win10-01", **values):

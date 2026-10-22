@@ -42,16 +42,24 @@ class TestSettingsRequest(BaseModel):
 
     __test__ = False
 
-    observation_minutes: int = Field(
+    observation_minutes: Optional[int] = Field(
+        default=None,
         description="the observation window of the test's runs registered from now on, used as it is (no slack, no "
-                    "floor), from 1 minute up to svs.runs.observation_window.ceiling_hours")
+                    "floor), from 1 minute up to svs.runs.observation_window.ceiling_hours; null for the computed "
+                    "window")
+    holds_host: bool = Field(
+        default=False,
+        description="the test leaves something behind on its hosts, so each run of it registered from now on holds "
+                    "them until its attribution window ends, not its observation window (docs/SVS_RUNS.md, *One run "
+                    "per test host*)")
 
 
 class TestSettings(BaseModel):
     __test__ = False
 
     test_guid: str
-    observation_minutes: Optional[int] = None
+    observation_minutes: Optional[int] = Field(default=None, description="null: the computed window")
+    holds_host: bool = False
     set_by: Optional[str] = Field(default=None, description="who set them (username)")
     updated_at: datetime
 

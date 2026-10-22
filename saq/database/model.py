@@ -2177,6 +2177,9 @@ class SVSRun(Base):
     attribution_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     observation_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     attribution_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the test's holds_host setting at registration: the run holds its hosts until its attribution
+    # window ends rather than its observation window (docs/SVS_RUNS.md, *One run per test host*)
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     owner_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
@@ -2471,8 +2474,9 @@ class SVSIgnore(Base):
 
 
 class SVSTestSettings(Base):
-    """Per-test settings (docs/SVS_RUNS.md, *Windows*): an observation window that replaces the
-    computed one for every run registered afterwards. Only saq/svs/expectations.py writes this
+    """Per-test settings (docs/SVS_RUNS.md, *Windows*, *One run per test host*): an observation
+    window that replaces the computed one, and whether a run holds its hosts for its whole attribution
+    window, for every run registered afterwards. Only saq/svs/expectations.py writes this
     table."""
 
     __tablename__ = 'svs_test_settings'
@@ -2480,6 +2484,9 @@ class SVSTestSettings(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     test_guid: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
     observation_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # the test leaves something behind on its hosts, so a run of it holds them for its whole
+    # attribution window
+    holds_host: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     set_by_user_id: Mapped[Optional[int]] = mapped_column(
         Integer,
         ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),

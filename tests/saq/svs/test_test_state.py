@@ -17,7 +17,8 @@ from saq.svs.run_summary import run_summaries
 from saq.svs.test_state import RECENT_RUNS, TestState, catalog_histories, evaluate_tests
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, write_yara_rule, yara_rule_source
 
-pytestmark = pytest.mark.integration
+# several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"

@@ -56,6 +56,7 @@ async def test_the_lifecycle(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("overlapping_runs")
 async def test_a_reported_failure_and_a_cancel_before_start(client: AsyncClient):
     run = await _register(client)
     await client.post(f"/svs/runs/{run['run_id']}/start")
@@ -125,8 +126,9 @@ async def test_validate_answers_what_registering_would_and_writes_nothing(client
     assert response.json() == {
         "decision": "accepted", "status_code": 201, "message": None, "platform": "windows",
         "observation_seconds": 3600, "observation_source": "all_hunts", "attribution_seconds": 25 * 3600,
+        "holds_host": False,
         "targets": [{"hostname": "win10-01.lab.example", "username": "LAB\\svc_art", "accepted": True, "reason": None,
-                     "test_host": "win10-01", "platform": "windows"}]}
+                     "test_host": "win10-01", "platform": "windows", "held_by": []}]}
 
     response = await client.post("/svs/runs/validate", json={**REGISTRATION, "targets": [
         {"hostname": "prod-dc-01"}, {"hostname": "win10-01", "username": "administrator"}]})
@@ -149,6 +151,44 @@ async def test_validate_answers_what_registering_would_and_writes_nothing(client
 
     # the body is checked as registering checks it
     assert (await client.post("/svs/runs/validate", json={**REGISTRATION, "targets": []})).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_host_held_by_another_run_is_409(client: AsyncClient):
+    first = await _register(client)
+    assert first["holds_host"] is False
+
+    response = await client.post("/svs/runs/", json=REGISTRATION)
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["holders"] == [{"host": "win10-01", "run_id": first["run_id"], "state": "created", "until": None}]
+    assert first["run_id"] in detail["message"]
+
+    response = await client.post("/svs/runs/validate", json=REGISTRATION)
+    validation = response.json()
+    assert (validation["decision"], validation["status_code"], validation["platform"]) == ("host_busy", 409, "windows")
+    assert [h["run_id"] for h in validation["targets"][0]["held_by"]] == [first["run_id"]]
+
+    # no alert: a lifecycle conflict, not a refusal
+    db = get_db()
+    db.expire_all()
+    assert db.query(Alert).all() == []
+
+
+@pytest.mark.asyncio
+async def test_start_answers_409_when_another_run_holds_the_host(client: AsyncClient, monkeypatch):
+    from saq.svs import runs
+    # runs registered before one run per host was enforced
+    monkeypatch.setattr(runs, "host_holders", lambda *args, **kwargs: [])
+    first = await _register(client)
+    await client.post(f"/svs/runs/{first['run_id']}/start")
+    second = await _register(client)
+    monkeypatch.undo()
+
+    response = await client.post(f"/svs/runs/{second['run_id']}/start")
+    assert response.status_code == 409, response.text
+    (holder,) = response.json()["detail"]["holders"]
+    assert (holder["run_id"], holder["state"]) == (first["run_id"], "started") and holder["until"] is not None
 
 
 @pytest.mark.asyncio

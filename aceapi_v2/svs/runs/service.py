@@ -34,6 +34,7 @@ from aceapi_v2.svs.runs.schemas import (
     AssociationRequest,
     AssociationResult,
     Attribution,
+    HostHolder,
     BulkRunRequest,
     BulkRunResult,
     HistoryRun,
@@ -96,8 +97,18 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
         run_id=run.uuid, marker=run.marker, state=run.state, test_guid=run.test_guid, platform=run.platform,
         targets=[_target(t) for t in run.targets],
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        created_at=run.created_at, started_at=run.started_at, observation_ends_at=run.observation_ends_at,
+        holds_host=run.holds_host, created_at=run.created_at, started_at=run.started_at,
+        observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason)
+
+
+def _holder(holder: runs.HostHolder) -> HostHolder:
+    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until)
+
+
+def _host_busy(e: runs.HostBusy) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "message": str(e), "holders": [_holder(holder).model_dump(mode="json") for holder in e.holders]})
 
 
 def _call(fn, *args, **kwargs) -> RunLifecycle:
@@ -107,6 +118,8 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
         raise HTTPException(status_code=404, detail=str(e))
     except runs.RunStateConflict as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
+    except runs.HostBusy as e:
+        raise _host_busy(e)
 
 
 def _registration(body: RunRegistrationRequest) -> runs.Registration:
@@ -123,6 +136,8 @@ def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
         raise HTTPException(status_code=422, detail=str(e))
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
+    except runs.HostBusy as e:
+        raise _host_busy(e)
 
 
 def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
@@ -131,17 +146,21 @@ def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
         RunValidationTarget(hostname=target.hostname, username=target.username, accepted=match.matched,
                             reason=match.reason,
                             test_host=match.host.hostname if match.host is not None else None,
-                            platform=match.host.platform if match.host is not None else None)
+                            platform=match.host.platform if match.host is not None else None,
+                            held_by=[_holder(holder) for holder in decision.busy
+                                     if match.host is not None and holder.host == match.host.hostname])
         for target, match in decision.matches]
     if decision.invalid:
         return RunValidation(decision="invalid", status_code=422, message=decision.invalid, targets=targets)
     if decision.refused:
         return RunValidation(decision="refused", status_code=403, targets=targets)
+    if decision.busy:
+        return RunValidation(decision="host_busy", status_code=409, targets=targets, platform=decision.platform)
     return RunValidation(
         decision="accepted", status_code=201, targets=targets, platform=decision.platform,
         observation_seconds=int(decision.observation.total_seconds()),
         observation_source=decision.observation_source,
-        attribution_seconds=int(decision.attribution.total_seconds()))
+        attribution_seconds=int(decision.attribution.total_seconds()), holds_host=decision.holds_host)
 
 
 def start(run_id: str, caller: Caller) -> RunLifecycle:
@@ -416,7 +435,7 @@ def get_detail(run_id: str) -> RunDetail:
         **_row_values(row), **_summary_values(summary), extra=_json(run.extra), launcher_error=run.launcher_error,
         test_content_hash=run.test_content_hash, catalog_commit=run.catalog_commit,
         observation_seconds=run.observation_seconds, attribution_seconds=run.attribution_seconds,
-        registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
+        holds_host=run.holds_host, registered_by=registrar.username if registrar is not None else None, review_blockers=blockers,
         log_search_url=log_search_url(run))
 
 

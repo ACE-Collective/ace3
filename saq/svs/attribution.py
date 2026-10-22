@@ -272,6 +272,12 @@ class RunSnapshot:
     observation_ends_at: Optional[datetime]
     attribution_ends_at: Optional[datetime]
     targets: tuple[TargetSnapshot, ...] = ()
+    holds_host: bool = False
+
+    @property
+    def claim_ends_at(self) -> Optional[datetime]:
+        """When its claim on its hosts ends (saq.svs.runs.host_holders)."""
+        return self.attribution_ends_at if self.holds_host else self.observation_ends_at
 
     def log_fields(self) -> dict:
         return {"svs_run": self.uuid, "svs_test": self.test_guid, "svs_marker": self.marker}
@@ -297,6 +303,7 @@ def _snapshots(session, runs: list[SVSRun]) -> list[RunSnapshot]:
     return [RunSnapshot(
         id=run.id, uuid=run.uuid, test_guid=run.test_guid, marker=run.marker, started_at=run.started_at,
         observation_ends_at=run.observation_ends_at, attribution_ends_at=run.attribution_ends_at,
+        holds_host=run.holds_host,
         targets=tuple(TargetSnapshot(target.host, target.fqdn, ips.get(target.test_host_id, frozenset()))
                       for target in run.targets))
         for run in runs]
@@ -594,6 +601,22 @@ def _existing(alert_uuid: str) -> tuple[list[ExistingAttribution], set[tuple[int
     return existing, blocked, disassociated - associated
 
 
+def context_claimant(candidates: list[RunSnapshot]) -> Optional[RunSnapshot]:
+    """The one run that can claim an alert by context among the runs whose windows cover its event
+    time on one of its hosts: the only one, or the latest started when every other one's claim on
+    its hosts ended before that start. Registration keeps a run from starting on a host another run
+    still holds (docs/SVS_RUNS.md, *One run per test host*), and a test that leaves nothing behind
+    causes nothing after its claim ends, so the latest run is the one that was on the host. None
+    when the claims overlap (runs registered before claims were enforced)."""
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    latest = max(candidates, key=lambda run: (run.started_at, run.id))
+    if all(run.claim_ends_at is not None and run.claim_ends_at < latest.started_at
+           for run in candidates if run is not latest):
+        return latest
+    return None
+
+
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
     """Judges every marker in the alert against its run and attributes its detections. Reads the
     database, writes nothing; the caller checks the gate (attribution_open) first."""
@@ -648,14 +671,14 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                             sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
         candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
-        if len(candidates) == 1 and candidates[0].id not in disassociated:
-            run = candidates[0]
+        run = context_claimant(candidates)
+        if run is not None and run.id not in disassociated:
             for detection in evaluation.detections:
                 if (run.id, detection.content_hash) not in blocked:
                     attributions[(run.id, detection.content_hash)] = Attribution(
                         run, detection.content_hash, AttributionConfidence.CONTEXT, run.is_late(event_time),
                         signature_uuid=detection.signature_uuid, signature_family=detection.signature_family)
-        elif len(candidates) > 1:
+        elif run is None and len(candidates) > 1:
             # attributing to the wrong run teaches the wrong expectation [FR-9]
             evaluation.candidate_runs = candidates
 

@@ -189,7 +189,7 @@ def _settings(settings: SVSTestSettings) -> TestSettings:
     if settings.set_by_user_id is not None:
         username = get_db().execute(select(User.username).where(User.id == settings.set_by_user_id)).scalar()
     return TestSettings(test_guid=settings.test_guid, observation_minutes=settings.observation_minutes,
-                        set_by=username, updated_at=settings.updated_at)
+                        holds_host=settings.holds_host, set_by=username, updated_at=settings.updated_at)
 
 
 def get_test_settings(guid: str) -> TestSettings:
@@ -207,7 +207,7 @@ def set_test_settings(guid: str, body: TestSettingsRequest, user_id: Optional[in
     user_id = require_user(user_id)
     try:
         settings = expectations.set_test_settings(guid, user_id, observation_minutes=body.observation_minutes,
-                                                  actor=actor)
+                                                  holds_host=body.holds_host, actor=actor)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
     return _settings(settings)

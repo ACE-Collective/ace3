@@ -48,12 +48,23 @@ class RunLifecycle(BaseModel):
     targets: list[RunTarget]
     observation_seconds: int = Field(description="how long after start the run waits for its alerts before it ends")
     attribution_seconds: int = Field(description="how long after start its alerts are still attributed to it")
+    holds_host: bool = Field(description="the run holds its hosts until its attribution window ends, not its "
+                                         "observation window (its test's settings)")
     created_at: datetime
     started_at: Optional[datetime] = None
     observation_ends_at: Optional[datetime] = None
     attribution_ends_at: Optional[datetime] = None
     error_reason: Optional[str] = None
     close_reason: Optional[str] = None
+
+
+class HostHolder(BaseModel):
+    """A run holding a test host (docs/SVS_RUNS.md, *One run per test host*)."""
+
+    host: str = Field(description="the test host, by its short name")
+    run_id: str = Field(description="the run holding it")
+    state: RunState
+    until: Optional[datetime] = Field(default=None, description="when its claim on the host ends; null while it hasn't started")
 
 
 class RunValidationTarget(BaseModel):
@@ -63,13 +74,15 @@ class RunValidationTarget(BaseModel):
     reason: Optional[str] = Field(default=None, description="why the target would be refused")
     test_host: Optional[str] = Field(default=None, description="the test host it names, by its short name")
     platform: Optional[str] = Field(default=None, description="that test host's platform")
+    held_by: list[HostHolder] = Field(default_factory=list, description="the runs holding that test host")
+
 
 
 class RunValidation(BaseModel):
     """What POST /api/v2/svs/runs/ would decide for the same body, decided without changing anything."""
 
-    decision: Literal["accepted", "refused", "invalid"]
-    status_code: int = Field(description="what registering would answer: 201, 403 or 422")
+    decision: Literal["accepted", "refused", "invalid", "host_busy"]
+    status_code: int = Field(description="what registering would answer: 201, 403, 409 or 422")
     message: Optional[str] = Field(default=None, description="why the registration is invalid: the 422's detail")
     targets: list[RunValidationTarget] = Field(
         description="every target, judged as registering would; empty when the registration is invalid before its "
@@ -79,6 +92,8 @@ class RunValidation(BaseModel):
     observation_source: Optional[ObservationSource] = Field(
         default=None, description="where the observation window comes from: override, expected or all_hunts")
     attribution_seconds: Optional[int] = Field(default=None, description="when accepted")
+    holds_host: Optional[bool] = Field(default=None, description="when accepted: the run would hold its hosts until "
+                                                                 "its attribution window ends")
 
 
 #
@@ -152,6 +167,8 @@ class RunDetail(RunRow):
     catalog_commit: str = Field(description="the catalog repository's commit when the run was registered")
     observation_seconds: int
     attribution_seconds: int
+    holds_host: bool = Field(description="the run holds its hosts until its attribution window ends, not its "
+                                         "observation window (its test's settings)")
     registered_by: Optional[str] = Field(default=None, description="the username of the key that registered it")
     review_blockers: Optional[ReviewBlockers] = Field(
         default=None, description="ended and reviewed runs: what stands in the way of a review; null for other states")

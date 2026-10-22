@@ -148,6 +148,10 @@ Invoke-RestMethod -Method Post -Uri "$Ace/api/v2/svs/runs/$($run.run_id)/execute
 | 403 | A target isn't a test host, or the user isn't one the host allows | Nothing is registered, and ACE raises a *registration refused* alert in the normal queue, because a test tool pointed at a production machine is something an analyst should see |
 | 422 | The test isn't in the catalog, its platforms don't include the host's, the targets are on different platforms, or a field is missing | Nothing is registered and nothing is alerted |
 | 409 | The call doesn't fit the run's state (starting it twice, `executed` before `start`) | The answer says the run's current state |
+| 409 | Another run holds a target's test host: it hasn't started yet, or its observation window hasn't ended | Nothing is registered or started, and nothing is alerted. The answer's `holders` names each run and `until`, when its hold ends (null while it hasn't started) |
+
+A test host takes one run at a time, so a launcher that runs several tests on one host registers
+the next only after the previous run's observation window ends.
 
 A run that is registered but never started goes to *error* after `svs.runs.start_timeout_minutes`
 (30 minutes by default) and is closed. Every call, accepted or not, is in the run's event log with
@@ -439,6 +443,10 @@ the decisions about it:
 - **Observation window**: set minutes here to override the computed window for runs registered from
   now on (`svs:run_manage`); *Use the computed window* clears it. Use it when you know a test's
   signatures fire within a minute or two, so its runs end sooner.
+- **The test leaves something behind**: check it (`svs:run_manage`) when what the test leaves can
+  fire later, such as persistence, a scheduled task or a service. Its runs registered from then on
+  hold their test hosts until their attribution window ends rather than their observation window,
+  so the next run on the host can't take the leftover's alerts.
 - **Expectations**: per platform, each signature decided expected or rejected, by whom, why, and
   from which run. *Remove* undoes a decision; the signature becomes a candidate again the next
   time it fires.

@@ -491,9 +491,12 @@ and the result is recomputed. [ART-3, ART-2] "Inside the window" is judged on `r
   `context`. Context-only attribution also routes. [ART-5] An alert whose marker disagreed never
   reaches this fallback. It has no per-detection signal, so it
   attributes **every** detection on the alert: a context-only alert is always `TEST?`, never
-  `PARTIAL TEST`. It also requires exactly one candidate run. When two runs on the same target
-  have overlapping windows, nothing is attributed and a WARNING record names both run UUIDs,
-  because attributing to the wrong run teaches the wrong expectation. [FR-9]
+  `PARTIAL TEST`. It also requires exactly one candidate run. Registration keeps two runs from
+  holding one host at once (`docs/SVS_RUNS.md`, *One run per test host*), so when several runs'
+  windows cover the alert, the one that started last claims it if every other one's claim on the
+  host had ended by then. Otherwise (claims that overlap, which only runs registered before that
+  rule can have) nothing is attributed and a WARNING record names the run UUIDs, because
+  attributing to the wrong run teaches the wrong expectation. [FR-9]
 
 The launcher's contract is to put the marker where the technique's process telemetry will show it:
 an input argument, a file name, or a trailing shell comment on the executor command.
