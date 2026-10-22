@@ -251,6 +251,9 @@ types:
   ja3s:
     description: "JA3S TLS server fingerprint hash"
 
+  ja4:
+    description: "JA4 TLS client fingerprint"
+
   jarm_hash:
     description: "JARM TLS server fingerprint hash"
 

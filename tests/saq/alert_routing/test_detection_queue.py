@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 
 def _route(root, stage=RouteStage.PRE_INSERT):
-    return DetectionQueueRouter().route(root, stage)
+    return DetectionQueueRouter().route(root, stage, final=False)
 
 
 def test_single_routed_detection_sets_queue():

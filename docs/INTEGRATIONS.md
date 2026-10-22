@@ -277,8 +277,8 @@ alert_routers:
 
 Subclass `AlertRouter` (`saq/alert_routing/router.py`): accept `name` and `priority` (and your
 `kwargs`) in `__init__` and pass the first two to `super().__init__()`, and implement
-`route(root, stage) -> RouteDecision | None`. A decision is `RouteDecision(queue, reason)`; the
-registry fills in your router's name.
+`route(root, stage, final) -> RouteDecision | None`. A decision is `RouteDecision(queue, reason)`;
+the registry fills in your router's name.
 
 The two stages:
 
@@ -291,6 +291,12 @@ The two stages:
   alert, for routing evidence that only appears once the alert is analyzed. The decision moves
   the alert through `move_alert_to_queue()`, but only while it is `OPEN` and nobody has taken it
   (the automation user counts as nobody). An alert an analyst is working stays where it is.
+
+`final` is `True` on the alert's last analysis pass: `POST_ANALYSIS` with no delayed analysis
+outstanding, or after the engine aborted the analysis (a timeout or an exception), which abandons
+what was delayed. Act on it for anything that must wait until a later pass can no longer change the
+tree (a marker a delayed module may still find, say); don't read `root.delayed` for this, which
+stays set after an aborted pass. It is always `False` at `PRE_INSERT`.
 
 The contract:
 
@@ -320,7 +326,7 @@ queue the alert came from.
 
 **Tests.** Call `saq.alert_routing.register_alert_router()` in a test and
 `reset_alert_routers()` after it (`tests/saq/alert_routing/conftest.py` does this for every
-test there), then call `route_alert(root, stage)` or `ALERT(root)`.
+test there), then call `route_alert(root, stage, final=...)` or `ALERT(root)`.
 
 `integrations.example/example/src/example/routing.py` (`ExampleTagRouter`) routes a new alert
 that carries one tag to one queue and does nothing to any other alert.

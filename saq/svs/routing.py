@@ -82,7 +82,7 @@ def _alert_row(alert_uuid: str) -> Optional[_AlertRow]:
 
 class MarkerRouter(AlertRouter):
 
-    def route(self, root, stage: RouteStage) -> Optional[RouteDecision]:
+    def route(self, root, stage: RouteStage, final: bool) -> Optional[RouteDecision]:
         if not attribution_open():
             return None
 

@@ -236,7 +236,7 @@ def ALERT(root: RootAnalysis, owner_id: int | None = None) -> Alert:
 
        :param owner_id: When given, the id of the User who owns the alert from the moment it exists."""
     original_queue = root.queue
-    decision = route_alert(root, RouteStage.PRE_INSERT)
+    decision = route_alert(root, RouteStage.PRE_INSERT, final=False)
     if decision is not None and decision.queue != root.queue:
         # callers save the root before calling this; save it again so the copy on disk, which
         # sync() reads back below, carries the routed queue. The tree is deliberately not handed
