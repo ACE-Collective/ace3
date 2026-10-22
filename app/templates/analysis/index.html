@@ -278,40 +278,6 @@
     {% include "analysis/_add_observable_modal.html" %}
 {% endwith %}
 
-<div class="modal fade" id="email_modal" tabindex="-1" role="dialog" aria-labelledby="disposition_modal_label" aria-hidden="true">
-    <div class="modal-dialog">
-        <form id="email-form" class="form-horizontal" role="form" method="POST" action="{{url_for('analysis.email_file')}}">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <button type="button" class="close" data-dismiss="modal"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
-                    <h4 class="modal-title" id="comment_modal_label">Email File</h4>
-                </div>
-                <div class="modal-body">
-                    Send File To<br/>
-                    <select class="form-control" id="emaillist" name="emaillist">
-                        <option value="Select to add">Select to add</option>
-                        {% for user in db.query(User).all() %}
-                            <option value="{{user.email}}">{{user.email}}</option>
-                        {% endfor %}
-                    </select>
-                    <br/>(use semicolon ";" to separate email addresses)<br/>
-                    <input class="form-control" type="text" id="toemail" name="toemail"/>
-                    <br/>Subject<br/>
-                    <input class="form-control" type="text" id="subject" name="subject" value="{{alert.description}}"/>
-                    <br/>Message<br/>
-                    <textarea class="form-control" rows="3" id="emailmessage" name="emailmessage"></textarea>
-                    <label><input class="form-control" type="checkbox" id="compress" name="compress" checked/>&nbsp;Compress</label>
-                    <label><input class="form-control" type="checkbox" id="encrypt" name="encrypt" checked/>&nbsp;Encrypt</label>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-default" data-dismiss="modal">Meh</button>
-                    <button type="button" class="btn btn-primary" id="btn-submit-email">Send</button>
-                </div>
-            </div>
-        </form>
-    </div>
-</div>
-
 <div class="modal fade" id="file_modal" tabindex="-1" role="dialog" aria-labelledby="file_modal_label" aria-hidden="true">
     <div class="modal-dialog">
         <form class="form-horizontal" role="form" method="POST" action="{{url_for('analysis.upload_file')}}" enctype="multipart/form-data">

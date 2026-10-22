@@ -757,8 +757,6 @@ def index():
         analysis=analysis,
         analysis_presenter=create_analysis_presenter(analysis) if analysis else None,
         ace_config=get_config(),
-        User=User,
-        db=get_db(),
         current_time=datetime.now(),
         directives={directive: DIRECTIVE_DESCRIPTIONS[directive] for directive in sorted(GUI_DIRECTIVES)},
         display_tree=display_tree,
