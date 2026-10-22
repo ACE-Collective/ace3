@@ -43,7 +43,9 @@ def dns_response(txid: int, name: str, cname: str, address: str) -> bytes:
     question = dns_name(name) + struct.pack("!HH", 1, 1)
     cname_rr = dns_name(name) + struct.pack("!HHIH", 5, 1, 300, len(dns_name(cname))) + dns_name(cname)
     a_rr = dns_name(cname) + struct.pack("!HHIH", 1, 1, 300, 4) + socket.inet_aton(address)
-    return struct.pack("!HHHHHH", txid, 0x8180, 1, 2, 0, 0) + question + cname_rr + a_rr
+    # the EDNS OPT pseudo-record every modern resolver adds: owner is the root, class is the UDP payload size
+    opt_rr = b"\x00" + struct.pack("!HHIH", 41, 1232, 0, 0)
+    return struct.pack("!HHHHHH", txid, 0x8180, 1, 2, 0, 1) + question + cname_rr + a_rr + opt_rr
 
 
 def dhcp_request(hostname: str) -> bytes:
