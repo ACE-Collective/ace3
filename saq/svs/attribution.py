@@ -388,16 +388,6 @@ def resolve_markers(markers: Iterable[str]) -> dict[str, RunSnapshot]:
     return result
 
 
-def runs_in_window(when: datetime, until: Optional[datetime] = None) -> list[RunSnapshot]:
-    """The runs whose attribution window covers when (the candidates of a context attribution), or
-    with until, overlaps when to until."""
-    with private_transaction() as session:
-        runs = list(session.execute(
-            select(SVSRun).where(SVSRun.started_at <= (until or when), SVSRun.attribution_ends_at >= when)
-            .order_by(SVSRun.id)).scalars())
-        return _snapshots(session, runs)
-
-
 def runs_overlapping(start: datetime, end: datetime) -> list[RunSnapshot]:
     """The runs whose attribution window overlaps start to end."""
     with private_transaction() as session:
@@ -629,6 +619,29 @@ def context_claimant(candidates: list[RunSnapshot]) -> Optional[RunSnapshot]:
     return None
 
 
+@dataclass(frozen=True)
+class ContextOwner:
+    """Who an event with no marker belongs to by its hosts and time."""
+    # the run context attribution gives it to (context_claimant)
+    run: Optional[RunSnapshot] = None
+    # the runs whose attribution window covers it on one of its hosts
+    candidates: tuple[RunSnapshot, ...] = ()
+
+
+def context_owners(events: list[tuple[AlertHosts, datetime]]) -> list[ContextOwner]:
+    """The owner of each (hosts, event time). Attribution, and a grouped hunt's suppression keys and
+    suppressed matches, all decide ownership here so that they never disagree on it. One query for
+    all the events."""
+    if not events:
+        return []
+    runs = runs_overlapping(min(when for _, when in events), max(when for _, when in events))
+    result = []
+    for hosts, when in events:
+        candidates = tuple(run for run in runs if run.in_window(when) and hosts.involves_run(run))
+        result.append(ContextOwner(context_claimant(list(candidates)), candidates))
+    return result
+
+
 def suppression_runs(roots: list[RootAnalysis], now: Optional[datetime] = None) -> list[Optional[RunSnapshot]]:
     """For each root a grouped hunt is about to submit, the run that keys its suppression: the run
     context attribution would give it to, by its hosts and event time, or the latest started of the
@@ -638,15 +651,9 @@ def suppression_runs(roots: list[RootAnalysis], now: Optional[datetime] = None) 
         return [None] * len(roots)
 
     now = now or datetime.now()
-    times = [alert_event_time(root, now) for root in roots]
-    runs = runs_overlapping(min(times), max(times))
-    result = []
-    for root, event_time in zip(roots, times):
-        hosts = alert_hosts(root)
-        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
-        result.append(context_claimant(candidates)
-                      or max(candidates, key=lambda run: (run.started_at, run.id), default=None))
-    return result
+    owners = context_owners([(alert_hosts(root), alert_event_time(root, now)) for root in roots])
+    return [owner.run or max(owner.candidates, key=lambda run: (run.started_at, run.id), default=None)
+            for owner in owners]
 
 
 def run_suppression_key(run_uuid: str, group_value: str) -> str:
@@ -708,17 +715,17 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                             run, detection.content_hash, AttributionConfidence.MARKER, run.is_late(event_time),
                             sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
-        candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
-        run = context_claimant(candidates)
+        owner = context_owners([(hosts, event_time)])[0]
+        run = owner.run
         if run is not None and run.id not in disassociated:
             for detection in evaluation.detections:
                 if (run.id, detection.content_hash) not in blocked:
                     attributions[(run.id, detection.content_hash)] = Attribution(
                         run, detection.content_hash, AttributionConfidence.CONTEXT, run.is_late(event_time),
                         signature_uuid=detection.signature_uuid, signature_family=detection.signature_family)
-        elif run is None and len(candidates) > 1:
+        elif run is None and len(owner.candidates) > 1:
             # attributing to the wrong run teaches the wrong expectation [FR-9]
-            evaluation.candidate_runs = candidates
+            evaluation.candidate_runs = list(owner.candidates)
 
     evaluation.attributions = list(attributions.values())
     evaluation.status = _status(evaluation)
@@ -956,13 +963,10 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
 
     now = now or datetime.now()
     times = [alert_event_time(root, now) for root, _ in matches]
-    runs = runs_in_window(min(times), max(times))
+    owners = context_owners([(alert_hosts(root), event_time) for (root, _), event_time in zip(matches, times)])
     first: dict[int, tuple[RunSnapshot, str, datetime]] = {}
-    for (root, group_value), event_time in sorted(zip(matches, times), key=lambda item: item[1]):
-        hosts = alert_hosts(root)
-        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
-        claimant = context_claimant(candidates)
-        for run in [claimant] if claimant is not None else candidates:
+    for (_, group_value), event_time, owner in sorted(zip(matches, times, owners), key=lambda item: item[1]):
+        for run in [owner.run] if owner.run is not None else owner.candidates:
             if run.id not in first:
                 first[run.id] = (run, group_value, event_time)
     if not first:
