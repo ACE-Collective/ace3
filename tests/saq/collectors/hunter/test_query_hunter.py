@@ -855,6 +855,72 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog, hunt
     assert "ignoring suppression" in caplog.text
 
 
+def _grouped_hunt(hunt_manager, name: str):
+    """A grouped hunt with suppression whose group 1.2.3.4 just alerted."""
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name=name,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        suppression="00:01:00",
+        group_by="src",
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+    )
+    hunt.set_last_alert_time(local_time(), "1.2.3.4")
+    return hunt
+
+
+@pytest.mark.unit
+def test_per_group_suppression_records_the_suppressed_matches_for_svs(monkeypatch, hunt_manager):
+    """Only the dropped matches go to svs, each with its root and group_value."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    recorded = []
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches",
+                        lambda hunt_uuid, matches: recorded.append((hunt_uuid, matches)))
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record")
+
+    submissions = hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
+
+    assert [s.group_value for s in submissions] == ["5.6.7.8"]
+    assert len(recorded) == 1
+    hunt_uuid, matches = recorded[0]
+    assert hunt_uuid == hunt.uuid
+    assert [value for _, value in matches] == ["1.2.3.4"]
+    assert any(o.value == "1.2.3.4" for o in matches[0][0].observables)
+
+
+@pytest.mark.unit
+def test_per_group_suppression_records_nothing_for_a_manual_hunt(monkeypatch, hunt_manager):
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    recorded = []
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches",
+                        lambda hunt_uuid, matches: recorded.append(matches))
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record_manual")
+    hunt.manual_hunt = True
+
+    assert len(hunt.process_query_results([{"src": "1.2.3.4"}])) == 1
+    assert recorded == []
+
+
+@pytest.mark.unit
+def test_a_failure_to_record_suppressed_matches_keeps_the_suppression(monkeypatch, caplog, hunt_manager):
+    """The record is lost, logged at ERROR with its traceback; the group stays suppressed."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+
+    def fail(hunt_uuid, matches):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches", fail)
+    hunt = _grouped_hunt(hunt_manager, "test_per_group_record_failure")
+
+    with caplog.at_level(logging.ERROR):
+        submissions = hunt.process_query_results([{"src": "1.2.3.4"}, {"src": "5.6.7.8"}])
+
+    assert [s.group_value for s in submissions] == ["5.6.7.8"]
+    record = next(r for r in caplog.records if "unable to record the suppressed matches" in r.getMessage())
+    assert record.levelno == logging.ERROR and record.exc_info is not None
+    assert (record.hunt_uuid, record.group_values) == (hunt.uuid, ["1.2.3.4"])
+
+
 @pytest.mark.unit
 def test_suppressed_property_false_when_group_by_set(monkeypatch, hunt_manager):
     """Hunt.suppressed must return False for grouped hunts so HuntManager.execute

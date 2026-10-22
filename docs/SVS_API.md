@@ -823,7 +823,7 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 | `alert_count` | The run's attributed alerts that carry the signature (0 when missing). |
 | `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
 | `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
-| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
+| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt deduplicates its alerts, so it may not have suppressed the run's. Both are empty for a hunt with `group_by`, whose suppression the hunter recorded (`docs/SVS_RUNS.md`, *Results*). |
 | `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
 | `updated_at` | The row's last change; the feed's `changed_since` key. |
 
