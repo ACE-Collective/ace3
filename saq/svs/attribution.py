@@ -49,7 +49,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.observable import Observable
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
 from saq.database.model import SVSAttribution, SVSMaintenanceWindow, SVSRun, SVSSuppressedMatch, SVSTestHost
@@ -63,6 +63,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
+    EventTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -482,6 +483,16 @@ def alert_hosts(root: RootAnalysis) -> AlertHosts:
     return result
 
 
+def event_time_source(root: RootAnalysis) -> EventTimeSource:
+    """Where alert_event_time's answer comes from: the event's own time, the time a hunt that couldn't
+    extract it ran its query (KEY_EVENT_TIME_FALLBACK), or the alert's insert time."""
+    if root.event_time is None:
+        return EventTimeSource.INSERT_TIME
+    if (root.extensions or {}).get(KEY_EVENT_TIME_FALLBACK) == EVENT_TIME_FALLBACK_QUERY_TIME:
+        return EventTimeSource.QUERY_TIME
+    return EventTimeSource.EVENT
+
+
 def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> datetime:
     """When the alert's event happened, as runs record time (naive, local): the root's event time
     (for a hunt, the query's event time), or when the alert was inserted [FR-9]."""
@@ -548,8 +559,9 @@ class Evaluation:
     existing: list[ExistingAttribution] = field(default_factory=list)
     # set when a context attribution was refused because more than one run could claim the alert
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
-    # the alert's event time it was judged by, kept on each attribution
+    # the alert's event time it was judged by, and where it came from, kept on each attribution
     event_time: Optional[datetime] = None
+    event_time_source: Optional[EventTimeSource] = None
     # it has no marker and no attribution, and its event time is in a maintenance window on one of
     # its hosts: it is routed to the test queue and closed (docs/SVS_RUNS.md, *Maintenance windows*)
     maintenance: Optional[MaintenanceSnapshot] = None
@@ -731,7 +743,8 @@ def suppression_key(owner: RunSnapshot | MaintenanceSnapshot, group_value: str) 
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
     """Judges every marker in the alert against its run and attributes its detections. Reads the
     database, writes nothing; the caller checks the gate (attribution_open) first."""
-    evaluation = Evaluation(detections=alert_detections(root), event_time=event_time)
+    evaluation = Evaluation(detections=alert_detections(root), event_time=event_time,
+                            event_time_source=event_time_source(root))
     hosts = alert_hosts(root)
     sightings = tree_sightings(root)
 
@@ -831,6 +844,8 @@ class RemovedAttribution:
 class WriteResult:
     written: list[Attribution] = field(default_factory=list)
     removed: list[RemovedAttribution] = field(default_factory=list)
+    # the alert had no rows of the router before this write: its first attribution
+    first: bool = False
 
 
 def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[datetime] = None) -> WriteResult:
@@ -911,6 +926,8 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
         if evaluation.event_time is not None and row.event_time != _to_second(evaluation.event_time):
             values.update(event_time=evaluation.event_time)
+        if evaluation.event_time_source is not None and row.event_time_source != evaluation.event_time_source:
+            values.update(event_time_source=evaluation.event_time_source.value)
         if values and _update_own_row(session, row.id, **values):
             result.written.append(attribution)
 
@@ -923,10 +940,12 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
             signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
             confidence=attribution.confidence.value, late=attribution.late, event_time=evaluation.event_time,
+            event_time_source=evaluation.event_time_source.value if evaluation.event_time_source else None,
             source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
             actor=ROUTER_ACTOR, created_at=now))
         if inserted.rowcount == 1:
             result.written.append(attribution)
+    result.first = bool(result.written) and all(row.source != AttributionSource.ROUTER for row in rows.values())
 
     removed_runs = {row.run_id for row in result.removed} - set(runs)
     if removed_runs:

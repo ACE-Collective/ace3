@@ -2414,6 +2414,10 @@ class SVSAttribution(Base):
     # the alert's event time the attribution was judged by, as runs record time; NULL for rows
     # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
     event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # saq.svs.constants.EventTimeSource: the event's own time, or a fallback (the hunt's query time,
+    # the alert's insert time) that may place the alert in the wrong window
+    event_time_source: Mapped[Optional[str]] = mapped_column(
+        Enum('event', 'query_time', 'insert_time'), nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
@@ -2608,6 +2612,8 @@ class SVSRunResult(Base):
     # every one of its attributions is late, or by context alone
     late_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     context_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # some attribution of it was judged by a fallback event time, not the event's own
+    fallback_time: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
     # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether

@@ -572,7 +572,7 @@ A marker **agrees** with its run when all three hold:
   not checked: process telemetry often doesn't carry it;
 - the alert's **event time** is inside the run's attribution window, from `start` to the window's
   end. The event time is the alert's (for a hunt, the query's event time), or when the alert was
-  created if it has none.
+  created if it has none (*Fallback event times*, below).
 
 A marker that doesn't agree (unknown, on another host, outside the window, or of a run that never
 started) is a **mismatch**. A mismatch is never routed, and it ends attribution for the whole
@@ -598,6 +598,24 @@ the marker only in the command line should expect file detections to be attribut
 - the file is found beneath the command line in the tree;
 - or the marker also shows in the file, in the alert's details, or in the detection itself (its
   description or details, which is where a hunt's query results usually carry it).
+
+### Fallback event times
+
+Windows are judged by the alert's event time, which is not always the event's own:
+
+- a hunt that can't extract an event's timestamp uses the time it processed the query's results
+  (the root carries the `event_time_fallback` extension, `query_time`);
+- an alert with no event time at all is judged by when it was inserted.
+
+Either can put an alert in the wrong run's window, or in none. Each attribution records which clock
+it was judged by (`event_time_source`: `event`, `query_time` or `insert_time`), a result row says
+when any of its signature's attributions rests on a fallback (`fallback_time`), and the run page
+says so next to *late*, on the alert, its detections and the result row. A hunt that alerted on a
+test host, inside a run's or a maintenance window, by its query's time is logged at WARNING as the
+alert is created, or at the later pass that first attributes it, naming the hunt, so its timestamp
+extraction can be fixed:
+`hunt … alerted on an svs test host without the event's own time` (`hunt`, `hunt_uuids`, `tool`,
+`tool_instance`, `alert_uuid`, `svs_run`, `event_time_source`).
 
 ### Without a marker: context
 

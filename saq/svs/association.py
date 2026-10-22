@@ -38,11 +38,12 @@ from saq.database.model import Alert, AlertQueueChange, DetectionPoint, SVSAttri
 from saq.database.pool import get_db
 from saq.database.util.alert import change_alert_owner, move_alert_to_queue, set_dispositions
 from saq.svs.alert_status import alert_svs_statuses
-from saq.svs.attribution import alert_event_time, flag_changed_since_review
+from saq.svs.attribution import alert_event_time, event_time_source, flag_changed_since_review
 from saq.svs.constants import (
     SVS_MANUAL_ROUTER,
     AttributionConfidence,
     AttributionSource,
+    EventTimeSource,
     RunEventKind,
     RunState,
     SVSStatus,
@@ -157,13 +158,14 @@ def _audit(message: str, run: SVSRun, alert_uuid: str, actor: str, user_id: int,
                                              "actor_user_id": user_id, **fields})
 
 
-def _event_time(alert: _Alert) -> datetime:
-    """The alert's event time, judged as the router judges it."""
+def _event_time(alert: _Alert) -> tuple[datetime, EventTimeSource]:
+    """The alert's event time and where it came from, judged as the router judges them."""
     try:
-        return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
+        root = load_root(alert.storage_dir)
+        return alert_event_time(root, alert.insert_date), event_time_source(root)
     except Exception as e:
         logging.warning("unable to load alert %s for its event time; using its insert time: %s", alert.uuid, e)
-        return alert.insert_date
+        return alert.insert_date, EventTimeSource.INSERT_TIME
 
 
 #
@@ -190,10 +192,12 @@ def associate(run_uuid: str, alert_uuid: str, user_id: int, actor: str, reason: 
         db.rollback()
         raise InvalidAssociation(f"alert {alert.uuid} has no detections to attribute")
 
-    event_time = _event_time(alert) if run.observation_ends_at is not None else None
-    late = event_time is not None and event_time > run.observation_ends_at
+    event_time, source = _event_time(alert)
+    # a run canceled or timed out before it started has no observation window to be late for
+    late = run.observation_ends_at is not None and event_time > run.observation_ends_at
     manual = {"source": AttributionSource.MANUAL.value, "confidence": AttributionConfidence.MARKER.value,
-              "scan_point": None, "late": late, "event_time": event_time, "actor": actor[:256], "actor_user_id": user_id,
+              "scan_point": None, "late": late, "event_time": event_time, "event_time_source": source.value,
+              "actor": actor[:256], "actor_user_id": user_id,
               "removed_at": None, "removed_by": None, "removed_by_user_id": None, "removal_reason": None}
     for content_hash, signature_uuid, signature_family in detections:
         db.execute(mysql_insert(SVSAttribution)
