@@ -1,0 +1,54 @@
+{# shared by every pcap analysis (saq/modules/file_analysis/pcap.py::PcapAnalysisPresenter) #}
+{% set details = analysis_presenter.details %}
+{% if details.error %}
+<div class="alert alert-danger">{{ details.error }}</div>
+{% endif %}
+{% if details.omitted %}
+<div class="alert alert-warning">
+    Not added (over the limit or invalid):
+    {% for o_type, count in details.omitted | dictsort %}{{ count }} {{ o_type }}{% if not loop.last %}, {% endif %}{% endfor %}
+</div>
+{% endif %}
+{% if analysis_presenter.capture_summary %}
+<div class="alert alert-light border py-1 px-2 small mb-2">
+    <span class="bi bi-file-earmark-binary"></span> From capture
+    {% for part in analysis_presenter.capture_summary %}{% if loop.first %}<b>{{ part }}</b>{% else %} &middot; {{ part }}{% endif %}{% endfor %}
+</div>
+{% endif %}
+{% for table in analysis_presenter.tables %}
+<h6 class="mt-3 mb-0">{{ table.title }}
+    {% if table.total > table.rows | length %}<small class="text-muted">(first {{ table.rows | length }} of {{ table.total }})</small>{% endif %}
+</h6>
+{% if table.order %}<div class="small text-muted mb-1"><span class="bi bi-sort-down"></span> {{ table.order }}</div>{% endif %}
+{% if table.note %}<div class="small text-muted mb-1"><span class="bi bi-info-circle"></span> {{ table.note }}</div>{% endif %}
+<div style="overflow-x: auto">
+    <table class="table table-sm table-striped">
+        <thead>
+            <tr>{% for column in table.columns %}<th>{{ column }}</th>{% endfor %}</tr>
+        </thead>
+        <tbody>
+            {% for row in table.rows %}
+            <tr>{% for cell in row %}<td style="{{ 'white-space: nowrap' if table.nowrap[loop.index0] else 'overflow-wrap: anywhere' }}">
+                {%- if cell is mapping and cell.pivot_type -%}
+                    <a href="#" class="pcap-pivot" title="alerts with {{ cell.pivot_type }} {{ cell.pivot_value }}"
+                       data-pivot-type="{{ cell.pivot_type }}" data-pivot-value="{{ cell.pivot_value }}">{{ cell.text }}</a>
+                {%- elif cell is iterable and cell is not string -%}
+                    {%- for item in cell %}<div>{{ item }}</div>{% endfor -%}
+                {%- else -%}
+                    {{ cell if cell is not none else '' }}
+                {%- endif -%}
+            </td>{% endfor %}</tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endfor %}
+<script type="text/javascript">
+    // the values come from the capture, so they travel in data attributes rather than in the script
+    $(document).off('click.pcapPivot').on('click.pcapPivot', 'a.pcap-pivot', function(e) {
+        e.preventDefault();
+        var o_type = this.dataset.pivotType;
+        apply_temp_filter([{'name': 'Observable', 'inverted': false, 'values': [[o_type, this.dataset.pivotValue]]}],
+                          'Observable ' + o_type, '{{ url_for('analysis.apply_temp_filter') }}', '{{ url_for('analysis.manage') }}');
+    });
+</script>

@@ -8,7 +8,7 @@ from typing import override
 from saq import x509
 from saq.analysis import Analysis, RootAnalysis
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.constants import F_FILE, F_FQDN, F_IP, F_SHA256, F_URL, DIRECTIVE_CRAWL, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_IP, F_SHA256, F_URL, DIRECTIVE_CRAWL, DIRECTIVE_NO_CRAWL, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.file_analysis import FileTypeAnalysis
 from saq.util.filesystem import get_local_file_path
@@ -215,8 +215,9 @@ class X509Analyzer(AnalysisModule):
         analysis.common_name = x509.common_name(cert)
         analysis.sha256_hash = x509.sha256(cert)  # Created from DER-encoded format of the certificate
 
-        # Note parent observable type; don't render/crawl extracted domains if parent is URL
-        parent_is_url = self.parent_is_url(_file)
+        # Don't auto-crawl names extracted from a certificate we only observed, rather than fetched:
+        # one reached through a URL, or one carved from passively captured traffic (DIRECTIVE_NO_CRAWL).
+        suppress_crawl = self.parent_is_url(_file) or _file.has_directive(DIRECTIVE_NO_CRAWL)
         if analysis.common_name is None:
             logging.info(f"unable to parse common name from {analysis.subject}")
         else:
@@ -225,7 +226,7 @@ class X509Analyzer(AnalysisModule):
             if cn_fqdn:
                 cn_fqdn.display_type = "Certificate Common Name"
 
-            if not parent_is_url:
+            if not suppress_crawl:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{common_name}')
                 if url:
                     url.display_type = "Certificate Common Name URL (http)"
@@ -250,7 +251,7 @@ class X509Analyzer(AnalysisModule):
             if san_fqdn:
                 san_fqdn.display_type = "Certificate SAN DNS Name"
 
-            if not parent_is_url:
+            if not suppress_crawl:
                 url = analysis.add_observable_by_spec(F_URL, f'http://{dns_name}')
                 if url:
                     url.display_type = "Certificate SAN URL (http)"

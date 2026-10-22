@@ -424,3 +424,23 @@ def is_email_file(path) -> bool:
     except Exception as e:
         logging.debug(f"unable to read file {path}: {e}")
         return False
+
+# libpcap (both byte orders, micro- and nanosecond timestamps) and the pcapng section header block
+PCAP_MAGIC_BYTES = (
+    b"\xd4\xc3\xb2\xa1",
+    b"\xa1\xb2\xc3\xd4",
+    b"\x4d\x3c\xb2\xa1",
+    b"\xa1\xb2\x3c\x4d",
+    b"\x0a\x0d\x0d\x0a",
+)
+
+def is_pcap_file(path) -> bool:
+    """Returns True if the file starts with a pcap or pcapng magic number (the extension is ignored)."""
+    if not path:
+        return False
+
+    try:
+        with open(path, "rb") as fp:
+            return fp.read(4) in PCAP_MAGIC_BYTES
+    except OSError:
+        return False

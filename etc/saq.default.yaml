@@ -1386,6 +1386,83 @@ analysis_module_har_extraction:
   # most response bodies extracted from one .har file, pages first, then scripts in request order
   max_extracted_files: 50
 
+# pcap/pcapng dissection with tshark in the Landlock sandbox (see docs/PCAP_ANALYSIS.md)
+# every pcap module takes these optional settings (defaults shown on pcap_analyzer):
+#   tshark_timeout (seconds per tshark run), work_dir (relative to DATA_DIR), sandbox (rlimits),
+#   max_file_size, max_keylog_size, max_table_rows, max_extracted_files,
+#   max_observables_per_type, excluded_fqdn_suffixes
+analysis_module_pcap_analyzer:
+  name: pcap_analyzer
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapAnalyzer
+  enabled: true
+  default_collapsed: true
+  # two tshark runs (statistics, then fields and carved files) of up to tshark_timeout each
+  maximum_analysis_time: 600
+  tshark_timeout: 240
+  work_dir: var/pcap_sandbox
+  max_file_size: 1073741824
+  max_table_rows: 500
+  max_extracted_files: 100
+  max_observables_per_type: 100
+  excluded_fqdn_suffixes:
+    - .arpa
+    - .local
+
+# one instance per category of the capture; each adds its observables under its own node
+analysis_module_pcap_dns:
+  name: pcap_dns
+  instance: dns
+  category: dns
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_tls:
+  name: pcap_tls
+  instance: tls
+  category: tls
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_http:
+  name: pcap_http
+  instance: http
+  category: http
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+analysis_module_pcap_files:
+  name: pcap_files
+  instance: files
+  category: files
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapCategoryAnalyzer
+  enabled: true
+  default_collapsed: true
+
+# runs in final analysis with every TLS key log found in the tree
+analysis_module_pcap_tls_decryption:
+  name: pcap_tls_decryption
+  python_module: saq.modules.file_analysis.pcap
+  python_class: PcapTlsDecryptor
+  enabled: true
+  default_collapsed: true
+  maximum_analysis_time: 600
+
+# recognizes TLS key logs (SSLKEYLOGFILE format) by content and applies one added late
+analysis_module_tls_keylog:
+  name: tls_keylog
+  python_module: saq.modules.file_analysis.pcap
+  python_class: TlsKeylogAnalyzer
+  enabled: true
+  maximum_analysis_time: 600
+
 analysis_module_html_js_extraction:
   name: html_js_extraction
   dependencies:
@@ -2467,6 +2544,12 @@ module_group_file:
     - officeparser3
     - olevba_v1_2
     - onenote_extraction
+    - pcap_analyzer
+    - pcap_dns
+    - pcap_files
+    - pcap_http
+    - pcap_tls
+    - pcap_tls_decryption
     - pcodedmp
     - pdf_analyzer
     - pdftotext
@@ -2476,6 +2559,7 @@ module_group_file:
     - rtfole
     - site_tagger
     - ssdeep
+    - tls_keylog
     - upx
     - url_extraction
     - vbscript_analyzer
