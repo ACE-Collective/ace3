@@ -29,6 +29,9 @@ def get_redis_connection(database: int, config_name: Optional[str] = None) -> re
         "decode_responses": True,
         "encoding": "utf-8",
         "health_check_interval": 30,
+        # redis-py waits forever by default; a stall raises redis.TimeoutError instead
+        "socket_connect_timeout": redis_config.socket_connect_timeout,
+        "socket_timeout": redis_config.socket_timeout,
     }
 
     if redis_config.use_ssl:
