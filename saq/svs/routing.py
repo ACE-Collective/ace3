@@ -37,11 +37,13 @@ from saq.svs.attribution import (
     log_sightings,
     write_attributions,
 )
+from saq.svs import maintenance
 from saq.svs.constants import SVS_MANUAL_ROUTER, SVSStatus
 
 REASON_ROUTED = "every detection is attributed to SVS test run {run}"
 REASON_NO_LONGER_ATTRIBUTED = "no longer attributed to an SVS test run"
 REASON_HELD = "queue set by hand in SVS"
+REASON_MAINTENANCE = "in SVS maintenance window {window} on test host {host}"
 
 DECISION_ROUTED = "routed"
 DECISION_PARTIAL = "partial"
@@ -49,6 +51,7 @@ DECISION_MISMATCH = "mismatch"
 DECISION_NONE = "none"
 DECISION_MOVED_BACK = "moved back"
 DECISION_HELD = "held (manual)"
+DECISION_MAINTENANCE = "maintenance"
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,10 @@ class MarkerRouter(AlertRouter):
         evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
         write_attributions(root.uuid, evaluation)
+        # confirmed by the alert's last pass: until then a delayed module may still find a marker
+        # in its analysis details
+        maintenance.record_alert(root.uuid, evaluation.maintenance.id if evaluation.maintenance else None,
+                                 confirmed=final)
 
         queue = get_config().svs.queue
         if alert is not None and alert.last_change is not None and alert.last_change[0] == SVS_MANUAL_ROUTER:
@@ -101,6 +108,10 @@ class MarkerRouter(AlertRouter):
             run = evaluation.runs[0].uuid if evaluation.runs else None
             decision = RouteDecision(queue=queue, reason=REASON_ROUTED.format(run=run))
             outcome = DECISION_ROUTED
+        elif evaluation.maintenance is not None:
+            decision = RouteDecision(queue=queue, reason=REASON_MAINTENANCE.format(
+                window=evaluation.maintenance.uuid, host=evaluation.maintenance.target.host))
+            outcome = DECISION_MAINTENANCE
         elif alert is not None and self._routed_here(alert, queue):
             decision = RouteDecision(queue=alert.last_change[1], reason=REASON_NO_LONGER_ATTRIBUTED)
             outcome = DECISION_MOVED_BACK
@@ -119,7 +130,8 @@ class MarkerRouter(AlertRouter):
 
     def _log(self, alert_uuid: str, stage: RouteStage, evaluation: Evaluation, outcome: str,
              decision: Optional[RouteDecision], alert: Optional[_AlertRow]) -> None:
-        if outcome == DECISION_NONE and not evaluation.judgements and not evaluation.attributions:
+        if (outcome == DECISION_NONE and not evaluation.judgements and not evaluation.attributions
+                and evaluation.maintenance is None):
             # nothing in this alert has to do with a run
             return
 
@@ -138,7 +150,9 @@ class MarkerRouter(AlertRouter):
     @staticmethod
     def _run_fields(evaluation: Evaluation) -> dict:
         """The run a decision is about: the one it attributes to, or else the run of a marker in the
-        alert (a mismatch on another host, say), or else just the marker."""
+        alert (a mismatch on another host, say), or else just the marker; or the maintenance window."""
+        if evaluation.maintenance is not None:
+            return evaluation.maintenance.log_fields()
         if evaluation.runs:
             return evaluation.runs[0].log_fields()
         for judgement in evaluation.judgements:

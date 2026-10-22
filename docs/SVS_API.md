@@ -473,6 +473,26 @@ added, changed and removed with `svs:admin`, each change an AUDIT line.
 With `changed_since`, a host is returned when it was added or changed at or after that time. A
 removed host just disappears; its removal is an AUDIT line in ACE's log.
 
+### Maintenance windows
+
+A test host's maintenance windows (`docs/SVS_RUNS.md`, *Maintenance windows*). `{host}` is the
+test host's id, or its short or fully qualified name.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `POST /api/v2/svs/test-hosts/{host}/maintenance` `{minutes, reason}` | `svs:run_register` | 201 and the window. 403 for a host that is not a test host (it also alerts), 404 for an unknown id, 409 while a run or another window holds the host (`{"detail": {"message", "holders"}}`, as for runs), 422 for `minutes` over `svs.runs.max_maintenance_minutes` |
+| `DELETE /api/v2/svs/test-hosts/{host}/maintenance` | `svs:run_register` | The window, ended now; 404 when the host has no open window |
+| `GET /api/v2/svs/test-hosts/{host}/maintenance` | `svs:run_read` | The host's windows, latest first, paged with `cursor` |
+
+| Field | Meaning |
+|---|---|
+| `id` | The window's uuid; `svs_maintenance` in ACE's logs and in the comment of every alert closed for it. |
+| `host`, `fqdn` | The test host's names when the window opened. |
+| `reason`, `opened_by`, `opened_at` | Why, who (the key's or user's name) and when. |
+| `ends_at` | When it was opened to end. |
+| `ended_at`, `ended_by`, `end_reason` | When it ended and who ended it: `ended` early by a call, or `expired` at `ends_at` (`ended_by` `svs`). |
+| `open` | It hasn't ended. |
+
 ## Tests
 
 The Atomic Red Team tests runs may be registered for, as `service_svs` reads them from the
@@ -609,7 +629,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
-| 409 | Registering, or starting, a run on a test host another run holds: `{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, `until` null for a run not started (`docs/SVS_RUNS.md`, *One run per test host*). No alert. |
+| 409 | Registering, or starting, a run on a test host another run or a maintenance window holds: `{"detail": {"message", "holders": [{"host", "run_id", "maintenance_id", "state", "until"}]}}`. A run holder has `run_id` and its state, with `until` null while it hasn't started (`docs/SVS_RUNS.md`, *One run per test host*); a window holder has `maintenance_id`, `run_id` null and the state `maintenance`, with `until` when it ends (*Maintenance windows*). No alert. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.

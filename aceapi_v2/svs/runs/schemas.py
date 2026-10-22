@@ -63,12 +63,14 @@ class RunLifecycle(BaseModel):
 
 
 class HostHolder(BaseModel):
-    """A run holding a test host (docs/SVS_RUNS.md, *One run per test host*)."""
+    """A run or a maintenance window holding a test host (docs/SVS_RUNS.md, *One run per test host*,
+    *Maintenance windows*)."""
 
     host: str = Field(description="the test host, by its short name")
-    run_id: str = Field(description="the run holding it")
-    state: RunState
-    until: Optional[datetime] = Field(default=None, description="when its claim on the host ends; null while it hasn't started")
+    run_id: Optional[str] = Field(default=None, description="the run holding it; null for a maintenance window")
+    state: str = Field(description="the run's state, or maintenance")
+    until: Optional[datetime] = Field(default=None, description="when its claim on the host ends; null while a run hasn't started")
+    maintenance_id: Optional[str] = Field(default=None, description="the maintenance window holding it")
 
 
 class RunValidationTarget(BaseModel):

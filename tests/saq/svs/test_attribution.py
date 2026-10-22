@@ -40,7 +40,7 @@ from saq.svs.attribution import (
     resolve_markers,
     runs_overlapping,
     save_sightings,
-    suppression_runs,
+    suppression_owners,
     saved_sightings,
     tree_sightings,
     write_attributions,
@@ -887,7 +887,7 @@ class TestContextOwners:
         root, group_value = _match(started + timedelta(minutes=10))
         root.add_detection_point("hunt hit")
         assert {a.run.id for a in evaluate(root, started + timedelta(minutes=10)).attributions} == {other.id}
-        assert suppression_runs([root]) == [other]
+        assert suppression_owners([root]) == [other]
         assert [run.id for run, _ in record_suppressed_matches(HUNT_UUID, [(root, group_value)])] == [other.id]
 
 

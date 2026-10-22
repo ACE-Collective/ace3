@@ -27,7 +27,7 @@ from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.signatures.model import SignatureType
-from saq.svs.attribution import record_suppressed_matches, run_suppression_key, suppression_runs
+from saq.svs.attribution import MaintenanceSnapshot, record_suppressed_matches, suppression_key, suppression_owners
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -824,26 +824,28 @@ class QueryHunt(Hunt):
 
     def key_suppression(self, submissions: list[Submission]):
         """Sets each grouped submission's suppression_key, which the suppression check and the
-        manager's last alert times use: its group_value, or during an svs run on a test host it
-        involves, the group_value keyed by that run (docs/SVS_RUNS.md, *Hunt suppression during
-        runs*), so a test is never hidden by an earlier alert and never hides a later one. A failure
-        to look the runs up falls back to the group_value."""
+        manager's last alert times use: its group_value, or during an svs run or maintenance window
+        on a test host it involves, the group_value keyed by that run or window (docs/SVS_RUNS.md,
+        *Hunt suppression during runs*), so a test is never hidden by an earlier alert and neither a
+        test nor a host's staging hides a later one. A failure to look them up falls back to the
+        group_value."""
         try:
-            runs = suppression_runs([submission.root for submission in submissions])
+            owners = suppression_owners([submission.root for submission in submissions])
         except Exception as e:
             logging.exception("unable to key the suppression of hunt %s (uuid=%s, type=%s) by svs run: %s",
                               self.name, self.uuid, self.type, e)
-            runs = [None] * len(submissions)
+            owners = [None] * len(submissions)
 
-        for submission, run in zip(submissions, runs):
+        for submission, owner in zip(submissions, owners):
             group_value = getattr(submission, "group_value", None)
-            if group_value is None or run is None:
+            if group_value is None or owner is None:
                 submission.suppression_key = group_value
                 continue
-            submission.suppression_key = run_suppression_key(run.uuid, group_value)
-            logging.info("hunt %s (uuid=%s, type=%s) group_value %s: suppression keyed by svs run %s",
-                         self.name, self.uuid, self.type, group_value, run.uuid,
-                         extra={**run.log_fields(), "hunt_uuid": self.uuid, "group_value": group_value})
+            submission.suppression_key = suppression_key(owner, group_value)
+            kind = "maintenance window" if isinstance(owner, MaintenanceSnapshot) else "run"
+            logging.info("hunt %s (uuid=%s, type=%s) group_value %s: suppression keyed by svs %s %s",
+                         self.name, self.uuid, self.type, group_value, kind, owner.uuid,
+                         extra={**owner.log_fields(), "hunt_uuid": self.uuid, "group_value": group_value})
 
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:

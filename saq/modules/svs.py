@@ -16,7 +16,7 @@ from saq.modules import AnalysisModule
 from saq.signatures.builtin import SVS_MARKER_MISMATCH, get_builtin_signature_version
 from saq.svs.attribution import alert_event_time, attribution_open, evaluate
 from saq.svs.capture import candidates_from_root, capture
-from saq.svs.constants import TAG_MARKER_MISMATCH, TAG_SVS_TEST, SVSStatus
+from saq.svs.constants import TAG_MAINTENANCE, TAG_MARKER_MISMATCH, TAG_SVS_TEST, SVSStatus
 
 
 class YaraSampleCapture(AnalysisModule):
@@ -73,8 +73,9 @@ class YaraSampleCapture(AnalysisModule):
 
 class SVSAlertTagger(AnalysisModule):
     """Marks what SVS attribution makes of an alert (docs/SVS_RUNS.md, *Attribution*) in its tree:
-    the svs_test tag on an alert whose every detection is attributed to a test run, and the
-    svs:marker_mismatch tag plus a detection on one carrying a marker that doesn't match its run.
+    the svs_test tag on an alert whose every detection is attributed to a test run, the
+    svs:marker_mismatch tag plus a detection on one carrying a marker that doesn't match its run,
+    and the svs:maintenance tag on one in a test host's maintenance window.
 
     The svs_marker alert router judges alerts but never changes the tree [FR-3], so this module
     does that part. It runs in correlation mode, in post-analysis, which comes before the router's
@@ -108,5 +109,10 @@ class SVSAlertTagger(AnalysisModule):
             root.add_tag(TAG_SVS_TEST)
         elif root.has_tag(TAG_SVS_TEST):
             root.remove_tag(TAG_SVS_TEST)
+
+        if evaluation.maintenance is not None:
+            root.add_tag(TAG_MAINTENANCE)
+        elif root.has_tag(TAG_MAINTENANCE):
+            root.remove_tag(TAG_MAINTENANCE)
 
         return AnalysisExecutionResult.COMPLETED

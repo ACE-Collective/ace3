@@ -277,6 +277,8 @@ svs:
     max_targets: 16
     # how often service_svs moves runs whose start timeout or windows have passed
     timer_interval_seconds: 30
+    # the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md)
+    max_maintenance_minutes: 240
   # attributing alerts to test runs by their markers (docs/SVS_RUNS.md, *Attribution*)
   attribution:
     # how long each process trusts its answer to "is any run registered or inside its attribution

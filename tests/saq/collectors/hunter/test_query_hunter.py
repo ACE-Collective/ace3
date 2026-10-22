@@ -47,12 +47,12 @@ from saq.observables.mapping import (
 )
 from saq.query.config import SummaryDetailConfig
 from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
-from saq.svs import attribution
-from saq.svs.attribution import run_suppression_key
+from saq.svs import attribution, maintenance
 from saq.svs.markers import new_marker
+from saq.svs.refusals import Caller
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.svs.conftest import add_catalog_test, add_test_host
 
 
 class TestQueryHunt(QueryHunt):
@@ -5476,7 +5476,7 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     with caplog.at_level(logging.INFO):
         submissions = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert {s.group_value: s.suppression_key for s in submissions} == {
-        "win10-01": run_suppression_key(first.uuid, "win10-01"), "prod-01": "prod-01"}
+        "win10-01": f"svs_run:{first.uuid}:win10-01", "prod-01": "prod-01"}
     (record,) = [r for r in caplog.records if "suppression keyed by svs run" in r.getMessage()]
     assert (record.svs_run, record.group_value) == (first.uuid, "win10-01")
     _record(hunt, submissions)
@@ -5489,7 +5489,21 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     # the same test again, within the hunt's suppression period: the next run's first match alerts
     second = _svs_run(now - timedelta(minutes=30))
     (submission,) = hunt.process_query_results([{"host": "win10-01"}])
-    assert submission.suppression_key == run_suppression_key(second.uuid, "win10-01")
+    assert submission.suppression_key == f"svs_run:{second.uuid}:win10-01"
+
+
+@pytest.mark.integration
+def test_a_maintenance_windows_matches_are_suppressed_under_the_windows_own_key(hunt_manager, caplog):
+    """A host's staging never suppresses production or a run (docs/SVS_RUNS.md, *Maintenance windows*)."""
+    add_test_host("win10-01")
+    window = maintenance.open_window("win10-01", 30, "staging", Caller(name="art-launcher"),
+                                     now=datetime.now() - timedelta(minutes=10))
+    hunt = _svs_grouped_hunt(hunt_manager)
+    with caplog.at_level(logging.INFO):
+        (submission,) = hunt.process_query_results([{"host": "win10-01"}])
+    assert submission.suppression_key == f"svs_maintenance:{window.uuid}:win10-01"
+    (record,) = [r for r in caplog.records if "suppression keyed by svs maintenance window" in r.getMessage()]
+    assert (record.svs_maintenance, record.group_value) == (window.uuid, "win10-01")
 
 
 @pytest.mark.integration
@@ -5513,7 +5527,7 @@ def test_a_failure_to_key_by_run_falls_back_to_the_group(hunt_manager, monkeypat
     def broken(roots):
         raise RuntimeError("database went away")
 
-    monkeypatch.setattr(query_hunter_module, "suppression_runs", broken)
+    monkeypatch.setattr(query_hunter_module, "suppression_owners", broken)
     with caplog.at_level(logging.ERROR):
         (submission,) = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert submission.suppression_key == "prod-01"

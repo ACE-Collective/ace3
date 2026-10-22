@@ -85,7 +85,7 @@ AttributionsChangedSinceParam = Annotated[datetime | None, Query(
     description="only attributions written, removed or kept at or after this time (UTC if no offset is given)")]
 
 
-def _caller(auth: ApiAuthResult, request: Request) -> Caller:
+def caller_of(auth: ApiAuthResult, request: Request) -> Caller:
     return Caller(name=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
                   address=request.client.host if request.client is not None else None)
 
@@ -184,7 +184,7 @@ async def register_run(body: RunRegistrationRequest, auth: RegisterAuth, request
     """Register a run in state created and get its marker. 422 for a test that is not in the
     catalog, a target whose platform the test doesn't support, or an extra that is too large; 403
     when a target is not a test host or not a user the host lists, which also alerts."""
-    return await run_db_in_thread(service.register, body, _caller(auth, request))
+    return await run_db_in_thread(service.register, body, caller_of(auth, request))
 
 
 @router.post("/validate", response_model=RunValidation)
@@ -192,20 +192,20 @@ async def validate_registration(body: RunRegistrationRequest, auth: RegisterAuth
     """What registering this body would decide: accepted (with the run's platform and windows),
     refused (with the reason per target) or invalid. Creates no run, event, refusal or alert, so a
     launcher's dry run is invisible to triage."""
-    return await run_db_in_thread(service.validate, body, _caller(auth, request))
+    return await run_db_in_thread(service.validate, body, caller_of(auth, request))
 
 
 @router.post("/{run_id}/start", response_model=RunLifecycle)
 async def start_run(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """created -> started: the windows start now. 409 in any other state."""
-    return await run_db_in_thread(service.start, run_id, _caller(auth, request))
+    return await run_db_in_thread(service.start, run_id, caller_of(auth, request))
 
 
 @router.post("/{run_id}/executed", response_model=RunLifecycle)
 async def run_executed(run_id: str, body: RunExecutedRequest, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """Report how the test executed on a started run. A non-zero exit code or an error moves it to
     error. 409 in any other state."""
-    return await run_db_in_thread(service.executed, run_id, body, _caller(auth, request))
+    return await run_db_in_thread(service.executed, run_id, body, caller_of(auth, request))
 
 
 @router.post("/{run_id}/cleanup", response_model=RunLifecycle)
@@ -213,14 +213,14 @@ async def run_cleanup(run_id: str, auth: RegisterAuth, request: Request) -> RunL
     """The test's cleanup begins now, on a started run: detections whose event time is at or after
     it are attributed as the cleanup's and left out of the run's candidates and expectations. Once
     per run; 409 in any other state or the second time."""
-    return await run_db_in_thread(service.cleanup, run_id, _caller(auth, request))
+    return await run_db_in_thread(service.cleanup, run_id, caller_of(auth, request))
 
 
 @router.post("/{run_id}/cancel", response_model=RunLifecycle)
 async def cancel_run(run_id: str, auth: RegisterAuth, request: Request) -> RunLifecycle:
     """created or started -> canceled. A canceled run keeps attributing until its attribution window
     ends; one canceled before it started is closed at once. 409 in any other state."""
-    return await run_db_in_thread(service.cancel, run_id, _caller(auth, request))
+    return await run_db_in_thread(service.cancel, run_id, caller_of(auth, request))
 
 
 #

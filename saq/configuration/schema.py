@@ -808,6 +808,7 @@ class SVSRunsConfig(BaseModel):
     max_extra_bytes: int = Field(default=16384, ge=0, description="the largest launcher extra a registration may carry, as serialized JSON; it is stored and shown on the run page")
     max_targets: int = Field(default=16, ge=1, description="the most targets one run may have")
     timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
+    max_maintenance_minutes: int = Field(default=240, ge=1, description="the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md, *Maintenance windows*)")
 
 
 class SVSAttributionConfig(BaseModel):

@@ -1,14 +1,15 @@
 """SVS test hosts router for ACE API v2 (docs/SVS_RUNS.md, *Test hosts*; docs/SVS_API.md).
 
 The hosts SVS test runs may target. Reading them needs svs:run_read; adding, changing and removing
-them needs svs:admin, and each change is an AUDIT line.
+them needs svs:admin, and each change is an AUDIT line. A launcher opens and ends a host's
+maintenance windows with svs:run_register (docs/SVS_RUNS.md, *Maintenance windows*).
 """
 
 import logging
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Response, Security
+from fastapi import APIRouter, Depends, Query, Request, Response, Security
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import LISTING_MAX_PAGE_SIZE, csv_response, ndjson_response, run_listing, start_export
@@ -16,7 +17,15 @@ from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.svs.preconditions import WritePrecondition
 from aceapi_v2.svs.test_hosts import service
-from aceapi_v2.svs.test_hosts.schemas import TestHost, TestHostPage, TestHostRequest
+from aceapi_v2.svs.runs.router import caller_of
+from aceapi_v2.svs.test_hosts.schemas import (
+    MaintenancePage,
+    MaintenanceRequest,
+    MaintenanceWindow,
+    TestHost,
+    TestHostPage,
+    TestHostRequest,
+)
 from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
@@ -95,3 +104,41 @@ async def delete_test_host(
     """Remove a test host. Runs already registered keep their targets."""
     await run_db_in_thread(service.delete_test_host, host_id, auth.auth_name)
     return Response(status_code=204)
+
+
+#
+# maintenance windows; {host} is a test host's id or its short or fully qualified name
+#
+
+@router.post("/{host}/maintenance", response_model=MaintenanceWindow, status_code=201)
+async def open_maintenance(
+    host: str,
+    body: MaintenanceRequest,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "run_register"))],
+    request: Request,
+) -> MaintenanceWindow:
+    """Open a maintenance window on the test host for body.minutes. 409 while a run or another window
+    holds the host; 403 for a host that is not a test host, which also alerts; 404 for an unknown
+    id; 422 for minutes over svs.runs.max_maintenance_minutes."""
+    return await run_db_in_thread(service.open_maintenance, host, body, caller_of(auth, request))
+
+
+@router.delete("/{host}/maintenance", response_model=MaintenanceWindow)
+async def end_maintenance(
+    host: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "run_register"))],
+    request: Request,
+) -> MaintenanceWindow:
+    """End the test host's open maintenance window now. 404 when it has none."""
+    return await run_db_in_thread(service.end_maintenance, host, caller_of(auth, request))
+
+
+@router.get("/{host}/maintenance", response_model=MaintenancePage)
+async def list_maintenance(
+    host: str,
+    auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "run_read"))],
+    cursor: Annotated[str | None, Query(description="the next_cursor of the previous page")] = None,
+    limit: Annotated[int, Query(ge=1, le=LISTING_MAX_PAGE_SIZE)] = 100,
+) -> MaintenancePage:
+    """The test host's maintenance windows, latest first. Follow next_cursor until it is null."""
+    return await run_listing(service.list_maintenance, host, cursor, limit)
