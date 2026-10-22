@@ -357,8 +357,18 @@ def wait_alert(uuid: str, timeout=300) -> dict:
 def register(test: str, host: str, username: str | None = "LAB\\svc_art", **extra) -> dict:
     body = {"test_guid": TESTS[test], "targets": [{"hostname": HOSTS[host]["fqdn"], "username": username}],
             "launcher": LAUNCHER, "batch_id": BATCH, "extra": extra}
-    with client("art-launcher") as c:
-        run = ok(c.post("/api/v2/svs/runs/", json=body), 201)
+
+    def attempt():
+        with client("art-launcher") as c:
+            r = c.post("/api/v2/svs/runs/", json=body)
+        # one run per test host: a started run's claim ends by itself, so wait it out; a run that hasn't
+        # started holds the host until it is canceled, which is a mistake in this script's order
+        holders = r.json()["detail"].get("holders") if r.status_code == 409 else None
+        if holders and all(h["until"] for h in holders):
+            return None
+        return ok(r, 201)
+
+    run = wait(attempt, timeout=600, interval=10, what=f"{host} to be free for {test}")
     log(f"registered {test} on {host}: {run['run_id']} {run['marker']}")
     return run
 
@@ -416,13 +426,15 @@ def disposition(uuids: list[str], value: str, persona: str, note: str):
 
 def phase_one(m: dict):
     """Runs on four hosts at once: three that fire and are reviewed (phase_one_review), one canceled, one
-    error, one closed."""
+    error, one closed. A test host takes one run at a time: the run that never starts is canceled before
+    the next registers on its host, and bits gets a host of its own."""
+    service_never = register("service", "win10-art-02", ticket="LAB-1042")
+    launcher_call(service_never["run_id"], "cancel")
     sam = register("sam", "win10-art-01", ticket="LAB-1042")
     netuser = register("netuser", "win10-art-02", ticket="LAB-1042")
     cron = register("cron", "ubuntu-art-01", username="svc_art", ticket="LAB-1042")
     rundll = register("rundll32", "win11-art-01", username=None, ticket="LAB-1042")
-    bits = register("bits", "win11-art-01", username=None, ticket="LAB-1042")
-    service_never = register("service", "win10-art-02", ticket="LAB-1042")
+    bits = register("bits", "win10-art-03", ticket="LAB-1042")
     for run in (sam, netuser, cron, rundll, bits):
         launcher_call(run["run_id"], "start")
     time.sleep(2)
@@ -450,7 +462,6 @@ def phase_one(m: dict):
     launcher_call(bits["run_id"], "executed", {
         "exit_code": 1, "error": "BITSADMIN: Unable to complete transfer. 0x80190197 (HTTP 407 proxy authentication "
                                  "required) for raw.githubusercontent.com"})
-    launcher_call(service_never["run_id"], "cancel")
     m["runs"].update({"sam": sam["run_id"], "netuser": netuser["run_id"], "cron": cron["run_id"],
                       "rundll32": rundll["run_id"], "bits": bits["run_id"], "service_never": service_never["run_id"]})
 

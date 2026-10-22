@@ -98,6 +98,10 @@ ace svs catalog status                 # each repository's commit, test count an
 ace svs catalog refresh [--force]      # read now; --force reads an unchanged commit again
 ```
 
+`GET /api/v2/svs/catalog/repositories` (`svs:run_read`) serves the same status. A launcher checks
+out the `commit` it names to run each test as the catalog has it, including the `src/` files a
+test's `content_hash` doesn't cover (`docs/SVS_API.md`, *Catalog repositories*).
+
 The catalog is read through `/api/v2/svs/tests` (`svs:run_read`): filter by technique (`T1059` also
 finds its sub-techniques), name, platform, executor, repository or `removed`.
 
@@ -724,7 +728,7 @@ below), each signature is:
 |---|---|
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
-| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunt alerted within that period before the run's window closed (below) |
+| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunter dropped a match of it during the run for that suppression, or (without `group_by`) the hunt alerted within that period before the run's window closed (below) |
 | `cleanup` | It fired only during the test's cleanup, and it isn't expected (*Cleanup*, above) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
@@ -744,15 +748,29 @@ below), each signature is:
   - the signature's family and name;
   - the content hash of the rule itself as it was when the result was computed. A missing row has
     one too: coverage uses it to tell when an expected rule changed.
-- **Possibly suppressed.** A hunt checks its `suppression` each time it runs, and the run that would
-  have caught the test comes up to its latency after the start. So ACE looks for an alert carrying
-  a detection of the hunt, inserted from `suppression` before the run started until the run ended,
-  and not attributed to this run. The latest one is named (`suppressing_alert_uuid`).
-  - For a hunt with `group_by` or `dedup_key` the answer is imprecise: that alert may have been for
-    another group or key. The row says so (`suppression_imprecise`).
-  - For a hunt with `group_by`, an alert attributed to another run doesn't count: it was suppressed
-    under that run's key (*Hunt suppression during runs*, below).
-  - Only hunts in correlation mode put their detection on their alerts, so only theirs can be found.
+- **Possibly suppressed.**
+  - **A hunt with `group_by`** suppresses each group on its own, inside its query results. During a
+    run, a group on one of the run's test hosts is suppressed under a key of the run's own (*Hunt
+    suppression during runs*, below), so it drops a match there only once that run's own first
+    match alerted, or when the runs couldn't be looked up. When it drops a match for its suppression
+    and the match's event time falls in a run's attribution
+    window, on one of the run's test hosts (its `hostname`, `fqdn` or test-host `ipv4` observables,
+    as attribution reads them), the hunter records it in `svs_suppressed_matches`: one row per run
+    and hunt, for the first such match, and the run's result goes stale. The match goes to the run
+    context attribution would give it to, so a run's test never counts against the run before it
+    on the host, or to each of them when their claims overlap (runs registered before claims were
+    enforced). The hunt is `possibly_suppressed` in that run's result exactly
+    when it has such a row, so that is not a guess, and no alert is named: the hunt's latest alert
+    may have been another group's. Nothing is recorded while no run is open, as for alerts, and a
+    failure to record is logged at ERROR and keeps the suppression.
+  - **Any other hunt** suppresses as a whole and doesn't run at all while suppressed, so there is no
+    match to record. A hunt checks its `suppression` each time it runs, and the run that would have
+    caught the test comes up to its latency after the start. So ACE looks for an alert carrying a
+    detection of the hunt, inserted from `suppression` before the run started until the run ended,
+    and not attributed to this run. The latest one is named (`suppressing_alert_uuid`). Only hunts in
+    correlation mode put their detection on their alerts, so only theirs can be found.
+  - For a hunt with `dedup_key` and no `group_by` that answer is imprecise: that alert may have been
+    for another key. The row says so (`suppression_imprecise`).
   - What runs don't key by themselves is revisited once reviewed runs show how often a missing
     signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
@@ -768,6 +786,7 @@ below), each signature is:
 
 | Record | Level | Fields |
 |---|---|---|
+| `svs run …: hunt … suppressed a match for group_value …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value` |
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
 | `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
 
@@ -788,10 +807,11 @@ keys the suppression of each group by the run (`QueryHunt.key_suppression`):
 - **What it doesn't reach.** A hunt without `group_by`, whose suppression stops the whole hunt from
   running, and whose catch-up after suppression must not lose production alerts; a group whose
   alert doesn't carry the test host (a `group_by` field other than the host, with no host
-  observable); and `dedup_key`. Those can still hide a test, which the result reads as *possibly
-  suppressed* (*Results*, above).
+  observable); and `dedup_key`. Those can still hide a test. For a hunt without `group_by` the
+  result reads *possibly suppressed* (*Results*, above); a dropped match of a group that doesn't
+  carry the test host isn't recorded for the run either, so the hunt reads *missing*.
 - **Cost.** Nothing while no run is open (the attribution gate, *Cost*, above); otherwise one query
-  per hunt execution.
+  per hunt execution, and one more when it drops a match, to record it (*Results*, above).
 - **Logs.** Each group keyed by a run is logged at INFO, `hunt … group_value …: suppression keyed by
   svs run …`, with the run's `svs_run`, `svs_test` and `svs_marker`, `hunt_uuid` and `group_value`.
   A failure to look the runs up is logged at ERROR, and the hunt suppresses by group as before.

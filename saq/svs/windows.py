@@ -113,10 +113,11 @@ class HuntInfo:
     # its suppression period, None without one (or when it can't be read)
     suppression: Optional[timedelta]
     # it groups (group_by) or deduplicates (dedup_key) its alerts, so its suppression is per group
-    # or key and an earlier alert need not have suppressed the run's
+    # or key and an earlier alert need not have suppressed the run's. Only a hunt that deduplicates
+    # without group_by is judged by that alert (per_group)
     grouped: bool
-    # it groups its alerts (group_by): during a run, a group on the run's test host is suppressed
-    # under a key of the run's own, so only an alert no run holds can have suppressed it
+    # it groups by group_by, so the hunter records the runs it suppressed a match for
+    # (svs_suppressed_matches) and its suppression need not be inferred from its alerts
     per_group: bool
     # the content hash of its file, as the signature inventory computes it
     content_hash: str

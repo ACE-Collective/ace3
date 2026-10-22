@@ -486,6 +486,7 @@ signatures, and its settings, are changed under it with `svs:run_manage` (*Expec
 | `GET /api/v2/svs/tests` | `svs:run_read` | Tests by technique, then name, filtered and paged |
 | `GET /api/v2/svs/tests/export/ndjson`, `/export/csv` | `svs:run_read` | The same, streamed (the CSV joins `platforms` with `,`) |
 | `GET /api/v2/svs/tests/{guid}` | `svs:run_read` | One test with its description and its atomic entry |
+| `GET /api/v2/svs/catalog/repositories` | `svs:run_read` | Each catalog repository and the commit the catalog reflects (*Catalog repositories*, below) |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/expectations/{platform}/{signature_uuid}` | `svs:run_manage` | Decide a signature for the test's runs on the platform, or remove the decision |
 | `PUT`, `DELETE /api/v2/svs/tests/{guid}/ignores/{signature_uuid}` | `svs:run_manage` | Ignore a signature during the test's runs on every platform, or stop |
 | `GET /api/v2/svs/tests/{guid}/settings` | `svs:run_read` | The test's settings (404 when it has none) |
@@ -554,6 +555,24 @@ platform: `{"platform", "test_state", "last_reviewed_run_id", "last_reviewed_at"
 
 With `changed_since`, a test is returned when it was added, changed, removed or came back at or
 after that time.
+
+### Catalog repositories
+
+`GET /api/v2/svs/catalog/repositories` lists every repository in `svs.catalog.repositories`, and
+any other that still has a row, by name: what `ace svs catalog status` prints. A launcher checks out
+`commit` to run the tests, `src/` files included, as the catalog has them.
+
+| Field | Meaning |
+|---|---|
+| `name` | The `name` of its `git_repo_*` section. |
+| `configured` | It is in `svs.catalog.repositories`. |
+| `git_url`, `branch` | From its `git_repo_*` section, `null` without one. `git_url` never carries a user or password. |
+| `commit` | The commit the catalog's tests were last read from; `null` until the first read succeeds. |
+| `refreshed_at` | When that commit was read. |
+| `test_count`, `skipped_count` | The tests read from that commit, and the tests and files that read couldn't use. |
+| `removed_count` | Its tests removed from the catalog. |
+| `error` | Why the last refresh failed, `null` when it succeeded. The catalog keeps the tests of the commit it last read, so a launcher should treat `commit` as behind. |
+| `retired` | Taken out of `svs.catalog.repositories`, so its tests were removed. |
 
 ## Runs
 
@@ -808,7 +827,7 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 | `alert_count` | The run's attributed alerts that carry the signature (0 when missing). A signature the test fired outside its cleanup counts only those alerts. |
 | `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
 | `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
-| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt groups or deduplicates its alerts, so it may not have suppressed the run's. |
+| `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt deduplicates its alerts, so it may not have suppressed the run's. Both are empty for a hunt with `group_by`, whose suppression the hunter recorded (`docs/SVS_RUNS.md`, *Results*). |
 | `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
 | `updated_at` | The row's last change; the feed's `changed_since` key. |
 

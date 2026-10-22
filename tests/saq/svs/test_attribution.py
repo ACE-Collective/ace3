@@ -15,7 +15,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
 from saq.database import private_session
-from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, User
+from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, SVSRunResultState, SVSSuppressedMatch, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.environment import get_local_timezone
@@ -34,6 +34,7 @@ from saq.svs.attribution import (
     evaluate,
     find_markers_in_data,
     record_delta_sightings,
+    record_suppressed_matches,
     resolve_markers,
     runs_in_window,
     save_sightings,
@@ -505,6 +506,8 @@ class TestDatabase:
         run = started_run(GUID)
         assert [r.uuid for r in runs_in_window(_soon())] == [run.uuid]
         assert runs_in_window(datetime.now() - timedelta(hours=1)) == []
+        # a span that reaches into its window
+        assert [r.uuid for r in runs_in_window(datetime.now() - timedelta(hours=1), _soon())] == [run.uuid]
 
     def test_evaluate_by_ip(self):
         run = started_run(GUID)
@@ -699,6 +702,145 @@ class TestDatabase:
         assert evaluation.status == SVSStatus.MISMATCH
         assert len(write_attributions(root.uuid, evaluation).removed) == 2
         assert {by for _, _, by, _ in self._rows(root.uuid)} == {ROUTER_ACTOR}
+
+
+#
+# suppressed matches (the hunter)
+#
+
+HUNT_UUID = "11111111-aaaa-4aaa-8aaa-111111111111"
+
+
+def _match(event_time: datetime, host: str = "win10-01", group_value: str = "alice") -> tuple[RootAnalysis, str]:
+    """A match (root, group_value) of a grouped hunt on host, at event_time."""
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, host)
+    root.event_time = event_time
+    return root, group_value
+
+
+def _suppressed(hunt_uuid: str = HUNT_UUID) -> list[tuple[int, str, datetime]]:
+    with private_transaction() as session:
+        return [(row.run_id, row.group_value, row.event_time) for row in session.execute(
+            select(SVSSuppressedMatch).where(SVSSuppressedMatch.hunt_uuid == hunt_uuid)
+            .order_by(SVSSuppressedMatch.run_id)).scalars()]
+
+
+def _generation(run_id: int) -> Optional[int]:
+    with private_transaction() as session:
+        return session.execute(select(SVSRunResultState.generation)
+                               .where(SVSRunResultState.run_id == run_id)).scalar()
+
+
+@pytest.mark.integration
+class TestSuppressedMatches:
+    @pytest.fixture(autouse=True)
+    def setup(self, no_hunts):
+        add_catalog_test(GUID)
+        add_test_host("win10-01")
+        add_test_host("win10-02")
+
+    @pytest.fixture
+    def started(self) -> datetime:
+        """When the run under test started: two hours ago, so now is inside its window too."""
+        return (datetime.now() - timedelta(hours=2)).replace(microsecond=0)
+
+    def test_a_match_on_a_runs_host_in_its_window_is_recorded(self, started, caplog):
+        run = started_run(GUID, now=started)
+        event_time = started + timedelta(minutes=10)
+
+        with caplog.at_level("INFO"):
+            written = record_suppressed_matches(HUNT_UUID, [_match(event_time)])
+
+        assert [(r.uuid, value) for r, value in written] == [(run.uuid, "alice")]
+        assert _suppressed() == [(run.id, "alice", event_time)]
+        # the run's result reads it, so it is stale
+        assert _generation(run.id) == 1
+        record = next(r for r in caplog.records if "suppressed a match" in r.getMessage())
+        assert (record.svs_run, record.hunt_uuid, record.group_value) == (run.uuid, HUNT_UUID, "alice")
+
+    def test_the_event_time_decides_not_now(self, started):
+        """A match from before the run started stays production's although the hunt runs inside
+        the run's window; of several matches the first inside the window is recorded."""
+        run = started_run(GUID, now=started)
+        assert record_suppressed_matches(HUNT_UUID, [_match(started - timedelta(minutes=10))]) == []
+        assert _suppressed() == []
+
+        inside = started + timedelta(minutes=30)
+        record_suppressed_matches(HUNT_UUID, [
+            _match(started - timedelta(minutes=10), group_value="before"),
+            _match(inside + timedelta(minutes=5), group_value="later"),
+            _match(inside, group_value="first"),
+        ])
+        assert _suppressed() == [(run.id, "first", inside)]
+
+    def test_an_expired_run_is_recorded_by_the_event_time(self):
+        """A catch-up execution: the run's window is over, the match's event time was inside it.
+        Recorded while some run keeps the gate open; with none open nothing is, as for alerts."""
+        started = (datetime.now() - timedelta(days=3)).replace(microsecond=0)
+        run = started_run(GUID, now=started)
+        match = _match(started + timedelta(hours=1))
+        assert record_suppressed_matches(HUNT_UUID, [match]) == []
+
+        started_run(GUID, "win10-02")
+        record_suppressed_matches(HUNT_UUID, [match])
+        assert [run_id for run_id, _, _ in _suppressed()] == [run.id]
+
+    def test_nothing_for_another_host_or_without_a_run(self, started):
+        assert record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))]) == []
+        started_run(GUID, now=started)
+        assert record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10), host="win10-02")]) == []
+        assert record_suppressed_matches(HUNT_UUID, []) == []
+        assert _suppressed() == []
+
+    def test_once_per_run_and_hunt(self, started):
+        run = started_run(GUID, now=started)
+        record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))])
+        assert record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=20), group_value="bob")]) == []
+        assert _suppressed() == [(run.id, "alice", started + timedelta(minutes=10))]
+        # not marked stale again
+        assert _generation(run.id) == 1
+
+        other_hunt = "22222222-bbbb-4bbb-8bbb-222222222222"
+        assert len(record_suppressed_matches(other_hunt, [_match(started + timedelta(minutes=20))])) == 1
+
+    def test_the_run_that_claims_it_by_context(self, started):
+        """Runs one after the other on a host: the earlier run's attribution window still covers the
+        later run's test, but its claim on the host has ended, so the match is the later run's."""
+        first = started_run(GUID, now=started)
+        # after the first run's observation window (the floor, an hour), which ends its claim
+        second = started_run(GUID, now=started + timedelta(minutes=90))
+        written = record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=100))])
+        assert [run.id for run, _ in written] == [second.id]
+        assert [run_id for run_id, _, _ in _suppressed()] == [second.id]
+        assert _generation(first.id) is None
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_every_run_whose_claims_overlap(self, started):
+        first = started_run(GUID, now=started)
+        second = started_run(GUID, now=started + timedelta(minutes=5))
+        record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))])
+        assert [run_id for run_id, _, _ in _suppressed()] == [first.id, second.id]
+
+    def test_a_row_another_execution_recorded_meanwhile(self, started, monkeypatch, caplog):
+        """Another node's execution of the hunt records the run between the read and the write: the
+        insert keeps its row, and the run is neither logged nor marked stale again."""
+        run = started_run(GUID, now=started)
+        write = attribution._write_suppressed_matches
+
+        def racing(session, hunt_uuid, pending):
+            with private_transaction() as other:
+                other.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid, group_value="bob",
+                                             event_time=started + timedelta(minutes=5)))
+            return write(session, hunt_uuid, pending)
+
+        monkeypatch.setattr(attribution, "_write_suppressed_matches", racing)
+        with caplog.at_level("INFO"):
+            assert record_suppressed_matches(HUNT_UUID, [_match(started + timedelta(minutes=10))]) == []
+
+        assert _suppressed() == [(run.id, "bob", started + timedelta(minutes=5))]
+        assert _generation(run.id) is None
+        assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
 
 
 @pytest.mark.unit

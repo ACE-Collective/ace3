@@ -1,7 +1,7 @@
 """svs run cleanup
 
 Revision ID: 7bad154554ed
-Revises: c29e406a95c0
+Revises: 06d4a14cf9c1
 Create Date: 2026-10-22 15:51:00.587965
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision: str = '7bad154554ed'
-down_revision: Union[str, None] = 'c29e406a95c0'
+down_revision: Union[str, None] = '06d4a14cf9c1'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

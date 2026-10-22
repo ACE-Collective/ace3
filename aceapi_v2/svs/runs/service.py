@@ -145,7 +145,7 @@ def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
     decision = runs.validate(_registration(body), caller)
     targets = [
         RunValidationTarget(hostname=target.hostname, username=target.username, accepted=match.matched,
-                            reason=None if match.matched else match.reason or "not a test host",
+                            reason=match.reason,
                             test_host=match.host.hostname if match.host is not None else None,
                             platform=match.host.platform if match.host is not None else None,
                             held_by=[_holder(holder) for holder in decision.busy
