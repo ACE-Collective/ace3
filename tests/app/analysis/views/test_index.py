@@ -1176,11 +1176,10 @@ def test_alert_page_collapsed_tree_node_stays_searchable(web_client, root_analys
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="get_analysis_module_config_by_module_path ignores the class name, so every "
-                   "analysis of a python module that hosts several modules gets the last-registered module's config")
 def test_alert_page_collapses_by_the_analysis_modules_own_config(web_client, root_analysis, monkeypatch):
     monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST), "default_collapsed", True)
 
     body = _render_collapsible_tree(web_client, root_analysis)
 
     assert body.count('<ul hidden="until-found">') == 1
+    assert re.search(r'<ul hidden="until-found">\s*<li [^>]*data-observable-value="found by searching"', body)
