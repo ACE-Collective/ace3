@@ -533,44 +533,53 @@ class TestDatabase:
     def test_writing(self, caplog):
         run = started_run(GUID)
         root = self._root(run)
+        # every pass judges it by the same event time, so only the detections change
+        event_time = _soon()
 
-        evaluation = evaluate(root, _soon())
+        evaluation = evaluate(root, event_time)
         result = write_attributions(root.uuid, evaluation)
         assert len(result.written) == 2
         assert [(removed, source) for _, removed, _, source in self._rows(root.uuid)] == [
             (False, "router"), (False, "router")]
 
         # the same evaluation changes nothing
-        assert write_attributions(root.uuid, evaluate(root, _soon())).written == []
+        assert write_attributions(root.uuid, evaluate(root, event_time)).written == []
 
         # a detection that is gone is removed by the router ...
         root.detections.pop()
-        result = write_attributions(root.uuid, evaluate(root, _soon()))
+        result = write_attributions(root.uuid, evaluate(root, event_time))
         assert len(result.removed) == 1
         assert sorted(removed for _, removed, _, _ in self._rows(root.uuid)) == [False, True]
         assert any(r.getMessage().startswith("svs attribution removed") for r in caplog.records)
 
         # ... and restored by it when it comes back
         root.add_detection_point("two")
-        result = write_attributions(root.uuid, evaluate(root, _soon()))
+        result = write_attributions(root.uuid, evaluate(root, event_time))
         assert len(result.written) == 1
         assert [removed for _, removed, _, _ in self._rows(root.uuid)] == [False, False]
 
-    def test_the_event_time_is_kept(self):
+    def _event_times(self, alert_uuid):
+        with private_transaction() as session:
+            return set(session.execute(select(SVSAttribution.event_time).where(
+                SVSAttribution.alert_uuid == alert_uuid)).scalars())
+
+    @pytest.mark.parametrize("fraction, stored", [(400000, 0), (600000, 1)])
+    def test_the_event_time_is_kept_as_stored(self, fraction, stored):
         run = started_run(GUID)
         root = self._root(run)
-        event_time = _soon().replace(microsecond=0)
+        second = _soon().replace(microsecond=0)
+        event_time = second.replace(microsecond=fraction)
         write_attributions(root.uuid, evaluate(root, event_time))
-        with private_transaction() as session:
-            assert set(session.execute(select(SVSAttribution.event_time).where(
-                SVSAttribution.alert_uuid == root.uuid)).scalars()) == {event_time}
+        # MySQL rounds the fraction to the nearest second
+        assert self._event_times(root.uuid) == {second + timedelta(seconds=stored)}
+
+        # judged again by the same time, it is unchanged: nothing is written
+        assert write_attributions(root.uuid, evaluate(root, event_time)).written == []
 
         # a pass that judges it by another event time moves it
-        later = event_time + timedelta(minutes=2)
+        later = second + timedelta(minutes=2)
         assert len(write_attributions(root.uuid, evaluate(root, later)).written) == 2
-        with private_transaction() as session:
-            assert set(session.execute(select(SVSAttribution.event_time).where(
-                SVSAttribution.alert_uuid == root.uuid)).scalars()) == {later}
+        assert self._event_times(root.uuid) == {later}
 
     def _reviewed_run(self):
         run = started_run(GUID)

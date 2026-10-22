@@ -454,6 +454,17 @@ def test_cleanup_is_recorded_once_on_a_started_run(caplog):
     assert json.loads(_events(run.uuid)[-1].details)["outcome"] == "conflict"
 
 
+def test_cleanup_begins_at_the_whole_second_of_the_call():
+    # stored from the exact time, it would round up past a cleanup detection of that second
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    returned = cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3, milliseconds=600))
+
+    assert returned.cleanup_at == _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
+    assert json.loads(_events(run.uuid)[-1].details)["payload"] == {
+        "cleanup_at": (T0 + timedelta(minutes=3)).isoformat()}
+
+
 def test_cancel_a_started_run_keeps_its_windows():
     run = register(_registration(), LAUNCHER)
     start(run.uuid, LAUNCHER)

@@ -700,7 +700,9 @@ def cleanup(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SV
     """Records, once, that the test's cleanup begins now on a Started run: detections whose event
     time is at or after it are the cleanup's, still the run's alerts but left out of what it
     teaches (docs/SVS_RUNS.md, *Cleanup*). Raises UnknownRun, RunStateConflict."""
-    now = now or datetime.now()
+    # to the second, as start() does: stored from the exact time, MySQL could round it up past a
+    # cleanup detection whose event time is whole seconds (a hunt's), which would count as the test's
+    now = (now or datetime.now()).replace(microsecond=0)
     run = get_run(run_uuid)
     if run.state != RunState.STARTED or run.cleanup_at is not None or get_db().execute(
             update(SVSRun)

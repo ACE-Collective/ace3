@@ -255,7 +255,10 @@ class TestEventLog:
 
     def test_nothing_is_written_when_nothing_changed(self, run):
         alert_uuid = _alert(marker=run.marker)
-        write_attributions(alert_uuid, evaluate(_root(alert_uuid, marker=run.marker), datetime.now()))
+        # judged by the event time it was first judged by: a different one would move it
+        event_time = get_db().execute(select(SVSAttribution.event_time)
+                                      .where(SVSAttribution.alert_uuid == alert_uuid)).scalars().first()
+        write_attributions(alert_uuid, evaluate(_root(alert_uuid, marker=run.marker), event_time))
         assert len(_events(run.uuid, RunEventKind.ATTRIBUTED)) == 1
 
 

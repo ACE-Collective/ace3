@@ -142,6 +142,7 @@ class RunRow(BaseModel):
     result_candidate: int = Field(default=0, description="signatures that fired and nobody has decided about")
     result_rejected: int = Field(default=0)
     result_ignored: int = Field(default=0)
+    result_cleanup: int = Field(default=0, description="signatures that fired only during the test's cleanup")
     result_stale: bool = Field(default=False, description="the result is about to be recomputed")
     reviewed_hit: int = Field(default=0, description="result_hit as signed off at the run's latest review; 0 until it is reviewed")
     reviewed_expected: int = Field(default=0, description="result_expected as signed off")
@@ -254,8 +255,8 @@ class RunResult(BaseModel):
     signature_name: Optional[str] = None
     status: Optional[str] = Field(
         default=None,
-        description="hit, missing, possibly_suppressed, candidate, rejected or ignored; null once the signature "
-                    "left the live result and the row holds only the reviewed result")
+        description="hit, missing, possibly_suppressed, candidate, rejected, ignored or cleanup; null once the "
+                    "signature left the live result and the row holds only the reviewed result")
     alert_count: int = Field(description="the run's attributed alerts that carry the signature")
     late_only: bool = Field(description="every attribution of it is late")
     context_only: bool = Field(description="every attribution of it is by context alone")

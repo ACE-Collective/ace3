@@ -620,6 +620,7 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `result_hit`, `result_expected` | Its result's hits out of the expected signatures it judged (*expected hits n/m*): `result_expected` counts hit, missing and possibly suppressed (*Results*, below). |
 | `result_missing`, `result_possibly_suppressed` | Expected signatures it missed (possibly suppressed ones included), and of those the possibly suppressed. |
 | `result_candidate`, `result_rejected`, `result_ignored` | Signatures that fired and nobody decided, were rejected, or are ignored. |
+| `result_cleanup` | Signatures that fired only during the test's cleanup (`docs/SVS_RUNS.md`, *Cleanup*). |
 | `result_stale` | Its result is about to be recomputed. |
 | `reviewed_hit`, `reviewed_expected`, `reviewed_missing`, `reviewed_possibly_suppressed` | The same counts of the result as signed off at its latest review (`reviewed_status`); 0 until it is reviewed. |
 | `alerts`, `marker_alerts`, `context_alerts`, `late_alerts` | The alerts attributed to it; of those, by a marker, by context alone (`TEST?`), and late. |
