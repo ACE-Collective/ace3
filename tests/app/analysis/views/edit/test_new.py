@@ -14,7 +14,7 @@ from saq.configuration.config import get_config
 from saq.constants import F_FILE, F_IPV4, create_file_location
 from saq.database.model import Alert, Company, Nodes
 from saq.database.pool import get_db
-from saq.environment import get_temp_dir
+from saq.environment import get_data_dir, get_temp_dir
 from saq.util.uuid import get_storage_dir
 
 
@@ -321,38 +321,28 @@ def test_new_alert_no_observables(web_client, mock_api_call, analyst, target_nod
     assert get_db().query(Alert).filter(Alert.uuid == root.uuid).one().owner_id == analyst
 
 
-def _submit_local_file(web_client, target_node, tmp_path):
-    local_file = tmp_path / 'test_file.txt'
-    local_file.write_bytes(b'local file content')
+@pytest.mark.integration
+def test_new_alert_never_reads_a_server_path(web_client, mock_api_call, target_node, tmp_path):
+    """A file observable's value is only ever an upload: a path on this server given in its place
+    (as the removed is_local field once allowed) is not opened or attached."""
+    server_file = tmp_path / 'secret.txt'
+    server_file.write_bytes(b'server file content')
 
     response = web_client.post(url_for('analysis.new_alert'), data=_form(
         target_node,
-        new_alert_description='Local File Alert',
+        new_alert_description='Server Path Alert',
         observables_types_0=F_FILE,
-        observables_values_0=str(local_file),
+        observables_values_0=str(server_file),
         is_local='true'))
 
-    return _submitted_root(response)
-
-
-@pytest.mark.integration
-def test_new_alert_local_file_path(web_client, mock_api_call, target_node, tmp_path):
-    """Test creation of alert with a file already on this server."""
-    root = _submit_local_file(web_client, target_node, tmp_path)
-    assert root.description == 'Local File Alert (test_file.txt)'
-    observable = root.get_observable_by_type(F_FILE)
-    assert observable.sha256_hash == hashlib.sha256(b'local file content').hexdigest()
-    assert observable.has_directive('no_scan')
-    assert observable.added_by == 'john'
-
-
-# only the file name is wrong; everything else about the submission is pinned by the test above
-@pytest.mark.integration
-@pytest.mark.xfail(strict=True, reason="a local file is submitted under its sha256 as the file name, and the "
-                   "submission's file_path is ignored, so the file observable is named by its hash")
-def test_new_alert_local_file_path_keeps_file_name(web_client, mock_api_call, target_node, tmp_path):
-    root = _submit_local_file(web_client, target_node, tmp_path)
-    assert root.get_observable_by_type(F_FILE).file_name == 'test_file.txt'
+    # a file row without an upload is refused as before, and nothing was read from the server path
+    assert response.status_code == 302
+    assert 'direct=' not in response.location
+    assert get_db().query(Alert).count() == 0
+    for dir_path, _, file_names in os.walk(get_data_dir()):
+        for file_name in file_names:
+            with open(os.path.join(dir_path, file_name), 'rb') as fp:
+                assert b'server file content' not in fp.read()
 
 
 @pytest.mark.integration
