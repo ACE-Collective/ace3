@@ -30,6 +30,7 @@ from aceapi_v2.saved_filters.router import router as saved_filters_router
 from aceapi_v2.search.router import router as search_router
 from aceapi_v2.secrets.router import router as secrets_router
 from aceapi_v2.svs.alerts.router import router as svs_alerts_router
+from aceapi_v2.svs.catalog.router import repositories_router as svs_catalog_repositories_router
 from aceapi_v2.svs.catalog.router import router as svs_tests_router
 from aceapi_v2.svs.coverage.router import router as svs_coverage_router
 from aceapi_v2.svs.expectations.router import router as svs_expectations_router
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     app.include_router(svs_validations_router, prefix="/svs/yara/validations", tags=["svs"])
     app.include_router(svs_test_hosts_router, prefix="/svs/test-hosts", tags=["svs"])
     app.include_router(svs_tests_router, prefix="/svs/tests", tags=["svs"])
+    app.include_router(svs_catalog_repositories_router, prefix="/svs/catalog", tags=["svs"])
     app.include_router(svs_expectations_router, prefix="/svs/expectations", tags=["svs"])
     app.include_router(svs_ignores_router, prefix="/svs/ignores", tags=["svs"])
     app.include_router(svs_runs_router, prefix="/svs/runs", tags=["svs"])

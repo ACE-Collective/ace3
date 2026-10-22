@@ -9,7 +9,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from saq.database.model import SVSCatalogTest, SVSRun
+from saq.configuration.config import get_config
+from saq.configuration.schema import GitRepoConfig
+from saq.database.model import SVSCatalogRepository, SVSCatalogTest, SVSRun
 from saq.database.pool import get_db
 from saq.svs.catalog import content_hash
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
@@ -147,4 +149,29 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
     async with api_key_client(key) as client:
         assert (await client.get("/svs/tests/")).status_code == 200
         assert (await client.get(f"/svs/tests/{_guid(1)}")).status_code == 200
+        assert (await client.get("/svs/catalog/repositories")).status_code == 200
     assert (await noperm_client.get("/svs/tests/")).status_code == 403
+    assert (await noperm_client.get("/svs/catalog/repositories")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_repositories(client: AsyncClient, monkeypatch):
+    get_config().add_git_repo_config("art", GitRepoConfig(
+        name="art", description="atomics", local_path="/nowhere", update_frequency=60, branch="master",
+        git_url="https://ghp_secret@github.com/redcanaryco/atomic-red-team.git"))
+    monkeypatch.setattr(get_config().svs.catalog, "repositories", ["art", "unread"])
+    refreshed_at = datetime(2026, 10, 20, 8, 30)
+    db = get_db()
+    db.add(SVSCatalogRepository(name="art", commit="c" * 40, refreshed_at=refreshed_at, test_count=1700,
+                                skipped_count=2))
+    db.commit()
+
+    response = await client.get("/svs/catalog/repositories")
+    assert response.status_code == 200, response.text
+    assert response.json() == [
+        {"name": "art", "configured": True, "git_url": "https://github.com/redcanaryco/atomic-red-team.git",
+         "branch": "master", "commit": "c" * 40, "refreshed_at": "2026-10-20T08:30:00", "test_count": 1700,
+         "skipped_count": 2, "removed_count": 0, "error": None, "retired": False},
+        {"name": "unread", "configured": True, "git_url": None, "branch": None, "commit": None, "refreshed_at": None,
+         "test_count": 0, "skipped_count": 0, "removed_count": 0, "error": None, "retired": False},
+    ]

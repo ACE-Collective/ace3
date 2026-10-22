@@ -19,6 +19,16 @@ REGEX_GOOGLE_DRIVE = re.compile(r'drive\.google\.com/file/d/([^/]+)/view')
 REGEX_URLDEFENSE = re.compile(r'^https://urldefense\.com/v3/__(.+?)__.+$')
 
 
+def strip_url_credentials(url: str) -> str:
+    """The url without a user or password in it (https://token@host/... is common for git), so it
+    can be shown to someone who mustn't see them. A url without a scheme, such as git@host:repo, is
+    returned unchanged: its user is not a secret."""
+    parsed = urlparse(url)
+    if not parsed.scheme or "@" not in parsed.netloc:
+        return url
+    return urlunparse(parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]))
+
+
 def fang(url):
     """Re-fangs a url that has been de-fanged.
     If url does not match the defang format, it returns the original string."""

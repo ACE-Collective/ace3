@@ -1,6 +1,6 @@
 import pytest
 
-from saq.util.url import extract_protected_url
+from saq.util.url import extract_protected_url, strip_url_credentials
 
 @pytest.mark.parametrize('source_url,expected_url', [
     ('https://no.changes.com/test', 'https://no.changes.com/test'),
@@ -30,3 +30,16 @@ from saq.util.url import extract_protected_url
 def test_extract_protected_url(source_url, expected_url):
     protection_type, extracted_url = extract_protected_url(source_url)
     assert extracted_url == expected_url
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("url, expected", [
+    ("https://github.com/redcanaryco/atomic-red-team.git", "https://github.com/redcanaryco/atomic-red-team.git"),
+    ("https://ghp_token@github.com/org/art.git", "https://github.com/org/art.git"),
+    ("https://user:p@ss@git.example:8443/org/art.git", "https://git.example:8443/org/art.git"),
+    ("ssh://git@git.example/org/art.git", "ssh://git.example/org/art.git"),
+    # scp-like: the user is not a secret, and there is no password to strip
+    ("git@github.com:org/art.git", "git@github.com:org/art.git"),
+])
+def test_strip_url_credentials(url, expected):
+    assert strip_url_credentials(url) == expected
