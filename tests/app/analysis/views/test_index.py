@@ -16,8 +16,9 @@ from saq.analysis.detection_identity import detection_content_hash, node_identit
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.constants import ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
-from saq.database.model import Alert
+from saq.analysis.presenter import create_observable_presenter
+from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING, ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
+from saq.database.model import Alert, Observable as DBObservable
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.gui import alert_actions
@@ -886,10 +887,6 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
 @pytest.mark.integration
 def test_available_actions_looks_up_what_is_not_supplied(root_analysis):
     """Outside the alert view nothing is supplied, so the presenter asks the database."""
-    from saq.analysis.presenter import create_observable_presenter
-    from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING
-    from saq.database.model import Observable as DBObservable
-
     observable = root_analysis.add_observable_by_spec(F_TEST, "looked_up")
     assert ACTION_MARK_INTERESTING in [action.name for action in create_observable_presenter(observable).available_actions]
 
