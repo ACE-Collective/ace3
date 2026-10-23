@@ -207,19 +207,18 @@ def test_log_error_on_load_enabled(caplog):
     assert len(error_records) == 1
     assert root.storage_dir in error_records[0].getMessage()
 
-@pytest.mark.skip(reason="Skipping IO count tests for now.")
 @pytest.mark.unit
 @track_io
 def test_io_count():
     root = create_root_analysis()
     root.initialize_storage()
     root.save()
-    # we should have one write at this point
-    assert _get_io_write_count() == 1
+    # the details of the root and data.json
+    assert _get_io_write_count() == 2
     root = create_root_analysis()
     root.load()
-    # and then one read
-    assert _get_io_read_count() == 1
+    # and then data.json and the details of the root
+    assert _get_io_read_count() == 2
 
 @pytest.mark.unit
 def test_has_observable():
