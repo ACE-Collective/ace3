@@ -36,17 +36,11 @@ def execute_hunt(args):
     exec_kwargs = {}
 
     if isinstance(hunt, QueryHunt):
-        start_time = datetime.datetime.strptime(args.start_time, '%m/%d/%Y:%H:%M:%S')
-        end_time = datetime.datetime.strptime(args.end_time, '%m/%d/%Y:%H:%M:%S')
-        if args.timezone is not None:
-            start_time = pytz.timezone(args.timezone).localize(start_time)
-            end_time = pytz.timezone(args.timezone).localize(end_time)
-        else:
-            start_time = pytz.utc.localize(start_time)
-            end_time = pytz.utc.localize(end_time)
-
-        exec_kwargs['start_time'] = start_time
-        exec_kwargs['end_time'] = end_time
+        time_zone = pytz.timezone(args.timezone) if args.timezone is not None else pytz.utc
+        # a time left out is the hunt's own: QueryHunt.execute() computes it as a scheduled run would
+        for name, value in (('start_time', args.start_time), ('end_time', args.end_time)):
+            if value is not None:
+                exec_kwargs[name] = time_zone.localize(datetime.datetime.strptime(value, '%m/%d/%Y:%H:%M:%S'))
 
         hunt.query_result_file = args.query_result_file
 
@@ -158,11 +152,11 @@ execute_hunt_parser = hunt_sp.add_parser('execute',
 execute_hunt_parser.add_argument('hunt',
     help="The name of the hunt to execute in the format type:name where type is the hunt type.")
 execute_hunt_parser.add_argument('-s', '--start-time', required=False, default=None,
-    help="Optional start time. Time spec absolute format is MM/DD/YYYY:HH:MM:SS")
+    help="Optional start time. Time spec absolute format is MM/DD/YYYY:HH:MM:SS. Defaults to the start of the hunt's next scheduled run.")
 execute_hunt_parser.add_argument('-e', '--end-time', required=False, default=None,
-    help="Optional end time. Time spec absolute format is MM/DD/YYYY:HH:MM:SS")
+    help="Optional end time. Time spec absolute format is MM/DD/YYYY:HH:MM:SS. Defaults to the end of the hunt's next scheduled run.")
 execute_hunt_parser.add_argument('-z', '--timezone', required=False, default=None,
-    help="Optional time zone for start time and end time. Defaults to local time zone.")
+    help="Optional time zone for start time and end time. Defaults to UTC.")
 execute_hunt_parser.add_argument('-v', '--events', required=False, default=False, action='store_true',
     help="Output the events instead of the submissions.")
 execute_hunt_parser.add_argument('--json-dir', required=False, default=None,
