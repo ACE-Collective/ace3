@@ -31,7 +31,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, create_api_key, delete_user
 from saq.error.remote import RemoteApiError
-from saq.logging import ThreadSuppressionFilter
+from saq.logging import ThreadSuppressionFilter, audit_actor
 from saq.permissions.user import add_user_permission
 from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import workload_count
@@ -1383,7 +1383,9 @@ def hunt_audit_records():
         def emit(self, record):
             message = record.getMessage()
             if message.startswith("HUNT_AUDIT "):
-                records.append(json.loads(message[len("HUNT_AUDIT "):]))
+                # the actor fields every AUDIT record has, from extra={}, under a key the JSON never uses
+                actor = {key: getattr(record, key, "missing") for key in audit_actor(None)}
+                records.append({**json.loads(message[len("HUNT_AUDIT "):]), "_actor": actor})
 
     probe = ProbeHandler()
     probe.addFilter(ThreadSuppressionFilter())
@@ -1424,6 +1426,8 @@ def test_validate_hunt_audits_execution_with_the_key_that_ran_it(hunt_api, hunt_
         assert record["user_id"] == user.id
         assert record["key_name"] == "hunt-ai"
         assert isinstance(record["key_id"], int)
+        assert record["_actor"] == {"actor": "hunt_auditor", "actor_user_id": user.id, "actor_key_id": record["key_id"],
+                                    "actor_key_name": "hunt-ai", "auth_type": "user"}
         assert record["hunt"] == {"type": "test", "name": "test_hunt", "uuid": "7b5f2270-4a1d-4009-86a0-de3f8c9c82e7"}
         assert record["query"] == "index=proxy | stats count by src"
         assert record["execution"]["create_alerts"] is True

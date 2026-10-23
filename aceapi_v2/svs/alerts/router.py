@@ -37,13 +37,11 @@ async def disassociate_alert(alert_uuid: str, auth: WriteAuth,
     the caller and the router never attributes the alert to those runs again. The alert is given
     back: OPEN if it was SIMULATED, and back in the queue SVS took it from when it is OPEN and
     nobody else has taken it. 409 when no run holds it."""
-    return await run_db_in_thread(service.disassociate_alert, alert_uuid, body, auth.auth_user_id, auth.auth_name,
-                                  False)
+    return await run_db_in_thread(service.disassociate_alert, alert_uuid, body, auth, False)
 
 
 @router.post("/{alert_uuid}/svs/not-a-test", response_model=AlertDisassociation)
 async def mark_not_a_test(alert_uuid: str, auth: WriteAuth,
                           body: AlertDisassociationRequest | None = None) -> AlertDisassociation:
     """Disassociate a TEST? alert, one its runs hold by context alone, as not a test (409 otherwise)."""
-    return await run_db_in_thread(service.disassociate_alert, alert_uuid, body, auth.auth_user_id, auth.auth_name,
-                                  True)
+    return await run_db_in_thread(service.disassociate_alert, alert_uuid, body, auth, True)

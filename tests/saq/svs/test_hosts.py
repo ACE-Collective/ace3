@@ -6,6 +6,8 @@ from datetime import datetime
 
 import pytest
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_CONFIG, API_CREDENTIAL_CONFIG_KEY
 from saq.database.model import SVSTestHost
 from saq.database.pool import get_db
 from saq.svs import hosts
@@ -105,16 +107,21 @@ def test_match_target(lab, hostname, username, matched, reason):
 
 @pytest.mark.integration
 def test_create_update_delete_are_audited(caplog):
+    # a config key: no user, so the key's name is all that says who it was
+    admin = ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="admin", key_name="admin",
+                          credential=API_CREDENTIAL_CONFIG_KEY)
     with caplog.at_level(logging.INFO):
-        host = hosts.create_host(build_spec("win10-01", usernames=["a"]), None, actor="admin")
-        hosts.update_host(host.id, build_spec("win10-01", usernames=["b"], platform="windows"), actor="admin")
-        hosts.delete_host(host.id, actor="admin")
+        host = hosts.create_host(build_spec("win10-01", usernames=["a"]), admin)
+        hosts.update_host(host.id, build_spec("win10-01", usernames=["b"], platform="windows"), admin)
+        hosts.delete_host(host.id, admin)
 
     records = {r.getMessage(): r for r in caplog.records if r.getMessage().startswith("AUDIT: svs test host")}
     assert records["AUDIT: svs test host added"].usernames == ["a"]
     changed = records["AUDIT: svs test host changed"]
-    assert changed.usernames == ["b"] and changed.before["usernames"] == ["a"] and changed.actor == "admin"
+    assert changed.usernames == ["b"] and changed.before["usernames"] == ["a"]
     assert records["AUDIT: svs test host removed"].svs_test_host == "win10-01"
+    assert [(r.actor, r.actor_user_id, r.actor_key_id, r.actor_key_name, r.auth_type) for r in records.values()] == [
+        ("admin", None, None, "admin", API_AUTH_TYPE_CONFIG)] * 3
     assert get_db().query(SVSTestHost).count() == 0
 
 

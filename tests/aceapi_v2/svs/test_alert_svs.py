@@ -10,6 +10,8 @@ from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_CONFIG
 from aceapi_v2.svs.alerts import service
 from saq.alert_routing import reset_alert_routers
 from saq.constants import F_HOSTNAME, QUEUE_DEFAULT
@@ -105,7 +107,7 @@ async def test_errors(client: AsyncClient):
 
 def test_a_config_key_is_refused():
     with pytest.raises(HTTPException) as e:
-        service.disassociate_alert(str(uuid.uuid4()), None, None, "ci", False)
+        service.disassociate_alert(str(uuid.uuid4()), None, ApiAuthResult(auth_type=API_AUTH_TYPE_CONFIG, auth_name="ci"), False)
     assert e.value.status_code == 422
 
 

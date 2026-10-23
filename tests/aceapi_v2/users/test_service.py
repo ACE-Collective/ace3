@@ -472,7 +472,7 @@ def _session_of(user: User) -> ApiAuthResult:
 def _assert_foreign_key_warned(caplog, action: str, key_id: int, key_owner_id: int, actor_id: int) -> None:
     warned = [r for r in caplog.records if r.levelno == logging.WARNING and f"tried to {action} api key" in r.getMessage()]
     assert len(warned) == 1
-    assert (warned[0].api_key_id, warned[0].user_id, warned[0].actor_id) == (key_id, key_owner_id, actor_id)
+    assert (warned[0].api_key_id, warned[0].user_id, warned[0].actor_user_id) == (key_id, key_owner_id, actor_id)
 
 
 async def _stored_scope(session: AsyncSession, key_id: int) -> list[tuple[str, str]]:
@@ -706,7 +706,7 @@ class TestSelfServiceApiKeys:
         audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key.id]
         assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
         assert all(r.levelno == logging.INFO and r.user_id == owner.id for r in audits)
-        assert [(r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+        assert [(r.actor, r.actor_user_id, r.actor_key_id) for r in audits] == [
             ("svc_audit_admin", admin.id, 99), ("automation", None, None), ("svc_audit_admin", admin.id, 99)]
         assert audits[1].getMessage().startswith("AUDIT: user automation updated")
         assert "alert:read" in audits[0].getMessage() and "signature:read" in audits[1].getMessage()

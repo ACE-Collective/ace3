@@ -212,7 +212,7 @@ class TestLookup:
 class TestQueue:
     @pytest.mark.asyncio
     async def test_remove(self, client: AsyncClient, remediable, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.remediation.router")
+        caplog.set_level(logging.INFO)
 
         response = await client.post("/remediation/remediations",
                                      json={"action": "remove", "targets": [_target("evil"), _target("worse")]})
@@ -222,8 +222,10 @@ class TestQueue:
         assert [(r["action"], r["status"]) for r in queued] == [("remove", "NEW"), ("remove", "NEW")]
         rows = [_remediation(r["id"]) for r in queued]
         assert [(row.key, row.user_id) for row in rows] == [("evil", _caller_id()), ("worse", _caller_id())]
-        assert any(record.getMessage().startswith("AUDIT: user unittest queued remove remediations")
-                   for record in caplog.records)
+        audit = next(record for record in caplog.records
+                     if record.getMessage().startswith("AUDIT: user unittest queued remove remediations"))
+        assert (audit.actor, audit.actor_user_id, audit.remediation_ids) == (
+            "unittest", _caller_id(), [r["id"] for r in queued])
 
     @pytest.mark.asyncio
     async def test_restore_uses_the_latest_successful_removal(self, client: AsyncClient, remediable):
@@ -299,15 +301,16 @@ class TestDelete:
 class TestRetry:
     @pytest.mark.asyncio
     async def test_queues_a_completed_remediation_again(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.remediation.router")
+        caplog.set_level(logging.INFO)
         remediation_id = _queue("evil", RemediationStatus.COMPLETED, RemediatorStatus.FAILED)
 
         response = await client.post(f"/remediation/remediations/{remediation_id}/retry")
 
         assert response.status_code == 200
         assert response.json() == {"id": remediation_id, "action": "remove", "status": "NEW", "result": None}
-        assert any(record.getMessage() == f"AUDIT: user unittest retried remediation {remediation_id}"
-                   for record in caplog.records)
+        audit = next(record for record in caplog.records
+                     if record.getMessage() == f"AUDIT: user unittest retried remediation {remediation_id}")
+        assert (audit.actor_user_id, audit.remediation_id) == (_caller_id(), remediation_id)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [RemediationStatus.NEW, RemediationStatus.IN_PROGRESS])

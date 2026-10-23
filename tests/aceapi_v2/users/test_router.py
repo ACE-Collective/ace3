@@ -267,7 +267,7 @@ class TestHappyPath:
 
         audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key_id]
         assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
-        assert [(r.user_id, r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+        assert [(r.user_id, r.actor, r.actor_user_id, r.actor_key_id) for r in audits] == [
             (owner.id, "unittest", test_user.id, admin_key_id)] * 3
 
     @pytest.mark.asyncio
@@ -463,7 +463,7 @@ class TestHappyPath:
         )).scalar_one_or_none() is None
 
         audit = next(r for r in caplog.records if r.getMessage().startswith(f"AUDIT: user unittest revoked user permission rows [{perm_id}]"))
-        assert audit.actor_id == admin_id and audit.actor_key_id is not None
+        assert audit.actor_user_id == admin_id and audit.actor_key_id is not None
 
     @pytest.mark.asyncio
     async def test_revoke_rejects_unknown_fields(self, client: AsyncClient, session: AsyncSession):
@@ -820,7 +820,7 @@ class TestSelfServiceApiKeyRoutes:
         audits = [r for r in caplog.records if r.getMessage().startswith("AUDIT:") and getattr(r, "api_key_id", None) == key_id]
         assert [r.getMessage().split()[3] for r in audits] == ["created", "updated", "revoked"]
         # a GUI session, so no API key acted
-        assert [(r.user_id, r.actor, r.actor_id, r.actor_key_id) for r in audits] == [
+        assert [(r.user_id, r.actor, r.actor_user_id, r.actor_key_id) for r in audits] == [
             (user.id, "rtr_self_audit", user.id, None)] * 3
 
     @pytest.mark.asyncio

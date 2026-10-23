@@ -412,8 +412,9 @@ async def submit(
     auth: Annotated[ApiAuthResult, Depends(require_permission("observable", "write"))],
 ) -> ObservableAnalysisRequested:
     observable = await run_db_in_thread(service.request_submission, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s requested a submission for observable %s in alert %s",
-                auth.auth_name, observable, alert_uuid)
+    # saq.logging.log_audit: "AUDIT: ..." at INFO, with the caller's actor fields in extra={}
+    log_audit("user %s requested a submission for observable %s in alert %s",
+              auth.auth_name, observable, alert_uuid, auth=auth, alert_uuid=alert_uuid)
     return ObservableAnalysisRequested(message="Submission requested.")
 
 # src/vendor/__init__.py

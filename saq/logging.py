@@ -8,11 +8,15 @@ import logging.config
 import os
 import sys
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import uuid
 import yaml
 
 from fluent.handler import FluentRecordFormatter
+
+if TYPE_CHECKING:
+    # for the type only: importing aceapi_v2 loads the whole API app, which imports saq
+    from aceapi_v2.auth.schemas import ApiAuthResult
 
 
 # Attributes the logging framework itself puts on a LogRecord, plus the ones ACE
@@ -280,6 +284,23 @@ def _install_transaction_id_filter():
     for handler in root_logger.handlers:
         if not any(isinstance(f, TransactionIdFilter) for f in handler.filters):
             handler.addFilter(TransactionIdFilter())
+
+
+def audit_actor(auth: Optional["ApiAuthResult"]) -> dict:
+    """The extra={} fields naming who did an audited thing, the same on every AUDIT record so one
+    Splunk field finds everything a user (actor_user_id) or an API key (actor_key_id) did. The user
+    id alone is not enough: it does not say which of the user's keys acted, and a config key has no
+    user at all. None is a change nobody authenticated for (an internal caller)."""
+    if auth is None:
+        return {"actor": None, "actor_user_id": None, "actor_key_id": None, "actor_key_name": None, "auth_type": None}
+    return {"actor": auth.auth_name, "actor_user_id": auth.auth_user_id, "actor_key_id": auth.key_id,
+            "actor_key_name": auth.key_name, "auth_type": auth.auth_type}
+
+
+def log_audit(message: str, *args, auth: Optional["ApiAuthResult"], **fields) -> None:
+    """Log an INFO "AUDIT: <message>" record of something done through the API, with the actor's
+    audit_actor() fields and `fields` in extra={}."""
+    logging.getLogger().info(f"AUDIT: {message}", *args, extra={**audit_actor(auth), **fields}, stacklevel=2)
 
 
 # base configuration for logging
