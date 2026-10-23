@@ -1,3 +1,6 @@
+import logging
+from threading import Event
+
 import pytest
 
 from saq.configuration.schema import RemediatorConfig
@@ -169,3 +172,45 @@ def test_worker_lifecycle(worker, thread_count):
     # all should be stopped at this point
     for thread in worker.worker_threads:
         assert not thread.is_alive()
+
+
+@pytest.mark.integration
+def test_worker_loop_recovers_after_failed_commit(worker, caplog):
+    """A remediation whose row was deleted while it was queued fails to commit its history. That
+    failure must not poison the thread's session for the remediations after it."""
+    worker.queue_wait_timeout = 0.1
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    good = create_remediation_work_item(get_db().query(Remediation).filter(Remediation.id == remediation_id).one())
+    deleted = RemediationWorkItem(id=good.id + 1000, action=RemediationAction.REMOVE, name="custom", type=F_TEST, key="deleted", restore_key=None)
+
+    worker.handle_remediation_request(deleted)
+    worker.handle_remediation_request(good)
+
+    # with the shutdown event set, each pass of the loop takes one item and returns
+    worker.stop()
+    worker.worker_loop(Event())
+    worker.worker_loop(Event())
+
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).one()
+    assert remediation.status == RemediationStatus.COMPLETED.value
+    assert remediation.result == RemediatorStatus.SUCCESS.value
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert any(f"(remediation {deleted.id})" in r.getMessage() for r in errors)
+
+
+@pytest.mark.integration
+def test_worker_loop_logs_failed_session_reset(worker, caplog, monkeypatch):
+    def _fail():
+        raise RuntimeError("pool gone")
+
+    monkeypatch.setattr("saq.remediation.worker.remove_all_sessions", _fail)
+    worker.queue_wait_timeout = 0.1
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    worker.handle_remediation_request(create_remediation_work_item(get_db().query(Remediation).filter(Remediation.id == remediation_id).one()))
+
+    worker.stop()
+    worker.worker_loop(Event())
+
+    assert worker.work_queue.empty()
+    assert any(r.levelno == logging.ERROR and r.exc_info and "error removing database connection" in r.getMessage() for r in caplog.records)

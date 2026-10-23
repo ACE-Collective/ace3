@@ -12,6 +12,7 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Optional
 
+from saq.database.pool import remove_all_sessions
 from saq.remediation.external.database import find_superseding_confirmation
 from saq.remediation.external.interface import CheckListener
 from saq.remediation.external.persistence import (
@@ -101,7 +102,19 @@ class ExternalRemediationCheckWorker(CheckListener):
                 if work:
                     self.process(work)
             except Exception as e:
-                logging.exception(f"error processing external remediation check: {e}")
+                logging.exception(
+                    f"error processing external remediation check {work.id} ({self.probe.name} "
+                    f"{work.observable_type} {work.observable_value}): {e}",
+                    extra={"alert_uuid": work.alert_uuid},
+                )
+            finally:
+                if work:
+                    # a failed commit leaves this thread's session needing a rollback, and every
+                    # later check on the thread would fail on it until the service restarts
+                    try:
+                        remove_all_sessions()
+                    except Exception as e:
+                        logging.exception(f"error removing database connection: {e}")
 
             if self.shutdown_event.is_set():
                 break
