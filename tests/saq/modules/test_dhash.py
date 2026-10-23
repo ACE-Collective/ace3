@@ -11,7 +11,7 @@ from saq.constants import DIRECTIVE_DHASH
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_global_runtime_settings
-from saq.modules.dhash import DHashImageAnalysis
+from saq.modules.dhash import DHashImageAnalysis, _image_hash
 from saq.signatures.builtin import DHASH_IMAGE_MATCH
 from saq.util.uuid import get_storage_dir
 
@@ -161,3 +161,28 @@ def test_analysis_without_scores():
     assert analysis.display_name == "DHash Image Analysis"
     analysis.details = None
     assert analysis.scores == []
+
+
+def _noise_image(mode: str, bands: int, seed: int) -> Image.Image:
+    rng = random.Random(seed)
+    image = Image.new(mode, (97, 61))
+    image.putdata([
+        tuple(rng.randint(0, 255) for _ in range(bands)) if bands > 1 else rng.randint(0, 255)
+        for _ in range(97 * 61)])
+    return image
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name, make, expected", [
+    ("L", lambda: _noise_image("L", 1, 1), 0x1936ab35975b91587726233a54b6b4fa7d0b9b57a9753b4dd8e5b142b896ced8f1866a7dce0711f9fd8fe648093dbde0642892978c23725849cdf74b21264cc9),
+    ("RGB", lambda: _noise_image("RGB", 3, 2), 0xccb962b63135c993889d364cc6195573c9b59ab4312d36ac0d68d23169976cd399e36efe2665d10289b737cc8a0974726d079ad4017b04ac69489ee1e334fc9e),
+    # transparency is flattened onto white
+    ("RGBA", lambda: _noise_image("RGBA", 4, 3), 0x6ac9324955725552d72c2732a393c569ce39d29c95285b2bb2b5ab12b2f152d1db9822d9fa6761d292096f682216b7c0cc7f07b8059f5a4a3080cb7a3ee79251),
+    ("LA", lambda: _noise_image("LA", 2, 4), 0xa867a59db52d324d354c594dd4ad6c558cd0c654eacc358e313cb2649f4a15c940cecf10b53e02c32e0c791094abe3ec3d130674da810f8e713866c5c83e279a),
+    ("P", lambda: _noise_image("RGB", 3, 5).convert("P"), 0x2a9494b36d8d6394db8655295929c3336a9a6ad243393b6d9da5a766416d4aaf6a1d90a218494ff1f204241e70e99f67af9f60800cb77f58f9a1043287718b27),
+])
+def test_image_hash_matches_the_dhash_package(tmp_path, name, make, expected):
+    # the expected values are dhash.dhash_int(image, size=16) from dhash 1.4, which this replaced
+    path = tmp_path / f"{name}.png"
+    make().save(path)
+    assert _image_hash(str(path)) == expected
