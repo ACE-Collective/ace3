@@ -16,6 +16,7 @@ import shlex
 import signal
 import sys
 
+import psutil
 import requests
 from fastapi import HTTPException
 from sqlalchemy import func, select, text, update
@@ -45,13 +46,17 @@ MAX_OUTPUT_BYTES = 1024 * 1024
 # how often a running command's output so far is written to its row, for the page to show
 OUTPUT_FLUSH_SECONDS = 2.0
 # a pending or running row this long past its timeout belongs to a run nothing is watching any more
-# (the node's API was killed mid-run, or the dispatch never happened)
-STALE_GRACE_SECONDS = 120
+# (the node's API was killed mid-run, or the dispatch never happened). Longer than stopping a run takes
+# (TERM_GRACE_SECONDS + KILL_WAIT_SECONDS), so a run that is still being stopped is not taken for one
+STALE_GRACE_SECONDS = 180
 # the dispatch only asks the node to start the run, so it returns at once
 DISPATCH_TIMEOUT = (10, 30)
-# a stopped child gets SIGTERM, so ACE's own shutdown runs (an engine started this way releases its
-# locks and marks its node stopped), and SIGKILL if it is still there this long after
-TERM_GRACE_SECONDS = 30
+# a stopped child gets SIGTERM, so ACE's own shutdown runs (an engine started this way stops its workers,
+# releases its locks and marks its node stopped), and this long to finish it before everything in its
+# session gets SIGKILL. Longer than any service takes, as docker's stop_grace_period is: SIGTERM reaches
+# only the command's own group, so an engine stops a worker waiting on a module's subprocess itself, and
+# its shutdown watchdog ends it at shutdown_deadline_seconds plus WATCHDOG_GRACE (95 seconds)
+TERM_GRACE_SECONDS = 100
 # how long a killed child gets to be reaped
 KILL_WAIT_SECONDS = 10
 # each run is a whole `ace` process in http-api-engine, the container the engines transfer work
@@ -363,29 +368,66 @@ def _child_environment() -> dict[str, str]:
     return env
 
 
-def _signal_group(process: asyncio.subprocess.Process, signum: int) -> None:
+def _signal_group(pgid: int, signum: int) -> None:
     try:
-        # start_new_session made the child a process group leader, so this reaches its children too
-        os.killpg(process.pid, signum)
+        os.killpg(pgid, signum)
     except ProcessLookupError:
         pass  # the whole group is already gone
 
 
+def _kill_session(process: asyncio.subprocess.Process) -> list[int]:
+    """SIGKILL every process group in the command's session, and return the pids it found there.
+
+    start_new_session made the command a session leader. A process that moves to a group of its own (an
+    engine's workers, the yara scanner's manager) stays in the session, and so does one reparented after
+    its parent died, so this reaches what a SIGKILL of the command's own group does not, also once the
+    command itself has exited. A process that starts a session of its own (the sandbox launcher) leaves
+    it, and bounds what it runs itself."""
+    if process.returncode is None:
+        # its own group first: once the command is dead it cannot start another group
+        _signal_group(process.pid, signal.SIGKILL)
+
+    members, groups = [], set()
+    for pid in psutil.pids():
+        try:
+            if pid != process.pid and os.getsid(pid) == process.pid:
+                groups.add(os.getpgid(pid))
+                members.append(pid)
+        except ProcessLookupError:
+            continue  # it exited after the listing
+
+    for pgid in groups:
+        _signal_group(pgid, signal.SIGKILL)
+
+    return members
+
+
 async def _stop(execution_id: int, process: asyncio.subprocess.Process) -> None:
-    """SIGTERM the command's process group, then SIGKILL it if the command is still there after
-    TERM_GRACE_SECONDS. Bounded: at most TERM_GRACE_SECONDS + KILL_WAIT_SECONDS."""
+    """SIGTERM the command's process group, give it TERM_GRACE_SECONDS to stop, then SIGKILL what is left
+    in its session. Bounded: at most TERM_GRACE_SECONDS + KILL_WAIT_SECONDS."""
     if process.returncode is not None:
         return
 
-    _signal_group(process, signal.SIGTERM)
+    # start_new_session made the child a process group leader, so this reaches the children that stayed
+    # in its group. The rest stop when it does: an engine stops its own workers
+    _signal_group(process.pid, signal.SIGTERM)
     try:
         await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS)
-        return
     except TimeoutError:
         logger.warning("cli execution %s: child %s ignored SIGTERM for %s seconds, killing it",
                        execution_id, process.pid, TERM_GRACE_SECONDS, extra={"cli_execution_id": execution_id})
 
-    _signal_group(process, signal.SIGKILL)
+    # also when it did stop: a service its shutdown watchdog ended never stopped what leads a group of its
+    # own, an engine's workers among them
+    left = _kill_session(process)
+    if left:
+        logger.warning("cli execution %s: killed %d processes left in the session of child %s: %s",
+                       execution_id, len(left), process.pid, left,
+                       extra={"cli_execution_id": execution_id, "killed_pids": left})
+
+    if process.returncode is not None:
+        return
+
     # SIGKILL cannot be ignored, so only an unkillable (D state) child takes this long
     try:
         await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_SECONDS)
