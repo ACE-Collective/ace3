@@ -1383,7 +1383,7 @@ def hunt_audit_records():
         def emit(self, record):
             message = record.getMessage()
             if message.startswith("HUNT_AUDIT "):
-                # the actor fields every AUDIT record has, from extra={}, under a key the JSON never uses
+                # the actor fields log_audit() records have, from extra={}, under a key the JSON never uses
                 actor = {key: getattr(record, key, "missing") for key in audit_actor(None)}
                 records.append({**json.loads(message[len("HUNT_AUDIT "):]), "_actor": actor})
 

@@ -34,7 +34,7 @@ class ValidationOutcome:
 
 
 def write_audit_record(event: str, auth: ApiAuthResult, src_ip: Optional[str], **fields: Any) -> None:
-    # the JSON keeps the AI_AUDIT identity fields; extra={} carries the ones every AUDIT record has
+    # the JSON keeps the AI_AUDIT identity fields; extra={} carries the ones log_audit() records have
     record = {
         "event": event,
         "user": auth.auth_name,
