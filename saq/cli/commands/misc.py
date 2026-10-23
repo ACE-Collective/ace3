@@ -24,6 +24,7 @@ def close_event(args):
         event_ids = args.event_id
 
     # Set the event status to the configured closed status
+    exit_code = 0
     for event_id in event_ids:
         if not event_id:
             continue
@@ -37,13 +38,14 @@ def close_event(args):
             print("event closed")
         except Exception as e:
             logging.exception(f"unable to close event {event_id}: {e}")
+            exit_code = 1
 
     if args.dry_run:
         get_db().rollback()
     else:
         get_db().commit()
 
-    sys.exit(0)
+    sys.exit(exit_code)
 
 event_parser = get_cli_subparsers().add_parser('event')
 event_sp = event_parser.add_subparsers(dest='event_cmd')
@@ -134,7 +136,7 @@ def s3_upload_file(args) -> int:
         logging.info(f"Successfully uploaded {args.file} to s3://{args.bucket}/{args.key}")
         return 0
     except Exception as e:
-        logging.error(f"Failed to upload file: {e}")
+        logging.exception(f"failed to upload {args.file} to s3://{args.bucket}/{args.key}: {e}")
         return 1
 
 s3_upload_parser = s3_sp.add_parser("upload")
