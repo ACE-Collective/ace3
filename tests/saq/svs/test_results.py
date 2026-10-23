@@ -132,10 +132,12 @@ def _hunt(hunt_dir: Path, *, suppression: Optional[str] = "1:00:00:00", grouped=
     return path
 
 
-def _suppressed_match(run: SVSRun, hunt_uuid: str = HUNT) -> None:
-    """The hunter's record that the hunt dropped a match for its suppression during the run."""
+def _suppressed_match(run: SVSRun, hunt_uuid: str = HUNT, dedup_key: Optional[str] = None) -> None:
+    """The hunter's record that the hunt dropped a match during the run: for its suppression, or with
+    dedup_key as a duplicate."""
     with private_transaction() as session:
-        session.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid, group_value="win10-01",
+        session.add(SVSSuppressedMatch(run_id=run.id, hunt_uuid=hunt_uuid,
+                                       group_value=None if dedup_key else "win10-01", dedup_key=dedup_key,
                                        event_time=run.started_at + timedelta(minutes=5)))
 
 
@@ -302,15 +304,34 @@ class TestSuppression:
         row = _row(run, HUNT)
         assert row.status == "possibly_suppressed"
         assert row.suppressing_alert_uuid == during != before
-        assert row.suppression_imprecise is False
 
-    def test_a_deduplicating_hunt_is_imprecise(self, hunt_dir):
+    def test_a_deduplicating_hunt_suppresses_as_a_whole(self, hunt_dir):
+        """Without group_by its suppression stops the whole hunt, so its alert is named."""
         _hunt(hunt_dir, dedup=True)
+        run = _run()
+        before = _hunt_alert(run.started_at - timedelta(hours=3))
+        results.compute_result(run.id)
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid) == ("possibly_suppressed", before)
+
+    @pytest.mark.parametrize("suppression", ["1:00:00:00", None])
+    def test_a_duplicate_the_collector_recorded(self, hunt_dir, suppression):
+        """The collector dropped the run's match as a duplicate of its key, whatever the hunt's
+        suppression: certain, and the hunt's alert is not named, since it may be another key's."""
+        _hunt(hunt_dir, dedup=True, suppression=suppression)
+        run = _run()
+        _hunt_alert(run.started_at - timedelta(hours=3))
+        _suppressed_match(run, dedup_key=f"{HUNT}:win10-01")
+        results.compute_result(run.id)
+        row = _row(run, HUNT)
+        assert (row.status, row.suppressing_alert_uuid) == ("possibly_suppressed", None)
+
+    def test_a_deduplicating_hunt_without_a_record_or_alert_is_missing(self, hunt_dir):
+        _hunt(hunt_dir, dedup=True, suppression=None)
         run = _run()
         _hunt_alert(run.started_at - timedelta(hours=3))
         results.compute_result(run.id)
-        row = _row(run, HUNT)
-        assert (row.status, row.suppression_imprecise) == ("possibly_suppressed", True)
+        assert _row(run, HUNT).status == "missing"
 
     def test_a_grouped_hunt_the_hunter_recorded_as_suppressed(self, hunt_dir, caplog):
         """Certain, whatever its alerts: none is named, since the latest may be another group's."""
@@ -322,8 +343,7 @@ class TestSuppression:
         with caplog.at_level(logging.INFO):
             results.compute_result(run.id)
         row = _row(run, HUNT)
-        assert (row.status, row.suppressing_alert_uuid, row.suppression_imprecise) == (
-            "possibly_suppressed", None, False)
+        assert (row.status, row.suppressing_alert_uuid) == ("possibly_suppressed", None)
         record = next(r for r in caplog.records if "is missing expected signature" in r.getMessage())
         assert record.getMessage().endswith(", possibly suppressed") and record.possibly_suppressed
 
@@ -341,9 +361,16 @@ class TestSuppression:
     def test_a_grouped_hunt_without_suppression_is_missing(self, hunt_dir):
         _hunt(hunt_dir, grouped=True, suppression=None)
         run = _run()
-        _suppressed_match(run)
+        _hunt_alert(run.started_at + timedelta(minutes=10))
         results.compute_result(run.id)
         assert _row(run, HUNT).status == "missing"
+
+    def test_a_grouped_hunt_without_suppression_the_collector_recorded_a_duplicate_of(self, hunt_dir):
+        _hunt(hunt_dir, grouped=True, dedup=True, suppression=None)
+        run = _run()
+        _suppressed_match(run, dedup_key=f"{HUNT}:win10-01")
+        results.compute_result(run.id)
+        assert _row(run, HUNT).status == "possibly_suppressed"
 
     def test_another_runs_alert_of_an_ungrouped_hunt_still_suppresses(self, hunt_dir):
         _hunt(hunt_dir)

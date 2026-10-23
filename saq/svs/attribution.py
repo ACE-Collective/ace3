@@ -1040,26 +1040,37 @@ def log_sightings(alert_uuid: str, evaluation: Evaluation, stage: str) -> None:
 # suppressed matches (the hunter)
 #
 
-def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, str]],
-                              now: Optional[datetime] = None) -> list[tuple[RunSnapshot, str]]:
+@dataclass(frozen=True)
+class SuppressedMatch:
+    group_value: Optional[str]
+    # the key the collector found it a duplicate of; None when the hunt suppressed it
+    dedup_key: Optional[str]
+    event_time: datetime
+
+
+def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, Optional[str]]],
+                              now: Optional[datetime] = None, duplicate: bool = False) -> list[tuple[RunSnapshot, str]]:
     """Records the runs whose attribution window covers the event time of a match (root, group_value)
-    that a hunt with group_by dropped for its suppression, on one of the run's test hosts, and marks
-    their results stale: the first match per run and hunt (svs_suppressed_matches). The match goes
-    to the run context attribution would give it to (context_claimant), or to each of the runs when
-    their claims on the host overlap, since none of them can be told apart. Nothing is read while no
-    run is open, and nothing is written for a run and hunt already recorded. Returns the (run,
-    group_value) recorded now."""
+    that a hunt dropped, on one of the run's test hosts, and marks their results stale: the first
+    match per run and hunt (svs_suppressed_matches). A hunt with group_by drops a match for its
+    suppression; with duplicate, the collector dropped it as a duplicate of its dedup_key
+    (root.submission_key), whatever the hunt's grouping. The match goes to the run context
+    attribution would give it to (context_claimant), or to each of the runs when their claims on the
+    host overlap, since none of them can be told apart. Nothing is read while no run is open, and
+    nothing is written for a run and hunt already recorded. Returns the (run, group_value or dedup
+    key) recorded now."""
     if not matches or not attribution_open():
         return []
 
     now = now or datetime.now()
     times = [alert_event_time(root, now) for root, _ in matches]
     owners = context_owners([(alert_hosts(root), event_time) for (root, _), event_time in zip(matches, times)])
-    first: dict[int, tuple[RunSnapshot, str, datetime]] = {}
-    for (_, group_value), event_time, owner in sorted(zip(matches, times, owners), key=lambda item: item[1]):
+    first: dict[int, tuple[RunSnapshot, SuppressedMatch]] = {}
+    for (root, group_value), event_time, owner in sorted(zip(matches, times, owners), key=lambda item: item[1]):
         for run in [owner.run] if owner.run is not None else owner.candidates:
             if run.id not in first:
-                first[run.id] = (run, group_value, event_time)
+                first[run.id] = (run, SuppressedMatch(group_value, root.submission_key if duplicate else None,
+                                                      event_time))
     if not first:
         return []
 
@@ -1074,28 +1085,36 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
     written = run_private_transaction(
         _write_suppressed_matches, hunt_uuid, pending, attempts=WRITE_ATTEMPTS,
         description=f"svs suppressed matches of hunt {hunt_uuid}", extra={"hunt_uuid": hunt_uuid})
-    for run, group_value in written:
-        logging.info("svs run %s: hunt %s suppressed a match for group_value %s", run.uuid, hunt_uuid, group_value,
-                     extra={**run.log_fields(), "hunt_uuid": hunt_uuid, "group_value": group_value})
-    return written
+    result = []
+    for run, match in written:
+        fields = {**run.log_fields(), "hunt_uuid": hunt_uuid, "group_value": match.group_value}
+        if match.dedup_key is not None:
+            logging.info("svs run %s: hunt %s dropped a duplicate match of dedup_key %s", run.uuid, hunt_uuid,
+                         match.dedup_key, extra={**fields, "dedup_key": match.dedup_key})
+        else:
+            logging.info("svs run %s: hunt %s suppressed a match for group_value %s", run.uuid, hunt_uuid,
+                         match.group_value, extra=fields)
+        result.append((run, match.dedup_key if match.dedup_key is not None else match.group_value))
+    return result
 
 
 def _write_suppressed_matches(session, hunt_uuid: str,
-                              pending: list[tuple[RunSnapshot, str, datetime]]) -> list[tuple[RunSnapshot, str]]:
+                              pending: list[tuple[RunSnapshot, SuppressedMatch]]) -> list[tuple[RunSnapshot, SuppressedMatch]]:
     """record_suppressed_matches' transaction, run again whole when it deadlocks. The runs are
     locked first, in id order, as _lock_runs does for attributions, since marking them stale needs
     them after the rows' foreign keys took a shared lock on them."""
     session.execute(
-        select(SVSRun.id).where(SVSRun.id.in_([run.id for run, _, _ in pending]))
+        select(SVSRun.id).where(SVSRun.id.in_([run.id for run, _ in pending]))
         .order_by(SVSRun.id).with_for_update()).all()
 
     written = []
-    for run, group_value, event_time in pending:
-        # the hunt's previous execution, or another node's, may have recorded it meanwhile
+    for run, match in pending:
+        # the hunt's previous execution, another node's, or the collector, may have recorded it meanwhile
         inserted = session.execute(mysql_insert(SVSSuppressedMatch).prefix_with("IGNORE").values(
-            run_id=run.id, hunt_uuid=hunt_uuid, group_value=group_value, event_time=event_time))
+            run_id=run.id, hunt_uuid=hunt_uuid, group_value=match.group_value, dedup_key=match.dedup_key,
+            event_time=match.event_time))
         if inserted.rowcount == 1:
-            written.append((run, group_value))
+            written.append((run, match))
 
     mark_runs_stale(session, run_ids=[run.id for run, _ in written])
     return written

@@ -325,6 +325,8 @@ dedup_key: "{{ user }}-{{ src_ip }}-{{ action }}"
 
 > If the `group_by` field is also set for the hunt, the computed `dedup_key` is built from the *first event* in the group.
 
+During an SVS test run, a match the collector drops as a duplicate on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt dropped the test rather than missed it (`docs/SVS_RUNS.md`, *Results*).
+
 ### `query` (string)
 
 The hunt to execute.

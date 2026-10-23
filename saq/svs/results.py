@@ -12,12 +12,13 @@ A signature that fired only in the test's cleanup (docs/SVS_RUNS.md, *Cleanup*) 
 it is expected, when it is missing: it is neither a hit nor a candidate.
 
 Each expected signature that did not fire (and is not ignored) is missing, or possibly suppressed
-when it is a hunt with a suppression period and [ART-8]:
-- it has group_by, and the hunter recorded that it dropped a match for its suppression during the
-  run, on one of the run's test hosts (svs_suppressed_matches);
-- otherwise, the hunt alerted within that period before the run's window closed, on an alert not
-  attributed to the run. For a hunt that deduplicates its alerts that can't be told for certain,
-  and the row says so.
+when it is a hunt and [ART-8]:
+- the hunter recorded that it dropped a match during the run, on one of the run's test hosts
+  (svs_suppressed_matches): for its suppression (a hunt with group_by) or as a duplicate of its
+  dedup_key;
+- or it has a suppression period and no group_by, and it alerted within that period before the
+  run's window closed, on an alert not attributed to the run: such a hunt suppresses as a whole,
+  by not running, so there is no match to record.
 
 The result is computed when the run ends, and again by the timers whenever it is stale
 (saq/svs/result_state.py). Each computation runs in a transaction of its own and clears the stale
@@ -121,14 +122,12 @@ class ResultRow:
     fallback_time: bool = False
     content_hash: Optional[str] = None
     suppressing_alert_uuid: Optional[str] = None
-    suppression_imprecise: bool = False
 
     def values(self) -> dict:
         return {"status": self.status.value, "signature_family": self.family, "signature_name": self.name,
                 "alert_count": self.alert_count, "late_only": self.late_only, "context_only": self.context_only,
                 "fallback_time": self.fallback_time,
-                "content_hash": self.content_hash, "suppressing_alert_uuid": self.suppressing_alert_uuid,
-                "suppression_imprecise": self.suppression_imprecise}
+                "content_hash": self.content_hash, "suppressing_alert_uuid": self.suppressing_alert_uuid}
 
 
 @dataclass
@@ -217,8 +216,8 @@ def suppressing_alert(session, run: SVSRun, hunt: HuntInfo, now: datetime) -> Op
 
 
 def suppressed_hunts(session, run_id: int) -> set[str]:
-    """The hunts with group_by that dropped a match for their suppression during the run, on one
-    of its test hosts (saq.svs.attribution.record_suppressed_matches)."""
+    """The hunts that dropped a match during the run, on one of its test hosts, for their
+    suppression or as a duplicate (saq.svs.attribution.record_suppressed_matches)."""
     return set(session.execute(
         select(SVSSuppressedMatch.hunt_uuid).where(SVSSuppressedMatch.run_id == run_id)).scalars())
 
@@ -265,23 +264,19 @@ def _rows(session, run: SVSRun, fired: dict[str, Fired], decisions: Decisions,
                               context_only=signature.context_only, fallback_time=signature.fallback_time,
                               **described(uuid, signature.family)))
 
-    suppressed = suppressed_hunts(session, run.id) if any(
-        uuid in hunts and hunts[uuid].per_group for uuid in missing) else set()
+    suppressed = suppressed_hunts(session, run.id) if missing else set()
     for uuid in sorted(missing):
         hunt = hunts.get(uuid)
-        if hunt is not None and hunt.per_group and hunt.suppression is not None:
-            # the hunter's record says it was suppressed but not by which alert, and the hunt's latest
-            # alert may be another group's, so none is named
-            if uuid in suppressed:
-                rows.append(ResultRow(uuid, ResultStatus.POSSIBLY_SUPPRESSED, **described(uuid)))
-            else:
-                rows.append(ResultRow(uuid, ResultStatus.MISSING, **described(uuid)))
+        # the hunter's record says it dropped a match, not because of which alert: the hunt's latest
+        # alert may be another group's or key's, so none is named
+        if uuid in suppressed:
+            rows.append(ResultRow(uuid, ResultStatus.POSSIBLY_SUPPRESSED, **described(uuid)))
             continue
 
-        alert_uuid = suppressing_alert(session, run, hunt, now) if hunt is not None else None
+        alert_uuid = suppressing_alert(session, run, hunt, now) if hunt is not None and not hunt.per_group else None
         if alert_uuid is not None:
             rows.append(ResultRow(uuid, ResultStatus.POSSIBLY_SUPPRESSED, suppressing_alert_uuid=alert_uuid,
-                                  suppression_imprecise=hunt.grouped, **described(uuid)))
+                                  **described(uuid)))
         else:
             rows.append(ResultRow(uuid, ResultStatus.MISSING, **described(uuid)))
 
@@ -375,8 +370,7 @@ def _log(fields: dict, result: ComputedResult) -> None:
                          ", possibly suppressed" if row.status == ResultStatus.POSSIBLY_SUPPRESSED else "",
                          extra={**fields, "signature_uuid": row.signature_uuid, "signature_family": row.family,
                                 "possibly_suppressed": row.status == ResultStatus.POSSIBLY_SUPPRESSED,
-                                "suppressing_alert_uuid": row.suppressing_alert_uuid,
-                                "suppression_imprecise": row.suppression_imprecise})
+                                "suppressing_alert_uuid": row.suppressing_alert_uuid})
 
 
 def recompute_stale_results(now: Optional[datetime] = None, limit: int = RECOMPUTE_BATCH) -> int:
