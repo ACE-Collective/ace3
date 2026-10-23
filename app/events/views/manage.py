@@ -1,16 +1,16 @@
 from datetime import datetime, timedelta
-import hashlib
 from flask import flash, redirect, render_template, request, session, url_for
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, exists, or_
 from app.auth.permissions import require_permission
 from app.blueprints import events
 from app.filters import FILTER_TYPE_CHECKBOX, FILTER_TYPE_MULTISELECT, FILTER_TYPE_SELECT, FILTER_TYPE_TEXT, SearchFilter
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT
-from saq.database.model import Alert, Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
+from saq.database.model import Campaign, Company, CompanyMapping, Event, EventMapping, EventPreventionTool, EventRemediation, EventRiskLevel, EventStatus, EventTagMapping, EventType, EventVector, Malware, MalwareMapping, Observable, ObservableMapping, Tag, User, Comment
 from saq.database.pool import get_db
 from saq.database.util.event import event_alerts_load_options, event_list_load_options, get_event_tags
 from saq.disposition import get_dispositions
+from saq.gui.filter_query import ANY_OBSERVABLE_TYPE, observable_value_condition
 from saq.remediation.coverage import get_remediation_coverage
 from aceapi_v2.sync import run_async
 from aceapi_v2.observable_types.service import get_observable_types
@@ -100,34 +100,24 @@ def manage():
     if filters['filter_event_risk_level'].value != 'ANY':
         query = query.filter(Event.risk_level.has(value=filters['filter_event_risk_level'].value))
 
-    # If an observable type and value filter was supplied, create the query so that it uses the type+md5 index
-    if filters['filter_observable_type'].value != 'ANY' and filters['filter_observable_value'].value:
-        o_md5 = hashlib.md5(filters['filter_observable_value'].value.encode('utf-8', errors='ignore')).hexdigest()
+    # events with an alert that carries the observable, matched on the (type, sha256) index the way
+    # the alert page matches it. EXISTS rather than joins, so an event is listed once however many
+    # of its alerts carry it
+    observable_type = filters['filter_observable_type'].value
+    observable_value = filters['filter_observable_value'].value
+    if observable_type != 'ANY' or observable_value:
+        if observable_value:
+            observable_condition = observable_value_condition(
+                ANY_OBSERVABLE_TYPE if observable_type == 'ANY' else observable_type, observable_value)
+        else:
+            observable_condition = Observable.type == observable_type
 
-        query = query.join(EventMapping, Event.id == EventMapping.event_id) \
-            .join(Alert, EventMapping.alert_id == Alert.id) \
-            .join(ObservableMapping, Alert.id == ObservableMapping.alert_id) \
-            .join(Observable, ObservableMapping.observable_id == Observable.id) \
-            .filter(Observable.type == filters['filter_observable_type'].value, Observable.md5 == func.UNHEX(o_md5))
-
-    # Otherwise, check to see if either of the individual filters were given. This prevents trying to join on the same
-    # tables more than once, which causes an error.
-    else:
-        if filters['filter_observable_type'].value != 'ANY':
-            query = query.join(EventMapping, Event.id == EventMapping.event_id) \
-                .join(Alert, EventMapping.alert_id == Alert.id) \
-                .join(ObservableMapping, Alert.id == ObservableMapping.alert_id) \
-                .join(Observable, ObservableMapping.observable_id == Observable.id) \
-                .filter(Observable.type == filters['filter_observable_type'].value)
-
-        elif filters['filter_observable_value'].value:
-            o_md5 = hashlib.md5(filters['filter_observable_value'].value.encode('utf-8', errors='ignore')).hexdigest()
-
-            query = query.join(EventMapping, Event.id == EventMapping.event_id) \
-                .join(Alert, EventMapping.alert_id == Alert.id) \
-                .join(ObservableMapping, Alert.id == ObservableMapping.alert_id) \
-                .join(Observable, ObservableMapping.observable_id == Observable.id) \
-                .filter(Observable.md5 == func.UNHEX(o_md5))
+        query = query.filter(exists().where(
+            EventMapping.event_id == Event.id,
+            ObservableMapping.alert_id == EventMapping.alert_id,
+            Observable.id == ObservableMapping.observable_id,
+            observable_condition,
+        ).correlate(Event))
 
     mal_filters = []
     for filter_name in filters.keys():
@@ -207,7 +197,8 @@ def manage():
         else:
             query = query.order_by(EventRiskLevel.value.asc())
     elif session['event_sort_by'] == 'owner':
-        query = query.join(User)
+        # an outer join: an event nobody owns yet is still listed
+        query = query.outerjoin(User, Event.owner_id == User.id)
         if session['event_sort_dir']:
             query = query.order_by(User.display_name.desc())
         else:

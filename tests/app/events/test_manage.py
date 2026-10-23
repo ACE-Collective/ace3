@@ -1,4 +1,6 @@
-from datetime import date, timedelta
+import hashlib
+import re
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 from flask import url_for
@@ -8,6 +10,9 @@ from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE
 from saq.database.model import (
     Alert,
     Campaign,
+    Comment,
+    Company,
+    CompanyMapping,
     Event,
     EventMapping,
     EventPreventionTool,
@@ -19,11 +24,14 @@ from saq.database.model import (
     EventVector,
     Malware,
     MalwareMapping,
+    Observable,
+    ObservableMapping,
     Tag,
     TagMapping,
     Threat,
     ThreatType,
 )
+from saq.configuration.config import get_config
 from saq.database.pool import get_db
 from tests.saq.helpers import count_queries
 
@@ -186,3 +194,176 @@ def test_manage_event_details_query_count_does_not_grow_with_alerts(web_client, 
         counts[event_id] = len(statements)
 
     assert counts[many] == counts[few], f"{counts[few]} queries for 2 alerts, {counts[many]} for 10"
+
+
+def _rows(html: str) -> list[str]:
+    """The event ids listed, in order, as many times as each is listed."""
+    return re.findall(r'id="event_row_(\d+)"', html)
+
+
+def _ids(*events) -> list[str]:
+    return [str(event.id) for event in events]
+
+
+def test_manage_redirects_when_events_are_not_displayed(web_client, monkeypatch):
+    monkeypatch.setattr(get_config().gui, "display_events", False)
+
+    response = web_client.get(url_for("events.manage"))
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith(url_for("analysis.index"))
+
+
+def test_manage_filters_by_date_range(web_client, lookups):
+    today = _make_events(lookups, 1, name="today")[0]
+    ten_days_ago = _make_events(lookups, 1, name="old")[0]
+    ten_days_ago.creation_date = date.today() - timedelta(days=10)
+    get_db().commit()
+
+    start = (datetime.now() - timedelta(days=2)).strftime("%m-%d-%Y %H:%M")
+    end = (datetime.now() + timedelta(days=1)).strftime("%m-%d-%Y %H:%M")
+    html, _ = _render(web_client, event_daterange=f"{start} - {end}")
+    assert _rows(html) == _ids(today)
+
+    # a range that does not parse falls back to the last 7 days, and says so
+    html, _ = _render(web_client, event_daterange="last tuesday")
+    assert "error parsing date range, using default 7 days" in html
+    assert _rows(html) == _ids(today)
+
+
+def test_manage_filters_by_status_and_owner(web_client, lookups):
+    owned = _make_events(lookups, 1, name="owned")[0]
+    unowned = _make_events(lookups, 1, name="unowned")[0]
+    unowned.owner_id = None
+    closed_status = EventStatus(value="CLOSED")
+    closed = _make_events(lookups, 1, name="closed")[0]
+    closed.status = closed_status
+    get_db().commit()
+
+    # OPEN is the default
+    html, _ = _render(web_client)
+    assert sorted(_rows(html)) == sorted(_ids(owned, unowned))
+
+    html, _ = _render(web_client, filter_event_status="CLOSED")
+    assert _rows(html) == _ids(closed)
+
+    html, _ = _render(web_client, filter_event_status="OPEN", filter_event_owner=str(lookups["owner_id"]))
+    assert _rows(html) == _ids(owned)
+
+    html, _ = _render(web_client, filter_event_status="OPEN", filter_event_owner="None")
+    assert _rows(html) == _ids(unowned)
+
+
+@pytest.mark.parametrize("field,lookup", [
+    ("filter_event_type", "type"),
+    ("filter_event_vector", "vector"),
+    ("filter_event_prevention_tool", "prevention_tool"),
+    ("filter_event_risk_level", "risk_level"),
+])
+def test_manage_filters_by_event_attribute(web_client, lookups, field, lookup):
+    event = _make_events(lookups, 1)[0]
+
+    html, _ = _render(web_client, **{field: lookups[lookup].value})
+    assert _rows(html) == _ids(event)
+
+    html, _ = _render(web_client, **{field: "no such value"})
+    assert _rows(html) == []
+
+
+def test_manage_filters_by_malware_company_and_campaign(web_client, lookups):
+    tagged = _make_events(lookups, 1, name="tagged")[0]
+    plain = _make_events(lookups, 1, name="plain")[0]
+    db = get_db()
+    company = Company(name="test_company")
+    db.add(company)
+    db.flush()
+    db.add(CompanyMapping(event_id=tagged.id, company_id=company.id))
+    db.query(MalwareMapping).filter(MalwareMapping.event_id == plain.id).delete()
+    plain.campaign = None
+    db.commit()
+
+    for form in ({f"malz_{lookups['malware'].id}": "on"},
+                 {f"company_{company.id}": "on"},
+                 {f"campaign_{lookups['campaign'].id}": "on"}):
+        html, _ = _render(web_client, **form)
+        assert _rows(html) == _ids(tagged), form
+
+
+def _add_observable(alert_ids: list[int], observable_type: str, value: str) -> Observable:
+    db = get_db()
+    observable = Observable(type=observable_type, value=value.encode(), sha256=hashlib.sha256(value.encode()).digest())
+    db.add(observable)
+    db.flush()
+    for alert_id in alert_ids:
+        db.add(ObservableMapping(observable_id=observable.id, alert_id=alert_id))
+    db.commit()
+    return observable
+
+
+def _alert_ids(event: Event) -> list[int]:
+    return [mapping.alert_id for mapping in get_db().query(EventMapping).filter(EventMapping.event_id == event.id)]
+
+
+def test_manage_filters_by_observable(web_client, lookups):
+    with_ip = _make_events(lookups, 1, name="with ip")[0]
+    with_fqdn = _make_events(lookups, 1, name="with fqdn")[0]
+    # every alert of the event carries it: the event is still listed once
+    _add_observable(_alert_ids(with_ip), "ipv4", "10.20.30.40")
+    _add_observable(_alert_ids(with_fqdn)[:1], "fqdn", "evil.example.com")
+
+    html, _ = _render(web_client, filter_observable_type="ipv4", filter_observable_value="10.20.30.40")
+    assert _rows(html) == _ids(with_ip)
+
+    html, _ = _render(web_client, filter_observable_type="ipv4", filter_observable_value="10.20.30.41")
+    assert _rows(html) == []
+
+    html, _ = _render(web_client, filter_observable_type="fqdn")
+    assert _rows(html) == _ids(with_fqdn)
+
+    html, _ = _render(web_client, filter_observable_type="ipv4")
+    assert _rows(html) == _ids(with_ip)
+
+    html, _ = _render(web_client, filter_observable_value="evil.example.com")
+    assert _rows(html) == _ids(with_fqdn)
+
+
+@pytest.mark.parametrize("sort_field", ["date", "event", "campaign", "prevention", "remediation", "status",
+                                        "risk_level", "owner", "disposition"])
+def test_manage_sorts_without_losing_events(web_client, lookups, sort_field):
+    owned = _make_events(lookups, 1, name="owned")[0]
+    # no owner and no campaign: nothing is required to sort by them
+    unowned = _make_events(lookups, 1, name="unowned", disposition=DISPOSITION_FALSE_POSITIVE)[0]
+    unowned.owner_id = None
+    unowned.campaign = None
+    # and a different value in every other sort column, so the order is never a tie
+    unowned.creation_date = date.today() - timedelta(days=1)
+    unowned.type = EventType(value="other_type")
+    unowned.vector = EventVector(value="other_vector")
+    unowned.prevention_tool = EventPreventionTool(value="other_prevention_tool")
+    unowned.remediation = EventRemediation(value="other_remediation")
+    unowned.risk_level = EventRiskLevel(value="other_risk_level")
+    unowned.status = EventStatus(value="CLOSED")
+    get_db().commit()
+    both_statuses = {"filter_event_status": ["OPEN", "CLOSED"]}
+
+    # the first post sorts by the field, the second the other way round
+    first, _ = _render(web_client, sort_field=sort_field, **both_statuses)
+    second, _ = _render(web_client, sort_field=sort_field, **both_statuses)
+
+    assert sorted(_rows(first)) == sorted(_ids(owned, unowned))
+    assert _rows(second) == list(reversed(_rows(first)))
+
+
+def test_manage_event_details_shows_alert_comments(web_client, lookups, analyst):
+    event = _make_events(lookups, 1, alerts_per_event=2)[0]
+    alerts = get_db().query(Alert).filter(Alert.id.in_(_alert_ids(event))).all()
+    db = get_db()
+    db.add(Comment(uuid=alerts[0].uuid, user_id=analyst, comment="first look"))
+    db.add(Comment(uuid=alerts[0].uuid, user_id=analyst, comment="second look"))
+    db.commit()
+
+    response = web_client.get(url_for("events.manage_event_details", event_id=event.id))
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert "first look" in html and "second look" in html
