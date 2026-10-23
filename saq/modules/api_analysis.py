@@ -302,6 +302,7 @@ class BaseAPIAnalyzer(AnalysisModule):
         if self.config.query_path is not None:
             self.verify_path_exists(abs_path(self.config.query_path))
 
+    @property
     def generated_analysis_type(self):
         return BaseAPIAnalysis
 
@@ -366,8 +367,8 @@ class BaseAPIAnalyzer(AnalysisModule):
         if self.json_query:
             try:
                 self.target_query = json.loads(self.target_query)
-            except:
-                raise ValueError(f"{self.name} query is not valid JSON: {self.target_query}")
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{self.name} query is not valid JSON: {self.target_query}") from e
 
     def _apply_mapping_properties(self, new_observable, mapping: ObservableMapping) -> None:
         """Apply tags, directives, and display settings from a mapping to an observable."""
@@ -415,6 +416,14 @@ class BaseAPIAnalyzer(AnalysisModule):
                             or the time AFTER which we should be searching for results.
                 stop_time: A string or datetime object that contains the 'stop_time' of the query,
                             or the time BEFORE which we should be searching for results.
+        """
+        pass
+
+    def fill_additional_timespecs(self, additional_times: dict[str, tuple[datetime.datetime, datetime.datetime]]) -> None:
+        """ Fills in the time specification of each named TIMESPEC token configured in time_ranges.
+
+            Args:
+                additional_times: maps each token name to the (start_time, stop_time) to search between.
         """
         pass
 
