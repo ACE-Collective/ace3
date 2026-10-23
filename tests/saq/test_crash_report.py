@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -1456,3 +1457,92 @@ def test_replication_thread_start_failure_releases_its_slot(monkeypatch, caplog)
     crash_replication._upload_slots.release()
     assert not any("crash replication busy" in r.getMessage() for r in caplog.records)
 
+
+def _replicated_crash(root_analysis):
+    from saq.crash_replication import replicate_report
+
+    root_analysis.save()
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION, module_path="saq.modules.test:BasicTestAnalysis", root=root_analysis,
+        exception=_raise(), index=False, replicate=False)
+    assert replicate_report(find_crash_report_dir(crash_id), crash_id)
+    return crash_id
+
+
+@pytest.mark.unit
+def test_replication_read_path_never_raises_on_a_broken_store(root_analysis, shared_storage, tmp_path, monkeypatch, caplog):
+    """Every reader answers "not there" when the object store fails, so the API falls back to
+    the local report rather than failing the request."""
+    from saq import crash_replication
+
+    crash_id = _replicated_crash(root_analysis)
+    for method in ("object_exists", "list_objects", "download_file", "get_object_info", "delete_object"):
+        monkeypatch.setattr(shared_storage, method, _explode)
+
+    assert crash_replication.remote_report_exists(crash_id) is False
+    assert crash_replication.list_remote_files(crash_id) == []
+    assert crash_replication.fetch_metadata(crash_id, str(tmp_path)) is None
+    assert crash_replication.list_replicated_ids() == set()
+    for message in ("unable to check shared storage for crash report",
+                    "unable to list shared storage for crash report",
+                    "unable to fetch crash metadata",
+                    "unable to list replicated crash reports"):
+        assert _warned(caplog, message), message
+
+
+@pytest.mark.unit
+def test_replication_fetch_and_delete_failures(root_analysis, shared_storage, tmp_path, monkeypatch, caplog):
+    from saq import crash_replication
+
+    crash_id = _replicated_crash(root_analysis)
+    # listing works, the per-object calls fail
+    monkeypatch.setattr(shared_storage, "download_file", _explode)
+    monkeypatch.setattr(shared_storage, "get_object_info", _explode)
+    monkeypatch.setattr(shared_storage, "delete_object", _explode)
+
+    assert crash_replication.fetch_report(crash_id, str(tmp_path)) is None
+    assert crash_replication.remote_file_sizes(crash_id) == {}
+    assert crash_replication.delete_report(crash_id) is False
+    for message in ("unable to fetch crash report", "unable to size crash report",
+                    "unable to delete replicated crash report"):
+        assert _warned(caplog, message), message
+
+
+@pytest.mark.unit
+def test_replication_of_a_missing_report(shared_storage, tmp_path, caplog):
+    from saq import crash_replication
+
+    crash_id = str(uuid.uuid4())
+
+    assert crash_replication.replicate_report(str(tmp_path / "gone"), crash_id) is False
+    assert _warned(caplog, "no longer exists")
+    # nothing up there: not found, and nothing to delete
+    assert crash_replication.fetch_report(crash_id, str(tmp_path)) is None
+    assert crash_replication.fetch_metadata(crash_id, str(tmp_path)) is None
+    assert crash_replication.remote_file_sizes(crash_id) == {}
+    assert crash_replication.delete_report(crash_id) is True
+    # invalid ids never reach the store
+    for function in (crash_replication.remote_report_exists, crash_replication.delete_report):
+        assert function("../etc") is False
+    assert crash_replication.list_remote_files("../etc") == []
+    assert crash_replication.fetch_metadata("../etc", str(tmp_path)) is None
+
+
+@pytest.mark.unit
+def test_replication_enabled_is_false_when_config_is_unreadable(monkeypatch):
+    from saq import crash_replication
+
+    monkeypatch.setattr("saq.configuration.config.get_config", _explode)
+
+    assert crash_replication.replication_enabled() is False
+
+
+@pytest.mark.unit
+def test_replication_defers_when_every_slot_is_busy(monkeypatch, caplog):
+    from saq import crash_replication
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(crash_replication, "_upload_slots", threading.Semaphore(0))
+
+    assert crash_replication.replicate_async("/nonexistent", "crash") is False
+    assert any("deferring crash to `ace crash sync`" in r.getMessage() for r in caplog.records)
