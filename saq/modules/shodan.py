@@ -1,5 +1,6 @@
 # vim: sw=4:ts=4:et
 
+import functools
 import json
 import logging
 import os.path
@@ -25,6 +26,10 @@ CONFIG_SHODAN_DELAY = "delay"
 CONFIG_SHODAN_API_KEY = "api_key"
 TAG_SHODAN = "shodan"
 TAG_X509 = "x509"
+
+# the shodan client sets no timeout on its requests: without one a stalled connection holds the
+# engine worker until the module's watchdog kills it
+SHODAN_REQUEST_TIMEOUT = 30
 
 class ShodanAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
@@ -80,8 +85,6 @@ class ShodanAnalysis(Analysis):
             return None
 
 class ShodanAnalyzer(AnalysisModule):
-    _test_data = None
-
     @property
     def generated_analysis_type(self):
         return ShodanAnalysis
@@ -189,20 +192,16 @@ class ShodanAnalyzer(AnalysisModule):
         if not api_key:
             raise ValueError("missing api key for shodan")
 
-        return shodan.Shodan(api_key)
+        client = shodan.Shodan(api_key)
+        client._session.request = functools.partial(client._session.request, timeout=SHODAN_REQUEST_TIMEOUT)
+        return client
 
     def search_cert(self, sha1):
-        if self._test_data:
-            return self._test_data
-
         client = self._get_shodan_client()
         logging.info(f"searching shodan cert {sha1}")
         return client.search(f"ssl.cert.fingerprint:{sha1}")
 
     def search_host(self, value):
-        if self._test_data:
-            return self._test_data
-
         client = self._get_shodan_client()
         logging.info(f"searching shodan host {value}")
         return client.host(value)
