@@ -132,13 +132,13 @@ def _http_request(method: str, url: str, *, stream: bool = False) -> Optional[re
             continue
 
         if response.status_code >= 400:
+            logging.warning("%s %s failed with HTTP %d", method, url, response.status_code)
             response.close()
             return None
 
         return response
 
-    if last_exc is not None:
-        logging.debug("%s %s failed after retry: %s", method, url, last_exc)
+    logging.warning("%s %s failed after retry: %s", method, url, last_exc)
     return None
 
 
