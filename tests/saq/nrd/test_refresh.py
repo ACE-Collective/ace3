@@ -1,10 +1,13 @@
 """Unit tests for ``saq.nrd.refresh``."""
 
 import json
+import logging
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import requests
 from requests.exceptions import ChunkedEncodingError
 
 from saq.configuration.config import get_config
@@ -519,3 +522,241 @@ def test_stream_failure_all_urls_exhausted_aborts(nrd_env, requests_mock, monkey
     assert not new_path.exists()
     # Two URLs × two attempts each.
     assert calls["n"] == 4
+
+
+# ---------------------------------------------------------------------------
+# HTTP failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    monkeypatch.setattr(refresh_mod, "HTTP_RETRY_BACKOFF_SECONDS", 0)
+
+
+@pytest.mark.unit
+def test_a_refused_list_is_logged_with_its_status(nrd_env, requests_mock, no_backoff, caplog):
+    db_path, configure = nrd_env
+    primary = "https://primary.example/nrd.txt"
+    backup = "https://backup.example/nrd.txt"
+    requests_mock.get(primary, status_code=403)
+    requests_mock.get(backup, status_code=404)
+    configure([_make_url_list(primary, backup)])
+
+    with caplog.at_level(logging.WARNING):
+        assert refresh() == 1
+
+    assert f"GET {primary} failed with HTTP 403" in caplog.text
+    assert f"GET {backup} failed with HTTP 404" in caplog.text
+    assert not db_path.exists()
+
+
+@pytest.mark.unit
+def test_a_connection_failure_is_retried_once(nrd_env, requests_mock, no_backoff, caplog):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, [
+        {"exc": requests.ConnectionError("connection reset")},
+        {"text": "alpha.example\n", "headers": {"ETag": "etag-v1"}},
+    ])
+    configure([_make_url_list(list_url)])
+
+    assert refresh() == 0
+    assert _domain_count(db_path) == 1
+
+
+@pytest.mark.unit
+def test_a_connection_failure_after_the_retry_is_logged(nrd_env, requests_mock, no_backoff, caplog):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, exc=requests.ConnectTimeout("connect timed out"))
+    configure([_make_url_list(list_url)])
+
+    with caplog.at_level(logging.WARNING):
+        assert refresh() == 1
+
+    assert requests_mock.call_count == 2
+    assert f"GET {list_url} failed after retry: connect timed out" in caplog.text
+
+
+@pytest.mark.unit
+def test_a_server_error_is_retried_once(nrd_env, requests_mock, no_backoff):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, [
+        {"status_code": 502},
+        {"text": "alpha.example\n", "headers": {"ETag": "etag-v1"}},
+    ])
+    configure([_make_url_list(list_url)])
+
+    assert refresh() == 0
+    assert _domain_count(db_path) == 1
+
+
+# ---------------------------------------------------------------------------
+# HEAD checks
+# ---------------------------------------------------------------------------
+
+
+def _build(nrd_env, requests_mock, list_url, headers):
+    db_path, configure = nrd_env
+    requests_mock.get(list_url, text="alpha.example\n", headers=headers)
+    configure([_make_url_list(list_url)], check_interval_hours=0)
+    assert refresh() == 0
+    return db_path.stat().st_mtime
+
+
+@pytest.mark.unit
+def test_head_match_on_last_modified_does_not_rebuild(nrd_env, requests_mock):
+    list_url = "https://feed.example/nrd.txt"
+    last_modified = "Wed, 21 Oct 2026 07:28:00 GMT"
+    first_mtime = _build(nrd_env, requests_mock, list_url, {"Last-Modified": last_modified})
+    requests_mock.head(list_url, headers={"Last-Modified": last_modified})
+
+    assert refresh() == 0
+    assert nrd_env[0].stat().st_mtime == first_mtime
+
+
+@pytest.mark.parametrize("head_headers", [
+    {"Last-Modified": "Thu, 22 Oct 2026 07:28:00 GMT"},
+    {},
+])
+@pytest.mark.unit
+def test_head_without_a_matching_last_modified_rebuilds(nrd_env, requests_mock, head_headers):
+    list_url = "https://feed.example/nrd.txt"
+    _build(nrd_env, requests_mock, list_url, {"Last-Modified": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    requests_mock.head(list_url, headers=head_headers)
+    requests_mock.get(list_url, text="alpha.example\nbeta.example\n")
+
+    assert refresh() == 0
+    assert _domain_count(nrd_env[0]) == 2
+
+
+@pytest.mark.unit
+def test_a_list_missing_from_the_stored_sources_rebuilds(nrd_env, requests_mock):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    _build(nrd_env, requests_mock, list_url, {"ETag": "etag-v1"})
+    requests_mock.head(list_url, headers={"ETag": "etag-v1"})
+    conn = sqlite3.connect(str(db_path))
+    with conn:
+        conn.execute("UPDATE meta SET value = '[]' WHERE key = 'sources'")
+    conn.close()
+    requests_mock.get(list_url, text="alpha.example\nbeta.example\n")
+
+    assert refresh() == 0
+    assert _domain_count(db_path) == 2
+
+
+# ---------------------------------------------------------------------------
+# reading the existing database
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_an_unreadable_database_is_rebuilt(nrd_env, requests_mock, caplog):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    db_path.write_bytes(b"not a sqlite database at all, just some bytes" * 10)
+    requests_mock.get(list_url, text="alpha.example\n")
+    configure([_make_url_list(list_url)])
+
+    with caplog.at_level(logging.WARNING):
+        assert refresh() == 0
+
+    assert f"could not read meta table from {db_path}" in caplog.text
+    assert _domain_count(db_path) == 1
+
+
+@pytest.mark.unit
+def test_unparseable_meta_values_read_as_missing(nrd_env):
+    db_path, _ = nrd_env
+    conn = sqlite3.connect(str(db_path))
+    with conn:
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta VALUES ('sources', '{not json'), ('last_refreshed_at', 'yesterday')")
+    conn.close()
+
+    meta = refresh_mod._read_meta(db_path)
+
+    assert meta["sources"] == []
+    assert refresh_mod._hours_since(meta["last_refreshed_at"]) is None
+
+
+@pytest.mark.unit
+def test_a_naive_timestamp_is_read_as_utc():
+    an_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+    assert refresh_mod._hours_since(an_hour_ago) == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# building the database
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_domains_are_inserted_in_batches(nrd_env, requests_mock, monkeypatch):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, text="".join(f"domain{i}.example\n" for i in range(5)),
+                      headers={"Content-Length": "not a number"})
+    monkeypatch.setattr(refresh_mod, "INSERT_BATCH_SIZE", 2)
+    configure([_make_url_list(list_url)])
+
+    assert refresh() == 0
+
+    assert _domain_count(db_path) == 5
+    assert _read_meta(db_path)["sources"][0]["content_length"] is None
+
+
+@pytest.mark.unit
+def test_a_leftover_new_file_is_replaced(nrd_env, requests_mock):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    new_path = db_path.with_suffix(db_path.suffix + ".new")
+    new_path.write_bytes(b"left behind by a killed refresh")
+    requests_mock.get(list_url, text="alpha.example\n")
+    configure([_make_url_list(list_url)])
+
+    assert refresh() == 0
+    assert _domain_count(db_path) == 1
+    assert not new_path.exists()
+
+
+@pytest.mark.unit
+def test_an_unexpected_failure_aborts_and_removes_the_new_file(nrd_env, requests_mock, monkeypatch, caplog):
+    db_path, configure = nrd_env
+    list_url = "https://feed.example/nrd.txt"
+    requests_mock.get(list_url, text="alpha.example\n")
+
+    def _write_meta(path, meta):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(refresh_mod, "_write_meta", _write_meta)
+    configure([_make_url_list(list_url)])
+
+    with caplog.at_level(logging.ERROR):
+        assert refresh() == 1
+
+    record = next(r for r in caplog.records if "Unexpected failure during NRD refresh" in r.getMessage())
+    assert record.exc_info is not None
+    assert not db_path.exists()
+    assert not db_path.with_suffix(db_path.suffix + ".new").exists()
+
+
+@pytest.mark.unit
+def test_refresh_does_nothing_without_url_lists(nrd_env, requests_mock):
+    db_path, configure = nrd_env
+    configure([])
+
+    assert refresh() == 0
+    assert not db_path.exists()
+    assert requests_mock.call_count == 0
+
+
+@pytest.mark.unit
+def test_refresh_does_nothing_without_nrd_config(monkeypatch, requests_mock):
+    monkeypatch.setattr(get_config(), "nrd", None)
+
+    assert refresh() == 0
+    assert requests_mock.call_count == 0
