@@ -169,6 +169,11 @@ ORDER BY
 
                         observable['value'] = sha256_file(save_path)
                         observable['file_path'] = upload_file.filename
+                    else:
+                        # a file row is nothing without its upload: refuse the whole submission
+                        # rather than fail on it later or have the api drop it from the alert
+                        flash(f"no file uploaded for observable {index}")
+                        return redirect(url_for('analysis.manage'))
 
                 # multi fields add multiple observables of the same type
                 # (only text observables can be "multi"; they never carry files)

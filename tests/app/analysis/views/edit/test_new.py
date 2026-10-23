@@ -67,6 +67,11 @@ def _leftover_uploads() -> list[str]:
     return glob.glob(os.path.join(get_temp_dir(), '*.upload'))
 
 
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as session:
+        return [message for _category, message in session.get('_flashes', [])]
+
+
 @pytest.mark.integration
 def test_new_alert_observable_get(web_client):
     """Test GET request to new_alert_observable returns template with correct data."""
@@ -206,9 +211,9 @@ def test_new_alert_file_location_observable(web_client, mock_api_call, target_no
 
 
 @pytest.mark.integration
-def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
-    """A file observable posted without a file is refused."""
-    with caplog.at_level(logging.ERROR):
+def test_new_alert_file_row_without_upload_is_refused(web_client, mock_api_call, target_node, caplog):
+    """A file observable posted without a file is refused with a message, not an error report."""
+    with caplog.at_level(logging.WARNING):
         response = web_client.post(url_for('analysis.new_alert'), data=_form(
             target_node,
             observables_types_0=F_FILE,
@@ -217,7 +222,32 @@ def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
     assert response.status_code == 302
     assert 'manage' in response.location
     assert _alerts() == []
-    assert any(r.getMessage().startswith("unable to submit alert") for r in caplog.records)
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_file_row_without_upload_refuses_every_observable(web_client, mock_api_call, target_node, submit_type):
+    """A file row without an upload among other observables refuses the whole submission: a single
+    alert is not created without it, no alert is created for the other observables, and the upload
+    already saved for an earlier row is removed."""
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt'),
+        observables_types_1=F_FILE,
+        observables_values_1='not an upload',
+        observables_directives_1='',
+        observable_data_sep_1='single',
+        submit_type=submit_type),
+        content_type='multipart/form-data')
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert _flashes(web_client) == ['no file uploaded for observable 1']
+    assert _leftover_uploads() == []
 
 
 @pytest.mark.integration
@@ -335,9 +365,10 @@ def test_new_alert_never_reads_a_server_path(web_client, mock_api_call, target_n
         observables_values_0=str(server_file),
         is_local='true'))
 
-    # a file row without an upload is refused as before, and nothing was read from the server path
+    # a file row without an upload is refused, and nothing was read from the server path
     assert response.status_code == 302
     assert 'direct=' not in response.location
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
     assert get_db().query(Alert).count() == 0
     for dir_path, _, file_names in os.walk(get_data_dir()):
         for file_name in file_names:
