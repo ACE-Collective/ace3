@@ -6,9 +6,17 @@ import pytest
 
 from saq.constants import F_COMMAND_LINE, F_IPV4
 from saq.modules.command_line import CommandLineAnalysis
+from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis
+from saq.modules.email.encryption.rar import RarEncryptionAnalysis
+from saq.modules.email.encryption.zip import ZipEncryptionAnalysis
 from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.file_analysis.js import JavaScriptDeobfuscationAnalysis
 from saq.modules.file_analysis.ocr import YARA_META_TYPE_OCR, OCRAnalysis
+from saq.modules.file_analysis.olevba import KEY_MACROS, OLEVBA_Analysis_v1_2
+from saq.modules.file_analysis.pdf import PDFTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
+from saq.modules.file_analysis.xml import KEY_XML_PLAIN_TEXT, XMLPlainTextAnalysis
+from saq.modules.rdap import KEY_WHOIS_RAW_TEXT, RdapAnalysis
 from saq.search import extractors  # noqa: F401
 from saq.search.documents import (
     ALERT_HEADER_KEY,
@@ -226,3 +234,166 @@ def test_documents_are_stable_across_calls(root_analysis):
     second = extract_documents(None, root_analysis, [_comment(7, "c")], max_document_bytes=CAP)
     assert [(d.kind, d.key) for d in first] == [(d.kind, d.key) for d in second]
     assert all(isinstance(d, SearchDocument) for d in first)
+
+
+def _analysis_documents(root_analysis):
+    return [d for d in extract_documents(None, root_analysis, max_document_bytes=CAP) if d.kind == KIND_ANALYSIS]
+
+
+def _write(tmpdir, name, content):
+    path = os.path.join(str(tmpdir), name)
+    with open(path, "w") as fp:
+        fp.write(content)
+    return path
+
+
+def test_email_extractor_falls_back_to_the_html_body(root_analysis, tmpdir):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.10")
+    analysis = EmailAnalysis()
+    observable.add_analysis(analysis)
+    analysis.details["email"] = {
+        "subject": "Mailbox quota",
+        # a malformed entry in the raw header list is skipped, not fatal
+        "headers": [["Return-Path"], ["Return-Path", "<bounce@quota.example>"]],
+    }
+    # a blank plain text part is no body
+    analysis.add_file_observable(_write(tmpdir, "email.rfc822.unknown_text_plain_000", "  \n"))
+    analysis.add_file_observable(_write(
+        tmpdir, "email.rfc822.unknown_text_html_000",
+        "<html><body><p>Your <b>mailbox</b> is over quota.</p></body></html>"))
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    text = documents[0].text
+    assert "Return-Path: <bounce@quota.example>" in text
+    assert "Your **mailbox** is over quota." in text
+    assert "<p>" not in text
+
+
+def test_email_extractor_keeps_html_html2text_cannot_convert(root_analysis, tmpdir, monkeypatch):
+    def broken_html2text(html):
+        raise ValueError("unconvertible")
+
+    monkeypatch.setattr(extractors, "html2text", broken_html2text)
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.11")
+    analysis = EmailAnalysis()
+    observable.add_analysis(analysis)
+    analysis.details["email"] = {"subject": "Mailbox quota"}
+    analysis.add_file_observable(_write(tmpdir, "email.rfc822.unknown_text_html_000", "<p>over quota</p>"))
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert "<p>over quota</p>" in documents[0].text
+
+
+def test_email_extractor_without_a_body(root_analysis):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.12")
+    analysis = EmailAnalysis()
+    observable.add_analysis(analysis)
+    analysis.details["email"] = {}
+
+    assert _analysis_documents(root_analysis) == []
+
+
+def test_olevba_extractor(root_analysis):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.13")
+    analysis = OLEVBA_Analysis_v1_2()
+    observable.add_analysis(analysis)
+    analysis.details[KEY_MACROS] = [
+        {"vba_code": "Sub AutoOpen()\n  Shell \"powershell -enc AAAA\"\nEnd Sub"},
+        {"vba_code": None},
+        "not a macro",
+    ]
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "VBA macro"
+    assert "Shell \"powershell -enc AAAA\"" in documents[0].text
+
+
+def test_olevba_extractor_without_code(root_analysis):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.14")
+    analysis = OLEVBA_Analysis_v1_2()
+    observable.add_analysis(analysis)
+    analysis.details[KEY_MACROS] = [{"vba_code": "   "}]
+
+    assert _analysis_documents(root_analysis) == []
+
+
+def test_rdap_extractor(root_analysis):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.15")
+    analysis = RdapAnalysis()
+    observable.add_analysis(analysis)
+    analysis.details[KEY_WHOIS_RAW_TEXT] = "Registrar: Example Registrar\nCreation Date: 2026-10-01"
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "whois"
+    assert "Creation Date: 2026-10-01" in documents[0].text
+
+
+@pytest.mark.parametrize("analysis_class", [ZipEncryptionAnalysis, RarEncryptionAnalysis, MSOfficeEncryptionAnalysis])
+def test_encrypted_attachment_email_body_extractor(root_analysis, analysis_class):
+    observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.16")
+    analysis = analysis_class()
+    observable.add_analysis(analysis)
+    analysis.details["email_body"] = "The password for the attached invoice is 1234"
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "email body"
+    assert "password for the attached invoice" in documents[0].text
+
+
+def test_xml_plain_text_extractor_reads_the_named_file(root_analysis, tmpdir):
+    document = root_analysis.add_file_observable(_write(tmpdir, "document.xml", "<?xml version='1.0'?><w/>"))
+    analysis = XMLPlainTextAnalysis()
+    document.add_analysis(analysis)
+    analysis.add_file_observable(_write(tmpdir, "other.txt", "not the document text"))
+    noxml = analysis.add_file_observable(_write(tmpdir, "document.xml.noxml", "Enable editing to view this invoice"))
+    analysis.details = {KEY_XML_PLAIN_TEXT: noxml.file_path}
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "document text"
+    assert documents[0].text == "Enable editing to view this invoice"
+
+
+def test_pdf_text_extractor_reads_the_output_file(root_analysis, tmpdir):
+    pdf = root_analysis.add_file_observable(_write(tmpdir, "invoice.pdf", "%PDF-1.4"))
+    analysis = PDFTextAnalysis()
+    pdf.add_analysis(analysis)
+    analysis.add_file_observable(_write(tmpdir, "other.txt", "not the pdf text"))
+    output = analysis.add_file_observable(_write(tmpdir, "invoice.pdf.txt", "Scan the code to sign the document"))
+    # the analyzer records the output observable's value
+    analysis.output_path = output.value
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "PDF text"
+    assert documents[0].text == "Scan the code to sign the document"
+
+
+def test_pdf_text_extractor_skips_empty_output(root_analysis, tmpdir):
+    pdf = root_analysis.add_file_observable(_write(tmpdir, "blank.pdf", "%PDF-1.4"))
+    analysis = PDFTextAnalysis()
+    pdf.add_analysis(analysis)
+    output = analysis.add_file_observable(_write(tmpdir, "blank.pdf.txt", "\n\n"))
+    analysis.output_path = output.value
+
+    assert _analysis_documents(root_analysis) == []
+
+
+def test_deobfuscated_script_extractor(root_analysis, tmpdir):
+    script = root_analysis.add_file_observable(_write(tmpdir, "loader.js", "eval(atob('...'))"))
+    analysis = JavaScriptDeobfuscationAnalysis()
+    script.add_analysis(analysis)
+    analysis.add_file_observable(_write(tmpdir, "payload.bin", "MZ"))
+    analysis.add_file_observable(_write(
+        tmpdir, "deobfuscated-loader.js",
+        "// ACE3 javascript deobfuscator\n// source: loader.js\n\nwindow.location = 'https://login.example/';\n"))
+
+    documents = _analysis_documents(root_analysis)
+    assert len(documents) == 1
+    assert documents[0].title == "deobfuscated script"
+    assert documents[0].text == "window.location = 'https://login.example/';"
