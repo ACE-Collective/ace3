@@ -1070,7 +1070,7 @@ class EmailAnalyzer(AnalysisModule):
                 target_email = parsed_email = email.parser.BytesParser().parse(fp)
 
         except Exception as e:
-            logging.error("unable to parse email {}: {}".format(_file, e))
+            logging.exception("unable to parse email {}: {}".format(_file, e))
 
             try:
                 # if Python's email parsing library can't parse it then we copy it off to the side
@@ -1080,7 +1080,7 @@ class EmailAnalyzer(AnalysisModule):
                 shutil.copy(src_path, dst_path)
 
             except Exception as e:
-                logging.error("unable to save file for review: {}".format(e))
+                logging.exception("unable to save {} for review: {}".format(_file, e))
 
             return False
 
@@ -1702,9 +1702,15 @@ class EmailAnalyzer(AnalysisModule):
                 })
                 _file.add_tag(TAG_EMAIL_PARSE_INCOMPLETE)
 
+                # the base name: an email extracted from an archive has a file_path in a
+                # subdirectory (<archive>.extracted/...) that the review directory does not have
                 target_path = os.path.join(get_data_dir(), 'review', 'rfc822', '{}.{}'.format(
-                                           _file.file_path, datetime.now().strftime('%Y%m%d%H%M%S')))
-                shutil.copy(_file.full_path, target_path)
+                                           os.path.basename(_file.file_path), datetime.now().strftime('%Y%m%d%H%M%S')))
+                try:
+                    shutil.copy(_file.full_path, target_path)
+                except Exception as copy_error:
+                    # this handler must not raise: the parts already extracted are kept
+                    logging.exception("unable to save %s for review: %s", _file, copy_error)
 
         _recursive_parser(target_email)
 
