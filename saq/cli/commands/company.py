@@ -50,7 +50,7 @@ add_companies_parser.add_argument('company_name', help="The name of the new comp
 add_companies_parser.set_defaults(func=add_company)
 
 def delete_company(args):
-    import saq
+    from saq.configuration import get_config
     from saq.constants import INSTANCE_TYPE_PRODUCTION
     from saq.database import get_db_connection
 
@@ -67,7 +67,7 @@ def delete_company(args):
         sys.exit(0)
 
     # see if we are on the production system
-    if saq.INSTANCE_TYPE == INSTANCE_TYPE_PRODUCTION:
+    if get_config().global_settings.instance_type == INSTANCE_TYPE_PRODUCTION:
         confirm = input("You are in a PRODUCTION SERVER. Are you SURE you know what you are doing? Type YES if you are sure.")
         if confirm != 'YES':
             print("Action not taken. Pay attention to what you're doing please.")
