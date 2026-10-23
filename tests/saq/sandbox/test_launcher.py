@@ -17,7 +17,10 @@ import pytest
 
 from saq.configuration.schema import SandboxConfig
 from saq.sandbox.launcher import (
+    EXIT_DEADLINE,
+    EXIT_PROCESS_LIMIT,
     EXIT_SANDBOX_FAILURE,
+    EXIT_STOPPED,
     NET_ABI,
     SCOPE_ABI,
     landlock_abi,
@@ -110,13 +113,13 @@ class TestCleanup:
         assert _alive(escaped)
 
         process.send_signal(signal.SIGTERM)
-        assert process.wait(timeout=15) == EXIT_SANDBOX_FAILURE
+        assert process.wait(timeout=15) == EXIT_STOPPED
         process.stdout.close()
         assert not _alive(escaped)
 
     def test_deadline_kills_the_command(self):
         result = _launch("/bin/sleep", "300", deadline=1)
-        assert result.returncode == EXIT_SANDBOX_FAILURE
+        assert result.returncode == EXIT_DEADLINE
         assert "past its deadline" in result.stderr
 
     def test_process_cap(self):
@@ -124,7 +127,7 @@ class TestCleanup:
                "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']) for _ in range(8)]\n" \
                "time.sleep(300)"
         result = _launch(PYTHON, "-c", code, max_processes=4)
-        assert result.returncode == EXIT_SANDBOX_FAILURE
+        assert result.returncode == EXIT_PROCESS_LIMIT
         assert "more than 4 processes" in result.stderr
 
 
