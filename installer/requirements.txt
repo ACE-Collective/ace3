@@ -47,7 +47,6 @@ psutil
 pyasn1
 pydantic
 pyenchant
-PyExifTool
 pylint
 PyMySQL
 pysimdjson
