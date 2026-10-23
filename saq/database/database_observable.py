@@ -1,7 +1,7 @@
 from typing import Optional
 
 from pymysql import IntegrityError
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from saq.analysis.disposition_history import DispositionHistory
 from saq.analysis.observable import Observable
@@ -43,6 +43,14 @@ def observable_is_set_for_detection(observable: Observable) -> bool:
             "SELECT 1 FROM observable_detections WHERE type = %s AND value_sha256 = %s",
             (observable.type, observable.sha256_bytes))
         return cursor.fetchone() is not None
+
+def observable_is_interesting(observable: Observable) -> bool:
+    """Returns True if the observable is marked as interesting in the database."""
+    is_interesting = get_db().execute(
+        select(DBObservable.is_interesting).where(
+            DBObservable.type == observable.type,
+            DBObservable.sha256 == observable.sha256_bytes)).scalar_one_or_none()
+    return bool(is_interesting)
 
 def get_observable_disposition_history(observable: Observable) -> Optional[DispositionHistory]:
     """Returns a DispositionHistory object if self.obj is an Observable, None otherwise."""

@@ -75,7 +75,7 @@ from saq.database.model import (
 from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
-from saq.svs import review, run_comments, runs
+from saq.svs import association, review, run_comments, runs
 from saq.svs.constants import FALLBACK_EVENT_TIME_SOURCES, RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
@@ -875,10 +875,6 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
                        user_id: int | None, actor: str) -> AssociationResult:
     """associate, disassociate, not-a-test or keep on (run, alert). 422 for a config key (a change records who made
     it), 400 for a malformed id, 404 for an unknown run or alert, 409 when it doesn't apply."""
-    # local: saq.svs.association imports the attribution and analysis stack, which imports the
-    # observables, which import aceapi_v2 while saq itself is still being imported
-    from saq.svs import association
-
     _require_user(user_id)
     run_uuid = _validate_run_id(run_id)
     if not UUID_REGEX.fullmatch(alert_uuid.lower()):

@@ -9,13 +9,13 @@ import uuid as uuidlib
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from saq.analysis.observable import Observable
 from saq.analysis.root import load_file_observable
 from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
 from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
@@ -60,6 +60,7 @@ from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
+from saq.observables.file import FileObservable
 from saq.search.query import build_listing_query
 from saq.search.tasks import submit_index_task
 from saq.search.types import SearchFilters
@@ -87,12 +88,6 @@ from aceapi_v2.common.listing import (
     settled,
 )
 from aceapi_v2.sync import run_db_in_thread
-
-if TYPE_CHECKING:
-    # saq.observables.file imports the presenters, which import aceapi_v2, so a runtime import
-    # here is circular
-    from saq.analysis.observable import Observable
-    from saq.observables.file import FileObservable
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +414,7 @@ def resolve_alert_log_path(alert_uuid: str) -> str:
     return log_path
 
 
-def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> "FileObservable":
+def resolve_alert_file(alert_uuid: str, observable_uuid: str) -> FileObservable:
     """A file observable of the alert whose file is on disk; 404 otherwise.
 
     Only that one observable is loaded, never the analysis tree (see load_file_observable).
@@ -505,7 +500,7 @@ CLICKER_SPLUNK_MODULE_NAME = "clicker_detection_splunk"
 
 
 def request_observable_analysis(alert_uuid: str, observable_uuid: str, valid_types: tuple[str, ...],
-                                change: Callable[["Observable"], None]) -> str:
+                                change: Callable[[Observable], None]) -> str:
     """Change one observable of the alert (add the directive an analysis module waits for), and
     queue the alert for the analysis the analyst asked for. Returns the observable as text, for
     the audit log. The observable actions of integrations use it too.
@@ -566,7 +561,7 @@ def request_crawl(alert_uuid: str, observable_uuid: str) -> str:
         lambda observable: observable.add_directive(DIRECTIVE_CRAWL))
 
 
-def _check_for_clickers(observable: "Observable") -> None:
+def _check_for_clickers(observable: Observable) -> None:
     observable.add_directive(DIRECTIVE_CLICKER_DETECTION)
     # An analyst asking again wants a fresh check. The engine skips a module whose analysis
     # already exists (saq/modules/base_module.py accepts()), so the earlier clicker analyses are
@@ -583,7 +578,7 @@ def request_clicker_check(alert_uuid: str, observable_uuid: str) -> str:
     return request_observable_analysis(alert_uuid, observable_uuid, (F_URL, F_FQDN), _check_for_clickers)
 
 
-def load_observable(alert_uuid: str, observable_uuid: str) -> "Observable":
+def load_observable(alert_uuid: str, observable_uuid: str) -> Observable:
     """One observable of the alert, for an action that reads it and changes nothing, so the alert
     is not locked. 404 for an unknown alert or observable."""
     alert = _resolve_alert(alert_uuid)

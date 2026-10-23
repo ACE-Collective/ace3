@@ -330,9 +330,6 @@ def get_all_valid_types() -> list[str]:
     registered via :func:`saq.observables.generator.register_observable_type` or
     an entry in the YAML config loaded by :func:`bootstrap_type_hierarchy`.
 
-    Lives in this module rather than ``saq.observables.__init__`` to avoid the
-    package-init circular import path through aceapi_v2 presenters.
-
     Triggers the same debounced mtime check as :func:`get_type_hierarchy`.
     """
     from saq.observables.generator import OBSERVABLE_TYPE_MAPPING

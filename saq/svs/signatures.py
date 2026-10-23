@@ -12,6 +12,7 @@ from typing import Iterable, Optional
 
 from saq.configuration.config import get_config
 from saq.signatures.builtin import BUILTIN_SIGNATURES
+from saq.signatures.loaders.builtin import load_builtin_signatures
 from saq.signatures.model import SignatureType
 from saq.svs import windows
 from saq.svs.attack import normalize_technique_id
@@ -118,10 +119,6 @@ def describe_signatures(uuids: Iterable[str]) -> dict[str, SignatureInfo]:
     result: dict[str, SignatureInfo] = {}
     if not uuids:
         return result
-
-    # local: the saq.signatures.loaders package imports the hunter, which imports the engine stack,
-    # which imports aceapi_v2, whose run API imports this module through saq.svs.runs
-    from saq.signatures.loaders.builtin import load_builtin_signatures
 
     builtins = {signature.uuid: signature for signature in load_builtin_signatures()}
     for uuid in uuids & set(BUILTIN_SIGNATURES):

@@ -702,12 +702,12 @@ def test_index_does_not_query_per_observable_for_actions(
         detection_calls.append(observable.uuid)
         return False
 
-    def _spy_run_async(fn, *args, **kwargs):
-        interesting_calls.append(args)
+    def _spy_interesting(observable):
+        interesting_calls.append(observable.uuid)
         return False
 
     monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _spy_detection)
-    monkeypatch.setattr(presenter_module, "run_async_with_session", _spy_run_async)
+    monkeypatch.setattr(presenter_module, "observable_is_interesting", _spy_interesting)
 
     _run_basic_analyzer(root_analysis, test_context)
     root_analysis.save()
@@ -850,9 +850,7 @@ def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
     monkeypatch.setattr(
         presenter_module, "observable_is_set_for_detection",
         lambda observable: detection_calls.append(observable.uuid) or False)
-    monkeypatch.setattr(
-        presenter_module, "run_async_with_session",
-        lambda fn, *args, **kwargs: False)
+    monkeypatch.setattr(presenter_module, "observable_is_interesting", lambda observable: False)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "cached_actions")
     presenter = create_observable_presenter(observable)
@@ -874,7 +872,7 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
         raise AssertionError("per-observable lookup should not run")
 
     monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _fail)
-    monkeypatch.setattr(presenter_module, "run_async_with_session", _fail)
+    monkeypatch.setattr(presenter_module, "observable_is_interesting", _fail)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "supplied_context")
     presenter = create_observable_presenter(
@@ -883,6 +881,25 @@ def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     action_names = [action.name for action in presenter.available_actions]
     assert ACTION_DISABLE_DETECTION in action_names
     assert ACTION_UNMARK_INTERESTING in action_names
+
+
+@pytest.mark.integration
+def test_available_actions_looks_up_what_is_not_supplied(root_analysis):
+    """Outside the alert view nothing is supplied, so the presenter asks the database."""
+    from saq.analysis.presenter import create_observable_presenter
+    from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING
+    from saq.database.model import Observable as DBObservable
+
+    observable = root_analysis.add_observable_by_spec(F_TEST, "looked_up")
+    assert ACTION_MARK_INTERESTING in [action.name for action in create_observable_presenter(observable).available_actions]
+
+    get_db().add(DBObservable(type=observable.type, sha256=observable.sha256_bytes,
+                              value=observable.value.encode("utf8"), is_interesting=True))
+    get_db().commit()
+
+    action_names = [action.name for action in create_observable_presenter(observable).available_actions]
+    assert ACTION_UNMARK_INTERESTING in action_names
+    assert ACTION_MARK_INTERESTING not in action_names
 
 
 @pytest.mark.unit
