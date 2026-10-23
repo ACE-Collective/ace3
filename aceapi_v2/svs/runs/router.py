@@ -554,8 +554,7 @@ async def associate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
     """Attribute every detection of the alert to the run, by hand; the alert moves to the test queue
     when it is OPEN and nobody else has taken it. 409 for a run that never started, 422 for an alert
     without detections."""
-    return await run_db_in_thread(service.change_association, "associate", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "associate", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/disassociate", response_model=AssociationResult)
@@ -564,23 +563,20 @@ async def disassociate_alert(run_id: str, alert_uuid: str, auth: ManageAuth,
     """Remove the alert's attributions to the run, by hand; the router never attributes it to the run
     again. An alert no longer fully attributed is given back: OPEN if it was SIMULATED, and back in
     the queue SVS took it from. 409 when it isn't attributed to the run."""
-    return await run_db_in_thread(service.change_association, "disassociate", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "disassociate", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/not-a-test", response_model=AssociationResult)
 async def mark_not_a_test(run_id: str, alert_uuid: str, auth: ManageAuth,
                           body: AssociationRequest | None = None) -> AssociationResult:
     """Disassociate a TEST? alert: one the run holds by context alone (409 otherwise)."""
-    return await run_db_in_thread(service.change_association, "not-a-test", run_id, alert_uuid, body,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "not-a-test", run_id, alert_uuid, body, auth)
 
 
 @router.post("/{run_id}/alerts/{alert_uuid}/keep", response_model=AssociationResult)
 async def keep_context(run_id: str, alert_uuid: str, auth: ManageAuth) -> AssociationResult:
     """Confirm the alert's context attributions to the run (409 when it has none)."""
-    return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None,
-                                  auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.change_association, "keep", run_id, alert_uuid, None, auth)
 
 
 

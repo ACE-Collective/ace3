@@ -11,16 +11,20 @@ line with the host's fields in extra.
 
 import ipaddress
 import json
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy.exc import IntegrityError
 
 from saq.database.model import SVSTestHost
 from saq.database.pool import get_db
+from saq.logging import log_audit
 from saq.svs.preconditions import NONE, Precondition, StaleWrite
+
+if TYPE_CHECKING:
+    # for the type only: importing aceapi_v2 loads the whole API app, which imports saq
+    from aceapi_v2.auth.schemas import ApiAuthResult
 
 # the Atomic Red Team names of the platforms a test host can be (a test's supported_platforms
 # also names cloud platforms, which are not hosts)
@@ -199,9 +203,9 @@ def match_target(hostname: str, username: Optional[str] = None) -> TargetMatch:
 # writing (svs:admin)
 #
 
-def _audit_extra(host: SVSTestHost, actor: Optional[str]) -> dict:
+def _audit_extra(host: SVSTestHost) -> dict:
     return {"svs_test_host": host.hostname, "fqdn": host.fqdn, "usernames": host_usernames(host),
-            "ips": host_ips(host), "platform": host.platform, "actor": actor}
+            "ips": host_ips(host), "platform": host.platform}
 
 
 def _apply(host: SVSTestHost, spec: HostSpec) -> None:
@@ -223,19 +227,19 @@ def _commit(host: SVSTestHost) -> None:
     db.refresh(host)
 
 
-def create_host(spec: HostSpec, user_id: Optional[int], actor: Optional[str] = None) -> SVSTestHost:
+def create_host(spec: HostSpec, auth: Optional["ApiAuthResult"] = None) -> SVSTestHost:
     """Adds a test host. Raises DuplicateTestHost when its short name is taken."""
     # created_at is stored to the second and MySQL rounds a fraction up: floored, it is never after
     # the updated_at the server stamps on the same insert
-    host = SVSTestHost(created_by=user_id, created_at=datetime.now().replace(microsecond=0))
+    host = SVSTestHost(created_by=auth.auth_user_id if auth else None, created_at=datetime.now().replace(microsecond=0))
     _apply(host, spec)
     get_db().add(host)
     _commit(host)
-    logging.info("AUDIT: svs test host added", extra=_audit_extra(host, actor))
+    log_audit("svs test host added", auth=auth, **_audit_extra(host))
     return host
 
 
-def update_host(host_id: int, spec: HostSpec, actor: Optional[str] = None,
+def update_host(host_id: int, spec: HostSpec, auth: Optional["ApiAuthResult"] = None,
                 precondition: Precondition = NONE) -> SVSTestHost:
     """Replaces a test host's fields. Raises UnknownTestHost, DuplicateTestHost, StaleWrite."""
     # a write from a form loaded before someone else changed the host is refused, not applied over it
@@ -245,15 +249,14 @@ def update_host(host_id: int, spec: HostSpec, actor: Optional[str] = None,
     except StaleWrite:
         get_db().rollback()
         raise
-    before = _audit_extra(host, actor)
+    before = _audit_extra(host)
     _apply(host, spec)
     _commit(host)
-    logging.info("AUDIT: svs test host changed",
-                 extra={**_audit_extra(host, actor), "before": {k: v for k, v in before.items() if k != "actor"}})
+    log_audit("svs test host changed", auth=auth, **_audit_extra(host), before=before)
     return host
 
 
-def delete_host(host_id: int, actor: Optional[str] = None) -> None:
+def delete_host(host_id: int, auth: Optional["ApiAuthResult"] = None) -> None:
     """Removes a test host and ends its open maintenance window. Runs keep the targets they were
     registered with. Raises UnknownTestHost."""
     # imported here: saq.svs.maintenance imports this module
@@ -261,9 +264,9 @@ def delete_host(host_id: int, actor: Optional[str] = None) -> None:
 
     # locked, so no window opens on the host while it is removed
     host = get_host(host_id, lock=True)
-    extra = _audit_extra(host, actor)
+    extra = _audit_extra(host)
     db = get_db()
-    with ending_host_windows(host, actor or "unknown") as windows:
+    with ending_host_windows(host, auth.auth_name if auth else "unknown") as windows:
         db.delete(host)
         db.commit()
-    logging.info("AUDIT: svs test host removed", extra={**extra, "ended_maintenance": [w.uuid for w in windows]})
+    log_audit("svs test host removed", auth=auth, **extra, ended_maintenance=[w.uuid for w in windows])

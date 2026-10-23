@@ -74,7 +74,7 @@ async def create_test_host(
     auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
 ) -> TestHost:
     """Add a test host: 409 when its short name is already one, 422 for a field that can't be used."""
-    return await run_db_in_thread(service.create_test_host, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.create_test_host, body, auth)
 
 
 @router.get("/{host_id}", response_model=TestHost)
@@ -93,7 +93,7 @@ async def update_test_host(
     precondition: WritePrecondition,
 ) -> TestHost:
     """Replace a test host's fields. 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
-    return await run_db_in_thread(service.update_test_host, host_id, body, auth.auth_name, precondition)
+    return await run_db_in_thread(service.update_test_host, host_id, body, auth, precondition)
 
 
 @router.delete("/{host_id}", status_code=204)
@@ -102,7 +102,7 @@ async def delete_test_host(
     auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
 ) -> Response:
     """Remove a test host. Runs already registered keep their targets."""
-    await run_db_in_thread(service.delete_test_host, host_id, auth.auth_name)
+    await run_db_in_thread(service.delete_test_host, host_id, auth)
     return Response(status_code=204)
 
 

@@ -7,6 +7,8 @@ import uuid
 
 import pytest
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.logging import (
     ExtraAwareFluentFormatter,
     ExtraAwareTextFormatter,
@@ -14,7 +16,9 @@ from saq.logging import (
     _install_transaction_id_filter,
     deferred_startup_logging,
     get_transaction_id,
+    audit_actor,
     initialize_transaction_id,
+    log_audit,
     set_transaction_id,
     transaction_id,
 )
@@ -434,3 +438,26 @@ def test_deferred_startup_logging_passes_through_when_already_configured():
             assert [r.getMessage() for r in collector.buffer] == ["direct"]
 
     assert [r.getMessage() for r in collector.buffer] == ["direct"]
+
+
+@pytest.mark.unit
+def test_log_audit_names_the_key_that_acted(caplog):
+    auth = ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name="alice", auth_user_id=12, key_id=34,
+                         key_name="ci", credential=API_CREDENTIAL_USER_KEY)
+    with caplog.at_level(logging.INFO):
+        log_audit("user %s deleted thing %s", "alice", 5, auth=auth, thing_id=5)
+
+    (record,) = caplog.records
+    assert (record.levelno, record.getMessage()) == (logging.INFO, "AUDIT: user alice deleted thing 5")
+    assert (record.actor, record.actor_user_id, record.actor_key_id, record.actor_key_name, record.auth_type,
+            record.thing_id) == ("alice", 12, 34, "ci", API_AUTH_TYPE_USER, 5)
+    # the caller's location, not the helper's
+    assert record.funcName == "test_log_audit_names_the_key_that_acted"
+
+
+@pytest.mark.unit
+def test_audit_actor_without_auth_has_every_field():
+    """A record nobody authenticated for still carries the fields, so a search on them never
+    depends on which caller wrote it."""
+    assert audit_actor(None) == {"actor": None, "actor_user_id": None, "actor_key_id": None,
+                                 "actor_key_name": None, "auth_type": None}

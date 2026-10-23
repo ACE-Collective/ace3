@@ -8,6 +8,8 @@ import pytest
 import yaml
 from sqlalchemy import select, update
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.analysis.root import RootAnalysis
 from saq.cas import CASPool, get_cas
 from saq.configuration.config import get_config, get_service_config
@@ -282,6 +284,12 @@ def write_yara_rule(signature_dir: Path, name: str, uuid: str, **meta: str) -> P
 
 
 LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+
+
+def person(user_id: Optional[int], name: str = "unittest", key_id: Optional[int] = None) -> ApiAuthResult:
+    """A user calling the API with one of their keys, as the routes pass the caller to saq.svs."""
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=name, auth_user_id=user_id, key_id=key_id,
+                         key_name=f"key-{key_id}" if key_id is not None else None, credential=API_CREDENTIAL_USER_KEY)
 
 # the signature of the detections attribute_to_run attributes
 SIGNATURE_UUID = "5c1a9e57-0000-4000-8000-00000000a7a7"

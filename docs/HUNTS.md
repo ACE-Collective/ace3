@@ -802,7 +802,11 @@ It answers 200 `{"valid": true, ...}` or 400 `{"valid": false, "error": ...}`.
 - **Every request is audited.** One `HUNT_AUDIT {json}` line per request on the `ace.hunt_audit`
   logger (`aceapi_v2/hunt/audit.py`), shipped off-box like any other log line. It has the same identity
   fields as the AI investigation API's `AI_AUDIT` lines (`user`, `user_id`, `key_id`, `key_name`,
-  `src_ip`), plus:
+  `src_ip`), and carries in `extra={}` the actor fields that `log_audit()` records have
+  (`saq/logging.py::audit_actor`: `actor`, `actor_user_id`, `actor_key_id`, `actor_key_name`,
+  `auth_type`), so one search finds a key's hunt validations along with its other audited actions
+  that go through `log_audit()`. Beyond
+  the identity fields, the JSON has:
   - `event`: `hunt_validate` (200), `hunt_rejected` (refused before it ran) or `hunt_error` (the
     execution failed), with `status`, `detail` (the error) and `duration_ms`
   - `package`: the target, the client's `package_root`, and each asset's path, kind and sha256, so

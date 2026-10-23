@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.orm import aliased, selectinload, undefer
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidCursor,
@@ -872,14 +873,14 @@ def fetch_attribution_feed_page(feed: AttributionFeed, cursor: str | None,
 #
 
 def change_association(action: str, run_id: str, alert_uuid: str, body: AssociationRequest | None,
-                       user_id: int | None, actor: str) -> AssociationResult:
+                       auth: ApiAuthResult) -> AssociationResult:
     """associate, disassociate, not-a-test or keep on (run, alert). 422 for a config key (a change records who made
     it), 400 for a malformed id, 404 for an unknown run or alert, 409 when it doesn't apply."""
     # local: saq.svs.association imports the attribution and analysis stack, which imports the
     # observables, which import aceapi_v2 while saq itself is still being imported
     from saq.svs import association
 
-    _require_user(user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     if not UUID_REGEX.fullmatch(alert_uuid.lower()):
         raise HTTPException(status_code=400, detail="invalid alert uuid")
@@ -887,13 +888,13 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
 
     try:
         if action == "associate":
-            result = association.associate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+            result = association.associate(run_uuid, alert_uuid.lower(), auth, reason)
         elif action == "disassociate":
-            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason)
+            result = association.disassociate(run_uuid, alert_uuid.lower(), auth, reason)
         elif action == "not-a-test":
-            result = association.disassociate(run_uuid, alert_uuid.lower(), user_id, actor, reason, not_a_test=True)
+            result = association.disassociate(run_uuid, alert_uuid.lower(), auth, reason, not_a_test=True)
         else:
-            result = association.keep(run_uuid, alert_uuid.lower(), user_id, actor)
+            result = association.keep(run_uuid, alert_uuid.lower(), auth)
     except (runs.UnknownRun, association.UnknownAlert) as e:
         raise HTTPException(status_code=404, detail=str(e))
     except association.AssociationConflict as e:
