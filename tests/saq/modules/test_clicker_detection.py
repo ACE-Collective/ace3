@@ -1,12 +1,14 @@
 import copy
 import datetime
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
 
 from saq.analysis import RootAnalysis
 from saq.analysis.module_path import MODULE_PATH
-from saq.constants import DIRECTIVE_CRAWL, F_EMAIL_ADDRESS, F_FQDN, F_IP, F_URL
+from saq.clicker_detection.analyzer import parse_clicker_timestamp
+from saq.constants import DIRECTIVE_CRAWL, F_EMAIL_ADDRESS, F_FQDN, F_IP, F_URL, AnalysisExecutionResult
 from saq.modules.clicker_detection import (
     SplunkClickerDetectionAnalysis,
     SplunkClickerDetectionAnalyzer,
@@ -64,7 +66,8 @@ MULTI_CONFIG = {"splunk": {"enabled": True, "searches": {"safelinks": copy.deepc
 
 class MockMultiSplunk(MockSplunk):
     """Returns preset rows depending on a marker substring in the query, so each named
-    search 'finds' its own rows synchronously (no AnalysisDelay)."""
+    search 'finds' its own rows synchronously. Rows of None leave the job pending (AnalysisDelay)
+    and an exception is raised as the search's failure."""
     def __init__(self, rows_by_marker):
         super().__init__()
         self.rows_by_marker = rows_by_marker
@@ -74,6 +77,8 @@ class MockMultiSplunk(MockSplunk):
         mock_job.name = "1"
         for marker, rows in self.rows_by_marker.items():
             if marker in query:
+                if isinstance(rows, Exception):
+                    raise rows
                 return mock_job, rows
         return mock_job, []
 
@@ -250,3 +255,125 @@ def test_skipped_phishkit_is_reset_on_hit(test_context):
 
         assert phishkit_key not in observable._analysis  # sentinel cleared
         assert observable.has_directive(DIRECTIVE_CRAWL)
+
+
+@pytest.mark.unit
+def test_failed_search_is_reported_and_the_rest_still_run(test_context, caplog):
+    splunk = MockMultiSplunk({
+        "app_defender_hunting": RuntimeError("splunk said no"),
+        "index=proxy": [PROXY_ROW],
+    })
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk), caplog.at_level(logging.ERROR):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = _run(analyzer, observable)
+
+    # the proxy search after the failed one still ran
+    assert {e.source for e in analysis.get_clicker_events()} == {"splunk:proxy"}
+
+    # the failure is visible to the analyst, next to the clicks the other search found
+    assert analysis.get_clicker_error() == "safelinks: splunk said no"
+    assert analysis.generate_summary() == "URL Clicks (Splunk): 1 click found, ERROR: safelinks: splunk said no"
+
+    records = [r for r in caplog.records if getattr(r, "clicker_search", None) == "safelinks"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    assert records[0].observable == "https://evil.example/landing"
+
+
+@pytest.mark.unit
+def test_every_failed_search_is_named(test_context):
+    splunk = MockMultiSplunk({
+        "app_defender_hunting": RuntimeError("first"),
+        "index=proxy": RuntimeError("second"),
+    })
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = _run(analyzer, observable)
+
+    assert analysis.get_clicker_error() == "safelinks: first; proxy: second"
+    assert analysis.generate_summary() == "URL Clicks (Splunk): ERROR: safelinks: first; proxy: second"
+
+
+@pytest.mark.unit
+def test_pending_search_delays_then_times_out(test_context):
+    splunk = MockMultiSplunk({"app_defender_hunting": None, "index=proxy": [PROXY_ROW]})
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = analyzer.create_analysis(observable)
+
+        # within the timeout the work item is delayed on the first search
+        with patch.object(analyzer, "delay_analysis", return_value=AnalysisExecutionResult.INCOMPLETE) as delay:
+            assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.INCOMPLETE
+        delay.assert_called_once_with(observable, analysis, seconds=analyzer.async_delay_seconds)
+        assert analysis.details["clicker_index"] == 0
+        assert analysis.get_clicker_error() is None
+
+        # once the timeout has passed the search is given up on and the next one runs
+        analysis.query_start -= analyzer.query_timeout + 1
+        assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
+
+    assert analysis.details["clicker_index"] == 2
+    assert {e.source for e in analysis.get_clicker_events()} == {"splunk:proxy"}
+    assert analysis.get_clicker_error() == "safelinks: timed out"
+
+
+@pytest.mark.unit
+def test_search_removed_from_config_mid_flight_is_skipped(test_context):
+    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED], "index=proxy": [PROXY_ROW]})
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk):
+        analyzer = _make_analyzer(test_context, MULTI_CONFIG)
+        observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+        analysis = analyzer.create_analysis(observable)
+        analysis.details["clicker_plan"] = ["safelinks", "proxy"]
+        analysis.details["clicker_index"] = 0
+        analysis.details["clicker_events"] = []
+
+        # the analyst deletes the safelinks search while the work item is delayed
+        analyzer._clicker_config = {"splunk": {"enabled": True, "searches": {"proxy": copy.deepcopy(PROXY)}}}
+        assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
+
+    assert {e.source for e in analysis.get_clicker_events()} == {"splunk:proxy"}
+    assert analysis.get_clicker_error() is None
+
+
+@pytest.mark.unit
+def test_failed_search_link_is_logged_and_left_out(test_context, caplog):
+    splunk = MockMultiSplunk({"app_defender_hunting": [ROW_ALLOWED]})
+    with patch("saq.modules.splunk.SplunkClient", return_value=splunk), caplog.at_level(logging.ERROR):
+        analyzer = _make_analyzer(test_context, URL_CONFIG)
+        with patch.object(analyzer, "_build_search_link", side_effect=RuntimeError("no link")):
+            observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
+            analysis = _run(analyzer, observable)
+
+    # the search itself is unaffected
+    events = analysis.get_clicker_events()
+    assert len(events) == 1
+    assert events[0].portal_url is None
+    assert not analysis.details.get("gui_link")
+    assert [r.message for r in caplog.records if r.exc_info] == [
+        "failed to build clicker gui link", "failed to build clicker search link"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value, expected", [
+    (None, None),
+    ("", None),
+    # Logscale @timestamp, milliseconds since the epoch, as a number or a string
+    (1781697826000, datetime.datetime(2026, 6, 17, 12, 3, 46, tzinfo=datetime.timezone.utc)),
+    ("1781697826000", datetime.datetime(2026, 6, 17, 12, 3, 46, tzinfo=datetime.timezone.utc)),
+    # seconds since the epoch
+    (1781697826, datetime.datetime(2026, 6, 17, 12, 3, 46, tzinfo=datetime.timezone.utc)),
+    # MS Defender: a Z suffix and 7 fractional digits
+    ("2026-06-17T12:03:46.6719381Z",
+     datetime.datetime(2026, 6, 17, 12, 3, 46, 671938, tzinfo=datetime.timezone.utc)),
+    # trailing text after the seconds
+    ("2026-06-17T12:03:46 UTC+00:00 (local)",
+     datetime.datetime(2026, 6, 17, 12, 3, 46, tzinfo=datetime.timezone.utc)),
+    ("not a time", None),
+])
+def test_parse_clicker_timestamp(value, expected):
+    assert parse_clicker_timestamp(value) == expected
