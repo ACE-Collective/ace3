@@ -184,6 +184,8 @@
     </div>
 </div>
 
+{% include 'analysis/lure_urls.html' %}
+
 {% include 'analysis/detection_chains.html' %}
 
 {% include 'analysis/crawl_chains.html' %}
@@ -380,6 +382,7 @@
 
                 {# display observable type and value if node is an observable #}
                 {% if not node.is_analysis %}
+                    {% if node.obj.uuid in (lure_url_uuids or ()) %}<span class="badge text-bg-warning" title="the URL this email lures its recipient to">lure</span>{% endif %}
                     <b>{{node.obj.display_type}}</b><span> : </span>
                 {% endif %}
 
