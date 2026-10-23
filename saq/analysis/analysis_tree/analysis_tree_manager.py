@@ -267,30 +267,6 @@ class AnalysisTreeManager:
     def reset_analysis_details(self, analysis: Analysis):
         self.persistence_manager.reset_analysis_details(analysis)
 
-    def discard_analysis_details(self, analysis: Analysis):
-        self.persistence_manager.discard_analysis_details(analysis)
-
-    def flush_all_analysis(self):
-        """Calls flush() on all Analysis objects in the tree."""
-        self.persistence_manager.flush_all_analysis()
-
-    def clear_all_analysis(self):
-        """Removes all analysis from all observables."""
-        for observable in self.query_engine.all_observables:
-            observable.clear_analysis()
-
-    def reset_tree(self, retain_original_observables=True):
-        """Resets the analysis tree, optionally retaining original observables.
-
-        Args:
-            retain_original_observables: If True, keeps observables that came with the original alert
-        """
-        self.persistence_manager.reset_tree(retain_original_observables)
-
-    def materialize_tree(self):
-        """Utility function to replace specific dict() in json with runtime object references."""
-        self.persistence_manager.materialize_tree()
-
     def serialize_observable_registry(self) -> dict:
         return self.persistence_manager.serialize_observable_registry()
 
