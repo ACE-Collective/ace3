@@ -1,4 +1,5 @@
 import re
+from typing import Optional
 
 from saq.analysis.observable import Observable
 from saq.constants import F_MAC_ADDRESS
@@ -7,21 +8,31 @@ from saq.observables.generator import register_observable_type
 
 
 RE_MAC = re.compile(r'^([a-fA-F0-9]{2})[^a-fA-F0-9]*?([a-fA-F0-9]{2})[^a-fA-F0-9]*?([a-fA-F0-9]{2})[^a-fA-F0-9]*?([a-fA-F0-9]{2})[^a-fA-F0-9]*?([a-fA-F0-9]{2})[^a-fA-F0-9]*?([a-fA-F0-9]{2})[^a-fA-F0-9]*?$')
+
+
+def normalize_mac_address(value: str) -> Optional[str]:
+    """Returns the mac address as lowercase aa-bb-cc-dd-ee-ff, or None if it does not parse.
+
+    Producers disagree on the separator (tshark uses ':', Windows and EDR tools '-'), and the same card
+    must be the same observable whichever one saw it."""
+    m = RE_MAC.match(value.strip())
+    if m is None:
+        return None
+    return '-'.join(m.groups()).lower()
+
+
 class MacAddressObservable(Observable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_MAC_ADDRESS, *args, **kwargs)
 
     @Observable.value.setter
     def value(self, new_value):
-        self._value = new_value
-
-        # try to deal with the various formats of mac addresses
-        # some separate with different characters and some don't separate at all
-        m = RE_MAC.match(new_value)
-        if m is None:
+        normalized = normalize_mac_address(new_value)
+        if normalized is None:
             raise ObservableValueError(f"{new_value} does not parse as a mac address")
 
-        self.mac_parts = m.groups()
+        self._value = normalized
+        self.mac_parts = tuple(normalized.split('-'))
 
     def mac_address(self, sep=':'):
         """Return the mac address formatted with the given separator. Defaults to :"""

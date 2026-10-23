@@ -58,6 +58,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_pcap_file
 from saq.observables.file import FileObservable
+from saq.observables.network.layer2 import normalize_mac_address
 from saq.util.ui import human_readable_size
 from saq.sandbox.runner import (
     build_sandbox_argv,
@@ -891,8 +892,9 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
         if _is_interesting_ip(row["address"]):
             _add(PcapObservable(CATEGORY_HOSTS, F_IP, row["address"], volatile=True))
     for row in statistics.get("mac", []):
-        if _is_interesting_mac(row["address"]):
-            _add(PcapObservable(CATEGORY_HOSTS, F_MAC_ADDRESS, row["address"], volatile=True))
+        mac = normalize_mac_address(row["address"])
+        if mac and _is_interesting_mac(row["address"]):
+            _add(PcapObservable(CATEGORY_HOSTS, F_MAC_ADDRESS, mac, volatile=True))
     for row in index.get("hostnames", []):
         _add(PcapObservable(CATEGORY_HOSTS, F_HOSTNAME, row["name"], volatile=True))
 
@@ -1454,7 +1456,12 @@ def _ip_pivot(address: Optional[str], text: Optional[str] = None):
 
 
 def _mac_pivot(address: Optional[str]):
-    return _pivot(F_MAC_ADDRESS, address) if address and _is_interesting_mac(address) else address
+    if not address:
+        return address
+    mac = normalize_mac_address(address)
+    if mac is None:
+        return address
+    return _pivot(F_MAC_ADDRESS, mac) if _is_interesting_mac(address) else mac
 
 
 def _flow_endpoint(endpoint: str):

@@ -2,6 +2,7 @@
 import datetime
 import pytest
 
+from saq.analysis.root import load_root
 from saq.configuration import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
@@ -221,14 +222,34 @@ def test_valid_mac_observable():
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_MAC_ADDRESS, '001122334455')
     assert observable
-    assert observable.value == '001122334455'
+    assert observable.value == '00-11-22-33-44-55'
     assert observable.mac_address() == '00:11:22:33:44:55'
     assert observable.mac_address(sep='-') == '00-11-22-33-44-55'
-
-    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00:11:22:33:44:55')
-    assert observable
-    assert observable.value == '00:11:22:33:44:55'
     assert observable.mac_address(sep='') == '001122334455'
+
+@pytest.mark.unit
+@pytest.mark.parametrize('value', ['0A:1B:2C:3D:4E:5F', '0a-1b-2c-3d-4e-5f', '0a1b.2c3d.4e5f', '0A1B2C3D4E5F', ' 0a:1b:2c:3d:4e:5f\n'])
+def test_mac_observable_normalized(value):
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_MAC_ADDRESS, value)
+    assert observable.value == '0a-1b-2c-3d-4e-5f'
+
+@pytest.mark.unit
+def test_mac_observable_separators_are_one_observable():
+    root = create_root_analysis()
+    first = root.add_observable_by_spec(F_MAC_ADDRESS, '00:11:22:AA:BB:CC')
+    second = root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-aa-bb-cc')
+    assert first is second
+    assert len([o for o in root.all_observables if o.type == F_MAC_ADDRESS]) == 1
+
+@pytest.mark.unit
+def test_mac_observable_normalized_on_load():
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-33-44-55')
+    observable._value = '00:11:22:33:44:55'
+    root.save()
+    loaded = load_root(root.storage_dir)
+    assert loaded.get_observable(observable.uuid).value == '00-11-22-33-44-55'
 
 @pytest.mark.unit
 def test_invalid_mac_observable():
