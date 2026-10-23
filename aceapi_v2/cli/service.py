@@ -405,20 +405,19 @@ def _kill_session(process: asyncio.subprocess.Process) -> list[int]:
 async def _stop(execution_id: int, process: asyncio.subprocess.Process) -> None:
     """SIGTERM the command's process group, give it TERM_GRACE_SECONDS to stop, then SIGKILL what is left
     in its session. Bounded: at most TERM_GRACE_SECONDS + KILL_WAIT_SECONDS."""
-    if process.returncode is not None:
-        return
+    if process.returncode is None:
+        # start_new_session made the child a process group leader, so this reaches the children that stayed
+        # in its group. The rest stop when it does: an engine stops its own workers
+        _signal_group(process.pid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS)
+        except TimeoutError:
+            logger.warning("cli execution %s: child %s ignored SIGTERM for %s seconds, killing it",
+                           execution_id, process.pid, TERM_GRACE_SECONDS, extra={"cli_execution_id": execution_id})
 
-    # start_new_session made the child a process group leader, so this reaches the children that stayed
-    # in its group. The rest stop when it does: an engine stops its own workers
-    _signal_group(process.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS)
-    except TimeoutError:
-        logger.warning("cli execution %s: child %s ignored SIGTERM for %s seconds, killing it",
-                       execution_id, process.pid, TERM_GRACE_SECONDS, extra={"cli_execution_id": execution_id})
-
-    # also when it did stop: a service its shutdown watchdog ended never stopped what leads a group of its
-    # own, an engine's workers among them
+    # also when it stopped, or had already exited (what it left can hold its output open until the
+    # timeout): a service its shutdown watchdog ended, or one that died, never stopped what leads a group
+    # of its own, an engine's workers among them
     left = _kill_session(process)
     if left:
         logger.warning("cli execution %s: killed %d processes left in the session of child %s: %s",

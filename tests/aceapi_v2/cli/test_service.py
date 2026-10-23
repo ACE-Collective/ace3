@@ -685,6 +685,36 @@ async def test_a_run_that_stops_still_takes_what_it_left_in_its_session(monkeypa
     assert "ignored SIGTERM" not in caplog.text
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_whose_command_exited_still_takes_what_holds_its_output(monkeypatch, caplog):
+    # an engine whose controller died leaves workers that hold its stdout: no EOF, so the run reaches its
+    # timeout with the command itself already gone
+    execution_id = _claimed(timeout_seconds=1)
+    _python(monkeypatch,
+            "import subprocess\n"
+            "worker = subprocess.Popen(['sleep', '60'], process_group=0)\n"
+            "print('worker', worker.pid, flush=True)\n")
+
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+
+    row = _row(execution_id)
+    worker = int(row.output.split("worker ")[1].split()[0])
+    try:
+        wait_for_condition(lambda: not psutil.pid_exists(worker)
+                           or psutil.Process(worker).status() == psutil.STATUS_ZOMBIE, timeout=10)
+    finally:
+        try:
+            os.kill(worker, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    assert row.status == service.STATUS_TIMED_OUT
+    [record] = [r for r in caplog.records if "left in the session" in r.getMessage()]
+    assert record.killed_pids == [worker]
+
+
 @pytest.mark.unit
 def test_a_service_stopped_here_gets_its_whole_shutdown():
     # SIGTERM reaches only the command's group, so a service stops the rest itself, and its watchdog ends it
