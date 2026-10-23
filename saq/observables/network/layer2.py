@@ -34,6 +34,16 @@ class MacAddressObservable(Observable):
         self._value = normalized
         self.mac_parts = tuple(normalized.split('-'))
 
+    # lookups (get_observable_by_spec) and exclusions pass the raw value they were given,
+    # so it is compared in canonical form, falling back to as-is when it does not parse
+    def _compare_value(self, other_value):
+        if isinstance(other_value, str):
+            other_value = normalize_mac_address(other_value) or other_value
+        return self.value == other_value
+
+    def matches(self, value):
+        return self._compare_value(value)
+
     def mac_address(self, sep=':'):
         """Return the mac address formatted with the given separator. Defaults to :"""
         return sep.join(self.mac_parts)

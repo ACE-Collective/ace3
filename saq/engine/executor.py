@@ -682,7 +682,7 @@ class AnalysisExecutor:
             return ObservableExclusionResult.EXCLUDED
 
         # is this observable globally excluded? matches() is exact for most
-        # observable types and CIDR-aware for ip/ipv4
+        # observable types, CIDR-aware for ip/ipv4 and notation-blind for mac_address
         excluded = any(
             work_item.observable.matches(exclusion)
             for exclusion in self.config.observable_exclusions.get(

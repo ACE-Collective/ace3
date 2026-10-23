@@ -252,6 +252,29 @@ def test_mac_observable_normalized_on_load():
     assert loaded.get_observable(observable.uuid).value == '00-11-22-33-44-55'
 
 @pytest.mark.unit
+@pytest.mark.parametrize('value', ['00:11:22:AA:BB:CC', '00-11-22-aa-bb-cc', '001122aabbcc'])
+def test_mac_observable_lookup_in_any_notation(value):
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-aa-bb-cc')
+    assert root.get_observable_by_spec(F_MAC_ADDRESS, value) is observable
+
+@pytest.mark.unit
+def test_mac_observable_lookup_misses():
+    root = create_root_analysis()
+    root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-aa-bb-cc')
+    assert root.get_observable_by_spec(F_MAC_ADDRESS, '00:11:22:aa:bb:cd') is None
+    assert root.get_observable_by_spec(F_MAC_ADDRESS, 'not a mac') is None
+
+@pytest.mark.unit
+def test_mac_observable_matches():
+    root = create_root_analysis()
+    observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-aa-bb-cc')
+    assert observable.matches('00:11:22:AA:BB:CC')
+    assert observable.matches('00-11-22-aa-bb-cc')
+    assert not observable.matches('00:11:22:aa:bb:cd')
+    assert not observable.matches('not a mac')
+
+@pytest.mark.unit
 def test_invalid_mac_observable():
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00112233445Z')
