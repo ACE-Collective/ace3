@@ -16,7 +16,7 @@ def execute_hunt(args):
     import ace_api
     import pytz
     from saq.collectors.hunter import HunterService
-    from saq.collectors.hunter.query_hunter import QueryHunt
+    from saq.collectors.hunter.query_hunter import QUERY_DETAILS_EVENTS, QueryHunt
     hunter_service = HunterService()
     hunter_service.load_hunt_managers()
 
@@ -80,20 +80,18 @@ def execute_hunt(args):
                 for pv in submission.root.pivot_links:
                     print(f"\t🔗 pivot ({pv.url})[{pv.text}]")
 
+        # query hunts keep the events that made the submission in its details
+        events = (submission.root.details or {}).get(QUERY_DETAILS_EVENTS, [])
         if args.events:
             print("BEGIN EVENTS")
-            for event in submission.root.details["events"]:
+            for event in events:
                 print(json.dumps(event, indent=True, sort_keys=True))
             print("END EVENTS")
 
         if args.json_dir is not None:
-            buffer = []
-            for event in submission.root.details:
-                buffer.append(event)
-
             target_json_file = os.path.join(args.json_dir, '{}.json'.format(str(json_dir_index)))
             with open(target_json_file, 'w') as fp:
-                json.dump(buffer, fp)
+                json.dump(events, fp)
 
             with open(os.path.join(args.json_dir, 'manifest'), 'a') as fp:
                 fp.write(f'{json_dir_index} = {submission.root.description}\n')
