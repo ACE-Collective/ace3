@@ -24,7 +24,7 @@ from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
 from saq.svs.runs import Registration, RegistrationRefused, TargetSpec, cancel, executed, register, run_timers, start
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import add_catalog_test, write_hunt
+from tests.saq.svs.conftest import add_catalog_test, person, write_hunt
 
 pytestmark = pytest.mark.integration
 
@@ -256,20 +256,36 @@ def test_a_suppressed_match(caplog):
     _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "group_value"))
 
 
+def test_a_duplicate_match(caplog):
+    run = _started()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    root.submission_key = f"{hunt_uuid}:win10-01"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, None)], duplicate=True)
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} dropped a duplicate match")
+    assert record.levelno == logging.INFO and record.dedup_key == f"{hunt_uuid}:win10-01"
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "dedup_key"))
+
+
 def test_a_persons_association_changes(caplog, routed):
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     run = _started()
     root = _alert("win10-01", {})
     with caplog.at_level(logging.INFO):
-        association.keep(run.uuid, root.uuid, user_id, "unittest")
-        association.disassociate(run.uuid, root.uuid, user_id, "unittest", not_a_test=True)
-        association.associate(run.uuid, root.uuid, user_id, "unittest", "it was the test after all")
+        association.keep(run.uuid, root.uuid, person(user_id, key_id=7))
+        association.disassociate(run.uuid, root.uuid, person(user_id, key_id=7), not_a_test=True)
+        association.associate(run.uuid, root.uuid, person(user_id, key_id=7), "it was the test after all")
 
     for message in ("AUDIT: svs context attribution kept", "AUDIT: svs alert disassociated from a run",
                     "AUDIT: svs alert associated with a run"):
         (record,) = _records(caplog, message)
         assert record.svs_run == run.uuid and record.alert_uuid == root.uuid
-        _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id"))
+        _assert_fields(record, RUN_FIELDS + ("alert_uuid", "actor", "actor_user_id", "actor_key_id"))
+        assert (record.actor, record.actor_user_id, record.actor_key_id) == ("unittest", user_id, 7)
 
 
 def test_a_review(caplog):

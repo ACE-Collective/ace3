@@ -6,8 +6,45 @@ from typing import Any, Optional
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
-from saq.util.filesystem import abs_path, is_path_under, unique_file_path
+from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, shorten_basename_for_suffix
 from saq.util.hashing import sha256_file
+
+
+# room left in a file name for the _NNN that tells same-named files apart
+UNIQUE_SUFFIX_BYTES = 8
+
+# a longer "extension" is part of the name, so that truncating keeps something of both
+MAX_EXTENSION_BYTES = 32
+
+# well under PATH_MAX (4096) once the storage directory is in front, and the _NNN of each renamed directory
+MAX_RELATIVE_PATH_BYTES = 1024
+
+
+def clean_file_name(name: str) -> str:
+    """Returns name as a path relative to a files directory that cannot leave it: every / separated
+    component is a plain file name (no .., backslash or NUL, and short enough for the filesystem), and empty
+    and . components are dropped. The leading directories of a path longer than MAX_RELATIVE_PATH_BYTES are dropped.
+    Cleaning a clean name returns it unchanged."""
+    components: list[str] = []
+    for component in name.split("/"):
+        if component in ("", "."):
+            continue
+
+        if component == "..":
+            component = "_"
+
+        component = component.replace("\\", "_").replace("\0", "_")
+        stem, ext = os.path.splitext(component)
+        if len(ext.encode("utf-8")) > MAX_EXTENSION_BYTES:
+            stem, ext = component, ""
+
+        components.append(shorten_basename_for_suffix(stem, ext, NAME_MAX_BYTES - UNIQUE_SUFFIX_BYTES))
+
+    # the leading directories go first, since the file name is the part that says what the file is
+    while len(components) > 1 and len("/".join(components).encode("utf-8")) > MAX_RELATIVE_PATH_BYTES:
+        components.pop(0)
+
+    return os.path.join(*components) if components else "_"
 
 
 class LocalFileManager(FileManagerInterface):
@@ -23,6 +60,11 @@ class LocalFileManager(FileManagerInterface):
             storage_dir: The base storage directory for this analysis
         """
         self._storage_dir = storage_dir
+        # base path -> the _NNN index to try next, so that N outputs sharing a name cost N checks rather
+        # than N^2/2 (a crafted document can repeat a part name thousands of times)
+        self._next_suffix: dict[str, int] = {}
+        # wanted directory -> the _NNN directory used instead, because something else had the name
+        self._moved_directories: dict[str, str] = {}
         
     @property
     def storage_dir(self) -> str:
@@ -112,13 +154,103 @@ class LocalFileManager(FileManagerInterface):
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         return target_path
             
+    def create_output_file(self, name: str) -> str:
+        """
+        Creates a new, empty file in the files directory for bytes named by an untrusted source
+        (an attachment, archive member or upload name) and returns its full path. The name is
+        cleaned before anything is written: each / separated component becomes a plain file
+        name, so the file can only land inside the files directory, and a name that is already
+        taken gets a _NNN suffix.
+
+        Args:
+            name: The untrusted name, which may place the file in a subdirectory
+
+        Returns:
+            Full path to the new, empty file
+
+        Raises:
+            ValueError: If the path still resolves outside the file directory (a symlinked subdirectory)
+        """
+        relative_path = clean_file_name(name)
+        directory = self._output_directory(os.path.dirname(relative_path), name)
+        base_path = os.path.join(directory, os.path.basename(relative_path))
+
+        while True:
+            target_path = self._free_path(base_path)
+            try:
+                # O_EXCL: never an existing file, nor something planted at the name, is written through
+                os.close(os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664))
+                return target_path
+            except FileExistsError:
+                # taken between the check and the create, so the next call picks another suffix
+                continue
+
+    def _free_path(self, path: str) -> str:
+        """Returns path, or when something already exists there, the first free <name>_NNN<ext> next to
+        it, searching from where the last search for the same path stopped."""
+        index = self._next_suffix.get(path)
+        if index is None:
+            if not os.path.lexists(path):
+                return path
+
+            index = 0
+
+        stem, ext = os.path.splitext(path)
+        while os.path.lexists(candidate := f"{stem}_{index:03}{ext}"):
+            index += 1
+
+        self._next_suffix[path] = index + 1
+        return candidate
+
+    def _output_directory(self, relative_dir: str, name: str) -> str:
+        """Creates the directory part of a cleaned name in the files directory, one component at a time,
+        and returns its path. A component taken by something that is not a directory (an attachment x
+        stored before x/payload.exe) moves to the next free _NNN name, like a taken file name, rather
+        than keeping the file from being written.
+
+        Raises:
+            ValueError: If a component is a symlink that resolves outside the files directory
+        """
+        directory = self.file_dir
+        os.makedirs(directory, exist_ok=True)
+        for component in relative_dir.split(os.sep) if relative_dir else []:
+            wanted = os.path.join(directory, component)
+            path = self._moved_directories.get(wanted, wanted)
+            index = 0
+            while True:
+                if os.path.isdir(path):
+                    # a directory created here is contained because its parent is, so only a link (an
+                    # archive's symlink member) can lead out
+                    if os.path.islink(path):
+                        self._refuse_outside_file_dir(path, name)
+
+                    break
+
+                try:
+                    os.mkdir(path)
+                    break
+                except FileExistsError:
+                    if os.path.isdir(path):
+                        # created between the check and the mkdir
+                        continue
+
+                    # moved to the next _NNN name; one an earlier pass moved there is a directory, reused above
+                    stem, ext = os.path.splitext(wanted)
+                    path = f"{stem}_{index:03}{ext}"
+                    index += 1
+                    self._moved_directories[wanted] = path
+
+            directory = path
+
+        return directory
+
     def store_file(self, source_path: Any, target_path: Optional[str] = None, move: bool = False) -> tuple[str, str]:
         """
         Store a file in the analysis storage system.
         
         Args:
             source_path: Path to the source file
-            target_path: Optional target path within file_dir. If None, uses basename of source
+            target_path: Optional target path within file_dir, cleaned like a create_output_file name. If None, uses basename of source
             move: If True, move the file instead of copying
             
         Returns:
@@ -140,12 +272,11 @@ class LocalFileManager(FileManagerInterface):
         if source_path.startswith(self.file_dir):
             target_path = source_path
         else:
-            target_path = os.path.join(self.file_dir, target_path or os.path.basename(source_path))
+            relative_path = clean_file_name(target_path or os.path.basename(source_path))
+            directory = self._output_directory(os.path.dirname(relative_path), relative_path)
+            target_path = os.path.join(directory, os.path.basename(relative_path))
 
         self._refuse_outside_file_dir(target_path, target_path)
-
-        # Ensure target directory exists
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
         
         # Compute file hash
         sha256_hash = sha256_file(source_path)
@@ -183,10 +314,10 @@ class LocalFileManager(FileManagerInterface):
         # Create reference link
         if not os.path.exists(target_path):
             os.link(hardcopy_path, target_path)
-        elif target_path != source_path and sha256_file(target_path) != sha256_hash:
-            # another file already has this name, and reusing it would give this observable the
-            # other file's bytes
-            target_path = unique_file_path(target_path)
+        elif target_path != source_path and not (os.path.isfile(target_path) and sha256_file(target_path) == sha256_hash):
+            # another file (or a directory) already has this name, and reusing it would give this
+            # observable the other file's bytes
+            target_path = self._free_path(target_path)
             os.link(hardcopy_path, target_path)
             
         # Return hash and relative path

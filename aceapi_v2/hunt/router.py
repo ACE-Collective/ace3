@@ -42,8 +42,7 @@ def _client_ip(request: Request) -> Optional[str]:
 
 
 def _audit(auth: ApiAuthResult, request: Request, event: str, fields: dict[str, Any]) -> None:
-    write_audit_record(event, user=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
-                               key_name=auth.key_name, src_ip=_client_ip(request), **fields)
+    write_audit_record(event, auth, _client_ip(request), **fields)
 
 
 @router.post(

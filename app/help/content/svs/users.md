@@ -277,7 +277,7 @@ what was decided about it, and how it did in the test's earlier runs.
 |---|---|
 | `hit` | Expected, and it fired |
 | `missing` | Expected, and it didn't fire |
-| `possibly suppressed` | Missing, but it is a hunt that alerted within its suppression period just before, so it may have been suppressed rather than blind. For a hunt that groups its alerts, the hunter recorded that it suppressed a match on the run's host |
+| `possibly suppressed` | Missing, but it is a hunt that alerted within its suppression period just before, so it may have been suppressed rather than blind. For a hunt that groups or deduplicates its alerts, the hunter recorded that it dropped a match on the run's host |
 | `candidate` | It fired, and nobody has decided about it |
 | `rejected` | It fired, and it was rejected for this test |
 | `ignored` | It fired, and it is ignored for this test or for every test |
@@ -473,8 +473,8 @@ Work through it in this order:
    section links straight to it.
 3. **Did the signature have a chance?** For a hunt, search for its completion record over the run's
    window: if the hunt didn't run across that time, it couldn't fire. A `possibly suppressed` status
-   points at the alert that probably suppressed it, except for a hunt that groups its alerts, where
-   the hunter recorded the suppression itself.
+   points at the alert that probably suppressed it, except where the hunter recorded the dropped
+   match itself (a hunt that groups or deduplicates its alerts).
 4. **Did it run and not match?** For a YARA rule, the run page links (with `signature:read`) to the
    files captured from the run's alerts; scan them against the rule.
 

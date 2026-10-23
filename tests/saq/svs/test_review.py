@@ -32,7 +32,7 @@ from saq.svs import association, expectations, results, review, run_comments, ru
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("overlapping_runs")]
@@ -278,7 +278,7 @@ class TestReview:
             review.review(run.uuid, user_id, ACTOR)
         assert e.value.blockers == {"context_alerts": [context]}
 
-        association.keep(run.uuid, context, user_id, ACTOR)
+        association.keep(run.uuid, context, person(user_id))
         assert review.review(run.uuid, user_id, ACTOR).alerts_closed == 1
 
     def test_a_result_never_computed_is_marked_stale(self, user_id):

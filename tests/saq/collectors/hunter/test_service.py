@@ -1,8 +1,11 @@
+import logging
 import os
 import shutil
 
 import pytest
 
+from saq.collectors.hunter import service as service_module
+from saq.collectors.hunter.query_hunter import dedup_key_hunt_uuid
 from saq.collectors.hunter.service import MAX_SUBMISSIONS_PER_COLLECTION, HunterCollector
 from tests.saq.helpers import create_staged_submission, create_submission_file_manager, log_count
 
@@ -174,3 +177,56 @@ def test_discard_removes_staged_submission(file_manager):
 
     assert file_manager.discard_staged_submission(root_uuid)
     assert file_manager.list_staged_submissions() == []
+
+
+HUNT_UUID = "11111111-aaaa-4aaa-8aaa-111111111111"
+OTHER_HUNT_UUID = "22222222-bbbb-4bbb-8bbb-222222222222"
+
+
+def _duplicates(file_manager, *keys) -> list:
+    for key in keys:
+        create_staged_submission(file_manager, key=key, group_value="win10-01" if key else None)
+    return list(HunterCollector(file_manager).collect())
+
+
+@pytest.mark.unit
+def test_dedup_key_hunt_uuid():
+    assert dedup_key_hunt_uuid(f"{HUNT_UUID}:alice:bob") == HUNT_UUID
+    assert dedup_key_hunt_uuid("no-prefix") is None
+    assert dedup_key_hunt_uuid(":value") is None
+    assert dedup_key_hunt_uuid(None) is None
+
+
+@pytest.mark.unit
+def test_duplicates_are_recorded_per_hunt(file_manager, monkeypatch):
+    """each hunt's duplicates go to svs together, as duplicates; a key no hunt made is skipped"""
+    calls = []
+    monkeypatch.setattr(service_module, "record_suppressed_matches",
+                        lambda hunt_uuid, matches, duplicate: calls.append(
+                            (hunt_uuid, sorted(value for _, value in matches), duplicate)))
+    submissions = _duplicates(file_manager, f"{HUNT_UUID}:a", f"{OTHER_HUNT_UUID}:b", f"{HUNT_UUID}:c", "no-prefix")
+
+    HunterCollector(file_manager).duplicates_dropped(submissions)
+    assert sorted(calls) == [(HUNT_UUID, ["win10-01", "win10-01"], True), (OTHER_HUNT_UUID, ["win10-01"], True)]
+
+
+@pytest.mark.unit
+def test_a_failure_to_record_duplicates_is_logged_per_hunt(file_manager, monkeypatch, caplog):
+    """one hunt's failure is logged at ERROR with its keys, and the next hunt is still recorded"""
+    recorded = []
+
+    def record(hunt_uuid, matches, duplicate):
+        if hunt_uuid == HUNT_UUID:
+            raise RuntimeError("database is gone")
+        recorded.append(hunt_uuid)
+
+    monkeypatch.setattr(service_module, "record_suppressed_matches", record)
+    submissions = _duplicates(file_manager, f"{HUNT_UUID}:a", f"{OTHER_HUNT_UUID}:b")
+
+    with caplog.at_level(logging.ERROR):
+        HunterCollector(file_manager).duplicates_dropped(submissions)
+
+    assert recorded == [OTHER_HUNT_UUID]
+    (record_,) = [r for r in caplog.records if "unable to record the duplicate matches" in r.getMessage()]
+    assert record_.levelno == logging.ERROR and record_.exc_info is not None
+    assert (record_.hunt_uuid, record_.dedup_keys) == (HUNT_UUID, [f"{HUNT_UUID}:a"])

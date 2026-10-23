@@ -113,3 +113,11 @@ def get_async_deobfuscate_result(
         return _copy_files(result_dir, output_dir)
     except TimeoutError:
         return None
+
+
+def maintain_files(max_file_age_days: int, timeout: float = 300) -> dict:
+    """Run the js-deobfuscator file-maintenance task."""
+    # imported here like the other tasks: importing the module builds the celery app
+    from js_deobfuscator.js_deobfuscator import maintain_files as jd_maintain_files
+    result = jd_maintain_files.delay(max_file_age_days)
+    return result.get(timeout=timeout)

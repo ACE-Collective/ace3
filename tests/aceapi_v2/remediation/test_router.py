@@ -212,7 +212,7 @@ class TestLookup:
 class TestQueue:
     @pytest.mark.asyncio
     async def test_remove(self, client: AsyncClient, remediable, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.remediation.router")
+        caplog.set_level(logging.INFO)
 
         response = await client.post("/remediation/remediations",
                                      json={"action": "remove", "targets": [_target("evil"), _target("worse")]})
@@ -222,8 +222,10 @@ class TestQueue:
         assert [(r["action"], r["status"]) for r in queued] == [("remove", "NEW"), ("remove", "NEW")]
         rows = [_remediation(r["id"]) for r in queued]
         assert [(row.key, row.user_id) for row in rows] == [("evil", _caller_id()), ("worse", _caller_id())]
-        assert any(record.getMessage().startswith("AUDIT: user unittest queued remove remediations")
-                   for record in caplog.records)
+        audit = next(record for record in caplog.records
+                     if record.getMessage().startswith("AUDIT: user unittest queued remove remediations"))
+        assert (audit.actor, audit.actor_user_id, audit.remediation_ids) == (
+            "unittest", _caller_id(), [r["id"] for r in queued])
 
     @pytest.mark.asyncio
     async def test_restore_uses_the_latest_successful_removal(self, client: AsyncClient, remediable):
@@ -257,7 +259,9 @@ class TestQueue:
 class TestCancel:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [RemediationStatus.NEW, RemediationStatus.IN_PROGRESS])
-    async def test_stops_a_remediation_that_has_not_completed(self, client: AsyncClient, status):
+    async def test_stops_a_remediation_that_has_not_completed(self, client: AsyncClient, status,
+                                                              caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         remediation_id = _queue("evil", status)
 
         response = await client.post(f"/remediation/remediations/{remediation_id}/cancel")
@@ -266,6 +270,9 @@ class TestCancel:
         assert response.json() == {"id": remediation_id, "action": "remove", "status": "COMPLETED", "result": "CANCELLED"}
         history = get_db().query(RemediationHistory).filter(RemediationHistory.remediation_id == remediation_id).one()
         assert history.message == "cancelled by unittest"
+        audit = next(record for record in caplog.records
+                     if record.getMessage() == f"AUDIT: user unittest cancelled remediation {remediation_id}")
+        assert (audit.actor_user_id, audit.remediation_id) == (_caller_id(), remediation_id)
 
     @pytest.mark.asyncio
     async def test_a_completed_remediation_keeps_its_result(self, client: AsyncClient):
@@ -285,11 +292,15 @@ class TestCancel:
 
 class TestDelete:
     @pytest.mark.asyncio
-    async def test_delete(self, client: AsyncClient):
+    async def test_delete(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         remediation_id = _queue("evil")
 
         assert (await client.delete(f"/remediation/remediations/{remediation_id}")).status_code == 204
         assert _remediation(remediation_id) is None
+        audit = next(record for record in caplog.records
+                     if record.getMessage().startswith(f"AUDIT: user unittest deleted remediation {remediation_id} "))
+        assert (audit.actor_user_id, audit.remediation_id) == (_caller_id(), remediation_id)
 
     @pytest.mark.asyncio
     async def test_unknown_remediation(self, client: AsyncClient):
@@ -299,15 +310,16 @@ class TestDelete:
 class TestRetry:
     @pytest.mark.asyncio
     async def test_queues_a_completed_remediation_again(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.remediation.router")
+        caplog.set_level(logging.INFO)
         remediation_id = _queue("evil", RemediationStatus.COMPLETED, RemediatorStatus.FAILED)
 
         response = await client.post(f"/remediation/remediations/{remediation_id}/retry")
 
         assert response.status_code == 200
         assert response.json() == {"id": remediation_id, "action": "remove", "status": "NEW", "result": None}
-        assert any(record.getMessage() == f"AUDIT: user unittest retried remediation {remediation_id}"
-                   for record in caplog.records)
+        audit = next(record for record in caplog.records
+                     if record.getMessage() == f"AUDIT: user unittest retried remediation {remediation_id}")
+        assert (audit.actor_user_id, audit.remediation_id) == (_caller_id(), remediation_id)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [RemediationStatus.NEW, RemediationStatus.IN_PROGRESS])
@@ -328,9 +340,10 @@ class TestRetry:
 
 class TestRestore:
     @pytest.mark.asyncio
-    async def test_restores_what_that_removal_removed(self, client: AsyncClient):
+    async def test_restores_what_that_removal_removed(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
         """The restore uses the key of the removal it undoes, not of the target's latest one, and is
         the caller's rather than the remover's."""
+        caplog.set_level(logging.INFO)
         other = add_user(username="remover", email="remover@localhost", display_name="remover", password="TestPass123!")
         removal = _queue("evil", RemediationStatus.COMPLETED, RemediatorStatus.SUCCESS, restore_key="first-key")
         _set(removal, user_id=other.id)
@@ -343,6 +356,9 @@ class TestRestore:
         assert (queued["action"], queued["status"]) == ("restore", "NEW")
         restore = _remediation(queued["id"])
         assert (restore.key, restore.restore_key, restore.user_id) == ("evil", "first-key", _caller_id())
+        audit = next(record for record in caplog.records
+                     if record.getMessage() == f"AUDIT: user unittest queued restore {queued['id']} of remediation {removal}")
+        assert (audit.actor_user_id, audit.remediation_id, audit.restore_id) == (_caller_id(), removal, queued["id"])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("action, status, result", [

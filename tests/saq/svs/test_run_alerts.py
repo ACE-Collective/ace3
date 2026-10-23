@@ -29,7 +29,7 @@ from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import RunEventKind, RunState
 from saq.svs.run_filters import needs_attention_condition, open_alerts_condition
 from tests.saq.helpers import create_root_analysis
-from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
+from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
 pytestmark = pytest.mark.integration
 
@@ -180,7 +180,7 @@ class TestClosingARun:
         def disassociated_first(*conditions):
             # the timers' late-alert sweep chooses again after the close
             if not _events(run.uuid, RunEventKind.DISASSOCIATED):
-                association.disassociate(run.uuid, alert_uuid, user_id, "unittest")
+                association.disassociate(run.uuid, alert_uuid, person(user_id))
             return chosen
 
         monkeypatch.setattr(runs, "_closable_alerts", disassociated_first)

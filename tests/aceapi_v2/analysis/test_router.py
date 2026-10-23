@@ -26,6 +26,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import set_node_status
 from saq.environment import get_data_dir, get_global_runtime_settings, get_local_timezone
 from saq.json_encoding import _JSONEncoder
+from saq.util.filesystem import is_path_under
 from saq.util.uuid import get_storage_dir
 
 pytestmark = pytest.mark.integration
@@ -182,29 +183,39 @@ class TestUploadNames:
     directory, but never a place outside it."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["../../{name}", "sub/../../{name}", ".."])
-    async def test_a_name_outside_the_root_is_refused(self, client: AsyncClient, name, caplog):
+    @pytest.mark.parametrize("name, stored", [
+        ("../../{name}", "_/_/{name}"),
+        ("sub/../../{name}", "sub/_/_/{name}"),
+        ("..", "_"),
+    ])
+    async def test_a_name_outside_the_root_is_kept_inside(self, client: AsyncClient, name, stored):
         file_name = f"escaped-{uuidlib.uuid4().hex}.txt"
         name = name.format(name=file_name)
-        before = _stored_roots()
+        stored = stored.format(name=file_name)
 
         response = await _submit(client, _submission(), [(name, b"escaped")])
 
-        assert response.status_code == 400
-        assert response.json()["detail"] == f"invalid file name {name!r}"
-        assert _stored_roots() == before
-        assert not any(file_name in files for _, _, files in os.walk(get_data_dir()))
-        assert [r.path for r in caplog.records if r.getMessage().startswith("refusing file path")] == [name]
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == stored
+        assert is_path_under(file_observable.full_path, root.file_dir)
+        with open(file_observable.full_path, "rb") as fp:
+            assert fp.read() == b"escaped"
+
+        assert not os.path.exists(os.path.join(root.file_dir, "..", "..", file_name))
 
     @pytest.mark.asyncio
-    async def test_an_absolute_name_is_refused(self, client: AsyncClient, tmp_path):
+    async def test_an_absolute_name_is_kept_inside(self, client: AsyncClient, tmp_path):
         target = tmp_path / "escaped.txt"
-        before = _stored_roots()
 
         response = await _submit(client, _submission(), [(str(target), b"escaped")])
 
-        assert response.status_code == 400
-        assert _stored_roots() == before
+        assert response.status_code == 201
+        root = _load(response.json()["uuid"])
+        (file_observable,) = _file_observables(root)
+        assert file_observable.file_path == str(target).lstrip("/")
+        assert is_path_under(file_observable.full_path, root.file_dir)
         assert not target.exists()
 
     @pytest.mark.asyncio

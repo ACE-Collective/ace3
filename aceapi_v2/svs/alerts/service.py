@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.svs.alerts.schemas import (
     AlertDisassociation,
     AlertDisassociationRequest,
@@ -57,16 +58,16 @@ def get_alert_svs(alert_uuid: str) -> AlertSVS:
         mismatches=[AlertSVSMismatch(marker=m.marker, result=m.result, run=_run(m.run)) for m in view.mismatches])
 
 
-def disassociate_alert(alert_uuid: str, body: AlertDisassociationRequest | None, user_id: int | None, actor: str,
+def disassociate_alert(alert_uuid: str, body: AlertDisassociationRequest | None, auth: ApiAuthResult,
                        not_a_test: bool) -> AlertDisassociation:
     """422 for a config key (the change records who made it), 404 for an unknown alert, 409 when
     nothing holds it, or for not-a-test on an alert that isn't TEST?."""
-    if user_id is None:
+    if auth.auth_user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
     alert_uuid = _alert_uuid(alert_uuid)
     reason = body.reason if body is not None else None
     try:
-        result = association.disassociate_alert(alert_uuid, user_id, actor, reason, not_a_test=not_a_test)
+        result = association.disassociate_alert(alert_uuid, auth, reason, not_a_test=not_a_test)
     except association.UnknownAlert as e:
         raise HTTPException(status_code=404, detail=str(e))
     except association.AssociationConflict as e:

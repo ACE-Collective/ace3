@@ -82,9 +82,8 @@ def test_hunt_info_keeps_every_hunt_for_results(hunt_dir):
 
     info = windows.hunt_info()
     assert set(info) == {"grouped", "off", "broken"}
-    assert (info["grouped"].suppression, info["grouped"].grouped, info["grouped"].latency) == (
-        timedelta(days=1), True, timedelta(minutes=5))
-    assert (info["off"].enabled, info["off"].grouped, info["off"].suppression) == (False, True, None)
+    assert (info["grouped"].suppression, info["grouped"].latency) == (timedelta(days=1), timedelta(minutes=5))
+    assert (info["off"].enabled, info["off"].suppression) == (False, None)
     # only group_by suppresses per group, which the hunter records
     assert (info["grouped"].per_group, info["off"].per_group, info["broken"].per_group) == (True, False, False)
     assert (info["broken"].latency, info["broken"].suppression) == (None, timedelta(hours=1))

@@ -178,7 +178,7 @@ Key top-level conventions:
 
 ### Analysis modules
 
-`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later.
+`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later. A module that writes a file named by analyzed content (an attachment, archive member or document part name) gets its path from `root.create_output_file(name)`, which cleans the name, keeps it inside the root's files directory and creates the file before anything is written; `create_file_path` is for names the module makes up itself.
 
 ### Engine
 

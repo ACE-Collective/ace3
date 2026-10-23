@@ -2616,11 +2616,9 @@ class SVSRunResult(Base):
     fallback_time: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
-    # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
-    # the hunt deduplicates its alerts, so that alert may not have suppressed this one. Neither for
-    # a hunt with group_by, whose suppression the hunter records (svs_suppressed_matches)
+    # possibly_suppressed: the latest alert of the hunt inside its suppression period. None when the
+    # hunter recorded the drop (svs_suppressed_matches), which names no alert
     suppressing_alert_uuid: Mapped[Optional[str]] = mapped_column(CHAR(36), nullable=True)
-    suppression_imprecise: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the result as signed off (docs/SVS.md, Part 6, *History kept for reports*)
     reviewed_status: Mapped[Optional[str]] = mapped_column(
         Enum('hit', 'missing', 'possibly_suppressed', 'candidate', 'rejected', 'ignored', 'cleanup'), nullable=True)
@@ -2636,9 +2634,9 @@ class SVSRunResult(Base):
 
 
 class SVSSuppressedMatch(Base):
-    """A hunt with group_by dropped a match for its suppression inside a run's attribution window,
-    on one of the run's test hosts (docs/SVS_RUNS.md, *Results*). One row per run and hunt, for the
-    first such match: a run's result reads it to tell a suppressed hunt from a missing one, so it
+    """A hunt dropped a match inside a run's attribution window, on one of the run's test hosts
+    (docs/SVS_RUNS.md, *Results*): a hunt with group_by for its suppression, or the collector as a
+    duplicate of the hunt's dedup_key. One row per run and hunt, for the first such match: a run's result reads it to tell a suppressed hunt from a missing one, so it
     lives as long as the run. Only saq/svs/attribution.py writes this table."""
 
     __tablename__ = 'svs_suppressed_matches'
@@ -2653,8 +2651,10 @@ class SVSSuppressedMatch(Base):
         nullable=False)
     hunt_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
     # the match's group_value, which keys its suppression by itself or with the run
-    # (QueryHunt.key_suppression)
-    group_value: Mapped[str] = mapped_column(Text, nullable=False)
+    # (QueryHunt.key_suppression); None for a duplicate of a hunt without group_by
+    group_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # the dedup key the collector found the match a duplicate of; None when the hunt suppressed it
+    dedup_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # the match's event time, as runs record time (naive, local)
     event_time: Mapped[datetime] = mapped_column(MYSQL_DATETIME(fsp=6), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

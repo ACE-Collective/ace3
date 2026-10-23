@@ -30,6 +30,7 @@ from saq.cli.commands import ( # noqa: F401
     node,
     permissions,
     phishkit,
+    js_deobfuscator,
     storage,
     search,
     nrd,

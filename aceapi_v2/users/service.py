@@ -24,6 +24,7 @@ from saq.database.model import (
     AuthUserPermission,
     User,
 )
+from saq.logging import log_audit
 from saq.permissions.catalog import SESSION_ONLY_PAIRS, get_catalog_pairs, get_permission_catalog
 from saq.permissions.logic import get_permission_rows_async, held_catalog_pairs, key_scope_allows
 from saq.util import sha256_str
@@ -464,10 +465,9 @@ async def revoke_permissions(
     await session.flush()
 
     if user_permission_ids or group_permission_ids:
-        audit = _audit_actor(actor)
-        logging.info(
-            "AUDIT: user %s revoked user permission rows %s and group permission rows %s",
-            audit["actor"], user_permission_ids, group_permission_ids, extra=audit)
+        log_audit(
+            "user %s revoked user permission rows %s and group permission rows %s",
+            actor.auth_name if actor else None, user_permission_ids, group_permission_ids, auth=actor)
 
 
 def all_timezones() -> list[str]:
@@ -529,20 +529,12 @@ def _describe_scope(inherit: bool, rows: list[AuthApiKeyPermission]) -> str:
     return ", ".join(f"{row.major}:{row.minor}" for row in rows)
 
 
-def _audit_actor(actor: ApiAuthResult | None) -> dict:
-    """Who made a change, for an AUDIT record's extra={}. The user id alone is not enough: it does
-    not say which API key acted for that user, and a config key has no user at all."""
-    if actor is None:
-        return {"actor": None, "actor_id": None, "actor_key_id": None}
-    return {"actor": actor.auth_name, "actor_id": actor.auth_user_id, "actor_key_id": actor.key_id}
-
-
 def _warn_foreign_key(action: str, key_id: int, key_owner_id: int, owner_id: int) -> None:
     # the caller only sees a missing key, so that a key's existence is not revealed; this record is
     # the only trace of someone trying another user's key id
     logging.warning(
         "user %s tried to %s api key %s, which belongs to user %s", owner_id, action, key_id, key_owner_id,
-        extra={"api_key_id": key_id, "user_id": key_owner_id, "actor_id": owner_id})
+        extra={"api_key_id": key_id, "user_id": key_owner_id, "actor_user_id": owner_id})
 
 
 def _reject_self_service_inherit(inherit: bool) -> None:
@@ -620,23 +612,22 @@ async def create_user_api_key(
     if self_service:
         await _check_scope_within_grants(session, user_id, name, rows)
 
-    audit = _audit_actor(actor)
     api_key = str(uuid.uuid4())
     key = AuthApiKey(
         user_id=user_id,
         name=name,
         key_hash=sha256_str(api_key),
         inherit_user_scope=inherit,
-        created_by=audit["actor_id"],
+        created_by=actor.auth_user_id if actor else None,
     )
     key.scope.extend(rows)
 
     session.add(key)
     await session.flush()
-    logging.info(
-        "AUDIT: user %s created api key %s (%r) for user %s with scope %s",
-        audit["actor"], key.id, name, user_id, _describe_scope(inherit, rows),
-        extra={"api_key_id": key.id, "user_id": user_id, **audit})
+    log_audit(
+        "user %s created api key %s (%r) for user %s with scope %s",
+        actor.auth_name if actor else None, key.id, name, user_id, _describe_scope(inherit, rows),
+        auth=actor, api_key_id=key.id, user_id=user_id)
     return key, api_key
 
 
@@ -697,11 +688,10 @@ async def update_user_api_key(
     await session.flush()
     key.scope.extend(rows)
     await session.flush()
-    audit = _audit_actor(actor)
-    logging.info(
-        "AUDIT: user %s updated api key %s (%r) of user %s to scope %s",
-        audit["actor"], key.id, name, key.user_id, _describe_scope(inherit, rows),
-        extra={"api_key_id": key.id, "user_id": key.user_id, **audit})
+    log_audit(
+        "user %s updated api key %s (%r) of user %s to scope %s",
+        actor.auth_name if actor else None, key.id, name, key.user_id, _describe_scope(inherit, rows),
+        auth=actor, api_key_id=key.id, user_id=key.user_id)
     return key
 
 
@@ -731,10 +721,9 @@ async def revoke_user_api_key(
     name, user_id = key.name, key.user_id
     await session.delete(key)
     await session.flush()
-    audit = _audit_actor(actor)
-    logging.info(
-        "AUDIT: user %s revoked api key %s (%r) of user %s", audit["actor"], key_id, name, user_id,
-        extra={"api_key_id": key_id, "user_id": user_id, **audit})
+    log_audit(
+        "user %s revoked api key %s (%r) of user %s", actor.auth_name if actor else None, key_id, name, user_id,
+        auth=actor, api_key_id=key_id, user_id=user_id)
     return True
 
 
