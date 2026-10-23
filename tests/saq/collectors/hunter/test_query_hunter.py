@@ -26,6 +26,7 @@ from saq.constants import (
     ANALYSIS_MODE_FILE,
     ExecutionMode,
     F_COMMAND_LINE,
+    F_FILE,
     F_HOSTNAME,
     F_IP,
     F_SIGNATURE_ID,
@@ -2101,11 +2102,8 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
 def test_process_query_results_file_name_stays_in_the_files_directory(monkeypatch, tmpdir, hunt_manager, name, stored):
     """The file name is interpolated from the event, which can carry an attacker's file names, so
     the root's file manager cleans it when the file is stored."""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    monkeypatch.setattr(query_hunter_module, "get_staging_tmp_dir", lambda: str(tmpdir))
 
     hunt = default_hunt(
         manager=hunt_manager,

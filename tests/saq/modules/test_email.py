@@ -896,6 +896,26 @@ def test_attachments_with_the_same_name_are_kept_apart(root_analysis):
 
 
 @pytest.mark.integration
+def test_an_attachment_under_another_attachments_name_is_extracted(root_analysis):
+    """A sender can name one attachment invoice.html and another invoice.html/payload.html, and
+    the second must not be lost because the first holds the name of its directory."""
+    raw_email = _build_attachment_email('text/html', 'nested-name')
+    second_part = (b'--BOUND\r\nContent-Type: text/html\r\n'
+                   b'Content-Disposition: attachment; filename="invoice.html/payload.html"\r\n\r\n'
+                   b'<html><body><a href="https://example.com/payload">x</a></body></html>\r\n')
+    raw_email = raw_email.replace(b'--BOUND--', second_part + b'--BOUND--')
+
+    root_analysis, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'nested_name')
+
+    attachments = {o.file_path: o for o in email_analysis.get_observables_by_type(F_FILE)}
+    assert "invoice.html" in attachments
+    payload = attachments[os.path.join("invoice_000.html", "payload.html")]
+    with open(payload.full_path, 'rb') as fp:
+        assert b'https://example.com/payload' in fp.read()
+    assert not any(o.has_tag("email_parse_incomplete") for o in root_analysis.all_observables)
+
+
+@pytest.mark.integration
 def test_malformed_content_type_attachment_still_gets_render(root_analysis):
     """An attachment declaring a malformed Content-Type must still be rendered.
 

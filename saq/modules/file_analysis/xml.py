@@ -4,6 +4,7 @@ import os
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.analysis.file_manager.local_file_manager import clean_file_name
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -140,7 +141,7 @@ class _XMLParser(object):
     def start(self, tag, attrib):
         if tag == PART_TAG:
             # part names are absolute within the package (/word/media/image1.png) and come from the
-            # document, so the file manager cleans them when the part is written
+            # document, so they are cleaned before they are put under the output directory
             self.part_name = attrib.get(PART_NAME)
 
         if tag == DATA_TAG:
@@ -149,7 +150,8 @@ class _XMLParser(object):
     def end(self, tag):
         if tag == DATA_TAG and self.part_name and self._data:
             try:
-                output_path = self.root.create_output_file(f"{self.output_dir}/{self.part_name}")
+                # cleaned on its own, so that a part named / is a file in the output directory, not the directory
+                output_path = self.root.create_output_file(os.path.join(self.output_dir, clean_file_name(self.part_name)))
                 logging.debug("extracting base64 encoded XML binary data into {}".format(output_path))
                 with open(output_path, 'wb') as fp:
                     fp.write(base64.b64decode(''.join(self._data)))

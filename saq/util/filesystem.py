@@ -100,18 +100,6 @@ def is_path_under(path: str, root: str) -> bool:
     real_root = os.path.realpath(root)
     return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
 
-def unique_file_path(path: str) -> str:
-    """Returns path, or when something already exists there, the first free <name>_NNN<ext> next to it."""
-    if not os.path.lexists(path):
-        return path
-
-    stem, ext = os.path.splitext(path)
-    index = 0
-    while os.path.lexists(f"{stem}_{index:03}{ext}"):
-        index += 1
-
-    return f"{stem}_{index:03}{ext}"
-
 def extract_windows_filepaths(command_line):
     """Given a command line, extract any file paths found inside of it and return a list of them."""
     result = []

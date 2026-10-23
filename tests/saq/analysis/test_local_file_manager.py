@@ -5,7 +5,7 @@ import shutil
 import pytest
 from pathlib import Path
 
-from saq.analysis.file_manager.local_file_manager import LocalFileManager, clean_file_name
+from saq.analysis.file_manager.local_file_manager import MAX_RELATIVE_PATH_BYTES, LocalFileManager, clean_file_name
 from saq.util.filesystem import NAME_MAX_BYTES
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 
@@ -292,6 +292,33 @@ def test_store_file_cleans_a_target_outside_the_file_dir(contained_file_manager,
 
 
 @pytest.mark.unit
+def test_store_file_moves_a_directory_whose_name_is_a_file(contained_file_manager, tmp_path, test_file):
+    """A hunt can name one file a and another a/b."""
+    other = tmp_path / "other.txt"
+    other.write_text("other")
+    contained_file_manager.store_file(test_file, "a")
+
+    _, relative_path = contained_file_manager.store_file(str(other), "a/b")
+
+    assert relative_path == os.path.join("a_000", "b")
+    with open(os.path.join(contained_file_manager.file_dir, relative_path)) as fp:
+        assert fp.read() == "other"
+
+
+@pytest.mark.unit
+def test_store_file_with_a_directory_at_the_target(contained_file_manager, tmp_path, test_file):
+    other = tmp_path / "other.txt"
+    other.write_text("other")
+    contained_file_manager.store_file(str(other), "a/b")
+
+    _, relative_path = contained_file_manager.store_file(test_file, "a")
+
+    assert relative_path == "a_000"
+    with open(os.path.join(contained_file_manager.file_dir, relative_path)) as fp:
+        assert fp.read() == "test content"
+
+
+@pytest.mark.unit
 def test_store_file_keeps_an_absolute_target_inside(contained_file_manager, outside_dir, test_file):
     target = outside_dir / "escaped.txt"
     _, relative_path = contained_file_manager.store_file(test_file, str(target))
@@ -420,6 +447,17 @@ def test_clean_file_name_fits_the_filesystem(name):
 
 
 @pytest.mark.unit
+def test_clean_file_name_drops_leading_directories_of_a_long_path():
+    name = "/".join(f"{i:03}" + "d" * 200 for i in range(30)) + "/payload.exe"
+    cleaned = clean_file_name(name)
+
+    assert len(cleaned.encode("utf-8")) <= MAX_RELATIVE_PATH_BYTES
+    assert cleaned.endswith("029" + "d" * 200 + "/payload.exe")
+    assert name.endswith(cleaned)
+    assert clean_file_name(cleaned) == cleaned
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("name, expected", [
     ("../escaped.txt", "_/escaped.txt"),
     ("../../outside/escaped.txt", "_/_/outside/escaped.txt"),
@@ -474,24 +512,135 @@ def test_create_output_file_does_not_write_through_a_planted_link(contained_file
 @pytest.mark.unit
 def test_create_output_file_takes_the_next_name_when_one_is_taken_meanwhile(contained_file_manager, monkeypatch):
     """Another writer can take the name between choosing it and creating it."""
-    from saq.analysis.file_manager import local_file_manager
-
-    real_unique_file_path = local_file_manager.unique_file_path
+    real_free_path = contained_file_manager._free_path
     calls = []
 
-    def unique_file_path(path):
-        result = real_unique_file_path(path)
+    def free_path(path):
+        result = real_free_path(path)
         if not calls:
             # the other writer
             open(result, "w").close()
         calls.append(result)
         return result
 
-    monkeypatch.setattr(local_file_manager, "unique_file_path", unique_file_path)
+    monkeypatch.setattr(contained_file_manager, "_free_path", free_path)
     path = contained_file_manager.create_output_file("report.pdf")
 
     assert path == os.path.join(contained_file_manager.file_dir, "report_000.pdf")
     assert len(calls) == 2
+
+
+@pytest.mark.unit
+def test_create_output_file_checks_each_name_once_for_repeated_names(contained_file_manager, monkeypatch):
+    """A crafted document can repeat one part name thousands of times, so the search for a free
+    _NNN goes on from where the last one stopped instead of from _000."""
+    real_lexists = os.path.lexists
+    checked = []
+
+    def lexists(path):
+        checked.append(path)
+        return real_lexists(path)
+
+    monkeypatch.setattr(os.path, "lexists", lexists)
+    paths = [contained_file_manager.create_output_file("image1.png") for _ in range(100)]
+
+    assert len(set(paths)) == 100
+    assert paths[-1] == os.path.join(contained_file_manager.file_dir, "image1_098.png")
+    # from _000 every time, this would be over 5000
+    assert len(checked) < 300
+
+
+@pytest.mark.unit
+def test_create_output_file_skips_a_name_taken_before_the_search_began(contained_file_manager):
+    file_dir = contained_file_manager.file_dir
+    for name in ("report.pdf", "report_000.pdf"):
+        open(os.path.join(file_dir, name), "w").close()
+
+    paths = [contained_file_manager.create_output_file("report.pdf") for _ in range(2)]
+
+    assert paths == [os.path.join(file_dir, "report_001.pdf"), os.path.join(file_dir, "report_002.pdf")]
+
+
+@pytest.mark.unit
+def test_create_output_file_moves_a_directory_whose_name_is_a_file(contained_file_manager):
+    """A sender can name one attachment x and another x/payload.exe, and the second must still be
+    written."""
+    file_dir = contained_file_manager.file_dir
+    first = contained_file_manager.create_output_file("inv.pdf")
+    payload = contained_file_manager.create_output_file("inv.pdf/evil.exe")
+    other = contained_file_manager.create_output_file("inv.pdf/other.exe")
+
+    assert first == os.path.join(file_dir, "inv.pdf")
+    assert os.path.isfile(first)
+    # every later name under it goes to the same moved directory
+    assert payload == os.path.join(file_dir, "inv_000.pdf", "evil.exe")
+    assert other == os.path.join(file_dir, "inv_000.pdf", "other.exe")
+
+
+@pytest.mark.unit
+def test_create_output_file_reuses_a_moved_directory_of_an_earlier_pass(contained_file_manager):
+    """The root is analyzed again by a new file manager, which knows nothing of the earlier one."""
+    file_dir = contained_file_manager.file_dir
+    contained_file_manager.create_output_file("inv.pdf")
+    contained_file_manager.create_output_file("inv.pdf/evil.exe")
+
+    path = LocalFileManager(contained_file_manager.storage_dir).create_output_file("inv.pdf/other.exe")
+
+    assert path == os.path.join(file_dir, "inv_000.pdf", "other.exe")
+
+
+@pytest.mark.unit
+def test_create_output_file_uses_a_directory_created_meanwhile(contained_file_manager, monkeypatch):
+    real_mkdir = os.mkdir
+
+    def mkdir(path, *args, **kwargs):
+        # the other writer
+        real_mkdir(path, *args, **kwargs)
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(os, "mkdir", mkdir)
+    path = contained_file_manager.create_output_file("sub/a.txt")
+
+    assert path == os.path.join(contained_file_manager.file_dir, "sub", "a.txt")
+
+
+@pytest.mark.unit
+def test_create_output_file_moves_past_a_dangling_link_at_a_directory_name(contained_file_manager, outside_dir):
+    os.symlink(outside_dir / "missing", os.path.join(contained_file_manager.file_dir, "sub"))
+
+    path = contained_file_manager.create_output_file("sub/a.txt")
+
+    assert path == os.path.join(contained_file_manager.file_dir, "sub_000", "a.txt")
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_output_file_follows_a_link_to_a_directory_inside(contained_file_manager):
+    file_dir = contained_file_manager.file_dir
+    os.mkdir(os.path.join(file_dir, "real"))
+    os.symlink(os.path.join(file_dir, "real"), os.path.join(file_dir, "link"))
+
+    path = contained_file_manager.create_output_file("link/a.txt")
+
+    assert os.path.realpath(path) == os.path.join(os.path.realpath(file_dir), "real", "a.txt")
+
+
+@pytest.mark.unit
+def test_create_output_file_with_a_directory_at_the_name(contained_file_manager):
+    file_dir = contained_file_manager.file_dir
+    contained_file_manager.create_output_file("a/b")
+
+    assert contained_file_manager.create_output_file("a") == os.path.join(file_dir, "a_000")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["/".join(["b" * 200] * 30) + "/payload.exe", "x/" * 2000 + "payload.exe"])
+def test_create_output_file_with_a_very_deep_name(contained_file_manager, name):
+    path = contained_file_manager.create_output_file(name)
+
+    assert os.path.isfile(path)
+    assert os.path.basename(path) == "payload.exe"
+    assert len(os.path.relpath(path, contained_file_manager.file_dir).encode("utf-8")) <= MAX_RELATIVE_PATH_BYTES
 
 
 @pytest.mark.unit
