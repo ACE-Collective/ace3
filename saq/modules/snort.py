@@ -130,16 +130,16 @@ class AlreadyLockedException(Exception):
 @contextlib.contextmanager
 def lock_signature_db(get_redis_connection=_get_redis_connection):
     redis_connection = get_redis_connection()
-    lock_uuid = None
+    lock_uuid = str(uuid.uuid4())
+    if not redis_connection.set(KEY_SURICATA_RULES_LOCK, lock_uuid, ex=30, nx=True):
+        raise AlreadyLockedException()
 
     try:
-        lock_uuid = str(uuid.uuid4())
-        if redis_connection.set(KEY_SURICATA_RULES_LOCK, lock_uuid, ex=30, nx=True):
-            yield lock_uuid
-        else:
-            raise AlreadyLockedException()
+        yield lock_uuid
     finally:
-        if lock_uuid:
+        # a rebuild that outlived the lock's expiry no longer holds it, and must not release the
+        # lock of the rebuild that took it over
+        if redis_connection.get(KEY_SURICATA_RULES_LOCK) == lock_uuid:
             redis_connection.delete(KEY_SURICATA_RULES_LOCK)
 
 def is_signature_db_stale(sig_path, get_redis_connection=_get_redis_connection):
