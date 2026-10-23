@@ -570,7 +570,7 @@ def _result(row) -> RunResult:
         alert_count=result.alert_count, late_only=result.late_only, context_only=result.context_only,
         fallback_time=result.fallback_time,
         content_hash=result.content_hash, suppressing_alert_uuid=result.suppressing_alert_uuid,
-        suppression_imprecise=result.suppression_imprecise, reviewed_status=result.reviewed_status,
+        reviewed_status=result.reviewed_status,
         reviewed_alert_count=result.reviewed_alert_count, reviewed_late_only=result.reviewed_late_only,
         reviewed_content_hash=result.reviewed_content_hash, updated_at=result.updated_at)
 

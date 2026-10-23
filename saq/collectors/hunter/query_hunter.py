@@ -104,6 +104,13 @@ def collect_correlate_steps(logic_steps: list[StepConfig]) -> list[tuple[Optiona
     _walk(logic_steps)
     return collected
 
+def dedup_key_hunt_uuid(key: Optional[str]) -> Optional[str]:
+    """The uuid of the hunt whose dedup_key made a submission key, which QueryHunt prefixes with it;
+    None for a key without the prefix."""
+    hunt_uuid, separator, _ = (key or "").partition(":")
+    return hunt_uuid if separator and hunt_uuid else None
+
+
 T = TypeVar("T")
 
 COMMENT_REGEX = re.compile(r'^\s*#.*?$', re.M)
@@ -948,6 +955,7 @@ class QueryHunt(Hunt):
                 return None
             if not value:
                 return None
+            # prefixed so hunts never share keys, and so dedup_key_hunt_uuid can tell the hunt
             return f"{self.uuid}:{value}"
 
         event_grouping = {} # key = self.group_by field value, value = Submission

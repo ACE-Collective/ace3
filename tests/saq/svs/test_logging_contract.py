@@ -256,6 +256,21 @@ def test_a_suppressed_match(caplog):
     _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "group_value"))
 
 
+def test_a_duplicate_match(caplog):
+    run = _started()
+    hunt_uuid = "11111111-aaaa-4aaa-8aaa-111111111111"
+    root = RootAnalysis(uuid=str(uuid.uuid4()))
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.event_time = datetime.now()
+    root.submission_key = f"{hunt_uuid}:win10-01"
+    with caplog.at_level(logging.INFO):
+        record_suppressed_matches(hunt_uuid, [(root, None)], duplicate=True)
+
+    (record,) = _records(caplog, f"svs run {run.uuid}: hunt {hunt_uuid} dropped a duplicate match")
+    assert record.levelno == logging.INFO and record.dedup_key == f"{hunt_uuid}:win10-01"
+    _assert_fields(record, RUN_FIELDS + ("hunt_uuid", "dedup_key"))
+
+
 def test_a_persons_association_changes(caplog, routed):
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     run = _started()

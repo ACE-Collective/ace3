@@ -807,7 +807,7 @@ below), each signature is:
 |---|---|
 | `hit` | It is expected, and it fired |
 | `missing` | It is expected, and it did not fire |
-| `possibly_suppressed` | It is missing, it is a hunt with a `suppression` period, and the hunter dropped a match of it during the run for that suppression, or (without `group_by`) the hunt alerted within that period before the run's window closed (below) |
+| `possibly_suppressed` | It is missing, it is a hunt, and the hunter dropped a match of it during the run, for its `suppression` or as a duplicate of its `dedup_key`, or (with a `suppression` period and without `group_by`) the hunt alerted within that period before the run's window closed (below) |
 | `cleanup` | It fired only during the test's cleanup, and it isn't expected (*Cleanup*, above) |
 | `candidate` | It fired, and nobody has decided about it yet |
 | `rejected` | It fired, and it was rejected for the test |
@@ -842,14 +842,19 @@ below), each signature is:
     when it has such a row, so that is not a guess, and no alert is named: the hunt's latest alert
     may have been another group's. Nothing is recorded while no run is open, as for alerts, and a
     failure to record is logged at ERROR and keeps the suppression.
+  - **A hunt with `dedup_key`**, grouped or not, has the collector drop a match whose key it has
+    seen before (`DuplicateSubmissionFilter`), whatever the hunt's `suppression`. The collector
+    hands what it dropped in each pass to `HunterCollector.duplicates_dropped`, which records it in
+    `svs_suppressed_matches` exactly as above, with the key in `dedup_key`. The hunt is
+    `possibly_suppressed` when its run has such a row, and no alert is named.
   - **Any other hunt** suppresses as a whole and doesn't run at all while suppressed, so there is no
     match to record. A hunt checks its `suppression` each time it runs, and the run that would have
     caught the test comes up to its latency after the start. So ACE looks for an alert carrying a
     detection of the hunt, inserted from `suppression` before the run started until the run ended,
     and not attributed to this run. The latest one is named (`suppressing_alert_uuid`). Only hunts in
     correlation mode put their detection on their alerts, so only theirs can be found.
-  - For a hunt with `dedup_key` and no `group_by` that answer is imprecise: that alert may have been
-    for another key. The row says so (`suppression_imprecise`).
+  - Such a hunt with `dedup_key` also suppresses itself after an execution whose every match was a
+    duplicate, which leaves no alert behind, so a test hidden that way reads `missing`.
   - What runs don't key by themselves is revisited once reviewed runs show how often a missing
     signature was possibly suppressed (`docs/SVS.md`, Part 3).
     `GET /api/v2/svs/runs/suppression-share` and the Runs tab show that share.
@@ -866,8 +871,9 @@ below), each signature is:
 | Record | Level | Fields |
 |---|---|---|
 | `svs run …: hunt … suppressed a match for group_value …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value` |
+| `svs run …: hunt … dropped a duplicate match of dedup_key …` | INFO, the first per run and hunt | `hunt_uuid`, `group_value`, `dedup_key` |
 | `svs run … result computed: …` | INFO, plus DEBUG per signature | `counts` (per status) |
-| `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid`, `suppression_imprecise` |
+| `svs run … is missing expected signature …` | INFO, once each time a signature becomes missing | `signature_uuid`, `signature_family`, `possibly_suppressed`, `suppressing_alert_uuid` |
 
 ### Hunt suppression during runs
 
@@ -890,7 +896,8 @@ keys the suppression of each group by the run (`QueryHunt.key_suppression`):
   running, and whose catch-up after suppression must not lose production alerts; a group whose
   alert doesn't carry the test host (a `group_by` field other than the host, with no host
   observable); and `dedup_key`. Those can still hide a test. For a hunt without `group_by` the
-  result reads *possibly suppressed* (*Results*, above); a dropped match of a group that doesn't
+  result reads *possibly suppressed* (*Results*, above), and so it does for a duplicate dropped on
+  the run's test host; a dropped match of a group that doesn't
   carry the test host isn't recorded for the run either, so the hunt reads *missing*.
 - **Cost.** Nothing while no run is open (the attribution gate, *Cost*, above); otherwise one query
   per hunt execution, and one more when it drops a match, to record it (*Results*, above).

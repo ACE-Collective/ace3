@@ -1,6 +1,7 @@
 """Attributing alerts to test runs (saq.svs.attribution, docs/SVS_RUNS.md, *Attribution*)."""
 
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -11,9 +12,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
-from saq.configuration.config import get_config
-from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis, Submission
+from saq.collectors.base_collector import CollectorService
+from saq.collectors.hunter.service import HunterCollector
+from saq.configuration.config import get_config, get_service_config
+from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL, SERVICE_HUNTER
 from saq.database import private_session
 from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, SVSRunResultState, SVSSuppressedMatch, User
 from saq.database.pool import get_db
@@ -884,6 +887,68 @@ class TestSuppressedMatches:
         assert _suppressed() == [(run.id, "bob", started + timedelta(minutes=5))]
         assert _generation(run.id) is None
         assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
+
+    def test_a_duplicate_is_recorded_with_its_key(self, started, caplog):
+        """The collector dropped it as a duplicate of its dedup_key: the key is kept, and a hunt
+        without group_by has no group value."""
+        run = started_run(GUID, now=started)
+        root, _ = _match(started + timedelta(minutes=10))
+        root.submission_key = f"{HUNT_UUID}:win10-01"
+
+        with caplog.at_level("INFO"):
+            written = record_suppressed_matches(HUNT_UUID, [(root, None)], duplicate=True)
+
+        assert [(r.id, value) for r, value in written] == [(run.id, f"{HUNT_UUID}:win10-01")]
+        with private_transaction() as session:
+            row = session.execute(select(SVSSuppressedMatch)).scalar_one()
+            assert (row.run_id, row.group_value, row.dedup_key) == (run.id, None, f"{HUNT_UUID}:win10-01")
+        assert _generation(run.id) == 1
+        record = next(r for r in caplog.records if "dropped a duplicate match" in r.getMessage())
+        assert (record.svs_run, record.hunt_uuid, record.dedup_key, record.group_value) == (
+            run.uuid, HUNT_UUID, f"{HUNT_UUID}:win10-01", None)
+        assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
+
+    def test_a_suppressed_match_records_no_key(self, started):
+        """A grouped hunt's own suppression: its submission's key, if it has one, is not why."""
+        run = started_run(GUID, now=started)
+        root, group_value = _match(started + timedelta(minutes=10))
+        root.submission_key = f"{HUNT_UUID}:win10-01"
+        record_suppressed_matches(HUNT_UUID, [(root, group_value)])
+        with private_transaction() as session:
+            row = session.execute(select(SVSSuppressedMatch)).scalar_one()
+            assert (row.run_id, row.group_value, row.dedup_key) == (run.id, "alice", None)
+
+    def test_a_duplicate_the_collector_drops_on_the_runs_host(self, started):
+        """End to end: the hunter's collector drops the run's match as a duplicate of the key an
+        earlier match took, and the run gets the row."""
+        service = CollectorService(collector=HunterCollector(), config=get_service_config(SERVICE_HUNTER))
+        service.collector.file_manager = service.file_manager
+        run = started_run(GUID, now=started)
+        key = f"{HUNT_UUID}:win10-01"
+
+        def stage(event_time: datetime):
+            root_uuid = str(uuid.uuid4())
+            root = RootAnalysis(uuid=root_uuid, storage_dir=service.file_manager.get_staging_tmp_path(root_uuid),
+                                desc="hunt", analysis_mode="analysis", tool="hunter-test", tool_instance="test",
+                                alert_type="hunter - test")
+            root.initialize_storage()
+            root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+            root.event_time = event_time
+            submission = Submission(root, key=key)
+            submission.queued_time = time.time()
+            service.file_manager.stage_submission(submission)
+
+        # production took the key before the run
+        stage(started - timedelta(hours=1))
+        assert service.execute_collection_loop() == (1, 1)
+        stage(started + timedelta(minutes=10))
+        assert service.execute_collection_loop() == (1, 0)
+
+        with private_transaction() as session:
+            row = session.execute(select(SVSSuppressedMatch)).scalar_one()
+            assert (row.run_id, row.hunt_uuid, row.group_value, row.dedup_key, row.event_time) == (
+                run.id, HUNT_UUID, None, key, started + timedelta(minutes=10))
+        assert _generation(run.id) == 1
 
 
 def _hosts(*names: str) -> AlertHosts:
