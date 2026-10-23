@@ -581,7 +581,6 @@ def test_delayed_analysis_timing():
     #assert analysis_2.complete_time < analysis_1.complete_time
 
 
-@pytest.mark.skip(reason="Skipping I/O counts for now.")
 @pytest.mark.integration
 @track_io
 def test_io_count():
@@ -594,30 +593,32 @@ def test_io_count():
     root.save() 
     root.schedule()
 
-    assert _get_io_write_count() == 1
+    # a save writes the details of the root and data.json
+    assert _get_io_write_count() == 2
     assert _get_io_read_count() == 0
 
     engine = Engine()
     engine.configuration_manager.enable_module('basic_test')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # at this point it should have loaded the root analysis
-    # and then saved it again along with the details for the BasicTestAnalysis
-    # 8/10/2021 - changed from 3 to 5 due to flushing the root during analysis
-    # 10/19/2021 - reduced to 4
-    assert _get_io_write_count() == 4
-    assert _get_io_read_count() == 1
+    # the engine loads data.json and the root's details, then saves the root after the module runs
+    # and when the analysis ends; a save rewrites every analysis whose details were loaded or
+    # modified, because loaded details are always treated as modified
+    assert _get_io_write_count() == 8
+    assert _get_io_read_count() == 2
 
     root = load_root(get_storage_dir(root.uuid))
+    # already loaded: no read
     root.load()
-    assert _get_io_write_count() == 4
-    assert _get_io_read_count() == 2
-    analysis = root.get_observable(observable.uuid).get_and_load_analysis(BasicTestAnalysis)
-    assert _get_io_read_count() == 2 # should not have loaded details yet...
+    assert _get_io_write_count() == 8
+    # load_root() reads the root's details a second time
+    assert _get_io_read_count() == 5
+    analysis = root.get_observable(observable.uuid).get_analysis(BasicTestAnalysis)
+    assert _get_io_read_count() == 5 # the details of an analysis are read only on request
+    assert analysis.load_details()
+    assert _get_io_read_count() == 6
     assert analysis.test_result
-    assert _get_io_read_count() == 3
 
-@pytest.mark.skip(reason="Skpping these I/O counts for now.")
 @pytest.mark.integration
 @track_io
 def test_delayed_analysis_io_count():
@@ -626,41 +627,32 @@ def test_delayed_analysis_io_count():
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, '00:00|00:00')
+    observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
     root.save() 
     root.schedule()
 
-    assert _get_io_write_count() == 1
+    assert _get_io_write_count() == 2
     assert _get_io_read_count() == 0
 
     engine = Engine()
     engine.configuration_manager.enable_module('test_delayed_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # expect 5 writes at this point
-    # (1) initial root analysis save
-    # (2) initial module save
-    # (3) root analysis completed save
-    # (4) updated module save
-    # (5) root analysis completed save
-    # UPDATE 8/10/2021 - we now expect 9 writes
-    # an additional 4 are added because we're flushing the entire RootAnalysis to disk
-    # every time execute_analysis returns True
-    # UPDATE 10/19/2021 - lowered to 6
-    assert _get_io_write_count() == 7
-    # and then 4 reads (one LOAD for each, iterated twice)
-    assert _get_io_read_count() == 3
+    # the root is loaded twice, once for each request, and the second time the details of the
+    # delayed analysis are read too
+    assert _get_io_write_count() == 14
+    assert _get_io_read_count() == 5
 
     root = load_root(get_storage_dir(root.uuid))
     assert root.load()
-    assert _get_io_write_count() == 6
-    assert _get_io_read_count() == 4
-    analysis = root.get_observable(observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
-    
+    assert _get_io_write_count() == 14
+    assert _get_io_read_count() == 8
+    analysis = root.get_observable(observable.uuid).get_analysis(DelayedAnalysisTestAnalysis)
     assert analysis
-    assert _get_io_read_count() == 4 # should not have loaded details yet...
+    assert _get_io_read_count() == 8
+    assert analysis.load_details()
+    assert _get_io_read_count() == 9
     assert analysis.delayed_request
-    assert _get_io_read_count() == 5
 
 @pytest.mark.system
 def test_autorefresh():
@@ -698,7 +690,6 @@ def test_final_analysis():
     # final analysis again
     assert log_count('entering final analysis for ') == 2
 
-@pytest.mark.skip(reason="Skipping I/O counts for now.")
 @pytest.mark.integration
 @track_io
 def test_final_analysis_io_count():
@@ -711,20 +702,18 @@ def test_final_analysis_io_count():
     root.save() 
     root.schedule()
 
-    assert _get_io_write_count() == 1
+    assert _get_io_write_count() == 2
     assert _get_io_read_count() == 0
 
     engine = Engine()
     engine.configuration_manager.enable_module('test_final_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # 8/10/2021 -- this used to be 3 but was changed to 6 when we started flushing the root during analysis
-    # 10/19/2021 -- reduced to 5
-    assert _get_io_write_count() == 5
-    assert _get_io_read_count() == 1
+    # the root is saved after each of the two passes of the module and when the analysis ends
+    assert _get_io_write_count() == 10
+    assert _get_io_read_count() == 2
     assert log_count('entering final analysis for ') == 2
 
-@pytest.mark.skip(reason="Skipping I/O counts for now.")
 @pytest.mark.integration
 @track_io
 def test_final_analysis_io_count_2():
@@ -739,17 +728,16 @@ def test_final_analysis_io_count_2():
     root.save() 
     root.schedule()
 
-    assert _get_io_write_count() == 1
+    assert _get_io_write_count() == 2
     assert _get_io_read_count() == 0
 
     engine = Engine()
     engine.configuration_manager.enable_module('test_final_analysis')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # 8/10/2021 - this used to be 4 but now it's 11 due to flushing the root during analysis
-    # 10/19/2021 - reduced to 7
-    assert _get_io_write_count() == 7
-    assert _get_io_read_count() == 1
+    # the root is saved after each of the four module runs and when the analysis ends
+    assert _get_io_write_count() == 18
+    assert _get_io_read_count() == 2
     assert log_count('entering final analysis for ') == 3
 
 # ensure that post analysis is executed even if delayed analysis times out
