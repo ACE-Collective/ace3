@@ -91,7 +91,7 @@ Each tshark run is bounded by `tshark_timeout` (120 s), so the three, with 30 s 
 for the copy, the sandbox's stop and parsing, fit in `pcap_analyzer`'s `maximum_analysis_time`
 (360 s). Before it starts, every pcap module also checks that its runs fit in what is left of its
 `maximum_analysis_time` and of the alert's analysis time for the pass
-(`maximum_cumulative_analysis_fail_time`, 900 s). The engine abandons the rest of the alert's
+(`maximum_cumulative_analysis_fail_time`, 900 s), as the engine reports it through `time_left()`. The engine abandons the rest of the alert's
 analysis once that time is used up. A capture whose runs do not fit is not dissected (or decrypted):
 its analysis says so ("skipped: dissecting this capture can take ... s and only ... s are left") and
 the module logs it at INFO. A capture this can happen to is one of several large ones in the same

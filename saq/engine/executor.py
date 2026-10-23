@@ -776,7 +776,11 @@ class AnalysisExecutor:
 
     def _get_maximum_cumulative_analysis_fail_time(self, analysis_mode: str) -> int:
         """Returns the maximum cumulative analysis fail time for the given analysis mode."""
-        return get_config().get_maximum_cumulative_analysis_fail_time(analysis_mode)
+        analysis_mode_config = get_config().get_analysis_mode_config(analysis_mode)
+        if analysis_mode_config.maximum_cumulative_analysis_fail_time is not None:
+            return analysis_mode_config.maximum_cumulative_analysis_fail_time
+        else:
+            return get_config().global_settings.maximum_cumulative_analysis_fail_time
 
     def _get_maximum_analysis_time(self, analysis_mode: str) -> int:
         """Returns the maximum analysis time for the given analysis mode."""

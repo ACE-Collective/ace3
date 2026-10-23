@@ -15,7 +15,6 @@ import re
 import shutil
 import stat
 import struct
-import time
 from dataclasses import dataclass
 from itertools import zip_longest
 from typing import Callable, Literal, Optional, override
@@ -28,7 +27,7 @@ from saq import x509 as x509_util
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.configuration.config import get_config, get_engine_config
+from saq.configuration.config import get_config
 from saq.configuration.schema import PcapConfig
 from saq.constants import (
     F_FILE,
@@ -43,7 +42,6 @@ from saq.constants import (
     DIRECTIVE_NO_CRAWL,
     R_DOWNLOADED_FROM,
     R_EXTRACTED_FROM,
-    STATE_TOTAL_ANALYSIS_TIME_SECONDS,
     AnalysisExecutionResult,
 )
 from saq.environment import get_data_dir
@@ -1152,20 +1150,6 @@ def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{count} {o_type}" for o_type, count in sorted(counts.items()))
 
 
-def _time_left(module: AnalysisModule, started: float) -> float:
-    """Seconds this module call can still run: what is left of its maximum_analysis_time, or of the
-    root's analysis time for this pass (maximum_cumulative_analysis_fail_time), whichever is less.
-    Past the first the worker is killed; past the second the rest of the alert's analysis is abandoned."""
-    elapsed = time.monotonic() - started
-    left = module.maximum_analysis_time - elapsed
-    root = module.get_root()
-    if root.analysis_mode not in get_engine_config().analysis_modes_ignore_cumulative_timeout:
-        # the engine brings this up to date just before each module call
-        used = root.state.get(STATE_TOTAL_ANALYSIS_TIME_SECONDS, 0)
-        left = min(left, get_config().get_maximum_cumulative_analysis_fail_time(root.analysis_mode) - used - elapsed)
-    return left
-
-
 def _stopping(module: AnalysisModule) -> Callable[[], bool]:
     """When a pcap module's tshark run should stop: the engine is shutting down, or the analysis was cancelled."""
     return lambda: module.shutdown or module.is_canceled_analysis()
@@ -1279,7 +1263,6 @@ class PcapAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        started = time.monotonic()
         path = _file.full_path
         if not os.path.isfile(path) or not is_pcap_file(path):
             return AnalysisExecutionResult.COMPLETED
@@ -1291,7 +1274,7 @@ class PcapAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         needed = CAPINFOS_TIMEOUT_SECONDS + 2 * _run_seconds(config)
-        left = _time_left(self, started)
+        left = self.time_left()
         if needed > left:
             self._failed(_file, _out_of_time(needed, left))
             logging.info("not dissecting pcap %s (sha256 %s) in %s: %s s needed, %.0f s left", path, _file.sha256_hash,
@@ -1595,11 +1578,10 @@ class PcapTlsDecryptor(AnalysisModule):
         if pcap_analysis is None or not pcap_analysis.index.get(CATEGORY_TLS):
             return AnalysisExecutionResult.COMPLETED
 
-        started = time.monotonic()
         config = get_config().pcap
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, PcapTlsDecryptionAnalysis)
-        left = _time_left(self, started)
+        left = self.time_left()
         if _run_seconds(config) > left:
             analysis.details[KEY_ERROR] = _out_of_time(_run_seconds(config), left)
             logging.info("not decrypting pcap %s (sha256 %s): %s s needed, %.0f s left", _file.full_path,
@@ -1659,7 +1641,6 @@ class TlsKeylogAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        started = time.monotonic()
         config = get_config().pcap
         path = _file.full_path
         if not os.path.isfile(path) or os.path.getsize(path) > config.max_keylog_size or not is_keylog_file(path):
@@ -1690,7 +1671,7 @@ class TlsKeylogAnalyzer(AnalysisModule):
                 continue
             # one tshark run per pcap: the pcaps left over once a run no longer fits in the time left
             # are skipped and said so
-            if _run_seconds(config) > _time_left(self, started):
+            if _run_seconds(config) > self.time_left():
                 analysis.details["skipped"].append(pcap_file.sha256_hash)
                 continue
 

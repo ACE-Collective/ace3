@@ -39,7 +39,6 @@ from saq.constants import (
     F_USER_AGENT,
     R_DOWNLOADED_FROM,
     R_EXTRACTED_FROM,
-    STATE_TOTAL_ANALYSIS_TIME_SECONDS,
     AnalysisExecutionResult,
 )
 from saq.engine.core import Engine
@@ -1863,11 +1862,12 @@ def test_an_unexpected_error_is_left_to_the_engine(monkeypatch):
 @pytest.mark.unit
 def test_pcap_analyzer_skips_a_capture_the_pass_has_no_time_for(caplog):
     root = _new_root()
-    # the alert has used most of its 900 s for this pass
-    root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 800
     observable = root.add_file_observable(NETWORK_PCAP)
+    analyzer = _adapter(PcapAnalyzer, root)
+    # the engine gives this call 100 s
+    analyzer.set_analysis_deadline(time.monotonic() + 100)
     with caplog.at_level(logging.INFO):
-        assert _adapter(PcapAnalyzer, root).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     analysis = observable.get_analysis(PcapAnalysis)
     assert analysis.error.startswith("skipped: dissecting this capture can take 330 s and only 100 s are left")
@@ -1879,7 +1879,6 @@ def test_pcap_analyzer_skips_a_capture_the_pass_has_no_time_for(caplog):
 @pytest.mark.unit
 def test_decryption_skips_a_capture_the_pass_has_no_time_for():
     root = _new_root()
-    root.state[STATE_TOTAL_ANALYSIS_TIME_SECONDS] = 800
     capture = root.add_file_observable(HTTP_TLS_PCAPNG)
     core = PcapAnalysis()
     core.details[pcap.KEY_INDEX] = {CATEGORY_TLS: [{"client_random": CLIENT_RANDOM_12}],
@@ -1888,6 +1887,7 @@ def test_decryption_skips_a_capture_the_pass_has_no_time_for():
     root.add_file_observable(SSLKEYLOG)
 
     decryptor = _adapter(pcap.PcapTlsDecryptor, root, ANALYSIS_MODULE_PCAP_TLS_DECRYPTION)
+    decryptor.set_analysis_deadline(time.monotonic() + 100)
     assert decryptor.execute_final_analysis(capture) == AnalysisExecutionResult.COMPLETED
     decryption = capture.get_analysis(PcapTlsDecryptionAnalysis)
     assert decryption.error.startswith("skipped: dissecting this capture can take 150 s")

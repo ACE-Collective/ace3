@@ -1380,13 +1380,6 @@ class ACEConfig(BaseModel):
             raise ValueError(f"analysis mode config for {name} not found")
 
         return self.__analysis_modes[name]
-
-    def get_maximum_cumulative_analysis_fail_time(self, analysis_mode: str) -> int:
-        """How long one analysis pass over a root in this mode may take before the engine abandons it."""
-        analysis_mode_config = self.get_analysis_mode_config(analysis_mode)
-        if analysis_mode_config.maximum_cumulative_analysis_fail_time is not None:
-            return analysis_mode_config.maximum_cumulative_analysis_fail_time
-        return self.global_settings.maximum_cumulative_analysis_fail_time
     
     #
     # module groups
