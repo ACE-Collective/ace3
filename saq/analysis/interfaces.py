@@ -119,6 +119,9 @@ class RootAnalysisInterface(Protocol):
     def create_file_path(self, relative_path: str) -> str:
         ...
 
+    def create_output_file(self, name: str) -> str:
+        ...
+
     def has_detections(self) -> bool:
         """Returns True if this analysis has detections."""
         ...

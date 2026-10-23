@@ -11,11 +11,11 @@ from saq.modules.file_analysis.xml import XMLBinaryDataAnalysis
 from saq.util.uuid import get_storage_dir
 
 
-def _flat_opc(parts: dict[str, bytes]) -> str:
+def _flat_opc(parts: list[tuple[str, bytes]]) -> str:
     """A Word document saved as a single XML file, with the given parts as base64 binary data."""
     package_parts = "".join(
         f'<pkg:part pkg:name="{name}"><pkg:binaryData>{base64.b64encode(content).decode()}</pkg:binaryData></pkg:part>'
-        for name, content in parts.items())
+        for name, content in parts)
     return ('<?xml version="1.0" standalone="yes"?>\n'
             '<?mso-application progid="Word.Document"?>\n'
             f'<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">{package_parts}</pkg:package>')
@@ -29,8 +29,8 @@ def test_xml_binary_data_part_names_stay_inside_the_output_dir(root_analysis, tm
     root_analysis.analysis_mode = "test_groups"
     target_path = root_analysis.create_file_path("document.xml")
     with open(target_path, "w") as fp:
-        # the extra leading / is what safe_filename let through as an absolute path
-        fp.write(_flat_opc({"/word/media/image1.png": b"image", f"/{escaped}": b"escaped"}))
+        # the extra leading / makes the part name an absolute path outside the package
+        fp.write(_flat_opc([("/word/media/image1.png", b"image"), (f"/{escaped}", b"escaped")]))
 
     _file = root_analysis.add_file_observable(target_path)
     root_analysis.save()
@@ -48,7 +48,33 @@ def test_xml_binary_data_part_names_stay_inside_the_output_dir(root_analysis, tm
     image_path = os.path.join("document.xml.xml", "word", "media", "image1.png")
     (escaped_path,) = set(extracted) - {image_path}
     assert image_path in extracted
-    assert escaped_path.startswith("document.xml.xml/tmp/")
-    assert escaped_path.endswith("/escaped.bin")
+    assert escaped_path == os.path.join("document.xml.xml", str(escaped).lstrip("/"))
     with open(extracted[escaped_path].full_path, "rb") as fp:
         assert fp.read() == b"escaped"
+
+
+@pytest.mark.integration
+def test_xml_binary_data_parts_with_the_same_name_are_kept_apart(root_analysis):
+    """A document can name two parts the same, and the second must not overwrite the first."""
+    root_analysis.analysis_mode = "test_groups"
+    target_path = root_analysis.create_file_path("document.xml")
+    with open(target_path, "w") as fp:
+        fp.write(_flat_opc([("/word/media/image1.png", b"first"), ("/word/media/image1.png", b"second")]))
+
+    _file = root_analysis.add_file_observable(target_path)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("xml_binary_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLBinaryDataAnalysis)
+    contents = {}
+    for o in analysis.get_observables_by_type(F_FILE):
+        with open(o.full_path, "rb") as fp:
+            contents[o.file_path] = fp.read()
+
+    media = os.path.join("document.xml.xml", "word", "media")
+    assert contents == {os.path.join(media, "image1.png"): b"first", os.path.join(media, "image1_000.png"): b"second"}

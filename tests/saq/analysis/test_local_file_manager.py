@@ -5,7 +5,8 @@ import shutil
 import pytest
 from pathlib import Path
 
-from saq.analysis.file_manager.local_file_manager import LocalFileManager
+from saq.analysis.file_manager.local_file_manager import LocalFileManager, clean_file_name
+from saq.util.filesystem import NAME_MAX_BYTES
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 
 
@@ -275,23 +276,27 @@ def test_create_file_path_with_a_relative_storage_dir(tmp_path, outside_dir, mon
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("target_path", ["../escaped.txt", "../../outside/escaped.txt", "sub/../../escaped.txt"])
-def test_store_file_refuses_a_target_outside_the_file_dir(contained_file_manager, outside_dir, test_file, caplog, target_path):
-    with pytest.raises(ValueError, match="outside of the files directory"):
-        contained_file_manager.store_file(test_file, target_path)
+@pytest.mark.parametrize("target_path, expected", [
+    ("../escaped.txt", "_/escaped.txt"),
+    ("../../outside/escaped.txt", "_/_/outside/escaped.txt"),
+    ("sub/../../escaped.txt", "sub/_/_/escaped.txt"),
+])
+def test_store_file_cleans_a_target_outside_the_file_dir(contained_file_manager, outside_dir, test_file, target_path, expected):
+    """A target is often a name from a submitter or from analyzed content (a hunt's event field, a
+    GUI upload), so it is cleaned like a create_output_file name."""
+    _, relative_path = contained_file_manager.store_file(test_file, target_path)
 
-    assert len(_refused_record(caplog, os.path.join(contained_file_manager.file_dir, target_path))) == 1
-    # refused before anything is stored
-    assert os.listdir(contained_file_manager.storage_dir) == [FILE_SUBDIR]
+    assert relative_path == expected
+    assert os.path.exists(os.path.join(contained_file_manager.file_dir, expected))
     assert os.listdir(outside_dir) == []
-    assert os.path.exists(test_file)
 
 
 @pytest.mark.unit
-def test_store_file_refuses_an_absolute_target(contained_file_manager, outside_dir, test_file):
-    with pytest.raises(ValueError):
-        contained_file_manager.store_file(test_file, str(outside_dir / "escaped.txt"))
+def test_store_file_keeps_an_absolute_target_inside(contained_file_manager, outside_dir, test_file):
+    target = outside_dir / "escaped.txt"
+    _, relative_path = contained_file_manager.store_file(test_file, str(target))
 
+    assert relative_path == str(target).lstrip("/")
     assert os.listdir(outside_dir) == []
 
 
@@ -371,3 +376,142 @@ def test_store_file_with_a_target_inside_the_file_dir(contained_file_manager, te
     with open(full_path, "w") as fp:
         fp.write("already here")
     assert contained_file_manager.store_file(full_path)[1] == "already_here.txt"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name, expected", [
+    ("test.txt", "test.txt"),
+    ("../test.txt", "_/test.txt"),
+    ("../../test.txt", "_/_/test.txt"),
+    ("sub/../../test.txt", "sub/_/_/test.txt"),
+    ("/some/path/test.txt", "some/path/test.txt"),
+    ("//////test.txt", "test.txt"),
+    ("./a/./b.txt", "a/b.txt"),
+    ("C:\\Users\\john\\test.txt", "C:_Users_john_test.txt"),
+    ("\\..\\..\\test.txt", "_.._.._test.txt"),
+    ("~john/test", "~john/test"),
+    (".", "_"),
+    ("..", "_"),
+    ("...", "..."),
+    ("..b.txt", "..b.txt"),
+    ("a\0b", "a_b"),
+    ("", "_"),
+    ("/", "_"),
+    ("Quarterly Report é.pdf", "Quarterly Report é.pdf"),
+])
+def test_clean_file_name(name, expected):
+    assert clean_file_name(name) == expected
+    # a stored name (a file_path) is cleaned again when output is named after it
+    assert clean_file_name(expected) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["a" * 1000 + ".txt", "é" * 300 + ".txt", "a" * 300, "a." + "b" * 300])
+def test_clean_file_name_fits_the_filesystem(name):
+    cleaned = clean_file_name(name)
+    # with room for the suffix that tells same-named files apart
+    assert len(cleaned.encode("utf-8")) <= NAME_MAX_BYTES - 8
+    assert clean_file_name(cleaned) == cleaned
+    if name.endswith(".txt"):
+        assert cleaned.endswith(".txt")
+
+    # two long names that share a prefix stay apart
+    assert clean_file_name(name + "x") != cleaned
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name, expected", [
+    ("../escaped.txt", "_/escaped.txt"),
+    ("../../outside/escaped.txt", "_/_/outside/escaped.txt"),
+    ("sub/../../escaped.txt", "sub/_/_/escaped.txt"),
+    ("..", "_"),
+    ("", "_"),
+    ("/tmp/escaped.txt", "tmp/escaped.txt"),
+    ("word/media/image1.png", "word/media/image1.png"),
+])
+def test_create_output_file_keeps_the_name_inside(contained_file_manager, outside_dir, name, expected):
+    path = contained_file_manager.create_output_file(name)
+
+    assert path == os.path.join(contained_file_manager.file_dir, expected)
+    # created, empty, before the caller writes anything
+    assert os.path.isfile(path)
+    assert os.path.getsize(path) == 0
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_output_file_keeps_an_absolute_name_inside(contained_file_manager, outside_dir):
+    name = str(outside_dir / "escaped.txt")
+    path = contained_file_manager.create_output_file(name)
+
+    assert path == os.path.join(contained_file_manager.file_dir, name.lstrip("/"))
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_output_file_never_reuses_a_name(contained_file_manager):
+    file_dir = contained_file_manager.file_dir
+    paths = [contained_file_manager.create_output_file("report.pdf") for _ in range(3)]
+
+    assert paths == [os.path.join(file_dir, name) for name in ("report.pdf", "report_000.pdf", "report_001.pdf")]
+
+
+@pytest.mark.unit
+def test_create_output_file_does_not_write_through_a_planted_link(contained_file_manager, outside_dir):
+    """A link already at the name (an archive's symlink member) is passed over, not opened."""
+    outside_file = outside_dir / "target.txt"
+    outside_file.write_text("outside")
+    os.symlink(outside_file, os.path.join(contained_file_manager.file_dir, "report.pdf"))
+
+    path = contained_file_manager.create_output_file("report.pdf")
+    with open(path, "wb") as fp:
+        fp.write(b"written")
+
+    assert path == os.path.join(contained_file_manager.file_dir, "report_000.pdf")
+    assert outside_file.read_text() == "outside"
+
+
+@pytest.mark.unit
+def test_create_output_file_takes_the_next_name_when_one_is_taken_meanwhile(contained_file_manager, monkeypatch):
+    """Another writer can take the name between choosing it and creating it."""
+    from saq.analysis.file_manager import local_file_manager
+
+    real_unique_file_path = local_file_manager.unique_file_path
+    calls = []
+
+    def unique_file_path(path):
+        result = real_unique_file_path(path)
+        if not calls:
+            # the other writer
+            open(result, "w").close()
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(local_file_manager, "unique_file_path", unique_file_path)
+    path = contained_file_manager.create_output_file("report.pdf")
+
+    assert path == os.path.join(contained_file_manager.file_dir, "report_000.pdf")
+    assert len(calls) == 2
+
+
+@pytest.mark.unit
+def test_create_output_file_refuses_a_symlink_out_of_the_file_dir(contained_file_manager, outside_dir, caplog):
+    os.symlink(outside_dir, os.path.join(contained_file_manager.file_dir, "link"))
+    with pytest.raises(ValueError, match="outside of the files directory"):
+        contained_file_manager.create_output_file("link/escaped.txt")
+
+    assert len(_refused_record(caplog, "link/escaped.txt")) == 1
+    assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_output_file_with_a_relative_storage_dir(tmp_path, outside_dir, monkeypatch):
+    """Storage directories are relative to SAQ_HOME, which is the working directory."""
+    monkeypatch.chdir(tmp_path)
+    fm = LocalFileManager("storage")
+    os.makedirs(fm.file_dir)
+
+    assert fm.create_output_file("a.txt") == os.path.join("storage", FILE_SUBDIR, "a.txt")
+    assert fm.create_output_file(os.path.join("..", "..", "outside", "escaped.txt")) == \
+        os.path.join("storage", FILE_SUBDIR, "_", "_", "outside", "escaped.txt")
+    assert os.listdir(outside_dir) == []

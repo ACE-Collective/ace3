@@ -934,6 +934,12 @@ class RootAnalysis(Analysis):
         Creates any required subdirectories."""
         return self.file_manager.create_file_path(relative_path)
 
+    def create_output_file(self, name: str) -> str:
+        """Creates a new, empty file in the files directory for bytes named by an untrusted source
+        (an attachment, archive member or upload name) and returns its full path. Use this rather
+        than create_file_path for any name that comes from analyzed content or a submitter."""
+        return self.file_manager.create_output_file(name)
+
 def load_root(dir: str) -> RootAnalysis:
     """Loads the RootAnalysis from the given directory. Returns the new RootAnalysis."""
     root = RootAnalysis(storage_dir=dir)

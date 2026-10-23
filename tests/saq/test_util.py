@@ -11,7 +11,7 @@ from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
-from saq.util.filesystem import extract_windows_filepaths, is_nt_path, map_mimetype_to_file_ext, safe_file_name
+from saq.util.filesystem import extract_windows_filepaths, is_nt_path, map_mimetype_to_file_ext
 from saq.util.networking import fully_qualified
 from saq.util.parsing import json_parse
 from saq.util.time import create_timedelta
@@ -154,27 +154,6 @@ def test_fang(input: str, expected: str):
 @pytest.mark.unit
 def test_is_nt_path(path: str, expected: bool):
     assert is_nt_path(path) == expected
-
-@pytest.mark.parametrize("input, expected", [
-    (r'test.txt', 'test.txt'),
-    (r'../test.txt', '_test.txt'),
-    (r'../../test.txt', '_test.txt'),
-    (r'../../../test.txt', '_test.txt'),
-    (r'\\../../test.txt', '_test.txt'),
-    (r'\\.\\.\\/test.txt', '_._._test.txt'),
-    (r'/some/path/test.txt', '_some_path_test.txt'),
-    (r'//////test.txt', '_test.txt'),
-    (r'~john/test', '_john_test'),
-    ('.', '_'),
-    ('..', '_'),
-    ('...', '...'),
-    ('a\0b', 'a_b'),
-    ('', ''),
-    ('Quarterly Report é.pdf', 'Quarterly Report é.pdf'),
-])
-@pytest.mark.unit
-def test_safe_file_name(input: str, expected: str):
-    assert safe_file_name(input) ==  expected
 
 @pytest.mark.parametrize("input, expected", [
         ("\"C:\\Windows\\SysWOW64\\mshta.exe\" \"\\\\hostname\\shares\\Applications\\EUPT\\Operations\\Shared_Services\\Item_Processing\\Databases\\Item Processing Database\\DB_FILES\\IP Database.hta\" ", [ 

@@ -6,8 +6,37 @@ from typing import Any, Optional
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
-from saq.util.filesystem import abs_path, is_path_under, unique_file_path
+from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, shorten_basename_for_suffix, unique_file_path
 from saq.util.hashing import sha256_file
+
+
+# room left in a file name for the _NNN that tells same-named files apart
+UNIQUE_SUFFIX_BYTES = 8
+
+# a longer "extension" is part of the name, so that truncating keeps something of both
+MAX_EXTENSION_BYTES = 32
+
+
+def clean_file_name(name: str) -> str:
+    """Returns name as a path relative to a files directory that cannot leave it: every / separated
+    component is a plain file name (no .., backslash or NUL, and short enough for the filesystem), and empty
+    and . components are dropped. Cleaning a clean name returns it unchanged."""
+    components = []
+    for component in name.split("/"):
+        if component in ("", "."):
+            continue
+
+        if component == "..":
+            component = "_"
+
+        component = component.replace("\\", "_").replace("\0", "_")
+        stem, ext = os.path.splitext(component)
+        if len(ext.encode("utf-8")) > MAX_EXTENSION_BYTES:
+            stem, ext = component, ""
+
+        components.append(shorten_basename_for_suffix(stem, ext, NAME_MAX_BYTES - UNIQUE_SUFFIX_BYTES))
+
+    return os.path.join(*components) if components else "_"
 
 
 class LocalFileManager(FileManagerInterface):
@@ -112,13 +141,49 @@ class LocalFileManager(FileManagerInterface):
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         return target_path
             
+    def create_output_file(self, name: str) -> str:
+        """
+        Creates a new, empty file in the files directory for bytes named by an untrusted source
+        (an attachment, archive member or upload name) and returns its full path. The name is
+        cleaned before anything is written: each / separated component becomes a plain file
+        name, so the file can only land inside the files directory, and a name that is already
+        taken gets a _NNN suffix.
+
+        Args:
+            name: The untrusted name, which may place the file in a subdirectory
+
+        Returns:
+            Full path to the new, empty file
+
+        Raises:
+            ValueError: If the path still resolves outside the file directory (a symlinked subdirectory)
+        """
+        base_path = os.path.join(self.file_dir, clean_file_name(name))
+        # only the directory can still lead out (a symlinked subdirectory): something already at
+        # the name, a link included, is passed over below
+        directory = os.path.dirname(base_path)
+        if not is_path_under(directory, self.file_dir):
+            self._refuse_outside_file_dir(directory, name)
+
+        os.makedirs(directory, exist_ok=True)
+
+        while True:
+            target_path = unique_file_path(base_path)
+            try:
+                # O_EXCL: never an existing file, nor something planted at the name, is written through
+                os.close(os.open(target_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o664))
+                return target_path
+            except FileExistsError:
+                # taken between the check and the create, so the next call picks another suffix
+                continue
+
     def store_file(self, source_path: Any, target_path: Optional[str] = None, move: bool = False) -> tuple[str, str]:
         """
         Store a file in the analysis storage system.
         
         Args:
             source_path: Path to the source file
-            target_path: Optional target path within file_dir. If None, uses basename of source
+            target_path: Optional target path within file_dir, cleaned like a create_output_file name. If None, uses basename of source
             move: If True, move the file instead of copying
             
         Returns:
@@ -140,7 +205,7 @@ class LocalFileManager(FileManagerInterface):
         if source_path.startswith(self.file_dir):
             target_path = source_path
         else:
-            target_path = os.path.join(self.file_dir, target_path or os.path.basename(source_path))
+            target_path = os.path.join(self.file_dir, clean_file_name(target_path or os.path.basename(source_path)))
 
         self._refuse_outside_file_dir(target_path, target_path)
 

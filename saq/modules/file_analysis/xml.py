@@ -8,7 +8,6 @@ from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
-from saq.util.filesystem import safe_filename
 
 from lxml import etree
 
@@ -129,45 +128,43 @@ class XMLPlainTextAnalyzer(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
 class _XMLParser(object):
-    def __init__(self, output_dir):
+    def __init__(self, root, output_dir: str):
+        self.root = root
+        # relative to the root's files directory
         self.output_dir = output_dir
-        self.output_path = None
+        self.part_name = None
         self._data = []
         self.extracted_files = []
         self.path = []
 
     def start(self, tag, attrib):
         if tag == PART_TAG:
-            if PART_NAME in attrib:
-                # part names are absolute within the package (/word/media/image1.png), and only
-                # the leading / of an absolute path would get past safe_filename
-                file_name = safe_filename(attrib[PART_NAME]).lstrip('/')
-                self.output_path = os.path.join(self.output_dir, file_name) if file_name else None
+            # part names are absolute within the package (/word/media/image1.png) and come from the
+            # document, so the file manager cleans them when the part is written
+            self.part_name = attrib.get(PART_NAME)
 
         if tag == DATA_TAG:
             self._data.clear()
 
     def end(self, tag):
-        if tag == DATA_TAG and self.output_path and self._data:
+        if tag == DATA_TAG and self.part_name and self._data:
             try:
-                if not os.path.isdir(os.path.dirname(self.output_path)):
-                    os.makedirs(os.path.dirname(self.output_path))
-
-                logging.debug("extracting base64 encoded XML binary data into {}".format(self.output_path))
-                with open(self.output_path, 'wb') as fp:
+                output_path = self.root.create_output_file(f"{self.output_dir}/{self.part_name}")
+                logging.debug("extracting base64 encoded XML binary data into {}".format(output_path))
+                with open(output_path, 'wb') as fp:
                     fp.write(base64.b64decode(''.join(self._data)))
 
-                self.extracted_files.append(self.output_path)
+                self.extracted_files.append(output_path)
 
             except Exception as e:
                 logging.error("unable to extract base64 encoded data: {}".format(e))
 
             finally:
                 self._data.clear()
-                self.output_path = None
+                self.part_name = None
 
     def data(self, data):
-        if self.output_path:
+        if self.part_name:
             self._data.append(data)
 
     def close(self):
@@ -238,7 +235,7 @@ class XMLBinaryDataAnalyzer(AnalysisModule):
 
             analysis = self.create_analysis(_file)
             assert isinstance(analysis, XMLBinaryDataAnalysis)
-            parser = etree.XMLParser(target=_XMLParser('{}.xml'.format(local_file_path)))
+            parser = etree.XMLParser(target=_XMLParser(self.get_root(), f'{_file.file_path}.xml'))
             extracted_files = etree.parse(local_file_path, parser)
 
             for extracted_file in extracted_files:
