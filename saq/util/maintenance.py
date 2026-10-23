@@ -128,16 +128,20 @@ def _archive_alerts(disposition: str, days: int, dry_run: bool):
             continue
 
         logging.info(f"archiving {disposition} alert {alert}")
+        # read now: a failed flush expires the alert and its attributes can no longer be loaded
+        alert_uuid, storage_dir = alert.uuid, alert.storage_dir
 
         try:
             alert.load()
+            alert.archive()
+            alert.sync()
         except Exception as e:
-            logging.error(f"unable to load {alert}: {e}")
-            continue
+            # one alert that cannot be archived must not stop the rest; it is retried on the next run
+            logging.exception(f"unable to archive {disposition} alert {alert_uuid}: {e}",
+                              extra={"alert_uuid": alert_uuid, "storage_dir": storage_dir})
+            # a failed commit leaves the session unusable for the alerts that follow
+            get_db().rollback()
 
-        alert.archive()
-        alert.sync()
-        
     if dry_run:
         logging.info(f"{dry_run_count} {disposition} alerts would be archived")
 

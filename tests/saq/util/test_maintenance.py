@@ -207,6 +207,73 @@ def test_simulated_dry_run_archives_nothing(caplog):
     assert "1 SIMULATED alerts would be archived" in caplog.text
 
 
+def _archive_error_records(caplog, alert: Alert) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno >= logging.ERROR and getattr(r, "alert_uuid", None) == alert.uuid]
+
+
+def _fail_for(alert: Alert, real_method, exception: Exception):
+    def _method(self, *args, **kwargs):
+        if self.uuid == alert.uuid:
+            raise exception
+        return real_method(self, *args, **kwargs)
+
+    return _method
+
+
+@pytest.mark.integration
+def test_archive_failure_is_logged_and_archiving_continues(monkeypatch, caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    monkeypatch.setattr(Alert, "archive", _fail_for(failing, Alert.archive, OSError("disk full")))
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    # left for the next run
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+
+    records = _archive_error_records(caplog, failing)
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.integration
+def test_archive_load_failure_is_logged_with_traceback(caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    os.remove(os.path.join(get_base_dir(), failing.storage_dir, "data.json"))
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+
+    records = _archive_error_records(caplog, failing)
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.integration
+def test_archive_commit_failure_does_not_break_the_next_alert(monkeypatch, caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    real_sync = Alert.sync
+
+    def _sync(self, *args, **kwargs):
+        if self.uuid == failing.uuid:
+            self.tool = None # NOT NULL: the commit fails and the session needs a rollback
+        return real_sync(self, *args, **kwargs)
+
+    monkeypatch.setattr(Alert, "sync", _sync)
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+    assert len(_archive_error_records(caplog, failing)) == 1
+
+
 #
 # IGNORE alerts are deleted after ignore_days
 #
