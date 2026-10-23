@@ -669,6 +669,21 @@ def stop_unittest_logging():
     test_log_messages = None
     memory_log_handler = None
 
+@contextmanager
+def unconfigured_logging():
+    """The root logger as a process starts with it: no handlers and level WARNING. The handlers
+    list is emptied and refilled in place, because pytest removes the capture handler it added
+    from that list at the end of the test phase."""
+    root_logger = logging.getLogger()
+    handlers, level = root_logger.handlers[:], root_logger.level
+    root_logger.handlers.clear()
+    root_logger.setLevel(logging.WARNING)
+    try:
+        yield root_logger
+    finally:
+        root_logger.handlers[:] = handlers
+        root_logger.setLevel(level)
+
 # test comms pipe is used to communicate between test process and child processes
 test_comms_p = None
 test_comms_pid = None

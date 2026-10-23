@@ -205,58 +205,52 @@ def initialize_environment(
         resolve_configuration,
     )
     from saq.integration.integration_loader import load_integrations, initialize_integrations
+    from saq.logging import deferred_startup_logging, initialize_logging
     from saq.observables.type_hierarchy import bootstrap_type_hierarchy
 
-    initialize_base_dir(saq_home)
-    load_integrations()
-    initialize_configuration(config_paths=config_paths)
-    initialize_integrations()
-    bootstrap_type_hierarchy()
+    # nothing logged before initialize_logging() would reach the log file, fluent-bit or an
+    # error report, so hold it until then
+    with deferred_startup_logging():
+        initialize_base_dir(saq_home)
+        load_integrations()
+        initialize_configuration(config_paths=config_paths)
+        initialize_integrations()
+        bootstrap_type_hierarchy()
 
-    get_global_runtime_settings().data_dir = data_dir if data_dir else os.path.join(
-        get_base_dir(), get_config().global_settings.data_dir
-    )
+        get_global_runtime_settings().data_dir = data_dir if data_dir else os.path.join(
+            get_base_dir(), get_config().global_settings.data_dir
+        )
 
-    get_global_runtime_settings().analyst_data_dir = os.path.join(
-        get_base_dir(),
-        get_config().global_settings.analyst_data_dir,
-    )
+        get_global_runtime_settings().analyst_data_dir = os.path.join(
+            get_base_dir(),
+            get_config().global_settings.analyst_data_dir,
+        )
 
-    get_global_runtime_settings().temp_dir = temp_dir or resolve_temp_dir(get_config().global_settings.tmp_dir)
-    get_global_runtime_settings().company_name = get_config().global_settings.company_name
-    get_global_runtime_settings().company_id = get_config().global_settings.company_id
-    get_global_runtime_settings().local_domains = get_config().global_settings.local_domains
-    get_global_runtime_settings().observable_limits = get_config().global_settings.maximum_observable_count
+        get_global_runtime_settings().temp_dir = temp_dir or resolve_temp_dir(get_config().global_settings.tmp_dir)
+        get_global_runtime_settings().company_name = get_config().global_settings.company_name
+        get_global_runtime_settings().company_id = get_config().global_settings.company_id
+        get_global_runtime_settings().local_domains = get_config().global_settings.local_domains
+        get_global_runtime_settings().observable_limits = get_config().global_settings.maximum_observable_count
 
-    minutes, seconds = map(
-        int, get_config().global_settings.lock_timeout.split(":")
-    )
-    get_global_runtime_settings().lock_timeout_seconds = (minutes * 60) + seconds
+        minutes, seconds = map(
+            int, get_config().global_settings.lock_timeout.split(":")
+        )
+        get_global_runtime_settings().lock_timeout_seconds = (minutes * 60) + seconds
 
-    # if the logging configuration path is not specified, see if it's set in the environment
-    if logging_config_path is None:
-        logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH)
+        # if the logging configuration path is not specified, see if it's set in the environment
+        if logging_config_path is None:
+            logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH)
 
-    # if it's still not set, use the default console logging configuration
-    if logging_config_path is None:
-        logging_config_path = os.path.join(get_base_dir(), "etc", "logging_configs", "console_logging.yaml")
+        # if it's still not set, use the default console logging configuration
+        if logging_config_path is None:
+            logging_config_path = os.path.join(get_base_dir(), "etc", "logging_configs", "console_logging.yaml")
 
-    from saq.logging import initialize_logging
-
-    initialize_logging(
-        logging_config_path,
-        log_sql=get_config().global_settings.log_sql,
-        # optional fluent-bit tag will set the tag for all log messages sent to fluent-bit
-        fluent_bit_tag=os.environ.get(ENV_FLUENT_BIT_TAG),
-    )  # this log file just gets some startup information
-
-    # initialize_integrations() runs well before logging is configured, so anything it wanted to
-    # warn about was stashed rather than logged
-    from saq.integration.integration_loader import DEFERRED_INTEGRATION_WARNINGS
-    for message in DEFERRED_INTEGRATION_WARNINGS:
-        logging.warning(message)
-
-    DEFERRED_INTEGRATION_WARNINGS.clear()
+        initialize_logging(
+            logging_config_path,
+            log_sql=get_config().global_settings.log_sql,
+            # optional fluent-bit tag will set the tag for all log messages sent to fluent-bit
+            fluent_bit_tag=os.environ.get(ENV_FLUENT_BIT_TAG),
+        )  # this log file just gets some startup information
 
     # has the encryption password been set yet?
     from saq.crypto import initialize_encryption

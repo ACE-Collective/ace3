@@ -345,3 +345,48 @@ def initialize_logging(logging_config_path: str, log_sql: Optional[bool]=False, 
     # stamp a per-task transaction id onto every record for log correlation
     _install_transaction_id_filter()
     initialize_transaction_id()
+
+
+class _RecordBuffer(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord):
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def deferred_startup_logging():
+    """Holds every record logged in the block until the block has configured logging, then hands
+    each one to the handlers it configured. initialize_environment() loads integrations and the
+    configuration before it can call initialize_logging(); without this a failure logged there goes
+    to the stderr handler logging.basicConfig() installs implicitly (and dictConfig() then removes),
+    so it never reaches the log file or fluent-bit and ErrorReportHandler never writes its report.
+
+    Does nothing when the root logger already has handlers, since the records reach them anyway. If
+    the block ends with no handlers configured, because it raised before initialize_logging() ran,
+    the records go to stderr."""
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        yield
+        return
+
+    buffer = _RecordBuffer()
+    root_logger.addHandler(buffer)
+    try:
+        yield
+    finally:
+        # dictConfig() has usually removed it already
+        root_logger.removeHandler(buffer)
+        if root_logger.handlers:
+            for record in buffer.records:
+                logger = logging.getLogger(record.name)
+                # the configuration can raise a logger's level after the record was made
+                if logger.isEnabledFor(record.levelno):
+                    logger.handle(record)
+        else:
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setFormatter(logging.Formatter(logging.BASIC_FORMAT))
+            for record in buffer.records:
+                stderr_handler.handle(record)

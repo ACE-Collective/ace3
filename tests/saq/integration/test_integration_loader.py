@@ -1,11 +1,18 @@
+import logging
+from logging.handlers import BufferingHandler
 import os
 import sys
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
-from saq.environment import get_global_runtime_settings
+import saq.environment
+from saq.configuration.schema import IntegrationConfig
+from saq.environment import get_base_dir, get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment
+from saq.error.reporting import ErrorReportHandler
 from saq.integration.integration_loader import (
+    initialize_integrations,
     load_integrations,
     load_integration_component_src,
     load_integration_component_bin,
@@ -18,6 +25,7 @@ from saq.integration.integration_util import (
     _recurse_integration_dirs,
     get_valid_integration_dirs,
 )
+from tests.saq.helpers import unconfigured_logging
 
 
 @pytest.mark.unit
@@ -166,8 +174,7 @@ class TestLoadIntegrations:
         integration1 = integration_env("integration1")
         integration2 = integration_env("integration2")
 
-        result = load_integrations()
-        assert result is True
+        load_integrations()
         _assert_loaded(integration1)
         _assert_loaded(integration2)
 
@@ -176,8 +183,7 @@ class TestLoadIntegrations:
         enabled = integration_env("enabled_integration")
         disabled = integration_env("disabled_integration", disabled=True)
 
-        result = load_integrations()
-        assert result is True
+        load_integrations()
         _assert_loaded(enabled)
         assert os.path.join(disabled, "src") not in sys.path
         assert os.path.join(disabled, "bin") not in os.environ["PATH"].split(":")
@@ -191,8 +197,7 @@ class TestLoadIntegrations:
         integration_env("integration1")
         mock_is_enabled.side_effect = Exception("Test exception")
 
-        result = load_integrations()
-        assert result is False
+        load_integrations()
         mock_write_error_report.assert_called_once()
 
     def test_load_integrations_component_raises(self, integration_env, monkeypatch, caplog):
@@ -204,8 +209,7 @@ class TestLoadIntegrations:
         # the bin component raises KeyError reading PATH
         monkeypatch.delenv("PATH")
 
-        result = load_integrations()
-        assert result is False
+        load_integrations()
 
         assert os.path.join(healthy, "src") in sys.path
         assert get_global_runtime_settings().integration_config_paths == [
@@ -215,6 +219,82 @@ class TestLoadIntegrations:
         assert len(failures) == 1
         assert failures[0].levelname == "ERROR"
         assert failures[0].exc_info[0] is KeyError
+
+
+@pytest.mark.unit
+class TestInitializeIntegrations:
+
+    def test_import_failure_is_logged_at_error(self, integration_env, monkeypatch, caplog):
+        """An integration package that fails to import is logged at ERROR with its traceback."""
+        config = SimpleNamespace(integrations=[IntegrationConfig(
+            name="broken", description="broken", enabled=True, python_module="no_such_integration_package")])
+        monkeypatch.setattr("saq.integration.integration_loader.get_config", lambda: config)
+
+        initialize_integrations()
+
+        failures = [r for r in caplog.records if r.message.startswith("failed to import integration module broken")]
+        assert len(failures) == 1
+        assert failures[0].levelname == "ERROR"
+        assert failures[0].exc_info[0] is ModuleNotFoundError
+
+    def test_undeclared_integration_is_logged_at_warning(self, integration_env, monkeypatch, caplog):
+        """An integration directory with no integration_*: block is logged at WARNING."""
+        undeclared = integration_env("undeclared")
+        monkeypatch.setattr("saq.integration.integration_loader.get_config", lambda: SimpleNamespace(integrations=[]))
+
+        initialize_integrations()
+
+        warnings = [r for r in caplog.records if r.message.startswith(f"integration undeclared ({undeclared}) declares no")]
+        assert len(warnings) == 1
+        assert warnings[0].levelname == "WARNING"
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.unit
+def test_startup_failures_reach_the_configured_handlers(integration_env, monkeypatch, capsys):
+    """What initialize_environment() logs before it has configured logging reaches the handlers
+    initialize_logging() installs, and a failure with a traceback writes its error report (#817)."""
+    broken = integration_env("broken")
+    monkeypatch.setattr("saq.integration.integration_loader.load_integration_from_directory",
+                        Mock(side_effect=RuntimeError("load failed")))
+    # nothing declares the integration, so initialize_integrations() warns about it too
+    monkeypatch.setattr("saq.integration.integration_loader.get_config", lambda: SimpleNamespace(integrations=[]))
+
+    # keep the session's configuration and runtime settings
+    monkeypatch.setattr("saq.configuration.initialize_configuration", lambda config_paths: None)
+    monkeypatch.setattr(saq.environment, "GLOBAL_RUNTIME_SETTINGS", get_global_runtime_settings().model_copy(deep=True))
+
+    collector = BufferingHandler(capacity=100)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    def initialize_logging(*args, **kwargs):
+        logging_root = logging.getLogger()
+        logging_root.addHandler(collector)
+        logging_root.addHandler(ErrorReportHandler())
+
+    monkeypatch.setattr("saq.logging.initialize_logging", initialize_logging)
+    # logging is configured by the time encryption is initialized, so stop there
+    monkeypatch.setattr("saq.crypto.initialize_encryption", Mock(side_effect=_Stop))
+
+    with unconfigured_logging():
+        with pytest.raises(_Stop):
+            initialize_environment(saq_home=get_base_dir(), data_dir=get_data_dir(), temp_dir=get_temp_dir(), config_paths=[])
+
+    failures = [r for r in collector.buffer if r.getMessage().startswith(f"failed to load integration from {broken}")]
+    assert len(failures) == 1
+    assert failures[0].levelname == "ERROR"
+    assert failures[0].exc_info[0] is RuntimeError
+    write_error_report.assert_called_once()
+    assert write_error_report.call_args.args[0][0] is RuntimeError
+
+    assert any(r.levelname == "WARNING" and r.getMessage().startswith("integration broken") for r in collector.buffer)
+
+    # nothing went to an implicit stderr handler first
+    assert "failed to load integration" not in capsys.readouterr().err
 
 
 @pytest.mark.unit
