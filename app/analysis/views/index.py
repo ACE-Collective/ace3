@@ -671,7 +671,7 @@ def index():
         # go ahead and get the list of all the users, we'll end up using it
         all_users = get_db().query(User).order_by('username').all()
     except Exception as e:
-        logging.error(f"idk why it breaks specifically right here {e}")
+        logging.exception(f"unable to list the users for alert {alert.uuid}, retrying after a rollback: {e}")
         get_db().rollback()
         all_users = get_db().query(User).order_by('username').all()
 
