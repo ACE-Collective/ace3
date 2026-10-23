@@ -266,18 +266,18 @@ ORDER BY
         return redirect(url_for('analysis.manage'))
 
     finally:
-        for file_path in temp_file_paths:
-            try:
-                os.remove(file_path)
-            except Exception as e:
-                logging.error(f"unable to remove {file_path}: {e}")
-
         for entry in observable_entries:
             for file_name, fp in entry['files']:
                 try:
                     fp.close()
-                except:
-                    logging.error(f"unable to close file descriptor for {file_name}")
+                except Exception as e:
+                    logging.exception(f"unable to close file descriptor for {file_name}: {e}", extra={"file_name": file_name})
+
+        for file_path in temp_file_paths:
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logging.exception(f"unable to remove {file_path}: {e}", extra={"path": file_path})
 
 @analysis.route('/new_alert_observable', methods=['GET'])
 @login_required
