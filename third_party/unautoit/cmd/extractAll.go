@@ -1,5 +1,7 @@
 /*
 Copyright © 2020 x0r19x91
+Modified for ACE, October 2026: the output directory is created with mode 0755
+(see third_party/README.md in the ACE repository).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by

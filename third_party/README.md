@@ -20,7 +20,8 @@ tests and cross-compiles it for the architecture the image is built for.
 ACE ships unautoit as a separate program and only runs it as a subprocess. No ACE code links
 against it, so its GPLv3 license covers this directory and the binary built from it.
 
-Changes from digitalsleuth/UnAutoIt `6c55d05`:
+Changes from digitalsleuth/UnAutoIt `6c55d05`, made for ACE in October 2026. Each modified `.go`
+file also says so in its header:
 
 - `cmd/extract.go`, `cmd/extractAll.go`: the output directory is created with mode `0755`, not
   `0666`, which has no execute bit, so nothing could be written into it.

@@ -8,6 +8,24 @@ ARG TARGETARCH
 COPY third_party/unautoit /src/unautoit
 RUN cd /src/unautoit/third_party/libautoit && go test ./... && \
     cd /src/unautoit && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/unautoit .
+# the binary is GPLv3 and statically links the Go standard library and the modules below, whose
+# licenses require their text to go wherever the binary goes; a module without a license file fails the build
+RUN cd /src/unautoit && mkdir -p /out/doc/modules && \
+    cp LICENSE /out/doc/LICENSE && cp "$(go env GOROOT)/LICENSE" /out/doc/LICENSE.go && \
+    printf '%s\n' \
+        'unautoit is free software under the GNU GPLv3 (LICENSE in this directory).' \
+        'Its complete source, including the changes made for ACE, is third_party/unautoit in the ACE' \
+        'repository this image was built from: https://github.com/ACE-Collective/ace3' \
+        'LICENSE.go and modules/ hold the licenses of the Go standard library and the Go modules' \
+        'compiled into it.' > /out/doc/README && \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go list -deps \
+        -f '{{with .Module}}{{if and (not .Main) (not .Replace)}}{{.Path}} {{.Dir}}{{end}}{{end}}' . | sort -u | \
+    while read -r path dir; do \
+        mkdir -p "/out/doc/modules/$path" && \
+        find "$dir" -maxdepth 1 -type f \( -iname 'licen[cs]e*' -o -iname 'copying*' -o -iname 'notice*' \) \
+            -exec cp {} "/out/doc/modules/$path/" \; && \
+        [ -n "$(ls "/out/doc/modules/$path")" ] || { echo "no license file in Go module $path" >&2; exit 1; }; \
+    done
 
 FROM ${DOCKER_IMAGE_PREFIX}/library/python:3.14-trixie
 
@@ -171,6 +189,7 @@ RUN python3 -m pip config set global.cert /etc/ssl/certs/ca-certificates.crt && 
 
 # install additional tools
 COPY --from=unautoit /out/unautoit /usr/local/bin/unautoit
+COPY --from=unautoit /out/doc /usr/local/share/doc/unautoit
 RUN curl -fsSLk https://github.com/leibnitz27/cfr/releases/download/0.151/cfr-0.151.jar -o /usr/local/bin/cfr.jar
 RUN chmod a+x /usr/local/bin/cfr.jar
 

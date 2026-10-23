@@ -15,6 +15,9 @@ copy are gone, so the module is wired in through the `replace` directive in
 
 ## Local changes
 
+Made for ACE in October 2026; each modified file says so in its header. The two
+test files, `lexer/scanner_test.go` and `tidy/clean_test.go`, are new.
+
 ### Word lookup performance
 
 Restoring the canonical case of keywords, functions and macros scanned the

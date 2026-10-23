@@ -1,3 +1,6 @@
+// Modified for ACE, October 2026: canonical word lookups go through maps, and string
+// literals are rendered as AutoIt literals (see third_party/unautoit/third_party/README.md).
+
 package lexer
 
 import (

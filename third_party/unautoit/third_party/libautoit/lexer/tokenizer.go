@@ -1,3 +1,6 @@
+// Modified for ACE, October 2026: isPresent looks words up in a map
+// (see third_party/unautoit/third_party/README.md).
+
 package lexer
 
 import (
