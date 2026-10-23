@@ -201,12 +201,14 @@ class TestStatuses:
         _attribute(run, HUNT, event_time_source="query_time")
         _attribute(run, YARA, event_time_source="event")
         _attribute(run, OTHER, event_time_source="insert_time")
+        created = "55555555-eeee-4eee-8eee-555555555555"
+        _attribute(run, created, event_time_source="now")
         # from before the source was kept
         _attribute(run, NOISE)
 
         results.compute_result(run.id)
-        assert {uuid: _row(run, uuid).fallback_time for uuid in (HUNT, YARA, OTHER, NOISE)} == {
-            HUNT: True, YARA: False, OTHER: True, NOISE: False}
+        assert {uuid: _row(run, uuid).fallback_time for uuid in (HUNT, YARA, OTHER, created, NOISE)} == {
+            HUNT: True, YARA: False, OTHER: True, created: True, NOISE: False}
 
     def test_an_ignore_wins_over_an_expectation(self, user_id):
         run = _run()

@@ -308,10 +308,11 @@ class Attribution(BaseModel):
                                       "so it is left out of the run's candidates and expectations")
     event_time_source: Optional[str] = Field(
         default=None, description="where event_time came from: event (the event's own), query_time (a hunt couldn't "
-                                  "extract it) or insert_time (the alert has none); null for attributions written "
+                                  "extract it), now (nothing gave the alert a time, so its producer used the time it "
+                                  "created it) or insert_time (the alert has none); null for attributions written "
                                   "before it was kept")
-    fallback_time: bool = Field(description="event_time is a fallback (query_time or insert_time), which may have put "
-                                            "the alert in the wrong window")
+    fallback_time: bool = Field(description="event_time is a fallback (query_time, now or insert_time), which may have "
+                                            "put the alert in the wrong window")
     source: str = Field(description="router (the marker router) or manual (a person associated the alert)")
     scan_point: Optional[str] = Field(default=None, description="where the agreeing marker was found; null for context or manual")
     actor: str = Field(description="who attributed it: svs for the router, else the person")

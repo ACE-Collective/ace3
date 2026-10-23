@@ -4,8 +4,10 @@ import sys
 import pytest
 import saq.cli.commands # noqa: F401
 
+from saq.analysis.root import load_root
 from saq.cli import cli_main
-from saq.cli.cli_main import get_cli_subparsers
+from saq.cli.cli_main import get_cli_parser, get_cli_subparsers
+from saq.constants import EventTimeSource
 
 
 @pytest.mark.unit
@@ -132,3 +134,13 @@ def test_cli_runs_from_saq_home(tmp_path, monkeypatch):
 
     assert seen["cwd"] == str(home)
     assert seen["saq_home"] == str(home)
+
+
+@pytest.mark.unit
+def test_alert_create_says_its_event_time_is_when_it_was_created(tmp_path):
+    args = get_cli_parser().parse_args(["alert", "create", str(tmp_path / "alert")])
+    args.func(args)
+
+    root = load_root(str(tmp_path / "alert"))
+    assert root.event_time is not None
+    assert root.event_time_source == EventTimeSource.NOW

@@ -12,7 +12,7 @@ from saq.cli.cli_main import get_cli_subparsers
 from saq.cli.cli_util import display_analysis
 from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import F_FILE
+from saq.constants import F_FILE, EventTimeSource
 from saq.environment import get_global_runtime_settings
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
@@ -102,7 +102,10 @@ def correlate(args):
 
         root.description = args.description if args.description else 'Command Line Correlation'
         root.instructions = args.instructions
-        root.event_time = datetime.datetime.now() if reference_time is None else reference_time
+        if reference_time is None:
+            root.set_event_time(datetime.datetime.now(), EventTimeSource.NOW)
+        else:
+            root.event_time = reference_time
         if args.load_details:
             with open(args.load_details, 'r') as fp:
                 root.details = json.load(fp)
@@ -173,7 +176,7 @@ def correlate(args):
             current_root.alert_type = root.alert_type
             current_root.analysis_mode = root.analysis_mode
             current_root.description = "{} - {}:{}".format(root.description, o_type, o_value)
-            current_root.event_time = root.event_time
+            current_root.set_event_time(root.event_time, root.event_time_source)
             current_root.details = root.details
             current_root.summary_details = list(root.summary_details)
 

@@ -94,7 +94,7 @@ class SVSAlertTagger(AnalysisModule):
             logging.debug("%s has no alert row - not tagged for svs", root)
             return AnalysisExecutionResult.COMPLETED
 
-        evaluation = evaluate(root, alert_event_time(root, inserted_at))
+        evaluation = evaluate(root, *alert_event_time(root, inserted_at))
 
         if evaluation.status == SVSStatus.MISMATCH:
             root.add_tag(TAG_MARKER_MISMATCH)

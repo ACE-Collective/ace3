@@ -92,7 +92,7 @@ class MarkerRouter(AlertRouter):
             if alert is None:
                 return None
 
-        evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
+        evaluation = evaluate(root, *alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
         written = write_attributions(root.uuid, evaluation)
         self._warn_fallback_time(root, stage, evaluation, written.first)

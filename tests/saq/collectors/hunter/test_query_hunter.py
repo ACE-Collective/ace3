@@ -13,7 +13,6 @@ from sqlalchemy import select
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
 import saq.util.time as saq_time
-from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
 from saq.collectors.hunter.query_hunter import (
     QueryHunt,
@@ -24,6 +23,7 @@ from saq.configuration.schema import HuntTypeConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     ANALYSIS_MODE_FILE,
+    EventTimeSource,
     ExecutionMode,
     F_COMMAND_LINE,
     F_FILE,
@@ -611,9 +611,9 @@ def test_process_query_results(monkeypatch, hunt_manager):
     assert submission.root.extensions == {
         "playbook_url": hunt.playbook_url,
         "transaction_id": get_transaction_id(),
-        # this hunt never extracts an event's timestamp
-        KEY_EVENT_TIME_FALLBACK: EVENT_TIME_FALLBACK_QUERY_TIME,
     }
+    # this hunt never extracts an event's timestamp
+    assert submission.root.event_time_source == EventTimeSource.QUERY_TIME
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
     assert submissions
@@ -5582,12 +5582,12 @@ def test_a_fallback_event_time_is_marked_on_the_root(monkeypatch, hunt_manager):
     monkeypatch.setattr(hunt, "extract_event_timestamp", lambda event: stamp if "_time" in event else None)
 
     own, fallback = hunt.process_query_results([{"src": "1.2.3.4", "_time": "x"}, {"src": "5.6.7.8"}])
-    assert own.root.event_time == stamp and KEY_EVENT_TIME_FALLBACK not in (own.root.extensions or {})
-    assert fallback.root.extensions[KEY_EVENT_TIME_FALLBACK] == EVENT_TIME_FALLBACK_QUERY_TIME
+    assert (own.root.event_time, own.root.event_time_source) == (stamp, EventTimeSource.EVENT)
+    assert fallback.root.event_time_source == EventTimeSource.QUERY_TIME
 
     # a group's time is its earliest event's, and so is whether it is its own
     hunt.config.group_by = "ALL"
     (group,) = hunt.process_query_results([{"src": "5.6.7.8"}, {"src": "1.2.3.4", "_time": "x"}])
-    assert group.root.event_time == stamp and KEY_EVENT_TIME_FALLBACK not in (group.root.extensions or {})
+    assert (group.root.event_time, group.root.event_time_source) == (stamp, EventTimeSource.EVENT)
     (group,) = hunt.process_query_results([{"src": "5.6.7.8"}])
-    assert group.root.extensions[KEY_EVENT_TIME_FALLBACK] == EVENT_TIME_FALLBACK_QUERY_TIME
+    assert group.root.event_time_source == EventTimeSource.QUERY_TIME

@@ -19,7 +19,7 @@ from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.serialize.observable_serializer import KEY_TYPE as KEY_OBSERVABLE_TYPE
 from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE, RootAnalysisSerializer
-from saq.constants import F_FILE, HARDCOPY_SUBDIR, QUEUE_DEFAULT
+from saq.constants import F_FILE, HARDCOPY_SUBDIR, QUEUE_DEFAULT, EventTimeSource
 from saq.environment import get_global_runtime_settings, get_local_timezone, get_temp_dir
 from saq.util import parse_event_time
 from saq.util.time import local_time
@@ -30,10 +30,6 @@ if TYPE_CHECKING:
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
 KEY_TRANSACTION_ID = 'transaction_id'
-# set when the root's event_time is not the event's own: a hunt that couldn't extract the event's
-# timestamp used the time it processed the results (EVENT_TIME_FALLBACK_QUERY_TIME)
-KEY_EVENT_TIME_FALLBACK = 'event_time_fallback'
-EVENT_TIME_FALLBACK_QUERY_TIME = 'query_time'
 # collector-layer submission metadata. these live on the root (rather than on Submission) because
 # a staged submission is reconstructed from disk after a restart, and only the root is serialized.
 KEY_SUBMISSION_KEY = 'submission_key'
@@ -50,6 +46,7 @@ class RootAnalysis(Analysis):
                  alert_type=None, 
                  desc=None, 
                  event_time=None, 
+                 event_time_source: Optional[EventTimeSource]=None,
                  action_counters=None,
                  details=None, 
                  name=None,
@@ -83,6 +80,8 @@ class RootAnalysis(Analysis):
         self._extensions = extensions
         self._analysis_failures = analysis_failures if analysis_failures else {}
         self._event_time = event_time
+        self._event_time_source = (EventTimeSource.UNSET if event_time is None
+                                   else EventTimeSource(event_time_source or EventTimeSource.EVENT))
         self._name = name
         self._remediation = remediation
         self.details = details or {}
@@ -400,10 +399,27 @@ class RootAnalysis(Analysis):
 
     @event_time.setter
     def event_time(self, value):
-        """Sets the event_time. Accepts a datetime object or a string in the format %Y-%m-%d %H:%M:%S %z."""
+        """Sets the event's own time (see set_event_time)."""
+        self.set_event_time(value, EventTimeSource.EVENT)
+
+    @property
+    def event_time_source(self) -> EventTimeSource:
+        """Where event_time came from. Set only together with it, so the two never disagree."""
+        return self._event_time_source
+
+    def set_event_time(self, value, source: EventTimeSource):
+        """Sets the event_time and where it came from: a producer that substitutes a time for the
+        event's own says so here. Accepts a datetime object or a string in the format
+        %Y-%m-%d %H:%M:%S %z; None clears it (and the source is UNSET)."""
         if value is None:
             self._event_time = None
-        elif isinstance(value, datetime):
+            self._event_time_source = EventTimeSource.UNSET
+            return
+
+        if source == EventTimeSource.UNSET:
+            raise ValueError("an event_time cannot have the source unset")
+
+        if isinstance(value, datetime):
             # if we didn't specify a timezone then we use the timezone of the local system
             if value.tzinfo is None:
                 value = get_local_timezone().localize(value)
@@ -413,6 +429,8 @@ class RootAnalysis(Analysis):
         else:
             raise ValueError("event_time must be a datetime object or a string in the format "
                              "%Y-%m-%d %H:%M:%S %z but you passed {}".format(type(value).__name__))
+
+        self._event_time_source = EventTimeSource(source)
 
     @property
     def event_time_datetime(self):

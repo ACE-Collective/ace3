@@ -7,7 +7,7 @@ from typing import NamedTuple
 # these are used in calls to saq.database.get_db_connection
 #
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 #
 # environment variables
@@ -1202,3 +1202,11 @@ class ExecutionMode(Enum):
     """Enum representing the mode of execution of something that runs in a loop."""
     SINGLE_SHOT = "single_shot" # execute once and then exit, useful for testing and command line tools
     CONTINUOUS = "continuous" # execute continuously until stopped
+
+class EventTimeSource(StrEnum):
+    """Where a root's event_time came from, so a consumer can tell the event's own time from one a
+    producer substituted for it."""
+    EVENT = 'event'            # the event's own (or a time a person gave for it)
+    QUERY_TIME = 'query_time'  # a hunt couldn't extract the event's timestamp: when it processed the results
+    NOW = 'now'                # nothing gave a time: when the producer created the root
+    UNSET = 'unset'            # the root has no event time

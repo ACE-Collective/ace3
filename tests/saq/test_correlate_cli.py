@@ -7,7 +7,7 @@ import pytest
 import saq.cli.commands  # noqa: F401
 from saq.analysis.root import RootAnalysis, load_root
 from saq.cli.cli_main import get_cli_parser
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_TEST
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_TEST, EventTimeSource
 from saq.database.model import Alert
 from saq.database.pool import get_db
 
@@ -42,7 +42,8 @@ def test_correlate_observables(out):
     assert root.details == {"comment": "from a ticket"}
     assert root.alert_type == "manual"
     assert root.instructions == "look at it"
-    assert root.event_time.year == 2026
+    # the reference time is the event's
+    assert (root.event_time.year, root.event_time_source) == (2026, EventTimeSource.EVENT)
     (ip,) = root.get_observables_by_type(F_IPV4)
     assert ip.value == "10.0.0.1"
     assert ip.has_tag("suspect")
@@ -116,6 +117,8 @@ def test_correlate_split(out):
     assert sorted(r.description for r in roots) == [
         "ACE Manual Correlation - ipv4:10.0.0.1", "ACE Manual Correlation - ipv4:10.0.0.2"]
     assert len({r.uuid for r in roots}) == 2
+    # without a reference time, each is given the time it was created, and says so
+    assert {r.event_time_source for r in roots} == {EventTimeSource.NOW}
     assert sorted(o.value for r in roots for o in r.get_observables_by_type(F_IPV4)) == ["10.0.0.1", "10.0.0.2"]
 
 

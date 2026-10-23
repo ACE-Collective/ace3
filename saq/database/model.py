@@ -2415,9 +2415,9 @@ class SVSAttribution(Base):
     # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
     event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # saq.svs.constants.EventTimeSource: the event's own time, or a fallback (the hunt's query time,
-    # the alert's insert time) that may place the alert in the wrong window
+    # when its producer created the alert, the alert's insert time) that may place the alert in the wrong window
     event_time_source: Mapped[Optional[str]] = mapped_column(
-        Enum('event', 'query_time', 'insert_time'), nullable=True)
+        Enum('event', 'query_time', 'insert_time', 'now'), nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context

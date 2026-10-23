@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import logging
 import os
 import uuid
 import pytest
@@ -10,7 +11,7 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.root import RootAnalysis, Submission, load_root
 from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_MD5, F_SHA1, F_SHA256, F_TEST, R_IS_HASH_OF
+from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_MD5, F_SHA1, F_SHA256, F_TEST, R_IS_HASH_OF, EventTimeSource
 from saq.database.database_observable import get_observable_disposition_history
 from saq.database.model import Alert
 from saq.database.util.alert import ALERT, get_alert_by_uuid
@@ -527,3 +528,70 @@ def test_load_root_with_hash_observable_rejected_after_the_fact(tmpdir, caplog, 
     assert "invalid observable type" not in caplog.text
     assert sorted(o.uuid for o in reloaded_again.all_observables) == \
            sorted(o.uuid for o in reloaded.all_observables)
+
+
+@pytest.mark.unit
+class TestEventTimeSource:
+    def test_it_moves_with_the_event_time(self):
+        root = RootAnalysis()
+        assert (root.event_time, root.event_time_source) == (None, EventTimeSource.UNSET)
+        root.set_event_time(datetime(2026, 10, 1, 12, 0, 0), EventTimeSource.NOW)
+        assert root.event_time_source == EventTimeSource.NOW
+        # assigning the time says it is the event's own
+        root.event_time = datetime(2026, 10, 1, 12, 0, 0)
+        assert root.event_time_source == EventTimeSource.EVENT
+        root.set_event_time(None, EventTimeSource.QUERY_TIME)
+        assert (root.event_time, root.event_time_source) == (None, EventTimeSource.UNSET)
+
+    def test_a_time_cannot_be_unset(self):
+        root = RootAnalysis()
+        with pytest.raises(ValueError):
+            root.set_event_time(datetime(2026, 10, 1, 12, 0, 0), EventTimeSource.UNSET)
+        assert root.event_time_source == EventTimeSource.UNSET
+
+    def test_the_constructor(self):
+        assert RootAnalysis().event_time_source == EventTimeSource.UNSET
+        assert RootAnalysis(event_time=datetime(2026, 10, 1)).event_time_source == EventTimeSource.EVENT
+        assert RootAnalysis(event_time=datetime(2026, 10, 1),
+                            event_time_source=EventTimeSource.QUERY_TIME).event_time_source == EventTimeSource.QUERY_TIME
+        # no time, no source
+        assert RootAnalysis(event_time_source=EventTimeSource.NOW).event_time_source == EventTimeSource.UNSET
+
+    @pytest.mark.parametrize("source", list(EventTimeSource))
+    def test_it_round_trips(self, tmp_path, source):
+        root = RootAnalysis(storage_dir=str(tmp_path))
+        root.initialize_storage()
+        root.set_event_time(None if source == EventTimeSource.UNSET else datetime(2026, 10, 1, 12, 0, 0), source)
+        root.save()
+        assert load_root(str(tmp_path)).event_time_source == source
+
+    def _saved(self, tmp_path, *, event_time=True, **changes) -> RootAnalysis:
+        """A root as saved by a version that knew nothing of event_time_source, changed by changes."""
+        root = RootAnalysis(storage_dir=str(tmp_path))
+        root.initialize_storage()
+        if event_time:
+            root.event_time = datetime(2026, 10, 1, 12, 0, 0)
+        root.save()
+        with open(root.json_path) as fp:
+            data = json.load(fp)
+        data.pop("event_time_source")
+        data.update(changes)
+        with open(root.json_path, "w") as fp:
+            json.dump(data, fp)
+        return load_root(str(tmp_path))
+
+    def test_a_root_saved_before_it_was_kept(self, tmp_path):
+        assert self._saved(tmp_path / "event").event_time_source == EventTimeSource.EVENT
+        assert self._saved(tmp_path / "none", event_time=False).event_time_source == EventTimeSource.UNSET
+
+    def test_a_root_the_hunter_marked_before_it_was_kept(self, tmp_path):
+        """v3.0.132 marked a hunt's query time with the event_time_fallback extension."""
+        root = self._saved(tmp_path, extensions={"event_time_fallback": "query_time"})
+        assert root.event_time_source == EventTimeSource.QUERY_TIME
+
+    def test_an_unknown_source(self, tmp_path, caplog):
+        caplog.set_level(logging.WARNING)
+        root = self._saved(tmp_path, event_time_source="from_the_future")
+        assert root.event_time_source == EventTimeSource.EVENT
+        (record,) = [r for r in caplog.records if "unknown event_time_source" in r.getMessage()]
+        assert record.levelno == logging.WARNING and record.root_uuid == root.uuid
