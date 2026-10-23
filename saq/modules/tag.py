@@ -7,11 +7,10 @@ import os.path
 import re
 import ipaddress
 from typing import Optional, Type, Union
-from pydantic import Field, ConfigDict
+from pydantic import Field
 
 from saq.analysis import Analysis
-from saq.analysis.search import recurse_down
-from saq.signatures.builtin import ALERTABLE_TAG, CORRELATED_TAG_MATCH
+from saq.signatures.builtin import ALERTABLE_TAG
 from saq.configuration.config import get_config
 from saq.constants import CONFIG_TAGS
 from saq.database.model import Observable
@@ -27,10 +26,6 @@ KEY_TAGS_DETECTABLE = "tags_detectable"
 
 class SiteTagAnalyzerConfig(AnalysisModuleConfig):
     csv_file: str = Field(..., description="The CSV file that contains the tagging definitions.")
-
-class CorrelatedTagAnalyzerConfig(AnalysisModuleConfig):
-    # Dynamic keys like definition_001_rule, definition_001_text are allowed via extra fields
-    model_config = ConfigDict(extra='allow')
 
 class ConfigurationDefinedTaggingAnalysis(Analysis):
     """Tags observables defined in the configuration"""
@@ -333,75 +328,5 @@ class SiteTagAnalyzer(AnalysisModule):
                 for tag in mapper.tags:
                     observable.add_tag(tag)
                     analysis.tags_added.append(tag)
-
-        return AnalysisExecutionResult.COMPLETED
-
-#
-# NOTE - understanding how this logic works
-# (A) --> (C) --> (alert)
-# (B) --> (C)
-# (B) --> (D) --> (alert)
-# where (A) has tag t1 and (B) has tag t2
-
-# (A) has t1 so tag_map[A] = (t1) and tag_map[C] = (t1)
-# (B) has t2 so tag_map[B] = (t2) and tag_map[C] = (t1, t2)
-# (t1, t2) matches the definition so C gets the detection point
-
-class CorrelatedTagDefinition(object):
-    def __init__(self, text, tags):
-        # the textual description of the alert
-        self.text = text
-        # the list of tags we expect to see in the children of a target object
-        self.tags = set(tags)
-
-class CorrelatedTagAnalyzer(AnalysisModule):
-    """Does this combination of tagging exist on objects with a common ancestry?"""
-    @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return CorrelatedTagAnalyzerConfig
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        self.definitions = []
-        
-        # Access config as dict for dynamic keys (definition_*_rule, definition_*_text)
-        config_dict = self.config.model_dump()
-        for config_item in config_dict.keys():
-            if config_item.startswith('definition_') and config_item.endswith('_rule'):
-                config_rule = config_item
-                config_text = config_item.replace('_rule', '_text')
-                if config_text not in config_dict:
-                    logging.error("missing text description for config rule {}".format(config_item))
-                    continue
-
-                self.definitions.append(CorrelatedTagDefinition(config_dict[config_text], 
-                                         [x.strip() for x in config_dict[config_rule].split(',')]))
-                logging.debug("loaded definition for {}".format(config_rule))
-
-    def execute_post_analysis(self) -> AnalysisExecutionResult:
-        for d in self.definitions:
-            tag_map = {} # key = object_id, value = [tags]
-            def callback(obj):
-                if obj is self.get_root():
-                    return
-
-                if id(obj) not in tag_map:
-                    tag_map[id(obj)] = set()
-
-                tag_map[id(obj)].add(t)
-                if tag_map[id(obj)] == d.tags:
-                    o.add_detection_point("Correlated Tag Match: {}".format(d.text), signature_uuid=CORRELATED_TAG_MATCH.uuid)
-
-            for t in d.tags:
-                for o in self.get_root().all:
-                    # exclude looking at the RootAnalysis object itself
-                    if o is self.get_root():
-                        continue
-
-                    # if this object has the tag we're looking for...
-                    if o.has_tag(t):
-                        # then "apply" the tag all the way down to (but not including) the root
-                        recurse_down(o, callback)
 
         return AnalysisExecutionResult.COMPLETED

@@ -10,25 +10,18 @@ from saq.modules.context import AnalysisModuleContext
 from saq.modules.tag import (
     ConfigurationDefinedTaggingAnalysis,
     ConfigurationDefinedTaggingAnalyzer,
-    CorrelatedTagAnalyzer,
-    CorrelatedTagAnalyzerConfig,
     UserDefinedTaggingAnalysis,
     UserDefinedTaggingAnalyzer,
 )
-from saq.signatures.builtin import ALERTABLE_TAG, CORRELATED_TAG_MATCH
+from saq.signatures.builtin import ALERTABLE_TAG
 
 
 class _TestAnalysis(Analysis):
     pass
 
 
-def _config(config_class=AnalysisModuleConfig, **kwargs):
-    return config_class(name="test_tagging", python_module="saq.modules.tag", python_class="Test", enabled=True,
-                        **kwargs)
-
-
-def _all_detections(root):
-    return [(obj, d) for obj in root.all for d in obj.detections]
+def _config():
+    return AnalysisModuleConfig(name="test_tagging", python_module="saq.modules.tag", python_class="Test", enabled=True)
 
 
 @pytest.fixture
@@ -42,61 +35,6 @@ def tree():
     d = root.add_observable_by_spec(F_FQDN, "d.example.com")
     e = d.add_analysis(_TestAnalysis()).add_observable_by_spec(F_IP, "10.0.0.3")
     return root, a, b, e
-
-
-def _correlated_analyzer(root, **definitions):
-    # the engine gives modules the root itself, not an adapter
-    return CorrelatedTagAnalyzer(context=AnalysisModuleContext(root=root),
-                                 config=_config(CorrelatedTagAnalyzerConfig, **definitions))
-
-
-@pytest.mark.unit
-def test_correlated_tags_with_common_ancestor(tree):
-    root, a, b, _ = tree
-    a.add_tag("t1")
-    b.add_tag("t2")
-    analyzer = _correlated_analyzer(root, definition_001_rule="t1, t2", definition_001_text="t1 and t2")
-
-    assert analyzer.execute_post_analysis() == AnalysisExecutionResult.COMPLETED
-
-    detections = _all_detections(root)
-    assert detections
-    assert {d.description for _, d in detections} == {"Correlated Tag Match: t1 and t2"}
-    assert {d.signature_uuid for _, d in detections} == {CORRELATED_TAG_MATCH.uuid}
-
-
-@pytest.mark.unit
-def test_correlated_tags_without_common_ancestor(tree):
-    # a and e only share the root, which doesn't count
-    root, a, _, e = tree
-    a.add_tag("t1")
-    e.add_tag("t2")
-    analyzer = _correlated_analyzer(root, definition_001_rule="t1,t2", definition_001_text="t1 and t2")
-
-    analyzer.execute_post_analysis()
-
-    assert _all_detections(root) == []
-
-
-@pytest.mark.unit
-def test_correlated_tags_incomplete(tree):
-    root, a, b, _ = tree
-    a.add_tag("t1")
-    b.add_tag("t2")
-    analyzer = _correlated_analyzer(root, definition_001_rule="t1,t2,t3", definition_001_text="all three")
-
-    analyzer.execute_post_analysis()
-
-    assert _all_detections(root) == []
-
-
-@pytest.mark.unit
-def test_correlated_tag_definition_without_text(caplog):
-    analyzer = _correlated_analyzer(RootAnalysis(), definition_001_rule="t1,t2", definition_002_rule="t3",
-                                    definition_002_text="t3 alone")
-
-    assert [(d.text, d.tags) for d in analyzer.definitions] == [("t3 alone", {"t3"})]
-    assert any(r.levelno == logging.ERROR and "definition_001_rule" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit
