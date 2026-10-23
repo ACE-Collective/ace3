@@ -350,6 +350,9 @@ class PDFTextAnalyzer(AnalysisModule):
             analysis.stdout, analysis.stderr = p.communicate(timeout=self.timeout)
         except TimeoutExpired:
             logging.warning(f"timeout executing {self.pdftotext_path} on {local_file_path}")
+            # a pdftotext that timed out is still running: stop it before moving on
+            p.kill()
+            p.communicate()
             return AnalysisExecutionResult.COMPLETED
         
         if len(analysis.stderr) > 0:
