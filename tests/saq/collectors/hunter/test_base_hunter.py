@@ -1726,3 +1726,13 @@ def test_completion_record_failure(manager_kwargs, caplog, exception, status):
     assert record.hunt_uuid == hunt.uuid
     # nothing was produced, and "0" would claim the hunt ran and found nothing
     assert record.submission_count is None
+
+
+@pytest.mark.integration
+def test_network_concurrency_lock_is_not_held_when_the_manager_is_stopping(manager_kwargs):
+    manager_kwargs["concurrency_limit"] = "test_semaphore"
+    manager = HuntManager(**manager_kwargs)
+    manager.manager_control_event.set()
+
+    # the cancelled request holds nothing, so there is nothing for the caller to release
+    assert manager.acquire_concurrency_lock() is None

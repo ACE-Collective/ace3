@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # vim: sw=4:ts=4:et:cc=120
 
+import logging
 import threading
 import time
 from unittest.mock import Mock
@@ -346,3 +347,32 @@ def test_failed_fallback_release_is_reported(monkeypatch):
     # the failsafe thread is still told to exit
     assert client.semaphore_acquired is False
     assert client.release_event.is_set()
+
+
+@pytest.mark.unit
+def test_release_after_a_cancelled_acquire_does_nothing(caplog):
+    # the semaphore service is not running, so this goes to the fallback, which is cancelled
+    client = NetworkSemaphoreClient(cancel_request_callback=lambda: True)
+    assert not client.acquire("test")
+
+    with caplog.at_level(logging.WARNING):
+        client.release()
+
+    assert not client.semaphore_acquired
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert any("release called on unacquired semaphore" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_second_release_does_not_release_the_fallback_again(caplog):
+    client = NetworkSemaphoreClient()
+    assert client.acquire("test")
+    semaphore = client.fallback_semaphore
+    client.release()
+    value = semaphore._value
+
+    with caplog.at_level(logging.WARNING):
+        client.release()
+
+    assert semaphore._value == value
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

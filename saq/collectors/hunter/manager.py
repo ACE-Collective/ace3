@@ -551,7 +551,9 @@ class HuntManager:
             result = NetworkSemaphoreClient(cancel_request_callback=self.manager_control_event.is_set)
                                                                 # make sure we cancel outstanding request 
                                                                 # when shutting down
-            result.acquire(self.concurrency_semaphore)
+            if not result.acquire(self.concurrency_semaphore):
+                # cancelled because the manager is stopping, or the fallback failed: nothing is held
+                result = None
         else:
             logging.debug(f"acquiring local concurrency semaphore for hunt type {self.hunt_type}")
             while not self.manager_control_event.is_set():
