@@ -2,6 +2,7 @@ import json
 import re
 from ldap3 import ALL, RESTARTABLE, SIMPLE, Server, Connection, SUBTREE, ALL_ATTRIBUTES
 from ldap3.utils.ciDict import CaseInsensitiveDict
+from ldap3.utils.conv import escape_filter_chars
 from saq.configuration.config import get_config
 from saq.email import is_local_email_domain, normalize_email_address
 
@@ -86,8 +87,8 @@ def lookup_email_address(email_address, force=False):
     email = normalize_email_address(email_address)
     name, domain = email.split('@', 1)
 
-    # we have to use this query here
-    return get_user_attributes(f"(proxyAddresses=smtp:{email})")
+    # escaped: a sender address is attacker controlled, and a * in it would match some other user
+    return get_user_attributes(f"(proxyAddresses=smtp:{escape_filter_chars(email)})")
 
 # return the user id of the email address
 def lookup_user_by_email(email_address):
@@ -102,7 +103,7 @@ def lookup_user_by_email(email_address):
 
 # lookup a user by cn and return the attributes including manager cn
 def lookup_user(user):
-    return get_user_attributes(f"(cn={user})")
+    return get_user_attributes(f"(cn={escape_filter_chars(user)})")
 
 def lookup_user_email_address(user):
     attributes = lookup_user(user)
