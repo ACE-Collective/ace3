@@ -16,6 +16,7 @@ from saq.constants import F_FILE
 from saq.environment import get_global_runtime_settings
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
+from saq.util.uuid import storage_dir_from_uuid
 
 
 def correlate(args):
@@ -144,7 +145,8 @@ def correlate(args):
 
         # are we creating a separate alert for each observable?
         if args.split:
-            subdir = os.path.join(root.storage_dir, current_root.uuid[0:3])
+            split_uuid = str(uuid.uuid4())
+            subdir = os.path.join(root.storage_dir, split_uuid[0:3])
             if not os.path.exists(subdir):
                 try:
                     os.mkdir(subdir)
@@ -152,7 +154,7 @@ def correlate(args):
                     logging.error("unable to create directory {}: {}".format(subdir, e))
                     sys.exit(1)
 
-            current_root = RootAnalysis(storage_dir=os.path.join(subdir, current_root.uuid))
+            current_root = RootAnalysis(uuid=split_uuid, storage_dir=os.path.join(subdir, split_uuid))
             try:
                 current_root.initialize_storage()
             except Exception as e:
