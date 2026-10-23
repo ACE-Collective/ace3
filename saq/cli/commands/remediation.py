@@ -2,23 +2,19 @@ import argparse
 import logging
 import sys
 
+from sqlalchemy import and_, or_
+
 from saq.cli.cli_main import get_cli_subparsers
-from saq.configuration import get_config
-from saq.database.model import Remediation
+from saq.database.model import Remediation, User
 from saq.database.pool import get_db
+from saq.remediation.types import RemediationStatus
 
 
 remediation_parser = get_cli_subparsers().add_parser('remediation')
 remediation_sp = remediation_parser.add_subparsers(dest='remediation_cmd')
 
-def print_remediation_status(id=None, type=None, status=None, key=None, user_id=None, user=None):
-    from saq.database import Remediation, User
-    from sqlalchemy import or_
-
+def print_remediation_status(type=None, status=None, key=None, user_id=None, user=None):
     query = get_db().query(Remediation).join(User)
-
-    if id:
-        query = query.filter(Remediation.id == id)
 
     if type:
         query = query.filter(Remediation.type == type)
@@ -37,10 +33,9 @@ def print_remediation_status(id=None, type=None, status=None, key=None, user_id=
                                  User.display_name.ilike(f'%{user}%')))
 
     for r in query.order_by(Remediation.insert_date.desc()):
-        print(f"insert_date: {r.insert_date} id:{r.id} type:{r.type} action:{r.action} "
+        print(f"insert_date: {r.insert_date} id:{r.id} name:{r.name} type:{r.type} action:{r.action} "
               f'user_id: {r.user_id} key: "{r.key}" result: "{r.result}" comment: "{r.comment}" '
-              f'successful: {r.successful} company_id: {r.company_id} lock: {r.lock} lock_time: {r.lock_time} '
-              f'status: {r.status}')
+              f'lock: {r.lock} lock_time: {r.lock_time} status: {r.status}')
 
 def remediation_status(args):
     print_remediation_status(status=args.status,
@@ -66,19 +61,13 @@ remediation_status_parser.set_defaults(func=remediation_status)
 
 
 def display_remediation_requests(args):
-    #print(['ID', 'STATUS', 'TYPE', 'ACTION', 'DATE', 'TARGET']))
-    #print(['ID', 'STATUS', 'TYPE', 'ACTION', 'DATE', 'TARGET']))
-    # NOTE: REMEDIATION_STATUS_NEW / REMEDIATION_STATUS_IN_PROGRESS are unresolved here
-    # exactly as they were in the original script (moved verbatim)
-    row_format = "{:<8}{:<10}{:<8}{:<9}{:<20} {}"
+    row_format = "{:<8}{:<12}{:<8}{:<9}{:<20} {}"
     print(row_format.format('ID', 'STATUS', 'TYPE', 'ACTION', 'DATE', 'TARGET'))
-    for r in get_db().query(Remediation).filter(Remediation.company_id == get_config().global_settings.company_id,
-                                              Remediation.status.in_([REMEDIATION_STATUS_NEW, 
-                                                                      REMEDIATION_STATUS_IN_PROGRESS]))\
+    for r in get_db().query(Remediation).filter(Remediation.status.in_([RemediationStatus.NEW.value,
+                                                                        RemediationStatus.IN_PROGRESS.value]))\
                                       .order_by(Remediation.id):
 
         print(row_format.format(r.id, r.status, r.type, r.action, str(r.insert_date), r.key))
-        #print('\t'.join(map(str, [r.id, r.type, r.action, r.insert_date, r.key])))
 
     sys.exit(0)
 
@@ -88,32 +77,25 @@ display_remediation_parser.set_defaults(func=display_remediation_requests)
 
 
 def clear_remediation_request(args):
-    import argparse
-    import saq
-    from saq.database import Remediation
-    from saq.remediation import REMEDIATION_STATUS_NEW
-    from sqlalchemy import and_
-
     if not args.remediation_ids and not args.all:
         logging.error("no remediation ids were specified and the --all option was not used")
         sys.exit(1)
-    
-    clause = and_(Remediation.status == REMEDIATION_STATUS_NEW,
-                  Remediation.lock == None,
-                  Remediation.company_id == saq.COMPANY_ID)
+
+    clause = and_(Remediation.status == RemediationStatus.NEW.value,
+                  Remediation.lock == None)
     if not args.all and args.remediation_ids:
         clause = and_(clause, Remediation.id.in_(args.remediation_ids))
 
     logging.info("deleted {} requests".format(
         get_db().execute(Remediation.__table__.delete().where(clause)).rowcount))
-    
+
     get_db().commit()
     sys.exit(0)
 
 clear_remediation_request_parser = remediation_sp.add_parser('clear',
     help="Clears one or more remediation requests.")
 clear_remediation_request_parser.add_argument('-a', '--all', action='store_true', default=False,
-    help="Clears all remediation requests that are not locked or have expired locks.")
+    help="Clears all new remediation requests that are not locked.")
 clear_remediation_request_parser.add_argument('remediation_ids', nargs=argparse.REMAINDER,
-    help="Zero or more remediation IDs to clear which can be obtained using the display-remediation-request command.")
+    help="Zero or more remediation IDs to clear, as `ace remediation display` lists them.")
 clear_remediation_request_parser.set_defaults(func=clear_remediation_request)
