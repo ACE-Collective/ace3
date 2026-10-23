@@ -113,6 +113,14 @@ def test_open_and_end(caplog):
         maintenance.end_window("win10-01", LAUNCHER, now=now + timedelta(minutes=6))
 
 
+def test_an_early_end_is_stored_to_the_second():
+    """MySQL rounds a DATETIME, so 12:05:00.9 would be stored as 12:05:01, after the call."""
+    opened = datetime(2026, 10, 22, 12, 0, 0)
+    window = maintenance.open_window("win10-01", 30, "staging", LAUNCHER, now=opened)
+    maintenance.end_window("win10-01", LAUNCHER, now=opened + timedelta(minutes=5, microseconds=900000))
+    assert _window(window.uuid).ended_at == opened + timedelta(minutes=5)
+
+
 @pytest.mark.parametrize("minutes, reason, message", [
     (0, "staging", "minutes must be from 1 to 240"),
     (241, "staging", "minutes must be from 1 to 240"),

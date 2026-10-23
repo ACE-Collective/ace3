@@ -146,12 +146,18 @@ def end_window(host_ref: str, caller: Caller, now: Optional[datetime] = None) ->
         db.rollback()
         raise UnknownMaintenance(f"test host {host.hostname} has no open maintenance window")
 
-    window.ended_at = now
-    window.ended_by = caller.name[:256]
-    window.end_reason = END_REASON_ENDED
+    _end(window, caller.name, now)
     db.commit()
-    _audit("svs maintenance window ended", window, caller.name, ended_at=now.isoformat())
+    _audit("svs maintenance window ended", window, caller.name, ended_at=window.ended_at.isoformat())
     return window
+
+
+def _end(window: SVSMaintenanceWindow, actor: str, now: datetime) -> None:
+    """Ends the window early, at now."""
+    # stored to the second, as open_window does: MySQL rounds, which could end it after now
+    window.ended_at = now.replace(microsecond=0)
+    window.ended_by = actor[:256]
+    window.end_reason = END_REASON_ENDED
 
 
 @contextmanager
@@ -161,8 +167,7 @@ def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] =
     outliving its host would go on closing the alerts of a host nobody tests, and nothing could end
     it (end_window refuses a host that is not a test host). The windows are audited once the block
     leaves without an exception."""
-    # stored to the second, as open_window does: MySQL rounds, which could end it after the removal
-    now = (now or datetime.now()).replace(microsecond=0)
+    now = now or datetime.now()
     db = get_db()
     windows = list(db.execute(
         select(SVSMaintenanceWindow)
@@ -171,12 +176,10 @@ def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] =
         .order_by(SVSMaintenanceWindow.id)
         .with_for_update()).scalars())
     for window in windows:
-        window.ended_at = now
-        window.ended_by = actor[:256]
-        window.end_reason = END_REASON_ENDED
+        _end(window, actor, now)
     yield windows
     for window in windows:
-        _audit("svs maintenance window ended", window, actor, ended_at=now.isoformat(),
+        _audit("svs maintenance window ended", window, actor, ended_at=window.ended_at.isoformat(),
                ended_because="test host removed")
 
 
