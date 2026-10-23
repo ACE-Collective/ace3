@@ -937,8 +937,8 @@ class RootAnalysis(Analysis):
 def load_root(dir: str) -> RootAnalysis:
     """Loads the RootAnalysis from the given directory. Returns the new RootAnalysis."""
     root = RootAnalysis(storage_dir=dir)
+    # load() reads the root's details too
     root.load()
-    root.load_details()
     return root
 
 def load_file_observable(storage_dir: str, observable_uuid: str) -> Optional["FileObservable"]:

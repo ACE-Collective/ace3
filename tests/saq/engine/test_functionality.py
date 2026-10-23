@@ -611,12 +611,12 @@ def test_io_count():
     # already loaded: no read
     root.load()
     assert _get_io_write_count() == 8
-    # load_root() reads the root's details a second time
-    assert _get_io_read_count() == 5
+    # data.json and the root's details, once each
+    assert _get_io_read_count() == 4
     analysis = root.get_observable(observable.uuid).get_analysis(BasicTestAnalysis)
-    assert _get_io_read_count() == 5 # the details of an analysis are read only on request
+    assert _get_io_read_count() == 4 # the details of an analysis are read only on request
     assert analysis.load_details()
-    assert _get_io_read_count() == 6
+    assert _get_io_read_count() == 5
     assert analysis.test_result
 
 @pytest.mark.integration
@@ -646,12 +646,12 @@ def test_delayed_analysis_io_count():
     root = load_root(get_storage_dir(root.uuid))
     assert root.load()
     assert _get_io_write_count() == 14
-    assert _get_io_read_count() == 8
+    assert _get_io_read_count() == 7
     analysis = root.get_observable(observable.uuid).get_analysis(DelayedAnalysisTestAnalysis)
     assert analysis
-    assert _get_io_read_count() == 8
+    assert _get_io_read_count() == 7
     assert analysis.load_details()
-    assert _get_io_read_count() == 9
+    assert _get_io_read_count() == 8
     assert analysis.delayed_request
 
 @pytest.mark.system
