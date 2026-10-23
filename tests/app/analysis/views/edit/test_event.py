@@ -102,3 +102,126 @@ def test_load_more_events_shows_save_button(web_client, closed_events):
     html = response.get_data(as_text=True)
 
     assert "toggleNewEventDialog();showEventSaveButton()" in html
+
+
+#
+# add_to_event
+#
+
+@pytest.fixture
+def event_lookups():
+    """add_to_event gives a new event the first row of each lookup table."""
+    db = get_db()
+    rows = [EventPreventionTool(value="test_prevention_tool"), EventRemediation(value="test_remediation"),
+            EventRiskLevel(value="test_risk_level"), EventStatus(value="OPEN"), EventType(value="test_type"),
+            EventVector(value="test_vector")]
+    db.add_all(rows)
+    db.commit()
+    yield rows
+    # the analyst fixture deletes its user on the way out, which events.owner_id would block
+    db.query(Event).update({Event.owner_id: None})
+    db.commit()
+
+
+def _alerts(count: int):
+    from tests.saq.helpers import insert_alert
+    return [insert_alert() for _ in range(count)]
+
+
+def _mapped(event_id: int) -> set[int]:
+    from saq.database.model import EventMapping
+
+    get_db().expire_all()
+    return {m.alert_id for m in get_db().query(EventMapping).filter(EventMapping.event_id == event_id)}
+
+
+def _add(web_client, **form):
+    return web_client.post(url_for("analysis.add_to_event"), data={"event_name": "", **form})
+
+
+@pytest.mark.integration
+def test_add_to_new_event(web_client, event_lookups, analyst):
+    from saq.database.model import Alert, CompanyMapping
+
+    alerts = _alerts(2)
+    # the event is dated by its oldest alert
+    get_db().query(Alert).filter(Alert.id == alerts[0].id).update({Alert.insert_date: "2026-01-02 03:04:05"})
+    get_db().commit()
+    with web_client.session_transaction() as session:
+        session["checked"] = [a.uuid for a in alerts]
+
+    response = _add(web_client, event="NEW", event_name="  new event  ", event_comment="first look",
+                    event_time="2026-01-01 00:00:00", alert_time="2026-01-02 03:04:05",
+                    alert_uuids=",".join(a.uuid for a in alerts))
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith(url_for("analysis.manage"))
+    event = get_db().query(Event).filter(Event.name == "new event").one()
+    assert str(event.creation_date) == "2026-01-02"
+    assert event.comment == "first look"
+    assert event.owner_id == analyst
+    assert str(event.event_time) == "2026-01-01 00:00:00"
+    assert (event.status.value, event.type.value, event.vector.value) == ("OPEN", "test_type", "test_vector")
+    assert _mapped(event.id) == {a.id for a in alerts}
+    assert get_db().query(CompanyMapping).filter(CompanyMapping.event_id == event.id).count() == 1
+    with web_client.session_transaction() as session:
+        # the selected alerts are cleared
+        assert "checked" not in session
+
+
+@pytest.mark.integration
+def test_add_to_new_event_with_the_name_of_an_existing_one(web_client, event_lookups):
+    first, second = _alerts(2)
+    _add(web_client, event="NEW", event_name="same name", alert_uuids=first.uuid)
+    _add(web_client, event="NEW", event_name="same name", alert_uuids=second.uuid)
+
+    [event] = get_db().query(Event).filter(Event.name == "same name").all()
+    assert _mapped(event.id) == {first.id, second.id}
+
+
+@pytest.mark.integration
+def test_add_to_existing_event(web_client, event_lookups):
+    first, second = _alerts(2)
+    _add(web_client, event="NEW", event_name="existing", alert_uuids=first.uuid)
+    event = get_db().query(Event).filter(Event.name == "existing").one()
+
+    response = _add(web_client, event=str(event.id), alert_uuids=second.uuid, redirect_to="events_manage")
+
+    assert response.headers["Location"].endswith(url_for("events.manage"))
+    assert _mapped(event.id) == {first.id, second.id}
+
+
+@pytest.mark.integration
+def test_add_to_event_skips_alerts_that_no_longer_exist(web_client, event_lookups):
+    [alert] = _alerts(1)
+
+    response = _add(web_client, event="NEW", event_name="partly gone", alert_uuids=f"{alert.uuid},00000000-0000-0000-0000-000000000000")
+
+    assert response.status_code == 302
+    event = get_db().query(Event).filter(Event.name == "partly gone").one()
+    assert _mapped(event.id) == {alert.id}
+    with web_client.session_transaction() as session:
+        assert "1 of the selected alerts no longer exist" in str(session.get("_flashes"))
+
+
+@pytest.mark.integration
+def test_add_to_new_event_when_no_alert_exists(web_client, event_lookups):
+    response = _add(web_client, event="NEW", event_name="all gone", alert_uuids="00000000-0000-0000-0000-000000000000")
+
+    assert response.status_code == 302
+    event = get_db().query(Event).filter(Event.name == "all gone").one()
+    assert event.creation_date == date.today()
+    assert _mapped(event.id) == set()
+
+
+@pytest.mark.integration
+def test_add_to_event_rejects_dates_out_of_order(web_client, event_lookups):
+    [alert] = _alerts(1)
+
+    response = _add(web_client, event="NEW", event_name="bad dates", alert_uuids=alert.uuid,
+                    event_time="2026-01-02 00:00:00", alert_time="2026-01-01 00:00:00")
+
+    assert response.headers["Location"].endswith(url_for("analysis.manage"))
+    assert get_db().query(Event).filter(Event.name == "bad dates").count() == 0
+    with web_client.session_transaction() as session:
+        assert "out of valid order" in str(session.get("_flashes"))

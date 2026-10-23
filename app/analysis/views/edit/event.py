@@ -79,7 +79,9 @@ def add_to_event():
                 sql %= in_p
                 cursor.execute(sql, alert_uuids)
                 result = cursor.fetchone()
-                creation_date = result[0].strftime("%Y-%m-%d")
+                # none of the alerts exist any more
+                if result is not None:
+                    creation_date = result[0].strftime("%Y-%m-%d")
 
             cursor.execute("""SELECT id FROM events WHERE creation_date = %s AND name = %s""", (creation_date, event_name))
             if cursor.rowcount > 0:
@@ -98,13 +100,15 @@ def add_to_event():
                 result = cursor.fetchone()
                 event_id = result[0]
 
-                cursor.execute("""SELECT uuid FROM events WHERE id=%s""", event_id)
-                result = cursor.fetchone()
-                event_uuid = result[0]
-
+        missing_alerts = []
         for uuid in alert_uuids:
             cursor.execute("""SELECT id, company_id FROM alerts WHERE uuid = %s""", uuid)
             result = cursor.fetchone()
+            if result is None:
+                # deleted since it was selected
+                missing_alerts.append(uuid)
+                continue
+
             alert_id = result[0]
             company_id = result[1]
             cursor.execute("""INSERT IGNORE INTO event_mapping (event_id, alert_id) VALUES (%s, %s)""", (event_id, alert_id))
@@ -113,23 +117,8 @@ def add_to_event():
         touch_alerts(alert_uuids, cursor=cursor)
         dbm.commit()
 
-        # generate wiki
-        cursor.execute("""SELECT creation_date, name FROM events WHERE id = %s""", event_id)
-        result = cursor.fetchone()
-        creation_date = result[0]
-        event_name = result[1]
-        cursor.execute("""SELECT uuid, storage_dir FROM alerts JOIN event_mapping ON alerts.id = event_mapping.alert_id WHERE 
-        event_mapping.event_id = %s""", event_id)
-        rows = cursor.fetchall()
-
-        alert_uuids = []
-        alert_paths = []
-        for row in rows:
-            alert_uuids.append(row[0])
-            alert_paths.append(row[1])
-
-        wiki_name = "{} {}".format(creation_date.strftime("%Y%m%d"), event_name)
-        data = {"name": wiki_name, "alerts": alert_paths, "id": event_id }
+    if missing_alerts:
+        flash(f"{len(missing_alerts)} of the selected alerts no longer exist and were not added to the event")
 
     if analysis_page:
         return redirect(url_for('analysis.index'))
