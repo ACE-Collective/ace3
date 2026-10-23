@@ -453,7 +453,7 @@ added, changed and removed with `svs:admin`, each change an AUDIT line.
 | `GET /api/v2/svs/test-hosts/{id}` | `svs:run_read` | One test host |
 | `POST /api/v2/svs/test-hosts` `{hostname, fqdn?, usernames?, ips?, platform?, notes?}` | `svs:admin` | 201 and the new host; 409 when its short name is already a test host, 422 for a field that can't be used |
 | `PUT /api/v2/svs/test-hosts/{id}` (the same body) | `svs:admin` | The host with its fields replaced |
-| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets |
+| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets; its open maintenance window is ended |
 
 ### Fields
 
@@ -490,7 +490,7 @@ test host's id, or its short or fully qualified name.
 | `host`, `fqdn` | The test host's names when the window opened. |
 | `reason`, `opened_by`, `opened_at` | Why, who (the key's or user's name) and when. |
 | `ends_at` | When it was opened to end. |
-| `ended_at`, `ended_by`, `end_reason` | When it ended and who ended it: `ended` early by a call, or `expired` at `ends_at` (`ended_by` `svs`). |
+| `ended_at`, `ended_by`, `end_reason` | When it ended and who ended it: `ended` early by a call (ending the window, or removing its test host), or `expired` at `ends_at` (`ended_by` `svs`). |
 | `open` | It hasn't ended. |
 
 ## Tests
