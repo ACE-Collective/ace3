@@ -29,6 +29,11 @@ from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
 
+# bounds the submission to the target node, which would otherwise hold this GUI worker for as long
+# as a stalled node keeps the connection open (the read timeout is per socket read, so a large
+# upload is not cut off by it)
+SUBMIT_TIMEOUT = (10, 60)
+
 
 @analysis.route('/new_alert', methods=['POST'])
 @require_permission('alert', 'create')
@@ -222,7 +227,8 @@ ORDER BY
                     tags = tags,
                     queue = queue,
                     files = all_files,
-                    api_key = get_config().api.api_key)
+                    api_key = get_config().api.api_key,
+                    timeout = SUBMIT_TIMEOUT)
 
                 if 'result' in result and 'uuid' in result['result']:
                     uuid = result['result']['uuid']
@@ -248,7 +254,8 @@ ORDER BY
                         queue = queue,
                         # only attach this observable's own file(s)
                         files = entry['files'],
-                        api_key = get_config().api.api_key)
+                        api_key = get_config().api.api_key,
+                        timeout = SUBMIT_TIMEOUT)
 
                     # in the case of multiple alerts we redirect to the last alert added
                     if 'result' in result and 'uuid' in result['result']:
