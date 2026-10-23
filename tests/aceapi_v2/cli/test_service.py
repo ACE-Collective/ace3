@@ -107,7 +107,8 @@ def test_the_child_is_stopped_when_its_parent_dies():
             with open(f"/proc/{pid}/status") as fp:
                 # a zombie has exited and only waits for whoever reaps orphans here
                 return any(line.startswith("State:") and "Z" in line for line in fp)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
+            # ProcessLookupError: the process was reaped between the open and the read
             return True
 
     try:
