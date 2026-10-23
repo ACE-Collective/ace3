@@ -1674,6 +1674,11 @@ analysis_module_email_conversation_frequency_analyzer:
 
 analysis_module_email_conversation_attachment_analyzer:
   name: email_conversation_attachment_analyzer
+  # these tag the macros it looks for: without them it could look before they ran
+  dependencies:
+    - file_type
+    - olevba_v1_2
+    - officeparser3
   python_module: saq.modules.email.fa
   python_class: EmailConversationAttachmentAnalyzer
   enabled: true

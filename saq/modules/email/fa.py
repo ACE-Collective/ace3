@@ -51,7 +51,7 @@ class EmailConversationFrequencyAnalysis(Analysis):
         self.details["dest_count"] = value
 
     def generate_summary(self):
-        if not self.source_count:
+        if self.source_count is None:
             return None
 
         result = 'Email Conversation Frequency Analysis -'
@@ -170,7 +170,7 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
         # wait for email conversation analysis to complete
         is_new_sender = False
         for ec_observable in self.get_root().get_observables_by_type(F_EMAIL_CONVERSATION):
-            if ec_observable.get_and_load_analysis(EmailConversationFrequencyAnalysis) is None:
+            if not self.wait_for_analysis(ec_observable, EmailConversationFrequencyAnalysis):
                 continue
 
             # is this tagged as new_sender?
