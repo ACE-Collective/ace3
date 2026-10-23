@@ -48,7 +48,7 @@ from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
-from saq.shutdown import wait_for_shared_flag
+from saq.shutdown import is_shutting_down, wait_for_shared_flag
 
 
 from saq.util.process import kill_process_tree
@@ -318,18 +318,28 @@ class Worker:
     def single_threaded_start(self, execution_mode: EngineExecutionMode):
         self.worker_loop(execution_mode)
 
-    def wait_for_start(self):
-        while not self._worker_startup_event.wait(30):
-            logging.warning(f"worker for {self.config.analysis_mode_priority} not starting ({self.process.pid if self.process else 'unknown'})")
+    def wait_for_start(self, timeout: float = 30) -> bool:
+        """Waits for the worker to load its modules and enter its loop. Returns False if the
+        process exited first, if shutdown was requested, or if it did not start within
+        timeout, in which case it is killed."""
+        deadline = time.monotonic() + timeout
+        while not self._worker_startup_event.wait(1):
+            if self.process is not None and not self.process.is_alive():
+                logging.error("worker %s exited with code %s before it started", self.name, self.process.exitcode,
+                              extra={"worker_name": self.name})
+                return False
 
-            try:
-                if self.process:
-                    kill_process_tree(self.process.pid, signal.SIGKILL)
-            except Exception as e:
-                logging.error(f"unable to kill process {self.process}: {e}")
+            if self.is_in_shutdown_state() or is_shutting_down():
+                logging.info("shutdown requested while worker %s was starting", self.name)
+                return False
 
-            if self.is_in_shutdown_state():
-                break
+            if time.monotonic() >= deadline:
+                logging.error("worker %s did not start within %s seconds - killing it", self.name, timeout,
+                              extra={"worker_name": self.name})
+                self.kill()
+                return False
+
+        return True
 
     def immediate_shutdown(self):
         """Stop the worker immediately."""
