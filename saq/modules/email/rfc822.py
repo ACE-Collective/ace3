@@ -1008,7 +1008,9 @@ class EmailAnalyzer(AnalysisModule):
 
     @property
     def outbound_exception_list(self):
-        return self.config.outbound_exceptions.split(',')
+        # normalized like the To: addresses they are compared with
+        addresses = (normalize_email_address(_) for _ in self.config.outbound_exceptions.split(','))
+        return [address for address in addresses if address]
 
     def analyze_rfc822(self, _file):
         assert isinstance(_file, FileObservable)

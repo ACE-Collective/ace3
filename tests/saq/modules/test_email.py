@@ -2,6 +2,7 @@ from datetime import datetime
 import email
 import filecmp
 import gzip
+import logging
 import os
 import shutil
 from email.mime.multipart import MIMEMultipart
@@ -35,6 +36,8 @@ from saq.modules.email.rfc822 import (
     EmailProviderHeaders,
     TAG_ANONYMOUS_DIRECT_SEND,
     TAG_AUTHENTICATION_FAILED,
+    TAG_OUTBOUND_EMAIL,
+    TAG_OUTBOUND_EXCEPTION_EMAIL,
     TAG_SPOOFED_INTERNAL,
     get_dkim_signing_domains,
     get_sender_tenant_id,
@@ -1584,6 +1587,98 @@ def test_whitelisting(root_analysis, whitelist_item, datadir):
     file_observable
     email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
     assert not email_analysis
+
+
+def _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path):
+    """Runs the email analyzer on the journaled o365 fixture rewritten as an outbound message
+    (its inner To: is random.person@whatever.com)."""
+    raw = (datadir / 'emails/o365_journaled.email.rfc822').read_bytes()
+    raw = raw.replace(b'X-MS-Exchange-Organization-MessageDirectionality: Incoming',
+                      b'X-MS-Exchange-Organization-MessageDirectionality: Originating')
+    path = tmp_path / 'outbound.email.rfc822'
+    path.write_bytes(raw)
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(path))
+    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('file_type', 'test_groups')
+    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    file_observable = root_analysis.get_observable(file_observable.uuid)
+    return file_observable, file_observable.get_and_load_analysis(EmailAnalysis)
+
+
+@pytest.mark.integration
+def test_outbound_email_is_tagged_and_analyzed(root_analysis, datadir, tmp_path):
+    file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    assert not file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
+    assert not file_observable.whitelisted
+
+
+@pytest.mark.integration
+def test_inbound_email_is_not_tagged_outbound(root_analysis, datadir):
+    file_observable, _ = _run_email_analyzer(root_analysis, datadir / 'emails/o365_journaled.email.rfc822')
+
+    assert not file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+
+
+@pytest.mark.integration
+def test_scan_inbound_only_skips_outbound_email(root_analysis, datadir, tmp_path, monkeypatch, caplog):
+    config = get_analysis_module_config('email_analyzer')
+    monkeypatch.setattr(config, 'scan_inbound_only', True)
+    monkeypatch.setattr(config, 'outbound_exceptions', 'someone.else@whatever.com')
+
+    with caplog.at_level(logging.INFO):
+        file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert not email_analysis
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    assert file_observable.whitelisted
+    assert "skipping outbound office365 email" in caplog.text
+
+
+@pytest.mark.parametrize("outbound_exceptions", [
+    "random.person@whatever.com",
+    # the setting is a comma separated list: a space after the comma, or a capital letter, must
+    # not keep an address from matching the (normalized) To: addresses
+    "someone.else@whatever.com, random.person@whatever.com",
+    "Random.Person@Whatever.com",
+])
+@pytest.mark.integration
+def test_scan_inbound_only_analyzes_outbound_exceptions(root_analysis, datadir, tmp_path, monkeypatch, outbound_exceptions):
+    config = get_analysis_module_config('email_analyzer')
+    monkeypatch.setattr(config, 'scan_inbound_only', True)
+    monkeypatch.setattr(config, 'outbound_exceptions', outbound_exceptions)
+
+    file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert isinstance(email_analysis, EmailAnalysis)
+    assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
+    assert file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
+    assert not file_observable.whitelisted
+
+
+@pytest.mark.integration
+def test_empty_outbound_exceptions_match_nothing(root_analysis, datadir, tmp_path, monkeypatch):
+    config = get_analysis_module_config('email_analyzer')
+    monkeypatch.setattr(config, 'scan_inbound_only', True)
+    monkeypatch.setattr(config, 'outbound_exceptions', '')
+
+    file_observable, email_analysis = _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path)
+
+    assert not email_analysis
+    assert not file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
+
 
 @pytest.mark.integration
 def test_automated_msoffice_decryption(root_analysis, datadir):
