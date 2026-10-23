@@ -123,7 +123,6 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             get_db()
             .query(Alert.uuid)
             .filter(Alert.uuid.in_(uuids))
-            # disposition is never NULL: an alert nobody has dispositioned yet is OPEN
             .filter(Alert.disposition != DISPOSITION_OPEN)
             .all()
         )
