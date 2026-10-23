@@ -51,7 +51,6 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import PCAPNG_BYTE_ORDER_MAGICS, PCAPNG_SECTION_HEADER, is_pcap_file
 from saq.observables.file import FileObservable
 from saq.observables.network.layer2 import normalize_mac_address
-from saq.util.filesystem import unique_file_path
 from saq.util.hashing import sha256_bytes, sha256_file
 from saq.util.strings import format_item_list_for_summary
 from saq.util.ui import human_readable_size
@@ -439,6 +438,18 @@ def parse_capinfos(output: str) -> dict:
     }
 
 
+def _unique_path(path: str) -> str:
+    """Returns path, or when something already exists there, the first free <name>_NNN<ext> next to it.
+    A carve moves at most max_extracted_files files, so the linear search per file is bounded."""
+    if not os.path.lexists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    index = 0
+    while os.path.lexists(f"{stem}_{index:03}{ext}"):
+        index += 1
+    return f"{stem}_{index:03}{ext}"
+
+
 def _host_without_port(host: str) -> str:
     host = host.strip()
     if host.startswith("["):
@@ -775,7 +786,7 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
             entry = {"protocol": protocol, "file_name": file_name, "sha256": sha256,
                      "size": source_stat.st_size, "path": None}
             if remaining > 0:
-                target = unique_file_path(os.path.join(target_dir, protocol, file_name))
+                target = _unique_path(os.path.join(target_dir, protocol, file_name))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 shutil.move(source, target)
                 entry["path"] = os.path.relpath(target, base_dir)
