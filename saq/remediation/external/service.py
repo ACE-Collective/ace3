@@ -13,7 +13,7 @@ from sqlalchemy import distinct
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import SERVICE_EXTERNAL_REMEDIATION_CHECK
+from saq.constants import DISPOSITION_OPEN, SERVICE_EXTERNAL_REMEDIATION_CHECK
 from saq.database.model import Alert, ExternalRemediationCheck
 from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import log_loop_exception
@@ -101,8 +101,8 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             finally:
                 try:
                     remove_all_sessions()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.exception(f"error removing database connection: {e}")
             self._sweep_shutdown.wait(interval_seconds)
 
     def _run_disposition_sweep(self):
@@ -123,7 +123,7 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             get_db()
             .query(Alert.uuid)
             .filter(Alert.uuid.in_(uuids))
-            .filter(Alert.disposition != None)  # noqa: E711
+            .filter(Alert.disposition != DISPOSITION_OPEN)
             .all()
         )
 
