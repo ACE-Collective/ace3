@@ -72,14 +72,21 @@ class UserAnalyzer(AnalysisModule):
                 new_observable.add_directive(directive)
 
         # get manager info and determine if user is executive
-        top_user = get_config().ldap.top_user
-        if 'manager_cn' in analysis.details['ldap'] and analysis.details['ldap']['manager_cn'] is not None:
-            analysis.details['manager_ldap'] = lookup_user(analysis.details['ldap']['manager_cn'])
+        # the user, their manager and their manager's manager: any of them being the top user
+        # makes this an executive (the top user's own entry usually has no manager)
+        chain = [analysis.details['ldap'].get('cn')]
+        manager_cn = analysis.details['ldap'].get('manager_cn')
+        if manager_cn is not None:
+            chain.append(manager_cn)
+            analysis.details['manager_ldap'] = lookup_user(manager_cn)
             if analysis.details['manager_ldap'] is None:
                 logging.error(f"Failed to fetch manger ldap info for {observable.value}")
-            elif 'manager_cn' in analysis.details['manager_ldap'] and analysis.details['manager_ldap']['manager_cn'] is not None:
-                if top_user in [observable.value.lower(), analysis.details['ldap']['manager_cn'].lower(), analysis.details['manager_ldap']['manager_cn'].lower()]:
-                    observable.add_tag("executive")
+            else:
+                chain.append(analysis.details['manager_ldap'].get('manager_cn'))
+
+        top_user = get_config().ldap.top_user.lower()
+        if top_user and top_user in [cn.lower() for cn in chain if cn]:
+            observable.add_tag("executive")
 
         # check for privileged access
         analysis.details['ldap']['entitlements'] = []
