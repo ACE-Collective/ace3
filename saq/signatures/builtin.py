@@ -47,6 +47,7 @@ class BuiltinSignature:
 # attributed to this should be monitored as "un-attributed".
 GENERIC                       = BuiltinSignature("generic", "87fe1a4a-0e60-4e3b-b712-da9d3db12fa7", "ACE detection with no specific signature")
 ALERTABLE_TAG                 = BuiltinSignature("alertable_tag", "14564014-a223-440a-914f-03a1f322e1bf", "tag configured as alertable")
+# raised only by the removed correlated_tag_analyzer; kept so its detections on older alerts still resolve
 CORRELATED_TAG_MATCH          = BuiltinSignature("correlated_tag_match", "6bf55f83-9ec0-4b64-88b4-63b237e010c4", "correlated tag match")
 OBSERVABLE_FLAGGED            = BuiltinSignature("observable_flagged_for_detection", "97a0bcb8-1bde-4cf0-8fa2-72d6343c6458", "observable flagged for detection")
 ARCHIVE_SINGLE_DANGEROUS_FILE = BuiltinSignature("archive_single_dangerous_file", "de4bfc85-d827-4e60-a7e3-211b60ad61c8", "archive holds a single exe/script/shortcut/JNLP/OneNote")

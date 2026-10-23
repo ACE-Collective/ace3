@@ -1073,8 +1073,8 @@ and each in-tree one depends on running again:
   mode leaks those entries in the worker and drops the cost metrics of later passes.
 - `alert_added_to_event` would check `EventMapping` only on the first disposition
   pass, so an alert added to an event later would never move to `event` mode.
-- `correlated_tag_analyzer` and `configuration_defined_tagging` would complete in
-  `analysis`/`email` mode and never see the tags that correlation-mode modules add.
+- `configuration_defined_tagging` would complete in `analysis`/`email` mode and
+  never see the tags that correlation-mode modules add.
 
 `svs_yara_sample_capture` (always INCOMPLETE), `email_logger` (returns `True`) and
 `email_archiver` (returns `None`) never matched COMPLETED and are unaffected.

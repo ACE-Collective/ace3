@@ -1801,15 +1801,6 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_ocr: "*.ocr"
   ignore_pattern_js_deobfuscated: "*/deobfuscated-*"
 
-analysis_module_correlated_tag_analyzer:
-  name: correlated_tag_analyzer
-  python_module: saq.modules.tag
-  python_class: CorrelatedTagAnalyzer
-  enabled: false
-  # powerpoint autoexec on mouse over to powershell
-  definition_001_rule: ppt_mouse_over,ppt_program_action,ppt_powershell
-  definition_001_text: openxml office document has mouseover event leading to powershell script
-
 analysis_module_ssdeep:
   name: ssdeep
   python_module: saq.modules.file_analysis.ssdeep
@@ -2352,6 +2343,8 @@ deprecated_modules:
   - saq.modules.asset.netbios:NetBIOSAnalysis
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
+  # generated no Analysis; listed so the removal is on record
+  - saq.modules.tag:CorrelatedTagAnalyzer
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2589,7 +2582,6 @@ module_group_common:
   modules:
     - command_line_analyzer
     - configuration_defined_tagging
-    - correlated_tag_analyzer
     - email_address_fqdn_analyzer
     - nrd_analyzer
     - observable_detection

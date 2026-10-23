@@ -813,30 +813,6 @@ def test_crawl_extracted_urls(yss_server, root_analysis, datadir):
 
 @pytest.mark.skip("missing file")
 @pytest.mark.integration
-def test_correlated_tag(yss_server, root_analysis):
-
-    source_path = os.path.join("test_data", "ppt", "Payment_Details.ppsx")
-
-    if not os.path.exists(source_path):
-        pytest.skip(f"missing {source_path}")
-
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(os.path.join('test_data', 'ppt', 'Payment_Details.ppsx'))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('correlated_tag_analyzer', 'test_groups')
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # we should have an alert
-    assert load_alert(root_analysis.uuid)
-
-@pytest.mark.skip("missing file")
-@pytest.mark.integration
 def test_mhtml_analysis(root_analysis):
 
     source_path = os.path.join('test_data', 'mhtml', 'Invoice_PDF.mht')
