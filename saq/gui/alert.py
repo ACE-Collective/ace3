@@ -38,75 +38,6 @@ class GUIAlert(Alert):
             "version": self.version,
         }
 
-    """Extends the Alert class to add functionality specific to the GUI."""
-    @property
-    def jinja_template_path(self):
-        # is there a custom template for this alert type that we can use?
-        try:
-            logging.debug(f"checking for custom template for {self.alert_type}")
-
-            # first check backward compatible config to see if there is already a template set for this alert_type value
-            backwards_compatible = get_config().custom_alerts_backward_compatibility.get(self.alert_type, None)
-            if backwards_compatible:
-                logging.debug(f"using backwards compatible template {backwards_compatible} for {self.alert_type}")
-                return backwards_compatible
-
-            base_template_dir = get_config().custom_alerts.template_dir
-            dirs = get_config().custom_alerts.dirs
-
-            # gather all available custom templates into dictionary with their parent directory
-            # Ex. {custom1: '/custom', custom2: '/custom', custom3: '/custom/site'}
-            files = {}
-            for directory in dirs:
-                files.update({file: directory for file in os.listdir(os.path.join(get_base_dir(), base_template_dir, directory))})
-
-            """ 
-                alert_type switch logic:
-                0. alert_type should be ' - ' separated in 'decreasing' subtype order: 
-                    Ex. 'tool - app - query' or 'hunter - splunk - aws' 
-                1. alert_subtype = alert_type tranformed to 'desired' HTML format
-                    Ex. 'tool_app_query' or 'hunter_splunk_aws'
-                2. Check whether desired filename (ex. 'tool_app_query.html') exists in our dictionary of files 
-                    if yes --> return path to that file
-                    if not --> Step 3 
-                3. Truncate alert_type from last '_' and repeat step 2 (ex. check for 'tool_app.html' or 'hunter_splunk.html')
-                    If fully truncated alert_type ('tool.html' or 'hunter.html') not found, return default view "analysis/alert.html"
-            """
-
-            alert_subtype = self.alert_type.replace(' - ', '_').replace(' ', '_')
-            while True:
-                if f'{alert_subtype}.html' in files.keys():
-
-                    logging.debug(f"found custom template {alert_subtype}.html")
-                    return os.path.join(files[f'{alert_subtype}.html'], f'{alert_subtype}.html')
-
-                if '_' not in alert_subtype:
-                    break
-                else:
-                    alert_subtype = alert_subtype.rsplit('_', 1)[0]
-
-            logging.debug(f" template not found for {self.alert_type}; defaulting to alert.html")
-
-        except Exception as e:
-            logging.debug(e)
-            pass
-
-        # otherwise just return the default
-        return "analysis/alert.html"
-
-    @property
-    def jinja_analysis_overview(self):
-        result = '<ul>'
-        for observable in self.observables:
-            result += '<li>{0}</li>'.format(observable)
-        result += '</ul>'
-
-        return result
-
-    @property
-    def jinja_event_time(self):
-        return self.event_time.strftime(EVENT_TIME_FORMAT_TZ)
-
     @property
     def display_insert_date(self):
         """Returns the insert date in the timezone specified by display_timezone."""
@@ -136,7 +67,8 @@ class GUIAlert(Alert):
                 try:
                     return url_for(self.icon_configuration.blueprint_file_location.name, filename=self.icon_configuration.blueprint_file_location.path)
                 except Exception as e:
-                    logging.error(f"error getting icon for {self.alert_type}: {e}")
+                    logging.exception(f"error getting icon for {self.alert_type}: {e}",
+                                      extra={"alert_uuid": self.uuid, "alert_type": self.alert_type})
             elif self.icon_configuration.url:
                 return self.icon_configuration.url
 
@@ -200,16 +132,10 @@ class GUIAlertPresenter(AnalysisPresenter):
         if alert_template:
             return alert_template
 
-        # Check if this is a GUIAlert with specific template logic
-        if not hasattr(self._analysis, "alert_type"):
+        if not self._analysis.alert_type:
             return "analysis/alert.html"
 
-        # Complex template selection logic from original GUIAlert
         try:
-            from saq.environment import get_base_dir
-            import os
-            import logging
-
             logging.debug(
                 f"checking for custom template for {self._analysis.alert_type}"
             )
@@ -239,7 +165,7 @@ class GUIAlertPresenter(AnalysisPresenter):
                     }
                 )
 
-            # alert_type switch logic
+            # "hunter - splunk - aws" looks for hunter_splunk_aws.html, then hunter_splunk.html, then hunter.html
             alert_subtype = self._analysis.alert_type.replace(" - ", "_").replace(
                 " ", "_"
             )
@@ -260,29 +186,12 @@ class GUIAlertPresenter(AnalysisPresenter):
             )
 
         except Exception as e:
-            logging.debug(e)
-            pass
+            # a custom template directory that cannot be read hides every custom alert view
+            logging.exception(f"unable to choose a custom template for alert {self._analysis.uuid}: {e}",
+                              extra={"alert_uuid": self._analysis.uuid, "alert_type": self._analysis.alert_type})
 
         # Default fallback
         return "analysis/alert.html"
-
-    @property
-    def analysis_overview(self) -> str:
-        """Returns HTML analysis overview."""
-        result = "<ul>"
-        for observable in self._analysis.observables:
-            result += "<li>{0}</li>".format(observable)
-        result += "</ul>"
-        return result
-
-    @property
-    def event_time(self) -> str:
-        """Returns formatted event time."""
-        from saq.constants import EVENT_TIME_FORMAT_TZ
-
-        if hasattr(self._analysis, "event_time") and self._analysis.event_time:
-            return self._analysis.event_time.strftime(EVENT_TIME_FORMAT_TZ)
-        return ""
 
 register_analysis_presenter(RootAnalysis, GUIAlertPresenter)
 #register_analysis_presenter(GUIAlert, GUIAlertPresenter)
