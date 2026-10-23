@@ -43,6 +43,10 @@ class XLMMacroDeobfuscatorAnalysis(Analysis):
 RE_XLM_CELL_PATTERN = re.compile(b'\nCELL:')
 RE_XLM_ERROR_PATTERN = re.compile(b'\nError ')
 RE_XLM_PARAMS = re.compile(r'^CELL:.*\(([^\)]*)\)$')
+RE_XLM_URL = re.compile(r'https?://[^"]+', re.IGNORECASE)
+
+# what _run returns for an encrypted document
+ENCRYPTED = object()
 
 # https://blog.reversinglabs.com/blog/excel-4.0-macros
 
@@ -105,7 +109,6 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
         # ignore files we're not interested in
         xlm4 = False
-        yara_matches = self.xlm_yara_context.match(local_file_path)
         for match in self.xlm_yara_context.match(local_file_path):
             if 'xlm4' in match.tags:
                 xlm4 = True
@@ -117,8 +120,8 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             nonlocal xlm4
             if isinstance(target, Observable) and target.type == F_FILE:
                 yara_analysis = target.get_and_load_analysis(YaraScanResults_v3_4)
-                if yara_analysis and isinstance(yara_analysis.details, list):
-                    for match in yara_analysis.details:
+                if yara_analysis and isinstance(yara_analysis.details, dict):
+                    for match in yara_analysis.scan_results:
                         if match['rule'] in self.yara_rule_names:
                             xlm4 = True
 
@@ -129,41 +132,15 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
         logging.info(f"executing xlmdeobfuscator on {_file} in {self.get_root()}")
 
-        stdout = None
-        stderr = None
-
         analysis = self.create_analysis(_file)
-        p = Popen(['xlmdeobfuscator', '-f', local_file_path], stdout=PIPE, stderr=PIPE)
-        try:
-            stdout, stderr = p.communicate(timeout=self.timeout)
-        except TimeoutExpired:
-            try:
-                logging.warning(f"xlmdeobfuscator timed out analyzing {local_file_path}")
-                _file.add_tag('xlmdeobfuscator_failed')
-                p.kill()
-            except Exception as e:
-                logging.error(f"unable to kill xlmdeobfuscator process: {e}")
+        target_dir = f'{local_file_path}.xlmdeobfuscator'
+
+        stdout = self._run(['xlmdeobfuscator', '-f', local_file_path], _file, target_dir, 'xlmdeobfuscator', 'xlmdeobfuscator_failed')
+        if stdout is ENCRYPTED:
+            return AnalysisExecutionResult.COMPLETED
 
         if stdout:
-            if b'Failed to decrypt the file\nUse --password switch to provide the correct password' in stdout:
-                logging.debug(f"{_file} is encrypted -- cannot xlmdeobfuscator the file")
-                return AnalysisExecutionResult.COMPLETED
-
-            target_dir = f'{local_file_path}.xlmdeobfuscator'
-            os.makedirs(target_dir, exist_ok=True)
-            target_file = os.path.join(target_dir, 'xlmdeobfuscator.stdout')
-            with open(target_file, 'wb') as fp:
-                # cut the banner out
-                if b'\nFile:' in stdout:
-                    stdout = stdout[stdout.index(b'\nFile:'):]
-
-                fp.write(stdout)
-
-            file_observable = analysis.add_file_observable(target_file, volatile=True)
-            if file_observable:
-                file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-                file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
-                file_observable.add_yara_meta("type", "script.macro.xlm")
+            self._add_output(analysis, target_dir, 'xlmdeobfuscator.stdout', stdout)
 
             # this analysis only runs if this document says it has xlm4
             # so if it didn't pull anything out then it's probably noteworthy
@@ -178,63 +155,15 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             if RE_XLM_ERROR_PATTERN.search(stdout):
                 _file.add_tag('xlm4:error')
             """
-            # special URL extraction
-            for line in stdout.decode().split('\n'):
-                if line.startswith('CELL:'):
-                    m = RE_XLM_PARAMS.match(line)
-                    if not m:
-                        continue
-
-                    params = m.group(1)
-                    if not params:
-                        continue
-
-                    if 'http' in params.lower():
-                        target_url = params[params.lower().index('http'):]
-                        _file.add_detection_point('A url was found in an Excel 4.0 macro.', signature_uuid=XLM_MACRO_URL.uuid)
-                        url = analysis.add_observable_by_spec(F_URL, target_url)
-                        if url:
-                            url.add_directive(DIRECTIVE_CRAWL)
-
-        # not sure when this happens
-        if stderr:
-            target_dir = f'{local_file_path}.xlmdeobfuscator'
-            os.makedirs(target_dir, exist_ok=True)
-            with open(os.path.join(target_dir, 'xlmdeobfuscator.stderr'), 'wb') as fp:
-                fp.write(stdout)
+            self._extract_urls(analysis, _file, stdout)
 
         # Do similar analysis using the -x option
-        p = Popen(['xlmdeobfuscator', '-x', '-f', local_file_path], stdout=PIPE, stderr=PIPE)
-        try:
-            stdout, stderr = p.communicate(timeout=self.timeout)
-        except TimeoutExpired:
-            try:
-                logging.warning(f"xlmdeobfuscator timed out extracting cells from {local_file_path}")
-                _file.add_tag('xlmdeobfuscatorextractcells_failed')
-                p.kill()
-            except Exception as e:
-                logging.error(f"unable to kill xlmdeobfuscator process: {e}")
+        stdout = self._run(['xlmdeobfuscator', '-x', '-f', local_file_path], _file, target_dir, 'xlmdeobfuscatorextractcells', 'xlmdeobfuscatorextractcells_failed')
+        if stdout is ENCRYPTED:
+            return AnalysisExecutionResult.COMPLETED
 
         if stdout:
-            if b'Failed to decrypt the file\nUse --password switch to provide the correct password' in stdout:
-                logging.debug(f"{_file.value} is encrypted -- cannot xlmdeobfuscator the file")
-                return AnalysisExecutionResult.COMPLETED
-
-            target_dir = f'{local_file_path}.xlmdeobfuscator'
-            os.makedirs(target_dir, exist_ok=True)
-            target_file = os.path.join(target_dir, 'xlmdeobfuscatorextractcells.stdout')
-            with open(target_file, 'wb') as fp:
-                # cut the banner out
-                if b'\nFile:' in stdout:
-                    stdout = stdout[stdout.index(b'\nFile:'):]
-
-                fp.write(stdout)
-
-            file_observable = analysis.add_file_observable(target_file, volatile=True)
-            if file_observable:
-                file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-                file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
-                file_observable.add_yara_meta("type", "script.macro.xlm")
+            self._add_output(analysis, target_dir, 'xlmdeobfuscatorextractcells.stdout', stdout)
 
             # this analysis only runs if this document says it has xlm4
             # so if it didn't pull anything out then it's probably noteworthy
@@ -249,30 +178,70 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
             if RE_XLM_ERROR_PATTERN.search(stdout):
                 _file.add_tag('xlm4:error')
 
-            # special URL extraction
-            for line in stdout.decode().split('\n'):
-                if line.startswith('CELL:'):
-                    m = RE_XLM_PARAMS.match(line)
-                    if not m:
-                        continue
+            self._extract_urls(analysis, _file, stdout)
 
-                    params = m.group(1)
-                    if not params:
-                        continue
+        return AnalysisExecutionResult.COMPLETED
 
-                    if 'http' in params.lower():
-                        target_url = params[params.lower().index('http'):]
-                        _file.add_detection_point('A url was found in an Excel 4.0 macro.', signature_uuid=XLM_MACRO_URL.uuid)
-                        url = analysis.add_observable_by_spec(F_URL, target_url)
-                        if url:
-                            url.add_directive(DIRECTIVE_CRAWL)
+    def _run(self, args: list[str], _file: FileObservable, target_dir: str, output_name: str, failed_tag: str):
+        """Runs xlmdeobfuscator and returns its stdout with the banner cut off, None when it printed
+        nothing or timed out, or ENCRYPTED when the document needs a password. Anything it printed
+        to stderr is kept in target_dir as <output_name>.stderr."""
+        p = Popen(args, stdout=PIPE, stderr=PIPE)
+        try:
+            stdout, stderr = p.communicate(timeout=self.timeout)
+        except TimeoutExpired:
+            logging.warning(f"xlmdeobfuscator {' '.join(args[1:-1])} timed out analyzing {_file.full_path}")
+            _file.add_tag(failed_tag)
+            p.kill()
+            # reap it: what it printed before it was killed is not used
+            p.communicate()
+            return None
 
         # not sure when this happens
         if stderr:
-            target_dir = f'{local_file_path}.xlmdeobfuscator'
             os.makedirs(target_dir, exist_ok=True)
-            with open(os.path.join(target_dir, 'xlmdeobfuscatorextractcells.stderr'), 'wb') as fp:
-                fp.write(stdout)
+            with open(os.path.join(target_dir, f'{output_name}.stderr'), 'wb') as fp:
+                fp.write(stderr)
 
+        if not stdout:
+            return None
 
-        return AnalysisExecutionResult.COMPLETED
+        if b'Failed to decrypt the file\nUse --password switch to provide the correct password' in stdout:
+            logging.debug(f"{_file} is encrypted -- cannot xlmdeobfuscator the file")
+            return ENCRYPTED
+
+        # cut the banner out
+        if b'\nFile:' in stdout:
+            stdout = stdout[stdout.index(b'\nFile:'):]
+
+        return stdout
+
+    def _add_output(self, analysis: XLMMacroDeobfuscatorAnalysis, target_dir: str, file_name: str, stdout: bytes):
+        os.makedirs(target_dir, exist_ok=True)
+        target_file = os.path.join(target_dir, file_name)
+        with open(target_file, 'wb') as fp:
+            fp.write(stdout)
+
+        file_observable = analysis.add_file_observable(target_file, volatile=True)
+        if file_observable:
+            file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+            file_observable.add_directive(DIRECTIVE_CRAWL_EXTRACTED_URLS)
+            file_observable.add_yara_meta("type", "script.macro.xlm")
+
+    def _extract_urls(self, analysis: XLMMacroDeobfuscatorAnalysis, _file: FileObservable, stdout: bytes):
+        """Adds the URLs passed as parameters in the macro's cells."""
+        # the output carries whatever bytes the cells hold
+        for line in stdout.decode(errors='replace').split('\n'):
+            if not line.startswith('CELL:'):
+                continue
+
+            m = RE_XLM_PARAMS.match(line)
+            if not m:
+                continue
+
+            # a URL ends where its quoted parameter does
+            for target_url in RE_XLM_URL.findall(m.group(1)):
+                _file.add_detection_point('A url was found in an Excel 4.0 macro.', signature_uuid=XLM_MACRO_URL.uuid)
+                url = analysis.add_observable_by_spec(F_URL, target_url)
+                if url:
+                    url.add_directive(DIRECTIVE_CRAWL)
