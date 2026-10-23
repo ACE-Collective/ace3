@@ -150,7 +150,7 @@ class DHashImageAnalyzer(AnalysisModule):
                 logging.exception(f"unable to hash dhash source image {source_image_file_path}: {e}")
                 continue
             bits_different = (source_image_hash ^ target_image_hash).bit_count()
-            percent_similar = 100.0 - ((bits_different / 512) * 100.0)
+            percent_similar = 100.0 - ((bits_different / PIXEL_SIZE) * 100.0)
             logging.info(f"target {local_file_path} source {source_image_file_path} ({percent_similar:.2f}) threshold ({score_threshold:.2f})")
 
             analysis.add_score(image_file_name, percent_similar, score_threshold)
