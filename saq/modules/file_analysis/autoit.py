@@ -120,9 +120,8 @@ class AutoItAnalyzer(AnalysisModule):
             analysis.stdout, analysis.stderr = Popen(['unautoit', 'list', local_file_path], stdout=PIPE, stderr=PIPE).communicate()
 
             # Decompile the executable.
-            # To avoid incorrect directory permissions, manually create the output dir first. The unautoit utility
-            # seems to create directories without the executable permission, which causes it to error out and not
-            # store the decompiled scripts in the directory.
+            # unautoit only creates the output dir once it has parsed the file, and the listing below needs it to
+            # exist even when parsing fails.
             os.makedirs(output_path)
             _, _ = Popen(['unautoit', 'extract-all', '--output-dir', output_path, local_file_path], stdout=PIPE, stderr=PIPE).communicate()
         except Exception as e:

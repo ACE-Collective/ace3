@@ -1,4 +1,14 @@
 ARG DOCKER_IMAGE_PREFIX=docker.io
+
+# unautoit is built from the vendored source in third_party/unautoit (see third_party/README.md),
+# cross-compiled on the build host for the architecture the image is built for
+FROM --platform=$BUILDPLATFORM ${DOCKER_IMAGE_PREFIX}/library/golang:1.27-trixie AS unautoit
+ARG TARGETOS
+ARG TARGETARCH
+COPY third_party/unautoit /src/unautoit
+RUN cd /src/unautoit/third_party/libautoit && go test ./... && \
+    cd /src/unautoit && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/unautoit .
+
 FROM ${DOCKER_IMAGE_PREFIX}/library/python:3.14-trixie
 
 ARG USE_UNPINNED_REQUIREMENTS=false
@@ -160,10 +170,9 @@ RUN python3 -m pip config set global.cert /etc/ssl/certs/ca-certificates.crt && 
     python3 -m pip install --no-cache-dir pip virtualenv --upgrade
 
 # install additional tools
-COPY packages/unautoit /usr/local/bin/unautoit
+COPY --from=unautoit /out/unautoit /usr/local/bin/unautoit
 RUN curl -fsSLk https://github.com/leibnitz27/cfr/releases/download/0.151/cfr-0.151.jar -o /usr/local/bin/cfr.jar
-RUN chmod a+x /usr/local/bin/unautoit && \
-    chmod a+x /usr/local/bin/cfr.jar
+RUN chmod a+x /usr/local/bin/cfr.jar
 
 # configure locale
 RUN sed -i '/en_US.UTF-8 UTF-8/ s/^# //' /etc/locale.gen && \
