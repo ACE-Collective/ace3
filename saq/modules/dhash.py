@@ -12,10 +12,6 @@ from saq.modules.file_analysis import is_image
 from saq.util.strings import format_item_list_for_summary
 
 from PIL import Image
-import dhash
-
-
-dhash.force_pil()
 
 IMAGE_SIZE = 16
 PIXEL_SIZE = IMAGE_SIZE * IMAGE_SIZE * 2
@@ -60,8 +56,30 @@ class DHashImageAnalysis(Analysis):
         return f"{self.display_name}: " + format_item_list_for_summary(summaries)
 
 def _image_hash(path: str) -> int:
+    """Returns the row hash and the column hash of the image as one 2*IMAGE_SIZE^2 bit integer.
+
+    This is the algorithm of the dhash package's dhash_int(), which is unmaintained and calls
+    Image.getdata(), removed in Pillow 14. The hashes must stay bit for bit the same as its.
+    """
+    width = IMAGE_SIZE + 1
     with Image.open(path) as image:
-        return dhash.dhash_int(image, size=IMAGE_SIZE)
+        # a transparent background hashes as white
+        if image.mode in ("RGBA", "LA"):
+            background = Image.new(image.mode[:-1], image.size, "white")
+            background.paste(image, image.split()[-1])
+            image = background
+
+        grays = image.convert("L").resize((width, width), Image.Resampling.LANCZOS).tobytes()
+
+    row_hash = 0
+    col_hash = 0
+    for y in range(IMAGE_SIZE):
+        for x in range(IMAGE_SIZE):
+            offset = y * width + x
+            row_hash = row_hash << 1 | (grays[offset] < grays[offset + 1])
+            col_hash = col_hash << 1 | (grays[offset] < grays[offset + width])
+
+    return row_hash << (IMAGE_SIZE * IMAGE_SIZE) | col_hash
 
 
 class DHashImageAnalyzer(AnalysisModule):
@@ -131,8 +149,8 @@ class DHashImageAnalyzer(AnalysisModule):
                 # one bad image in the analyst data repo must not stop the comparison with the rest
                 logging.exception(f"unable to hash dhash source image {source_image_file_path}: {e}")
                 continue
-            bits_different = dhash.get_num_bits_different(source_image_hash, target_image_hash)
-            percent_similar = 100.0 - ((bits_different / 512) * 100.0)
+            bits_different = (source_image_hash ^ target_image_hash).bit_count()
+            percent_similar = 100.0 - ((bits_different / PIXEL_SIZE) * 100.0)
             logging.info(f"target {local_file_path} source {source_image_file_path} ({percent_similar:.2f}) threshold ({score_threshold:.2f})")
 
             analysis.add_score(image_file_name, percent_similar, score_threshold)
