@@ -161,6 +161,22 @@ async def test_maintenance_windows(client: AsyncClient, no_hunts):
 
 
 @pytest.mark.asyncio
+async def test_removing_a_test_host_ends_its_maintenance_window(client: AsyncClient, test_user, no_hunts):
+    host = (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).json()
+    window = (await client.post("/svs/test-hosts/win10-01/maintenance", json={"minutes": 30, "reason": "staging"})).json()
+
+    assert (await client.delete(f"/svs/test-hosts/{host['id']}")).status_code == 204
+
+    (listed,) = (await client.get("/svs/test-hosts/win10-01/maintenance")).json()["data"]
+    assert (listed["id"], listed["open"], listed["end_reason"], listed["ended_by"]) == (
+        window["id"], False, "ended", test_user.username)
+    # the host can be added back and given a window again
+    assert (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).status_code == 201
+    assert (await client.post("/svs/test-hosts/win10-01/maintenance",
+                              json={"minutes": 5, "reason": "staging"})).status_code == 201
+
+
+@pytest.mark.asyncio
 async def test_maintenance_listing_pages_by_window(client: AsyncClient, no_hunts):
     host = (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).json()
     ids = []

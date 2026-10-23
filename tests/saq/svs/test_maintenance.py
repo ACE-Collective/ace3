@@ -18,12 +18,13 @@ from saq.database.model import (
     SVSMaintenanceWindow,
     SVSRegistrationRefusal,
     SVSRun,
+    SVSTestHost,
     User,
 )
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.engine.execution_context import EngineExecutionContext
-from saq.svs import attribution, maintenance, service
+from saq.svs import attribution, hosts, maintenance, service
 from saq.svs.association import associate, disassociate
 from saq.svs.attribution import attribution_open, evaluate, record_suppressed_matches, suppression_key, suppression_owners
 from saq.svs.constants import SVSStatus
@@ -110,6 +111,14 @@ def test_open_and_end(caplog):
 
     with pytest.raises(UnknownMaintenance, match="no open maintenance window"):
         maintenance.end_window("win10-01", LAUNCHER, now=now + timedelta(minutes=6))
+
+
+def test_an_early_end_is_stored_to_the_second():
+    """MySQL rounds a DATETIME, so 12:05:00.9 would be stored as 12:05:01, after the call."""
+    opened = datetime(2026, 10, 22, 12, 0, 0)
+    window = maintenance.open_window("win10-01", 30, "staging", LAUNCHER, now=opened)
+    maintenance.end_window("win10-01", LAUNCHER, now=opened + timedelta(minutes=5, microseconds=900000))
+    assert _window(window.uuid).ended_at == opened + timedelta(minutes=5)
 
 
 @pytest.mark.parametrize("minutes, reason, message", [
@@ -209,6 +218,58 @@ def test_the_timers_expire_a_window(caplog):
     (record,) = [r for r in caplog.records if r.getMessage().startswith("AUDIT: svs maintenance window expired")]
     assert record.svs_maintenance == window.uuid
     assert maintenance.run_timers(now) == (0, 0)
+
+
+def _host_id(hostname: str) -> int:
+    return get_db().execute(select(SVSTestHost.id).where(SVSTestHost.hostname == hostname)).scalar_one()
+
+
+def test_removing_the_test_host_ends_its_window(caplog):
+    """Otherwise the window went on closing the alerts of a host nobody tests, and couldn't be
+    ended: end_window refuses a host that is not a test host."""
+    opened = datetime.now().replace(microsecond=0) - timedelta(minutes=10)
+    window = maintenance.open_window("win10-01", 30, "staging", LAUNCHER, now=opened)
+    other = maintenance.open_window("srv-01", 30, "staging", LAUNCHER, now=opened)
+
+    caplog.set_level(logging.INFO)
+    hosts.delete_host(_host_id("win10-01"), actor="dana")
+    removed_at = datetime.now()
+
+    window = _window(window.uuid)
+    assert window.test_host_id is None
+    assert (window.end_reason, window.ended_by) == ("ended", "dana")
+    assert opened < window.ended_at <= removed_at
+    assert _window(other.uuid).ended_at is None
+    (ended,) = [r for r in caplog.records if r.getMessage().startswith("AUDIT: svs maintenance window ended")]
+    assert (ended.svs_maintenance, ended.actor, ended.ended_because) == (window.uuid, "dana", "test host removed")
+    (host_removed,) = [r for r in caplog.records if r.getMessage() == "AUDIT: svs test host removed"]
+    assert host_removed.ended_maintenance == [window.uuid]
+
+    # what happened before the removal is still the window's; after it, triage's
+    before = window.ended_at - timedelta(minutes=1)
+    assert evaluate(_root(event_time=before), before).maintenance.uuid == window.uuid
+    after = window.ended_at + timedelta(seconds=1)
+    assert evaluate(_root(event_time=after), after).maintenance is None
+
+
+def test_a_failed_host_removal_leaves_the_window_open(monkeypatch, caplog):
+    window = maintenance.open_window("win10-01", 30, "staging", LAUNCHER, now=datetime.now() - timedelta(minutes=10))
+    db = get_db()
+
+    def broken():
+        raise RuntimeError("database went away")
+
+    monkeypatch.setattr(db, "commit", broken)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(RuntimeError, match="database went away"):
+        hosts.delete_host(_host_id("win10-01"), actor="dana")
+    monkeypatch.undo()
+    db.rollback()
+
+    window = _window(window.uuid)
+    assert window.ended_at is None and window.test_host_id == _host_id("win10-01")
+    assert not [r for r in caplog.records if r.getMessage().startswith(("AUDIT: svs maintenance window ended",
+                                                                        "AUDIT: svs test host removed"))]
 
 
 def test_service_svs_runs_the_maintenance_timers(monkeypatch):

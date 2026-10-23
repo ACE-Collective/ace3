@@ -329,6 +329,8 @@ expectations. A launcher opens a **maintenance window** on the test host for tha
 - **Alongside a run on another host.** An alert that also involves another test host, which a run
   holds at its event time, is the run's: the run is on its own host, and the window's host can only
   be the other end of what it did.
+- **Removing the test host** ends its open window, by the person who removed it: what happens on a
+  host nobody tests is triage's, and nothing could end a window on it.
 - **Time.** A window expires at its end; the timers (`svs.runs.timer_interval_seconds`) record it.
   Its alerts may arrive as late as a run's (`svs.runs.attribution_extra_hours`), which is how long
   attribution keeps looking after a window ends.
