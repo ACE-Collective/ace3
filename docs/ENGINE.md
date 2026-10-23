@@ -248,10 +248,30 @@ available (§5.2).
   read off disk for this worker (§12.5) says a module started more than its
   `maximum_analysis_time` ago. The deadline is on `CLOCK_MONOTONIC`, which is
   system-wide, so the manager compares it against its own reading. It `SIGKILL`s
-  the whole process tree;
+  the worker's process group;
 - RSS exceeds `global_settings.memory_limit_kill` (MB → bytes in
-  `EngineConfiguration`). `SIGKILL`. A warning is logged above
-  `memory_limit_warning`.
+  `EngineConfiguration`). `SIGKILL`s the worker's process group. A warning is
+  logged above `memory_limit_warning`.
+
+Every forked worker leads a process group of its own: `Worker.start()` and the
+worker itself (`Worker._forked_worker_loop`) both call `os.setpgid`, never in
+single-threaded mode, where `worker_loop` runs in the caller's process. Every
+process its analysis modules start is in that group, and `Worker.kill()` is one
+`os.killpg(SIGKILL)` of it. It is how the manager stops a worker on a timeout or
+memory limit, one that does not start (`wait_for_start`) and one that outlived the
+shutdown budget (`docs/SHUTDOWN.md`). It is also what `check()` does to a worker that died on its own
+(the monitor's `os._exit(1)` (§8), a crash, the OOM killer), and what the end of
+`supervise_shutdown` does to every worker that exited while it waited: what that worker
+left running was reparented to init but kept its group, and a group outlives its leader
+while it has members. When `kill()` finds such processes it logs one warning naming
+them (pid and process name). A leftover named like the engine itself (`python3`) is
+a copy of the worker that never reached its exec, which is what a child that runs
+Python before its exec in a threaded process does when it deadlocks on a lock another
+thread held at the fork (see `saq/database/pool.py`'s `reset_database_after_fork`). A process that starts a session
+or group of its own has left the group, and nothing here kills it. The sandbox launcher
+bounds itself (it is a subreaper and stops everything at its `--deadline`); `pcodedmp`
+is bounded only by its worker's own 30-second wait, so it outlives a worker that is
+killed while it runs.
 
 `restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
@@ -262,8 +282,9 @@ with an `XXX` acknowledging it does not handle signal-killed processes cleanly.
 
 ### 4.5 The worker loop
 
-`Worker.worker_loop(execution_mode)` (`saq/engine/worker.py`) is the child
-process entry point:
+`Worker.worker_loop(execution_mode)` (`saq/engine/worker.py`) is what a forked
+worker runs, once `_forked_worker_loop` has made it the leader of its own process
+group (§4.4), and what single-threaded mode runs in-process:
 
 1. fresh logging transaction id (forked children inherit the parent's);
 2. **`configuration_manager.load_modules()`** — this is where analysis modules
@@ -723,7 +744,8 @@ implement.
 `AnalysisModuleMonitor` is a daemon thread that waits
 `min(mode maximum_analysis_time, module maximum_analysis_time)` and then warns
 every 5 seconds; once elapsed time passes the *module's* limit it calls
-`os._exit(1)`, killing the worker process outright. Recovery is §12.5.
+`os._exit(1)`, killing the worker process outright. The manager then kills what the
+worker left running (§4.4). Recovery is §12.5.
 
 ---
 
@@ -899,11 +921,11 @@ Everything else — key derivation, storage, refusal rules, blob spilling — is
 | Layer | Limit | Enforced by | Effect |
 |---|---|---|---|
 | One module invocation | mode `maximum_analysis_time`, else `global_settings.maximum_analysis_time` (warning threshold) and module `maximum_analysis_time` (kill threshold) | `AnalysisModuleMonitor` thread | warns every 5s, then `os._exit(1)` on the worker process |
-| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the worker's tracking file | `SIGKILL` the worker process tree |
+| One module invocation (external view) | module `maximum_analysis_time` | `WorkerManager.check` against the worker's tracking file | `SIGKILL` the worker's process group |
 | Whole run, warning | mode `maximum_cumulative_analysis_warning_time`, else global | `_check_for_analysis_timeout` | warning, rate-limited to one per 10s |
 | Whole run, fail | mode `maximum_cumulative_analysis_fail_time`, else global | `_check_for_analysis_timeout` | `AnalysisTimeoutError`; modes in `analysis_modes_ignore_cumulative_timeout` are exempt |
 | Delayed analysis | `timeout_hours/minutes/seconds` passed to `delay_analysis` | `Worker.is_delayed_analysis_timed_out` | refuses further delay; analysis closed out empty |
-| Worker memory | `global_settings.memory_limit_kill` | `WorkerManager.check` | `SIGKILL` |
+| Worker memory | `global_settings.memory_limit_kill` | `WorkerManager.check` | `SIGKILL` the worker's process group |
 | Worker lifetime | `auto_refresh_frequency` | `Worker.worker_loop` | clean exit; manager forks a replacement |
 
 The two cumulative limits measure `root.state["total_analysis_time_seconds"]`:

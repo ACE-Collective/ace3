@@ -2,7 +2,7 @@
 
 The engine kills workers abruptly on purpose -- AnalysisModuleMonitor calls os._exit(1)
 when a module runs past its maximum_analysis_time, and WorkerManager.check() SIGKILLs the
-process tree on a timeout or a memory limit. Neither of those unwinds anything inside the
+worker's process group on a timeout or a memory limit. Neither of those unwinds anything inside the
 worker.
 
 That is why the shutdown signal may not be a multiprocessing.Event. Condition.wait()
