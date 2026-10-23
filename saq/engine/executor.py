@@ -890,6 +890,7 @@ class AnalysisExecutor:
 
     def _process_generated_analysis(
         self,
+        context: EngineExecutionContext,
         analysis_result: AnalysisExecutionResult,
         root: RootAnalysis,
         work_item: WorkTarget,
@@ -938,8 +939,27 @@ class AnalysisExecutor:
         if work_item.dependency:
             # did we analyze the target analysis of a dependency?
             if work_item.dependency.ready:
+                # a target cancelled mid-run (shutdown, lost lock) has not answered yet: the
+                # dependency stays ready and is serialized that way, so the requeued pass runs
+                # the target again instead of handing the source a permanent "nothing". the
+                # cancel flag is what guarantees the loop stops rather than retrying it here
+                if (
+                    not output_analysis
+                    and analysis_result == AnalysisExecutionResult.INCOMPLETE
+                    and context.cancel_analysis_flag
+                ):
+                    logging.info(
+                        "analysis cancelled before %s answered dependency %s - leaving it unresolved",
+                        analysis_module, work_item.dependency,
+                        extra={
+                            "root_uuid": root.uuid,
+                            "module_name": analysis_module.name,
+                            "observable_uuid": work_item.observable.uuid,
+                        },
+                    )
+
                 # if we did not generate any analysis then the dependency has failed
-                if not output_analysis:
+                elif not output_analysis:
                     logging.debug(
                         "analysis module {} did not generate analysis to resolve dep {}".format(
                             analysis_module, work_item.dependency
@@ -1396,7 +1416,7 @@ class AnalysisExecutor:
                             lookup_result,
                         )
                         self._process_generated_analysis(
-                            AnalysisExecutionResult.COMPLETED, root, work_item,
+                            context, AnalysisExecutionResult.COMPLETED, root, work_item,
                             work_stack, work_stack_buffer, analysis_module,
                         )
                         self._save_root(context, root)
@@ -1595,6 +1615,7 @@ class AnalysisExecutor:
                 context.cancel_analysis()
 
             self._process_generated_analysis(
+                context,
                 analysis_result,
                 root,
                 work_item,

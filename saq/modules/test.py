@@ -705,6 +705,8 @@ class WaitAnalyzerModule_A(AnalysisModule):
             return self.execute_analysis_wait_for_analysis_source_delayed(test)
         elif test.value == 'test_wait_for_analysis_source_and_target_delayed':
             return self.execute_analysis_wait_for_analysis_source_and_target_delayed(test)
+        elif test.value in ('test_wait_for_analysis_target_cancelled', 'test_wait_for_analysis_target_incomplete'):
+            return self.execute_analysis_01(test)
 
     def continue_analysis(self, observable: Observable, analysis: Analysis) -> AnalysisExecutionResult:
         assert isinstance(observable, Observable)
@@ -820,8 +822,26 @@ class WaitAnalyzerModule_B(AnalysisModule):
             return self.execute_analysis_01(test)
         elif test.value == 'test_wait_for_analysis_source_and_target_delayed':
             return self.execute_analysis_wait_for_analysis_source_and_target_delayed(test)
+        elif test.value == 'test_wait_for_analysis_target_cancelled':
+            return self.execute_analysis_target_cancelled(test)
+        elif test.value == 'test_wait_for_analysis_target_incomplete':
+            return AnalysisExecutionResult.INCOMPLETE
 
     def execute_analysis_01(self, test) -> AnalysisExecutionResult:
+        self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_analysis_target_cancelled(self, test) -> AnalysisExecutionResult:
+        # run 1 is the plain pass over the observable, run 2 resolves A's dependency and is
+        # stopped the way shutdown stops one, run 3 is the requeued pass and answers
+        root = self.get_root()
+        runs = root.state["test_wait_b_runs"] = root.state.get("test_wait_b_runs", 0) + 1
+        if runs == 1:
+            return AnalysisExecutionResult.INCOMPLETE
+        if runs == 2:
+            self.cancel_analysis()
+            return AnalysisExecutionResult.INCOMPLETE
+
         self.create_analysis(test)
         return AnalysisExecutionResult.COMPLETED
 
