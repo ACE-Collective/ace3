@@ -4,7 +4,6 @@
 #
 
 import base64
-import binascii
 import logging
 import re
 
@@ -558,8 +557,8 @@ class Process:
                 if '\x00' in decoded_chunk:
                     decoded_chunk = base64.b64decode(chunk).decode('utf-16')
                 decoded_command = decoded_command.replace(chunk, decoded_chunk)
-            except (binascii.Error, UnicodeDecodeError):
-                # most chunks are not base64
+            except ValueError:
+                # most chunks are not base64 (binascii.Error, UnicodeDecodeError, or non-ASCII text)
                 pass
 
         # Remove [charXX] Powershell obfuscation.
@@ -579,7 +578,8 @@ class Process:
             items = match[4]  # "'JDxA','QDc'"
 
             order_ints = [int(x) for x in order.split('}{')]
-            items_list = [i.replace('\'', '').replace('"', '') for i in items.split(',')]
+            # an item may contain a comma, so take the quoted strings rather than splitting on commas
+            items_list = re.findall(r'[\'\"]([^\'\"]+)[\'\"]', items)
 
             if all(i < len(items_list) for i in order_ints):
                 deobfuscated_string = ''.join(items_list[i] for i in order_ints)
