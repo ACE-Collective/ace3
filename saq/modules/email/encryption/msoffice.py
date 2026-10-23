@@ -118,7 +118,6 @@ class MSOfficeEncryptionAnalyzerConfig(AnalysisModuleConfig):
     byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
     list_limit: int = Field(..., description="The maximum size of the word list created.")
     john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-    attempt_brute_force: bool = Field(default=True, description="Whether brute force decryption should be attempted if wordlist fails.")
 
 class MSOfficeEncryptionAnalyzer(AnalysisModule):
     @classmethod
@@ -152,10 +151,6 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
     @property
     def john_bin_path(self):
         return self.config.john_bin_path
-
-    @property
-    def attempt_brute_force(self):
-        return self.config.attempt_brute_force
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -241,10 +236,6 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
 
             # crack it with john the ripper using wordlist
             analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
-
-            # let's try brute forcing it if we didn't crack it with the email
-            if not analysis.password and self.attempt_brute_force:
-                analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, '--incremental=DigitsCustom')
 
             if not analysis.password:
                 analysis.error = "could not crack password"

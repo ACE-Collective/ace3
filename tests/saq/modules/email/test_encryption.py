@@ -246,11 +246,6 @@ def _fail_encryption_check(monkeypatch, message: str):
 MSOFFICE_MODULES = ("file_type", "email_analyzer", ANALYSIS_MODULE_MSOFFICE_ENCRYPTION_ANALYZER)
 
 
-@pytest.fixture
-def no_brute_force():
-    get_analysis_module_config(ANALYSIS_MODULE_MSOFFICE_ENCRYPTION_ANALYZER).attempt_brute_force = False
-
-
 @pytest.mark.integration
 def test_msoffice_decrypts_with_password_from_email_body(root_analysis, tmp_path):
     email_path = _email(tmp_path, _encrypted_docx(tmp_path), subtype="vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -268,7 +263,7 @@ def test_msoffice_decrypts_with_password_from_email_body(root_analysis, tmp_path
 
 
 @pytest.mark.integration
-def test_msoffice_password_not_found(root_analysis, tmp_path, no_brute_force):
+def test_msoffice_password_not_found(root_analysis, tmp_path):
     email_path = _email(tmp_path, _encrypted_docx(tmp_path), body="see attached", subtype="octet-stream")
     _, email_observable = _analyze(root_analysis, email_path, MSOFFICE_MODULES)
 
@@ -371,7 +366,6 @@ def fake_rar(monkeypatch, tmp_path):
         return real_popen(args, *a, **kw)
 
     monkeypatch.setattr("saq.modules.email.encryption.rar.Popen", _popen)
-    get_analysis_module_config(ANALYSIS_MODULE_RAR_ENCRYPTION_ANALYZER).attempt_brute_force = False
 
     archive = tmp_path / "payload.rar"
     archive.write_bytes(b"Rar!\x1a\x07\x01\x00 not really")
