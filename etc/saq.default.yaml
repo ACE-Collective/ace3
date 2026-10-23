@@ -422,6 +422,10 @@ phishkit:
   # age in days after which phishkit input/output job directories are deleted
   max_file_age_days: 3
 
+js_deobfuscator:
+  # age in days after which js-deobfuscator input/output job directories are deleted
+  max_file_age_days: 3
+
 storage:
   # local, s3 or custom
   target: local

@@ -28,7 +28,7 @@ Both build with the **repo root as context**, so `COPY` paths are repo-relative.
 3. `js_deobfuscator.py` `deobfuscate` → `_run_scanner` → `docker run` of the scanner with the input path and `/js-deobfuscator/output/<job_id>/deobfuscated.js`.
 4. The task returns the output dir; ACE copies its files back out, emits `deobfuscated-<name>` as a file observable with `DIRECTIVE_EXTRACT_URLS`, and tags the source `script.javascript`.
 
-The `ace-js-deobfuscator` named volume (created with `input/`+`output/` by `docker/startup/initialize_volumes.sh`) is the only channel for payloads and results.
+The `ace-js-deobfuscator` named volume (created with `input/`+`output/` by `docker/startup/initialize_volumes.sh`) is the only channel for payloads and results. Nothing in ACE deletes from it: the manager's `maintain_files` task ages out the job directories under both, because the output is written as root, run daily by `ace js-deobfuscator maintain-files` (`etc/cron/daily/js-deobfuscator-files`, `js_deobfuscator.max_file_age_days`).
 
 Both this manager and phishkit's share one rabbitmq broker, so `js_deobfuscator.py` pins its own queue/exchange/routing key. Leaving any of them on the default `celery` makes the two workers steal each other's tasks and raise `NotRegistered`.
 
