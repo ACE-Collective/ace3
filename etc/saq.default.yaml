@@ -1938,8 +1938,6 @@ analysis_module_msoffice_encryption_analyzer:
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  # yes/no whether brute force decryption should be attempted if wordlist fails
-  attempt_brute_force: true
 
 analysis_module_xml_binary_analyzer:
   name: xml_binary_analyzer
@@ -2283,7 +2281,7 @@ analysis_module_zip_encryption_analyzer:
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
   # the maximum amount of time (in seconds) to wait for 7z to complete
   # 7z can go nuts and consume all system memory, so this tries to prevent that
-  timeout: 5
+  extract_timeout: 5
 
 analysis_module_rar_encryption_analyzer:
   name: rar_encryption_analyzer
@@ -2301,7 +2299,6 @@ analysis_module_rar_encryption_analyzer:
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  attempt_brute_force: true
 
 analysis_module_alert_added_to_event:
   name: alert_added_to_event

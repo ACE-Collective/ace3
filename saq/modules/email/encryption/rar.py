@@ -114,7 +114,6 @@ class RarEncryptionAnalyzerConfig(AnalysisModuleConfig):
     byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
     list_limit: int = Field(..., description="The maximum size of the word list created.")
     john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-    attempt_brute_force: bool = Field(default=True, description="Whether brute force decryption should be attempted if wordlist fails.")
 
 class RarEncryptionAnalyzer(AnalysisModule):
     @classmethod
@@ -148,10 +147,6 @@ class RarEncryptionAnalyzer(AnalysisModule):
     @property
     def john_bin_path(self):
         return self.config.john_bin_path
-
-    @property
-    def attempt_brute_force(self):
-        return self.config.attempt_brute_force
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -198,7 +193,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
 
             # convert html to text
             try:
-                with open(os.path.join(self.get_root().storage_dir, source_email.body.value), 'r', errors='ignore') as fp:
+                with open(source_email.body.full_path, 'r', errors='ignore') as fp:
                     logging.debug(f"parsing {source_email.body.value} for html")
                     analysis.email_body = html2text(fp.read())[:self.byte_limit]
 
@@ -223,10 +218,6 @@ class RarEncryptionAnalyzer(AnalysisModule):
             except Exception as e:
                 logging.error(f"Error encountered when building password wordlist for {_file}: {e}")
                 return AnalysisExecutionResult.COMPLETED
-
-        # let's try brute forcing it if we didn't crack it with the email
-        if not analysis.password and self.attempt_brute_force:
-            analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--incremental=DigitsCustom')
 
         if not analysis.password:
             analysis.error = f"RarEncryptionAnalyzer could not crack password!"
