@@ -429,7 +429,9 @@ def _build_engine_options(database_config) -> dict:
 
     if not database_config.unix_socket:
         if database_config.ssl_ca or database_config.ssl_cert or database_config.ssl_key:
-            ssl_options = {"ca": abs_path(database_config.ssl_ca)}
+            ssl_options = {}
+            if database_config.ssl_ca:
+                ssl_options["ca"] = abs_path(database_config.ssl_ca)
             if database_config.ssl_cert:
                 ssl_options["cert"] = abs_path(database_config.ssl_cert)
             if database_config.ssl_key:
