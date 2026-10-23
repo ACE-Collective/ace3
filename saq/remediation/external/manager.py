@@ -50,7 +50,11 @@ class ExternalRemediationCheckManager:
             worker.start()
 
     def start_single_threaded(self):
-        pass
+        # one pass: collect what is due, then work through all of it in this thread
+        self.load_workers()
+        self.collector.start_single_threaded()
+        for worker in self.workers.values():
+            worker.start_single_threaded()
 
     def wait_for_start(self, timeout: float) -> bool:
         for worker in self.workers.values():

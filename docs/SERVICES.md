@@ -99,15 +99,20 @@ class MyService(ACEServiceInterface):
     def get_config_class(cls) -> Type[ServiceConfig]:
         return MyServiceConfig
 
-    def start(self):
+    def _create_manager(self) -> MyManager:
         config = get_service_config(MY_SERVICE_NAME)
-        self.manager = MyManager(poll_interval_seconds=config.poll_interval_seconds)
+        return MyManager(poll_interval_seconds=config.poll_interval_seconds)
+
+    def start(self):
+        self.manager = self._create_manager()
         self.manager.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
         return self.manager.wait_for_start(timeout)
 
     def start_single_threaded(self):
+        # --single-threaded calls this instead of start(), so it builds the manager too
+        self.manager = self._create_manager()
         self.manager.start_single_threaded()
 
     def stop(self):

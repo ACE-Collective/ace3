@@ -45,8 +45,10 @@ class RemediationWorker(RemediationListener):
             thread.start()
 
     def start_single_threaded(self):
+        # with the shutdown event set each pass of the loop takes at most one item
         self.stop()
-        self.worker_loop(Event())
+        while not self.work_queue.empty():
+            self.worker_loop(Event())
 
     def wait_for_start(self, timeout: float) -> bool:
         for index, startup_event in enumerate(self.startup_events):

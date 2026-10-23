@@ -41,8 +41,6 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
 class FileCollectionCollector:
     """Responsible for collecting file collection jobs from the database and sending them to the appropriate workers."""
 
-    collector_thread: Thread
-
     def __init__(
         self,
         lock_timeout_seconds: int = 300,
@@ -54,6 +52,8 @@ class FileCollectionCollector:
         self.initial_retry_delay_seconds = initial_retry_delay_seconds
         self.max_retry_delay_seconds = max_retry_delay_seconds
         self.max_collection_time_seconds = max_collection_time_seconds
+        # stays None when the collector runs single threaded
+        self.collector_thread: Optional[Thread] = None
         self.collector_startup_event = Event()
         self.shutdown_event = Event()
 
@@ -80,7 +80,8 @@ class FileCollectionCollector:
         self.shutdown_event.set()
 
     def wait(self):
-        self.collector_thread.join()
+        if self.collector_thread is not None:
+            self.collector_thread.join()
 
     def register_file_collection_listener(self, name: str, listener: FileCollectionListener):
         """Called to associate a file collector name with a listener.

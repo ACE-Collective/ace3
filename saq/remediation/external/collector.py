@@ -69,8 +69,6 @@ class ExternalRemediationCheckCollector:
     """Collector daemon. One instance per service, dispatches to per-probe
     workers registered via :meth:`register_listener`."""
 
-    collector_thread: Thread
-
     def __init__(
         self,
         lock_timeout_seconds: int = 300,
@@ -85,6 +83,8 @@ class ExternalRemediationCheckCollector:
         self.initial_retry_delay_seconds = initial_retry_delay_seconds
         self.max_retry_delay_seconds = max_retry_delay_seconds
         self.loop_interval_seconds = loop_interval_seconds
+        # stays None when the collector runs single threaded
+        self.collector_thread: Optional[Thread] = None
         self.collector_startup_event = Event()
         self.shutdown_event = Event()
         self.listeners: dict[str, CheckListener] = {}
@@ -110,7 +110,8 @@ class ExternalRemediationCheckCollector:
         self.shutdown_event.set()
 
     def wait(self):
-        self.collector_thread.join()
+        if self.collector_thread is not None:
+            self.collector_thread.join()
 
     def register_listener(self, name: str, listener: CheckListener):
         if name in self.listeners:
