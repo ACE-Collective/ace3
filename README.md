@@ -64,3 +64,9 @@ pytest -m "unit or integration or system"
 ## Malware
 
 This repo contains some live malware samples for testing purposes. Keep this in mind if your using a system with some kind of anti virus protection.
+
+## License
+
+ACE is licensed under the Apache License 2.0 (`LICENSE`). The `third_party/` directory holds
+source from other projects that ACE builds and ships under their own licenses, which are not
+necessarily ACE's. See [third_party/README.md](third_party/README.md).

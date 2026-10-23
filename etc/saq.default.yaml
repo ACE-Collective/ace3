@@ -2216,20 +2216,6 @@ analysis_module_nowhitespace_analyzer:
   enabled: true
 
 # TAGGING MODULES
-analysis_module_user_tagger:
-  name: user_tagger
-  # tag people in specific groups in the organization
-  python_module: saq.modules.user
-  python_class: UserTaggingAnalyzer
-  enabled: true
-  # location of the cache (use ace user update-organization to build this file)
-  json_path: data/etc/organization.json
-  # FORMAT: group_GROUPNAME = BOSS,LEVELS_DEEP,TAG
-  # GROUPNAME = some unique name to give the group
-  # BOSS = the person at the organization leading the group
-  # LEVELS_DEEP = how far deep in direct reports to include people in the group
-  # TAG = what tag to give people in this group
-
 analysis_module_user_defined_tagging:
   name: user_defined_tagging
   # tags observables as defined by the analysts in the database
@@ -2343,6 +2329,7 @@ deprecated_modules:
   - saq.modules.asset.netbios:NetBIOSAnalysis
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
+  - saq.modules.user:UserTagAnalysis
   # generated no Analysis; listed so the removal is on record
   - saq.modules.tag:CorrelatedTagAnalyzer
 
@@ -2589,7 +2576,6 @@ module_group_common:
     - protected_url_analyzer
     - site_tagger
     - user_defined_tagging
-    - user_tagger
 
 # EXTERNAL REMEDIATION CHECK SERVICE
 # Background daemon that polls external systems to discover whether *they*

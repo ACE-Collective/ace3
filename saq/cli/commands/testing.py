@@ -1,7 +1,6 @@
 import logging
 import sys
 import time
-import traceback
 
 import requests
 
@@ -14,14 +13,15 @@ from saq.configuration import get_config
 #
 
 def test_proxy(args):
+    from saq import proxy
     try:
-        from saq import proxy
-        default_proxy = get_config().get_proxy_config()
-        requests.get(args.url, proxies=proxy.proxies(), verify=default_proxy.verify if default_proxy.verify else False)
-        sys.exit(0)
-    except Exception:
-        traceback.print_exc()
+        # proxies have no tls verification setting, and test_proxies does not verify either
+        requests.get(args.url, proxies=proxy.proxies(), verify=False, timeout=20)
+    except Exception as e:
+        logging.exception(f"unable to download {args.url} through the default proxy: {e}")
         sys.exit(1)
+
+    sys.exit(0)
 
 test_parser = get_cli_subparsers().add_parser('test',
     help="Test commands.")
@@ -60,11 +60,16 @@ def test_network_semaphore(args):
     from saq.network_semaphore import NetworkSemaphoreClient
 
     client = NetworkSemaphoreClient()
-    if client.acquire(args.semaphore_name):
+    if not client.acquire(args.semaphore_name):
+        logging.error(f"unable to acquire network semaphore {args.semaphore_name}")
+        sys.exit(1)
+
+    try:
         time.sleep(args.timeout)
+    finally:
         client.release()
-    else:
-        logging.error("test failed")
+
+    sys.exit(0)
 
 network_semaphore_test = test_sp.add_parser('network-semaphore',
     help="Test the Network Semaphore Server by requesting a semaphore.")
@@ -75,18 +80,25 @@ network_semaphore_test.set_defaults(func=test_network_semaphore)
 
 def test_proxies(args):
     from saq.proxy import proxies
+    exit_code = 0
     for proxy_config in get_config().proxies:
         print("testing proxy {} ({})".format(proxy_config.name, proxy_config))
         session = requests.session()
         session.proxies = proxies(proxy_config.name)
-        response = session.request('GET', args.url,
-                                   timeout=20,
-                                   allow_redirects=True,
-                                   verify=False)
+        try:
+            response = session.request('GET', args.url,
+                                       timeout=20,
+                                       allow_redirects=True,
+                                       verify=False)
+        except Exception as e:
+            # one unreachable proxy must not stop the others from being tested
+            print("result: FAILED - {}".format(e))
+            exit_code = 1
+            continue
 
         print("result: ({}) - {}".format(response.status_code, response.reason))
 
-    sys.exit(0)
+    sys.exit(exit_code)
 
 test_proxies_parser = test_sp.add_parser('proxies',
     help="Test the configured proxies to make sure ACE can use them.")
@@ -98,6 +110,7 @@ def verify_modules(args):
     """Executes verify_environment() on all modules that are enabled."""
     from saq.modules.adapter import load_module_from_config
 
+    exit_code = 0
     for analysis_module_config in get_config().analysis_modules:
         # is this module disabled globally?
         # modules that are disable globally are not used anywhere
@@ -109,18 +122,21 @@ def verify_modules(args):
         analysis_module = load_module_from_config(analysis_module_config.name)
         if analysis_module is None:
             logging.error("analysis module {} not found".format(analysis_module_config.name))
+            exit_code = 1
             continue
 
         # make sure the module has everything it needs
         try:
             analysis_module.verify_environment()
         except Exception as e:
-            logging.error("analysis module {} failed environment verification: {}".format(analysis_module, e))
-            traceback.print_exc()
+            logging.exception("analysis module {} failed environment verification: {}".format(analysis_module_config.name, e))
+            exit_code = 1
             continue
 
         logging.info("analysis module {} verification OK".format(analysis_module_config.name))
-    
+
+    sys.exit(exit_code)
+
 verify_modules_parsers = test_sp.add_parser('modules',
     help="Executes verify_environment() on all modules that are enabled.")
 verify_modules_parsers.set_defaults(func=verify_modules)

@@ -70,8 +70,8 @@ class BrotexWhitelist(object):
                 except Exception as e:
                     logging.error("unable to translate {} to an IPv4 in brotex whitelist: {}".format(value, e))
                     continue
-            
-                self.whitelist[WHITELIST_TYPE_HTTP_SRC_IP] = temp
+
+            self.whitelist[WHITELIST_TYPE_HTTP_SRC_IP] = temp
 
         # translate all the IP addresses to iptools.IpRange 
         if WHITELIST_TYPE_HTTP_DEST_IP in self.whitelist:
@@ -82,8 +82,8 @@ class BrotexWhitelist(object):
                 except Exception as e:
                     logging.error("unable to translate {} to an IPv4 in brotex whitelist: {}".format(value, e))
                     continue
-            
-                self.whitelist[WHITELIST_TYPE_HTTP_DEST_IP] = temp
+
+            self.whitelist[WHITELIST_TYPE_HTTP_DEST_IP] = temp
 
     def check_whitelist(self):
         if self.whitelist_timestamp != os.path.getmtime(self.whitelist_path):

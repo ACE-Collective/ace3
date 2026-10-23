@@ -95,7 +95,7 @@ def test_cli_subcommands_registered():
     assert {"list"} <= choices("modules")
     assert {"display"} <= choices("workload")
     assert {"database-connections", "network-semaphore", "proxies", "modules"} <= choices("test")
-    assert {"update-organization"} <= choices("user")
+    assert {"add", "modify", "delete", "list", "exists"} <= choices("user")
     assert {"build-db"} <= choices("signatures")
     assert {"display", "clear"} <= choices("remediation")
     assert {"yara"} <= choices("svs")

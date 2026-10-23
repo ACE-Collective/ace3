@@ -8,7 +8,6 @@ memcached.conf
 
 mysql_defaults
 mysql_defaults.local
-organization.json
 saq.aws.ini
 ssdeep_hashes
 

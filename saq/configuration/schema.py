@@ -1245,6 +1245,17 @@ class ACEConfig(BaseModel):
             if not key.startswith("analysis_module_"):
                 continue
 
+            # a site overlay that only set keys on a module ACE has since removed is all that is
+            # left of its block; it can never load, and failing on it would stop every process
+            if isinstance(value, dict) and not value.keys() & {"name", "python_module", "python_class"}:
+                logging.warning(
+                    "config %s does not define an analysis module (its module was probably removed "
+                    "from ACE); ignoring it, delete it from the config overlay that sets it",
+                    key,
+                    extra={"config_key": key},
+                )
+                continue
+
             # the analysis module class (and therefore the config class it declares) is
             # not loaded here -- see saq.configuration.lazy_registry
             analysis_module_config = self.__analysis_modules.add_raw(key, value)

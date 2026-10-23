@@ -4,7 +4,7 @@ import os
 import os.path
 import shutil
 import sys
-import traceback
+from uuid import uuid4
 
 import pytz
 
@@ -24,6 +24,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.index import chunked
+from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.icon import KEY_ICON_CONFIGURATION, IconConfiguration
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.search.tasks import submit_delete_task
@@ -145,7 +146,7 @@ backfill_icons_parser.set_defaults(func=backfill_icons)
 def import_alerts(args):
     """Imports one or more alerts from the given directories."""
     from saq.analysis.root import RootAnalysis
-    from saq.database.util.alert import ALERT, get_alert_by_uuid
+    from saq.database.util.alert import ALERT
 
     for _dir in args.dirs:
         json_path = os.path.join(_dir, 'data.json')
@@ -159,6 +160,9 @@ def import_alerts(args):
             continue
 
         target_storage_dir = storage_dir_from_uuid(root.uuid)
+        if os.path.exists(target_storage_dir):
+            logging.error("not importing {}: {} already exists".format(_dir, target_storage_dir))
+            continue
 
         # copy the root analysis into the system
         shutil.copytree(_dir, target_storage_dir)
@@ -169,24 +173,15 @@ def import_alerts(args):
             logging.error("unable to load {}: try running saq upgrade {}".format(target_storage_dir, target_storage_dir))
             continue
 
-        ALERT(root)
-        alert = get_alert_by_uuid(root.uuid)
+        # set on the root, which the alert row and the workload entry are made from
+        root.location = get_global_runtime_settings().saq_node
+        root.company_id = get_config().global_settings.company_id
+        root.company_name = get_config().global_settings.company_name
+        root.analysis_mode = ANALYSIS_MODE_CORRELATION
+        root.save()
 
-        # are we resetting the alerts?
-        #if args.reset:
-            #alert.reset()
-
-        # change a few more things
-        alert.location = get_global_runtime_settings().saq_node
-        alert.company_id = get_config().global_settings.company_id
-        alert.company_name = get_config().global_settings.company_name
-        alert.analysis_mode = ANALYSIS_MODE_CORRELATION
-
-        # sync it to the database
-        alert.sync()
-
-        # request analysis
-        alert.root_analysis.schedule()
+        alert = ALERT(root)
+        root.schedule()
 
         logging.info("imported alert {}".format(alert))
 
@@ -272,21 +267,23 @@ reset_alert_parser.add_argument('dirs', nargs='+', help="One or more alert direc
 reset_alert_parser.set_defaults(func=reset_alerts)
 
 def archive_alerts(args):
-    from saq.database.model import load_alert_by_storage_dir
-
     for storage_dir in args.dirs:
         # get the storage directory of the alert
         if not os.path.exists(storage_dir):
             logging.error("storage directory {} does not exist".format(storage_dir))
             continue
 
-        alert = load_alert_by_storage_dir(storage_dir)
+        # alerts record their storage directory relative to SAQ_HOME
+        relative_dir = os.path.relpath(os.path.abspath(storage_dir), start=get_base_dir())
+        alert = get_db().query(Alert).filter(Alert.storage_dir.in_([storage_dir, relative_dir])).one_or_none()
         if alert is None:
             logging.warning(f"cannot find alert with storage_dir {storage_dir}")
             continue
 
+        alert.load()
         alert.archive()
-        alert.root_analysis.save()
+        # records the archive in the database, as the cleanup job does
+        alert.sync()
 
 # archive-alerts
 archive_alert_parser = alert_sp.add_parser('archive',
@@ -305,33 +302,33 @@ def add_observable(args):
         logging.error("invalid observable type {}".format(args.observable_type))
         sys.exit(1)
 
-    # get the alert to modify
+    # the uuid that is locked comes from the root on disk
     alert = RootAnalysis(storage_dir=args.dir)
-    if not alert.lock():
+    try:
+        alert.load()
+    except Exception:
+        logging.exception("unable to load alert from %s", args.dir)
+        sys.exit(1)
+
+    lock_uuid = str(uuid4())
+    if not acquire_lock(alert.uuid, lock_uuid):
         logging.error("unable to lock alert {}".format(alert))
         sys.exit(1)
 
     try:
-        alert.load()
-
         if args.observable_type == F_FILE or args.observable_type == F_SUSPECT_FILE:
-            try:
-                dest_path = os.path.join(alert.storage_dir, os.path.basename(args.observable_value))
-                shutil.copy(args.observable_value, dest_path)
-                args.observable_value = os.path.relpath(dest_path, start=alert.storage_dir)
-            except Exception as e:
-                logging.error("unable to copy file into storage directory: {0}".format(str(e)))
+            observable = alert.add_file_observable(args.observable_value, time=args.reference_time)
+        else:
+            observable = alert.add_observable_by_spec(args.observable_type, args.observable_value, o_time=args.reference_time)
 
-        alert.add_observable(args.observable_type, args.observable_value, o_time=args.reference_time)
+        if observable is None:
+            logging.error("unable to add {} observable {} to {}".format(args.observable_type, args.observable_value, alert))
+            sys.exit(1)
+
         alert.save()
 
-    except Exception as e:
-        logging.error(str(e))
-        traceback.print_exc()
-        sys.exit(1)
-
     finally:
-        alert.unlock()
+        release_lock(alert.uuid, lock_uuid)
 
 add_observable_parser = alert_sp.add_parser('add-observable',
     help="Add an observable to an existing alert and re-analyze.")
@@ -423,9 +420,8 @@ def display_alert(args):
     alert = RootAnalysis(storage_dir=args.dir)
     try:
         alert.load()
-    except Exception as e:
-        logging.error("unable to load alert from {}: {}".format(args.dir, str(e)))
-        traceback.print_exc()
+    except Exception:
+        logging.exception("unable to load alert from %s", args.dir)
         sys.exit(1)
 
     display_analysis(alert, include_context=args.context)

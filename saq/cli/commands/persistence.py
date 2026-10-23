@@ -1,6 +1,8 @@
 import logging
 import sys
 
+from sqlalchemy import and_
+
 from saq.cli.cli_main import get_cli_subparsers
 from saq.database.model import Persistence, PersistenceSource
 from saq.database.pool import get_db
@@ -41,10 +43,15 @@ list_persistence_parser.add_argument('-t', '--temporal', action='store_true', de
     help="Also display temporal (non-permanent) keys.")
 list_persistence_parser.set_defaults(func=list_persistence)
 
+def _finish_clear(args):
+    if args.dry_run:
+        get_db().rollback()
+    else:
+        get_db().commit()
+
 def clear_persistence(args):
+    # imported here: dateparser costs every ace command 200ms at startup
     import dateparser
-    from saq.database import Persistence, PersistenceSource
-    from sqlalchemy import and_
 
     source = get_db().query(PersistenceSource).filter(PersistenceSource.name == args.source).first()
     if source is None:
@@ -54,23 +61,21 @@ def clear_persistence(args):
     if args.all:
         result = get_db().execute(Persistence.__table__.delete().where(Persistence.source_id == source.id))
         logging.info(f"persistence group {args.source} cleared {result.rowcount} items")
-
-        if not args.dry_run:
-            get_db().commit()
-
+        _finish_clear(args)
         sys.exit(0)
 
     elif args.older_than:
         target_date = dateparser.parse(args.older_than)
+        if target_date is None:
+            logging.error(f"invalid --older-than {args.older_than!r}")
+            sys.exit(1)
+
         result = get_db().execute(Persistence.__table__.delete().where(and_(Persistence.source_id == source.id,
                                                                           Persistence.permanent == 0,
                                                                           Persistence.last_update < target_date)))
 
         logging.info(f"persistence group {args.source} cleared {result.rowcount} items")
-
-        if not args.dry_run:
-            get_db().commit()
-
+        _finish_clear(args)
         sys.exit(0)
 
     for key in args.keys:
@@ -79,9 +84,7 @@ def clear_persistence(args):
 
         logging.info(f"persistence group {args.source} key {key} cleared {result.rowcount} items")
 
-    if not args.dry_run:
-        get_db().commit()
-
+    _finish_clear(args)
     sys.exit(0)
 
 clear_persistence_parser = persistence_sp.add_parser('clear',
