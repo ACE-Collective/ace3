@@ -111,7 +111,7 @@ from saq.modules.email.constants import (
     KEY_X_SENDER_IP,
 )
 from saq.observables.file import FileObservable
-from saq.util.filesystem import safe_file_name, shorten_basename_for_suffix
+from saq.util.filesystem import shorten_basename_for_suffix
 from saq.util.networking import is_subdomain
 from saq.whitelist import (
     WHITELIST_TYPE_SMTP_FROM,
@@ -1571,42 +1571,9 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
                                                                            target.get_content_subtype(), unknown_ext)
 
-                # sanitize the file name
-                sanitized_file_name = safe_file_name(file_name)
-                if file_name != sanitized_file_name:
-                    logging.debug("changed file name from {} to {}".format(file_name, sanitized_file_name))
-                    file_name = sanitized_file_name
-
                 if not file_name:
                     file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
                                                                            target.get_content_subtype(), unknown_ext)
-
-                # make sure the file name isn't too long
-                if len(file_name) > 120:
-                    logging.debug("file name {} is too long".format(file_name))
-                    _file_name, _file_ext = os.path.splitext(file_name)
-                    # this can be wrong too
-                    if len(_file_ext) > 40:
-                        _file_ext = '.unknown'
-                    file_name = '{}{}'.format(file_name[:120], _file_ext)
-
-                # make sure it's unique
-                file_path = self.get_root().create_file_path(file_name)
-                while True:
-                    if not os.path.exists(file_path):
-                        break
-
-                    _file_name, _file_ext = os.path.splitext(os.path.basename(file_path))
-                    m = re.match('(.+)_([0-9]{3})$', _file_name)
-                    if m:
-                        _file_name = m.group(1)
-                        index = int(m.group(2)) + 1
-                    else:
-                        index = 0
-
-                    _file_name = '{}_{:03}'.format(_file_name, index)
-                    file_path = '{}{}'.format(_file_name, _file_ext)
-                    file_path = self.get_root().create_file_path(file_path)
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
@@ -1626,6 +1593,8 @@ class EmailAnalyzer(AnalysisModule):
                     # otherwise we just need the decoded contents as bytes
                     payload = target.get_payload(decode=True)
 
+                # the name is the sender's, so the file manager cleans it and keeps it unique
+                file_path = self.get_root().create_output_file(file_name)
                 with open(file_path, 'wb') as fp:
                     fp.write(payload)
 

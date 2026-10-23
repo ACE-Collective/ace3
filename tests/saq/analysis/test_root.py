@@ -4,6 +4,7 @@ import os
 import uuid
 import pytest
 
+from saq.analysis.adapter import RootAnalysisAdapter
 from saq.analysis.analysis import Analysis
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.root import RootAnalysis, Submission, load_root
@@ -351,6 +352,21 @@ def test_archive_root_analysis(tmpdir):
 
 class ArchiveTestAnalysis(Analysis):
     pass
+
+
+@pytest.mark.unit
+def test_create_output_file_through_the_module_adapter():
+    """Modules reach the root through RootAnalysisAdapter, which must hand the untrusted name to
+    the file manager rather than to anything else."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    adapter = RootAnalysisAdapter(root)
+
+    first = adapter.create_output_file("../invoice.pdf")
+    second = adapter.create_output_file("../invoice.pdf")
+
+    assert first == os.path.join(root.file_dir, "_", "invoice.pdf")
+    assert second == os.path.join(root.file_dir, "_", "invoice_000.pdf")
 
 
 def _hardcopy_path(root: RootAnalysis, file_observable: FileObservable) -> str:

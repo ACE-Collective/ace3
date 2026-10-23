@@ -67,13 +67,29 @@ class FileManagerAdapter(FileManagerInterface):
         """
         return self._file_manager.create_file_path(relative_path)
         
+    def create_output_file(self, name: str) -> str:
+        """
+        Creates a new, empty file in the files directory for bytes named by an untrusted source
+        and returns its full path.
+
+        Args:
+            name: The untrusted name, which may place the file in a subdirectory
+
+        Returns:
+            Full path to the new, empty file
+
+        Raises:
+            ValueError: If the path still resolves outside the file directory
+        """
+        return self._file_manager.create_output_file(name)
+
     def store_file(self, source_path: Any, target_path: Optional[str] = None, move: bool = False) -> tuple[str, str]:
         """
         Store a file in the analysis storage system.
         
         Args:
             source_path: Path to the source file
-            target_path: Optional target path within file_dir. If None, uses basename of source
+            target_path: Optional target path within file_dir, cleaned like a create_output_file name. If None, uses basename of source
             move: If True, move the file instead of copying
             
         Returns:
