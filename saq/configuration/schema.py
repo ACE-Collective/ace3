@@ -1270,6 +1270,12 @@ class ACEConfig(BaseModel):
 
         return self.__analysis_modules.get(name)
 
+    def has_analysis_module_config(self, name: str) -> bool:
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
+
+        return name in self.__analysis_modules
+
     def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
         """Look up the config of the analysis module that generates the analysis a module_path
         string names (e.g. 'saq.modules.x:AnalysisClass:instance'), or None if no configured
