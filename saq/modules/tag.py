@@ -10,6 +10,7 @@ from typing import Optional, Type, Union
 from pydantic import Field, ConfigDict
 
 from saq.analysis import Analysis
+from saq.analysis.search import recurse_down
 from saq.signatures.builtin import ALERTABLE_TAG, CORRELATED_TAG_MATCH
 from saq.configuration.config import get_config
 from saq.constants import CONFIG_TAGS
@@ -162,11 +163,13 @@ class _tag_mapping:
     MATCH_TYPE_SUBDOMAIN = 'subdomain'
 
     def __init__(self, match_type, ignore_case, value, tags):
-        assert match_type in [ _tag_mapping.MATCH_TYPE_DEFAULT,
+        if match_type not in [ _tag_mapping.MATCH_TYPE_DEFAULT,
                                _tag_mapping.MATCH_TYPE_GLOB,
                                _tag_mapping.MATCH_TYPE_REGEX,
                                _tag_mapping.MATCH_TYPE_SUBDOMAIN,
-                               _tag_mapping.MATCH_TYPE_CIDR ]
+                               _tag_mapping.MATCH_TYPE_CIDR ]:
+            raise ValueError(f"invalid match type: {match_type}")
+
         assert isinstance(ignore_case, bool)
         assert value is not None
         assert isinstance(tags, list)
@@ -209,8 +212,9 @@ class _tag_mapping:
         return self.value == value
 
     def _matches_glob(self, value):
+        # fnmatch.fnmatch only ignores case where the OS file system does
         if self.ignore_case:
-            return fnmatch.fnmatch(value, self.value)
+            return fnmatch.fnmatchcase(value.lower(), self.value.lower())
 
         return fnmatch.fnmatchcase(value, self.value)
 
@@ -292,20 +296,19 @@ class SiteTagAnalyzer(AnalysisModule):
         # load the configuration
         with open(self.csv_file, 'r') as fp:
             for row in csv.reader(fp):
-                try:
-                    o_types, match_type, ignore_case, value, tags = row
-                except Exception as e:
-                    logging.error("invalid tag specification: {}: {}".format(','.join(row), e))
+                if not row:
                     continue
 
-                o_types = o_types.split('|')
-                ignore_case = bool(ignore_case)
-                tags = tags.split('|')
+                # one bad row must not take the rules after it with it
+                try:
+                    o_types, match_type, ignore_case, value, tags = row
+                    mapper = _tag_mapping(match_type, ignore_case.strip().lower() in ['true', 'yes', '1'], value,
+                                          tags.split('|'))
+                except (ValueError, re.error) as e:
+                    logging.exception("invalid tag specification in {}: {}: {}".format(self.csv_file, ','.join(row), e))
+                    continue
 
-                mapper = _tag_mapping(match_type, ignore_case, value, tags)
-                #logging.debug("created mapping {}".format(mapper))
-
-                for o_type in o_types:
+                for o_type in o_types.split('|'):
                     if o_type not in self.tag_mapping:
                         self.tag_mapping[o_type] = []
 
@@ -399,6 +402,6 @@ class CorrelatedTagAnalyzer(AnalysisModule):
                     # if this object has the tag we're looking for...
                     if o.has_tag(t):
                         # then "apply" the tag all the way down to (but not including) the root
-                        o.recurse_down(callback)
+                        recurse_down(o, callback)
 
         return AnalysisExecutionResult.COMPLETED

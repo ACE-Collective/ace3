@@ -8,6 +8,7 @@ Focus areas:
   the rules CSV's ``(mtime_ns, size)`` so analyst edits invalidate the
   cache key in step with the in-process ``watch_file`` reload.
 """
+import logging
 import os
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from saq.constants import (
     F_FQDN,
     F_IP,
 )
+from saq.environment import get_base_dir
 from saq.modules.tag import SiteTagAnalysis, SiteTagAnalyzer
 from tests.saq.helpers import create_root_analysis
 
@@ -210,3 +212,99 @@ def test_extended_version_changes_when_csv_rotated(site_tags_csv, test_context):
 
     after = analyzer.extended_version["site_tags_version"]
     assert before != after
+
+
+# ---------------------------------------------------------------------------
+# The rules CSV and the match types
+# ---------------------------------------------------------------------------
+
+
+def _tags_for(analyzer, o_type, value):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(o_type, value)
+    analyzer.root = root
+    analyzer.execute_analysis(observable)
+    return sorted(observable.tags)
+
+
+def test_ignore_case_column(site_tags_csv, test_context):
+    # bool() of any non-empty string is True, so "false" used to ignore case too
+    site_tags_csv([
+        "fqdn,default,false,Exact.example.com,exact",
+        "fqdn,default,true,Caseless.example.com,caseless",
+        "fqdn,default,,Blank.example.com,blank",
+    ])
+    analyzer = _build_analyzer(test_context)
+
+    assert _tags_for(analyzer, F_FQDN, "exact.example.com") == []
+    assert _tags_for(analyzer, F_FQDN, "Exact.example.com") == ["exact"]
+    assert _tags_for(analyzer, F_FQDN, "caseless.EXAMPLE.com") == ["caseless"]
+    assert _tags_for(analyzer, F_FQDN, "blank.example.com") == []
+
+
+def test_glob_ignore_case(site_tags_csv, test_context):
+    # fnmatch.fnmatch only ignores case on Windows
+    site_tags_csv([
+        "fqdn,glob,true,*.Caseless.example.com,caseless",
+        "fqdn,glob,false,*.Exact.example.com,exact",
+    ])
+    analyzer = _build_analyzer(test_context)
+
+    assert _tags_for(analyzer, F_FQDN, "www.caseless.example.com") == ["caseless"]
+    assert _tags_for(analyzer, F_FQDN, "www.exact.example.com") == []
+    assert _tags_for(analyzer, F_FQDN, "www.Exact.example.com") == ["exact"]
+
+
+def test_match_types(site_tags_csv, test_context):
+    site_tags_csv([
+        "fqdn|url,regex,true,^https?://EVIL,evil-url",
+        "fqdn,regex,false,^Evil,evil-exact",
+        "fqdn,subdomain,false,corp.example.com,corp|internal",
+        "ip,cidr,false,10.0.0.0/8,internal-network",
+    ])
+    analyzer = _build_analyzer(test_context)
+
+    assert _tags_for(analyzer, "url", "http://evil.example.com/x") == ["evil-url"]
+    assert _tags_for(analyzer, F_FQDN, "evil.example.com") == []
+    assert _tags_for(analyzer, F_FQDN, "Evil.example.com") == ["evil-exact"]
+    assert _tags_for(analyzer, F_FQDN, "mail.corp.example.com") == ["corp", "internal"]
+    assert _tags_for(analyzer, F_FQDN, "corp.example.com.evil.com") == []
+    assert _tags_for(analyzer, F_IP, "10.9.8.7") == ["internal-network"]
+    assert _tags_for(analyzer, F_IP, "192.168.1.1") == []
+
+
+def test_invalid_rows_are_skipped(site_tags_csv, test_context, caplog):
+    # an invalid row used to raise out of the load and drop every rule after it
+    site_tags_csv([
+        "fqdn,default,false,first.example.com,first",
+        "fqdn,default,false,too-few-columns",
+        "",
+        "fqdn,regex,false,[unclosed,bad-regex",
+        "ip,cidr,false,10.0.0.0/33,bad-cidr",
+        "fqdn,fuzzy,false,last.example.com,bad-type",
+        "fqdn,default,false,last.example.com,last",
+    ])
+    analyzer = _build_analyzer(test_context)
+
+    assert _tags_for(analyzer, F_FQDN, "first.example.com") == ["first"]
+    assert _tags_for(analyzer, F_FQDN, "last.example.com") == ["last"]
+    invalid = [r.getMessage() for r in caplog.records
+               if r.levelno == logging.ERROR and "invalid tag specification" in r.getMessage()]
+    assert len(invalid) == 4
+    assert any("invalid match type: fuzzy" in m for m in invalid)
+
+
+def test_csv_file_path(monkeypatch, test_context, tmp_path):
+    config = get_analysis_module_config(ANALYSIS_MODULE_SITE_TAGGER)
+    monkeypatch.setattr(config, "csv_file", "etc/missing_site_tags.csv")
+    analyzer = SiteTagAnalyzer(context=test_context, config=config)
+
+    assert analyzer.csv_file == os.path.join(get_base_dir(), "etc/missing_site_tags.csv")
+    assert analyzer.tag_mapping == {}
+    assert analyzer.extended_version == {}
+    with pytest.raises(RuntimeError, match="missing"):
+        analyzer.verify_environment()
+
+    monkeypatch.setattr(config, "csv_file", str(tmp_path / "site_tags.csv"))
+    assert analyzer.csv_file == str(tmp_path / "site_tags.csv")
