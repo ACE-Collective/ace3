@@ -198,7 +198,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
 
             # convert html to text
             try:
-                with open(os.path.join(self.get_root().storage_dir, source_email.body.value), 'r', errors='ignore') as fp:
+                with open(source_email.body.full_path, 'r', errors='ignore') as fp:
                     logging.debug(f"parsing {source_email.body.value} for html")
                     analysis.email_body = html2text(fp.read())[:self.byte_limit]
 

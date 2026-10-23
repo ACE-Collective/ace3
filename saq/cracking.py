@@ -1,5 +1,6 @@
 # vim: sw=4:ts=4:et
 
+import logging
 import os
 import re
 
@@ -52,11 +53,19 @@ def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str)
     if not os.path.exists(john_bin):
         raise FileNotFoundError(f"john binary {john_bin} not found")
 
-    p = Popen([john_bin, mode, hash_file], stdin=PIPE, stdout=PIPE,
-              stderr=PIPE)
-    _, _ = p.communicate()
+    # john defaults to one session file and one pot for the whole install. a run refuses to start
+    # while another holds the session ("Crash recovery file is locked"), so concurrent workers
+    # cracking at the same time failed. each hash file gets its own session and pot instead
+    session = f'--session={hash_file}.john'
+    pot = f'--pot={hash_file}.pot'
 
-    p = Popen([john_bin, '--show', hash_file], stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    p = Popen([john_bin, session, pot, mode, hash_file], stdin=PIPE, stdout=PIPE,
+              stderr=PIPE)
+    _, stderr = p.communicate()
+    if p.returncode != 0:
+        logging.warning(f"john {mode} on {hash_file} exited with {p.returncode}: {stderr.decode(errors='ignore').strip()}")
+
+    p = Popen([john_bin, pot, '--show', hash_file], stdin=PIPE, stdout=PIPE, stderr=PIPE)
     stdout, _ = p.communicate()
 
     password = None

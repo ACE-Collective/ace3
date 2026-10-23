@@ -170,7 +170,7 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             with open(_file.full_path, 'rb') as office_fp:
                 try:
                     office_file = msoffcrypto.OfficeFile(office_fp)
-                except:
+                except Exception:
                     logging.debug(f"msoffcrypto unable to parse file: {_file.full_path}")
                     return AnalysisExecutionResult.COMPLETED
 
