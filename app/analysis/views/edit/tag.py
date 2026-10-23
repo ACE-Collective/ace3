@@ -42,8 +42,10 @@ def add_tag():
 
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
-        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one()
+        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one_or_none()
         if alert is None:
+            # deleted since the page was loaded: the others are still tagged
+            logging.info(f"cannot change the tags of alert {uuid}: it does not exist")
             continue
 
         try:
@@ -61,7 +63,7 @@ def add_tag():
             alert.sync()
 
         except Exception as e:
-            logging.error(f"unable to add tag to {alert}: {e}")
+            logging.exception(f"unable to add tag to {alert}: {e}")
             failed_count += 1
 
         finally:
@@ -105,10 +107,14 @@ def remove_tag():
 
     failed_count = 0
 
+    logging.info(f"AUDIT: user {current_user} removed tags {tags} from alerts {uuids}")
+
     for uuid in uuids:
         logging.debug("attempting to lock alert {} for tagging".format(uuid))
-        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one()
+        alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one_or_none()
         if alert is None:
+            # deleted since the page was loaded: the others are still tagged
+            logging.info(f"cannot change the tags of alert {uuid}: it does not exist")
             continue
 
         try:
@@ -124,10 +130,9 @@ def remove_tag():
                 alert.root_analysis.remove_tag(tag)
 
             alert.sync()
-            logging.info(f"AUDIT: user {current_user} removed tag {tag} from alert {alert}")
 
         except Exception as e:
-            logging.error(f"unable to remove tag from {alert}: {e}")
+            logging.exception(f"unable to remove tag from {alert}: {e}")
             failed_count += 1
 
         finally:
