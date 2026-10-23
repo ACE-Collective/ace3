@@ -1,5 +1,6 @@
 import logging
 from threading import Event, Thread
+from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import or_, text
@@ -21,11 +22,11 @@ def create_remediation_work_item(remediation: Remediation) -> RemediationWorkIte
 
 class RemediationCollector:
     """Responsible for collecting remediation jobs from the database and sending them to the appropriate queues."""
-    collector_thread: Thread
-
     def __init__(self, lock_timeout_seconds: int=300, delay_time_seconds: int=60):
         self.lock_timeout_seconds = lock_timeout_seconds
         self.delay_time_seconds = delay_time_seconds
+        # stays None when the collector runs single threaded
+        self.collector_thread: Optional[Thread] = None
         self.collector_startup_event = Event()
         self.shutdown_event = Event()
 
@@ -52,7 +53,8 @@ class RemediationCollector:
         self.shutdown_event.set()
 
     def wait(self):
-        self.collector_thread.join()
+        if self.collector_thread is not None:
+            self.collector_thread.join()
 
     def register_remediation_listener(self, name: str, listener: RemediationListener):
         """Called to associate a remediation type with a listener.
