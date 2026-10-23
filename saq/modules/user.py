@@ -6,7 +6,7 @@ import logging
 import json
 from typing import Type
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from saq.analysis import Analysis
 from saq.analysis.presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_config
@@ -22,6 +22,9 @@ class UserTagAnalysis(Analysis):
     pass
 
 class UserTaggingAnalyzerConfig(AnalysisModuleConfig):
+    # the organization's groups are the group_<name> keys, read by ace user update-organization
+    model_config = ConfigDict(extra='allow')
+
     json_path: str = Field(..., description="Location of the cache (use ace user update-organization to build this file).")
 
 class UserTaggingAnalyzer(AnalysisModule):

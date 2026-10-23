@@ -318,15 +318,15 @@ def update_organization(args):
                 m = re.search(r'CN=([^,]+),', direct_report)
                 if m is None:
                     logging.warning("unable to extract direct report info from {0}".format(direct_report))
+                    continue
 
                 user_id = m.group(1)
-                if user_id is not None:
-                    # add this guy (and possibly all his direct reports too)
-                    logging.debug("adding {0} as a direct report to {1} for group {2}".format(user_id, current_user_id, group_name))
-                    recurse_org(group_name, limit, tag, user_id, current_level)
+                # add this guy (and possibly all his direct reports too)
+                logging.debug("adding {0} as a direct report to {1} for group {2}".format(user_id, current_user_id, group_name))
+                recurse_org(group_name, limit, tag, user_id, current_level)
 
     # load all the hierarchy definitions
-    for section in config.keys():
+    for section, value in config.model_dump().items():
         if section.startswith('group_'):
             m = re.match(r'^group_([^_]+)$', section)
             if m is None:
@@ -334,7 +334,7 @@ def update_organization(args):
                 continue
 
             group_name = m.group(1)
-            parent_id, limit, tag = [x.strip() for x in config[section].split(',')]
+            parent_id, limit, tag = [x.strip() for x in value.split(',')]
             
             recurse_org(group_name, limit, tag, parent_id)
 
