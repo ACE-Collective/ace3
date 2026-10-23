@@ -100,8 +100,8 @@ def _module_loader(analysis_mode: str) -> ModuleLoader:
     )
 
 
-def _removed_module_warnings(caplog, module_name: str) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if r.levelno == logging.WARNING and getattr(r, "analysis_module", None) == module_name]
+def _removed_module_errors(caplog, module_name: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno == logging.ERROR and getattr(r, "analysis_module", None) == module_name]
 
 
 @pytest.mark.unit
@@ -116,11 +116,11 @@ def test_module_group_reference_to_removed_module_is_skipped(caplog):
         AnalysisModeConfig(name="test_removed_ref", module_groups=["test_removed_ref"], cleanup=True),
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         mapping = _module_loader("test_removed_ref")._build_analysis_mode_mapping()
 
     assert mapping == {"test_removed_ref": {configured_module}}
-    (record,) = _removed_module_warnings(caplog, "removed_module")
+    (record,) = _removed_module_errors(caplog, "removed_module")
     assert record.analysis_mode == "test_removed_ref"
     assert record.module_group == "test_removed_ref"
 
@@ -139,12 +139,12 @@ def test_enabled_and_disabled_reference_to_removed_module_is_skipped(caplog):
         ),
     )
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         mapping = _module_loader("test_removed_ref")._build_analysis_mode_mapping()
 
     assert mapping == {"test_removed_ref": {configured_module}}
     for module_name in ("removed_enabled", "removed_disabled"):
-        (record,) = _removed_module_warnings(caplog, module_name)
+        (record,) = _removed_module_errors(caplog, module_name)
         assert record.analysis_mode == "test_removed_ref"
         assert record.module_group is None
 

@@ -161,15 +161,15 @@ class ModuleLoader:
             analysis_mode_module_names_map[analysis_mode_config.name].discard(key_name)
 
     def _is_module_configured(self, module_name: str, analysis_mode: str, module_group: Optional[str] = None) -> bool:
-        # a site overlay can still name a module ACE has since removed; failing on it would stop
-        # every engine worker, so the reference is skipped and the operator told to delete it
+        # a site overlay can still name a module ACE has since removed (or misspell one); failing on
+        # it would stop every engine worker, so the reference is skipped and logged at ERROR instead
         if get_config().has_analysis_module_config(module_name):
             return True
 
-        logging.warning(
+        logging.error(
             "analysis mode %s references analysis module %s%s, which has no analysis_module_%s "
-            "config (it was probably removed from ACE); ignoring it, delete the reference from "
-            "the config overlay that sets it",
+            "config (it was removed from ACE, or the name is misspelled); ignoring it, fix or "
+            "delete the reference in the config overlay that sets it",
             analysis_mode, module_name,
             f" through module group {module_group}" if module_group else "",
             module_name,

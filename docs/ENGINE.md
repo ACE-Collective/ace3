@@ -1389,9 +1389,11 @@ definition fails loudly as before.
 
 An overlay may also still name the module in an analysis mode's `enabled_modules` or
 `disabled_modules`, or in a `module_group_*` list (lists append when overlays merge, so
-re-listing `module_group_common` counts). `ModuleLoader` skips each such name with a
-WARNING naming the mode, the module and the group, instead of failing to load modules
-and stopping every engine worker.
+re-listing `module_group_common` counts). `ModuleLoader` skips each such name and logs an
+ERROR naming the mode, the module and the group, instead of failing to load modules
+and stopping every engine worker. It logs at ERROR rather than WARNING because it
+cannot tell a removed module from a misspelled name, and a misspelled module silently
+not running is something the operator has to fix.
 
 Alerts saved before the module was removed still carry its serialized Analysis. When
 `Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)
