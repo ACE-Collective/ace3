@@ -69,6 +69,22 @@ def test_lookup_user(monkeypatch, datadir, user, query_filename_map, expected_at
         for attribute in expected_attributes:
             assert attributes[attribute] == expected_attributes[attribute]
 
+@pytest.mark.parametrize('lookup, value, expected_query', [
+    # an inbound sender address is attacker controlled: unescaped, a * matches some other user
+    ('lookup_email_address', 'a*@company.com', r'(proxyAddresses=smtp:a\2a@company.com)'),
+    ('lookup_email_address', '"a)(cn=*"@company.com', r'(proxyAddresses=smtp:"a\29\28cn=\2a"@company.com)'),
+    ('lookup_user', 'j*', r'(cn=j\2a)'),
+    ('lookup_user', 'jdoe)(objectClass=*', r'(cn=jdoe\29\28objectClass=\2a)'),
+])
+@pytest.mark.unit
+def test_lookup_escapes_filter_characters(monkeypatch, lookup, value, expected_query):
+    queries = []
+    monkeypatch.setattr(saq.ldap, "search", lambda query, **kwargs: queries.append(query) or [])
+
+    assert getattr(saq.ldap, lookup)(value) is None
+    assert queries == [expected_query]
+
+
 @pytest.mark.unit
 def test_entry_to_dict():
     entry = {
