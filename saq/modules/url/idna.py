@@ -1,4 +1,6 @@
+import logging
 from typing import Optional
+
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FQDN, AnalysisExecutionResult
 from saq.modules import AnalysisModule
@@ -73,25 +75,33 @@ class IDNAAnalyzer(AnalysisModule):
     def execute_analysis(self, observable, **kwargs) -> AnalysisExecutionResult:
         url = URL(f"https://{observable.value}")
 
+        # an xn-- label that is not valid punycode passes fqdn validation but has no unicode form
+        try:
+            netloc_idna = url.netloc_idna
+            netloc_unicode = url.netloc_unicode
+        except UnicodeError as e:
+            logging.info(f"unable to convert {observable.value} between idna and unicode: {e}")
+            return AnalysisExecutionResult.COMPLETED
+
         # If the IDNA and Unicode form of the domains are the same, then stop analyzing
-        if url.netloc_idna == url.netloc_unicode:
+        if netloc_idna == netloc_unicode:
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(observable)
         assert isinstance(analysis, IDNAAnalysis)
         analysis.original = url.netloc_original
-        analysis.idna = url.netloc_idna
-        analysis.unicode = url.netloc_unicode
+        analysis.idna = netloc_idna
+        analysis.unicode = netloc_unicode
 
         # Add either the IDNA or Unicode domain as an observable, depending on which one is not
         # the same as the original form of the domain.
-        if url.netloc_idna != url.netloc_original:
-            idna_observable = analysis.add_observable_by_spec(F_FQDN, url.netloc_idna)
+        if netloc_idna != url.netloc_original:
+            idna_observable = analysis.add_observable_by_spec(F_FQDN, netloc_idna)
             idna_observable.exclude_analysis(self)
             idna_observable.display_type = "IDNA Domain"
 
-        if url.netloc_unicode != url.netloc_original:
-            unicode_observable = analysis.add_observable_by_spec(F_FQDN, url.netloc_unicode)
+        if netloc_unicode != url.netloc_original:
+            unicode_observable = analysis.add_observable_by_spec(F_FQDN, netloc_unicode)
             unicode_observable.exclude_analysis(self)
             unicode_observable.display_type = "Unicode Domain"
 
