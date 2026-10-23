@@ -32,6 +32,11 @@ sslkeylog.txt
   each analyzed. Using the first response keeps it to one timed observable per IP.
 - IP addresses, MAC addresses and hostnames are added `volatile`, so they are hidden unless the
   analyst selects "Show All Observables" or they lead to a detection. Everything else is visible.
+- MAC addresses are shown and added as lowercase `aa-bb-cc-dd-ee-ff`, not tshark's `aa:bb:...`:
+  the `mac_address` observable normalizes every value to that form, so a card seen in a capture is
+  the same observable as the one an EDR integration reports. Lookups and observable exclusions accept
+  a MAC in any notation, but a site tag rule (`site_tags.csv`) is compared as written, so a MAC rule
+  must use the `aa-bb-cc-dd-ee-ff` form (an OUI prefix regex is `^00-50-56`, not `^00:50:56`).
 - In the node tables, JA4 (TLS), URL (HTTP), file name, SHA256 and URL (Files), and the hostnames, IP
   and MAC addresses and flow endpoints of PCAP Analysis are links that
   pivot to every alert containing that observable, exactly like clicking it in the alert tree. A
