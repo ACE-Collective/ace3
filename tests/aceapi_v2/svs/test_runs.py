@@ -168,7 +168,8 @@ async def test_a_host_held_by_another_run_is_409(client: AsyncClient):
     response = await client.post("/svs/runs/", json=REGISTRATION)
     assert response.status_code == 409, response.text
     detail = response.json()["detail"]
-    assert detail["holders"] == [{"host": "win10-01", "run_id": first["run_id"], "state": "created", "until": None}]
+    assert detail["holders"] == [{"host": "win10-01", "run_id": first["run_id"], "state": "created", "until": None,
+                                 "maintenance_id": None}]
     assert first["run_id"] in detail["message"]
 
     response = await client.post("/svs/runs/validate", json=REGISTRATION)
@@ -212,17 +213,20 @@ async def test_cleanup(client: AsyncClient):
     # an attribution of the cleanup, and one of the test
     run_db_id = get_db().execute(select(SVSRun.id).where(SVSRun.uuid == run["run_id"])).scalar_one()
     with private_transaction() as session:
-        for alert_uuid, event_time in (("aaaaaaaa-0000-4000-8000-000000000001", cleanup_at + timedelta(seconds=5)),
-                                       ("aaaaaaaa-0000-4000-8000-000000000002", cleanup_at - timedelta(seconds=5))):
+        for alert_uuid, event_time, source in (
+                ("aaaaaaaa-0000-4000-8000-000000000001", cleanup_at + timedelta(seconds=5), "event"),
+                ("aaaaaaaa-0000-4000-8000-000000000002", cleanup_at - timedelta(seconds=5), "query_time")):
             session.add(SVSAttribution(run_id=run_db_id, alert_uuid=alert_uuid, content_hash="0" * 64,
                                        signature_uuid=SIGNATURE, confidence="marker", source="router", actor="svs",
-                                       created_at=datetime.now(), event_time=event_time))
+                                       created_at=datetime.now(), event_time=event_time, event_time_source=source))
 
     attributions = (await client.get(f"/svs/runs/{run['run_id']}/attributions")).json()["data"]
-    assert [(a["alert_uuid"][-1], a["cleanup"]) for a in attributions] == [("1", True), ("2", False)]
+    assert [(a["alert_uuid"][-1], a["cleanup"], a["event_time_source"], a["fallback_time"]) for a in attributions] == [
+        ("1", True, "event", False), ("2", False, "query_time", True)]
     assert attributions[0]["event_time"] is not None
     alerts = (await client.get(f"/svs/runs/{run['run_id']}/alerts")).json()["data"]
-    assert [(a["alert_uuid"][-1], a["cleanup"]) for a in alerts] == [("1", True), ("2", False)]
+    assert [(a["alert_uuid"][-1], a["cleanup"], a["fallback_time"]) for a in alerts] == [
+        ("1", True, False), ("2", False, True)]
     assert (await client.get(f"/svs/runs/{run['run_id']}")).json()["cleanup_at"] == response.json()["cleanup_at"]
 
     # a signature only the cleanup fired: the run's summaries count it as cleanup

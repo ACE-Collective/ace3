@@ -1,37 +1,11 @@
 # vim: sw=4:ts=4:et:cc=120
 
 import logging
-import re
 
 from email.utils import parseaddr
 from email.header import decode_header
 from saq.configuration import get_config
 from saq.util import is_subdomain
-
-# returns all substrings after removing the domain and non-alphabetic characters
-lower_alpha_re = re.compile('[^a-z]')
-def tokenize_email_address(email_address):
-    name = lower_alpha_re.sub('', email_address.split('@', 1)[0])
-    return set([name[i: j] for i in range(len(name)) for j in range(i + 1, len(name) + 1)])
-
-# return the percent similarity by averaging the fraction of common tokens in a and b
-def email_address_similarity(email_address_a, email_address_b):
-    try:
-        a = tokenize_email_address(email_address_a)
-        if len(a) == 0:
-            return 0
-        b = tokenize_email_address(email_address_b)
-        if len(b) == 0:
-            return 0
-        intersection = len(a.intersection(b))
-        ia = intersection / len(a)
-        ib = intersection / len(b)
-        return 100 * (ia + ib) / 2
-
-    # return 0 if we fail to parse the email address
-    except:
-        return 0
-
 
 def normalize_email_address(email_address):
     """Returns a normalized version of email address.  Returns None if the address cannot be parsed."""
@@ -62,13 +36,6 @@ def normalize_email_address(email_address):
         return None
 
     return address.lower()
-
-def parse_display_email(email):
-    match = re.search(r'<([^><]*)>', email)
-    if match is None:
-        return email
-
-    return normalize_email_address(match.group(1))
 
 def get_email_domain(email_address):
     try:
@@ -116,41 +83,6 @@ def is_local_email_domain(email_address):
                 return True
 
     return False
-
-class EmailArchiveEntry:
-    def __init__(self, archive_id):
-        self.archive_id = archive_id
-        self.message_id = None
-        self.recipient = None
-        self.subject = None
-        self.sender = None
-        self.remediation_history = []
-
-    @property
-    def remediated(self):
-        result = False
-        for history in self.remediation_history:
-            if history['action'] == 'remove' and history['successful']:
-                result = True
-            if history['action'] == 'restore' and history['successful']:
-                result = False
-
-        return result
-
-    @property
-    def key(self):
-        return '{}:{}'.format(self.message_id, self.recipient)
-
-    @property
-    def json(self):
-        return {
-            'archive_id': self.archive_id,
-            'message_id': self.message_id,
-            'recipient': self.recipient,
-            'sender': self.sender,
-            'subject': self.subject,
-            'remediated': self.remediated,
-            'remediation_history': self.remediation_history }
 
 def get_email_archive_sections():
     """Returns the list of configuration sections for email archives.

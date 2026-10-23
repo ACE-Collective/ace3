@@ -100,6 +100,17 @@ class QRCodeFilter:
 
         return False
 
+def _rendered_pages(prefix: str) -> list[str]:
+    """Returns the page images gs wrote as <prefix><page number>.png, in page order."""
+    # the prefix is the attachment's own path, which can contain glob characters ("scan[1].pdf")
+    pages = []
+    for path in glob.glob(f"{glob.escape(prefix)}*.png"):
+        page_number = path[len(prefix):-len(".png")]
+        if page_number.isdigit():
+            pages.append((int(page_number), path))
+
+    return [path for _, path in sorted(pages)]
+
 class QRCodeAnalyzerConfig(AnalysisModuleConfig):
     filter_path: Optional[str] = Field(default=None, description="Path to a list of strings to exclude from the results relative to ANALYST_DATA_DIR.")
     pdf_first_pages: int = Field(default=3, description="Number of pages to scan from the beginning of a PDF.")
@@ -225,8 +236,8 @@ class QRCodeAnalyzer(AnalysisModule):
         string = scanned clean with no symbol, None = the invert/save/scan
         failed (treat as unknown, not as a negative result)."""
         try:
-            image = Image.open(image_path).convert("RGB")
-            image_inverted = ImageOps.invert(image)
+            with Image.open(image_path) as image:
+                image_inverted = ImageOps.invert(image.convert("RGB"))
         except Exception as e:
             logging.warning(f"unable to invert image {image_path}: {e}")
             return None
@@ -275,18 +286,18 @@ class QRCodeAnalyzer(AnalysisModule):
                 target_file_pattern = f"{local_file_path}-%d.png"
                 logging.info(f"PDF has {total_pages} pages, rendering all pages")
                 if self._render_pdf_pages(local_file_path, 1, total_pages, target_file_pattern):
-                    target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+                    target_file_paths = _rendered_pages(f"{local_file_path}-")
             else:
                 logging.info(f"PDF has {total_pages} pages, rendering first {first_n} and last {last_n} pages")
                 # Render first N pages
                 first_pattern = f"{local_file_path}-first-%d.png"
                 if self._render_pdf_pages(local_file_path, 1, first_n, first_pattern):
-                    target_file_paths.extend(sorted(glob.glob(f"{local_file_path}-first-*.png")))
+                    target_file_paths.extend(_rendered_pages(f"{local_file_path}-first-"))
                 # Render last N pages
                 last_start = total_pages - last_n + 1
                 last_pattern = f"{local_file_path}-last-%d.png"
                 if self._render_pdf_pages(local_file_path, last_start, total_pages, last_pattern):
-                    target_file_paths.extend(sorted(glob.glob(f"{local_file_path}-last-*.png")))
+                    target_file_paths.extend(_rendered_pages(f"{local_file_path}-last-"))
 
             if target_file_paths:
                 return target_file_paths
@@ -304,7 +315,7 @@ class QRCodeAnalyzer(AnalysisModule):
             process.communicate()
             return []
 
-        target_file_paths = sorted(glob.glob(f"{local_file_path}-*.png"))
+        target_file_paths = _rendered_pages(f"{local_file_path}-")
         if not target_file_paths:
             logging.warning(f"conversion of {local_file_path} to png failed")
             return []
@@ -322,7 +333,7 @@ class QRCodeAnalyzer(AnalysisModule):
                         os.unlink(p)
                     except Exception as e:
                         logging.error(f"unable to remove skipped page {p}: {e}")
-            target_file_paths = sorted(pages_to_scan)
+            target_file_paths = [p for p in target_file_paths if p in pages_to_scan]
             logging.info(f"PDF has {total_pages} pages, scanning first {first_n} and last {last_n} pages")
         else:
             logging.info(f"PDF has {total_pages} pages, scanning all pages")

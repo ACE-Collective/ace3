@@ -1,3 +1,6 @@
+import logging
+import uuid
+
 import pytest
 from flask import url_for
 
@@ -26,6 +29,7 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
+from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
 from tests.saq.helpers import insert_alert, make_simulated
 
@@ -393,3 +397,125 @@ def test_bulk_review_disposition_skips_and_reports_a_simulated_alert(web_client)
     assert db.get(Alert, other.id).disposition == DISPOSITION_WEAPONIZATION
     assert _flashes(web_client) == [
         "disposition review recorded for 1 alerts; left 1 SIMULATED alert alone (only ACE sets that disposition)"]
+
+
+#
+# the paths the tests above do not take
+#
+
+def test_bulk_action_without_an_event_returns_to_the_manage_page(web_client):
+    response = web_client.post(url_for("events.bulk_add_tag"), data={"alert_uuids": "", "tag": "bulk_tag"})
+
+    assert response.status_code == 302
+    assert response.location.endswith(url_for("events.manage"))
+
+
+@pytest.mark.parametrize("endpoint", ["events.bulk_add_tag", "events.bulk_remove_tag", "events.bulk_add_comment",
+                                      "events.bulk_set_disposition", "events.bulk_review_disposition"])
+def test_bulk_actions_need_selected_alerts(web_client, endpoint):
+    response = web_client.post(url_for(endpoint), data={"event_id": EVENT_ID, "alert_uuids": ",",
+                                                        "tag": "bulk_tag", "comment": "a comment"})
+
+    assert response.status_code == 302
+    assert _flashes(web_client) == ["you must select one or more alerts"]
+
+
+@pytest.mark.parametrize("endpoint,message", [
+    ("events.bulk_add_tag", "you must specify one or more tags to add"),
+    ("events.bulk_remove_tag", "you must specify one or more tags to remove"),
+])
+def test_bulk_tag_actions_need_tags(web_client, endpoint, message):
+    alert = insert_alert()
+
+    web_client.post(url_for(endpoint), data={"event_id": EVENT_ID, "alert_uuids": alert.uuid, "tag": "  "})
+
+    assert _flashes(web_client) == [message]
+
+
+@pytest.mark.parametrize("endpoint", ["events.bulk_add_tag", "events.bulk_remove_tag"])
+def test_bulk_tag_skips_an_alert_being_analyzed(web_client, endpoint):
+    locked, unlocked = insert_alert(), insert_alert()
+    engine_lock = str(uuid.uuid4())
+    assert acquire_lock(locked.uuid, engine_lock)
+    try:
+        web_client.post(url_for(endpoint), data={
+            "event_id": EVENT_ID,
+            # an alert that no longer exists is skipped silently
+            "alert_uuids": f"{locked.uuid},{uuid.uuid4()},{unlocked.uuid}",
+            "tag": "bulk_tag",
+        })
+    finally:
+        release_lock(locked.uuid, engine_lock)
+
+    assert _flashes(web_client) == ["unable to modify some alerts: alert is currently being analyzed"]
+    assert not _reloaded_root(locked).has_tag("bulk_tag")
+    if endpoint == "events.bulk_add_tag":
+        assert _reloaded_root(unlocked).has_tag("bulk_tag")
+
+
+def test_bulk_tag_failure_is_logged_with_its_traceback(web_client, monkeypatch, caplog):
+    alert = insert_alert()
+
+    def broken_sync(self):
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr("saq.gui.alert.GUIAlert.sync", broken_sync)
+
+    with caplog.at_level(logging.ERROR):
+        web_client.post(url_for("events.bulk_add_tag"), data={
+            "event_id": EVENT_ID, "alert_uuids": alert.uuid, "tag": "bulk_tag"})
+
+    [record] = [r for r in caplog.records if "unable to modify tags on" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert _flashes(web_client) == ["unable to modify some alerts: alert is currently being analyzed"]
+    # the lock was released on the way out, so the next attempt can take it
+    lock = str(uuid.uuid4())
+    assert acquire_lock(alert.uuid, lock)
+    release_lock(alert.uuid, lock)
+
+
+def test_bulk_set_disposition_failure(web_client, monkeypatch, caplog):
+    alert = insert_alert()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("deadlock")
+
+    monkeypatch.setattr("app.events.views.edit.bulk.set_dispositions", broken)
+
+    web_client.post(url_for("events.bulk_set_disposition"), data={
+        "event_id": EVENT_ID, "alert_uuids": alert.uuid, "disposition": DISPOSITION_FALSE_POSITIVE})
+
+    assert _flashes(web_client) == ["unable to set disposition (review error logs)"]
+    [record] = [r for r in caplog.records if "unable to set disposition for 1 alerts" in r.getMessage()]
+    assert record.exc_info is not None
+
+
+def test_bulk_review_disposition_rejects_bad_input(web_client):
+    alert = insert_alert()
+
+    web_client.post(url_for("events.bulk_review_disposition"), data={
+        "event_id": EVENT_ID, "alert_uuids": alert.uuid, "review_result": "MAYBE"})
+    assert _flashes(web_client) == ["invalid review result: MAYBE"]
+
+    web_client.post(url_for("events.bulk_review_disposition"), data={
+        "event_id": EVENT_ID, "alert_uuids": alert.uuid, "review_result": DISPOSITION_REVIEW_INCORRECT,
+        "corrected_disposition": "NOT_A_DISPOSITION", "comment": "wrong"})
+    # nothing has displayed the first flash yet, so both are pending
+    assert _flashes(web_client) == ["invalid review result: MAYBE", "invalid corrected disposition: NOT_A_DISPOSITION"]
+
+
+def test_bulk_review_disposition_failure(web_client, monkeypatch, caplog):
+    alert = insert_alert()
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("deadlock")
+
+    monkeypatch.setattr("app.events.views.edit.bulk.set_disposition_reviews", broken)
+
+    web_client.post(url_for("events.bulk_review_disposition"), data={
+        "event_id": EVENT_ID, "alert_uuids": alert.uuid, "review_result": DISPOSITION_REVIEW_CORRECT})
+
+    assert _flashes(web_client) == ["unable to record disposition review (review error logs)"]
+    [record] = [r for r in caplog.records if "unable to review disposition for 1 alerts" in r.getMessage()]
+    assert record.exc_info is not None

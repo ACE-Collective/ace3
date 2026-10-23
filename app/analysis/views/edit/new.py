@@ -29,6 +29,11 @@ from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
 
+# bounds the submission to the target node, which would otherwise hold this GUI worker for as long
+# as a stalled node keeps the connection open (the read timeout is per socket read, so a large
+# upload is not cut off by it)
+SUBMIT_TIMEOUT = (10, 60)
+
 
 @analysis.route('/new_alert', methods=['POST'])
 @require_permission('alert', 'create')
@@ -169,6 +174,11 @@ ORDER BY
 
                         observable['value'] = sha256_file(save_path)
                         observable['file_path'] = upload_file.filename
+                    else:
+                        # a file row is nothing without its upload: refuse the whole submission
+                        # rather than fail on it later or have the api drop it from the alert
+                        flash(f"no file uploaded for observable {index}")
+                        return redirect(url_for('analysis.manage'))
 
                 # multi fields add multiple observables of the same type
                 # (only text observables can be "multi"; they never carry files)
@@ -217,7 +227,8 @@ ORDER BY
                     tags = tags,
                     queue = queue,
                     files = all_files,
-                    api_key = get_config().api.api_key)
+                    api_key = get_config().api.api_key,
+                    timeout = SUBMIT_TIMEOUT)
 
                 if 'result' in result and 'uuid' in result['result']:
                     uuid = result['result']['uuid']
@@ -243,7 +254,8 @@ ORDER BY
                         queue = queue,
                         # only attach this observable's own file(s)
                         files = entry['files'],
-                        api_key = get_config().api.api_key)
+                        api_key = get_config().api.api_key,
+                        timeout = SUBMIT_TIMEOUT)
 
                     # in the case of multiple alerts we redirect to the last alert added
                     if 'result' in result and 'uuid' in result['result']:
@@ -261,18 +273,18 @@ ORDER BY
         return redirect(url_for('analysis.manage'))
 
     finally:
-        for file_path in temp_file_paths:
-            try:
-                os.remove(file_path)
-            except Exception as e:
-                logging.error(f"unable to remove {file_path}: {e}")
-
         for entry in observable_entries:
             for file_name, fp in entry['files']:
                 try:
                     fp.close()
-                except:
-                    logging.error(f"unable to close file descriptor for {file_name}")
+                except Exception as e:
+                    logging.exception(f"unable to close file descriptor for {file_name}: {e}", extra={"file_name": file_name})
+
+        for file_path in temp_file_paths:
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logging.exception(f"unable to remove {file_path}: {e}", extra={"path": file_path})
 
 @analysis.route('/new_alert_observable', methods=['GET'])
 @login_required

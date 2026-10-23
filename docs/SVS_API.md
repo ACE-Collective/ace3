@@ -453,7 +453,7 @@ added, changed and removed with `svs:admin`, each change an AUDIT line.
 | `GET /api/v2/svs/test-hosts/{id}` | `svs:run_read` | One test host |
 | `POST /api/v2/svs/test-hosts` `{hostname, fqdn?, usernames?, ips?, platform?, notes?}` | `svs:admin` | 201 and the new host; 409 when its short name is already a test host, 422 for a field that can't be used |
 | `PUT /api/v2/svs/test-hosts/{id}` (the same body) | `svs:admin` | The host with its fields replaced |
-| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets |
+| `DELETE /api/v2/svs/test-hosts/{id}` | `svs:admin` | 204. Runs already registered keep their targets; its open maintenance window is ended |
 
 ### Fields
 
@@ -472,6 +472,26 @@ added, changed and removed with `svs:admin`, each change an AUDIT line.
 
 With `changed_since`, a host is returned when it was added or changed at or after that time. A
 removed host just disappears; its removal is an AUDIT line in ACE's log.
+
+### Maintenance windows
+
+A test host's maintenance windows (`docs/SVS_RUNS.md`, *Maintenance windows*). `{host}` is the
+test host's id, or its short or fully qualified name.
+
+| Endpoint | Permission | Returns |
+|---|---|---|
+| `POST /api/v2/svs/test-hosts/{host}/maintenance` `{minutes, reason}` | `svs:run_register` | 201 and the window. 403 for a host that is not a test host (it also alerts), 404 for an unknown id, 409 while a run or another window holds the host (`{"detail": {"message", "holders"}}`, as for runs), 422 for `minutes` over `svs.runs.max_maintenance_minutes` |
+| `DELETE /api/v2/svs/test-hosts/{host}/maintenance` | `svs:run_register` | The window, ended now; 404 when the host has no open window |
+| `GET /api/v2/svs/test-hosts/{host}/maintenance` | `svs:run_read` | The host's windows, latest first, paged with `cursor` |
+
+| Field | Meaning |
+|---|---|
+| `id` | The window's uuid; `svs_maintenance` in ACE's logs and in the comment of every alert closed for it. |
+| `host`, `fqdn` | The test host's names when the window opened. |
+| `reason`, `opened_by`, `opened_at` | Why, who (the key's or user's name) and when. |
+| `ends_at` | When it was opened to end. |
+| `ended_at`, `ended_by`, `end_reason` | When it ended and who ended it: `ended` early by a call (ending the window, or removing its test host), or `expired` at `ends_at` (`ended_by` `svs`). |
+| `open` | It hasn't ended. |
 
 ## Tests
 
@@ -609,7 +629,7 @@ The lifecycle calls return the run's lifecycle fields: `run_id`, `marker`, `stat
 | 403 | A target is not a test host, or names a user the host doesn't list: `{"detail": {"message", "reasons": […]}}`, one reason per refused target. It also alerts (`docs/SVS_RUNS.md`, *Refused registrations*). Also a key without the call's permission. |
 | 404 | No run has that `run_id`. |
 | 409 | The call doesn't apply to the run's state: `{"detail": {"message", "state"}}`. |
-| 409 | Registering, or starting, a run on a test host another run holds: `{"detail": {"message", "holders": [{"host", "run_id", "state", "until"}]}}`, `until` null for a run not started (`docs/SVS_RUNS.md`, *One run per test host*). No alert. |
+| 409 | Registering, or starting, a run on a test host another run or a maintenance window holds: `{"detail": {"message", "holders": [{"host", "run_id", "maintenance_id", "state", "until"}]}}`. A run holder has `run_id` and its state, with `until` null while it hasn't started (`docs/SVS_RUNS.md`, *One run per test host*); a window holder has `maintenance_id`, `run_id` null and the state `maintenance`, with `until` when it ends (*Maintenance windows*). No alert. |
 | 422 | The test is not in the catalog or was removed, a target's platform isn't one the test supports, the run's platform can't be decided (the targets' hosts disagree, or none has a platform and the test supports more than one), a host or user name can't be used, too many targets, or `extra` is too large. |
 
 The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown one.
@@ -826,6 +846,7 @@ A run's result is one row per signature (`docs/SVS_RUNS.md`, *Results*), read wi
 | `status` | `hit`, `missing`, `possibly_suppressed`, `candidate`, `rejected`, `ignored` or `cleanup` (it fired only during the test's cleanup and isn't expected); null once the signature left the live result and the row holds only the reviewed one. |
 | `alert_count` | The run's attributed alerts that carry the signature (0 when missing). A signature the test fired outside its cleanup counts only those alerts. |
 | `late_only`, `context_only` | Every attribution of it was *late*, or by context alone. |
+| `fallback_time` | Some attribution of it was judged by a fallback event time (`docs/SVS_RUNS.md`, *Fallback event times*). |
 | `content_hash` | The rule's own content hash when the result was computed (the YARA rule's text, the hunt's file, a built-in's declaration). |
 | `suppressing_alert_uuid`, `suppression_imprecise` | For `possibly_suppressed`: the hunt's latest alert within its suppression period, and whether the hunt deduplicates its alerts, so it may not have suppressed the run's. Both are empty for a hunt with `group_by`, whose suppression the hunter recorded (`docs/SVS_RUNS.md`, *Results*). |
 | `reviewed_status`, `reviewed_alert_count`, `reviewed_late_only`, `reviewed_content_hash` | The result as signed off; null until the run is reviewed. A re-review replaces them. |
@@ -850,6 +871,7 @@ alerts by hand*), one row per (alert, detection), removed ones included, read wi
 | `signature_uuid`, `signature_family` | The detection's signature. |
 | `confidence`, `late` | `marker` or `context` (a person's association is `marker`), and whether the alert's event came after the observation window. |
 | `event_time`, `cleanup` | The alert's event time the attribution was judged by (null for attributions written before it was kept), and whether it is at or after the run's `cleanup_at`: the test's cleanup caused it (`docs/SVS_RUNS.md`, *Cleanup*). |
+| `event_time_source`, `fallback_time` | Where `event_time` came from: `event` (the event's own), `query_time` (a hunt couldn't extract it) or `insert_time` (the alert has none); null for attributions written before it was kept. `fallback_time` is true for the last two (`docs/SVS_RUNS.md`, *Fallback event times*). |
 | `source` | `router` (the `svs_marker` router) or `manual` (a person associated the alert). |
 | `scan_point` | Where the agreeing marker was found; null for context and for a person's association. |
 | `actor`, `actor_user`, `created_at` | Who attributed it (`svs` for the router) and when. |
@@ -884,6 +906,7 @@ paged with `cursor`. Its NDJSON export streams every row. The rows nest, so ther
 | `confidence` | Of the attributions that hold: `marker` when any is (a person's association counts as one), else `context`; null when none holds. |
 | `late`, `manual` | An attribution that holds is late, or was made by a person. |
 | `cleanup` | Every attribution that holds is the test's cleanup's. |
+| `fallback_time` | An attribution that holds was judged by a fallback event time. |
 | `kept` | A person kept its context attributions. |
 | `undecided_context` | It has a context attribution that holds and that nobody kept: a review waits for *keep* or *not a test* (`review_blockers.context_alerts`). |
 | `detections` | Every detection of the alert, then any attributed one it no longer has: `{"detection", "description", "signature_uuid", "signature_family", "attribution"}`, where `detection` is the `content_hash`, `description` is null for one it no longer has, and `attribution` is its attribution to this run (as in *Attributions*), or null when it never had one. |

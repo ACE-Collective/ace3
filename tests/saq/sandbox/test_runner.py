@@ -23,9 +23,13 @@ from saq.sandbox.runner import (
 
 PYTHON = sandbox_python()
 
+# the tests that are not about TCP leave it unrestricted, so they run on any kernel with Landlock and
+# not only on one with TCP port rules (ABI 4, Linux 6.7)
+NO_TCP_RULES = SandboxConfig(allowed_tcp_ports=None)
 
-def _run_python(code: str, workdir: str, *args: str, config: SandboxConfig | None = None):
-    argv = build_sandbox_argv([PYTHON, "-I", "-c", code, *args], workdir, config or SandboxConfig(), datetime.timedelta(seconds=30))
+
+def _run_python(code: str, workdir: str, *args: str, config: SandboxConfig = NO_TCP_RULES):
+    argv = build_sandbox_argv([PYTHON, "-I", "-c", code, *args], workdir, config, datetime.timedelta(seconds=30))
     return run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir, datetime.timedelta(seconds=30), 1024 * 1024)
 
 
@@ -81,7 +85,7 @@ def test_default_config_refuses_every_tcp_connection(tmp_path):
         "    print('allowed')"
     )
     with create_workdir(str(tmp_path)) as workdir:
-        result = _run_python(code, workdir)
+        result = _run_python(code, workdir, config=SandboxConfig())
         assert result.stdout.strip() == "refused", result.stderr
 
 
@@ -123,7 +127,7 @@ def test_cancel_stops_the_command_and_everything_it_started(tmp_path):
     )
     cancel = threading.Event()
     with create_workdir(str(tmp_path)) as workdir:
-        argv = build_sandbox_argv([PYTHON, "-I", "-c", code], workdir, SandboxConfig(), datetime.timedelta(seconds=60))
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", code], workdir, NO_TCP_RULES, datetime.timedelta(seconds=60))
         env = {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}
         pid_file = os.path.join(workdir, "child.pid")
         threading.Thread(target=lambda: (_wait_for(pid_file), cancel.set()), daemon=True).start()
@@ -143,7 +147,7 @@ def test_cancel_stops_the_command_and_everything_it_started(tmp_path):
 @pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
 def test_an_unset_cancel_event_changes_nothing(tmp_path):
     with create_workdir(str(tmp_path)) as workdir:
-        argv = build_sandbox_argv([PYTHON, "-I", "-c", "print('done')"], workdir, SandboxConfig(),
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", "print('done')"], workdir, NO_TCP_RULES,
                                   datetime.timedelta(seconds=30))
         result = run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
                                datetime.timedelta(seconds=30), 1024 * 1024, cancel=threading.Event())

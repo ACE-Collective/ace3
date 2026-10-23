@@ -1,20 +1,28 @@
 from datetime import datetime, timedelta
 import logging
 import os.path
+from types import SimpleNamespace
 
 from saq.analysis import RootAnalysis
 from saq.database import ALERT, Alert, Event, get_db
 from saq.configuration.config import get_config
-from saq.constants import DISPOSITION_IGNORE, DISPOSITION_SIMULATED, ENV_ACE_IS_PRIMARY_NODE
+from saq.constants import DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, DISPOSITION_SIMULATED, ENV_ACE_IS_PRIMARY_NODE
 from saq.database.model import DetectionPoint
 from saq.environment import get_base_dir
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
-from saq.util.maintenance import archive_simulated_alerts, cleanup_alerts, cleanup_ignored_alerts, distribute_old_alerts
+from saq.util.maintenance import (
+    archive_fp_alerts,
+    archive_simulated_alerts,
+    cleanup_alerts,
+    cleanup_ignored_alerts,
+    distribute_old_alerts,
+)
 from tests.saq.helpers import insert_alert, insert_alert_with_detections, make_simulated
 
 import saq.util.maintenance
 
 import pytest
+from sqlalchemy import func, text
 
 @pytest.mark.parametrize("days,target,insert_alert,alert_age_days,add_to_event,expected_raises,upload_failure,non_success,expected_count,alert_still_exists,dry_run", [
     #days  target   insrt  age event  raise  fail   n-succ cnt isdir  dry
@@ -145,6 +153,11 @@ def test_emit_cache_stats_emits_heartbeat(caplog):
 # SIMULATED (test-run) alerts are archived after svs.simulated_days and never deleted
 #
 
+def _db_days_ago(days: int):
+    # the database's clock, which is the one that sets disposition_time
+    return func.date_sub(func.now(), text(f"INTERVAL {int(days)} DAY"))
+
+
 def _simulated_alert(days_ago: int) -> Alert:
     alert = insert_alert_with_detections([
         {"description": "test signature fired", "signature_uuid": BUILTIN_SIGNATURE_UUID, "fqdn": "test.example.com"},
@@ -152,7 +165,17 @@ def _simulated_alert(days_ago: int) -> Alert:
     make_simulated(alert)
     db = get_db()
     db.query(Alert).filter(Alert.id == alert.id).update(
-        {Alert.disposition_time: datetime.now() - timedelta(days=days_ago)})
+        {Alert.disposition_time: _db_days_ago(days_ago)}, synchronize_session=False)
+    db.commit()
+    return alert
+
+
+def _fp_alert(days_ago: int) -> Alert:
+    alert = insert_alert()
+    db = get_db()
+    db.query(Alert).filter(Alert.id == alert.id).update(
+        {Alert.disposition: DISPOSITION_FALSE_POSITIVE, Alert.disposition_time: _db_days_ago(days_ago)},
+        synchronize_session=False)
     db.commit()
     return alert
 
@@ -207,6 +230,73 @@ def test_simulated_dry_run_archives_nothing(caplog):
     assert "1 SIMULATED alerts would be archived" in caplog.text
 
 
+def _archive_error_records(caplog, alert: Alert) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.levelno >= logging.ERROR and getattr(r, "alert_uuid", None) == alert.uuid]
+
+
+def _fail_for(alert: Alert, real_method, exception: Exception):
+    def _method(self, *args, **kwargs):
+        if self.uuid == alert.uuid:
+            raise exception
+        return real_method(self, *args, **kwargs)
+
+    return _method
+
+
+@pytest.mark.integration
+def test_archive_failure_is_logged_and_archiving_continues(monkeypatch, caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    monkeypatch.setattr(Alert, "archive", _fail_for(failing, Alert.archive, OSError("disk full")))
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    # left for the next run
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+
+    records = _archive_error_records(caplog, failing)
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.integration
+def test_archive_load_failure_is_logged_with_traceback(caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    os.remove(os.path.join(get_base_dir(), failing.storage_dir, "data.json"))
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+
+    records = _archive_error_records(caplog, failing)
+    assert len(records) == 1
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.integration
+def test_archive_commit_failure_does_not_break_the_next_alert(monkeypatch, caplog):
+    failing, other = _simulated_alert(days_ago=31), _simulated_alert(days_ago=31)
+    real_sync = Alert.sync
+
+    def _sync(self, *args, **kwargs):
+        if self.uuid == failing.uuid:
+            self.tool = None # NOT NULL: the commit fails and the session needs a rollback
+        return real_sync(self, *args, **kwargs)
+
+    monkeypatch.setattr(Alert, "sync", _sync)
+
+    with caplog.at_level(logging.ERROR):
+        archive_simulated_alerts(30, dry_run=False)
+
+    assert not _reloaded(failing).archived
+    assert _reloaded(other).archived
+    assert len(_archive_error_records(caplog, failing)) == 1
+
+
 #
 # IGNORE alerts are deleted after ignore_days
 #
@@ -217,7 +307,8 @@ def _ignored_alert(days_ago: int) -> tuple[int, str, str]:
     alert = insert_alert()
     db = get_db()
     db.query(Alert).filter(Alert.id == alert.id).update(
-        {Alert.disposition: DISPOSITION_IGNORE, Alert.disposition_time: datetime.now() - timedelta(days=days_ago)})
+        {Alert.disposition: DISPOSITION_IGNORE, Alert.disposition_time: _db_days_ago(days_ago)},
+        synchronize_session=False)
     db.commit()
     return alert.id, alert.uuid, os.path.join(get_base_dir(), alert.storage_dir)
 
@@ -279,3 +370,48 @@ def test_ignored_alert_storage_delete_failure_is_logged_and_cleanup_continues(mo
     assert records[0].levelno == logging.ERROR
     assert records[0].exc_info is not None
     assert records[0].storage_dir == failing_dir
+
+
+#
+# the cutoffs come from the database's clock, which wrote disposition_time, not the node's
+#
+
+class _NodeClockAhead(datetime):
+    """The node's clock, 30 days ahead of the database's (e.g. a different time zone)."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + timedelta(days=30)
+
+
+@pytest.fixture
+def node_clock_ahead(monkeypatch):
+    # only the maintenance module sees the skewed clock
+    monkeypatch.setattr(saq.util.maintenance, "datetime", SimpleNamespace(datetime=_NodeClockAhead, timedelta=timedelta))
+
+
+@pytest.mark.integration
+def test_ignore_cutoff_uses_the_database_clock(node_clock_ahead, monkeypatch):
+    old_id, _, _ = _ignored_alert(days_ago=8)
+    recent_id, _, recent_dir = _ignored_alert(days_ago=2)
+    monkeypatch.setattr(saq.util.maintenance, "submit_delete_task", lambda alert_uuid: True)
+
+    cleanup_ignored_alerts(7, dry_run=False)
+
+    assert not _alert_row_exists(old_id)
+    assert _alert_row_exists(recent_id)
+    assert os.path.exists(recent_dir)
+
+
+@pytest.mark.parametrize("make_alert,archive", [
+    (_fp_alert, archive_fp_alerts),
+    (_simulated_alert, archive_simulated_alerts),
+])
+@pytest.mark.integration
+def test_archive_cutoff_uses_the_database_clock(node_clock_ahead, make_alert, archive):
+    old, recent = make_alert(days_ago=8), make_alert(days_ago=2)
+
+    archive(7, dry_run=False)
+
+    assert _reloaded(old).archived
+    assert not _reloaded(recent).archived

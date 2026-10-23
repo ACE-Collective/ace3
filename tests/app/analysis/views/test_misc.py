@@ -567,3 +567,77 @@ class TestUploadFileRecordsTheAnalyst:
         lock_uuid = str(uuid4())
         assert acquire_lock(alert_uuid, lock_uuid)
         release_lock(alert_uuid, lock_uuid)
+
+
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as sess:
+        return [message for _category, message in sess.get("_flashes", [])]
+
+
+@pytest.mark.integration
+class TestUploadFileFailures:
+    """The ways an upload to an existing alert can fail, and what each one leaves behind."""
+
+    def test_a_comment_that_cannot_be_saved_keeps_the_upload(self, web_client, monkeypatch, caplog):
+        alert_uuid = _new_alert_uuid(web_client)
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr("app.analysis.views.misc.create_comment", broken)
+
+        with caplog.at_level(logging.ERROR):
+            result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid,
+                             comment='captured from the detonation VM')
+
+        assert result.status_code == 302
+        assert _flashes(web_client) == ["uploaded the file, but unable to save the comment"]
+        [record] = [r for r in caplog.records if "unable to add the upload comment" in r.getMessage()]
+        assert alert_uuid in record.getMessage()
+        assert record.exc_info is not None
+        _, file_observable = _file_observable(alert_uuid, 'later.txt')
+        assert file_observable is not None
+
+    def test_an_alert_being_analyzed_is_left_alone(self, web_client):
+        alert_uuid = _new_alert_uuid(web_client)
+        engine_lock = str(uuid4())
+        assert acquire_lock(alert_uuid, engine_lock)
+        try:
+            result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+        finally:
+            release_lock(alert_uuid, engine_lock)
+
+        assert result.status_code == 302
+        assert [message for message in _flashes(web_client) if message.startswith("unable to lock alert")]
+        alert = get_alert_by_uuid(alert_uuid)
+        alert.load()
+        assert not [o for o in alert.root_analysis.observables if o.type == 'file' and o.file_name == 'later.txt']
+
+    def test_an_alert_that_will_not_load_is_reported(self, web_client, monkeypatch):
+        alert_uuid = _new_alert_uuid(web_client)
+        monkeypatch.setattr(RootAnalysis, "load", lambda self, *args, **kwargs: False)
+
+        result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+
+        assert result.status_code == 302
+        assert [message for message in _flashes(web_client) if message.startswith("unable to load alert")]
+        # the lock was released on the way out
+        lock_uuid = str(uuid4())
+        assert acquire_lock(alert_uuid, lock_uuid)
+        release_lock(alert_uuid, lock_uuid)
+
+    def test_a_lock_that_cannot_be_released_is_reported(self, web_client, monkeypatch):
+        alert_uuid = _new_alert_uuid(web_client)
+        released = []
+
+        def release_but_fail(uuid, lock_uuid):
+            released.append(release_lock(uuid, lock_uuid))
+            return False
+
+        monkeypatch.setattr("app.analysis.views.misc.release_lock", release_but_fail)
+
+        result = _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid)
+
+        assert result.status_code == 302
+        assert [message for message in _flashes(web_client) if message.startswith("unable to release lock for alert")]
+        assert released == [True]

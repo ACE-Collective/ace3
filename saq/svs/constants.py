@@ -112,6 +112,16 @@ class AttributionConfidence(StrEnum):
     CONTEXT = "context"      # no marker at all: the run's target and window alone
 
 
+class EventTimeSource(StrEnum):
+    """Where the event time an alert was judged by came from (svs_attributions.event_time_source)."""
+    EVENT = "event"            # the event's own
+    QUERY_TIME = "query_time"  # a hunt couldn't extract the event's timestamp and used its query's time
+    INSERT_TIME = "insert_time"  # the alert has no event time: when it was inserted
+
+
+FALLBACK_EVENT_TIME_SOURCES = (EventTimeSource.QUERY_TIME.value, EventTimeSource.INSERT_TIME.value)
+
+
 class AttributionSource(StrEnum):
     """Who wrote an attribution (svs_attributions.source)."""
     ROUTER = "router"        # the marker router (saq/svs/routing.py)
@@ -149,6 +159,8 @@ SIGHTINGS_EXTENSION = "svs_sightings"
 # the tags the svs_alert_tagger module puts on the root
 TAG_SVS_TEST = "svs_test"
 TAG_MARKER_MISMATCH = "svs:marker_mismatch"
+# an alert of a test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)
+TAG_MAINTENANCE = "svs:maintenance"
 
 # the actor of what the marker router writes
 ROUTER_ACTOR = "svs"

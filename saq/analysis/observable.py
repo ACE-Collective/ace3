@@ -17,7 +17,6 @@ from saq.util import create_timedelta, parse_event_time
 if TYPE_CHECKING:
     from saq.analysis.analysis import Analysis
     from saq.modules.base_module import AnalysisModule
-    from saq.remediation.target import RemediationTarget
 
 class Observable(BaseNode):
     """Represents a piece of information discovered in an analysis that can itself be analyzed."""
@@ -267,11 +266,6 @@ class Observable(BaseNode):
     def directives(self, value):
         assert isinstance(value, list)
         self._directives = value
-
-    @property
-    def remediation_targets(self) -> list["RemediationTarget"]:
-        """Returns a list of remediation targets for the observable, by default this is an empty list."""
-        return []
 
     def add_directive(self, directive):
         """Adds a directive that analysis modules might use to change their behavior."""

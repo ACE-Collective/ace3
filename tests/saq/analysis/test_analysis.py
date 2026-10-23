@@ -157,6 +157,17 @@ def test_load_analysis_from_module_path_deprecated_logs_debug(caplog, monkeypatc
     assert any("saq.modules.test:DoesNotExist" in m for m in debug_messages)
 
 @pytest.mark.unit
+def test_load_removed_user_tag_analysis(caplog):
+    # the user_tagger module was removed, but saved alerts still reference its analysis
+    from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
+
+    caplog.set_level(logging.DEBUG)
+    analysis = load_analysis_from_module_path("saq.modules.user:UserTagAnalysis")
+
+    assert isinstance(analysis, UnknownAnalysis)
+    assert not [r for r in caplog.records if r.levelno > logging.DEBUG]
+
+@pytest.mark.unit
 def test_is_deprecated_module_path(monkeypatch):
     from saq.analysis.analysis import is_deprecated_module_path
 

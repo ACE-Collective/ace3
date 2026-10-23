@@ -101,13 +101,14 @@ class ClickerDetectionAnalysisMixin:
         source = self.details.get("clicker_source")
         if source:
             label = f"{label} ({source.capitalize()})"
-        if self.query_error:
-            return f"{label}: ERROR: {self.query_error}"
         events = self.details.get("clicker_events") or []
-        if not events:
-            return f"{label}: no clicks found"
         count = len(events)
-        return f"{label}: {count} click{'' if count == 1 else 's'} found"
+        found = f"{count} click{'' if count == 1 else 's'} found" if events else "no clicks found"
+        if self.query_error:
+            # one failed search must not hide the clicks the others found
+            prefix = f"{found}, " if events else ""
+            return f"{label}: {prefix}ERROR: {self.query_error}"
+        return f"{label}: {found}"
 
     def get_clicker_error(self) -> Optional[str]:
         """The search error for this source's clicker run, if any (for the URL Clicks card).
@@ -263,6 +264,7 @@ class ClickerDetectionMixin:
 
             self._prepare_search(observable, search_def)
 
+            error = None
             try:
                 results = self.execute_query()
             except AnalysisDelay:
@@ -270,9 +272,18 @@ class ClickerDetectionMixin:
                     return self.delay_analysis(observable, analysis, seconds=self.async_delay_seconds)
                 logging.warning("%s clicker search %s timed out", self.config.source, name)
                 results = None
+                error = "timed out"
             except Exception as e:
-                logging.error("clicker search %s failed: %s", name, e)
+                logging.exception(f"{self.config.source} clicker search {name} failed for {observable.value}: {e}",
+                                  extra={"clicker_source": self.config.source, "clicker_search": name,
+                                         "observable": observable.value})
                 results = None
+                error = str(e)
+
+            if error is not None:
+                # recorded so that a search that never answered does not read as "no clicks found"
+                previous = f"{analysis.query_error}; " if analysis.query_error else ""
+                analysis.query_error = f"{previous}{name}: {error}"
 
             if results is not None:
                 self.process_query_results(results, analysis, observable)

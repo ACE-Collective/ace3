@@ -533,6 +533,8 @@ If `offset` is set to a value, then the entire computed time range is shifted ea
 
 Usually a hunt is just performing some kind of a search, and you usually want to make sure that all of the data is searched. In that case, you want `use_index_time` and `full_coverage` set to true. This is the most common configuration.
 
+A hunt that can't extract an event's timestamp gives its alert the time it processed the results instead, and marks the alert so (the `event_time_fallback` root extension). SVS judges test runs by that time, and logs a WARNING naming the hunt when it alerted on a test host that way (`docs/SVS_RUNS.md`, *Fallback event times*): fix the hunt's timestamp extraction.
+
 If your hunt does some kind of a computation or uses some kind of logic that is based on event time, then `use_index_time` and `full_coverage` should be set to false. A good example of this would be something that computes a number of failed logins over a certain period.
 
 If `use_index_time` is set to false and the log data that you are searching is often behind, you can use offset to search by an `offset`. For example, if you find that a log source is usually 15 minutes behind, you can use a 20 minute offset to help ensure you can scan all of the data.

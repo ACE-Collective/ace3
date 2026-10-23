@@ -170,7 +170,13 @@ def replicate_async(crash_dir: str, crash_id: str) -> bool:
             finally:
                 _upload_slots.release()
 
-        threading.Thread(target=_run, name=f"crash-replication-{crash_id[:8]}", daemon=True).start()
+        try:
+            threading.Thread(target=_run, name=f"crash-replication-{crash_id[:8]}", daemon=True).start()
+        except Exception:
+            # _run never ran, so its finally will not give the slot back
+            _upload_slots.release()
+            raise
+
         return True
 
     except Exception as e:

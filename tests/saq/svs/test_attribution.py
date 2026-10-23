@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL
 from saq.database import private_session
@@ -23,6 +23,7 @@ from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 from saq.svs import attribution
 from saq.svs.attribution import (
     AlertHosts,
+    ContextOwner,
     RunSnapshot,
     Sighting,
     TargetSnapshot,
@@ -31,13 +32,16 @@ from saq.svs.attribution import (
     analysis_sightings,
     attribution_open,
     context_claimant,
+    context_owners,
     evaluate,
+    event_time_source,
     find_markers_in_data,
     record_delta_sightings,
     record_suppressed_matches,
     resolve_markers,
-    runs_in_window,
+    runs_overlapping,
     save_sightings,
+    suppression_owners,
     saved_sightings,
     tree_sightings,
     write_attributions,
@@ -47,6 +51,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
+    EventTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -203,6 +208,14 @@ class TestHosts:
         aware = datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc)
         root.event_time = aware
         assert alert_event_time(root, T0) == aware.astimezone(get_local_timezone()).replace(tzinfo=None)
+
+    def test_event_time_source(self):
+        root = RootAnalysis(uuid=str(uuid.uuid4()))
+        assert event_time_source(root) == EventTimeSource.INSERT_TIME
+        root.event_time = T0
+        assert event_time_source(root) == EventTimeSource.EVENT
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        assert event_time_source(root) == EventTimeSource.QUERY_TIME
 
 
 #
@@ -502,12 +515,13 @@ class TestDatabase:
         assert record_delta_sightings(root, parent, Delta(), "module_x") == 0
         assert not (root.extensions or {}).get(SIGHTINGS_EXTENSION)
 
-    def test_runs_in_window(self):
+    def test_runs_overlapping(self):
         run = started_run(GUID)
-        assert [r.uuid for r in runs_in_window(_soon())] == [run.uuid]
-        assert runs_in_window(datetime.now() - timedelta(hours=1)) == []
+        assert [r.uuid for r in runs_overlapping(_soon(), _soon())] == [run.uuid]
+        an_hour_ago = datetime.now() - timedelta(hours=1)
+        assert runs_overlapping(an_hour_ago, an_hour_ago) == []
         # a span that reaches into its window
-        assert [r.uuid for r in runs_in_window(datetime.now() - timedelta(hours=1), _soon())] == [run.uuid]
+        assert [r.uuid for r in runs_overlapping(an_hour_ago, _soon())] == [run.uuid]
 
     def test_evaluate_by_ip(self):
         run = started_run(GUID)
@@ -583,6 +597,35 @@ class TestDatabase:
         later = second + timedelta(minutes=2)
         assert len(write_attributions(root.uuid, evaluate(root, later)).written) == 2
         assert self._event_times(root.uuid) == {later}
+
+    def _sources(self, alert_uuid):
+        with private_transaction() as session:
+            return set(session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == alert_uuid)).scalars())
+
+    def test_the_event_time_source_is_kept(self):
+        run = started_run(GUID)
+        root = self._root(run)
+        event_time = _soon().replace(microsecond=0)
+        root.event_time = event_time
+        write_attributions(root.uuid, evaluate(root, event_time))
+        assert self._sources(root.uuid) == {"event"}
+
+        # a later pass that finds the time was the hunt's query time says so
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        assert self._sources(root.uuid) == {"query_time"}
+
+        # rows written before the source was recorded get it on the next pass
+        with private_transaction() as session:
+            session.execute(SVSAttribution.__table__.update().where(
+                SVSAttribution.alert_uuid == root.uuid).values(event_time_source=None))
+        root.extensions.pop(KEY_EVENT_TIME_FALLBACK)
+        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        assert self._sources(root.uuid) == {"event"}
+
+        # and a pass that changes nothing writes nothing
+        assert write_attributions(root.uuid, evaluate(root, event_time)).written == []
 
     def _reviewed_run(self):
         run = started_run(GUID)
@@ -841,6 +884,50 @@ class TestSuppressedMatches:
         assert _suppressed() == [(run.id, "bob", started + timedelta(minutes=5))]
         assert _generation(run.id) is None
         assert not [r for r in caplog.records if "suppressed a match" in r.getMessage()]
+
+
+def _hosts(*names: str) -> AlertHosts:
+    return AlertHosts(names={(name, None) for name in names})
+
+
+@pytest.mark.integration
+class TestContextOwners:
+    @pytest.fixture(autouse=True)
+    def setup(self, no_hunts):
+        add_catalog_test(GUID)
+        add_test_host("win10-01")
+        add_test_host("win10-02")
+
+    def test_each_event_by_its_hosts_and_time(self):
+        run = _run()
+        before, inside = T0 - timedelta(minutes=10), T0 + timedelta(minutes=10)
+        owners = context_owners([(_hosts("win10-01"), inside), (_hosts("win10-02"), inside),
+                                 (_hosts("win10-01"), before)])
+        assert owners == [ContextOwner(run, (run,)), ContextOwner(), ContextOwner()]
+        assert context_owners([]) == []
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_no_owner_but_every_candidate_when_claims_overlap(self):
+        first, second = _run(), _run(started=T0 + timedelta(minutes=5))
+        (owner,) = context_owners([(_hosts("win10-01"), T0 + timedelta(minutes=10))])
+        assert owner.run is None
+        assert owner.candidates == (first, second)
+
+    def test_attribution_and_the_hunter_all_ask_it(self, monkeypatch):
+        """Ownership is decided in one place: the alert's context attribution, a grouped hunt's
+        suppression key and its suppressed matches all follow context_owners."""
+        started = (datetime.now() - timedelta(hours=2)).replace(microsecond=0)
+        started_run(GUID, now=started)
+        other = resolve_markers([started_run(GUID, "win10-02", now=started).marker])
+        other = next(iter(other.values()))
+        monkeypatch.setattr(attribution, "context_owners",
+                            lambda events: [ContextOwner(other, (other,)) for _ in events])
+
+        root, group_value = _match(started + timedelta(minutes=10))
+        root.add_detection_point("hunt hit")
+        assert {a.run.id for a in evaluate(root, started + timedelta(minutes=10)).attributions} == {other.id}
+        assert suppression_owners([root]) == [other]
+        assert [run.id for run, _ in record_suppressed_matches(HUNT_UUID, [(root, group_value)])] == [other.id]
 
 
 @pytest.mark.unit

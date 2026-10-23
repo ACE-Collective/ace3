@@ -16,7 +16,14 @@ import pytz
 from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
-from saq.analysis.root import KEY_PLAYBOOK_URL, KEY_TRANSACTION_ID, RootAnalysis, Submission
+from saq.analysis.root import (
+    EVENT_TIME_FALLBACK_QUERY_TIME,
+    KEY_EVENT_TIME_FALLBACK,
+    KEY_PLAYBOOK_URL,
+    KEY_TRANSACTION_ID,
+    RootAnalysis,
+    Submission,
+)
 from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
@@ -27,7 +34,7 @@ from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.signatures.model import SignatureType
-from saq.svs.attribution import record_suppressed_matches, run_suppression_key, suppression_runs
+from saq.svs.attribution import MaintenanceSnapshot, record_suppressed_matches, suppression_key, suppression_owners
 from saq.observables.mapping import (
     ObservableMapping,
     RelationshipMapping,
@@ -824,26 +831,28 @@ class QueryHunt(Hunt):
 
     def key_suppression(self, submissions: list[Submission]):
         """Sets each grouped submission's suppression_key, which the suppression check and the
-        manager's last alert times use: its group_value, or during an svs run on a test host it
-        involves, the group_value keyed by that run (docs/SVS_RUNS.md, *Hunt suppression during
-        runs*), so a test is never hidden by an earlier alert and never hides a later one. A failure
-        to look the runs up falls back to the group_value."""
+        manager's last alert times use: its group_value, or during an svs run or maintenance window
+        on a test host it involves, the group_value keyed by that run or window (docs/SVS_RUNS.md,
+        *Hunt suppression during runs*), so a test is never hidden by an earlier alert and neither a
+        test nor a host's staging hides a later one. A failure to look them up falls back to the
+        group_value."""
         try:
-            runs = suppression_runs([submission.root for submission in submissions])
+            owners = suppression_owners([submission.root for submission in submissions])
         except Exception as e:
             logging.exception("unable to key the suppression of hunt %s (uuid=%s, type=%s) by svs run: %s",
                               self.name, self.uuid, self.type, e)
-            runs = [None] * len(submissions)
+            owners = [None] * len(submissions)
 
-        for submission, run in zip(submissions, runs):
+        for submission, owner in zip(submissions, owners):
             group_value = getattr(submission, "group_value", None)
-            if group_value is None or run is None:
+            if group_value is None or owner is None:
                 submission.suppression_key = group_value
                 continue
-            submission.suppression_key = run_suppression_key(run.uuid, group_value)
-            logging.info("hunt %s (uuid=%s, type=%s) group_value %s: suppression keyed by svs run %s",
-                         self.name, self.uuid, self.type, group_value, run.uuid,
-                         extra={**run.log_fields(), "hunt_uuid": self.uuid, "group_value": group_value})
+            submission.suppression_key = suppression_key(owner, group_value)
+            kind = "maintenance window" if isinstance(owner, MaintenanceSnapshot) else "run"
+            logging.info("hunt %s (uuid=%s, type=%s) group_value %s: suppression keyed by svs %s %s",
+                         self.name, self.uuid, self.type, group_value, kind, owner.uuid,
+                         extra={**owner.log_fields(), "hunt_uuid": self.uuid, "group_value": group_value})
 
     def process_query_results(self, query_results, **kwargs) -> Optional[list[Submission]]:
         if query_results is None:
@@ -983,7 +992,8 @@ class QueryHunt(Hunt):
 
         # map results to observables
         for event_index, event in enumerate(query_results):
-            event_time = self.extract_event_timestamp(event) or local_time()
+            extracted_time = self.extract_event_timestamp(event)
+            event_time = extracted_time or local_time()
             event = self.wrap_event(event)
 
             # use shared extraction pipeline
@@ -1035,6 +1045,9 @@ class QueryHunt(Hunt):
                 submission = _create_submission(event)
                 submission.key = _compute_dedup_key(event)
                 submission.root.event_time = event_time
+                # SVS attribution judges windows by it, and says when it rests on the query's time
+                submission.root.set_optional_extension(
+                    KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
 
                 # Apply correlation overrides
                 if event_index in event_action_overrides:
@@ -1122,10 +1135,12 @@ class QueryHunt(Hunt):
 
                     # for grouped events, the overall event time is the earliest event time in the group
                     # this won't really matter if the observables are temporal
-                    if event_grouping[grouping_target].root.event_time is None:
-                        event_grouping[grouping_target].root.event_time = event_time
-                    elif event_time < event_grouping[grouping_target].root.event_time:
-                        event_grouping[grouping_target].root.event_time = event_time
+                    group_root = event_grouping[grouping_target].root
+                    if group_root.event_time is None or event_time < group_root.event_time:
+                        group_root.event_time = event_time
+                        # the group's time is its earliest event's: whether that one's is its own
+                        group_root.set_optional_extension(
+                            KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
 
             # apply relationships to the observables
             for submission in submissions:

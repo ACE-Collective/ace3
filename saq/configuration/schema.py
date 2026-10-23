@@ -823,6 +823,7 @@ class SVSRunsConfig(BaseModel):
     max_extra_bytes: int = Field(default=16384, ge=0, description="the largest launcher extra a registration may carry, as serialized JSON; it is stored and shown on the run page")
     max_targets: int = Field(default=16, ge=1, description="the most targets one run may have")
     timer_interval_seconds: int = Field(default=30, gt=0, description="how often service_svs looks for runs whose start timeout or windows have passed")
+    max_maintenance_minutes: int = Field(default=240, ge=1, description="the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md, *Maintenance windows*)")
 
 
 class SVSAttributionConfig(BaseModel):
@@ -1260,6 +1261,17 @@ class ACEConfig(BaseModel):
             if not key.startswith("analysis_module_"):
                 continue
 
+            # a site overlay that only set keys on a module ACE has since removed is all that is
+            # left of its block; it can never load, and failing on it would stop every process
+            if isinstance(value, dict) and not value.keys() & {"name", "python_module", "python_class"}:
+                logging.warning(
+                    "config %s does not define an analysis module (its module was probably removed "
+                    "from ACE); ignoring it, delete it from the config overlay that sets it",
+                    key,
+                    extra={"config_key": key},
+                )
+                continue
+
             # the analysis module class (and therefore the config class it declares) is
             # not loaded here -- see saq.configuration.lazy_registry
             analysis_module_config = self.__analysis_modules.add_raw(key, value)
@@ -1273,6 +1285,12 @@ class ACEConfig(BaseModel):
             raise ValueError(f"analysis module config for {name} not found")
 
         return self.__analysis_modules.get(name)
+
+    def has_analysis_module_config(self, name: str) -> bool:
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
+
+        return name in self.__analysis_modules
 
     def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
         """Look up the config of the analysis module that generates the analysis a module_path

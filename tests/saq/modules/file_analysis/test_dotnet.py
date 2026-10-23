@@ -1,7 +1,7 @@
 import os
 import pytest
 from unittest.mock import Mock, patch
-from subprocess import Popen, TimeoutExpired
+from subprocess import DEVNULL, Popen, TimeoutExpired
 
 from saq.configuration.config import get_config, get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_ILSPY, F_FILE, AnalysisExecutionResult, R_EXTRACTED_FROM
@@ -480,8 +480,28 @@ class TestIlspyAnalyzer:
         assert "BadImageFormatException" in analysis.stderr
 
     @patch("saq.modules.file_analysis.dotnet.Popen")
-    def test_execute_analysis_timeout(self, mock_popen, root_analysis, tmpdir):
-        # mock the ilspy process to timeout on first communicate, then return on second
+    def test_ilspy_writes_its_own_file_and_skips_the_update_check(self, mock_popen, root_analysis, tmpdir):
+        # writing stdout to the .il file was a few bytes per write(), minutes on a slow filesystem, and -o
+        # turns on a network update check unless it is disabled
+        mock_popen.return_value.communicate.return_value = (None, b"")
+        mock_popen.return_value.returncode = 0
+
+        analyzer = IlspyAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
+
+        test_file = _write_dotnet_sample(tmpdir / "test.exe")
+        analyzer.execute_analysis(root_analysis.add_file_observable(test_file))
+
+        args, kwargs = mock_popen.call_args
+        argv = args[0]
+        assert "--disable-updatecheck" in argv
+        assert "-o" in argv
+        assert kwargs["stdout"] == DEVNULL
+
+    @patch("saq.modules.file_analysis.dotnet.Popen")
+    def test_execute_analysis_timeout(self, mock_popen, root_analysis, tmpdir, caplog):
+        # mock the ilspy process to timeout on first communicate, then return on second; it never writes its file
         mock_process = Mock()
         mock_process.communicate.side_effect = [
             TimeoutExpired(cmd="ilspy", timeout=10),
@@ -506,6 +526,9 @@ class TestIlspyAnalyzer:
         # should have created analysis
         analysis = file_observable.get_analysis(IlspyAnalysis)
         assert analysis is not None
+        # with no .il written there is nothing to add, and no warning about a missing file
+        assert not [obs for obs in analysis.observables if obs.file_name.endswith(".il")]
+        assert "non-existant file" not in caplog.text
 
     @patch("saq.modules.file_analysis.dotnet.Popen")
     def test_execute_analysis_exception(self, mock_popen, root_analysis, tmpdir):

@@ -1,6 +1,7 @@
 """The SVS marker router (saq.svs.routing, docs/SVS_RUNS.md, *Attribution*) in use: ALERT() at
 PRE_INSERT, and the engine's POST_ANALYSIS stage."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import Mock
@@ -9,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from saq.alert_routing import get_alert_routers, load_alert_routers, reset_alert_routers
-from saq.analysis.root import RootAnalysis, load_root
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis, load_root
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
@@ -25,7 +26,7 @@ from saq.database.private_session import private_transaction
 from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.svs import routing
+from saq.svs import maintenance, routing
 from saq.svs.attribution import saved_sightings
 from saq.svs.constants import ScanPoint
 from saq.svs.refusals import Caller, refuse
@@ -91,6 +92,104 @@ def test_the_router_is_configured_ahead_of_the_detection_queue_router():
     load_alert_routers()
     names = [router.name for router in get_alert_routers()]
     assert names.index("svs_marker") < names.index("detection_queue")
+
+
+class TestFallbackEventTime:
+    def test_a_hunt_that_fell_back_on_a_test_host_is_warned_about_once(self, run, caplog):
+        run_uuid = run.uuid
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["query_time"]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert warning.levelno == logging.WARNING
+        assert (warning.hunt, warning.alert_uuid, warning.svs_run, warning.stage) == (
+            "suspicious powershell", root.uuid, run_uuid, "pre_insert")
+
+    def test_a_hunt_first_attributed_by_a_later_pass_is_warned_about_then(self, run, caplog):
+        run_uuid = run.uuid
+        # as inserted, it names no host, so nothing concerns a run
+        root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() + timedelta(minutes=1))
+        root.initialize_storage()
+        root.add_detection_point("hunt hit")
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert _attributions(root.uuid) == []
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+
+        # analysis finds the test host
+        root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+        root.save()
+        sync_alert(root)
+        assert _attributions(root.uuid) == [("context", False)]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.alert_uuid, warning.svs_run, warning.stage) == (root.uuid, run_uuid, "post_analysis")
+
+    def test_a_later_pass_that_changes_its_attributions_is_not_warned_about_again(self, run, caplog):
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert _attributions(root.uuid) == [("context", False)]
+
+        # analysis finds the run's marker, which updates the attribution
+        root.details = {"events": [{"command_line": f"whoami & REM {run.marker}"}]}
+        root.save()
+        sync_alert(root)
+        assert _attributions(root.uuid) == [("marker", False)]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert warning.stage == "pre_insert"
+
+    def test_a_hunt_inside_a_maintenance_window_is_warned_about(self, caplog):
+        maintenance.open_window("win10-01", 30, "staging", CALLER, now=datetime.now() - timedelta(minutes=10))
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        assert _attributions(root.uuid) == []
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.levelno, warning.hunt, warning.alert_uuid, warning.stage) == (
+            logging.WARNING, "suspicious powershell", root.uuid, "pre_insert")
+
+    @pytest.mark.usefixtures("overlapping_runs")
+    def test_a_hunt_that_several_runs_could_claim_is_warned_about(self, caplog):
+        started_run(GUID)
+        started_run(GUID)
+        root = _root()
+        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.description = "suspicious powershell"
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+
+        assert _attributions(root.uuid) == []
+        assert [r for r in caplog.records if "context attribution of alert" in r.getMessage()]
+        (warning,) = [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        assert (warning.levelno, warning.hunt, warning.alert_uuid, warning.stage) == (
+            logging.WARNING, "suspicious powershell", root.uuid, "pre_insert")
+
+    def test_the_events_own_time_is_not_warned_about(self, run, caplog):
+        root = _root()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["event"]
 
 
 class TestPreInsert:

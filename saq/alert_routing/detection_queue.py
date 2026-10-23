@@ -19,7 +19,7 @@ class DetectionQueueRouter(AlertRouter):
     def __init__(self, name: str = DETECTION_QUEUE_ROUTER_NAME, priority: int = DETECTION_QUEUE_ROUTER_PRIORITY):
         super().__init__(name=name, priority=priority)
 
-    def route(self, root, stage: RouteStage) -> Optional[RouteDecision]:
+    def route(self, root, stage: RouteStage, final: bool) -> Optional[RouteDecision]:
         # only when the alert is created, when the full set of pre-alert detections is known
         if stage != RouteStage.PRE_INSERT:
             return None

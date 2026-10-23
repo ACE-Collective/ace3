@@ -254,10 +254,16 @@ def update_host(host_id: int, spec: HostSpec, actor: Optional[str] = None,
 
 
 def delete_host(host_id: int, actor: Optional[str] = None) -> None:
-    """Removes a test host. Runs keep the targets they were registered with. Raises UnknownTestHost."""
-    host = get_host(host_id)
+    """Removes a test host and ends its open maintenance window. Runs keep the targets they were
+    registered with. Raises UnknownTestHost."""
+    # imported here: saq.svs.maintenance imports this module
+    from saq.svs.maintenance import ending_host_windows
+
+    # locked, so no window opens on the host while it is removed
+    host = get_host(host_id, lock=True)
     extra = _audit_extra(host, actor)
     db = get_db()
-    db.delete(host)
-    db.commit()
-    logging.info("AUDIT: svs test host removed", extra=extra)
+    with ending_host_windows(host, actor or "unknown") as windows:
+        db.delete(host)
+        db.commit()
+    logging.info("AUDIT: svs test host removed", extra={**extra, "ended_maintenance": [w.uuid for w in windows]})

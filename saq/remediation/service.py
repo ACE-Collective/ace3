@@ -17,15 +17,19 @@ class RemediationService(ACEServiceInterface):
     def get_config_class(cls) -> Type[ServiceConfig]:
         return RemediationServiceConfig
 
-    def start(self):
+    def _create_manager(self) -> RemediationManager:
         config = get_service_config(SERVICE_REMEDIATION)
-        self.manager = RemediationManager(lock_timeout_seconds=config.lock_timeout_seconds, delay_time_seconds=config.delay_time_seconds)
+        return RemediationManager(lock_timeout_seconds=config.lock_timeout_seconds, delay_time_seconds=config.delay_time_seconds)
+
+    def start(self):
+        self.manager = self._create_manager()
         self.manager.start()
     
     def wait_for_start(self, timeout: float = 5) -> bool:
         return self.manager.wait_for_start(timeout)
     
     def start_single_threaded(self):
+        self.manager = self._create_manager()
         self.manager.start_single_threaded()
 
     def stop(self):

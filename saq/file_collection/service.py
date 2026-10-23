@@ -38,20 +38,24 @@ class FileCollectionService(ACEServiceInterface):
     def get_config_class(cls) -> Type[ServiceConfig]:
         return FileCollectionServiceConfig
 
-    def start(self):
+    def _create_manager(self) -> FileCollectionManager:
         config = get_service_config(SERVICE_FILE_COLLECTION)
-        self.manager = FileCollectionManager(
+        return FileCollectionManager(
             lock_timeout_seconds=config.lock_timeout_seconds,
             initial_retry_delay_seconds=config.initial_retry_delay_seconds,
             max_retry_delay_seconds=config.max_retry_delay_seconds,
             max_collection_time_seconds=config.max_collection_time_seconds,
         )
+
+    def start(self):
+        self.manager = self._create_manager()
         self.manager.start()
 
     def wait_for_start(self, timeout: float = 5) -> bool:
         return self.manager.wait_for_start(timeout)
 
     def start_single_threaded(self):
+        self.manager = self._create_manager()
         self.manager.start_single_threaded()
 
     def stop(self):

@@ -30,7 +30,7 @@ if logging_config_path is None:
 elif not os.path.isabs(logging_config_path):
     logging_config_path = os.path.join(saq_home, logging_config_path)
 
-initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path, relative_dir=saq_home)
+initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path)
 
 # create the node-to-node fastapi application (only the engine routes; see docs/ENGINE_API.md)
 application = aceapi_v2.create_engine_app()

@@ -40,7 +40,15 @@ from sqlalchemy import and_, case, null, or_, select, update
 
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
-from saq.database.model import Alert, SVSAttribution, SVSCatalogTest, SVSRun, SVSRunTarget, SVSTestHost
+from saq.database.model import (
+    Alert,
+    SVSAttribution,
+    SVSCatalogTest,
+    SVSMaintenanceWindow,
+    SVSRun,
+    SVSRunTarget,
+    SVSTestHost,
+)
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
@@ -107,15 +115,23 @@ class UnknownRun(LookupError):
     pass
 
 
+# the state of a maintenance window that holds a host
+HOLDER_MAINTENANCE = "maintenance"
+
+
 @dataclass(frozen=True)
 class HostHolder:
-    """A run holding a test host: registered and not started, or started and inside its claim on the
-    host (docs/SVS_RUNS.md, *One run per test host*)."""
+    """What holds a test host: a run registered and not started, or started and inside its claim on
+    the host (docs/SVS_RUNS.md, *One run per test host*), or an open maintenance window
+    (*Maintenance windows*)."""
     host: str
-    run_uuid: str
+    # the run, None for a maintenance window
+    run_uuid: Optional[str]
+    # the run's state, or HOLDER_MAINTENANCE
     state: str
-    # when its claim ends, None while it hasn't started
+    # when its claim ends, None while a run hasn't started
     until: Optional[datetime]
+    maintenance_uuid: Optional[str] = None
 
 
 class HostBusy(Exception):
@@ -124,8 +140,10 @@ class HostBusy(Exception):
 
     def __init__(self, holders: list[HostHolder]):
         super().__init__("; ".join(
-            f"test host {holder.host} is held by run {holder.run_uuid} ({holder.state}"
-            + (f", until {holder.until}" if holder.until is not None else ", not started") + ")"
+            (f"test host {holder.host} is in maintenance window {holder.maintenance_uuid} until {holder.until}"
+             if holder.maintenance_uuid else
+             f"test host {holder.host} is held by run {holder.run_uuid} ({holder.state}"
+             + (f", until {holder.until}" if holder.until is not None else ", not started") + ")")
             for holder in holders))
         self.holders = holders
 
@@ -366,10 +384,11 @@ def claim_ends_at():
 
 
 def host_holders(hosts: Iterable[str], now: datetime, exclude_run_id: Optional[int] = None) -> list[HostHolder]:
-    """The runs holding any of the test hosts (short names) at now, other than exclude_run_id: a run
-    not started yet holds its hosts until it starts, times out or is canceled; a started run, in any
-    state, until its claim ends. Claims judge by time, like attribution, so a run closed early still
-    holds its hosts until its claim ends."""
+    """The runs and maintenance windows holding any of the test hosts (short names) at now, other
+    than run exclude_run_id: a run not started yet holds its hosts until it starts, times out or is
+    canceled; a started run, in any state, until its claim ends; a maintenance window until it ends.
+    Claims judge by time, like attribution, so a run closed early still holds its hosts until its
+    claim ends."""
     hosts = sorted(set(hosts))
     if not hosts:
         return []
@@ -385,12 +404,19 @@ def host_holders(hosts: Iterable[str], now: datetime, exclude_run_id: Optional[i
         .order_by(SVSRunTarget.host, SVSRun.uuid))
     if exclude_run_id is not None:
         statement = statement.where(SVSRun.id != exclude_run_id)
-    return [HostHolder(host, run_uuid, state, until) for host, run_uuid, state, until in get_db().execute(statement)]
+    holders = [HostHolder(host, run_uuid, state, until) for host, run_uuid, state, until in get_db().execute(statement)]
+    holders.extend(HostHolder(host, None, HOLDER_MAINTENANCE, ends_at, maintenance_uuid)
+                   for host, maintenance_uuid, ends_at in get_db().execute(
+                       select(SVSMaintenanceWindow.host, SVSMaintenanceWindow.uuid, SVSMaintenanceWindow.ends_at)
+                       .where(SVSMaintenanceWindow.host.in_(hosts), SVSMaintenanceWindow.ended_at.is_(None),
+                              SVSMaintenanceWindow.ends_at >= now)
+                       .order_by(SVSMaintenanceWindow.host, SVSMaintenanceWindow.id)))
+    return holders
 
 
-def _lock_hosts(host_ids: Iterable[int]) -> None:
-    """Locks the test hosts' rows, in id order, so registrations and starts on a host are decided one
-    at a time. The session is READ COMMITTED, so host_holders after this sees every run another
+def lock_hosts(host_ids: Iterable[int]) -> None:
+    """Locks the test hosts' rows, in id order, so registrations, starts and maintenance windows on a
+    host are decided one at a time. The session is READ COMMITTED, so host_holders after this sees every run another
     registration committed while it held them."""
     host_ids = sorted({host_id for host_id in host_ids if host_id is not None})
     if host_ids:
@@ -551,7 +577,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     # checked again under the hosts' locks: another registration may have taken a host since
     busy = decision.busy
     if not busy:
-        _lock_hosts(match.host.id for _, match in decision.matches)
+        lock_hosts(match.host.id for _, match in decision.matches)
         busy = host_holders([match.host.hostname for _, match in decision.matches], now)
     if busy:
         get_db().rollback()
@@ -643,7 +669,7 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
     now = (now or datetime.now()).replace(microsecond=0)
     run = get_run(run_uuid)
     if run.state == RunState.CREATED:
-        _lock_hosts(target.test_host_id for target in run.targets)
+        lock_hosts(target.test_host_id for target in run.targets)
         busy = host_holders([target.host for target in run.targets], now, exclude_run_id=run.id)
         if busy:
             raise _host_busy(run, caller, busy)

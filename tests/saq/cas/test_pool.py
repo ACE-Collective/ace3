@@ -623,6 +623,10 @@ def test_orphans(plain_pool, payload):
     new_path = os.path.join(plain_pool.backend.root, plain_pool.key(new_digest))
     os.makedirs(os.path.dirname(new_path), exist_ok=True)
     open(new_path, "wb").write(b"new orphan")
+    # an hour old: within the default grace, and in the past for the zero-grace sweep below even on a
+    # filesystem whose clock runs ahead of this process's (a macOS bind mount, by tens of milliseconds)
+    an_hour_ago = time.time() - 3600
+    os.utime(new_path, (an_hour_ago, an_hour_ago))
 
     stray = os.path.join(shard, "not-a-digest")
     open(stray, "wb").write(b"?")

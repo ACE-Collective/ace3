@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.132] - 2026-10-23
+
+- [End a test host's maintenance window when the host is removed](https://github.com/ACE-Collective/ace3/pull/851)
+- [Tell alert routers when a pass is the alert's last](https://github.com/ACE-Collective/ace3/pull/849)
+- [Decide an SVS event's context owner in one place](https://github.com/ACE-Collective/ace3/pull/844)
+- [Record a grouped hunt's suppressed matches for SVS runs](https://github.com/ACE-Collective/ace3/pull/841)
+- [Flag SVS attributions that rest on a fallback event time](https://github.com/ACE-Collective/ace3/pull/839)
+- [Add SVS test host maintenance windows](https://github.com/ACE-Collective/ace3/pull/838)
+- [Take an SVS test's output as a field of the run](https://github.com/ACE-Collective/ace3/pull/837)
+- [Mark the cleanup phase of an SVS run](https://github.com/ACE-Collective/ace3/pull/836)
+- [Key a grouped hunt's suppression by the SVS run during test runs](https://github.com/ACE-Collective/ace3/pull/835)
+- [Enforce one run per SVS test host](https://github.com/ACE-Collective/ace3/pull/834)
+- [Serve each SVS catalog repository's commit over the API](https://github.com/ACE-Collective/ace3/pull/833)
+- [Validate an SVS run registration without registering it](https://github.com/ACE-Collective/ace3/pull/832)
+- [Track design flaws as GitHub issues instead of docs/design-flaws/](https://github.com/ACE-Collective/ace3/pull/828)
+- [Insert interesting observable display values as text, not HTML](https://github.com/ACE-Collective/ace3/pull/824)
+- [Record which credential authenticated a request](https://github.com/ACE-Collective/ace3/pull/823)
+- [Time out redis calls instead of blocking forever on a stalled server](https://github.com/ACE-Collective/ace3/pull/819)
+- [Delete an ignored alert's row before its storage directory](https://github.com/ACE-Collective/ace3/pull/816)
+- [Remove emailing a file from the alert page](https://github.com/ACE-Collective/ace3/pull/814)
+- [Remove the hidden local-file path from New Alert](https://github.com/ACE-Collective/ace3/pull/813)
+- [Refuse file paths outside a root's files directory](https://github.com/ACE-Collective/ace3/pull/812)
+- [Flag design flaws worked around in /ace-review and keep a ledger of them](https://github.com/ACE-Collective/ace3/pull/811)
+- [Let users manage their own scoped API keys (`user:self`)](https://github.com/ACE-Collective/ace3/pull/810)
+- [Stop stripping certificate bytes before parsing them in x509_analyzer](https://github.com/ACE-Collective/ace3/pull/809)
+- [Add pcap/pcapng analysis with TLS key log decryption](https://github.com/ACE-Collective/ace3/pull/808)
+- [Remove the unreachable except around the worker's search index submission](https://github.com/ACE-Collective/ace3/pull/806)
+- [Remove the unreachable "failed to load" branch from the integration loader](https://github.com/ACE-Collective/ace3/pull/805)
+- [Remove the dead Matching Open Events card from the alert page](https://github.com/ACE-Collective/ace3/pull/804)
+- [Read a certificate's common name from its parsed subject](https://github.com/ACE-Collective/ace3/pull/803)
+- [Skip alerts whose storage is gone instead of dead-lettering their index task](https://github.com/ACE-Collective/ace3/pull/802)
+- [Let observable modifier rules set the display value of a file observable](https://github.com/ACE-Collective/ace3/pull/801)
+- [Look up an analysis module's config by the class its module path names](https://github.com/ACE-Collective/ace3/pull/800)
+- [Add rounds, base-branch rules and per-finding votes to /ace-review](https://github.com/ACE-Collective/ace3/pull/799)
+- [Test the real thing instead of mocking what runs locally](https://github.com/ACE-Collective/ace3/pull/797)
+
 ## [3.0.131] - 2026-10-21
 
 - [Remove report_exception()](https://github.com/ACE-Collective/ace3/pull/795)

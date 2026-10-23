@@ -1,77 +1,14 @@
 # vim: sw=4:ts=4:et
 
-import os
-import os.path
 import logging
-import json
-from typing import Type
 
-from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_config
 from saq.constants import F_EMAIL_ADDRESS, F_USER, AnalysisExecutionResult
-from saq.environment import get_base_dir
 from saq.ldap import lookup_email_address, lookup_user
 from saq.modules import AnalysisModule
-from saq.modules.config import AnalysisModuleConfig
 from saq.email import is_local_email_domain, normalize_email_address
-
-# XXX this is stupid, we just need a global list of observable matching to tag
-class UserTagAnalysis(Analysis):
-    pass
-
-class UserTaggingAnalyzerConfig(AnalysisModuleConfig):
-    json_path: str = Field(..., description="Location of the cache (use ace user update-organization to build this file).")
-
-class UserTaggingAnalyzer(AnalysisModule):
-    @classmethod
-    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return UserTaggingAnalyzerConfig
-
-    @property
-    def generated_analysis_type(self):
-        return UserTagAnalysis
-
-    @property
-    def valid_observable_types(self):
-        return F_USER
-
-    @property
-    def json_path(self):
-        return os.path.join(get_base_dir(), self.config.json_path)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.mapping = None # dict of key = username (lowercase), value = [ tags ]
-        self.watch_file(self.json_path, self.load_tags)
-
-    def load_tags(self):
-        # if we haven't loaded it or if it has changed since the last time we loaded it
-        logging.debug("loading {}".format(self.json_path))
-        with open(self.json_path, 'r') as fp:
-            self.mapping = json.load(fp)
-
-    def execute_analysis(self, user) -> AnalysisExecutionResult:
-
-        analysis = self.create_analysis(user)
-        assert isinstance(analysis, UserTagAnalysis)
-
-        # does this user ID exist in our list of userIDs to tag?
-        if user.value.lower().strip() in self.mapping:
-            for tag in self.mapping[user.value.lower().strip()]:
-                user.add_tag(tag)
-
-        return AnalysisExecutionResult.COMPLETED
-
-class UserTagAnalysisPresenter(AnalysisPresenter):
-    """Presenter for UserTagAnalysis - doesn't render in GUI."""
-
-    @property
-    def should_render(self) -> bool:
-        return False
-
-register_analysis_presenter(UserTagAnalysis, UserTagAnalysisPresenter)
 
 class UserAnalysis(Analysis):
     @property
@@ -135,14 +72,21 @@ class UserAnalyzer(AnalysisModule):
                 new_observable.add_directive(directive)
 
         # get manager info and determine if user is executive
-        top_user = get_config().ldap.top_user
-        if 'manager_cn' in analysis.details['ldap'] and analysis.details['ldap']['manager_cn'] is not None:
-            analysis.details['manager_ldap'] = lookup_user(analysis.details['ldap']['manager_cn'])
+        # the user, their manager and their manager's manager: any of them being the top user
+        # makes this an executive (the top user's own entry usually has no manager)
+        chain = [analysis.details['ldap'].get('cn')]
+        manager_cn = analysis.details['ldap'].get('manager_cn')
+        if manager_cn is not None:
+            chain.append(manager_cn)
+            analysis.details['manager_ldap'] = lookup_user(manager_cn)
             if analysis.details['manager_ldap'] is None:
                 logging.error(f"Failed to fetch manger ldap info for {observable.value}")
-            elif 'manager_cn' in analysis.details['manager_ldap'] and analysis.details['manager_ldap']['manager_cn'] is not None:
-                if top_user in [observable.value.lower(), analysis.details['ldap']['manager_cn'].lower(), analysis.details['manager_ldap']['manager_cn'].lower()]:
-                    observable.add_tag("executive")
+            else:
+                chain.append(analysis.details['manager_ldap'].get('manager_cn'))
+
+        top_user = get_config().ldap.top_user.lower()
+        if top_user and top_user in [cn.lower() for cn in chain if cn]:
+            observable.add_tag("executive")
 
         # check for privileged access
         analysis.details['ldap']['entitlements'] = []

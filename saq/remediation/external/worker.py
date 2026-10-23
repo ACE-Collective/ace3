@@ -12,6 +12,7 @@ from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Optional
 
+from saq.database.pool import remove_all_sessions
 from saq.remediation.external.database import find_superseding_confirmation
 from saq.remediation.external.interface import CheckListener
 from saq.remediation.external.persistence import (
@@ -26,6 +27,7 @@ from saq.remediation.external.types import (
     ProbeOutcomeKind,
     ProbeTarget,
 )
+from saq.shutdown import is_shutting_down
 
 
 class ExternalRemediationCheckWorker(CheckListener):
@@ -71,8 +73,11 @@ class ExternalRemediationCheckWorker(CheckListener):
             thread.start()
 
     def start_single_threaded(self):
+        # with the shutdown event set each pass of the loop takes at most one item; the
+        # process-wide flag is what a signal sets while this runs on the main thread
         self.stop()
-        self.worker_loop(Event())
+        while not self.work_queue.empty() and not is_shutting_down():
+            self.worker_loop(Event())
 
     def wait_for_start(self, timeout: float) -> bool:
         for index, ev in enumerate(self.startup_events):
@@ -101,7 +106,19 @@ class ExternalRemediationCheckWorker(CheckListener):
                 if work:
                     self.process(work)
             except Exception as e:
-                logging.exception(f"error processing external remediation check: {e}")
+                logging.exception(
+                    f"error processing external remediation check {work.id} ({self.probe.name} "
+                    f"{work.observable_type} {work.observable_value}): {e}",
+                    extra={"alert_uuid": work.alert_uuid},
+                )
+            finally:
+                if work:
+                    # a failed commit leaves this thread's session needing a rollback, and every
+                    # later check on the thread would fail on it until the service restarts
+                    try:
+                        remove_all_sessions()
+                    except Exception as e:
+                        logging.exception(f"error removing database connection: {e}")
 
             if self.shutdown_event.is_set():
                 break

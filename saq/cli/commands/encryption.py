@@ -134,7 +134,8 @@ decrypt_file_parser = encryption_sp.add_parser('decrypt',
 decrypt_file_parser.add_argument('source_path', help="The file to decrypt from.")
 decrypt_file_parser.add_argument('target_path', help="The file to saved the decrypted data to.")
 decrypt_file_parser.add_argument('--password', help="Use the given password to decrypt the file.")
-decrypt_file_parser.add_argument('--prompt', help="Prompt for the password to use to decrypt the file.")
+decrypt_file_parser.add_argument('--prompt', action='store_true', default=False,
+    help="Prompt for the password to use to decrypt the file.")
 decrypt_file_parser.set_defaults(func=decrypt_file)
 
 config_encryption_parser = encryption_sp.add_parser('config',
@@ -197,11 +198,11 @@ list_encrypted_passwords_parser.set_defaults(func=list_encrypted_passwords)
 
 def delete_encrypted_password(args):
     from saq.configuration.encryption import delete_password
-    if delete_password(args.key):
-        print("password deleted")
-    else:
+    if not delete_password(args.key):
         print("ERROR: unable to delete password")
+        sys.exit(1)
 
+    print("password deleted")
     sys.exit(0)
 
 delete_encrypted_password_parser = config_encryption_sp.add_parser('delete',
@@ -213,14 +214,15 @@ delete_encrypted_password_parser.set_defaults(func=delete_encrypted_password)
 def export_encrypted_passwords(args):
     import saq.configuration.encryption
 
+    export = saq.configuration.encryption.export_encrypted_passwords()
     if args.file == '-':
-        fp = sys.stdout
+        json.dump(export, sys.stdout)
+        sys.stdout.write('\n')
     else:
-        fp = open(args.file, 'w')
+        with open(args.file, 'w') as fp:
+            json.dump(export, fp)
+            fp.write('\n')
 
-    json.dump(saq.configuration.encryption.export_encrypted_passwords(), fp)
-    fp.write('\n')
-    fp.close()
     sys.exit(0)
 
 export_encrypted_passwords_parser = config_encryption_sp.add_parser('export',
@@ -234,12 +236,12 @@ def import_encrypted_passwords(args):
     import saq.configuration.encryption
 
     if args.file == '-':
-        fp = sys.stdin
+        export = json.load(sys.stdin)
     else:
-        fp = open(args.file, 'r')
+        with open(args.file, 'r') as fp:
+            export = json.load(fp)
 
-    saq.configuration.encryption.import_encrypted_passwords(json.load(fp))
-    fp.close()
+    saq.configuration.encryption.import_encrypted_passwords(export)
     sys.exit(0)
 
 import_encrypted_passwords_parser = config_encryption_sp.add_parser('import',

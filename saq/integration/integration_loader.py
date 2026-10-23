@@ -11,11 +11,6 @@ from saq.integration.integration_util import (
     get_valid_integration_dirs,
 )
 
-# Warnings raised by initialize_integrations(), which runs at saq/environment.py:189 -- BEFORE
-# initialize_logging() at :228. Anything logged there goes to the un-configured root logger and is
-# lost, so stash it here and let the caller re-emit once logging is up.
-DEFERRED_INTEGRATION_WARNINGS: list[str] = []
-
 
 def discover_integration_packages(dir_path: str) -> list[str]:
     """Returns the importable top level package names under <dir_path>/src."""
@@ -29,10 +24,8 @@ def discover_integration_packages(dir_path: str) -> list[str]:
     )
 
 
-def load_integrations() -> bool:
-    """Loads all integrations. Returns True if all defined and enabled integrations were loaded successfully."""
-    result = True
-
+def load_integrations():
+    """Loads all enabled integrations. One that fails to load is logged and skipped."""
     for dir_path in get_valid_integration_dirs():
         try:
             if not is_integration_enabled(get_integration_name_from_path(dir_path)):
@@ -42,10 +35,6 @@ def load_integrations() -> bool:
             load_integration_from_directory(dir_path)
         except Exception as e:
             logging.exception(f"failed to load integration from {dir_path}: {e}")
-            result = False
-
-    #initialize_integrations()
-    return result
 
 def load_integration_component_src(dir_path: str):
     """Loads the source code for a component of an integration.
@@ -144,10 +133,7 @@ def _warn_about_undeclared_integrations(imported: set[str]):
                 f"  description: \"<describe the integration>\"\n"
                 f"  python_module: {package}")
 
-            DEFERRED_INTEGRATION_WARNINGS.append(message)
-            # logging is not configured yet at this point in startup -- see the note on
-            # DEFERRED_INTEGRATION_WARNINGS above
-            sys.stderr.write(f"WARNING: {message}\n")
+            logging.warning(message)
 
 def load_integration_from_directory(dir_path: str):
     """Loads an ACE integration from a local directory.

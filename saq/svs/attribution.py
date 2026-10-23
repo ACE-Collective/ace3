@@ -49,10 +49,10 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.observable import Observable
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
-from saq.database.model import SVSAttribution, SVSRun, SVSSuppressedMatch, SVSTestHost
+from saq.database.model import SVSAttribution, SVSMaintenanceWindow, SVSRun, SVSSuppressedMatch, SVSTestHost
 from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_local_timezone
 from saq.observables.file import FileObservable
@@ -63,6 +63,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
+    EventTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -286,6 +287,10 @@ class RunSnapshot:
         return (self.started_at is not None and self.attribution_ends_at is not None
                 and self.started_at <= when <= self.attribution_ends_at)
 
+    def holds_host_at(self, when: datetime) -> bool:
+        """Its claim on its hosts covers when."""
+        return self.claim_ends_at is None or when <= self.claim_ends_at
+
     def is_late(self, when: datetime) -> bool:
         return self.observation_ends_at is not None and when > self.observation_ends_at
 
@@ -332,8 +337,9 @@ def clear_caches() -> None:
 
 
 def attribution_open(now: Optional[datetime] = None) -> bool:
-    """True when some run is registered and not started yet, or is inside its attribution window:
-    only then can an alert be attributed, so only then is anything scanned. Each process trusts its
+    """True when some run is registered and not started yet, or is inside its attribution window, or
+    a maintenance window was open within svs.runs.attribution_extra_hours: only then can an alert
+    be attributed or closed for maintenance, so only then is anything scanned. Each process trusts its
     answer for svs.attribution.gate_cache_seconds. A registered run opens the gate before its test
     fires, so the cache never hides the start of a run."""
     ttl = get_config().svs.attribution.gate_cache_seconds
@@ -342,11 +348,16 @@ def attribution_open(now: Optional[datetime] = None) -> bool:
             return _caches.gate[1]
 
     now = now or datetime.now()
+    # an alert of a maintenance window may come as late as a run's
+    window_horizon = now - timedelta(hours=get_config().svs.runs.attribution_extra_hours)
     with private_transaction() as session:
         value = bool(session.execute(select(or_(
             exists().where(SVSRun.state == RunState.CREATED.value),
             exists().where(SVSRun.state.in_([state.value for state in RunState if state != RunState.CREATED]),
-                           SVSRun.attribution_ends_at >= now)))).scalar())
+                           SVSRun.attribution_ends_at >= now),
+            exists().where(SVSMaintenanceWindow.ends_at >= window_horizon,
+                           or_(SVSMaintenanceWindow.ended_at.is_(None),
+                               SVSMaintenanceWindow.ended_at >= window_horizon))))).scalar())
 
     with _caches.lock:
         _caches.gate = (time.monotonic() + ttl, value)
@@ -388,14 +399,39 @@ def resolve_markers(markers: Iterable[str]) -> dict[str, RunSnapshot]:
     return result
 
 
-def runs_in_window(when: datetime, until: Optional[datetime] = None) -> list[RunSnapshot]:
-    """The runs whose attribution window covers when (the candidates of a context attribution), or
-    with until, overlaps when to until."""
+@dataclass(frozen=True)
+class MaintenanceSnapshot:
+    """What attribution needs of a maintenance window (docs/SVS_RUNS.md, *Maintenance windows*)."""
+    id: int
+    uuid: str
+    target: TargetSnapshot
+    opened_at: datetime
+    # when it ended, or ends
+    ends_at: datetime
+
+    def log_fields(self) -> dict:
+        return {"svs_maintenance": self.uuid, "host": self.target.host}
+
+    def covers(self, when: datetime) -> bool:
+        return self.opened_at <= when <= self.ends_at
+
+
+def maintenance_windows_overlapping(start: datetime, end: datetime) -> list[MaintenanceSnapshot]:
+    """The maintenance windows open at some time from start to end, on any host. Never cached: a
+    window ends early."""
     with private_transaction() as session:
-        runs = list(session.execute(
-            select(SVSRun).where(SVSRun.started_at <= (until or when), SVSRun.attribution_ends_at >= when)
-            .order_by(SVSRun.id)).scalars())
-        return _snapshots(session, runs)
+        rows = session.execute(
+            select(SVSMaintenanceWindow, SVSTestHost)
+            .outerjoin(SVSTestHost, SVSTestHost.id == SVSMaintenanceWindow.test_host_id)
+            # the planned end bounds the window, and is indexed
+            .where(SVSMaintenanceWindow.ends_at >= start, SVSMaintenanceWindow.opened_at <= end,
+                   or_(SVSMaintenanceWindow.ended_at.is_(None), SVSMaintenanceWindow.ended_at >= start))
+            .order_by(SVSMaintenanceWindow.id)).all()
+        return [MaintenanceSnapshot(
+            id=window.id, uuid=window.uuid,
+            target=TargetSnapshot(window.host, window.fqdn, frozenset(host_ips(host)) if host else frozenset()),
+            opened_at=window.opened_at, ends_at=window.ended_at or window.ends_at)
+            for window, host in rows]
 
 
 def runs_overlapping(start: datetime, end: datetime) -> list[RunSnapshot]:
@@ -445,6 +481,16 @@ def alert_hosts(root: RootAnalysis) -> AlertHosts:
             except InvalidTestHost:
                 pass
     return result
+
+
+def event_time_source(root: RootAnalysis) -> EventTimeSource:
+    """Where alert_event_time's answer comes from: the event's own time, the time a hunt that couldn't
+    extract it ran its query (KEY_EVENT_TIME_FALLBACK), or the alert's insert time."""
+    if root.event_time is None:
+        return EventTimeSource.INSERT_TIME
+    if (root.extensions or {}).get(KEY_EVENT_TIME_FALLBACK) == EVENT_TIME_FALLBACK_QUERY_TIME:
+        return EventTimeSource.QUERY_TIME
+    return EventTimeSource.EVENT
 
 
 def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> datetime:
@@ -513,8 +559,12 @@ class Evaluation:
     existing: list[ExistingAttribution] = field(default_factory=list)
     # set when a context attribution was refused because more than one run could claim the alert
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
-    # the alert's event time it was judged by, kept on each attribution
+    # the alert's event time it was judged by, and where it came from, kept on each attribution
     event_time: Optional[datetime] = None
+    event_time_source: Optional[EventTimeSource] = None
+    # it has no marker and no attribution, and its event time is in a maintenance window on one of
+    # its hosts: it is routed to the test queue and closed (docs/SVS_RUNS.md, *Maintenance windows*)
+    maintenance: Optional[MaintenanceSnapshot] = None
 
     @property
     def mismatches(self) -> list[MarkerJudgement]:
@@ -629,36 +679,72 @@ def context_claimant(candidates: list[RunSnapshot]) -> Optional[RunSnapshot]:
     return None
 
 
-def suppression_runs(roots: list[RootAnalysis], now: Optional[datetime] = None) -> list[Optional[RunSnapshot]]:
-    """For each root a grouped hunt is about to submit, the run that keys its suppression: the run
-    context attribution would give it to, by its hosts and event time, or the latest started of the
-    runs that could claim it when their claims overlap. None when no run's window covers it on one
-    of its hosts, as for every root while no run is open. One query for all the roots."""
+@dataclass(frozen=True)
+class ContextOwner:
+    """Who an event with no marker belongs to by its hosts and time: a run, a maintenance window,
+    or nobody."""
+    # the run context attribution gives it to (context_claimant)
+    run: Optional[RunSnapshot] = None
+    # the runs whose attribution window covers it on one of its hosts
+    candidates: tuple[RunSnapshot, ...] = ()
+    # the maintenance window it happened in (docs/SVS_RUNS.md, *Maintenance windows*); no run owns it then
+    maintenance: Optional[MaintenanceSnapshot] = None
+
+
+def context_owners(events: list[tuple[AlertHosts, datetime]]) -> list[ContextOwner]:
+    """The owner of each (hosts, event time). Attribution, and a grouped hunt's suppression keys and
+    suppressed matches, all decide ownership here so that they never disagree on it. One query for
+    all the events."""
+    if not events:
+        return []
+    start, end = min(when for _, when in events), max(when for _, when in events)
+    runs = runs_overlapping(start, end)
+    windows = maintenance_windows_overlapping(start, end)
+    result = []
+    for hosts, when in events:
+        candidates = tuple(run for run in runs if run.in_window(when) and hosts.involves_run(run))
+        window = next((window for window in windows if window.covers(when) and hosts.involves(window.target)), None)
+        # no run holds a host while a window on it is open (saq.svs.runs.host_holders), so a run still
+        # holding one of the event's hosts holds another one, and the event is the run's. A run whose
+        # late attribution window still covers the event ended its claim before the window opened:
+        # what happened in the window is the window's.
+        if window is not None and not any(run.holds_host_at(when) for run in candidates):
+            result.append(ContextOwner(maintenance=window))
+        else:
+            result.append(ContextOwner(context_claimant(list(candidates)), candidates))
+    return result
+
+
+def suppression_owners(roots: list[RootAnalysis],
+                       now: Optional[datetime] = None) -> list[Optional[RunSnapshot | MaintenanceSnapshot]]:
+    """For each root a grouped hunt is about to submit, the run or maintenance window that keys its
+    suppression: the one context attribution would give it to, by its hosts and event time, or the
+    latest started of the runs that could claim it when their claims overlap. None when neither
+    covers it on one of its hosts, as for every root while the gate is closed. One query for all the
+    roots."""
     if not roots or not attribution_open():
         return [None] * len(roots)
 
     now = now or datetime.now()
-    times = [alert_event_time(root, now) for root in roots]
-    runs = runs_overlapping(min(times), max(times))
-    result = []
-    for root, event_time in zip(roots, times):
-        hosts = alert_hosts(root)
-        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
-        result.append(context_claimant(candidates)
-                      or max(candidates, key=lambda run: (run.started_at, run.id), default=None))
-    return result
+    owners = context_owners([(alert_hosts(root), alert_event_time(root, now)) for root in roots])
+    return [owner.maintenance or owner.run
+            or max(owner.candidates, key=lambda run: (run.started_at, run.id), default=None)
+            for owner in owners]
 
 
-def run_suppression_key(run_uuid: str, group_value: str) -> str:
-    """The key a grouped hunt's suppression of group_value is recorded under during a run: the first
-    match for each run alerts, and a test never suppresses production or another run."""
-    return f"svs_run:{run_uuid}:{group_value}"
+def suppression_key(owner: RunSnapshot | MaintenanceSnapshot, group_value: str) -> str:
+    """The key a grouped hunt's suppression of group_value is recorded under during a run or a
+    maintenance window: the first match for each alerts, and neither a test nor a host's staging
+    ever suppresses production or a run."""
+    kind = "svs_maintenance" if isinstance(owner, MaintenanceSnapshot) else "svs_run"
+    return f"{kind}:{owner.uuid}:{group_value}"
 
 
 def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
     """Judges every marker in the alert against its run and attributes its detections. Reads the
     database, writes nothing; the caller checks the gate (attribution_open) first."""
-    evaluation = Evaluation(detections=alert_detections(root), event_time=event_time)
+    evaluation = Evaluation(detections=alert_detections(root), event_time=event_time,
+                            event_time_source=event_time_source(root))
     hosts = alert_hosts(root)
     sightings = tree_sightings(root)
 
@@ -708,17 +794,23 @@ def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
                             run, detection.content_hash, AttributionConfidence.MARKER, run.is_late(event_time),
                             sighting.scan_point, detection.signature_uuid, detection.signature_family)
     else:
-        candidates = [run for run in runs_in_window(event_time) if hosts.involves_run(run)]
-        run = context_claimant(candidates)
+        owner = context_owners([(hosts, event_time)])[0]
+        # a person's association still holds
+        if owner.maintenance is not None and all(row.removed for row in evaluation.existing):
+            evaluation.maintenance = owner.maintenance
+            evaluation.status = None
+            return evaluation
+
+        run = owner.run
         if run is not None and run.id not in disassociated:
             for detection in evaluation.detections:
                 if (run.id, detection.content_hash) not in blocked:
                     attributions[(run.id, detection.content_hash)] = Attribution(
                         run, detection.content_hash, AttributionConfidence.CONTEXT, run.is_late(event_time),
                         signature_uuid=detection.signature_uuid, signature_family=detection.signature_family)
-        elif run is None and len(candidates) > 1:
+        elif run is None and len(owner.candidates) > 1:
             # attributing to the wrong run teaches the wrong expectation [FR-9]
-            evaluation.candidate_runs = candidates
+            evaluation.candidate_runs = list(owner.candidates)
 
     evaluation.attributions = list(attributions.values())
     evaluation.status = _status(evaluation)
@@ -752,6 +844,8 @@ class RemovedAttribution:
 class WriteResult:
     written: list[Attribution] = field(default_factory=list)
     removed: list[RemovedAttribution] = field(default_factory=list)
+    # the alert had no rows of the router before this write: its first attribution
+    first: bool = False
 
 
 def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[datetime] = None) -> WriteResult:
@@ -832,6 +926,8 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             values.update(confidence=attribution.confidence.value, late=attribution.late, scan_point=scan_point)
         if evaluation.event_time is not None and row.event_time != _to_second(evaluation.event_time):
             values.update(event_time=evaluation.event_time)
+        if evaluation.event_time_source is not None and row.event_time_source != evaluation.event_time_source:
+            values.update(event_time_source=evaluation.event_time_source.value)
         if values and _update_own_row(session, row.id, **values):
             result.written.append(attribution)
 
@@ -844,10 +940,12 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             run_id=attribution.run.id, alert_uuid=alert_uuid, content_hash=attribution.content_hash,
             signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
             confidence=attribution.confidence.value, late=attribution.late, event_time=evaluation.event_time,
+            event_time_source=evaluation.event_time_source.value if evaluation.event_time_source else None,
             source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
             actor=ROUTER_ACTOR, created_at=now))
         if inserted.rowcount == 1:
             result.written.append(attribution)
+    result.first = bool(result.written) and all(row.source != AttributionSource.ROUTER for row in rows.values())
 
     removed_runs = {row.run_id for row in result.removed} - set(runs)
     if removed_runs:
@@ -956,13 +1054,10 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
 
     now = now or datetime.now()
     times = [alert_event_time(root, now) for root, _ in matches]
-    runs = runs_in_window(min(times), max(times))
+    owners = context_owners([(alert_hosts(root), event_time) for (root, _), event_time in zip(matches, times)])
     first: dict[int, tuple[RunSnapshot, str, datetime]] = {}
-    for (root, group_value), event_time in sorted(zip(matches, times), key=lambda item: item[1]):
-        hosts = alert_hosts(root)
-        candidates = [run for run in runs if run.in_window(event_time) and hosts.involves_run(run)]
-        claimant = context_claimant(candidates)
-        for run in [claimant] if claimant is not None else candidates:
+    for (_, group_value), event_time, owner in sorted(zip(matches, times, owners), key=lambda item: item[1]):
+        for run in [owner.run] if owner.run is not None else owner.candidates:
             if run.id not in first:
                 first[run.id] = (run, group_value, event_time)
     if not first:

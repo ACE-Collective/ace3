@@ -80,7 +80,9 @@ class Config:
         # are we using SSL for MySQL connections? (you should be)
         if not ace_config.unix_socket:
             if ace_config.ssl_ca or ace_config.ssl_cert or ace_config.ssl_key:
-                ssl_options = { 'ca': abs_path(ace_config.ssl_ca) }
+                ssl_options = {}
+                if ace_config.ssl_ca:
+                    ssl_options['ca'] = abs_path(ace_config.ssl_ca)
                 if ace_config.ssl_cert:
                     ssl_options['cert'] = abs_path(ace_config.ssl_cert)
                 if ace_config.ssl_key:

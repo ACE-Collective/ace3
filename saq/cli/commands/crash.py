@@ -102,7 +102,7 @@ def cli_prune(args):
             shutil.rmtree(crash_dir)
             removed.append(crash_id)
         except Exception as e:
-            logging.error("unable to remove crash report %s: %s", crash_dir, e)
+            logging.exception("unable to remove crash report %s: %s", crash_dir, e)
 
     if removed and not args.dry_run:
         _delete_rows(removed)
@@ -295,18 +295,21 @@ def _delete_rows(crash_ids: list[str]):
         ).delete(synchronize_session=False)
         get_db().commit()
     except Exception as e:
-        logging.error("unable to delete crash report index rows: %s", e)
+        logging.exception("unable to delete crash report index rows for %s: %s", crash_ids, e)
 
 
 def _remove_empty_date_dirs(root_dir: str):
     """Reap YYYY/MM/DD levels the sweep drained, deepest first."""
-    for dirpath, dir_names, file_names in os.walk(root_dir, topdown=False):
+    # os.walk lists a directory before descending into it, so its dir_names still names the
+    # children removed below it; whether it is empty now is only known by asking again
+    for dirpath, _, _ in os.walk(root_dir, topdown=False):
         if dirpath == root_dir:
             continue
-        if not dir_names and not file_names:
+        if not os.listdir(dirpath):
             try:
                 os.rmdir(dirpath)
             except OSError:
+                # a crash report written into it since; the next prune gets it
                 pass
 
 

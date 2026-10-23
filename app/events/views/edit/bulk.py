@@ -64,7 +64,7 @@ def _apply_tags(alert_uuids: list[str], tags: list[str], add: bool) -> int:
             alert.sync()
 
         except Exception as e:
-            logging.error(f"unable to modify tags on {alert}: {e}")
+            logging.exception(f"unable to modify tags on {alert}: {e}")
             failed_count += 1
 
         finally:

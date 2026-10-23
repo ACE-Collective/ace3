@@ -1,6 +1,10 @@
+import os
+import sys
+
 import pytest
 import saq.cli.commands # noqa: F401
 
+from saq.cli import cli_main
 from saq.cli.cli_main import get_cli_subparsers
 
 
@@ -95,9 +99,36 @@ def test_cli_subcommands_registered():
     assert {"list"} <= choices("modules")
     assert {"display"} <= choices("workload")
     assert {"database-connections", "network-semaphore", "proxies", "modules"} <= choices("test")
-    assert {"update-organization"} <= choices("user")
+    assert {"add", "modify", "delete", "list", "exists"} <= choices("user")
     assert {"build-db"} <= choices("signatures")
     assert {"display", "clear"} <= choices("remediation")
     assert {"yara"} <= choices("svs")
     svs_yara = sp.choices["svs"]._subparsers._group_actions[0].choices["yara"]
     assert {"validate", "layout", "prune"} <= set(svs_yara._subparsers._group_actions[0].choices.keys())
+
+
+@pytest.mark.unit
+def test_cli_runs_from_saq_home(tmp_path, monkeypatch):
+    """ace --saq-home resolves a relative path against the caller's directory, changes to it,
+    and hands that home to initialize_environment()."""
+    home = tmp_path / "home"
+    os.makedirs(home / "saq")
+    # also restores the cwd after main() changes it
+    monkeypatch.chdir(tmp_path)
+
+    class Initialized(Exception):
+        pass
+
+    seen = {}
+
+    def fake_initialize_environment(**kwargs):
+        seen.update(kwargs, cwd=os.getcwd())
+        raise Initialized()
+
+    monkeypatch.setattr(cli_main, "initialize_environment", fake_initialize_environment)
+    monkeypatch.setattr(sys, "argv", ["ace", "--saq-home", "home"])
+    with pytest.raises(Initialized):
+        cli_main.main()
+
+    assert seen["cwd"] == str(home)
+    assert seen["saq_home"] == str(home)

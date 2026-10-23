@@ -9,7 +9,7 @@ from saq.database.model import (
 )
 from saq.database.pool import get_db
 from saq.permissions.catalog import CATALOG_PAIRS
-from saq.permissions.logic import held_catalog_pairs
+from saq.permissions.logic import held_catalog_pairs, key_scope_allows
 from saq.permissions import (
     create_auth_group,
     delete_auth_group,
@@ -226,6 +226,19 @@ class TestUserPermissionManagement:
         ).count()
         assert count == 1
 
+    def test_add_user_permission_stores_lowercase(self):
+        """The unique index is case-insensitive and enforcement ignores case, so a case variant of a
+        grant is the same grant: stored once, lowercase, and enforced."""
+        user = create_test_user("permuser_case", "permuser_case@example.com")
+
+        perm1 = add_user_permission(user.id, "Signature", "Read")
+        perm2 = add_user_permission(user.id, "signature", "READ")
+
+        assert (perm1.major, perm1.minor) == ("signature", "read")
+        assert perm2.id == perm1.id
+        assert get_db().query(AuthUserPermission).filter(AuthUserPermission.user_id == user.id).count() == 1
+        assert user_has_permission(user.id, "signature", "read") is True
+
     def test_delete_user_permission_by_id(self):
         """Test deleting a user permission by ID."""
         user = create_test_user("permuser6", "permuser6@example.com")
@@ -301,6 +314,20 @@ class TestGroupPermissionManagement:
         perm = add_group_permission(group.id, major, minor, effect="deny")
         
         assert perm.effect == "DENY"
+
+    def test_add_group_permission_stores_lowercase(self):
+        group = create_auth_group("case_perm_group")
+        user = create_test_user("grouppermcase", "grouppermcase@example.com")
+        add_user_to_auth_group(user.id, group.id)
+
+        perm1 = add_group_permission(group.id, "Signature", "Download", effect="DENY")
+        perm2 = add_group_permission(group.id, "SIGNATURE", "download", effect="DENY")
+        add_user_permission(user.id, "signature", "*")
+
+        assert (perm1.major, perm1.minor) == ("signature", "download")
+        assert perm2.id == perm1.id
+        assert user_has_permission(user.id, "signature", "read") is True
+        assert user_has_permission(user.id, "signature", "download") is False
 
     def test_add_group_permission_idempotent(self):
         """Test that adding the same group permission twice is idempotent."""
@@ -900,8 +927,18 @@ class TestHeldCatalogPairs:
         assert ("signature", "read") in held
         assert held == signature - {("signature", "download")}
 
-    def test_grants_match_case_sensitively(self):
-        assert held_catalog_pairs([("Signature", "read", "ALLOW")], [], CATALOG_PAIRS) == frozenset()
+    def test_grants_match_whatever_their_case(self):
+        assert held_catalog_pairs([("Signature", "READ", "ALLOW")], [], CATALOG_PAIRS) == {("signature", "read")}
+
+    def test_a_deny_in_another_case_still_denies(self):
+        held = held_catalog_pairs([("signature", "*", "ALLOW")], [("SIGNATURE", "Download", "DENY")], CATALOG_PAIRS)
+        assert ("signature", "read") in held
+        assert ("signature", "download") not in held
+
+    def test_key_scope_matches_whatever_its_case(self):
+        assert key_scope_allows([("Signature", "Re*")], "signature", "read") is True
+        assert key_scope_allows([("signature", "read")], "Signature", "READ") is True
+        assert key_scope_allows([("Signature", "read")], "signature", "download") is False
 
     def test_no_grants_hold_nothing(self):
         assert held_catalog_pairs([], [], CATALOG_PAIRS) == frozenset()

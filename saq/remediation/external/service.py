@@ -13,7 +13,7 @@ from sqlalchemy import distinct
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
-from saq.constants import SERVICE_EXTERNAL_REMEDIATION_CHECK
+from saq.constants import DISPOSITION_OPEN, SERVICE_EXTERNAL_REMEDIATION_CHECK
 from saq.database.model import Alert, ExternalRemediationCheck
 from saq.database.pool import get_db, remove_all_sessions
 from saq.error.reporting import log_loop_exception
@@ -56,17 +56,22 @@ class ExternalRemediationCheckService(ACEServiceInterface):
     def get_config_class(cls) -> Type[ServiceConfig]:
         return ExternalRemediationCheckServiceConfig
 
-    def start(self):
-        config = get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK)
-        self.manager = ExternalRemediationCheckManager(
+    def __init__(self):
+        self._sweep_thread = None
+        self._sweep_shutdown = threading.Event()
+
+    def _create_manager(self, config: ExternalRemediationCheckServiceConfig) -> ExternalRemediationCheckManager:
+        return ExternalRemediationCheckManager(
             lock_timeout_seconds=config.lock_timeout_seconds,
             initial_retry_delay_seconds=config.initial_retry_delay_seconds,
             max_retry_delay_seconds=config.max_retry_delay_seconds,
         )
+
+    def start(self):
+        config = get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK)
+        self.manager = self._create_manager(config)
         self.manager.start()
 
-        self._sweep_thread = None
-        self._sweep_shutdown = threading.Event()
         if config.stop_on_disposition:
             self._sweep_thread = threading.Thread(
                 target=self._disposition_sweep_loop,
@@ -80,7 +85,11 @@ class ExternalRemediationCheckService(ACEServiceInterface):
         return self.manager.wait_for_start(timeout)
 
     def start_single_threaded(self):
+        config = get_service_config(SERVICE_EXTERNAL_REMEDIATION_CHECK)
+        self.manager = self._create_manager(config)
         self.manager.start_single_threaded()
+        if config.stop_on_disposition:
+            self._run_disposition_sweep()
 
     def stop(self):
         self._sweep_shutdown.set()
@@ -101,8 +110,8 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             finally:
                 try:
                     remove_all_sessions()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.exception(f"error removing database connection: {e}")
             self._sweep_shutdown.wait(interval_seconds)
 
     def _run_disposition_sweep(self):
@@ -123,7 +132,7 @@ class ExternalRemediationCheckService(ACEServiceInterface):
             get_db()
             .query(Alert.uuid)
             .filter(Alert.uuid.in_(uuids))
-            .filter(Alert.disposition != None)  # noqa: E711
+            .filter(Alert.disposition != DISPOSITION_OPEN)
             .all()
         )
 

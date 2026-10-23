@@ -1,21 +1,14 @@
-import html
 import logging
-from typing import TYPE_CHECKING
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_BODY, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FIRST_HOP_IP, F_EMAIL_HEADER, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_MESSAGE_ID, create_email_delivery, parse_email_conversation, parse_email_delivery
-from saq.database.pool import get_db_connection
-from saq.email import is_local_email_domain, normalize_email_address, normalize_message_id
+from saq.email import normalize_email_address, normalize_message_id
 from saq.configuration.config import get_config
 from saq.gui import ObservableActionAddLocalEmailDomain
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
 from saq.observables.network.ip import IPObservable
 from saq.util import is_subdomain
-
-
-if TYPE_CHECKING:
-    from saq.remediation import RemediationTarget
 
 class EmailAddressObservable(CaselessObservable):
     def __init__(self, *args, **kwargs):
@@ -90,15 +83,6 @@ class EmailDeliveryObservable(CaselessObservable):
     def jinja_template_path(self):
         return "analysis/email_delivery_observable.html"
 
-    @property
-    def remediation_targets(self) -> list["RemediationTarget"]:
-        from saq.remediation import RemediationTarget
-
-        if is_local_email_domain(self.email_address):
-            return [RemediationTarget('email', self.value)]
-
-        return []
-
 class EmailSubjectObservable(Observable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_EMAIL_SUBJECT, *args, **kwargs)
@@ -167,40 +151,6 @@ class MessageIDObservable(Observable):
 
         self._value = normalize_message_id(new_value.strip())
 
-    @property
-    def remediation_targets(self) -> list["RemediationTarget"]:
-        from saq.remediation import RemediationTarget
-
-        message_id = html.unescape(self.value)
-
-        # create targets from recipients of message_id in email archive
-        targets = {}
-        with get_db_connection("email_archive") as db:
-            c = db.cursor()
-            sql = "SELECT recipient FROM email_history WHERE message_id_hash = UNHEX(SHA2(%s, 256))"
-            #sql = (
-                #"SELECT as1.value FROM archive_search as1 "
-                #"JOIN archive_search as2 ON as1.archive_id = as2.archive_id "
-                #"WHERE as2.field = 'message_id' AND as2.value = %s AND as1.field IN ('env_to', 'body_to')"
-            #)
-            c.execute(sql, (message_id,))
-            for row in c:
-                mailbox = row[0]
-                if is_local_email_domain(mailbox):
-                    target = create_email_delivery(message_id, mailbox)
-                    if target not in targets:
-                        targets[target] = RemediationTarget('email', target)
-
-        # also get targets from remediation history
-        #query = get_db().query(Remediation)
-        #query = query.filter(Remediation.type == 'email')
-        #query = query.filter(Remediation.key.like(f"{message_id}%"))
-        #history = query.all()
-        #for h in history:
-            #if h.key not in targets:
-                #targets[h.key] = RemediationTarget('email', h.key)
-
-        return list(targets.values())
 
 class EmailBodyObservable(Observable):
     def __init__(self, *args, **kwargs):

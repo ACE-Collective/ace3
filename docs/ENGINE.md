@@ -912,6 +912,13 @@ this pass plus every earlier pass of the same logical analysis run — the initi
 new root work item (mode transition, disposition pass, analyst-requested
 analysis) starts the budget over. See §19.6.
 
+A module that runs a long, bounded step (a subprocess with a timeout) asks how
+much of this budget its current call has left with `self.time_left()`: the
+executor sets a deadline on the module's context just before the monitor starts,
+the sooner of the module's `maximum_analysis_time` and what is left of the
+cumulative fail time (not counted in an ignored mode), and clears it when the
+call returns. Outside of an engine call it returns `maximum_analysis_time`.
+
 ### 12.2 Cancellation
 
 `EngineExecutionContext.cancel_analysis()` sets a flag the main loop tests at the
@@ -1379,6 +1386,21 @@ These are MODULE_PATHs of the generated *Analysis* class
 (`python_module:AnalysisClass`, plus `:instance` for an instanced module), not
 `analysis_module_<name>` config section names. A deprecated module has had its config
 section deleted along with its code, so there is no section left to key off of.
+
+A site config overlay may still set keys on the deleted section (`enabled: false`, or a
+module-specific setting). What is left of the section then has no `name`,
+`python_module` or `python_class`, and `load_analysis_module_configs` skips it with a
+WARNING naming the key instead of failing configuration validation in every process.
+A section that has any of those three keys is still validated, so a half-written module
+definition fails loudly as before.
+
+An overlay may also still name the module in an analysis mode's `enabled_modules` or
+`disabled_modules`, or in a `module_group_*` list (lists append when overlays merge, so
+re-listing `module_group_common` counts). `ModuleLoader` skips each such name and logs an
+ERROR naming the mode, the module and the group, instead of failing to load modules
+and stopping every engine worker. It logs at ERROR rather than WARNING because it
+cannot tell a removed module from a misspelled name, and a misspelled module silently
+not running is something the operator has to fix.
 
 Alerts saved before the module was removed still carry its serialized Analysis. When
 `Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)

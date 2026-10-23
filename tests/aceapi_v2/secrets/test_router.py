@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
-from saq.configuration.encryption import delete_password, list_encrypted_password_keys
+from saq.configuration.encryption import list_encrypted_password_keys
 from saq.database.model import AuthUserPermission, User
 from saq.environment import get_global_runtime_settings
 
@@ -31,15 +31,6 @@ def _client_for(user: User) -> AsyncClient:
         base_url="http://test",
         headers={"x-ace-auth": user.test_api_key},
     )
-
-
-@pytest.fixture(autouse=True)
-def _cleanup_leaked_keys():
-    """Router writes commit to the real encrypted_passwords table; remove any test.* leftovers."""
-    yield
-    for key in list_encrypted_password_keys():
-        if key.startswith("test."):
-            delete_password(key)
 
 
 class TestAuth:

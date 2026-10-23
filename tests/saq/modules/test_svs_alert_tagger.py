@@ -17,8 +17,9 @@ from saq.filesystem.adapter import FileSystemAdapter
 from saq.modules.context import AnalysisModuleContext
 from saq.modules.svs import SVSAlertTagger
 from saq.signatures.builtin import SVS_MARKER_MISMATCH
-from saq.svs import attribution, windows
-from saq.svs.constants import TAG_MARKER_MISMATCH, TAG_SVS_TEST
+from saq.svs import attribution, maintenance, windows
+from saq.svs.constants import TAG_MAINTENANCE, TAG_MARKER_MISMATCH, TAG_SVS_TEST
+from saq.svs.refusals import Caller
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
@@ -120,3 +121,21 @@ def test_nothing_while_no_run_is_open():
     _tag(root)
     assert not root.has_tag(TAG_MARKER_MISMATCH)
     assert not _mismatch_detections(root)
+
+
+def test_an_alert_in_a_maintenance_window_is_tagged_until_it_is_not():
+    maintenance.open_window("win10-01", 30, "staging", Caller(name="art"), now=datetime.now() - timedelta(minutes=5))
+    root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode="correlation")
+    root.initialize_storage()
+    root.add_observable_by_spec(F_HOSTNAME, "win10-01")
+    root.add_detection_point("staging tool downloaded")
+    root.save()
+    ALERT(root)
+
+    _tag(root)
+    assert root.has_tag(TAG_MAINTENANCE) and not root.has_tag(TAG_SVS_TEST)
+
+    # a marker found later: judged as any other alert
+    root.details = {"cmd": "svs-" + "c" * 26}
+    _tag(root)
+    assert not root.has_tag(TAG_MAINTENANCE) and root.has_tag(TAG_MARKER_MISMATCH)

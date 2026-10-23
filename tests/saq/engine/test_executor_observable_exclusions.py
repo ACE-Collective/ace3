@@ -25,6 +25,7 @@ from saq.constants import (
     DIRECTIVE_EXCLUDE_ALL,
     F_FQDN,
     F_IPV4,
+    F_MAC_ADDRESS,
     F_URL,
 )
 from saq.engine.configuration_manager import ConfigurationManager
@@ -122,6 +123,19 @@ def test_exclusion_ipv4_outside_cidr(tmp_path):
     assert (
         executor._process_observable_exclusions(work_item)
         == ObservableExclusionResult.OK
+    )
+
+
+@pytest.mark.unit
+def test_exclusion_matches_mac_in_any_notation(tmp_path):
+    """mac_address values are stored as aa-bb-cc-dd-ee-ff, but an exclusion written
+    with colons or in upper case still matches (``MacAddressObservable.matches``)."""
+    executor = _make_executor({F_MAC_ADDRESS: ["00:50:56:C0:00:08"]})
+    work_item = _make_work_item(tmp_path, F_MAC_ADDRESS, "00-50-56-c0-00-08")
+
+    assert (
+        executor._process_observable_exclusions(work_item)
+        == ObservableExclusionResult.EXCLUDED
     )
 
 

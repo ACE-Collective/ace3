@@ -162,6 +162,7 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM malware")
         cursor.execute("DELETE FROM threat_type")
         cursor.execute("DELETE FROM `config`")
+        cursor.execute("DELETE FROM encrypted_passwords")
         cursor.execute("DELETE FROM incoming_workload")
         cursor.execute("DELETE FROM incoming_workload_type")
         cursor.execute("DELETE FROM work_distribution")
@@ -204,6 +205,8 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM svs_run_targets")
         cursor.execute("DELETE FROM svs_runs")
         cursor.execute("DELETE FROM svs_registration_refusals")
+        cursor.execute("DELETE FROM svs_maintenance_alerts")
+        cursor.execute("DELETE FROM svs_maintenance_windows")
         cursor.execute("DELETE FROM svs_test_hosts")
         cursor.execute("DELETE FROM svs_catalog_tests")
         cursor.execute("DELETE FROM svs_catalog_repositories")
@@ -287,8 +290,7 @@ def execute_global_setup():
         temp_dir=temp_dir,
         config_paths=[], 
         # a copy of etc/logging_configs/unittest_logging.yaml that logs to this slot's own file
-        logging_config_path=unittest_session.write_logging_config(temp_dir),
-        relative_dir=None)
+        logging_config_path=unittest_session.write_logging_config(temp_dir))
 
     execute_global_db_setup()
 

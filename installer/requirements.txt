@@ -9,7 +9,6 @@ croniter
 cryptography
 dateparser
 deepmerge
-dhash
 diff-cover
 distorm3
 dnspython

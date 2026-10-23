@@ -162,12 +162,10 @@ class ZipEncryptionAnalyzer(AnalysisModule):
         if not _file.exists:
             return AnalysisExecutionResult.COMPLETED
 
-        # is this an encrypted zip file?
+        # is this an encrypted zip file? one encrypted entry is enough
         try:
             with zipfile.ZipFile(_file.full_path) as zip_fp:
-                for zip_info in zip_fp.infolist():
-                    is_encrypted = zip_info.flag_bits & 0x1
-                if not is_encrypted:
+                if not any(zip_info.flag_bits & 0x1 for zip_info in zip_fp.infolist()):
                     return AnalysisExecutionResult.COMPLETED
 
         # expected condition if it's not an zip archive
@@ -199,7 +197,7 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
             # convert html to text
             try:
-                target_path = os.path.join(self.get_root().storage_dir, source_email.body.value)
+                target_path = source_email.body.full_path
                 if not os.path.exists(target_path):
                     analysis.error = f"email body file {target_path} does not exist"
                     return AnalysisExecutionResult.COMPLETED
@@ -245,10 +243,13 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
         # extract data from zip to output directory w/ 7zip
         # 'x' = extract, '-y' = assume yes to all queries
+        p = Popen(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{output_dir}", _file.full_path], stdout=PIPE, stderr=PIPE)
         try:
-            p = Popen(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{output_dir}", _file.full_path], stdout=PIPE, stderr=PIPE)
-            _, _ = p.communicate(timeout=self.extract_timeout)
+            p.communicate(timeout=self.extract_timeout)
         except Exception as e:
+            # a 7z that timed out is still running (and still writing): stop it before moving on
+            p.kill()
+            p.communicate()
             logging.error(f"Unable to extract data from encrypted zip {_file}: {e}")
             return AnalysisExecutionResult.COMPLETED
 

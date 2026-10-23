@@ -17,7 +17,7 @@ reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 
 | Permission | Grants |
 |---|---|
-| `svs:run_register` | The launcher's run lifecycle calls |
+| `svs:run_register` | The launcher's run lifecycle calls, and opening and ending a test host's maintenance windows |
 | `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
 | `svs:run_manage` | Ownership, cancel, close, review; a test's expectations, ignores and settings; manual association |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores (and, for YARA, retiring and deleting samples) |
@@ -285,6 +285,66 @@ after its observation window. Its test settings say so: `PUT /api/v2/svs/tests/{
 with `"holds_host": true` (`svs:run_manage`), or the checkbox on the test's page. Each run of it
 registered afterwards holds its hosts for its whole attribution window (`holds_host` on the run).
 
+## Maintenance windows
+
+Tests with prerequisites (`dependencies`) download or stage tools before they run, and installing or
+updating a launcher's own bundle on a host does the same; that is detectable. Before `start` its
+alerts would land in triage, and after it they would be attributed to the run and taught as
+expectations. A launcher opens a **maintenance window** on the test host for that instead:
+
+| Call | Does |
+|---|---|
+| `POST /api/v2/svs/test-hosts/{host}/maintenance` `{minutes, reason}` | Opens a window on the test host for `minutes`, at most `svs.runs.max_maintenance_minutes` (240). |
+| `DELETE /api/v2/svs/test-hosts/{host}/maintenance` | Ends its open window now. |
+| `GET /api/v2/svs/test-hosts/{host}/maintenance` | Its windows, latest first (`svs:run_read`). |
+
+`{host}` is the test host's id, or its short or fully qualified name. Opening and ending need
+`svs:run_register`.
+
+- **Only test hosts.** A name that is not a test host's, or a fully qualified name that isn't the
+  test host's own, is refused with 403 and alerts, exactly as a refused registration does (*Refused
+  registrations*, below).
+- **Never with a run.** A window and a run never hold one host at once (*One run per test host*,
+  above): opening a window on a host a run or another window holds, and registering or starting a
+  run on a host a window holds, answer 409 naming what holds it (`maintenance_id` for a window).
+- **What happens to its alerts.** An alert that involves the host (as attribution judges it: a
+  `hostname`/`fqdn` observable, or one of the test host's `ips`), with its event time inside the
+  window, that carries **no marker** and that no person associated with a run:
+  - is routed to `svs.queue` by the `svs_marker` router (decision `maintenance`) and tagged
+    `svs:maintenance`;
+  - once its last correlation pass (no analysis left delayed, or the analysis aborted) has judged
+    it the same way, is closed by the timers as `IGNORE` by the automation user, with the comment
+    *closed: SVS maintenance window … on test host …: <reason>*. `IGNORE` records nothing about its
+    detections, so nothing reaches any run's result.
+
+  It is kept, searchable and auditable, never dropped: find them by the `svs:maintenance` tag. An
+  analyst who takes one, or associates it with a run, before it is closed keeps it. An alert with a marker is judged as any other,
+  so a marker mismatch stays in triage, and one whose correlation pass finds a marker goes back to
+  the queue it came from.
+- **Over a run's late attribution.** A run's attribution window may still cover the window (its
+  claim ended before the window opened). What happens in the window is the window's: its alerts are
+  not attributed to the run by context, and a grouped hunt keys their suppression by the window
+  (`svs_maintenance:<window uuid>:<group value>`, *Hunt suppression during runs*, below) and never
+  records a match it drops there for the run (*Results*, above).
+- **Alongside a run on another host.** An alert that also involves another test host, which a run
+  holds at its event time, is the run's: the run is on its own host, and the window's host can only
+  be the other end of what it did.
+- **Removing the test host** ends its open window, by the person who removed it: what happens on a
+  host nobody tests is triage's, and nothing could end a window on it.
+- **Time.** A window expires at its end; the timers (`svs.runs.timer_interval_seconds`) record it.
+  Its alerts may arrive as late as a run's (`svs.runs.attribution_extra_hours`), which is how long
+  attribution keeps looking after a window ends.
+- **Logs.** Opening, ending and expiring a window are AUDIT records (`svs_maintenance`, `host`,
+  `reason`, `actor`), and each alert closed for one is an INFO record,
+  `svs maintenance window …: alert … closed as IGNORE`, with `svs_maintenance` and `alert_uuid`.
+
+```bash
+curl -X POST https://ace.example/api/v2/svs/test-hosts/win10-art-01/maintenance -H "x-ace-auth: $KEY" \
+     -H 'Content-Type: application/json' -d '{"minutes": 20, "reason": "staging T1003.001 prerequisites"}'
+# … stage the prerequisites …
+curl -X DELETE https://ace.example/api/v2/svs/test-hosts/win10-art-01/maintenance -H "x-ace-auth: $KEY"
+```
+
 ## Run states and timers
 
 | State | Reached by | Then |
@@ -348,6 +408,7 @@ svs:
     max_extra_bytes: 16384
     max_targets: 16
     timer_interval_seconds: 30
+    max_maintenance_minutes: 240
 ```
 
 ## Refused registrations
@@ -513,7 +574,7 @@ A marker **agrees** with its run when all three hold:
   not checked: process telemetry often doesn't carry it;
 - the alert's **event time** is inside the run's attribution window, from `start` to the window's
   end. The event time is the alert's (for a hunt, the query's event time), or when the alert was
-  created if it has none.
+  created if it has none (*Fallback event times*, below).
 
 A marker that doesn't agree (unknown, on another host, outside the window, or of a run that never
 started) is a **mismatch**. A mismatch is never routed, and it ends attribution for the whole
@@ -539,6 +600,24 @@ the marker only in the command line should expect file detections to be attribut
 - the file is found beneath the command line in the tree;
 - or the marker also shows in the file, in the alert's details, or in the detection itself (its
   description or details, which is where a hunt's query results usually carry it).
+
+### Fallback event times
+
+Windows are judged by the alert's event time, which is not always the event's own:
+
+- a hunt that can't extract an event's timestamp uses the time it processed the query's results
+  (the root carries the `event_time_fallback` extension, `query_time`);
+- an alert with no event time at all is judged by when it was inserted.
+
+Either can put an alert in the wrong run's window, or in none. Each attribution records which clock
+it was judged by (`event_time_source`: `event`, `query_time` or `insert_time`), a result row says
+when any of its signature's attributions rests on a fallback (`fallback_time`), and the run page
+says so next to *late*, on the alert, its detections and the result row. A hunt that alerted on a
+test host, inside a run's or a maintenance window, by its query's time is logged at WARNING as the
+alert is created, or at the later pass that first attributes it, naming the hunt, so its timestamp
+extraction can be fixed:
+`hunt … alerted on an svs test host without the event's own time` (`hunt`, `hunt_uuids`, `tool`,
+`tool_instance`, `alert_uuid`, `svs_run`, `event_time_source`).
 
 ### Without a marker: context
 
@@ -799,7 +878,10 @@ keys the suppression of each group by the run (`QueryHunt.key_suppression`):
 - **Which groups.** A group whose alert involves one of the run's test hosts (its `hostname`, `fqdn`
   or test host `ipv4` observables, as attribution reads them) with its event time inside the run's
   attribution window. Several runs' windows can cover it: the run context attribution would choose
-  is the one (*Without a marker: context*, above).
+  is the one (*Without a marker: context*, above). A group whose alert context attribution gives
+  to a maintenance window is keyed by the window instead (`svs_maintenance:<window uuid>:<group
+  value>`), so a host's staging never suppresses production or a run (*Maintenance windows*,
+  above).
 - **What it does.** The group's suppression is recorded and checked under a key of its own for the
   run (`svs_run:<run uuid>:<group value>`), so each run's first match alerts and the rest of that
   run's are suppressed as usual. An alert before the run (production, or another run) doesn't hide

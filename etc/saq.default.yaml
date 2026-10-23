@@ -277,6 +277,8 @@ svs:
     max_targets: 16
     # how often service_svs moves runs whose start timeout or windows have passed
     timer_interval_seconds: 30
+    # the longest maintenance window a launcher may open on a test host (docs/SVS_RUNS.md)
+    max_maintenance_minutes: 240
   # attributing alerts to test runs by their markers (docs/SVS_RUNS.md, *Attribution*)
   attribution:
     # how long each process trusts its answer to "is any run registered or inside its attribution
@@ -1685,6 +1687,11 @@ analysis_module_email_conversation_frequency_analyzer:
 
 analysis_module_email_conversation_attachment_analyzer:
   name: email_conversation_attachment_analyzer
+  # these tag the macros it looks for: without them it could look before they ran
+  dependencies:
+    - file_type
+    - olevba_v1_2
+    - officeparser3
   python_module: saq.modules.email.fa
   python_class: EmailConversationAttachmentAnalyzer
   enabled: true
@@ -1806,15 +1813,6 @@ analysis_module_file_hash_analyzer:
   ignore_pattern_gs: "*.pdf.gs.pdf"
   ignore_pattern_ocr: "*.ocr"
   ignore_pattern_js_deobfuscated: "*/deobfuscated-*"
-
-analysis_module_correlated_tag_analyzer:
-  name: correlated_tag_analyzer
-  python_module: saq.modules.tag
-  python_class: CorrelatedTagAnalyzer
-  enabled: false
-  # powerpoint autoexec on mouse over to powershell
-  definition_001_rule: ppt_mouse_over,ppt_program_action,ppt_powershell
-  definition_001_text: openxml office document has mouseover event leading to powershell script
 
 analysis_module_ssdeep:
   name: ssdeep
@@ -1949,8 +1947,6 @@ analysis_module_msoffice_encryption_analyzer:
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  # yes/no whether brute force decryption should be attempted if wordlist fails
-  attempt_brute_force: true
 
 analysis_module_xml_binary_analyzer:
   name: xml_binary_analyzer
@@ -2233,20 +2229,6 @@ analysis_module_nowhitespace_analyzer:
   enabled: true
 
 # TAGGING MODULES
-analysis_module_user_tagger:
-  name: user_tagger
-  # tag people in specific groups in the organization
-  python_module: saq.modules.user
-  python_class: UserTaggingAnalyzer
-  enabled: true
-  # location of the cache (use ace user update-organization to build this file)
-  json_path: data/etc/organization.json
-  # FORMAT: group_GROUPNAME = BOSS,LEVELS_DEEP,TAG
-  # GROUPNAME = some unique name to give the group
-  # BOSS = the person at the organization leading the group
-  # LEVELS_DEEP = how far deep in direct reports to include people in the group
-  # TAG = what tag to give people in this group
-
 analysis_module_user_defined_tagging:
   name: user_defined_tagging
   # tags observables as defined by the analysts in the database
@@ -2294,7 +2276,7 @@ analysis_module_zip_encryption_analyzer:
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
   # the maximum amount of time (in seconds) to wait for 7z to complete
   # 7z can go nuts and consume all system memory, so this tries to prevent that
-  timeout: 5
+  extract_timeout: 5
 
 analysis_module_rar_encryption_analyzer:
   name: rar_encryption_analyzer
@@ -2312,7 +2294,6 @@ analysis_module_rar_encryption_analyzer:
   list_limit: 5000
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
-  attempt_brute_force: true
 
 analysis_module_alert_added_to_event:
   name: alert_added_to_event
@@ -2361,6 +2342,7 @@ deprecated_modules:
   - saq.modules.asset.netbios:NetBIOSAnalysis
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
+  - saq.modules.user:UserTagAnalysis
 
 analysis_module_observable_detection:
   name: observable_detection
@@ -2598,7 +2580,6 @@ module_group_common:
   modules:
     - command_line_analyzer
     - configuration_defined_tagging
-    - correlated_tag_analyzer
     - email_address_fqdn_analyzer
     - nrd_analyzer
     - observable_detection
@@ -2606,7 +2587,6 @@ module_group_common:
     - protected_url_analyzer
     - site_tagger
     - user_defined_tagging
-    - user_tagger
 
 # EXTERNAL REMEDIATION CHECK SERVICE
 # Background daemon that polls external systems to discover whether *they*

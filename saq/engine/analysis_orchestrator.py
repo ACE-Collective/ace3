@@ -502,14 +502,14 @@ class AnalysisOrchestrator:
                         execution_context.root.uuid, alert.storage_dir, execution_context.root.storage_dir,
                     )
                     alert.load()
-                # do not rebuild the index if there are outstanding analysis requests --
-                # a later non-delayed pass will do the final rebuild. But if analysis was
-                # aborted (timeout / exception) the delayed requests were abandoned and
-                # root.delayed is stale, so force the rebuild now or the observables never
-                # make it into observable_mapping (and the alert becomes unsearchable by them).
-                build_index = (not execution_context.root.delayed) or execution_context.analysis_aborted
-                self._route_post_analysis(execution_context, alert)
-                alert.sync(build_index=build_index)
+                # the alert's last pass: nothing delayed is outstanding, or analysis was aborted
+                # (timeout / exception), which abandoned the delayed requests and left
+                # root.delayed stale. Only the last pass rebuilds the index, or the observables
+                # never make it into observable_mapping (and the alert becomes unsearchable by
+                # them); routers are told too (AlertRouter.route).
+                final = (not execution_context.root.delayed) or execution_context.analysis_aborted
+                self._route_post_analysis(execution_context, alert, final)
+                alert.sync(build_index=final)
             else:
                 # every path that puts a root in correlation mode inserts its alerts row
                 # (ALERT()); a root here without one is an alert no analyst will ever see
@@ -521,7 +521,7 @@ class AnalysisOrchestrator:
             if session:
                 session.close()
 
-    def _route_post_analysis(self, execution_context: EngineExecutionContext, alert: Alert):
+    def _route_post_analysis(self, execution_context: EngineExecutionContext, alert: Alert, final: bool):
         """Let the alert routers move an existing alert after an analysis pass
         (RouteStage.POST_ANALYSIS): for an alert inserted before analysis (a hunt, an API
         submission) whose routing evidence only appears once it is analyzed.
@@ -530,7 +530,7 @@ class AnalysisOrchestrator:
         analyst working it is worse than leaving it; the automation user counts as nobody,
         because setting a disposition as automation also makes it the owner."""
         root = execution_context.root
-        decision = route_alert(root, RouteStage.POST_ANALYSIS)
+        decision = route_alert(root, RouteStage.POST_ANALYSIS, final=final)
         if decision is None or decision.queue == alert.queue:
             return
 

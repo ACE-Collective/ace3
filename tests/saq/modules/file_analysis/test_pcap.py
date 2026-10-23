@@ -441,7 +441,7 @@ def test_collect_observables():
         by_category.setdefault(item.category, set()).add((item.o_type, item.value, item.volatile))
 
     assert by_category[CATEGORY_HOSTS] == {
-        (F_IP, "10.0.0.1", True), (F_IP, "2001:db8::1", True), (F_MAC_ADDRESS, "02:00:00:aa:00:01", True),
+        (F_IP, "10.0.0.1", True), (F_IP, "2001:db8::1", True), (F_MAC_ADDRESS, "02-00-00-aa-00-01", True),
         (F_HOSTNAME, "Workstation-1", True), (F_HOSTNAME, "NBHOST", True),
     }
     assert by_category[CATEGORY_DNS] == {
@@ -656,7 +656,7 @@ def test_pcap_tree(root_analysis):
     assert core.error is None
     assert core.index["statistics"]["packets"] == 5
     assert _values(core, F_IP) == {"10.20.30.40", "10.20.30.1", "10.20.30.255"}
-    assert _values(core, F_MAC_ADDRESS) == {"02:00:00:aa:00:01", "02:00:00:bb:00:02"}
+    assert _values(core, F_MAC_ADDRESS) == {"02-00-00-aa-00-01", "02-00-00-bb-00-02"}
     assert _values(core, F_HOSTNAME) == {"pcap-workstation", "PCAPNBNSHOST"}
     assert all(o.volatile for o in core.observables)
 
@@ -1517,6 +1517,14 @@ def test_dns_answer_ip_takes_its_first_response_time():
 
 
 @pytest.mark.unit
+def test_unparseable_mac_is_left_alone():
+    index = {"statistics": {"mac": [{"address": "02:00:00:aa"}]}}
+    assert not [i for i in collect_observables(index, []) if i.o_type == F_MAC_ADDRESS]
+    assert pcap._mac_pivot("02:00:00:aa") == "02:00:00:aa"
+    assert pcap._mac_pivot(None) is None
+
+
+@pytest.mark.unit
 def test_hosts_tables_pivot_on_observables_only():
     analysis = PcapAnalysis()
     analysis.details[pcap.KEY_INDEX] = {
@@ -1537,11 +1545,11 @@ def test_hosts_tables_pivot_on_observables_only():
     def pivot(o_type, value, text=None):
         return {"text": text or value, "pivot_type": o_type, "pivot_value": value}
 
-    assert tables["Hostnames"] == [[pivot(F_HOSTNAME, "WS-1"), "dhcp", pivot(F_MAC_ADDRESS, "02:00:00:aa:00:01")],
+    assert tables["Hostnames"] == [[pivot(F_HOSTNAME, "WS-1"), "dhcp", pivot(F_MAC_ADDRESS, "02-00-00-aa-00-01")],
                                    [pivot(F_HOSTNAME, "NB"), "nbns", None]]
     # multicast and broadcast are never observables, so they are not links
     assert [r[0] for r in tables["IP Endpoints"]] == [pivot(F_IP, "10.0.0.1"), "224.0.0.251"]
-    assert [r[0] for r in tables["Ethernet Endpoints"]] == [pivot(F_MAC_ADDRESS, "02:00:00:aa:00:01"), "ff:ff:ff:ff:ff:ff"]
+    assert [r[0] for r in tables["Ethernet Endpoints"]] == [pivot(F_MAC_ADDRESS, "02-00-00-aa-00-01"), "ff-ff-ff-ff-ff-ff"]
     # a flow endpoint shows address:port and pivots on the address, IPv6 included
     assert tables["Flows"][0][1:3] == [pivot(F_IP, "10.0.0.1", "10.0.0.1:50000"),
                                        pivot(F_IP, "198.51.100.7", "198.51.100.7:443")]

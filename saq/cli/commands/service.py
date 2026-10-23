@@ -3,6 +3,7 @@ import os
 import threading
 
 from saq.cli.cli_main import get_cli_subparsers
+from saq.error.reporting import log_loop_exception
 from saq.shutdown import get_shutdown_coordinator, run_bounded
 
 
@@ -35,6 +36,7 @@ def start_service(args):
     # on the main path below, never inside a signal handler
     coordinator.install_signal_handlers()
 
+    exit_code = 0
     try:
         if args.single_threaded:
             service.start_single_threaded()
@@ -47,7 +49,7 @@ def start_service(args):
         # collectors, most others) returns from start() immediately and does its waiting
         # in wait(); we sit here until either a signal arrives or the service finishes on
         # its own.
-        _run_until_finished(service, coordinator, args.service)
+        exit_code = _run_until_finished(service, coordinator, args.service)
 
     except KeyboardInterrupt:
         # only reachable if a service installed its own SIGINT handling over ours
@@ -58,18 +60,21 @@ def start_service(args):
         # tell a service that fell over from one that was asked to stop
         _shutdown(service, coordinator, args.service, exit_code=1)
 
-    _shutdown(service, coordinator, args.service)
+    _shutdown(service, coordinator, args.service, exit_code=exit_code)
 
 
-def _run_until_finished(service, coordinator, service_name: str):
-    """Block until shutdown is requested or the service finishes by itself."""
+def _run_until_finished(service, coordinator, service_name: str) -> int:
+    """Block until shutdown is requested or the service finishes by itself. Returns the exit
+    code: 1 when the service's wait() raised, which is a service that fell over."""
     finished = threading.Event()
+    failed = threading.Event()
 
     def _wait():
         try:
             service.wait()
         except Exception as e:
-            logging.warning(f"error waiting for service {service_name}: {e}")
+            failed.set()
+            log_loop_exception(e, f"error waiting for service {service_name}")
         finally:
             finished.set()
 
@@ -77,11 +82,14 @@ def _run_until_finished(service, coordinator, service_name: str):
 
     while True:
         if coordinator.wait_for_shutdown(SERVICE_POLL_INTERVAL):
-            return
+            return 0
 
         if finished.is_set():
+            if failed.is_set():
+                return 1
+
             logging.info(f"service {service_name} finished on its own")
-            return
+            return 0
 
 
 def _shutdown(service, coordinator, service_name: str, exit_code: int = 0):

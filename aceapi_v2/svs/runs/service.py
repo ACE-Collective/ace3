@@ -76,7 +76,7 @@ from saq.database.pool import get_db
 from saq.gui.filter_screens import SVS_RUNS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.svs import review, run_comments, runs
-from saq.svs.constants import RUN_STATES, AttributionConfidence, RunState
+from saq.svs.constants import FALLBACK_EVENT_TIME_SOURCES, RUN_STATES, AttributionConfidence, RunState
 from saq.svs.log_search import log_search_url
 from saq.svs.refusals import Caller
 from saq.svs.results import cleanup_condition
@@ -104,10 +104,11 @@ def _lifecycle(run: SVSRun) -> RunLifecycle:
 
 
 def _holder(holder: runs.HostHolder) -> HostHolder:
-    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until)
+    return HostHolder(host=holder.host, run_id=holder.run_uuid, state=holder.state, until=holder.until,
+                      maintenance_id=holder.maintenance_uuid)
 
 
-def _host_busy(e: runs.HostBusy) -> HTTPException:
+def host_busy_error(e: runs.HostBusy) -> HTTPException:
     return HTTPException(status_code=409, detail={
         "message": str(e), "holders": [_holder(holder).model_dump(mode="json") for holder in e.holders]})
 
@@ -120,7 +121,7 @@ def _call(fn, *args, **kwargs) -> RunLifecycle:
     except runs.RunStateConflict as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "state": e.state})
     except runs.HostBusy as e:
-        raise _host_busy(e)
+        raise host_busy_error(e)
 
 
 def _registration(body: RunRegistrationRequest) -> runs.Registration:
@@ -138,7 +139,7 @@ def register(body: RunRegistrationRequest, caller: Caller) -> RunLifecycle:
     except runs.RegistrationRefused as e:
         raise HTTPException(status_code=403, detail={"message": "registration refused", "reasons": e.reasons})
     except runs.HostBusy as e:
-        raise _host_busy(e)
+        raise host_busy_error(e)
 
 
 def validate(body: RunRegistrationRequest, caller: Caller) -> RunValidation:
@@ -567,6 +568,7 @@ def _result(row) -> RunResult:
         id=result.id, run_id=run_uuid, signature_uuid=result.signature_uuid,
         signature_family=result.signature_family, signature_name=result.signature_name, status=result.status,
         alert_count=result.alert_count, late_only=result.late_only, context_only=result.context_only,
+        fallback_time=result.fallback_time,
         content_hash=result.content_hash, suppressing_alert_uuid=result.suppressing_alert_uuid,
         suppression_imprecise=result.suppression_imprecise, reviewed_status=result.reviewed_status,
         reviewed_alert_count=result.reviewed_alert_count, reviewed_late_only=result.reviewed_late_only,
@@ -678,7 +680,8 @@ def _attribution(row) -> Attribution:
         id=attribution.id, run_id=run_uuid, alert_uuid=attribution.alert_uuid, detection=attribution.content_hash,
         signature_uuid=attribution.signature_uuid, signature_family=attribution.signature_family,
         confidence=attribution.confidence, late=attribution.late, event_time=attribution.event_time,
-        cleanup=bool(cleanup), source=attribution.source,
+        cleanup=bool(cleanup), event_time_source=attribution.event_time_source,
+        fallback_time=attribution.event_time_source in FALLBACK_EVENT_TIME_SOURCES, source=attribution.source,
         scan_point=attribution.scan_point, actor=attribution.actor, actor_user=actor_user,
         created_at=attribution.created_at, removed_at=attribution.removed_at, removed_by=attribution.removed_by,
         removed_by_user=removed_by_user, removal_reason=attribution.removal_reason, kept_at=attribution.kept_at,
@@ -732,6 +735,7 @@ def _run_alert(alert_uuid: str, alert, attributions: list[Attribution], detectio
     return RunAlert(
         alert_uuid=alert_uuid, alert=alert, holds=bool(holding), confidence=confidence,
         late=any(a.late for a in holding), cleanup=bool(holding) and all(a.cleanup for a in holding),
+        fallback_time=any(a.fallback_time for a in holding),
         manual=any(a.source == "manual" for a in holding),
         kept=any(a.kept_at is not None for a in context),
         undecided_context=any(a.kept_at is None for a in context), detections=rows)

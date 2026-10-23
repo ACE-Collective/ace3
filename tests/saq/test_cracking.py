@@ -1,4 +1,7 @@
+import logging
 import os
+import subprocess
+import threading
 import pytest
 import tempfile
 
@@ -233,3 +236,58 @@ def test_crack_password_invalid_mode():
         assert result is None or isinstance(result, str)
     finally:
         os.unlink(hash_file_path)
+
+def _encrypted_zip_hash(directory, name: str, password: str) -> str:
+    """Returns the path of the zip2john hash of a new zip encrypted with password."""
+    payload = os.path.join(directory, f"{name}.txt")
+    with open(payload, "w") as fp:
+        # zip2john skips entries that are too short
+        fp.write("payload line\n" * 50)
+    archive = os.path.join(directory, f"{name}.zip")
+    subprocess.run(["7z", "a", "-tzip", f"-p{password}", archive, payload], check=True, capture_output=True)
+    hash_file = f"{archive}.hash"
+    with open(hash_file, "wb") as fp:
+        fp.write(subprocess.run([os.path.join(_john_available(), "zip2john"), archive], check=True, capture_output=True).stdout)
+    return hash_file
+
+
+@pytest.mark.integration
+def test_crack_password_concurrently(tmp_path):
+    """Engine workers crack attachments at the same time; every run must get its own john session."""
+    john_path = _john_available()
+    if not john_path:
+        pytest.skip("John the Ripper not found in common locations")
+
+    count = 8
+    hash_files = [_encrypted_zip_hash(str(tmp_path), f"archive{i}", f"Concurrent{i}") for i in range(count)]
+    wordlist = tmp_path / "wordlist"
+    wordlist.write_text("".join(f"Concurrent{i}\n" for i in range(count)))
+
+    barrier = threading.Barrier(count)
+    results = [None] * count
+
+    def _crack(index: int):
+        barrier.wait()
+        results[index] = crack_password(john_path, hash_files[index], f"archive{index}.zip", f"--wordlist={wordlist}")
+
+    threads = [threading.Thread(target=_crack, args=(i,)) for i in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+
+    assert results == [f"Concurrent{i}" for i in range(count)]
+
+
+@pytest.mark.integration
+def test_crack_password_logs_john_failure(tmp_path, caplog):
+    john_path = _john_available()
+    if not john_path:
+        pytest.skip("John the Ripper not found in common locations")
+
+    hash_file = _encrypted_zip_hash(str(tmp_path), "archive", "secret")
+
+    assert crack_password(john_path, hash_file, "archive.zip", "--incremental=NoSuchMode") is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "--incremental=NoSuchMode" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "Unknown incremental mode: NoSuchMode" in warnings[0].getMessage()

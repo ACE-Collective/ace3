@@ -55,10 +55,6 @@ class URLObservable(Observable):
         result.extend(super().jinja_available_actions)
         return result
 
-    @property
-    def remediation_targets(self):
-        return []
-
     def is_managed(self):
         """Returns True if this URL has a managed domain."""
 

@@ -14,6 +14,7 @@ from typing import Optional
 from saq.configuration.config import get_config
 from saq.storage.adapter import StorageAdapter
 from saq.storage.error import StorageError
+from saq.util.filesystem import abs_path
 
 STORAGE_SYSTEM = None
 
@@ -118,11 +119,7 @@ class StorageFactory:
         if config.storage is not None:
             base_dir = config.storage.base_dir
 
-        # resolve relative paths against SAQ_HOME
-        if not os.path.isabs(base_dir):
-            saq_home = os.environ.get("SAQ_HOME", "")
-            if saq_home:
-                base_dir = os.path.join(saq_home, base_dir)
+        base_dir = abs_path(base_dir)
 
         storage = LocalStorage(base_dir=base_dir)
         return StorageAdapter(storage)

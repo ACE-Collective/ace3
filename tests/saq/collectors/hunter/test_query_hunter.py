@@ -2,7 +2,7 @@ import configparser
 import logging
 import os
 import shutil
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from queue import Queue
 from uuid import uuid4
 
@@ -13,6 +13,7 @@ from sqlalchemy import select
 import saq.collectors.hunter.base_hunter as hunter_base
 import saq.collectors.hunter.query_hunter as query_hunter_module
 import saq.util.time as saq_time
+from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK
 from saq.collectors.hunter import HunterService, HuntManager, read_persistence_data
 from saq.collectors.hunter.query_hunter import (
     QueryHunt,
@@ -47,12 +48,12 @@ from saq.observables.mapping import (
 )
 from saq.query.config import SummaryDetailConfig
 from saq.splunk import extract_event_timestamp as splunk_extract_event_timestamp
-from saq.svs import attribution
-from saq.svs.attribution import run_suppression_key
+from saq.svs import attribution, maintenance
 from saq.svs.markers import new_marker
+from saq.svs.refusals import Caller
 from saq.util.time import create_timedelta, local_time
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
-from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.svs.conftest import add_catalog_test, add_test_host
 
 
 class TestQueryHunt(QueryHunt):
@@ -609,6 +610,8 @@ def test_process_query_results(monkeypatch, hunt_manager):
     assert submission.root.extensions == {
         "playbook_url": hunt.playbook_url,
         "transaction_id": get_transaction_id(),
+        # this hunt never extracts an event's timestamp
+        KEY_EVENT_TIME_FALLBACK: EVENT_TIME_FALLBACK_QUERY_TIME,
     }
 
     submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
@@ -5476,7 +5479,7 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     with caplog.at_level(logging.INFO):
         submissions = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert {s.group_value: s.suppression_key for s in submissions} == {
-        "win10-01": run_suppression_key(first.uuid, "win10-01"), "prod-01": "prod-01"}
+        "win10-01": f"svs_run:{first.uuid}:win10-01", "prod-01": "prod-01"}
     (record,) = [r for r in caplog.records if "suppression keyed by svs run" in r.getMessage()]
     assert (record.svs_run, record.group_value) == (first.uuid, "win10-01")
     _record(hunt, submissions)
@@ -5489,7 +5492,21 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
     # the same test again, within the hunt's suppression period: the next run's first match alerts
     second = _svs_run(now - timedelta(minutes=30))
     (submission,) = hunt.process_query_results([{"host": "win10-01"}])
-    assert submission.suppression_key == run_suppression_key(second.uuid, "win10-01")
+    assert submission.suppression_key == f"svs_run:{second.uuid}:win10-01"
+
+
+@pytest.mark.integration
+def test_a_maintenance_windows_matches_are_suppressed_under_the_windows_own_key(hunt_manager, caplog):
+    """A host's staging never suppresses production or a run (docs/SVS_RUNS.md, *Maintenance windows*)."""
+    add_test_host("win10-01")
+    window = maintenance.open_window("win10-01", 30, "staging", Caller(name="art-launcher"),
+                                     now=datetime.now() - timedelta(minutes=10))
+    hunt = _svs_grouped_hunt(hunt_manager)
+    with caplog.at_level(logging.INFO):
+        (submission,) = hunt.process_query_results([{"host": "win10-01"}])
+    assert submission.suppression_key == f"svs_maintenance:{window.uuid}:win10-01"
+    (record,) = [r for r in caplog.records if "suppression keyed by svs maintenance window" in r.getMessage()]
+    assert (record.svs_maintenance, record.group_value) == (window.uuid, "win10-01")
 
 
 @pytest.mark.integration
@@ -5513,9 +5530,33 @@ def test_a_failure_to_key_by_run_falls_back_to_the_group(hunt_manager, monkeypat
     def broken(roots):
         raise RuntimeError("database went away")
 
-    monkeypatch.setattr(query_hunter_module, "suppression_runs", broken)
+    monkeypatch.setattr(query_hunter_module, "suppression_owners", broken)
     with caplog.at_level(logging.ERROR):
         (submission,) = hunt.process_query_results([{"host": "win10-01"}, {"host": "prod-01"}])
     assert submission.suppression_key == "prod-01"
     (record,) = [r for r in caplog.records if "unable to key the suppression" in r.getMessage()]
     assert record.levelno == logging.ERROR and record.exc_info is not None
+
+
+@pytest.mark.unit
+def test_a_fallback_event_time_is_marked_on_the_root(monkeypatch, hunt_manager):
+    """SVS attribution needs to know when a root's event time is the hunt's query time."""
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="test_fallback_event_time",
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
+    )
+    stamp = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(hunt, "extract_event_timestamp", lambda event: stamp if "_time" in event else None)
+
+    own, fallback = hunt.process_query_results([{"src": "1.2.3.4", "_time": "x"}, {"src": "5.6.7.8"}])
+    assert own.root.event_time == stamp and KEY_EVENT_TIME_FALLBACK not in (own.root.extensions or {})
+    assert fallback.root.extensions[KEY_EVENT_TIME_FALLBACK] == EVENT_TIME_FALLBACK_QUERY_TIME
+
+    # a group's time is its earliest event's, and so is whether it is its own
+    hunt.config.group_by = "ALL"
+    (group,) = hunt.process_query_results([{"src": "5.6.7.8"}, {"src": "1.2.3.4", "_time": "x"}])
+    assert group.root.event_time == stamp and KEY_EVENT_TIME_FALLBACK not in (group.root.extensions or {})
+    (group,) = hunt.process_query_results([{"src": "5.6.7.8"}])
+    assert group.root.extensions[KEY_EVENT_TIME_FALLBACK] == EVENT_TIME_FALLBACK_QUERY_TIME

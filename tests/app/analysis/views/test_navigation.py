@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from flask import url_for, session
 from io import BytesIO
@@ -408,3 +410,40 @@ class TestNavigationModuleStructure:
         assert callable(navigation_module.redirect_to)
         assert callable(navigation_module.set_page_offset)
         assert callable(navigation_module.set_page_size)
+
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as sess:
+        return [message for _category, message in sess.get("_flashes", [])]
+
+
+def _uploaded_alert_uuid(web_client) -> str:
+    upload_result = web_client.post(url_for('analysis.upload_file'), data={
+        'file_path': (BytesIO(b'test file content'), 'test_file.txt'),
+        'comment': 'test comment',
+        'alert_uuid': '',
+    }, content_type='multipart/form-data')
+    return parse_qs(urlparse(upload_result.location).query)['direct'][0]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("params", [{}, {"direct": "00000000-0000-0000-0000-000000000000"}])
+def test_redirect_to_without_an_alert(web_client, params):
+    result = web_client.get(url_for('analysis.redirect_to', file_uuid="x", target="vt", **params))
+
+    assert result.status_code == 302
+    assert result.location.endswith(url_for('analysis.index'))
+    assert _flashes(web_client) == ["internal error"]
+
+
+@pytest.mark.integration
+def test_redirect_to_an_alert_that_will_not_load(web_client, monkeypatch, caplog):
+    alert_uuid = _uploaded_alert_uuid(web_client)
+    monkeypatch.setattr("saq.analysis.root.RootAnalysis.load", lambda self, *args, **kwargs: False)
+
+    with caplog.at_level(logging.ERROR):
+        result = web_client.get(url_for('analysis.redirect_to', direct=alert_uuid, file_uuid="x", target="vt"))
+
+    assert result.status_code == 302
+    assert result.location.endswith(url_for('analysis.index'))
+    assert _flashes(web_client) == ["internal error"]
+    assert "unable to load alert" in caplog.text

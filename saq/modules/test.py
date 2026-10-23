@@ -175,9 +175,10 @@ class BasicTestAnalyzer(AnalysisModule):
         logging.info("execute_worker_gil_hang")
 
         # catastrophic backtracking: _sre never releases the GIL, so the monitor thread is
-        # starved and only the worker manager's kill ends this. bounded (about 20 seconds on its
-        # own) so a failed kill cannot wedge the test suite
-        re.match(r"(a+)+$", "a" * 28 + "b")
+        # starved and only the worker manager's kill ends this. each extra "a" doubles the run
+        # time: 30 takes about 18 seconds on a fast native CPU, well past the kill, and is still
+        # bounded so a failed kill cannot wedge the test suite
+        re.match(r"(a+)+$", "a" * 30 + "b")
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_test_add_file(self, test) -> AnalysisExecutionResult:
@@ -526,6 +527,25 @@ class SlowDelayedAnalysisTestModule(AnalysisModule):
         time.sleep(float(observable.value))
         analysis.details[KEY_DELAYED_REQUEST] = True
         analysis.details[KEY_REQUEST_COUNT] += 1
+        return AnalysisExecutionResult.COMPLETED
+
+class TimeLeftTestAnalysis(Analysis):
+    pass
+
+class TimeLeftTestModule(AnalysisModule):
+    """Records what time_left() returned during the engine's call to execute_analysis()."""
+
+    @property
+    def generated_analysis_type(self):
+        return TimeLeftTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        analysis.details = {"time_left": self.time_left()}
         return AnalysisExecutionResult.COMPLETED
 
 class EngineLockingTestAnalysis(Analysis):

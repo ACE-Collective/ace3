@@ -1,3 +1,4 @@
+import logging
 import os
 import os.path
 import sys
@@ -6,9 +7,10 @@ from saq.configuration import (
         YAMLConfig,
         ConfigurationException)
 from saq.configuration.loader import load_configuration
-from saq.configuration.schema import APIConfig
+from saq.configuration.schema import ACEConfig, APIConfig
 
 import pytest
+from pydantic import ValidationError
 
 @pytest.mark.unit
 def test_apply_config(tmp_path):
@@ -207,3 +209,41 @@ def test_api_config_ignores_secret_key():
         "secret_key": "left-over",
     })
     assert not hasattr(config, "secret_key")
+
+
+def _load_with_overlay(tmp_path, overlay: str) -> ACEConfig:
+    overlay_path = str(tmp_path / 'overlay.yaml')
+    with open(overlay_path, 'w') as fp:
+        fp.write(overlay)
+
+    raw_config = load_configuration(config_paths=[overlay_path])
+    config = ACEConfig.model_validate(raw_config._data)
+    config.raw = raw_config
+    return config
+
+@pytest.mark.unit
+@pytest.mark.parametrize("overlay", [
+    "analysis_module_removed_module:\n  enabled: false\n",
+    "analysis_module_removed_module:\n  group_execs: ceo,2,executive\n",
+])
+def test_overlay_of_removed_analysis_module_is_ignored(tmp_path, caplog, overlay):
+    # the module's block in saq.default.yaml is gone, so the overlay's keys are all that is left of it
+    caplog.set_level(logging.WARNING)
+    config = _load_with_overlay(tmp_path, overlay)
+
+    with pytest.raises(ValueError):
+        config.get_analysis_module_config("removed_module")
+    records = [r for r in caplog.records if getattr(r, "config_key", None) == "analysis_module_removed_module"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+
+@pytest.mark.unit
+def test_incomplete_analysis_module_definition_still_fails(tmp_path):
+    # a block that names a module but leaves out its class is a mistake, not a leftover
+    with pytest.raises(ValidationError):
+        _load_with_overlay(tmp_path, """
+analysis_module_half_written:
+  name: half_written
+  python_module: saq.modules.test
+  enabled: true
+""")

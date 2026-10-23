@@ -7,8 +7,10 @@ from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
+import requests
 from flask import url_for
 
+from app.analysis.views.edit.new import SUBMIT_TIMEOUT
 from saq.analysis.root import load_root
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, F_IPV4, create_file_location
@@ -65,6 +67,11 @@ def _alerts() -> list[Alert]:
 
 def _leftover_uploads() -> list[str]:
     return glob.glob(os.path.join(get_temp_dir(), '*.upload'))
+
+
+def _flashes(web_client) -> list[str]:
+    with web_client.session_transaction() as session:
+        return [message for _category, message in session.get('_flashes', [])]
 
 
 @pytest.mark.integration
@@ -206,9 +213,9 @@ def test_new_alert_file_location_observable(web_client, mock_api_call, target_no
 
 
 @pytest.mark.integration
-def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
-    """A file observable posted without a file is refused."""
-    with caplog.at_level(logging.ERROR):
+def test_new_alert_file_row_without_upload_is_refused(web_client, mock_api_call, target_node, caplog):
+    """A file observable posted without a file is refused with a message, not an error report."""
+    with caplog.at_level(logging.WARNING):
         response = web_client.post(url_for('analysis.new_alert'), data=_form(
             target_node,
             observables_types_0=F_FILE,
@@ -217,7 +224,32 @@ def test_new_alert_file_upload(web_client, mock_api_call, target_node, caplog):
     assert response.status_code == 302
     assert 'manage' in response.location
     assert _alerts() == []
-    assert any(r.getMessage().startswith("unable to submit alert") for r in caplog.records)
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_file_row_without_upload_refuses_every_observable(web_client, mock_api_call, target_node, submit_type):
+    """A file row without an upload among other observables refuses the whole submission: a single
+    alert is not created without it, no alert is created for the other observables, and the upload
+    already saved for an earlier row is removed."""
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt'),
+        observables_types_1=F_FILE,
+        observables_values_1='not an upload',
+        observables_directives_1='',
+        observable_data_sep_1='single',
+        submit_type=submit_type),
+        content_type='multipart/form-data')
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert _flashes(web_client) == ['no file uploaded for observable 1']
+    assert _leftover_uploads() == []
 
 
 @pytest.mark.integration
@@ -233,6 +265,35 @@ def test_new_alert_api_submission_failure(web_client, target_node):
     # Should redirect to manage page with error
     assert response.status_code == 302
     assert 'manage' in response.location
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_submission_timeout_is_reported(web_client, target_node, monkeypatch, caplog, submit_type):
+    """A target node that stalls times the submission out instead of holding the GUI worker."""
+    post = Mock(side_effect=requests.Timeout("read timed out"))
+    monkeypatch.setattr("ace_api.requests.post", post)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            observables_types_0='ipv4',
+            observables_values_0='192.168.1.1',
+            submit_type=submit_type))
+
+    post.assert_called_once()
+    assert post.call_args.kwargs['timeout'] == SUBMIT_TIMEOUT
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _flashes(web_client) == ['unable to submit alert: read timed out']
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to submit alert")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info is not None
+    write_error_report.assert_called_once()
+    assert _alerts() == []
 
 
 @pytest.mark.integration
@@ -335,9 +396,10 @@ def test_new_alert_never_reads_a_server_path(web_client, mock_api_call, target_n
         observables_values_0=str(server_file),
         is_local='true'))
 
-    # a file row without an upload is refused as before, and nothing was read from the server path
+    # a file row without an upload is refused, and nothing was read from the server path
     assert response.status_code == 302
     assert 'direct=' not in response.location
+    assert _flashes(web_client) == ['no file uploaded for observable 0']
     assert get_db().query(Alert).count() == 0
     for dir_path, _, file_names in os.walk(get_data_dir()):
         for file_name in file_names:
@@ -424,4 +486,75 @@ def test_new_alert_file_save_failure_is_reported(web_client, mock_api_call, targ
     assert _leftover_uploads() == []
     records = [r for r in caplog.records if r.getMessage().startswith("unable to save")]
     assert len(records) == 1
+    write_error_report.assert_called_once()
+
+
+def _post_file_alert(web_client, target_node):
+    return web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='File Upload Alert',
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt')),
+        content_type='multipart/form-data')
+
+
+@pytest.mark.integration
+def test_new_alert_temp_file_remove_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload left behind in the temp dir is reported with its traceback and path, and the
+    alert is still submitted."""
+    real_remove = os.remove
+
+    def failing_remove(path, *args, **kwargs):
+        if str(path).endswith('.upload'):
+            raise PermissionError("permission denied")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", failing_remove)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    monkeypatch.undo()
+    leftovers = _leftover_uploads()
+    for path in leftovers:
+        os.remove(path)
+
+    _alert_uuid(response)
+    assert len(leftovers) == 1
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to remove")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is PermissionError
+    assert records[0].path == leftovers[0]
+    write_error_report.assert_called_once()
+
+
+@pytest.mark.integration
+def test_new_alert_upload_close_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload whose file descriptor cannot be closed is reported with its traceback and file
+    name, and the temp file is still removed."""
+    class FailingClose(io.BufferedReader):
+        def close(self):
+            if self.closed:
+                return
+            super().close()
+            raise OSError("bad file descriptor")
+
+    monkeypatch.setattr("app.analysis.views.edit.new.open",
+                        lambda path, mode: FailingClose(io.FileIO(path, mode)), raising=False)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    _alert_uuid(response)
+    assert _leftover_uploads() == []
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to close")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is OSError
+    assert records[0].file_name == 'upload.txt'
     write_error_report.assert_called_once()

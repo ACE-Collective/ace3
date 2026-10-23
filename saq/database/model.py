@@ -2282,6 +2282,75 @@ class SVSRunEvent(Base):
         server_onupdate=FetchedValue())
 
 
+class SVSMaintenanceWindow(Base):
+    """A test host's maintenance window (docs/SVS_RUNS.md, *Maintenance windows*): while it is open
+    no run may hold the host, and an alert without a marker that involves the host, with its event
+    time inside the window, is routed to the test queue and closed. Only saq/svs/maintenance.py
+    writes this table."""
+
+    __tablename__ = 'svs_maintenance_windows'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, unique=True)
+    # the test host, NULL once it is removed; host and fqdn are its names when the window opened
+    test_host_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('svs_test_hosts.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    host: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    fqdn: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    opened_by_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey('users.id', ondelete='SET NULL', onupdate='CASCADE'),
+        nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # when it was opened to end; ended_at is when it did, early or at ends_at
+    ends_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    ended_by: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    # ended (early, by a call) or expired (at ends_at, by the timers)
+    end_reason: Mapped[Optional[str]] = mapped_column(Enum('ended', 'expired'), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
+class SVSMaintenanceAlert(Base):
+    """An alert routed to the test queue for a maintenance window, until the timers close it. The
+    marker router writes it as it judges the alert, confirms it at the alert's correlation pass, and
+    marks it removed when a later pass no longer judges the alert maintenance (a marker found in
+    analysis). Only saq/svs/maintenance.py writes this table."""
+
+    __tablename__ = 'svs_maintenance_alerts'
+    __table_args__ = (
+        UniqueConstraint('window_id', 'alert_uuid', name='uq_svs_maintenance_alerts_window_alert'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    window_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey('svs_maintenance_windows.id', ondelete='CASCADE', onupdate='CASCADE'),
+        nullable=False)
+    alert_uuid: Mapped[str] = mapped_column(CHAR(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # judged maintenance by the router after the alert's correlation pass: it may be closed
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    removed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # the timers closed it (or found an analyst had taken or dispositioned it)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        MYSQL_TIMESTAMP(fsp=6),
+        nullable=False,
+        index=True,
+        server_default=text('CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'),
+        server_onupdate=FetchedValue())
+
+
 class SVSRegistrationRefusal(Base):
     """Refused registrations per (caller, host, hour) (docs/SVS_RUNS.md, *Refused registrations*):
     the first refusal in an hour creates an alert, the rest only count, so a launcher retrying in a
@@ -2345,6 +2414,10 @@ class SVSAttribution(Base):
     # the alert's event time the attribution was judged by, as runs record time; NULL for rows
     # written before it was kept. At or after the run's cleanup_at, the detection is the cleanup's
     event_time: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # saq.svs.constants.EventTimeSource: the event's own time, or a fallback (the hunt's query time,
+    # the alert's insert time) that may place the alert in the wrong window
+    event_time_source: Mapped[Optional[str]] = mapped_column(
+        Enum('event', 'query_time', 'insert_time'), nullable=True)
     # saq.svs.constants.AttributionSource: the marker router, or a person
     source: Mapped[str] = mapped_column(Enum('router', 'manual'), nullable=False)
     # saq.svs.constants.ScanPoint where the agreeing marker was found, NULL for context
@@ -2539,6 +2612,8 @@ class SVSRunResult(Base):
     # every one of its attributions is late, or by context alone
     late_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     context_only: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
+    # some attribution of it was judged by a fallback event time, not the event's own
+    fallback_time: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
     # the rule's own content hash when the result was computed (saq.signatures.model.Signature)
     content_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
     # possibly_suppressed: the latest alert of the hunt inside its suppression period, and whether
@@ -3677,6 +3752,12 @@ class AuthGroupUser(Base):
     group: Mapped["AuthGroup"] = relationship('AuthGroup')
     user: Mapped["User"] = relationship('User')
 
+def _lowercase_permission_part(self, key, value):
+    # permissions match case-insensitively (saq.permissions.logic) and the ascii_general_ci unique
+    # indexes on these tables already treat case variants as one row, so a pattern is always
+    # stored lowercase and every reader sees it the way enforcement does
+    return value.lower() if value is not None else value
+
 class AuthPermissionCatalog(Base):
 
     __tablename__ = 'auth_permission_catalog'
@@ -3695,6 +3776,8 @@ class AuthPermissionCatalog(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     description: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -3725,6 +3808,8 @@ class AuthUserPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3770,6 +3855,8 @@ class AuthGroupPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3864,6 +3951,8 @@ class AuthApiKeyPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     # v1 mints ALLOW-only (a positive allowlist); the column mirrors the user/group permission
     # tables so a future per-key DENY capability needs no schema change.
