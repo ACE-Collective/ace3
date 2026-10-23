@@ -1387,6 +1387,12 @@ WARNING naming the key instead of failing configuration validation in every proc
 A section that has any of those three keys is still validated, so a half-written module
 definition fails loudly as before.
 
+An overlay may also still name the module in an analysis mode's `enabled_modules` or
+`disabled_modules`, or in a `module_group_*` list (lists append when overlays merge, so
+re-listing `module_group_common` counts). `ModuleLoader` skips each such name with a
+WARNING naming the mode, the module and the group, instead of failing to load modules
+and stopping every engine worker.
+
 Alerts saved before the module was removed still carry its serialized Analysis. When
 `Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)
 cannot import the class it substitutes a read-only `UnknownAnalysis`, so the rest of

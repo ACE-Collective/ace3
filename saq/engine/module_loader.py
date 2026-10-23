@@ -138,25 +138,45 @@ class ModuleLoader:
         for module_group_name in analysis_mode_config.module_groups:
             module_group_config = get_config().get_module_group_config(module_group_name)
             for module_name in module_group_config.modules:
-                # make sure the module exists
-                get_config().get_analysis_module_config(module_name)
+                if not self._is_module_configured(module_name, analysis_mode_config.name, module_group_name):
+                    continue
+
                 analysis_mode_module_names_map[analysis_mode_config.name].add(module_name)
-    
+
     def _add_individual_modules(self, analysis_mode_config: AnalysisModeConfig,
                                analysis_mode_module_names_map: Dict[str, Set[str]]):
         """Add or remove individual modules for an analysis mode."""
         # add any enabled modules
         for key_name in analysis_mode_config.enabled_modules:
-            # make sure the referenced module exists
-            get_config().get_analysis_module_config(key_name)
+            if not self._is_module_configured(key_name, analysis_mode_config.name):
+                continue
+
             analysis_mode_module_names_map[analysis_mode_config.name].add(key_name)
 
         # and then remove any disabled modules
         for key_name in analysis_mode_config.disabled_modules:
-            # make sure the referenced module exists
-            get_config().get_analysis_module_config(key_name)
+            if not self._is_module_configured(key_name, analysis_mode_config.name):
+                continue
+
             analysis_mode_module_names_map[analysis_mode_config.name].discard(key_name)
-    
+
+    def _is_module_configured(self, module_name: str, analysis_mode: str, module_group: Optional[str] = None) -> bool:
+        # a site overlay can still name a module ACE has since removed; failing on it would stop
+        # every engine worker, so the reference is skipped and the operator told to delete it
+        if get_config().has_analysis_module_config(module_name):
+            return True
+
+        logging.warning(
+            "analysis mode %s references analysis module %s%s, which has no analysis_module_%s "
+            "config (it was probably removed from ACE); ignoring it, delete the reference from "
+            "the config overlay that sets it",
+            analysis_mode, module_name,
+            f" through module group {module_group}" if module_group else "",
+            module_name,
+            extra={"analysis_mode": analysis_mode, "analysis_module": module_name, "module_group": module_group},
+        )
+        return False
+
     def _add_locally_mapped_modules(self, analysis_mode_config: AnalysisModeConfig, analysis_mode_module_names_map: Dict[str, Set[str]]):
         """Add locally mapped modules for testing."""
         assert isinstance(analysis_mode_config, AnalysisModeConfig)
