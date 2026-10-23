@@ -710,7 +710,7 @@ run has carries only `svs_marker`:
 | `svs attribution written` / `removed` | INFO | `alert_uuid`, `detection`, `confidence`, `late`, `source` |
 | `svs run … changed since review` | INFO | `alert_uuid` |
 | `svs run …: n alerts closed as SIMULATED` | INFO | `alert_uuids`, `left_alone` (taken by an analyst, or dispositioned, meanwhile), `late`, `actor` |
-| `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, the actor fields every AUDIT record has (`saq/logging.py::audit_actor`: `actor`, `actor_user_id`, `actor_key_id`, `actor_key_name`, `auth_type`), and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
+| `AUDIT: svs alert associated with a run` / `disassociated from a run` / `svs context attribution kept` | INFO | `alert_uuid`, the actor fields `log_audit()` records have (`saq/logging.py::audit_actor`: `actor`, `actor_user_id`, `actor_key_id`, `actor_key_name`, `auth_type`), and `reason`, `late` or `not_a_test` (*Associating alerts by hand*, below) |
 
 `svs.log_search_url` makes the run page's *Logs* section a link to the site's own log search. ACE
 never queries it. It is an `http` or `https` URL in which `{run_uuid}`, `{marker}`, `{test_guid}`,

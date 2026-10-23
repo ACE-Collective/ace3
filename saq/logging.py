@@ -287,8 +287,8 @@ def _install_transaction_id_filter():
 
 
 def audit_actor(auth: Optional["ApiAuthResult"]) -> dict:
-    """The extra={} fields naming who did an audited thing, the same on every AUDIT record so one
-    Splunk field finds everything a user (actor_user_id) or an API key (actor_key_id) did. The user
+    """The extra={} fields naming who did an audited thing, the same on every log_audit() record so
+    one Splunk field finds what a user (actor_user_id) or an API key (actor_key_id) did. The user
     id alone is not enough: it does not say which of the user's keys acted, and a config key has no
     user at all. None is a change nobody authenticated for (an internal caller)."""
     if auth is None:
