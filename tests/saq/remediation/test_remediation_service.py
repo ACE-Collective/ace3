@@ -35,6 +35,21 @@ def test_start_single_threaded_remediates_everything_due():
 
 
 @pytest.mark.integration
+def test_start_single_threaded_stops_on_shutdown(monkeypatch):
+    ids = [_queue("one"), _queue("two"), _queue("three")]
+    # shutdown is requested (as a signal would) while the first item is being worked
+    checks = iter([False])
+    monkeypatch.setattr("saq.remediation.worker.is_shutting_down", lambda: next(checks, True))
+
+    service = RemediationService()
+    service.start_single_threaded()
+
+    assert [_status(remediation_id) for remediation_id in ids].count(RemediationStatus.COMPLETED.value) == 1
+    service.stop()
+    service.wait()
+
+
+@pytest.mark.integration
 def test_service_lifecycle():
     remediation_id = _queue("one")
 

@@ -173,6 +173,22 @@ def test_start_single_threaded_probes_everything_due(make_check, probe_sections)
 
 
 @pytest.mark.integration
+def test_start_single_threaded_stops_on_shutdown(make_check, probe_sections, monkeypatch):
+    probe_sections(fake_probe={})
+    ids = [make_check().id for _ in range(3)]
+    # shutdown is requested (as a signal would) while the first item is being worked
+    checks = iter([False])
+    monkeypatch.setattr("saq.remediation.external.worker.is_shutting_down", lambda: next(checks, True))
+
+    service = ExternalRemediationCheckService()
+    service.start_single_threaded()
+
+    assert [_check(check_id).result for check_id in ids].count(CheckResult.NOT_FOUND.value) == 1
+    service.stop()
+    service.wait()
+
+
+@pytest.mark.integration
 def test_start_single_threaded_sweeps_dispositioned_alerts_once(make_check, db_alert, no_probes, service_config):
     service_config.stop_on_disposition = True
     check_id = make_check(probe_name="unconfigured_probe").id

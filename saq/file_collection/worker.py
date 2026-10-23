@@ -17,6 +17,7 @@ from saq.file_collection.types import (
     FileCollectorResult,
     FileCollectorStatus,
 )
+from saq.shutdown import is_shutting_down
 
 
 class FileCollectionWorker(FileCollectionListener):
@@ -75,9 +76,10 @@ class FileCollectionWorker(FileCollectionListener):
             thread.start()
 
     def start_single_threaded(self):
-        # with the shutdown event set each pass of the loop takes at most one item
+        # with the shutdown event set each pass of the loop takes at most one item; the
+        # process-wide flag is what a signal sets while this runs on the main thread
         self.stop()
-        while not self.work_queue.empty():
+        while not self.work_queue.empty() and not is_shutting_down():
             self.worker_loop(Event())
 
     def wait_for_start(self, timeout: float) -> bool:

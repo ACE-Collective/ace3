@@ -88,6 +88,22 @@ def test_start_single_threaded_collects_everything_due(db_alert, file_collector_
 
 
 @pytest.mark.integration
+def test_start_single_threaded_stops_on_shutdown(db_alert, file_collector_sections, service_config, monkeypatch):
+    file_collector_sections("collector_a")
+    ids = [queue_file_collection("collector_a", F_FILE_LOCATION, f"host@/a{n}", db_alert.uuid) for n in range(3)]
+    # shutdown is requested (as a signal would) while the first item is being worked
+    checks = iter([False])
+    monkeypatch.setattr("saq.file_collection.worker.is_shutting_down", lambda: next(checks, True))
+
+    service = FileCollectionService()
+    service.start_single_threaded()
+
+    assert [_status(collection_id) for collection_id in ids].count(FileCollectionStatus.COMPLETED.value) == 1
+    service.stop()
+    service.wait()
+
+
+@pytest.mark.integration
 def test_service_lifecycle(db_alert, file_collector_sections, service_config):
     file_collector_sections("collector_a")
     collection_id = queue_file_collection("collector_a", F_FILE_LOCATION, "host@/a1", db_alert.uuid)

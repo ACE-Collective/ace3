@@ -8,6 +8,7 @@ from saq.database.pool import get_db, remove_all_sessions
 from saq.remediation.interface import RemediationListener
 from saq.remediation.remediator import Remediator
 from saq.remediation.types import RemediationWorkItem, RemediatorResult, RemediatorStatus
+from saq.shutdown import is_shutting_down
 
 
 class RemediationWorker(RemediationListener):
@@ -45,9 +46,10 @@ class RemediationWorker(RemediationListener):
             thread.start()
 
     def start_single_threaded(self):
-        # with the shutdown event set each pass of the loop takes at most one item
+        # with the shutdown event set each pass of the loop takes at most one item; the
+        # process-wide flag is what a signal sets while this runs on the main thread
         self.stop()
-        while not self.work_queue.empty():
+        while not self.work_queue.empty() and not is_shutting_down():
             self.worker_loop(Event())
 
     def wait_for_start(self, timeout: float) -> bool:
