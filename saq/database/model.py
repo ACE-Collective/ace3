@@ -3752,6 +3752,12 @@ class AuthGroupUser(Base):
     group: Mapped["AuthGroup"] = relationship('AuthGroup')
     user: Mapped["User"] = relationship('User')
 
+def _lowercase_permission_part(self, key, value):
+    # permissions match case-insensitively (saq.permissions.logic) and the ascii_general_ci unique
+    # indexes on these tables already treat case variants as one row, so a pattern is always
+    # stored lowercase and every reader sees it the way enforcement does
+    return value.lower() if value is not None else value
+
 class AuthPermissionCatalog(Base):
 
     __tablename__ = 'auth_permission_catalog'
@@ -3770,6 +3776,8 @@ class AuthPermissionCatalog(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     description: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -3800,6 +3808,8 @@ class AuthUserPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3845,6 +3855,8 @@ class AuthGroupPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     effect: Mapped[str] = mapped_column(
         Enum('ALLOW', 'DENY'),
@@ -3939,6 +3951,8 @@ class AuthApiKeyPermission(Base):
     minor: Mapped[str] = mapped_column(
         String(512, collation='ascii_general_ci'),
         nullable=False)
+
+    _lowercase_major_minor = validates('major', 'minor')(_lowercase_permission_part)
 
     # v1 mints ALLOW-only (a positive allowlist); the column mirrors the user/group permission
     # tables so a future per-key DENY capability needs no schema change.

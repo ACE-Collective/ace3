@@ -505,26 +505,19 @@ def _validate_api_key_scope(
 
     rows: list[AuthApiKeyPermission] = []
     if not inherit:
-        # u_api_key_perm is case-insensitive (ascii_general_ci), so a repeated pattern -- exactly or
-        # in another case -- would fail the INSERT. Enforcement matches case-sensitively, so a
-        # case variant is a different pattern that cannot be stored next to the first: refuse it.
-        seen: dict[tuple[str, str], tuple[str, str]] = {}
+        # a repeated pattern would fail u_api_key_perm, so it is stored once
+        seen: set[tuple[str, str]] = set()
         for perm in scope:
-            major = (perm.major or "").strip()
-            minor = (perm.minor or "").strip()
+            major = (perm.major or "").strip().lower()
+            minor = (perm.minor or "").strip().lower()
             if not major or not minor:
                 raise InvalidPermissionError("both a major and a minor are required for each scope entry")
-            folded = (major.lower(), minor.lower())
-            if folded in SESSION_ONLY_PAIRS:
+            if (major, minor) in SESSION_ONLY_PAIRS:
                 # it would allow nothing (check_permission), so storing it only misleads
                 raise InvalidPermissionError(f"{major}:{minor} is never given to an API key, only to a GUI session")
-            if folded in seen:
-                if seen[folded] == (major, minor):
-                    continue
-                first_major, first_minor = seen[folded]
-                raise InvalidPermissionError(
-                    f"{first_major}:{first_minor} and {major}:{minor} differ only in case; keep one")
-            seen[folded] = (major, minor)
+            if (major, minor) in seen:
+                continue
+            seen.add((major, minor))
             rows.append(AuthApiKeyPermission(major=major, minor=minor, effect="ALLOW"))
 
     return name, rows
