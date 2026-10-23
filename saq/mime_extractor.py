@@ -8,7 +8,7 @@ import zlib
 
 from argparse import ArgumentParser
 from email.parser import BytesParser
-from mmap import mmap
+from mmap import ACCESS_READ, mmap
 from struct import unpack
 
 # cONtENT-Type:                 multipart/related; boundary="----=_NextPart_01D9BFB6.09C21E10"
@@ -23,8 +23,8 @@ def parse_mime(file_path: str, output_dir: str) -> list[str]:
     The list of paths to all extracted files is returned."""
 
     logging.debug(f"analyzing {file_path} for hidden mime data")
-    with open(file_path, "r+b") as fp:
-        mm = mmap(fp.fileno(), 0)
+    # read only: the file can be a read-only hard link to where the attachment came from
+    with open(file_path, "rb") as fp, mmap(fp.fileno(), 0, access=ACCESS_READ) as mm:
 
         # look for something that looks like it might be a MIME boundary
         m = RE_BOUNDARY.search(mm)

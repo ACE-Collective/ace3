@@ -108,6 +108,6 @@ class MicrosoftScriptEncodingAnalyzer(AnalysisModule):
             if file_observable:
                 file_observable.redirection = _file
                 file_observable.add_yara_meta("type", "script.encoded")
-            analysis.analysis_output = file_observable.file_path
+                analysis.analysis_output = file_observable.file_path
 
         return AnalysisExecutionResult.COMPLETED
