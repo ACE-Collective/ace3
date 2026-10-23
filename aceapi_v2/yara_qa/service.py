@@ -43,8 +43,8 @@ _RESERVED_ENTRY_NAMES = {_MATCH_RECORD_NAME, MANIFEST_NAME}
 
 
 def _load_inventory() -> YaraInventory:
-    # local import: the signature loaders import the hunter, and through it the engine, which
-    # imports aceapi_v2 back (a circular import at startup)
+    # local: the inventory imports the yara scanner, which the API must import without
+    # (tests/saq/test_imports.py)
     from saq.signatures.yara_inventory import get_yara_inventory
 
     return get_yara_inventory(get_config().yara_qa.inventory_refresh_seconds)

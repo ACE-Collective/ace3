@@ -233,10 +233,8 @@ def _load_details(analysis: Analysis, max_document_bytes: int) -> bool:
 
 def ensure_builtin_extractors() -> None:
     """Registers the built-in extractors (idempotent)."""
-    # deferred: the built-in extractors import the analysis modules, and saq.modules (through the
-    # observable presenters and the v2 API application, whose search router imports this
-    # package) is still initializing when this module is first imported -- a module-level import
-    # would be circular
+    # deferred: the built-in extractors import this module (register_extractor), so a module-level
+    # import would be circular
     import saq.search.extractors  # noqa: F401
 
 
