@@ -1,8 +1,11 @@
 import json
+import logging
 from datetime import datetime, timedelta, timezone
+from threading import Event
 
 import pytest
 
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.types import (
     CheckResult,
@@ -334,3 +337,59 @@ def test_worker_grace_zero_supersedes_immediately(make_check):
     assert check.status == CheckStatus.COMPLETED.value
     assert check.result == CheckResult.SUPERSEDED.value
     assert probe.calls == []
+
+
+@pytest.mark.integration
+def test_worker_loop_recovers_after_failed_commit(make_check, caplog):
+    """A check whose outcome fails to commit must not poison the thread's session for the
+    checks after it."""
+    first = _work_item_from(make_check())
+    second = _work_item_from(make_check())
+
+    def outcome(target):
+        if target.observable_value == first.observable_value:
+            # leaves a row in the session without its NOT NULL max_retries, which fails when the
+            # worker commits this check's outcome
+            get_db().add(ExternalRemediationCheck(
+                probe_name="fake_probe",
+                observable_type="email_delivery",
+                observable_value="invalid",
+                alert_uuid=target.alert_uuid,
+                status="NEW",
+                deadline=datetime.now(timezone.utc) + timedelta(hours=1),
+            ))
+        return ProbeOutcome(not_found=True)
+
+    worker = ExternalRemediationCheckWorker(FakeProbe(outcome_factory=outcome))
+    worker.queue_wait_timeout = 0.1
+    worker.handle_external_check_request(first)
+    worker.handle_external_check_request(second)
+
+    # with the shutdown event set, each pass of the loop takes one item and returns
+    worker.stop()
+    worker.worker_loop(Event())
+    worker.worker_loop(Event())
+
+    check = get_db().query(ExternalRemediationCheck).filter(ExternalRemediationCheck.id == second.id).one()
+    assert check.status == CheckStatus.COMPLETED.value
+    assert check.result == CheckResult.NOT_FOUND.value
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert any(f"external remediation check {first.id} " in r.getMessage() and r.alert_uuid == first.alert_uuid for r in errors)
+
+
+@pytest.mark.integration
+def test_worker_loop_logs_failed_session_reset(make_check, caplog, monkeypatch):
+    def _fail():
+        raise RuntimeError("pool gone")
+
+    monkeypatch.setattr("saq.remediation.external.worker.remove_all_sessions", _fail)
+    worker = ExternalRemediationCheckWorker(FakeProbe(outcome_factory=lambda t: ProbeOutcome(not_found=True)))
+    worker.queue_wait_timeout = 0.1
+    worker.handle_external_check_request(_work_item_from(make_check()))
+
+    worker.stop()
+    worker.worker_loop(Event())
+
+    assert worker.work_queue.empty()
+    assert any(r.levelno == logging.ERROR and r.exc_info and "error removing database connection" in r.getMessage() for r in caplog.records)
