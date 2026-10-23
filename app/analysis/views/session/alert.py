@@ -38,15 +38,3 @@ def get_current_alert():
         logging.info(f"couldn't get alert {alert_uuid}: {e}")
 
     return None
-
-def load_current_alert():
-    alert = get_current_alert()
-    if alert is None:
-        return None
-
-    try:
-        alert.load()
-        return alert
-    except Exception as e:
-        logging.error(f"unable to load alert uuid {alert.uuid}: {e}")
-        return None
