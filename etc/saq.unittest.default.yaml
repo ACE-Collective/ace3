@@ -777,6 +777,11 @@ yara_qa:
 svs:
   samples:
     inventory_refresh_seconds: 0
+  yara:
+    sandbox:
+      # as for hunter.correlation.executable: the shipped [] needs Landlock ABI 4 (Linux 6.7), so the
+      # validation tests run on any kernel the sandbox supports
+      allowed_tcp_ports: null
 
 storage:
   target: local

@@ -60,6 +60,19 @@ RUN /opt/venv/bin/pip install -U pip \
 
 RUN /opt/venv/bin/seleniumbase install chromedriver
 
+# seleniumbase installs the x86-64 chromedriver on every Linux host, so on arm64 replace it with
+# the Chrome for Testing linux-arm64 build of the installed Chrome's exact version (a driver from
+# another major refuses to start). uc mode copies chromedriver to uc_driver and patches that
+# copy, so replacing chromedriver is enough
+RUN if [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+        VERSION=$(google-chrome --version | grep -oE '[0-9]+(\.[0-9]+){3}') && \
+        DRIVERS=$(/opt/venv/bin/python -c 'import os, seleniumbase; print(os.path.join(os.path.dirname(seleniumbase.__file__), "drivers"))') && \
+        curl -fsSLk "https://storage.googleapis.com/chrome-for-testing-public/${VERSION}/linux-arm64/chromedriver-linux-arm64.zip" -o /tmp/chromedriver.zip && \
+        /opt/venv/bin/python -c "import zipfile; zipfile.ZipFile('/tmp/chromedriver.zip').extractall('/tmp/chromedriver')" && \
+        install -m 755 /tmp/chromedriver/chromedriver-linux-arm64/chromedriver "${DRIVERS}/chromedriver" && \
+        rm -rf /tmp/chromedriver /tmp/chromedriver.zip; \
+    fi
+
 RUN mkdir /export
 COPY phishkit/scanner.py /opt/app/scanner.py
 COPY etc/phishkit_config.yaml /opt/app/phishkit_config.yaml

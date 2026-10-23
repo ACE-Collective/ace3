@@ -189,7 +189,9 @@ def test_the_sandboxed_scan_cannot_read_saq_home(tmp_path):
         fp.write(source.read())
 
     layout = TreeLayout(namespaces=[TreeNamespace("acme", namespace_dir, [os.path.join(namespace_dir, "steal.yar")])])
-    result = _run_child(str(workdir), str(workdir / "base"), str(tree), layout, corpus, SandboxConfig())
+    # TCP is left unrestricted so this runs without TCP port rules (Landlock ABI 4, Linux 6.7)
+    result = _run_child(str(workdir), str(workdir / "base"), str(tree), layout, corpus,
+                        SandboxConfig(allowed_tcp_ports=None))
 
     errors = [warning["error"] for warning in result["include_warnings"]]
     assert any("PermissionError" in error for error in errors), errors

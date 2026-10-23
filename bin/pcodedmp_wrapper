@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
 
-python3 "$1" "$2" | sed -ne '/^Module streams:/,$ p' | egrep '^[[:space:]]'
+# run the utility itself: its shebang names the interpreter it was installed into, which the
+# python3 on PATH is not when /venv is not activated
+"$1" "$2" | sed -ne '/^Module streams:/,$ p' | egrep '^[[:space:]]'

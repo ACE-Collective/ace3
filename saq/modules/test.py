@@ -175,9 +175,10 @@ class BasicTestAnalyzer(AnalysisModule):
         logging.info("execute_worker_gil_hang")
 
         # catastrophic backtracking: _sre never releases the GIL, so the monitor thread is
-        # starved and only the worker manager's kill ends this. bounded (about 20 seconds on its
-        # own) so a failed kill cannot wedge the test suite
-        re.match(r"(a+)+$", "a" * 28 + "b")
+        # starved and only the worker manager's kill ends this. each extra "a" doubles the run
+        # time: 30 takes about 18 seconds on a fast native CPU, well past the kill, and is still
+        # bounded so a failed kill cannot wedge the test suite
+        re.match(r"(a+)+$", "a" * 30 + "b")
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_test_add_file(self, test) -> AnalysisExecutionResult:

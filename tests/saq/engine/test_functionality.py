@@ -1813,7 +1813,7 @@ def test_crash_report_on_gil_hang():
         read_crash_report,
     )
 
-    # the dump fires at 2 seconds, the manager kills at 4, the regex alone would run ~20
+    # the dump fires at 2 seconds, the manager kills at 4, the regex alone would run ~18
     get_analysis_module_config("basic_test").maximum_analysis_time = 4
 
     existing = set(_enum_crash_reports())

@@ -111,7 +111,6 @@ services:
 
   # ensures file permissions on named volumes are correct
   ace-root-volume-initialize:
-    platform: linux/amd64
     environment: *common-env
     user: root
     # this runs before fluent-bit (which depends on it), so it cannot ship to the
@@ -145,7 +144,6 @@ services:
       - ace
 
   fluent-bit:
-    platform: linux/amd64
     environment: *common-env
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/fluent/fluent-bit:latest
     ports:
@@ -173,7 +171,6 @@ services:
 
   # performs all first-time initialization routines that do not require the db
   ace-initialize:
-    platform: linux/amd64
     environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/initialize.sh"
@@ -196,7 +193,6 @@ services:
       - ace
 
   ace-db:
-    platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/mysql:9.7
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
@@ -237,7 +233,6 @@ services:
         hard: 65536
 
   ace-db-readonly:
-    platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/mysql:9.7
     command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_520_ci --max-allowed-packet=1073741824
     logging:
@@ -278,7 +273,6 @@ services:
         hard: 65536
 
   qdrant:
-    platform: linux/amd64
     environment:
       QDRANT__SERVICE__ENABLE_TLS: 1
       QDRANT__TLS__CERT: /ssl/ace.cert.pem
@@ -313,7 +307,6 @@ services:
 
   # performs all first-time initialization routines that require the db
   ace-setup:
-    platform: linux/amd64
     environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
     command: /bin/bash -c "/opt/ace/docker/startup/setup.sh"
@@ -335,7 +328,6 @@ services:
       - ace
 
   ace-http-external:
-    platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
     stop_grace_period: 30s
@@ -362,7 +354,6 @@ services:
       - ace
 
   ace-http:
-    platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/nginx:latest
     restart: always
     stop_grace_period: 30s
@@ -389,7 +380,6 @@ services:
       - ace
 
   http-app:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -409,7 +399,6 @@ services:
       - ace
 
   http-api-v2:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -440,7 +429,6 @@ services:
   # other nodes that pull from this one, so the worker count is set per node with
   # ACE_API_ENGINE_WORKERS; see docs/ENGINE_API.md for how to size it.
   http-api-engine:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -466,7 +454,6 @@ services:
   # etc/saq.yaml, read-only mounts, and its own startup checks (aceapi_ai/startup_checks.py) that
   # refuse to boot if any of that is violated.
   http-api-ai:
-    platform: linux/amd64
     environment:
       # no SAQ_ENC: this process must not be able to unlock the encryption subsystem
       SAQ_CONFIG_PATHS: etc/saq.ai.yaml
@@ -502,7 +489,6 @@ services:
       - ace
 
   redis:
-    platform: linux/amd64
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/redis:latest
     ports:
       - "${ACE_BIND_ADDRESS:-127.0.0.1}::6379"
@@ -534,7 +520,6 @@ services:
       - ace
 
   http-debug:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -554,7 +539,6 @@ services:
       - ace
 
   network-semaphore:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -575,7 +559,6 @@ services:
       - ace
 
   git:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -593,7 +576,6 @@ services:
       - ace
 
   cron:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -611,7 +593,6 @@ services:
       - ace
 
   yara:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -630,7 +611,6 @@ services:
       - ace
 
   search-indexer:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -653,7 +633,6 @@ services:
       - ace
 
   remediation:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -672,7 +651,6 @@ services:
       - ace
 
   svs:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -691,7 +669,6 @@ services:
       - ace
 
   external-remediation-check:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -710,7 +687,6 @@ services:
       - ace
 
   monitoring:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -730,10 +706,14 @@ services:
 
   # this is the service you will attach to for development purposes
   dev:
-    platform: linux/amd64
     environment: *common-env
     image: ${ACE3_IMAGE_URL:-ace3:latest}
-    #depends_on:
+    # Docker fills an empty named volume from the image when the first container that mounts it
+    # is created. Without this, dev and ace-root-volume-initialize are created together and can
+    # both copy into a fresh data volume ("failed to mkdir .../data/_data/logs: file exists")
+    depends_on:
+      ace-root-volume-initialize:
+        condition: service_completed_successfully
       #ace-setup:
         #condition: service_completed_successfully
     command: /bin/bash -c "/opt/ace/docker/startup/start_nothing.sh"
@@ -750,7 +730,6 @@ services:
       - ace
 
   ace:
-    platform: linux/amd64
     environment:
       <<: *common-env
       ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -779,10 +758,10 @@ services:
       - ace
 
   rabbitmq:
-    # No platform pin: the image is multi-arch, and the amd64 Erlang/OTP 28+ JIT dies at
-    # boot under user-space emulation (Rosetta, QEMU), which upstream does not support
-    # (erlang/otp#10355). The minor version is pinned so a rebuild picks up patch releases
-    # only, never a new RabbitMQ release line or Erlang/OTP major unannounced.
+    # Never run this under user-space emulation (an amd64 image on an arm64 host, through
+    # Rosetta or QEMU): the Erlang/OTP 28+ JIT dies at boot there, and upstream does not
+    # support it (erlang/otp#10355). The minor version is pinned so a rebuild picks up patch
+    # releases only, never a new RabbitMQ release line or Erlang/OTP major unannounced.
     environment:
       RABBITMQ_DEFAULT_USER: "ace3"
     image: ${DOCKER_IMAGE_PREFIX:-docker.io}/library/rabbitmq:4.4
@@ -821,7 +800,6 @@ services:
       - ace
 
   phishkit-init:
-    platform: linux/amd64
     build:
       context: .
       dockerfile: phishkit/Dockerfile.phishkit
@@ -832,7 +810,6 @@ services:
     entrypoint: /bin/true
 
   phishkit:
-    platform: linux/amd64
     environment:
       ACE3_PHISHKIT_IMAGE_URL: ${ACE3_PHISHKIT_IMAGE_URL:-phishkit:latest}
       # this container shells out to `docker run` on the host daemon, so it has to be told the
@@ -878,7 +855,6 @@ services:
       - ace
 
   js-deobfuscator-init:
-    platform: linux/amd64
     build:
       context: .
       dockerfile: js_deobfuscator/Dockerfile.js_deobfuscator
@@ -889,7 +865,6 @@ services:
     entrypoint: /bin/true
 
   js-deobfuscator:
-    platform: linux/amd64
     environment:
       ACE3_JS_DEOBFUSCATOR_IMAGE_URL: ${ACE3_JS_DEOBFUSCATOR_IMAGE_URL:-js-deobfuscator:latest}
       # as with phishkit: spawns sibling containers, so it needs the real volume name

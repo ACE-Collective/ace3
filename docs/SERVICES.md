@@ -152,7 +152,6 @@ Add a stanza to *both* files, modeled after the existing services (e.g. the `rem
 
 ```yaml
 myservice:
-  platform: linux/amd64
   environment:
     <<: *common-env
     ACE_LOG_CONFIG_PATH: etc/logging_configs/ace_logging.yaml
@@ -179,7 +178,6 @@ The production-overlay stanzas are similar to the root file but with a few extra
 
 - **`profiles:`** — every service is gated by one or more Compose profiles (`correlation`, `email-scanner`, `file-content-scanner`, `core`, `db`, etc.). Pick the same profile(s) used by the closest equivalent service so it deploys to the right node group. A service with no profile will *not* start in production.
 - **`environment:`** uses the overlay's `*common-env` anchor (deployment-wide environment and credentials) — just `<<: *common-env` like the others; no manual edits needed.
-- The `platform: linux/amd64` line is omitted in the production-overlay file.
 - Production secrets/config come from your deployment's secret-management tooling, not from compose defaults — don't hard-code values.
 
 ### 4. Verify
