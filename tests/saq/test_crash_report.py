@@ -1439,3 +1439,20 @@ def test_list_report_files_failures(tmp_path, monkeypatch):
 
     monkeypatch.setattr("saq.crash_report.os.walk", _explode)
     assert crash_report.list_report_files(str(tmp_path)) == []
+
+
+@pytest.mark.unit
+def test_replication_thread_start_failure_releases_its_slot(monkeypatch, caplog):
+    from saq import crash_replication
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr("saq.crash_replication.threading.Thread.start", _explode)
+    for _ in range(crash_replication._MAX_CONCURRENT_UPLOADS + 1):
+        assert crash_replication.replicate_async("/nonexistent", "crash") is False
+
+    assert _warned(caplog, "unable to start crash replication for crash")
+    # every slot is still free
+    assert crash_replication._upload_slots.acquire(blocking=False)
+    crash_replication._upload_slots.release()
+    assert not any("crash replication busy" in r.getMessage() for r in caplog.records)
+
