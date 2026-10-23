@@ -208,8 +208,8 @@ class HTMLDataURLAnalyzer(AnalysisModule):
 
         # map the file into memory so it can be scanned
         count = 0
-        with open(local_file_path, "rb") as f:
-            mm = mmap(f.fileno(), min([self.max_bytes, os.path.getsize(local_file_path)]), prot=PROT_READ) # XXX add limit
+        with open(local_file_path, "rb") as f, \
+             mmap(f.fileno(), min([self.max_bytes, os.path.getsize(local_file_path)]), prot=PROT_READ) as mm:
             for mime_type, b64data in RE_HTML_EMBED.findall(mm):
                 # try to decoded the base64 data
                 try:
@@ -219,7 +219,8 @@ class HTMLDataURLAnalyzer(AnalysisModule):
                     continue
 
                 # TODO figure out a possible file extension based on mime type
-                ext = map_mimetype_to_file_ext(mime_type.decode())
+                # the mime type is whatever the file says it is, which need not be utf-8
+                ext = map_mimetype_to_file_ext(mime_type.decode(errors="replace"))
 
                 # build local file path for this embedded document
                 target_file_path = f"{local_file_path}_embed_{count}.{ext}"
