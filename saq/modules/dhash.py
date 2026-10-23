@@ -59,6 +59,11 @@ class DHashImageAnalysis(Analysis):
 
         return f"{self.display_name}: " + format_item_list_for_summary(summaries)
 
+def _image_hash(path: str) -> int:
+    with Image.open(path) as image:
+        return dhash.dhash_int(image, size=IMAGE_SIZE)
+
+
 class DHashImageAnalyzer(AnalysisModule):
     @property
     def generated_analysis_type(self):
@@ -93,8 +98,12 @@ class DHashImageAnalyzer(AnalysisModule):
             logging.warning(f"missing dhash source directory {source_dir}")
             return AnalysisExecutionResult.COMPLETED
 
-        target_image = Image.open(local_file_path)
-        target_image_hash = dhash.dhash_int(target_image, size=IMAGE_SIZE)
+        try:
+            target_image_hash = _image_hash(local_file_path)
+        except Exception as e:
+            # a truncated or corrupt image still passes is_image(), which reads only the header
+            logging.info(f"unable to hash image {local_file_path}: {e}")
+            return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
 
@@ -113,11 +122,15 @@ class DHashImageAnalyzer(AnalysisModule):
                     score_threshold = float(fp.read())
                     logging.debug(f"loaded score threshold {score_threshold} for {score_threshold_path}")
             except Exception as e:
-                logging.error(f"unable to load score threshold from {score_threshold_path}: {e}")
+                logging.exception(f"unable to load score threshold from {score_threshold_path}: {e}")
                 continue
 
-            source_image = Image.open(source_image_file_path)
-            source_image_hash = dhash.dhash_int(source_image, size=IMAGE_SIZE)
+            try:
+                source_image_hash = _image_hash(source_image_file_path)
+            except Exception as e:
+                # one bad image in the analyst data repo must not stop the comparison with the rest
+                logging.exception(f"unable to hash dhash source image {source_image_file_path}: {e}")
+                continue
             bits_different = dhash.get_num_bits_different(source_image_hash, target_image_hash)
             percent_similar = 100.0 - ((bits_different / 512) * 100.0)
             logging.info(f"target {local_file_path} source {source_image_file_path} ({percent_similar:.2f}) threshold ({score_threshold:.2f})")
