@@ -1,6 +1,7 @@
 """Tests for the extra-aware formatters and the transaction id correlation field."""
 import logging
 import logging.config
+from logging.handlers import BufferingHandler
 import threading
 import uuid
 
@@ -11,11 +12,13 @@ from saq.logging import (
     ExtraAwareTextFormatter,
     TransactionIdFilter,
     _install_transaction_id_filter,
+    deferred_startup_logging,
     get_transaction_id,
     initialize_transaction_id,
     set_transaction_id,
     transaction_id,
 )
+from tests.saq.helpers import unconfigured_logging
 
 
 def _make_formatter():
@@ -346,3 +349,88 @@ def test_install_transaction_id_filter_idempotent():
         assert len(installed) == 1
     finally:
         root_logger.removeHandler(handler)
+
+
+def _configure(root_logger: logging.Logger) -> BufferingHandler:
+    """What dictConfig() does to the root logger: its handlers are replaced by the configured ones."""
+    collector = BufferingHandler(capacity=100)
+    root_logger.handlers[:] = [collector]
+    return collector
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_replays_into_configured_handlers(capsys):
+    """records logged before logging is configured reach the configured handlers, in order and
+    with their tracebacks, and nothing goes to stderr in the meantime"""
+    with unconfigured_logging() as root_logger:
+        with deferred_startup_logging():
+            logging.getLogger("saq.test_deferred").warning("early warning")
+            try:
+                raise RuntimeError("early failure")
+            except RuntimeError:
+                logging.exception("early exception")
+
+            collector = _configure(root_logger)
+
+    assert [r.getMessage() for r in collector.buffer] == ["early warning", "early exception"]
+    assert collector.buffer[1].levelname == "ERROR"
+    assert collector.buffer[1].exc_info[0] is RuntimeError
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_respects_configured_levels():
+    """a record the configuration would have filtered out is not replayed"""
+    quiet_logger = logging.getLogger("saq.test_deferred.quiet")
+    try:
+        with unconfigured_logging() as root_logger:
+            with deferred_startup_logging():
+                quiet_logger.warning("filtered")
+                logging.warning("kept")
+
+                collector = _configure(root_logger)
+                quiet_logger.setLevel(logging.ERROR)
+    finally:
+        quiet_logger.setLevel(logging.NOTSET)
+
+    assert [r.getMessage() for r in collector.buffer] == ["kept"]
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_writes_to_stderr_when_never_configured(capsys):
+    """when the block fails before configuring logging, the records go to stderr and the
+    exception still propagates"""
+    with unconfigured_logging() as root_logger:
+        with pytest.raises(ValueError):
+            with deferred_startup_logging():
+                logging.getLogger("saq.test_deferred").warning("early warning")
+                raise ValueError("bad config")
+
+        assert root_logger.handlers == []
+
+    assert "WARNING:saq.test_deferred:early warning" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_replays_when_block_fails_after_configuring():
+    """an exception raised after logging is configured still replays what was held"""
+    with unconfigured_logging() as root_logger:
+        with pytest.raises(ValueError):
+            with deferred_startup_logging():
+                logging.warning("early warning")
+                collector = _configure(root_logger)
+                raise ValueError("late failure")
+
+    assert [r.getMessage() for r in collector.buffer] == ["early warning"]
+
+
+@pytest.mark.unit
+def test_deferred_startup_logging_passes_through_when_already_configured():
+    """with logging already configured, records go straight to the handlers, once"""
+    with unconfigured_logging() as root_logger:
+        collector = _configure(root_logger)
+        with deferred_startup_logging():
+            logging.warning("direct")
+            assert [r.getMessage() for r in collector.buffer] == ["direct"]
+
+    assert [r.getMessage() for r in collector.buffer] == ["direct"]
