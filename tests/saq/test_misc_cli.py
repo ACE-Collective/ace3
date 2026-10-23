@@ -2,6 +2,7 @@
 
 from datetime import date, timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -99,12 +100,17 @@ def test_close_event_dry_run_changes_nothing():
 
 
 @pytest.mark.integration
-def test_close_unknown_event_is_an_error(caplog):
+def test_close_unknown_event_is_an_error(monkeypatch, caplog):
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
     event_id = _event("cli close known")
 
     assert _ace("event", "close", "-i", "999999", "-i", str(event_id)) == 1
 
-    assert "unable to close event 999999" in caplog.text
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to close event 999999")]
+    assert len(records) == 1
+    assert records[0].levelname == "ERROR" and records[0].exc_info
+    write_error_report.assert_called_once()
     # the other event is still closed
     assert _status_of(event_id) == "CLOSED"
 
