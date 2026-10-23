@@ -1380,6 +1380,13 @@ These are MODULE_PATHs of the generated *Analysis* class
 `analysis_module_<name>` config section names. A deprecated module has had its config
 section deleted along with its code, so there is no section left to key off of.
 
+A site config overlay may still set keys on the deleted section (`enabled: false`, or a
+module-specific setting). What is left of the section then has no `name`,
+`python_module` or `python_class`, and `load_analysis_module_configs` skips it with a
+WARNING naming the key instead of failing configuration validation in every process.
+A section that has any of those three keys is still validated, so a half-written module
+definition fails loudly as before.
+
 Alerts saved before the module was removed still carry its serialized Analysis. When
 `Observable._load_analysis()` (or the cache replay path in `saq/analysis/cache.py`)
 cannot import the class it substitutes a read-only `UnknownAnalysis`, so the rest of
