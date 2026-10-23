@@ -54,7 +54,8 @@ def cli_list_objects(args) -> int:
 
 storage_list_objects_parser = storage_sp.add_parser("list-objects", help="List objects in a storage bucket.")
 storage_list_objects_parser.add_argument("bucket", help="The bucket to list objects from.")
-storage_list_objects_parser.add_argument("-p", "--prefix", help="Optional prefix to filter objects by.")
+storage_list_objects_parser.add_argument("-p", "--prefix", default="",
+    help="Optional prefix to filter objects by.")
 storage_list_objects_parser.set_defaults(func=cli_list_objects)
 
 def cli_download(args) -> int:
