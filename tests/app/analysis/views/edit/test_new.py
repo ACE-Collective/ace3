@@ -456,3 +456,74 @@ def test_new_alert_file_save_failure_is_reported(web_client, mock_api_call, targ
     records = [r for r in caplog.records if r.getMessage().startswith("unable to save")]
     assert len(records) == 1
     write_error_report.assert_called_once()
+
+
+def _post_file_alert(web_client, target_node):
+    return web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_description='File Upload Alert',
+        observables_types_0=F_FILE,
+        observables_values_0=(io.BytesIO(b'uploaded content'), 'upload.txt')),
+        content_type='multipart/form-data')
+
+
+@pytest.mark.integration
+def test_new_alert_temp_file_remove_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload left behind in the temp dir is reported with its traceback and path, and the
+    alert is still submitted."""
+    real_remove = os.remove
+
+    def failing_remove(path, *args, **kwargs):
+        if str(path).endswith('.upload'):
+            raise PermissionError("permission denied")
+        return real_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "remove", failing_remove)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    monkeypatch.undo()
+    leftovers = _leftover_uploads()
+    for path in leftovers:
+        os.remove(path)
+
+    _alert_uuid(response)
+    assert len(leftovers) == 1
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to remove")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is PermissionError
+    assert records[0].path == leftovers[0]
+    write_error_report.assert_called_once()
+
+
+@pytest.mark.integration
+def test_new_alert_upload_close_failure_is_reported(web_client, mock_api_call, target_node, monkeypatch, caplog):
+    """An upload whose file descriptor cannot be closed is reported with its traceback and file
+    name, and the temp file is still removed."""
+    class FailingClose(io.BufferedReader):
+        def close(self):
+            if self.closed:
+                return
+            super().close()
+            raise OSError("bad file descriptor")
+
+    monkeypatch.setattr("app.analysis.views.edit.new.open",
+                        lambda path, mode: FailingClose(io.FileIO(path, mode)), raising=False)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with caplog.at_level(logging.ERROR):
+        response = _post_file_alert(web_client, target_node)
+
+    _alert_uuid(response)
+    assert _leftover_uploads() == []
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to close")]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is OSError
+    assert records[0].file_name == 'upload.txt'
+    write_error_report.assert_called_once()
