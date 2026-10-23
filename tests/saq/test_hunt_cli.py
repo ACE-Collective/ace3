@@ -3,17 +3,18 @@
 import json
 import shutil
 from argparse import Namespace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+import pytz
 import yaml
 
 import saq.cli.commands  # noqa: F401
 from saq.analysis.root import RootAnalysis, Submission
 from saq.cli.cli_main import get_cli_parser
 from saq.cli.commands.hunt import list_hunt_types, list_hunts, verify_hunt
-from saq.collectors.hunter.query_hunter import QUERY_DETAILS_EVENTS
+from saq.collectors.hunter.query_hunter import QUERY_DETAILS_EVENTS, QueryHunt
 from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_EXTRACT_URLS, F_FQDN, F_IPV4, R_REDIRECTED_FROM
 from saq.database.model import Alert
 from saq.database.pool import get_db
@@ -195,3 +196,84 @@ def test_execute_hunt_submit_alerts_remote(submitting_hunt_type, monkeypatch):
     assert [name for name, _ in kwargs["files"]] == ["payload.txt"]
     for _, fp in kwargs["files"]:
         fp.close()
+
+
+class _RecordingQueryHunt(QueryHunt):
+    """Records the time range it was asked to query, and finds nothing."""
+    __test__ = False
+
+    executed = []
+
+    def execute_query(self, start_time, end_time, *args, **kwargs):
+        _RecordingQueryHunt.executed.append((start_time, end_time))
+        return []
+
+    def cancel(self):
+        pass
+
+
+@pytest.fixture
+def query_hunt_type(tmp_path):
+    rules_dir = tmp_path / "rules"
+    rules_dir.mkdir()
+    with open(rules_dir / "query_hunt.yaml", "w") as fp:
+        yaml.dump({
+            "rule": {
+                "uuid": "5d0f7c1e-3b8a-4f2e-9c6d-1a2b3c4d5e6f",
+                "enabled": True,
+                "name": "query_hunt",
+                "description": "Query Hunt",
+                "type": "test",
+                "alert_type": "test - query",
+                "frequency": "00:10:00",
+                "instance_types": ["unittest"],
+                "time_range": "00:10:00",
+                "full_coverage": False,
+                "use_index_time": False,
+                "query": "index=test",
+            }
+        }, fp)
+
+    _configure_hunt_type(rules_dir, "tests.saq.test_hunt_cli", "_RecordingQueryHunt")
+    _RecordingQueryHunt.executed = []
+    yield _RecordingQueryHunt.executed
+    get_config().load_hunt_type_configs()
+
+
+@pytest.mark.integration
+def test_execute_query_hunt_over_its_own_time_range(query_hunt_type):
+    before = datetime.now(timezone.utc)
+    assert _execute("test:query_hunt") is None
+
+    [(start_time, end_time)] = query_hunt_type
+    # the range a scheduled run would query: the last time_range (start and end each read the clock)
+    assert abs(end_time - start_time - timedelta(minutes=10)) < timedelta(seconds=1)
+    assert end_time >= before
+
+
+@pytest.mark.integration
+def test_execute_query_hunt_over_a_given_time_range(query_hunt_type):
+    assert _execute("test:query_hunt", "-s", "01/02/2026:03:04:05", "-e", "01/02/2026:04:04:05") is None
+
+    assert query_hunt_type == [(datetime(2026, 1, 2, 3, 4, 5, tzinfo=pytz.utc), datetime(2026, 1, 2, 4, 4, 5, tzinfo=pytz.utc))]
+
+
+@pytest.mark.integration
+def test_execute_query_hunt_in_a_time_zone(query_hunt_type):
+    assert _execute("test:query_hunt", "-s", "07/01/2026:08:00:00", "-e", "07/01/2026:09:00:00",
+                    "-z", "America/New_York") is None
+
+    [(start_time, end_time)] = query_hunt_type
+    # EDT is four hours behind UTC
+    assert start_time == datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert end_time == datetime(2026, 7, 1, 13, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.integration
+def test_execute_query_hunt_with_only_a_start_time(query_hunt_type):
+    assert _execute("test:query_hunt", "-s", "01/02/2026:03:04:05") is None
+
+    [(start_time, end_time)] = query_hunt_type
+    assert start_time == datetime(2026, 1, 2, 3, 4, 5, tzinfo=pytz.utc)
+    # the end is the hunt's own: now
+    assert end_time > datetime(2026, 1, 3, tzinfo=timezone.utc)
