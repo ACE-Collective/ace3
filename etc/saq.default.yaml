@@ -2330,8 +2330,6 @@ deprecated_modules:
   - saq.modules.asset.active_directory:ActiveDirectoryAnalysis
   - saq.modules.pcap.sensor_extraction:PcapExtractionAnalysis
   - saq.modules.user:UserTagAnalysis
-  # generated no Analysis; listed so the removal is on record
-  - saq.modules.tag:CorrelatedTagAnalyzer
 
 analysis_module_observable_detection:
   name: observable_detection
