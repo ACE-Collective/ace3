@@ -1,8 +1,12 @@
+import os
+
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from saq.configuration.config import get_analysis_module_config, get_config
 from saq.configuration.schema import ACEConfig, SVSConfig
+from saq.environment import get_base_dir
 from saq.svs.yara.replay import ReplayError, _check_work_root
 
 
@@ -55,8 +59,9 @@ def test_yara_validation_defaults():
     # the export of a commit is uncapped unless a site sets a limit
     assert config.max_archive_bytes is None
     assert config.max_archive_members is None
-    # the compile and the scan get no network at all
-    assert config.sandbox.allowed_tcp_ports == []
+    # the compile and the scan get no network at all (the unit-test config lifts that, so read what ships)
+    with open(os.path.join(get_base_dir(), "etc", "saq.default.yaml")) as fp:
+        assert yaml.safe_load(fp)["svs"]["yara"]["sandbox"]["allowed_tcp_ports"] == []
 
     with pytest.raises(ValidationError):
         SVSConfig.model_validate({"yara": {"nope": 1}})
