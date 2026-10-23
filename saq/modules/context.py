@@ -45,6 +45,10 @@ class AnalysisModuleContext:
         # the time at which the cooldown expires (None if no cooldown is in effect)
         self.cooldown_timeout: Optional[datetime] = None
 
+        # the time.monotonic() value past which the engine stops the module call in progress
+        # (None outside of one), see AnalysisModule.time_left()
+        self.analysis_deadline: Optional[float] = None
+
     @property
     def delayed_analysis_interface(self) -> "DelayedAnalysisInterface":
         """Returns the delayed analysis interface."""

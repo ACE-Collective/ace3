@@ -182,6 +182,10 @@ class AnalysisModuleInterface(Protocol):
         """Set the dependency injection context."""
         ...
     
+    def set_analysis_deadline(self, deadline: Optional[float]) -> None:
+        """Records the time.monotonic() value past which the engine stops the current call to analyze()."""
+        ...
+
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from context."""
         ...

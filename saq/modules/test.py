@@ -529,6 +529,25 @@ class SlowDelayedAnalysisTestModule(AnalysisModule):
         analysis.details[KEY_REQUEST_COUNT] += 1
         return AnalysisExecutionResult.COMPLETED
 
+class TimeLeftTestAnalysis(Analysis):
+    pass
+
+class TimeLeftTestModule(AnalysisModule):
+    """Records what time_left() returned during the engine's call to execute_analysis()."""
+
+    @property
+    def generated_analysis_type(self):
+        return TimeLeftTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        analysis.details = {"time_left": self.time_left()}
+        return AnalysisExecutionResult.COMPLETED
+
 class EngineLockingTestAnalysis(Analysis):
     pass
 
