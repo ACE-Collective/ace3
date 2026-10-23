@@ -32,10 +32,6 @@ class FQDNObservable(CaselessObservable):
 
         return result
 
-    @property
-    def remediation_targets(self):
-        return []
-
     def is_managed(self):
         """Returns True if this FQDN is a managed DN."""
         for fqdn in get_config().global_settings.local_domains:
