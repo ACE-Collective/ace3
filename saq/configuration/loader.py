@@ -43,7 +43,7 @@ def load_configuration(config_paths: list[str] | None = None):
     (see tests/unittest_database.py).
     """
 
-    default_yaml = os.path.join("etc", "saq.default.yaml")
+    default_yaml = os.path.join(get_base_dir(), "etc", "saq.default.yaml")
 
     config = YAMLConfig()
     config.load_file(default_yaml)
@@ -75,7 +75,7 @@ def load_configuration(config_paths: list[str] | None = None):
     # optional auto-generated passwords and API keys
     db_auto_yaml = "/docker-entrypoint-initdb.d/saq.database.passwords.yaml"
     s3_test_yaml = "/docker-entrypoint-initdb.d/saq.s3.test.passwords.yaml"
-    local_yaml = "etc/saq.yaml"
+    local_yaml = os.path.join(get_base_dir(), "etc", "saq.yaml")
 
     def _load_optional(path_yaml: str) -> None:
         if os.path.exists(path_yaml):

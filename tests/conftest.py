@@ -290,8 +290,7 @@ def execute_global_setup():
         temp_dir=temp_dir,
         config_paths=[], 
         # a copy of etc/logging_configs/unittest_logging.yaml that logs to this slot's own file
-        logging_config_path=unittest_session.write_logging_config(temp_dir),
-        relative_dir=None)
+        logging_config_path=unittest_session.write_logging_config(temp_dir))
 
     execute_global_db_setup()
 

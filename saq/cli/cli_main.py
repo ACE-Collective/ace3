@@ -3,7 +3,7 @@ import argparse
 import os
 import sys
 
-from saq.environment import initialize_environment
+from saq.environment import get_base_dir, initialize_base_dir, initialize_environment
 
 
 parser = argparse.ArgumentParser(description="Analysis Correlation Engine")
@@ -18,8 +18,6 @@ parser.add_argument('-u', '--user-name', required=False, dest='user_name', defau
     help="The user name of the ACE user executing the command. This information is required for some commands.")
 parser.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
     help="Force all analysis to always generate an alert.")
-parser.add_argument('--relative-dir', required=False, dest='relative_dir', default=None,
-    help="Assume all storage paths are relative to the given directory.  Defaults to current work directory.")
 parser.add_argument('-p', '--provide-decryption-password', required=False, action='store_true', dest='provide_decryption_password', default=False,
     help="Prompt for the decryption password. Read README.CRYPTO for details.")
 parser.add_argument('-P', '--set-decryption-password', dest='set_decryption_password', default=None,
@@ -46,12 +44,12 @@ def main():
         print("do not run ace as root please")
         sys.exit(1)
 
-    # ACE assumes the cwd is /opt/ace
-    if os.getcwd() != '/opt/ace':
-        os.chdir('/opt/ace')
-
     # parse the command line arguments
     args = parser.parse_args()
+
+    # ACE assumes the cwd is SAQ_HOME
+    initialize_base_dir(args.saq_home)
+    os.chdir(get_base_dir())
 
     encryption_password_plaintext = None
     if args.provide_decryption_password:
@@ -59,10 +57,9 @@ def main():
 
     # initialize saq
     initialize_environment(
-        saq_home=args.saq_home,
+        saq_home=get_base_dir(),
         config_paths=args.config_paths,
         logging_config_path=args.logging_config_path,
-        relative_dir=args.relative_dir,
         encryption_password_plaintext=encryption_password_plaintext,
         force_alerts=args.force_alerts,
     )
