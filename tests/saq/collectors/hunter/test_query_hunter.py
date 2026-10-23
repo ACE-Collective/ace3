@@ -26,6 +26,7 @@ from saq.constants import (
     ANALYSIS_MODE_FILE,
     ExecutionMode,
     F_COMMAND_LINE,
+    F_FILE,
     F_HOSTNAME,
     F_IP,
     F_SIGNATURE_ID,
@@ -2089,6 +2090,36 @@ def test_process_query_results_file_observable_with_interpolation(monkeypatch, t
     assert len(file_observables) == 1
     file_obs = file_observables[0]
     assert file_obs.file_name == "dynamic_file.bin"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name, stored", [
+    ("../../escaped.exe", "_/_/escaped.exe"),
+    ("/opt/ace/escaped.exe", "opt/ace/escaped.exe"),
+    ("..", "_"),
+    ("invoice 2026.pdf", "invoice 2026.pdf"),
+])
+def test_process_query_results_file_name_stays_in_the_files_directory(monkeypatch, tmpdir, hunt_manager, name, stored):
+    """The file name is interpolated from the event, which can carry an attacker's file names, so
+    the root's file manager cleans it when the file is stored."""
+    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
+    monkeypatch.setattr(query_hunter_module, "get_staging_tmp_dir", lambda: str(tmpdir))
+
+    hunt = default_hunt(
+        manager=hunt_manager,
+        name="test_file_hunt",
+        group_by=None,
+        analysis_mode=ANALYSIS_MODE_CORRELATION,
+        observable_mapping=[ObservableMapping(fields=["file_content", "filename"], type=F_FILE, file_name="{{ filename }}")]
+    )
+
+    (submission,) = hunt.process_query_results([{"file_content": "test data", "filename": name}])
+
+    (file_obs,) = [o for o in submission.root.observables if o.type == F_FILE]
+    assert file_obs.file_path == stored
+    assert os.path.realpath(file_obs.full_path) == os.path.realpath(os.path.join(submission.root.file_dir, stored))
+    with open(file_obs.full_path, "rb") as f:
+        assert f.read() == b"test data"
 
 
 @pytest.mark.unit

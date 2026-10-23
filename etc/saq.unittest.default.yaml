@@ -160,6 +160,12 @@ analysis_module_test_slow_delayed_analysis:
   python_class: SlowDelayedAnalysisTestModule
   enabled: false
 
+analysis_module_test_time_left:
+  name: test_time_left
+  python_module: saq.modules.test
+  python_class: TimeLeftTestModule
+  enabled: false
+
 analysis_module_test_engine_locking:
   name: test_engine_locking
   python_module: saq.modules.test

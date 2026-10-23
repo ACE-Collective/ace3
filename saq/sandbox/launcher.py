@@ -28,7 +28,11 @@ things the command cannot undo:
 - A process cap. A command with more than --max-processes live descendants is killed.
 
 It exits with the command's exit status (128 + N for a command killed by signal N). When it killed
-the command itself, or could not start it, it says why on stderr and exits EXIT_SANDBOX_FAILURE.
+the command itself, or could not start it, it says why on stderr and exits with a code that says
+which, so a caller can tell a node that cannot run sandboxed commands from a command that misbehaved
+without reading the message: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE or
+EXIT_PROCESS_LIMIT when it was killed for that, and EXIT_STOPPED when it was told to stop. A command
+can exit with any of those codes itself; the message on stderr is what tells the two apart.
 """
 
 import ctypes
@@ -56,8 +60,14 @@ NET_ABI = 4
 # the first Landlock ABI with scopes (Linux 6.12)
 SCOPE_ABI = 6
 
-# the launcher's own failure, or its verdict when it killed the command (the value timeout(1) uses)
+# the sandbox could not be set up or the command could not be started (the value timeout(1) uses)
 EXIT_SANDBOX_FAILURE = 125
+# the command ran past --deadline (the value timeout(1) uses)
+EXIT_DEADLINE = 124
+# the command had more than --max-processes live descendants
+EXIT_PROCESS_LIMIT = 123
+# the launcher was told to stop: what a command killed by SIGTERM exits with, which is what happened
+EXIT_STOPPED = 128 + signal.SIGTERM
 
 # how often descendants are counted while the command runs; SIGCHLD also wakes the loop
 _POLL_SECONDS = 0.05
@@ -257,10 +267,10 @@ def _exec_command(command: list[str], abi: int, tcp_ports: list[int] | None, sig
             os._exit(EXIT_SANDBOX_FAILURE)
 
 
-def _abort(command_pid: int, reason: str) -> int:
+def _abort(command_pid: int, reason: str, exit_code: int) -> int:
     kill_descendants(command_pid)
     print(f"sandbox: {reason}", file=sys.stderr)
-    return EXIT_SANDBOX_FAILURE
+    return exit_code
 
 
 def supervise(command_pid: int, max_processes: int, deadline: float) -> int:
@@ -275,14 +285,14 @@ def supervise(command_pid: int, max_processes: int, deadline: float) -> int:
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _abort(command_pid, "the command ran past its deadline")
+            return _abort(command_pid, "the command ran past its deadline", EXIT_DEADLINE)
 
         info = signal.sigtimedwait(_WAKE_SIGNALS, min(_POLL_SECONDS, remaining))
         if info is not None and info.si_signo in _STOP_SIGNALS:
-            return _abort(command_pid, "stopped")
+            return _abort(command_pid, "stopped", EXIT_STOPPED)
 
         if len(_live_descendants()) > max_processes:
-            return _abort(command_pid, f"the command started more than {max_processes} processes")
+            return _abort(command_pid, f"the command started more than {max_processes} processes", EXIT_PROCESS_LIMIT)
 
 
 def _parse_arguments(argv: list[str]) -> tuple[int, float, list[int] | None, list[str]]:

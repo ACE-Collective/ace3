@@ -95,31 +95,10 @@ def find_nt_paths_in_text(text):
     return paths
 
 
-def safe_file_name(file_name):
-    """Returns a file name with all path separator and directory traversal replaced with underscores."""
-    result = re.sub('_+', '_', file_name.replace('\\', '_').replace('../', '_').replace('/', '_').replace('~', '_').replace('\0', '_'))
-    # what is left of "." or ".." is still the directory or its parent
-    if result in ('.', '..'):
-        return '_'
-
-    return result
-
 def is_path_under(path: str, root: str) -> bool:
     """True when path really resolves to root or somewhere inside it, symlinks followed."""
     real_root = os.path.realpath(root)
     return os.path.commonpath([real_root, os.path.realpath(path)]) == real_root
-
-def unique_file_path(path: str) -> str:
-    """Returns path, or when something already exists there, the first free <name>_NNN<ext> next to it."""
-    if not os.path.lexists(path):
-        return path
-
-    stem, ext = os.path.splitext(path)
-    index = 0
-    while os.path.lexists(f"{stem}_{index:03}{ext}"):
-        index += 1
-
-    return f"{stem}_{index:03}{ext}"
 
 def extract_windows_filepaths(command_line):
     """Given a command line, extract any file paths found inside of it and return a list of them."""
@@ -194,18 +173,6 @@ def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAM
     truncated_bytes = basename.encode("utf-8")[:available]
     truncated_stem = truncated_bytes.decode("utf-8", errors="ignore")
     return f"{truncated_stem}{tail}"
-
-def safe_filename(s):
-
-    def _safe_char(c):
-        # we want . for file ext and / for dir path, but ...
-        if c.isalnum() or c == '/' or c == '.':
-            return c
-        else:
-            return "_"
-
-    # make sure we don't allow parent dir
-    return ("".join(_safe_char(c) for c in s).rstrip("_")).replace('..', '_') # turn parent dir into bemused face
 
 def get_local_file_path(root, _file):
     """Return the local (full) file path for a given F_FILE type indicator from the given analysis."""
