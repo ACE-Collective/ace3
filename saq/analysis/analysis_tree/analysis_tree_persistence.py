@@ -7,7 +7,6 @@ from saq.analysis.observable_registry import ObservableRegistry
 from saq.analysis.persistence_manager import AnalysisDetailsPersistenceManager
 from saq.analysis.serialize.observable_registry_serializer import ObservableRegistrySerializer
 from saq.analysis.detection_point import DetectionPoint
-from saq.constants import F_FILE
 
 if TYPE_CHECKING:
     from saq.analysis.root import RootAnalysis
@@ -92,61 +91,6 @@ class AnalysisTreePersistenceManager:
         """
         self._details_persistence_manager.reset(analysis)
 
-    def discard_analysis_details(self, analysis: Analysis):
-        """Simply discards the details of this analysis, not saving any changes.
-        
-        Args:
-            analysis: The Analysis object to discard details for
-        """
-        self._details_persistence_manager.discard_details(analysis)
-
-    # Tree-level Operations
-    # ------------------------------------------------------------------------
-
-    def flush_all_analysis(self):
-        """Calls flush() on all Analysis objects in the tree."""
-        for analysis in self.query_engine.all_analysis:
-            if analysis is not self.root_analysis:
-                self.flush_analysis_details(analysis)
-
-    def reset_tree(self, retain_original_observables=True):
-        """Resets the analysis tree, optionally retaining original observables.
-
-        Args:
-            retain_original_observables: If True, keeps observables that came with the original alert
-        """
-        # Clear external details storage for all analysis (except root)
-        for analysis in self.query_engine.all_analysis:
-            if analysis is not self.root_analysis:
-                self.reset_analysis_details(analysis)
-
-        # Remove analysis objects from all observables
-        for observable in self.query_engine.all_observables:
-            observable.clear_analysis()
-
-        if retain_original_observables:
-            # Remove observables that didn't come with the original alert
-            original_uuids = set([o.id for o in self.root_analysis.observables])
-            remove_list = []
-            for uuid in list(self.observable_registry.store.keys()):
-                if uuid not in original_uuids:
-                    remove_list.append(uuid)
-
-            for uuid in remove_list:
-                # If the observable is a F_FILE then try to also delete the file
-                if self.observable_registry.store[uuid].type == F_FILE:
-                    observable = self.observable_registry.store[uuid]
-                    if hasattr(observable, "exists") and getattr(observable, "exists", False):
-                        file_path = getattr(observable, "full_path", None)
-                        if file_path and self.root_analysis.file_manager:
-                            self.root_analysis.file_manager.delete_file(file_path)
-
-                self.observable_registry.remove(uuid)
-
-        # Remove tags from observables
-        for observable in self.query_engine.all_observables:
-            observable.clear_tags()
-
     # Serialization Methods
     # ------------------------------------------------------------------------
 
@@ -191,35 +135,6 @@ class AnalysisTreePersistenceManager:
 
     # Tree Materialization and Loading
     # ------------------------------------------------------------------------
-
-    def materialize_tree(self):
-        """Utility function to replace specific dict() in json with runtime object references.
-        
-        This method converts serialized JSON data back into proper object references,
-        tags, detection points, and relationships.
-        """
-        # Load the Analysis objects in the Observables
-        for observable in self.observable_registry.store.values():
-            observable._load_analysis()
-
-        # Load the Observable references in the Analysis objects
-        for analysis in self.query_engine.all_analysis:
-            analysis._load_observable_references()
-
-        # Load DetectionPoints
-        for analysis in self.query_engine.all_analysis:
-            analysis.detections = [
-                DetectionPoint.from_json(dp) for dp in analysis.detections
-            ]
-
-        for observable in self.query_engine.all_observables:
-            observable.detections = [
-                DetectionPoint.from_json(dp) for dp in observable.detections
-            ]
-
-        # Load Relationships
-        for observable in self.query_engine.all_observables:
-            observable._load_relationships()
 
     def load(self):
         """Loads the analysis tree from the JSON data.
