@@ -192,6 +192,20 @@ class TestFallbackEventTime:
             assert session.execute(select(SVSAttribution.event_time_source).where(
                 SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["event"]
 
+    def test_a_time_its_producer_made_up_is_not_blamed_on_a_hunt(self, run, caplog):
+        # now is a fallback time too, but no hunt's timestamp extraction is at fault
+        root = _root()
+        root.set_event_time(root.event_time, EventTimeSource.NOW)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["now"]
+
 
 class TestPreInsert:
     def test_a_marker_that_agrees_routes_the_alert(self, run):

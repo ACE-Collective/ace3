@@ -63,7 +63,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
-    EventTimeSource,
+    AttributionTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -483,20 +483,17 @@ def alert_hosts(root: RootAnalysis) -> AlertHosts:
     return result
 
 
-def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> tuple[datetime, EventTimeSource]:
+def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> tuple[datetime, AttributionTimeSource]:
     """When the alert's event happened, as runs record time (naive, local), and where that came from:
     the root's event time (for a hunt, the query's event time) and its source, or when the alert was
     inserted [FR-9]."""
     event_time = root.event_time
     if event_time is None:
-        return inserted_at, EventTimeSource.INSERT_TIME
+        return inserted_at, AttributionTimeSource.INSERT_TIME
     if event_time.tzinfo is not None:
         event_time = event_time.astimezone(get_local_timezone()).replace(tzinfo=None)
-    # two enums share the name: root.event_time_source is saq.constants.EventTimeSource (where the
-    # root's time came from), this function returns saq.svs.constants.EventTimeSource (which time a
-    # run recorded, insert_time included); the root's members other than unset (which has no time)
-    # are this one's by value
-    return event_time, EventTimeSource(root.event_time_source)
+    # every root source but unset (which has no time) is an attribution source by value
+    return event_time, AttributionTimeSource(root.event_time_source)
 
 
 #
@@ -556,7 +553,7 @@ class Evaluation:
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
     # the alert's event time it was judged by, and where it came from, kept on each attribution
     event_time: Optional[datetime] = None
-    event_time_source: Optional[EventTimeSource] = None
+    event_time_source: Optional[AttributionTimeSource] = None
     # it has no marker and no attribution, and its event time is in a maintenance window on one of
     # its hosts: it is routed to the test queue and closed (docs/SVS_RUNS.md, *Maintenance windows*)
     maintenance: Optional[MaintenanceSnapshot] = None
@@ -736,7 +733,7 @@ def suppression_key(owner: RunSnapshot | MaintenanceSnapshot, group_value: str) 
 
 
 def evaluate(root: RootAnalysis, event_time: datetime,
-             event_time_source: EventTimeSource = EventTimeSource.EVENT) -> Evaluation:
+             event_time_source: AttributionTimeSource = AttributionTimeSource.EVENT) -> Evaluation:
     """Judges every marker in the alert against its run and attributes its detections, by the event
     time and source alert_event_time gives. Reads the database, writes nothing; the caller checks the
     gate (attribution_open) first."""

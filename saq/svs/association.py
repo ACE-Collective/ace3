@@ -44,7 +44,7 @@ from saq.svs.constants import (
     SVS_MANUAL_ROUTER,
     AttributionConfidence,
     AttributionSource,
-    EventTimeSource,
+    AttributionTimeSource,
     RunEventKind,
     RunState,
     SVSStatus,
@@ -162,14 +162,14 @@ def _audit(message: str, run: SVSRun, alert_uuid: str, auth: "ApiAuthResult", **
     log_audit(message, auth=auth, **run_log_fields(run), alert_uuid=alert_uuid, **fields)
 
 
-def _event_time(alert: _Alert) -> tuple[datetime, EventTimeSource]:
+def _event_time(alert: _Alert) -> tuple[datetime, AttributionTimeSource]:
     """The alert's event time and where it came from, judged as the router judges them."""
     try:
         return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
     except Exception:
         logging.exception("unable to load alert %s for its event time; using its insert time", alert.uuid,
                           extra={"alert_uuid": alert.uuid, "storage_dir": alert.storage_dir})
-        return alert.insert_date, EventTimeSource.INSERT_TIME
+        return alert.insert_date, AttributionTimeSource.INSERT_TIME
 
 
 #
