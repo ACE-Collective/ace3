@@ -29,13 +29,20 @@ took.
 Tests 1-3 and 7 failed before the fix with ``AttributeError``. Test 4 pins the
 positive path, tests 5-6 pin the removals.
 """
+import glob
+import os
+import threading
 import time
+import uuid
 from unittest.mock import Mock
 
 import pytest
 
 from saq.analysis.root import load_root
+from saq.configuration.config import get_config
 from saq.constants import F_TEST
+from saq.database.util.locking import acquire_lock, force_release_lock, release_lock
+from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
@@ -43,11 +50,14 @@ from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.shutdown_adapter import WorkerShutdownAdapter
 from saq.engine.worker import Worker
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
-from saq.modules.test import KEY_CONTROLLED_SHUTDOWN, KEY_SHUTDOWN, BasicTestAnalysis
+from saq.modules.test import KEY_CONTROLLED_SHUTDOWN, KEY_SHUTDOWN, KEY_TEST_RESULT, BasicTestAnalysis
+from saq.sandbox.runner import landlock_available
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import search_log, wait_for_condition
 from tests.saq.test_util import create_test_context
 
 
@@ -139,6 +149,26 @@ def test_module_should_stop_on_shutdown_or_cancel():
 
 
 @pytest.mark.unit
+def test_module_sees_the_engines_cancel():
+    """A cancel on the engine's context reaches the module, which never cancelled anything itself."""
+    engine_canceled = False
+    module = make_module(create_test_context(engine_canceled=lambda: engine_canceled))
+    assert module.is_canceled_analysis() is False
+    assert module.should_stop() is False
+
+    engine_canceled = True
+    assert module.is_canceled_analysis() is True
+    assert module.should_stop() is True
+    # the module's own flag is untouched: the executor tells the two apart
+    assert module._context.cancel_analysis_flag is False
+
+
+@pytest.mark.unit
+def test_module_without_an_engine_is_not_canceled(test_context):
+    assert make_module(test_context).is_canceled_analysis() is False
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("stop", ["shutdown", "cancel"])
 def test_module_sleep_returns_once_it_should_stop(stop):
     shutdown_interface = FakeShutdownInterface()
@@ -226,3 +256,94 @@ def test_module_shutdown_signals_during_analysis(root_analysis):
     assert analysis, "the module raised instead of reading the shutdown signal"
     assert analysis.details[KEY_SHUTDOWN] is False
     assert analysis.details[KEY_CONTROLLED_SHUTDOWN] is False
+
+
+def _when_the_command_starts(action) -> threading.Thread:
+    """Runs action on another thread once the module's sandboxed command is running."""
+    def run():
+        started_glob = os.path.join(get_temp_dir(), "test_sandbox_should_stop", "*", "started")
+        wait_for_condition(lambda: glob.glob(started_glob), timeout=30)
+        action()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def _schedule_sandbox_should_stop(root_analysis):
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_sandbox_should_stop")
+    root_analysis.save()
+    root_analysis.schedule()
+    return observable
+
+
+def _sandbox_result(root_analysis, observable) -> str:
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(observable.uuid).get_and_load_analysis(BasicTestAnalysis)
+    assert analysis
+    return analysis.details[KEY_TEST_RESULT]
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_engine_cancel_stops_a_modules_sandboxed_command(root_analysis, monkeypatch):
+    """A cancel on the work item's context reaches a module blocked in run_sandboxed(cancel=should_stop).
+
+    Before the fix the engine's cancel never reached the module's is_canceled_analysis(), so the
+    command ran to its 60 second timeout.
+    """
+    captured = []
+    original = AnalysisOrchestrator.orchestrate_analysis
+
+    def spy(self, execution_context):
+        captured.append(execution_context)
+        return original(self, execution_context)
+
+    monkeypatch.setattr(AnalysisOrchestrator, "orchestrate_analysis", spy)
+    observable = _schedule_sandbox_should_stop(root_analysis)
+    # the call Worker._handle_lock_lost makes from the keepalive thread
+    canceller = _when_the_command_starts(lambda: captured[0].cancel_analysis())
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("basic_test", "test_groups")
+    started = time.monotonic()
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+    elapsed = time.monotonic() - started
+    canceller.join(timeout=5)
+
+    assert _sandbox_result(root_analysis, observable) == "cancelled"
+    assert elapsed < 30
+    # the cancel came from the engine and is not reported as the module's
+    assert not search_log("cancelled analysis for")
+
+
+@pytest.mark.system
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_lost_lock_stops_a_modules_sandboxed_command(root_analysis, monkeypatch):
+    """The same, end to end: a forked worker loses its lock while the command runs.
+
+    Only a worker that is not single threaded keeps its lock alive, so this one is forked.
+    """
+    monkeypatch.setattr(get_config().global_settings, "lock_keepalive_frequency", 0.1)
+    observable = _schedule_sandbox_should_stop(root_analysis)
+    other_lock_uuid = str(uuid.uuid4())
+
+    def steal_lock():
+        # as another node does once our lock has expired: our keepalive cannot re-acquire it
+        force_release_lock(root_analysis.uuid)
+        assert acquire_lock(root_analysis.uuid, other_lock_uuid)
+
+    thief = _when_the_command_starts(steal_lock)
+
+    try:
+        engine = Engine()
+        engine.configuration_manager.enable_module("basic_test", "test_groups")
+        engine.start(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+        thief.join(timeout=5)
+    finally:
+        release_lock(root_analysis.uuid, other_lock_uuid)
+
+    # the controller stops at once in SINGLE_SHOT and kills a worker still running after its
+    # shutdown budget, which leaves no analysis: a result at all means the command was stopped
+    assert _sandbox_result(root_analysis, observable) == "cancelled"

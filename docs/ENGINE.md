@@ -962,13 +962,18 @@ round trip is honored: `AnalysisExecutor.execute` opens with
 mid-loop.
 
 Cancellation is cooperative — a module already inside `execute_analysis` runs to
-completion.
+completion unless it polls `self.should_stop()` (true on an immediate shutdown or
+a cancel). `sleep()` does, and a module passes it as the `cancel` of a blocking
+call such as `run_sandboxed`, so a lost lock stops the command rather than
+letting it run to its timeout on a work item the worker has given up.
 
 `AnalysisModuleContext.cancel_analysis_flag` (`saq/modules/context.py`) is a
 *different*, deliberately separate flag: it is per module instance, reset with
-every fresh `AnalysisModuleContext`, set by `AnalysisModule.cancel_analysis()`
-and also read by `AnalysisModule.sleep()`. `_execute_module_analysis` promotes it
-into the run-level flag above right after the call returns.
+every fresh `AnalysisModuleContext`, and set only by
+`AnalysisModule.cancel_analysis()`. `_execute_module_analysis` promotes it into
+the run-level flag above right after the call returns. The executor also hands
+each module context the run-level flag (`engine_canceled`), and
+`AnalysisModule.is_canceled_analysis()` is true when either is set.
 
 ### 12.3 Module exceptions
 

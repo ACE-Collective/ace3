@@ -16,10 +16,12 @@ from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
+from saq.configuration.schema import SandboxConfig
 from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.sandbox.runner import SandboxCancelled, build_sandbox_argv, create_workdir, run_sandboxed, sandbox_python
 from tests.saq.helpers import recv_test_message, send_test_message
 
 KEY_TEST_RESULT = 'test_result'
@@ -109,6 +111,8 @@ class BasicTestAnalyzer(AnalysisModule):
             return self.execute_test_cancel(test)
         elif test.value == 'test_engine_signals':
             return self.execute_test_engine_signals(test)
+        elif test.value == 'test_sandbox_should_stop':
+            return self.execute_test_sandbox_should_stop(test)
         else:
             return AnalysisExecutionResult.COMPLETED
 
@@ -240,6 +244,23 @@ class BasicTestAnalyzer(AnalysisModule):
         }
         analysis = self.create_analysis(test)
         analysis.details = { KEY_TEST_RESULT: True, **signals }
+        return AnalysisExecutionResult.COMPLETED
+
+    def execute_test_sandbox_should_stop(self, test) -> AnalysisExecutionResult:
+        # a command that runs until should_stop() stops it; it creates "started" in its working
+        # directory (under get_temp_dir()/test_sandbox_should_stop) so a test knows when to cancel
+        analysis = self.create_analysis(test)
+        timeout = datetime.timedelta(seconds=60)
+        with create_workdir(os.path.join(get_temp_dir(), test.value)) as workdir:
+            argv = build_sandbox_argv([sandbox_python(), "-I", "-c", "open('started', 'w'); import time; time.sleep(60)"],
+                                      workdir, SandboxConfig(allowed_tcp_ports=None), timeout)
+            try:
+                run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
+                              timeout, 1024 * 1024, cancel=self.should_stop)
+                analysis.details = { KEY_TEST_RESULT: "completed" }
+            except SandboxCancelled:
+                analysis.details = { KEY_TEST_RESULT: "cancelled" }
+
         return AnalysisExecutionResult.COMPLETED
 
 class ConfigurableModuleTestAnalysis(TestAnalysis):
