@@ -212,7 +212,7 @@ def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpu
         [sandbox_python(), "-I", os.path.join(workdir, "child.py"), side_dir], workdir, sandbox_config, timeout)
     try:
         result = run_sandboxed(argv, None, _sandbox_env(workdir), workdir, timeout, sandbox_config.max_output_bytes,
-                               cancel=cancel)
+                               cancel=None if cancel is None else cancel.is_set)
     except SandboxCancelled:
         raise ReplayCancelled("the validation was cancelled") from None
     except RuntimeError as e:
