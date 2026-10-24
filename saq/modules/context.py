@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 from saq.analysis.interfaces import RootAnalysisInterface
 from saq.filesystem.interfaces import FileSystemInterface
 
@@ -25,7 +25,8 @@ class AnalysisModuleContext:
                  filesystem: Optional[FileSystemInterface] = None,
                  state_repository: Optional["StateRepositoryInterface"] = None,
                  cache_strategy: Optional["AnalysisCacheStrategyInterface"] = None,
-                 shutdown_interface: Optional["ShutdownInterface"] = None):
+                 shutdown_interface: Optional["ShutdownInterface"] = None,
+                 engine_canceled: Optional[Callable[[], bool]] = None):
 
         self._delayed_analysis_interface: Optional["DelayedAnalysisInterface"] = delayed_analysis_interface
         self._root: Optional[RootAnalysisInterface] = root
@@ -34,8 +35,9 @@ class AnalysisModuleContext:
         self.state_repository: Optional["StateRepositoryInterface"] = state_repository
         self.cache_strategy: Optional["AnalysisCacheStrategyInterface"] = cache_strategy
         self._shutdown_interface: Optional["ShutdownInterface"] = shutdown_interface
+        self._engine_canceled: Optional[Callable[[], bool]] = engine_canceled
 
-        # something might try to cancel an analysis execution
+        # set when this module cancels the analysis; a cancel from the engine is engine_canceled
         self.cancel_analysis_flag: bool = False
 
         # sometimes a module can depend on another service that is failing
@@ -105,3 +107,8 @@ class AnalysisModuleContext:
     def controlled_shutdown(self) -> bool:
         """Returns True if a controlled shutdown has been signaled."""
         return self._shutdown_interface.controlled_shutdown if self._shutdown_interface else False
+
+    @property
+    def engine_canceled(self) -> bool:
+        """Returns True if the engine cancelled the analysis (a lost lock, an immediate shutdown, a disposition, a whitelist)."""
+        return self._engine_canceled() if self._engine_canceled else False

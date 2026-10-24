@@ -247,6 +247,8 @@ class AnalysisExecutor:
                     filesystem=FileSystemAdapter(),
                     state_repository=state_repository,
                     shutdown_interface=self.shutdown_interface,
+                    # the flag rather than its value: the keepalive thread cancels while a module runs
+                    engine_canceled=lambda: context.cancel_analysis_flag,
                 )
             )
 
@@ -1633,8 +1635,9 @@ class AnalysisExecutor:
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()
 
-            # did the module cancel the analysis?
-            if analysis_module.is_canceled_analysis():
+            # did the module cancel the analysis? is_canceled_analysis() also reports a cancel from
+            # the engine, which is already on the context
+            if analysis_module.is_canceled_analysis() and not context.cancel_analysis_flag:
                 logging.info(
                     f"analysis module {analysis_module} cancelled analysis for {root} when analyzing {work_item}"
                 )

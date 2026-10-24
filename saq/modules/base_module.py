@@ -873,8 +873,8 @@ class AnalysisModule(FileWatcherMixin):
         self.cancel_analysis_handler()
 
     def is_canceled_analysis(self) -> bool:
-        """Returns True if the current analysis has been canceled."""
-        return self._context.cancel_analysis_flag
+        """Returns True if the current analysis has been canceled, by this module or by the engine."""
+        return self._context.cancel_analysis_flag or self._context.engine_canceled
 
     def should_stop(self) -> bool:
         """Returns True if the module should abandon what it is doing: the engine is shutting down

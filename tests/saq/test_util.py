@@ -163,7 +163,7 @@ def test_is_nt_path(path: str, expected: bool):
 def test_extract_windows_filepaths(input: str, expected: str):
     extract_windows_filepaths(input) == expected
 
-def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None, delayed_analysis_interface=None):
+def create_test_context(root: Optional[RootAnalysis] = None, configuration_manager: Optional[ConfigurationManager] = None, shutdown_interface=None, delayed_analysis_interface=None, engine_canceled=None):
     from saq.modules.state_repository import StateRepositoryFactory
     root_analysis = root or RootAnalysis()
     return AnalysisModuleContext(
@@ -175,4 +175,5 @@ def create_test_context(root: Optional[RootAnalysis] = None, configuration_manag
             RootAnalysisAdapter(root_analysis)
         ),
         shutdown_interface=shutdown_interface,
+        engine_canceled=engine_canceled,
     )
