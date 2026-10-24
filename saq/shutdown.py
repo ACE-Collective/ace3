@@ -235,8 +235,16 @@ class ShutdownCoordinator:
 
         logging.info("shutdown requested: %s (deadline %.1fs)", self._reason, self.deadline_seconds)
 
-        # mirror the flag for forked children
-        self._mp_flag.value = True
+        # mirror the flag for forked children. the mirror only flows down: a forked child
+        # shares it with its parent and every sibling, so a child that sets it shuts them
+        # all down too (an engine started with start_nonblocking() and then sent SIGINT
+        # left its parent, and every engine forked from that parent afterwards, shutting
+        # down on arrival). such a child takes a mirror of its own instead, which the
+        # processes it forks from now on inherit
+        if os.getpid() == self._owner_pid:
+            self._mp_flag.value = True
+        else:
+            self._mp_flag = ACE_MP_CONTEXT.Value(ctypes.c_bool, True, lock=False)
 
         self._start_watchdog()
 
