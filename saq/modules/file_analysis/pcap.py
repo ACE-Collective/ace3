@@ -1,33 +1,24 @@
-"""Dissects pcap/pcapng captures with tshark and turns what they carried into observables.
+"""Dissects pcap/pcapng captures with tshark and turns what they carried into observables
+(docs/PCAP_ANALYSIS.md).
 
 tshark's dissectors parse untrusted bytes and have a long CVE history, so tshark only ever runs in
 the Landlock sandbox (saq/sandbox/runner.py): no network, nothing of ACE readable, bounded by a
-timeout, rlimits and an output cap. See docs/PCAP_ANALYSIS.md for the analysis tree this builds.
-
-One tshark run per capture builds an *index* (stored in PcapAnalysis.details); every other pcap
-analysis reads that index instead of running tshark again:
-
-- PcapAnalyzer: the index, the flows table and the hosts (IPs, MACs, hostnames)
-- PcapCategoryAnalyzer: one configured instance per category (dns, tls, http, files)
-- PcapTlsDecryptor: runs in final analysis, so every TLS key log in the tree (also one extracted
-  late, from an archive) is known by then; adds only what the decrypted traffic shows beyond the
-  plaintext index
-- TlsKeylogAnalyzer: recognizes key logs by content and applies one added after the pcap's
-  decryption analysis already completed
+timeout, rlimits and an output cap.
 """
 
 import datetime
-import hashlib
 import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
+import stat
 import struct
 from dataclasses import dataclass
-from typing import Literal, Optional, override
-from urllib.parse import urlsplit
+from itertools import zip_longest
+from typing import Callable, Literal, Optional, override
+from urllib.parse import SplitResult, urlsplit
 
 from cryptography.x509.oid import NameOID
 from pydantic import Field
@@ -36,7 +27,8 @@ from saq import x509 as x509_util
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.configuration.schema import SandboxConfig
+from saq.configuration.config import get_config
+from saq.configuration.schema import PcapConfig
 from saq.constants import (
     F_FILE,
     F_FQDN,
@@ -56,11 +48,15 @@ from saq.environment import get_data_dir
 from saq.error.reporting import log_loop_exception
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.file_analysis.is_file_type import is_pcap_file
+from saq.modules.file_analysis.is_file_type import PCAPNG_BYTE_ORDER_MAGICS, PCAPNG_SECTION_HEADER, is_pcap_file
 from saq.observables.file import FileObservable
 from saq.observables.network.layer2 import normalize_mac_address
+from saq.util.hashing import sha256_bytes, sha256_file
+from saq.util.strings import format_item_list_for_summary
 from saq.util.ui import human_readable_size
+from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
 from saq.sandbox.runner import (
+    SandboxCancelled,
     build_sandbox_argv,
     create_workdir,
     landlock_available,
@@ -120,6 +116,18 @@ EXPORT_OBJECT_PROTOCOLS = ("http", "smb", "ftp-data", "tftp", "imf")
 
 # the owner of an SOA or NS record (usually from the authority section of a reply with no answer) is a zone
 DNS_ZONE_RECORD_TYPES = {"2", "6"}
+# the EDNS OPT pseudo-record, which every modern resolver adds; its owner is the root, not a name
+DNS_OPT_RECORD_TYPE = "41"
+# how tshark prints the root domain
+DNS_ROOT_NAME = "<root>"
+
+# capinfos only reads the record headers, so it never needs the time a full tshark pass does
+CAPINFOS_TIMEOUT_SECONDS = 30
+# copying the capture into the workdir, stopping the sandbox and parsing tshark's output, around one tshark run
+RUN_MARGIN_SECONDS = 30
+# the tool never ran: the launcher could not set the sandbox up (EXIT_SANDBOX_FAILURE), or prlimit or
+# setpriv could not execute it (126, 127); tshark and capinfos never exit with these themselves
+NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
 
 # TLS handshake message types
 TLS_CLIENT_HELLO = "1"
@@ -149,7 +157,8 @@ RE_CONVERSATION = re.compile(
 RE_IO_STAT_TOTAL = re.compile(r"^\|\s*[\d.]+\s*<>\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|")
 
 KEY_ERROR = "error"
-KEY_WARNING = "warning"
+KEY_CLIENT_RANDOMS = "tls_client_randoms"
+KEY_CARVED_SHA256 = "carved_sha256"
 KEY_INDEX = "index"
 KEY_ADDED = "added"
 KEY_OMITTED = "omitted"
@@ -157,6 +166,11 @@ KEY_OMITTED = "omitted"
 
 class PcapError(Exception):
     """tshark could not dissect the capture."""
+
+
+class PcapNodeError(Exception):
+    """This node cannot run tshark at all (no Landlock, a tool that does not start): an operator's
+    problem, not the capture's."""
 
 
 # ----------------------------------------------------------------------------------------------
@@ -176,6 +190,7 @@ def is_keylog_file(path: str) -> bool:
         with open(path, "rb") as fp:
             head = fp.read(KEYLOG_SNIFF_BYTES)
     except OSError:
+        # a file that cannot be read is not a key log anyone can use
         return False
 
     try:
@@ -227,7 +242,6 @@ def read_keylog(path: str) -> KeylogContents:
 
 
 # pcapng blocks (https://datatracker.ietf.org/doc/draft-ietf-opsawg-pcapng/)
-PCAPNG_SECTION_HEADER = b"\x0a\x0d\x0d\x0a"
 PCAPNG_DECRYPTION_SECRETS_BLOCK = 0x0000000A
 PCAPNG_SECRETS_TYPES = {
     0x544C534B: "TLS",
@@ -239,11 +253,19 @@ PCAPNG_SECRETS_TYPES = {
 }
 
 
-def read_embedded_secrets(path: str, max_tls_bytes: int) -> Optional[dict]:
+# each block header costs about a microsecond in python: a capture of tiny blocks must not hold
+# the worker, so the scan stops after this many (Wireshark writes the secrets before the packets
+# they decrypt, near the start of the file)
+EMBEDDED_SECRETS_MAX_BLOCKS = 1_000_000
+EMBEDDED_SECRETS_STOP_CHECK_BLOCKS = 10_000
+
+
+def read_embedded_secrets(path: str, max_tls_bytes: int, stopping: Callable[[], bool] = lambda: False) -> Optional[dict]:
     """The Decryption Secrets Blocks of a pcapng, which tshark decrypts with on its own. Returns
     {"types": {name: blocks}, "label_counts": {...}, "client_randoms": set} or None when there are
-    none. Only block headers are read (the rest is skipped by seeking), and only up to max_tls_bytes
-    of TLS secrets are parsed. The secrets themselves are not returned."""
+    none. Only block headers are read (the rest is skipped by seeking), at most
+    EMBEDDED_SECRETS_MAX_BLOCKS of them, and only up to max_tls_bytes of TLS secrets are parsed. The
+    secrets themselves are not returned. Raises SandboxCancelled once stopping() says so."""
     types: dict[str, int] = {}
     tls_lines: list[str] = []
     tls_bytes = 0
@@ -252,25 +274,34 @@ def read_embedded_secrets(path: str, max_tls_bytes: int) -> Optional[dict]:
             return None
         fp.seek(0)
         endian = "<"
+        blocks = 0
         while True:
+            blocks += 1
+            if blocks > EMBEDDED_SECRETS_MAX_BLOCKS:
+                logging.info("stopped looking for decryption secrets in pcap %s after %s blocks", path,
+                             EMBEDDED_SECRETS_MAX_BLOCKS, extra={"pcap_path": path})
+                break
+            if blocks % EMBEDDED_SECRETS_STOP_CHECK_BLOCKS == 0 and stopping():
+                raise SandboxCancelled(f"stopped reading pcap {path}: the analysis was stopped")
             block_start = fp.tell()
             header = fp.read(12)
             if len(header) < 12:
                 break
             if header[:4] == PCAPNG_SECTION_HEADER:
                 # every section declares its own byte order
-                if header[8:12] == b"\x4d\x3c\x2b\x1a":
-                    endian = "<"
-                elif header[8:12] == b"\x1a\x2b\x3c\x4d":
-                    endian = ">"
-                else:
+                if header[8:12] not in PCAPNG_BYTE_ORDER_MAGICS:
                     break
+                endian = "<" if header[8:12] == PCAPNG_BYTE_ORDER_MAGICS[0] else ">"
             block_type, length, first_word = struct.unpack(endian + "III", header)
             # a damaged block ends the scan: tshark has already read what it could of the file
             if length < 12 or length % 4:
                 break
             if block_type == PCAPNG_DECRYPTION_SECRETS_BLOCK and length >= 20:
-                secrets_length = struct.unpack(endian + "I", fp.read(4))[0]
+                raw_length = fp.read(4)
+                # the file ends inside the block
+                if len(raw_length) < 4:
+                    break
+                secrets_length = struct.unpack(endian + "I", raw_length)[0]
                 name = PCAPNG_SECRETS_TYPES.get(first_word, f"0x{first_word:08x}")
                 types[name] = types.get(name, 0) + 1
                 if name == "TLS" and secrets_length <= length - 20 and tls_bytes + secrets_length <= max_tls_bytes:
@@ -294,6 +325,7 @@ def find_keylog_observables(root, max_size: int) -> list[FileObservable]:
             if not os.path.isfile(path) or os.path.getsize(path) > max_size:
                 continue
         except OSError:
+            # gone or unreadable since it was added: not a key log anyone can use
             continue
         if is_keylog_file(path):
             result.append(observable)
@@ -305,49 +337,50 @@ def find_keylog_observables(root, max_size: int) -> list[FileObservable]:
 # running tshark
 # ----------------------------------------------------------------------------------------------
 
-class PcapModuleConfig(AnalysisModuleConfig):
-    tshark_path: str = Field(default="/usr/bin/tshark", description="the tshark binary")
-    tshark_timeout: int = Field(default=240, gt=0, description="seconds one tshark run may take")
-    work_dir: str = Field(default="var/pcap_sandbox", description="where each tshark run gets its private working directory (relative to DATA_DIR)")
-    sandbox: SandboxConfig = Field(default_factory=SandboxConfig, description="limits for the sandboxed tshark process; allowed_tcp_ports stays empty (no network)")
-    max_file_size: int = Field(default=1024 ** 3, gt=0, description="largest capture dissected, in bytes")
-    max_keylog_size: int = Field(default=10 * 1024 ** 2, gt=0, description="largest file considered as a TLS key log, in bytes")
-    max_table_rows: int = Field(default=500, gt=0, description="most rows kept in each table of the analysis details")
-    max_extracted_files: int = Field(default=100, ge=0, description="most files carved out of one capture (objects and certificates)")
-    max_observables_per_type: int = Field(default=100, ge=0, description="most observables of one type one pcap analysis adds")
-    excluded_fqdn_suffixes: list[str] = Field(default_factory=lambda: [".arpa", ".local"], description="names ending in one of these are never added as fqdn observables")
-
-
-class PcapCategoryConfig(PcapModuleConfig):
+class PcapCategoryConfig(AnalysisModuleConfig):
     category: Literal["dns", "tls", "http", "files"] = Field(..., description="which part of the capture index this instance turns into observables")
 
 
-def _run_tshark(config: PcapModuleConfig, workdir: str, args: list[str]) -> str:
-    """Runs tshark on <workdir>/input in the sandbox and returns its stdout."""
-    return _run_tool(config, workdir, [config.tshark_path, "-n", "-r", "input", *args])
+def _run_tshark(config: PcapConfig, pcap_path: str, workdir: str, args: list[str],
+                stopping: Callable[[], bool]) -> str:
+    """Runs tshark on <workdir>/input (the copy of pcap_path) in the sandbox and returns its stdout."""
+    return _run_tool(config, pcap_path, workdir, [config.tshark_path, "-n", "-r", "input", *args], config.tshark_timeout,
+                     stopping)
 
 
-def _run_tool(config: PcapModuleConfig, workdir: str, command: list[str]) -> str:
-    """Runs a Wireshark tool in the sandbox and returns its stdout."""
+def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[str], timeout_seconds: int,
+              stopping: Callable[[], bool]) -> str:
+    """Runs a Wireshark tool on <workdir>/input (the copy of pcap_path) in the sandbox and returns its
+    stdout. Raises SandboxCancelled once stopping() says so, killing the tool if it is running."""
     if not landlock_available():
-        raise PcapError("the Landlock sandbox is not available on this node; tshark is never run unsandboxed")
+        raise PcapNodeError("the Landlock sandbox is not available on this node; tshark is never run unsandboxed")
 
     tool = os.path.basename(command[0])
-    timeout = datetime.timedelta(seconds=config.tshark_timeout)
+    timeout = datetime.timedelta(seconds=timeout_seconds)
     argv = build_sandbox_argv(command, workdir, config.sandbox, timeout)
     # never os.environ: Landlock does not filter the environment and ACE's carries secrets
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": workdir}
     try:
-        result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes)
+        result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes,
+                               cancel=stopping)
+    except SandboxCancelled as e:
+        # a RuntimeError too, but not the capture's failure: nothing is recorded, so it runs again
+        raise SandboxCancelled(f"stopped {tool} on pcap {pcap_path}: the analysis was stopped") from e
     except RuntimeError as e:
         raise PcapError(f"{tool} failed: {e}") from e
+
+    # a missing binary, a wrong tshark_path or a node the sandbox cannot be set up on; the launcher's
+    # verdicts on a run that did start (EXIT_DEADLINE, EXIT_PROCESS_LIMIT) are the capture's problem
+    if not result.stdout.strip() and result.returncode in NODE_FAILURE_EXIT_CODES:
+        raise PcapNodeError(f"{tool} could not be run in the sandbox: {result.stderr.strip()[-500:]}")
 
     # a capture cut short mid-packet exits non-zero after printing everything before the cut
     if result.returncode != 0 and not result.stdout.strip():
         raise PcapError(f"{tool} exited with {result.returncode}: {result.stderr.strip()[-500:]}")
 
     if result.returncode != 0:
-        logging.info("%s exited with %s but produced output: %s", tool, result.returncode, result.stderr.strip()[-500:])
+        logging.info("%s exited with %s on pcap %s but produced output: %s", tool, result.returncode, pcap_path,
+                     result.stderr.strip()[-500:], extra={"pcap_path": pcap_path})
 
     return result.stdout
 
@@ -392,22 +425,16 @@ def parse_capinfos(output: str) -> dict:
     }
 
 
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fp:
-        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _unique_path(path: str) -> str:
-    if not os.path.exists(path):
+    """Returns path, or when something already exists there, the first free <name>_NNN<ext> next to it.
+    A carve moves at most max_extracted_files files, so the linear search per file is bounded."""
+    if not os.path.lexists(path):
         return path
-    base, ext = os.path.splitext(path)
-    index = 1
-    while os.path.exists(f"{base}_{index}{ext}"):
+    stem, ext = os.path.splitext(path)
+    index = 0
+    while os.path.lexists(f"{stem}_{index:03}{ext}"):
         index += 1
-    return f"{base}_{index}{ext}"
+    return f"{stem}_{index:03}{ext}"
 
 
 def _host_without_port(host: str) -> str:
@@ -513,15 +540,20 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
     for layers in packets:
         frame = _first(layers, "frame.number") or ""
 
-        # every name gets a row, also one never looked up (a CNAME target, a zone): it is an fqdn observable
-        for name in layers.get("dns.qry.name", []) + layers.get("dns.resp.name", []) + layers.get("dns.cname", []):
-            dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "queries": 0, "responses": 0,
-                                          "seen_as": []})
-        roles = [(name, "cname") for name in layers.get("dns.cname", [])]
         # dns.resp.name and dns.resp.type are parallel: one entry per resource record
+        record_names = [name for name, record_type in zip_longest(layers.get("dns.resp.name", []), layers.get("dns.resp.type", []))
+                        if name is not None and record_type != DNS_OPT_RECORD_TYPE]
+        # every name gets a row, also one never looked up (a CNAME target, a zone): it is an fqdn observable
+        for name in layers.get("dns.qry.name", []) + record_names + layers.get("dns.cname", []):
+            if name.lower() != DNS_ROOT_NAME:
+                dns.setdefault(name.lower(), {"name": name.lower(), "answers": [], "queries": 0, "responses": 0,
+                                              "seen_as": []})
+        roles = [(name, "cname") for name in layers.get("dns.cname", [])]
         roles += [(name, "zone") for name, record_type in zip(layers.get("dns.resp.name", []), layers.get("dns.resp.type", []))
                   if record_type in DNS_ZONE_RECORD_TYPES]
         for name, role in roles:
+            if name.lower() == DNS_ROOT_NAME:
+                continue
             seen_as = dns[name.lower()]["seen_as"]
             if role not in seen_as:
                 seen_as.append(role)
@@ -529,6 +561,9 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
             is_response = _first(layers, "dns.flags.response") in ("True", "1", "true")
             answers = layers.get("dns.a", []) + layers.get("dns.aaaa", []) + layers.get("dns.cname", [])
             for name in layers["dns.qry.name"]:
+                # a root query (". NS", a resolver priming itself) names nothing
+                if name.lower() == DNS_ROOT_NAME:
+                    continue
                 entry = dns[name.lower()]
                 entry["responses" if is_response else "queries"] += 1
                 if is_response:
@@ -601,16 +636,55 @@ def build_index(packets: list[dict], certificates: list[dict], objects: list[dic
     index = {
         CATEGORY_DNS: list(dns.values()),
         CATEGORY_TLS: list(tls.values()),
+        # key logs are matched against every session, not only the ones the table keeps
+        KEY_CLIENT_RANDOMS: sorted({s["client_random"] for s in tls.values() if s.get("client_random")}),
+        # and a later decryption knows every file this run carved or listed, not only the rows kept
+        KEY_CARVED_SHA256: sorted({o["sha256"] for o in objects} | {c["sha256"] for c in certificates}),
         CATEGORY_HTTP: list(http.values()),
         "hostnames": list(hostnames.values()),
         "objects": objects,
         "certificates": [{k: v for k, v in c.items() if k != "der_hex"} for c in certificates],
     }
-    for key in (CATEGORY_DNS, CATEGORY_TLS, CATEGORY_HTTP, "hostnames", "certificates"):
+    for key in INDEX_ROW_KEYS:
         index[f"{key}_total"] = len(index[key])
         index[key] = index[key][:max_rows]
 
     return index
+
+
+# what makes two rows of an index table the same row
+INDEX_ROW_KEYS = {
+    CATEGORY_DNS: lambda row: row["name"],
+    CATEGORY_TLS: lambda row: row["flow"],
+    CATEGORY_HTTP: lambda row: (row.get("method"), row.get("url")),
+    "hostnames": lambda row: row["name"].lower(),
+    "objects": lambda row: row["sha256"],
+    "certificates": lambda row: row["sha256"],
+}
+
+
+def merge_index(previous: Optional[dict], new: dict, max_rows: int) -> dict:
+    """new, with every row of previous kept as it was: a later decryption adds rows to the earlier
+    one's tables and never replaces them (the files an earlier key log carved are not carved again,
+    so they are only in previous)."""
+    if not previous:
+        return new
+
+    merged = dict(new)
+    merged[KEY_CARVED_SHA256] = sorted(set(previous.get(KEY_CARVED_SHA256, [])) | set(new.get(KEY_CARVED_SHA256, [])))
+    for key, row_key in INDEX_ROW_KEYS.items():
+        old_rows = previous.get(key, [])
+        new_rows = new.get(key, [])
+        old_keys = {row_key(row) for row in old_rows}
+        added = [row for row in new_rows if row_key(row) not in old_keys]
+        merged[key] = (old_rows + added)[:max_rows]
+        old_total = previous.get(f"{key}_total", len(old_rows))
+        new_total = new.get(f"{key}_total", len(new_rows))
+        # a later run decrypts every earlier session again, so its tables already count the earlier
+        # rows; only its objects leave out what was carved before (known_sha256)
+        total = old_total + new_total if key == "objects" else max(old_total, new_total)
+        merged[f"{key}_total"] = max(total, len(merged[key]))
+    return merged
 
 
 MAX_CERTIFICATE_SANS = 10
@@ -656,6 +730,16 @@ def describe_certificate(entry: dict) -> str:
     return text
 
 
+def _real_directory(path: str) -> bool:
+    """True if path is a directory itself, not a symlink to one. tshark may create symlinks in its
+    workdir, and following one would let it point ACE, which is not sandboxed, anywhere."""
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        # tshark exported nothing there
+        return False
+
+
 def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], max_files: int,
                           known_sha256: set[str]) -> tuple[list[dict], list[dict]]:
     """Moves the objects tshark exported and the certificates seen in the handshakes out of the
@@ -667,6 +751,35 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
     remaining = max_files
     base_dir = os.path.dirname(target_dir)
 
+    # what crossed the wire first: a payload matters more than the certificates of the handshakes
+    # everything in the workdir is tshark's, so nothing is followed out of it: no symlinked directory
+    # and no file that is a symlink or a hard link to one elsewhere. The launcher killed whatever
+    # tshark started before run_sandboxed returned, so nothing can swap a path after it is checked.
+    seen_sha256: set[str] = set()
+    objects_dir = os.path.join(workdir, "objects")
+    for protocol in EXPORT_OBJECT_PROTOCOLS:
+        protocol_dir = os.path.join(objects_dir, protocol)
+        if not _real_directory(objects_dir) or not _real_directory(protocol_dir):
+            continue
+        for file_name in sorted(os.listdir(protocol_dir)):
+            source = os.path.join(protocol_dir, file_name)
+            source_stat = os.lstat(source)
+            if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1:
+                continue
+            sha256 = sha256_file(source)
+            if sha256 in known_sha256 or sha256 in seen_sha256:
+                continue
+            seen_sha256.add(sha256)
+            entry = {"protocol": protocol, "file_name": file_name, "sha256": sha256,
+                     "size": source_stat.st_size, "path": None}
+            if remaining > 0:
+                target = _unique_path(os.path.join(target_dir, protocol, file_name))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.move(source, target)
+                entry["path"] = os.path.relpath(target, base_dir)
+                remaining -= 1
+            objects.append(entry)
+
     seen_der: set[str] = set()
     for layers in packets:
         for der_hex in layers.get("tls.handshake.certificate", []):
@@ -677,8 +790,9 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
             try:
                 der = bytes.fromhex(der_hex)
             except ValueError:
+                # tshark printed something that is not a certificate's bytes; there is nothing to carve
                 continue
-            sha256 = hashlib.sha256(der).hexdigest()
+            sha256 = sha256_bytes(der)
             entry = {"sha256": sha256, "der_hex": der_hex, "path": None, **certificate_names(der)}
             if sha256 not in known_sha256 and remaining > 0:
                 path = os.path.join(target_dir, "certificates", f"{sha256}.der")
@@ -689,29 +803,16 @@ def _collect_carved_files(workdir: str, target_dir: str, packets: list[dict], ma
                 remaining -= 1
             certificates.append(entry)
 
-    objects_dir = os.path.join(workdir, "objects")
-    for protocol in EXPORT_OBJECT_PROTOCOLS:
-        protocol_dir = os.path.join(objects_dir, protocol)
-        if not os.path.isdir(protocol_dir):
-            continue
-        for file_name in sorted(os.listdir(protocol_dir)):
-            source = os.path.join(protocol_dir, file_name)
-            if not os.path.isfile(source) or os.path.islink(source):
-                continue
-            sha256 = _sha256_file(source)
-            if sha256 in known_sha256 or any(o["sha256"] == sha256 for o in objects):
-                continue
-            entry = {"protocol": protocol, "file_name": file_name, "sha256": sha256,
-                     "size": os.path.getsize(source), "path": None}
-            if remaining > 0:
-                target = _unique_path(os.path.join(target_dir, protocol, file_name))
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                shutil.move(source, target)
-                entry["path"] = os.path.relpath(target, base_dir)
-                remaining -= 1
-            objects.append(entry)
-
     return objects, certificates
+
+
+def _split_url(url: str) -> Optional[SplitResult]:
+    """urlsplit, or None for a URL that does not parse."""
+    try:
+        return urlsplit(url)
+    except ValueError:
+        # tshark builds the URL from the Host header the client sent, which can be anything ("[x")
+        return None
 
 
 def _link_http_objects(index: dict):
@@ -719,9 +820,10 @@ def _link_http_objects(index: dict):
     when exactly one request in the capture matches."""
     by_name: dict[str, set[str]] = {}
     for request in index[CATEGORY_HTTP]:
-        if not request.get("url"):
+        parts = _split_url(request["url"]) if request.get("url") else None
+        if parts is None:
             continue
-        name = os.path.basename(urlsplit(request["url"]).path)
+        name = os.path.basename(parts.path)
         if name:
             by_name.setdefault(name, set()).add(request["url"])
 
@@ -732,9 +834,16 @@ def _link_http_objects(index: dict):
         entry["url"] = next(iter(urls)) if len(urls) == 1 else None
 
 
-def dissect(config: PcapModuleConfig, pcap_path: str, target_dir: str, keylog_lines: Optional[list[str]] = None,
-            known_sha256: Optional[set[str]] = None, statistics: bool = True) -> dict:
-    """Runs tshark over the capture and returns its index. Carved files land in target_dir."""
+def dissect(config: PcapConfig, pcap_path: str, target_dir: str, keylog_lines: Optional[list[str]] = None,
+            known_sha256: Optional[set[str]] = None, statistics: bool = True,
+            stopping: Callable[[], bool] = lambda: False) -> dict:
+    """Runs tshark over the capture and returns its index. Carved files land in target_dir. Raises
+    SandboxCancelled once stopping() says the engine is shutting down, stopping a run in progress."""
+
+    def _check_stopping():
+        if stopping():
+            raise SandboxCancelled(f"stopped dissecting pcap {pcap_path}: the engine is shutting down")
+
     work_root = os.path.join(get_data_dir(), config.work_dir)
     sweep_stale_workdirs(work_root)
     with create_workdir(work_root) as workdir:
@@ -744,19 +853,36 @@ def dissect(config: PcapModuleConfig, pcap_path: str, target_dir: str, keylog_li
         os.mkdir(os.path.join(workdir, "objects"))
 
         index_stats = {}
+        statistics_error = None
         capture = None
         if statistics:
             capinfos = os.path.join(os.path.dirname(config.tshark_path), "capinfos")
+            _check_stopping()
             try:
-                capture = parse_capinfos(_run_tool(config, workdir, [capinfos, "-M", "-S", "input"]))
+                capture = parse_capinfos(_run_tool(config, pcap_path, workdir, [capinfos, "-M", "-S", "input"],
+                                                   CAPINFOS_TIMEOUT_SECONDS, stopping))
             except PcapError as e:
                 # only the page header needs it; the dissection does not
                 logging.info("no capture metadata for pcap %s: %s", pcap_path, e)
-            output = _run_tshark(config, workdir, ["-q", "-z", "io,stat,0", "-z", "endpoints,eth", "-z", "endpoints,ip",
-                                                   "-z", "endpoints,ipv6", "-z", "conv,tcp", "-z", "conv,udp"])
-            index_stats = _parse_statistics(output, config.max_table_rows)
+            _check_stopping()
+            try:
+                output = _run_tshark(config, pcap_path, workdir, ["-q", "-z", "io,stat,0", "-z", "endpoints,eth",
+                                                                  "-z", "endpoints,ip", "-z", "endpoints,ipv6",
+                                                                  "-z", "conv,tcp", "-z", "conv,udp"], stopping)
+                index_stats = _parse_statistics(output, config.max_table_rows)
+            except PcapError as e:
+                # a line per conversation can outgrow the output cap (a scan, heavy DNS); only the
+                # endpoint and flow tables need it, so the field pass still runs
+                statistics_error = str(e)
+                logging.info("no packet statistics for pcap %s: %s", pcap_path, e, extra={"pcap_path": pcap_path})
+            if index_stats.get("packets", 0) > config.max_field_packets:
+                logging.info("pcap %s has %s packets: DNS, TLS and HTTP are read from the first %s", pcap_path,
+                             index_stats["packets"], config.max_field_packets, extra={"pcap_path": pcap_path})
 
-        args = ["-T", "json", "-Y", DISPLAY_FILTER]
+        # tshark's JSON is about 1 kB a packet and must fit under the sandbox's output cap. The limit
+        # is a display filter, not -c, so tshark still reads every packet and the object export
+        # covers the whole capture.
+        args = ["-T", "json", "-Y", f"frame.number <= {config.max_field_packets} && ({DISPLAY_FILTER})"]
         for field in TSHARK_FIELDS:
             args.extend(["-e", field])
         for protocol in EXPORT_OBJECT_PROTOCOLS:
@@ -766,14 +892,17 @@ def dissect(config: PcapModuleConfig, pcap_path: str, target_dir: str, keylog_li
                 fp.write("\n".join(keylog_lines) + "\n")
             args.extend(["-o", "tls.keylog_file:keylog"])
 
-        packets = _parse_fields(_run_tshark(config, workdir, args))
+        _check_stopping()
+        packets = _parse_fields(_run_tshark(config, pcap_path, workdir, args, stopping))
         objects, certificates = _collect_carved_files(workdir, target_dir, packets, config.max_extracted_files,
                                                       known_sha256 or set())
 
     index = build_index(packets, certificates, objects, config.max_table_rows)
+    index["field_packet_limit"] = config.max_field_packets
     _link_http_objects(index)
     if statistics:
         index["statistics"] = index_stats
+        index["statistics_error"] = statistics_error
         index["capture"] = capture
     return index
 
@@ -858,9 +987,8 @@ def ja4_display_types(sessions: list[dict]) -> dict[str, str]:
         if not targets:
             result[ja4] = "JA4 client fingerprint (TLS ClientHello)"
             continue
-        shown = ", ".join(targets[:MAX_JA4_DESTINATIONS])
-        more = len(targets) - MAX_JA4_DESTINATIONS
-        result[ja4] = f"JA4 client fingerprint (TLS ClientHello), seen to {shown}{f', +{more} more' if more > 0 else ''}"
+        result[ja4] = ("JA4 client fingerprint (TLS ClientHello), seen to "
+                       f"{format_item_list_for_summary(targets, MAX_JA4_DESTINATIONS)}")
     return result
 
 
@@ -925,7 +1053,7 @@ def collect_observables(index: dict, excluded_fqdn_suffixes: list[str]) -> list[
             _add(PcapObservable(CATEGORY_TLS, F_FILE, row["sha256"], path=row["path"], no_crawl=True))
 
     for row in index.get(CATEGORY_HTTP, []):
-        if row.get("url") and urlsplit(row["url"]).scheme in ("http", "https"):
+        if row.get("url") and getattr(_split_url(row["url"]), "scheme", None) in ("http", "https"):
             _add(PcapObservable(CATEGORY_HTTP, F_URL, row["url"]))
         if row.get("host"):
             _add(_host_observable(CATEGORY_HTTP, row["host"], excluded_fqdn_suffixes))
@@ -947,15 +1075,28 @@ def _observable_key(observable: Observable) -> tuple[str, str]:
 
 
 def add_pcap_observables(analysis: Analysis, pcap_file: FileObservable, items: list[PcapObservable],
-                         max_per_type: int) -> tuple[dict[str, int], dict[str, int]]:
-    """Adds the observables to the analysis, at most max_per_type of each type (counting the ones it
-    already has). Returns (added, omitted) counts by type."""
+                         max_per_type: int, reserved: list[PcapObservable] = ()) -> tuple[dict[str, int], dict[str, int]]:
+    """Adds the observables to the analysis, at most max_per_type of each type for the whole capture:
+    the ones every pcap node of pcap_file already has count, so one capture never puts more than
+    max_per_type nodes of a type in the tree. reserved are observables another node adds later,
+    whose room is kept for them. Returns (added, omitted) counts by type."""
     added: dict[str, int] = {}
     omitted: dict[str, int] = {}
     present = {_observable_key(o) for o in analysis.observables}
     per_type: dict[str, int] = {}
-    for o in analysis.observables:
-        per_type[o.type] = per_type.get(o.type, 0) + 1
+    in_capture: set[tuple[str, str]] = set()
+    for node in pcap_file.all_analysis:
+        if isinstance(node, PCAP_ANALYSIS_TYPES):
+            for o in node.observables:
+                per_type[o.type] = per_type.get(o.type, 0) + 1
+                in_capture.add(_observable_key(o))
+    for item in reserved:
+        if item.key not in in_capture:
+            per_type[item.o_type] = per_type.get(item.o_type, 0) + 1
+
+    # a payload file before a certificate: the certificates seen in the handshakes never take the
+    # room of what crossed the wire
+    items = sorted(items, key=lambda item: item.no_crawl)
 
     for item in items:
         if item.key in present:
@@ -1005,6 +1146,26 @@ def _merge_counts(details: dict, key: str, counts: dict[str, int]):
 
 def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{count} {o_type}" for o_type, count in sorted(counts.items()))
+
+
+def _run_seconds(config: PcapConfig) -> int:
+    """The most one tshark run can take, with the work around it."""
+    return config.tshark_timeout + RUN_MARGIN_SECONDS
+
+
+def _out_of_time(needed: float, left: float) -> str:
+    return (f"skipped: dissecting this capture can take {needed:.0f} s and only {max(left, 0):.0f} s are left "
+            "of this module's maximum_analysis_time or this alert's analysis time")
+
+
+def _session_randoms(index: dict) -> set[str]:
+    """The client randoms of every TLS session in the capture, which key log lines are keyed by."""
+    return set(index.get(KEY_CLIENT_RANDOMS, []))
+
+
+def _embedded_randoms(index: dict) -> set[str]:
+    """The sessions the capture's own secrets already decrypted in the plaintext pass."""
+    return set((index.get("embedded_secrets") or {}).get("keyed_client_randoms", []))
 
 
 def _get_pcap_analysis(observable: FileObservable) -> Optional["PcapAnalysis"]:
@@ -1070,8 +1231,11 @@ class PcapAnalysis(Analysis):
             return None
 
         statistics = self.index.get("statistics", {})
-        summary = (f"PCAP Analysis: {statistics.get('packets', 0)} packets, {statistics.get('flows_total', 0)} flows, "
-                   f"{len(self.index.get(CATEGORY_TLS, []))} TLS sessions")
+        if self.index.get("statistics_error"):
+            summary = f"PCAP Analysis: no packet statistics ({self.index['statistics_error']}), "
+        else:
+            summary = f"PCAP Analysis: {statistics.get('packets', 0)} packets, {statistics.get('flows_total', 0)} flows, "
+        summary += f"{self.index.get(f'{CATEGORY_TLS}_total', len(self.index.get(CATEGORY_TLS, [])))} TLS sessions"
         embedded = self.index.get("embedded_secrets")
         if embedded:
             summary += f", decryption keys embedded ({_describe_embedded(embedded)})"
@@ -1082,10 +1246,6 @@ class PcapAnalysis(Analysis):
 
 class PcapAnalyzer(AnalysisModule):
     """Dissects a pcap/pcapng file with sandboxed tshark."""
-
-    @classmethod
-    def get_config_class(cls) -> type[AnalysisModuleConfig]:
-        return PcapModuleConfig
 
     @property
     def generated_analysis_type(self):
@@ -1100,26 +1260,43 @@ class PcapAnalyzer(AnalysisModule):
         if not os.path.isfile(path) or not is_pcap_file(path):
             return AnalysisExecutionResult.COMPLETED
 
-        analysis = self.create_analysis(_file)
-        assert isinstance(analysis, PcapAnalysis)
-
+        config = get_config().pcap
         size = os.path.getsize(path)
-        if size > self.config.max_file_size:
-            analysis.error = f"{size} bytes exceeds max_file_size {self.config.max_file_size}"
+        if size > config.max_file_size:
+            self._failed(_file, f"{size} bytes exceeds max_file_size {config.max_file_size}")
+            return AnalysisExecutionResult.COMPLETED
+
+        needed = CAPINFOS_TIMEOUT_SECONDS + 2 * _run_seconds(config)
+        left = self.time_left()
+        if needed > left:
+            self._failed(_file, _out_of_time(needed, left))
+            logging.info("not dissecting pcap %s (sha256 %s) in %s: %s s needed, %.0f s left", path, _file.sha256_hash,
+                         self.get_root().uuid, needed, left, extra={"pcap_sha256": _file.sha256_hash})
             return AnalysisExecutionResult.COMPLETED
 
         try:
-            index = dissect(self.config, path, f"{path}.pcap_objects")
-            embedded = read_embedded_secrets(path, self.config.max_keylog_size)
-        except Exception as e:
-            analysis.error = str(e)
+            index = dissect(config, path, f"{path}.pcap_objects", stopping=self.should_stop)
+            embedded = read_embedded_secrets(path, config.max_keylog_size, stopping=self.should_stop)
+        except SandboxCancelled as e:
+            # no analysis yet, so the capture is dissected again when the work item is picked up again
+            logging.info("%s", e, extra={"pcap_sha256": _file.sha256_hash})
+            return AnalysisExecutionResult.INCOMPLETE
+        except PcapNodeError as e:
+            self._failed(_file, str(e))
             log_loop_exception(e, f"unable to dissect pcap {path} (sha256 {_file.sha256_hash}) in {self.get_root().uuid}")
             return AnalysisExecutionResult.COMPLETED
+        except PcapError as e:
+            # a capture tshark cannot read is the analyst's to see, in the analysis, not an operator's
+            self._failed(_file, str(e))
+            logging.info("unable to dissect pcap %s (sha256 %s) in %s: %s", path, _file.sha256_hash, self.get_root().uuid, e,
+                         extra={"pcap_sha256": _file.sha256_hash})
+            return AnalysisExecutionResult.COMPLETED
 
+        analysis = self.create_analysis(_file)
+        assert isinstance(analysis, PcapAnalysis)
         if embedded:
-            session_randoms = {s["client_random"] for s in index[CATEGORY_TLS] if s.get("client_random")}
             # client randoms are sent in the clear; only the secrets keyed by them are sensitive
-            embedded["keyed_client_randoms"] = sorted(session_randoms & embedded.pop("client_randoms"))
+            embedded["keyed_client_randoms"] = sorted(_session_randoms(index) & embedded.pop("client_randoms"))
             index["embedded_secrets"] = embedded
             for tag in embedded_secrets_tags(embedded["types"]):
                 _file.add_tag(tag)
@@ -1129,11 +1306,16 @@ class PcapAnalyzer(AnalysisModule):
         if index.get("capture"):
             index["capture"]["file_name"] = _file.file_name
         analysis.details[KEY_INDEX] = index
-        hosts = [o for o in collect_observables(index, self.config.excluded_fqdn_suffixes) if o.category == CATEGORY_HOSTS]
-        added, omitted = add_pcap_observables(analysis, _file, hosts, self.config.max_observables_per_type)
+        hosts = [o for o in collect_observables(index, config.excluded_fqdn_suffixes) if o.category == CATEGORY_HOSTS]
+        added, omitted = add_pcap_observables(analysis, _file, hosts, config.max_observables_per_type)
         analysis.details[KEY_ADDED] = added
         analysis.details[KEY_OMITTED] = omitted
         return AnalysisExecutionResult.COMPLETED
+
+    def _failed(self, _file: FileObservable, error: str):
+        analysis = self.create_analysis(_file)
+        assert isinstance(analysis, PcapAnalysis)
+        analysis.error = error
 
 
 # ----------------------------------------------------------------------------------------------
@@ -1167,6 +1349,11 @@ class PcapCategoryAnalysis(Analysis):
         return summary
 
 
+def _rows_key(category: str) -> str:
+    """Where the index keeps a category's rows."""
+    return "objects" if category == CATEGORY_FILES else category
+
+
 class PcapCategoryAnalyzer(AnalysisModule):
     """Adds one category of a pcap's index as observables."""
 
@@ -1187,14 +1374,37 @@ class PcapCategoryAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         self.wait_for_analysis(_file, PcapAnalysis)
+        return self._add_category(_file, final=False)
+
+    def execute_final_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
+        # only reached when execute_analysis left the capture INCOMPLETE
+        if not os.path.isfile(_file.full_path) or not is_pcap_file(_file.full_path):
+            return AnalysisExecutionResult.COMPLETED
+        return self._add_category(_file, final=True)
+
+    def _add_category(self, _file: FileObservable, final: bool) -> AnalysisExecutionResult:
+        if not _file.get_analysis(PcapAnalysis):
+            # pcap_analyzer was stopped (the engine shutting down) or has not run in this pass yet,
+            # e.g. after a dependency on it failed when it stopped. INCOMPLETE records nothing, so this
+            # runs again in final analysis, or when the work item is picked up again, instead of
+            # recording that the capture has nothing in this category.
+            if not final or self.should_stop():
+                return AnalysisExecutionResult.INCOMPLETE
+            return AnalysisExecutionResult.COMPLETED
+
         pcap_analysis = _get_pcap_analysis(_file)
+        # the dissection failed: its error is on the PCAP Analysis node
         if pcap_analysis is None:
             return AnalysisExecutionResult.COMPLETED
 
+        config = get_config().pcap
         category = self.config.category
         index = pcap_analysis.index
-        items = [o for o in collect_observables(index, self.config.excluded_fqdn_suffixes) if o.category == category]
-        rows = index.get("objects", []) if category == CATEGORY_FILES else index.get(category, [])
+        everything = collect_observables(index, config.excluded_fqdn_suffixes)
+        items = [o for o in everything if o.category == category]
+        # the files node may run after this one: its payload files keep their room
+        reserved = [o for o in everything if o.category == CATEGORY_FILES] if category != CATEGORY_FILES else []
+        rows = index.get(_rows_key(category), [])
         # nothing in the capture for this category: no node in the tree
         if not items and not rows:
             return AnalysisExecutionResult.COMPLETED
@@ -1203,12 +1413,13 @@ class PcapCategoryAnalyzer(AnalysisModule):
         assert isinstance(analysis, PcapCategoryAnalysis)
         analysis.details["category"] = category
         analysis.details["capture"] = index.get("capture")
+        analysis.details["field_packet_limit"] = index.get("field_packet_limit")
         analysis.details["rows"] = rows
-        analysis.details["total"] = len(rows) if category == CATEGORY_FILES else index.get(f"{category}_total", len(rows))
+        analysis.details["total"] = index.get(f"{_rows_key(category)}_total", len(rows))
         if category == CATEGORY_TLS:
             analysis.details["certificates"] = index.get("certificates", [])
 
-        added, omitted = add_pcap_observables(analysis, _file, items, self.config.max_observables_per_type)
+        added, omitted = add_pcap_observables(analysis, _file, items, config.max_observables_per_type, reserved)
         analysis.details[KEY_ADDED] = added
         analysis.details[KEY_OMITTED] = omitted
         return AnalysisExecutionResult.COMPLETED
@@ -1266,10 +1477,12 @@ class PcapTlsDecryptionAnalysis(Analysis):
         return summary
 
 
-def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_analysis: PcapAnalysis,
-                  analysis: PcapTlsDecryptionAnalysis, keylog_observables: list[FileObservable]):
+def apply_keylogs(config: PcapConfig, pcap_file: FileObservable, pcap_analysis: PcapAnalysis,
+                  analysis: PcapTlsDecryptionAnalysis, keylog_observables: list[FileObservable],
+                  stopping: Callable[[], bool] = lambda: False):
     """Decrypts the capture with every given key log and adds what the decrypted traffic shows
-    beyond the plaintext index. Idempotent: calling it again with the same key logs adds nothing."""
+    beyond the plaintext index. Idempotent: calling it again with the same key logs adds nothing.
+    Raises SandboxCancelled, having recorded nothing, when stopping() says the engine is shutting down."""
     keylogs = []
     # a dict keeps the first-seen order of the lines without a quadratic membership test
     lines: dict[str, None] = {}
@@ -1282,31 +1495,45 @@ def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_anal
         lines.update(dict.fromkeys(contents.lines))
 
     plaintext_index = pcap_analysis.index
-    analysis.details["keylogs"] = keylogs
+    applied = {k["sha256"] for k in analysis.details.get("keylogs", [])}
+    all_keylogs = analysis.details.get("keylogs", []) + [k for k in keylogs if k["sha256"] not in applied]
     analysis.details["capture"] = plaintext_index.get("capture")
-    session_randoms = {s.get("client_random") for s in plaintext_index.get(CATEGORY_TLS, []) if s.get("client_random")}
-    # sessions the capture's own secrets already decrypted in the plaintext pass
-    embedded_randoms = set((plaintext_index.get("embedded_secrets") or {}).get("keyed_client_randoms", []))
+    session_randoms = _session_randoms(plaintext_index)
+    embedded_randoms = _embedded_randoms(plaintext_index)
     analysis.details["sessions"] = len(session_randoms)
     analysis.details["sessions_with_embedded_keys"] = len(embedded_randoms)
     analysis.details["sessions_with_keys"] = len(session_randoms & (client_randoms | embedded_randoms))
     has_rsa_keys = any("RSA" in k["label_counts"] for k in keylogs)
     if not lines or not ((session_randoms & client_randoms) - embedded_randoms or has_rsa_keys):
+        analysis.details["keylogs"] = all_keylogs
         return
 
-    known_sha256 = {o["sha256"] for o in plaintext_index.get("objects", [])}
-    known_sha256 |= {c["sha256"] for c in plaintext_index.get("certificates", [])}
+    # whatever the plaintext pass or an earlier decryption already found is not carved again
+    known_sha256 = set(plaintext_index.get(KEY_CARVED_SHA256, []))
+    known_sha256 |= set((analysis.details.get(KEY_INDEX) or {}).get(KEY_CARVED_SHA256, []))
     known_sha256 |= {o.sha256_hash for o in analysis.observables if isinstance(o, FileObservable)}
+    # a SandboxCancelled passes through before the key logs are recorded as applied, so they are
+    # applied again when the work item is picked up again
     try:
         index = dissect(config, pcap_file.full_path, f"{pcap_file.full_path}.pcap_decrypted", keylog_lines=list(lines),
-                        known_sha256=known_sha256, statistics=False)
-    except Exception as e:
+                        known_sha256=known_sha256, statistics=False, stopping=stopping)
+    except PcapNodeError as e:
+        analysis.details["keylogs"] = all_keylogs
         analysis.details[KEY_ERROR] = str(e)
         log_loop_exception(e, f"unable to decrypt pcap {pcap_file.full_path} (sha256 {pcap_file.sha256_hash})")
         return
+    except PcapError as e:
+        # like a capture that cannot be dissected: the analyst sees it in the analysis
+        analysis.details["keylogs"] = all_keylogs
+        analysis.details[KEY_ERROR] = str(e)
+        logging.info("unable to decrypt pcap %s (sha256 %s): %s", pcap_file.full_path, pcap_file.sha256_hash, e,
+                     extra={"pcap_sha256": pcap_file.sha256_hash})
+        return
 
+    analysis.details["keylogs"] = all_keylogs
+    index.pop(KEY_CLIENT_RANDOMS, None)
     analysis.details[KEY_ERROR] = None
-    analysis.details[KEY_INDEX] = index
+    analysis.details[KEY_INDEX] = merge_index(analysis.details.get(KEY_INDEX), index, config.max_table_rows)
     plaintext_keys = {o.key for o in collect_observables(plaintext_index, config.excluded_fqdn_suffixes)}
     items = [o for o in collect_observables(index, config.excluded_fqdn_suffixes)
              if o.category != CATEGORY_HOSTS and o.key not in plaintext_keys]
@@ -1321,10 +1548,6 @@ def apply_keylogs(config: PcapModuleConfig, pcap_file: FileObservable, pcap_anal
 
 class PcapTlsDecryptor(AnalysisModule):
     """Decrypts the TLS in a pcap with the key logs in the tree, once everything else is analyzed."""
-
-    @classmethod
-    def get_config_class(cls) -> type[AnalysisModuleConfig]:
-        return PcapModuleConfig
 
     @property
     def generated_analysis_type(self):
@@ -1348,10 +1571,24 @@ class PcapTlsDecryptor(AnalysisModule):
         if pcap_analysis is None or not pcap_analysis.index.get(CATEGORY_TLS):
             return AnalysisExecutionResult.COMPLETED
 
+        config = get_config().pcap
         analysis = self.create_analysis(_file)
         assert isinstance(analysis, PcapTlsDecryptionAnalysis)
-        keylogs = find_keylog_observables(self.get_root(), self.config.max_keylog_size)
-        apply_keylogs(self.config, _file, pcap_analysis, analysis, keylogs)
+        left = self.time_left()
+        if _run_seconds(config) > left:
+            analysis.details[KEY_ERROR] = _out_of_time(_run_seconds(config), left)
+            logging.info("not decrypting pcap %s (sha256 %s): %s s needed, %.0f s left", _file.full_path,
+                         _file.sha256_hash, _run_seconds(config), left, extra={"pcap_sha256": _file.sha256_hash})
+            return AnalysisExecutionResult.COMPLETED
+
+        keylogs = find_keylog_observables(self.get_root(), config.max_keylog_size)
+        try:
+            apply_keylogs(config, _file, pcap_analysis, analysis, keylogs, stopping=self.should_stop)
+        except SandboxCancelled as e:
+            # without the analysis this runs again when the work item is picked up again
+            _file.delete_analysis(analysis)
+            logging.info("%s", e, extra={"pcap_sha256": _file.sha256_hash})
+            return AnalysisExecutionResult.INCOMPLETE
         return AnalysisExecutionResult.COMPLETED
 
 
@@ -1364,7 +1601,7 @@ class TlsKeylogAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = {"label_counts": {}, "client_randoms": 0, "applied_to": []}
+        self.details = {"label_counts": {}, "client_randoms": 0, "applied_to": [], "skipped": []}
 
     @override
     @property
@@ -1379,16 +1616,14 @@ class TlsKeylogAnalysis(Analysis):
                    f"TLS sessions ({_format_counts(counts)})")
         if self.details.get("applied_to"):
             summary += f", applied to {len(self.details['applied_to'])} pcaps"
+        if self.details.get("skipped"):
+            summary += f", not applied to {len(self.details['skipped'])} pcaps (out of time)"
         return summary
 
 
 class TlsKeylogAnalyzer(AnalysisModule):
     """Recognizes a TLS key log by its content. When the key log arrives after a pcap's decryption
     analysis completed (an analyst adds it to the alert), decrypts that pcap with it."""
-
-    @classmethod
-    def get_config_class(cls) -> type[AnalysisModuleConfig]:
-        return PcapModuleConfig
 
     @property
     def generated_analysis_type(self):
@@ -1399,8 +1634,9 @@ class TlsKeylogAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
+        config = get_config().pcap
         path = _file.full_path
-        if not os.path.isfile(path) or os.path.getsize(path) > self.config.max_keylog_size or not is_keylog_file(path):
+        if not os.path.isfile(path) or os.path.getsize(path) > config.max_keylog_size or not is_keylog_file(path):
             return AnalysisExecutionResult.COMPLETED
 
         contents = read_keylog(path)
@@ -1421,14 +1657,34 @@ class TlsKeylogAnalyzer(AnalysisModule):
             pcap_analysis = _get_pcap_analysis(pcap_file)
             if pcap_analysis is None:
                 continue
+            # the key logs applied before already decrypted what they could: only sessions this one
+            # has keys for are worth another tshark run
+            new_sessions = (_session_randoms(pcap_analysis.index) & contents.client_randoms) - _embedded_randoms(pcap_analysis.index)
+            if not new_sessions and "RSA" not in contents.label_counts:
+                continue
+            # one tshark run per pcap: the pcaps left over once a run no longer fits in the time left
+            # are skipped and said so
+            if _run_seconds(config) > self.time_left():
+                analysis.details["skipped"].append(pcap_file.sha256_hash)
+                continue
 
             logging.info("applying late TLS key log %s to pcap %s", path, pcap_file.full_path,
                          extra={"keylog_sha256": _file.sha256_hash, "pcap_sha256": pcap_file.sha256_hash})
-            apply_keylogs(self.config, pcap_file, pcap_analysis, decryption,
-                          find_keylog_observables(root, self.config.max_keylog_size))
+            try:
+                apply_keylogs(config, pcap_file, pcap_analysis, decryption, find_keylog_observables(root, config.max_keylog_size),
+                              stopping=self.should_stop)
+            except SandboxCancelled as e:
+                # without this analysis the key log is applied again, to the pcaps it was not applied
+                # to yet, when the work item is picked up again
+                _file.delete_analysis(analysis)
+                logging.info("%s", e, extra={"keylog_sha256": _file.sha256_hash, "pcap_sha256": pcap_file.sha256_hash})
+                return AnalysisExecutionResult.INCOMPLETE
             decryption.set_details_modified()
             analysis.details["applied_to"].append(pcap_file.sha256_hash)
 
+        if analysis.details["skipped"]:
+            logging.info("out of time to apply TLS key log %s to %s more pcaps", path, len(analysis.details["skipped"]),
+                         extra={"keylog_sha256": _file.sha256_hash, "pcap_sha256": analysis.details["skipped"]})
         return AnalysisExecutionResult.COMPLETED
 
 
@@ -1491,6 +1747,18 @@ def _capture_order(what: str, capture: Optional[dict]) -> str:
     return f"{what}."
 
 
+def _packet_limit_note(limit: Optional[int], capture: Optional[dict]) -> Optional[str]:
+    """Says a table was read from the start of the capture only, when it was."""
+    packets = (capture or {}).get("packets")
+    if not limit or packets is None or packets <= limit:
+        return None
+    return f"Read from the first {limit:,} of the capture's {packets:,} packets only."
+
+
+def _notes(*notes: Optional[str]) -> Optional[str]:
+    return " ".join(note for note in notes if note) or None
+
+
 def _format_time_range(capture: dict) -> Optional[str]:
     if capture.get("first") is None or capture.get("last") is None:
         return None
@@ -1532,30 +1800,33 @@ def index_tables(index: Optional[dict], category: Optional[str] = None, capture:
         return []
 
     tables = []
+    limit_note = _packet_limit_note(index.get("field_packet_limit"), capture)
     if category in (None, CATEGORY_DNS) and index.get(CATEGORY_DNS):
         tables.append(_table("DNS", ["Name", "Answers", "Queries", "Responses"],
                              [[r["name"], ", ".join(r["answers"]), r.get("queries"), r.get("responses")]
                               for r in index[CATEGORY_DNS]],
                              index.get(f"{CATEGORY_DNS}_total"),
-                             _capture_order("Names in the order they first appear in the capture", capture)))
+                             _capture_order("Names in the order they first appear in the capture", capture), limit_note))
     if category in (None, CATEGORY_TLS) and index.get(CATEGORY_TLS):
         certificates = {c["sha256"]: c for c in index.get("certificates", [])}
         tables.append(_table("TLS Sessions", ["Server", "SNI", "JA4", "Certificates"],
                              [[r.get("server"), r.get("sni"), _pivot(F_JA4, r.get("ja4")),
                                [describe_certificate(certificates.get(h, {"sha256": h})) for h in r.get("certificates", [])]]
                               for r in index[CATEGORY_TLS]], index.get(f"{CATEGORY_TLS}_total"),
-                             _capture_order("Sessions in the order their handshakes start", capture), note=JA4_NOTE))
+                             _capture_order("Sessions in the order their handshakes start", capture),
+                             _notes(JA4_NOTE, limit_note)))
     if category in (None, CATEGORY_HTTP) and index.get(CATEGORY_HTTP):
         tables.append(_table("HTTP Requests", ["Method", "URL", "Status", "Content Type", "User Agent"],
                              [[r.get("method"), _pivot(F_URL, r.get("url")), r.get("status"), r.get("content_type"),
                                r.get("user_agent")]
                               for r in index[CATEGORY_HTTP]], index.get(f"{CATEGORY_HTTP}_total"),
-                             _capture_order("Requests in the order they were sent", capture)))
+                             _capture_order("Requests in the order they were sent", capture), limit_note))
     if category in (None, CATEGORY_FILES) and index.get("objects"):
         tables.append(_table("Carved Files", ["Protocol", "File Name", "Size", "SHA256", "URL"],
                              # a file observable's value is its sha256, so the file name pivots on the content
                              [[r["protocol"], _pivot(F_FILE, r["sha256"], text=r["file_name"]), r["size"],
                                _pivot(F_SHA256, r["sha256"]), _pivot(F_URL, r.get("url"))] for r in index["objects"]],
+                             index.get("objects_total"),
                              # tshark's object export does not say when each object crossed the wire
                              order="By protocol, then file name. Not chronological."))
     return tables
@@ -1579,6 +1850,14 @@ class PcapAnalysisPresenter(AnalysisPresenter):
         return capture_summary(self.capture)
 
     @property
+    def notice(self) -> Optional[str]:
+        """What the page is missing although the analysis did not fail."""
+        if isinstance(self._analysis, PcapAnalysis) and (self._analysis.index or {}).get("statistics_error"):
+            return (f"No endpoint or flow tables: the packet statistics pass failed "
+                    f"({self._analysis.index['statistics_error']}).")
+        return None
+
+    @property
     def tables(self) -> list[dict]:
         details = self._analysis.details or {}
         analysis = self._analysis
@@ -1596,8 +1875,9 @@ class PcapAnalysisPresenter(AnalysisPresenter):
             if index.get("hostnames"):
                 tables.append(_table("Hostnames", ["Name", "Source", "MAC"],
                                      [[_pivot(F_HOSTNAME, r["name"]), r["source"], _mac_pivot(r.get("mac"))]
-                                      for r in index["hostnames"]],
-                                     order=_capture_order("In the order they first appear in the capture", capture)))
+                                      for r in index["hostnames"]], index.get("hostnames_total"),
+                                     _capture_order("In the order they first appear in the capture", capture),
+                                     _packet_limit_note(index.get("field_packet_limit"), capture)))
             if statistics.get("ip"):
                 tables.append(_table("IP Endpoints", ["Address", "Packets", "Bytes"],
                                      [[_ip_pivot(r["address"]), r["packets"], r["bytes"]] for r in statistics["ip"]],
@@ -1617,9 +1897,10 @@ class PcapAnalysisPresenter(AnalysisPresenter):
             return tables
         if isinstance(analysis, PcapCategoryAnalysis):
             category = details.get("category")
-            rows_key = "objects" if category == CATEGORY_FILES else category
-            index = {rows_key: details.get("rows", []), f"{category}_total": details.get("total"),
-                     "certificates": details.get("certificates", [])}
+            rows_key = _rows_key(category)
+            index = {rows_key: details.get("rows", []), f"{rows_key}_total": details.get("total"),
+                     "certificates": details.get("certificates", []),
+                     "field_packet_limit": details.get("field_packet_limit")}
             return index_tables(index, category, capture)
         if isinstance(analysis, PcapTlsDecryptionAnalysis):
             rows = []
@@ -1635,3 +1916,6 @@ class PcapAnalysisPresenter(AnalysisPresenter):
 
 for _analysis_class in (PcapAnalysis, PcapCategoryAnalysis, PcapTlsDecryptionAnalysis, TlsKeylogAnalysis):
     register_analysis_presenter(_analysis_class, PcapAnalysisPresenter)
+
+# the analyses whose observables share one capture's max_observables_per_type
+PCAP_ANALYSIS_TYPES = (PcapAnalysis, PcapCategoryAnalysis, PcapTlsDecryptionAnalysis)

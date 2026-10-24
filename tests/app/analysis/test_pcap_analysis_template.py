@@ -1,6 +1,15 @@
 import pytest
 
-from saq.modules.file_analysis.pcap import CATEGORY_FILES, CATEGORY_HTTP, PcapAnalysisPresenter, PcapCategoryAnalysis
+from saq.modules.file_analysis.pcap import (
+    CATEGORY_FILES,
+    CATEGORY_HTTP,
+    CATEGORY_TLS,
+    JA4_NOTE,
+    KEY_INDEX,
+    PcapAnalysis,
+    PcapAnalysisPresenter,
+    PcapCategoryAnalysis,
+)
 
 # what a capture can carry in a request line
 HOSTILE_URL = 'http://evil.example/"><script>alert(1)</script>'
@@ -66,9 +75,16 @@ def test_no_capture_header_without_metadata(app):
 
 @pytest.mark.integration
 def test_tls_note_renders(app):
-    from saq.modules.file_analysis.pcap import CATEGORY_TLS, JA4_NOTE
-
     analysis = PcapCategoryAnalysis()
     analysis.details.update({"category": CATEGORY_TLS, "total": 1,
                              "rows": [{"server": "198.51.100.7:443", "sni": "a.example", "ja4": "t13_a", "certificates": []}]})
     assert JA4_NOTE in _render(app, analysis)
+
+
+@pytest.mark.integration
+def test_missing_statistics_notice_renders_escaped(app):
+    analysis = PcapAnalysis()
+    analysis.details[KEY_INDEX] = {"statistics": {}, "statistics_error": "tshark failed: <b>output</b>"}
+    html = _render(app, analysis)
+    assert "No endpoint or flow tables" in html
+    assert "&lt;b&gt;output&lt;/b&gt;" in html
