@@ -341,14 +341,6 @@ class PcapCategoryConfig(AnalysisModuleConfig):
     category: Literal["dns", "tls", "http", "files"] = Field(..., description="which part of the capture index this instance turns into observables")
 
 
-class _StopWhen:
-    """The cancel event run_sandboxed polls, set when stopping() says so: the engine shutting down
-    (or the analysis being cancelled) stops a run in the middle, not only before the next one."""
-
-    def __init__(self, stopping: Callable[[], bool]):
-        self.is_set = stopping
-
-
 def _run_tshark(config: PcapConfig, pcap_path: str, workdir: str, args: list[str],
                 stopping: Callable[[], bool]) -> str:
     """Runs tshark on <workdir>/input (the copy of pcap_path) in the sandbox and returns its stdout."""
@@ -370,7 +362,7 @@ def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[st
     env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": workdir}
     try:
         result = run_sandboxed(argv, None, env, workdir, timeout, config.sandbox.max_output_bytes,
-                               cancel=_StopWhen(stopping))
+                               cancel=stopping)
     except SandboxCancelled as e:
         # a RuntimeError too, but not the capture's failure: nothing is recorded, so it runs again
         raise SandboxCancelled(f"stopped {tool} on pcap {pcap_path}: the analysis was stopped") from e
@@ -1156,11 +1148,6 @@ def _format_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{count} {o_type}" for o_type, count in sorted(counts.items()))
 
 
-def _stopping(module: AnalysisModule) -> Callable[[], bool]:
-    """When a pcap module's tshark run should stop: the engine is shutting down, or the analysis was cancelled."""
-    return lambda: module.shutdown or module.is_canceled_analysis()
-
-
 def _run_seconds(config: PcapConfig) -> int:
     """The most one tshark run can take, with the work around it."""
     return config.tshark_timeout + RUN_MARGIN_SECONDS
@@ -1288,8 +1275,8 @@ class PcapAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         try:
-            index = dissect(config, path, f"{path}.pcap_objects", stopping=_stopping(self))
-            embedded = read_embedded_secrets(path, config.max_keylog_size, stopping=_stopping(self))
+            index = dissect(config, path, f"{path}.pcap_objects", stopping=self.should_stop)
+            embedded = read_embedded_secrets(path, config.max_keylog_size, stopping=self.should_stop)
         except SandboxCancelled as e:
             # no analysis yet, so the capture is dissected again when the work item is picked up again
             logging.info("%s", e, extra={"pcap_sha256": _file.sha256_hash})
@@ -1401,7 +1388,7 @@ class PcapCategoryAnalyzer(AnalysisModule):
             # e.g. after a dependency on it failed when it stopped. INCOMPLETE records nothing, so this
             # runs again in final analysis, or when the work item is picked up again, instead of
             # recording that the capture has nothing in this category.
-            if not final or _stopping(self)():
+            if not final or self.should_stop():
                 return AnalysisExecutionResult.INCOMPLETE
             return AnalysisExecutionResult.COMPLETED
 
@@ -1596,7 +1583,7 @@ class PcapTlsDecryptor(AnalysisModule):
 
         keylogs = find_keylog_observables(self.get_root(), config.max_keylog_size)
         try:
-            apply_keylogs(config, _file, pcap_analysis, analysis, keylogs, stopping=_stopping(self))
+            apply_keylogs(config, _file, pcap_analysis, analysis, keylogs, stopping=self.should_stop)
         except SandboxCancelled as e:
             # without the analysis this runs again when the work item is picked up again
             _file.delete_analysis(analysis)
@@ -1685,7 +1672,7 @@ class TlsKeylogAnalyzer(AnalysisModule):
                          extra={"keylog_sha256": _file.sha256_hash, "pcap_sha256": pcap_file.sha256_hash})
             try:
                 apply_keylogs(config, pcap_file, pcap_analysis, decryption, find_keylog_observables(root, config.max_keylog_size),
-                              stopping=_stopping(self))
+                              stopping=self.should_stop)
             except SandboxCancelled as e:
                 # without this analysis the key log is applied again, to the pcaps it was not applied
                 # to yet, when the work item is picked up again
