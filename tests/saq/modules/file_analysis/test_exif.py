@@ -1,14 +1,17 @@
 import logging
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from saq.analysis.root import load_root
-from saq.constants import F_FILE, R_EXTRACTED_FROM
+from saq.configuration.config import get_analysis_module_config
+from saq.constants import ANALYSIS_MODULE_EXIF, F_FILE, R_EXTRACTED_FROM
+from saq.database import pool
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.modules.file_analysis import exif as exif_module
 from saq.modules.file_analysis.exif import ExifAnalysis
 from saq.modules.file_analysis.file_type import FileTypeAnalyzer
 from saq.modules.file_analysis.hash import FileHashAnalyzer
@@ -39,6 +42,8 @@ def test_pdf_metadata(root_analysis):
     assert analysis.error is None
     assert analysis.exifdata["PDF:PageCount"] == 3
     assert analysis.exifdata["PDF:Producer"] == "Skia/PDF m143"
+    # a number, not exiftool's formatted "NN kB"
+    assert analysis.exifdata["File:FileSize"] == os.path.getsize(SAMPLES / "sample_pdf_with_qr_code.pdf")
 
     # the summary leaves out exiftool's own and the file system's fields, and the group prefix
     summary = analysis.generate_summary()
@@ -93,22 +98,147 @@ def test_other_files_are_skipped(root_analysis, tmp_path):
     assert _analyze(root_analysis, path) is False
 
 
+class _RecordingPopen(subprocess.Popen):
+    started = []
+
+    def __init__(self, args, *a, **kw):
+        super().__init__(args, *a, **kw)
+        _RecordingPopen.started.append((args, self))
+
+
+def _exiftool_processes():
+    return [process for args, process in _RecordingPopen.started if "exiftool" in str(args[0])]
+
+
+@pytest.fixture
+def recording_popen(monkeypatch):
+    _RecordingPopen.started = []
+    monkeypatch.setattr(subprocess, "Popen", _RecordingPopen)
+    yield
+    _RecordingPopen.started = []
+
+
+def _exiftool_returns(monkeypatch, outcome):
+    """Makes the module's exiftool run give outcome: a CompletedProcess's (returncode, stdout, stderr), an
+    exception to raise, or a command line to run in its place. Every other run is left alone."""
+    real_run = subprocess.run
+
+    def run(args, *a, **kw):
+        if args[0] != "exiftool":
+            return real_run(args, *a, **kw)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if isinstance(outcome, list):
+            return real_run(outcome, *a, **kw)
+        returncode, stdout, stderr = outcome
+        return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
 @pytest.mark.integration
-def test_exiftool_failure_is_recorded(root_analysis, monkeypatch, caplog):
-    class BrokenExifToolHelper:
-        def __enter__(self):
-            raise RuntimeError("exiftool is not running")
+def test_no_python_runs_in_the_exiftool_child(root_analysis, monkeypatch, recording_popen):
+    # every child that runs Python between its fork and its exec runs the at-fork hooks, and in a worker one
+    # of them can wait for ever on a lock another thread held at the fork. This hook records who ran it
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    monkeypatch.setattr(pool, "reset_database_after_fork", lambda: os.write(write_fd, f"{os.getpid()} ".encode()))
 
-        def __exit__(self, *args):
-            return False
+    def ran_the_hook() -> set[int]:
+        try:
+            return {int(pid) for pid in os.read(read_fd, 65536).split()}
+        except BlockingIOError:
+            return set()
 
-    monkeypatch.setattr(exif_module.exiftool, "ExifToolHelper", BrokenExifToolHelper)
+    try:
+        # the probe sees a child that does
+        control = subprocess.Popen(["true"], preexec_fn=lambda: None)
+        control.wait()
+        assert ran_the_hook() == {control.pid}
+
+        analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+        assert analysis.exifdata["PDF:PageCount"] == 3
+
+        exiftool = _exiftool_processes()
+        assert len(exiftool) == 1
+        assert exiftool[0].pid not in ran_the_hook()
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+@pytest.mark.integration
+def test_file_exiftool_cannot_read_records_its_reason(root_analysis, tmp_path, caplog):
+    # an OLE header and nothing else: exiftool exits 1, with the reason in its JSON and nothing on stderr
+    path = tmp_path / "header_only.doc"
+    path.write_bytes(bytes.fromhex("d0cf11e0a1b11ae1"))
 
     with caplog.at_level(logging.INFO):
-        analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+        analysis = _analyze(root_analysis, path)
 
     assert isinstance(analysis, ExifAnalysis)
-    assert analysis.error == "exiftool is not running"
-    assert analysis.generate_summary() == "Exiftool Analysis: ⚠ exiftool is not running"
+    assert analysis.error == "File format error"
+    assert analysis.exifdata == {}
+    assert analysis.generate_summary() == "Exiftool Analysis: ⚠ File format error"
     assert analysis.get_observables_by_type(F_FILE) == []
-    assert "Exif data extraction failed" in caplog.text
+    assert any(r.levelno == logging.INFO and "Exif data extraction failed" in r.getMessage()
+               and r.path.endswith("header_only.doc") for r in caplog.records)
+
+
+@pytest.mark.parametrize("returncode,stderr,error", [
+    # a Perl runtime error on a crafted file: the last line is the one that ended it
+    (255, b"Warning: something first\n'x' outside of string in unpack at ExifTool.pm line 5920.\n",
+     "'x' outside of string in unpack at ExifTool.pm line 5920."),
+    # a long line (a vanished file's path, say) is cut short: it ends up in the summary
+    (1, b"first\n" + b"x" * 2000 + b"\n", "x" * 500),
+    (1, b"", "exiftool exited with status 1"),
+    (-9, b"", "exiftool was killed by signal 9"),
+])
+@pytest.mark.integration
+def test_exiftool_failure_without_its_json(root_analysis, monkeypatch, returncode, stderr, error):
+    _exiftool_returns(monkeypatch, (returncode, b"", stderr))
+
+    analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+
+    assert analysis.error == error
+    assert analysis.get_observables_by_type(F_FILE) == []
+
+
+@pytest.mark.integration
+def test_exiftool_timeout_is_recorded(root_analysis, monkeypatch, recording_popen, caplog):
+    get_analysis_module_config(ANALYSIS_MODULE_EXIF).timeout = 1
+    _exiftool_returns(monkeypatch, ["sleep", "30"])
+
+    analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+
+    assert analysis.error == "exiftool timed out after 1 seconds"
+    assert analysis.get_observables_by_type(F_FILE) == []
+    # killed and reaped, not left running
+    sleeps = [process for args, process in _RecordingPopen.started if args[0] == "sleep"]
+    assert [process.returncode for process in sleeps] == [-9]
+    assert any(r.levelno == logging.WARNING and "exiftool timed out" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("stdout", [b"not json", b"[]", b"{}", b"[1]"])
+@pytest.mark.integration
+def test_unreadable_exiftool_output_is_an_error(root_analysis, monkeypatch, caplog, stdout):
+    _exiftool_returns(monkeypatch, (0, stdout, b""))
+
+    analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+
+    assert analysis.error.startswith("unreadable exiftool output: ")
+    assert analysis.get_observables_by_type(F_FILE) == []
+    assert any(r.levelno == logging.ERROR and r.exc_info and "unreadable exiftool output" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_exiftool_that_cannot_run_is_an_error(root_analysis, monkeypatch, caplog):
+    _exiftool_returns(monkeypatch, FileNotFoundError(2, "No such file or directory", "exiftool"))
+
+    analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+
+    assert analysis.error.startswith("unable to run exiftool: ")
+    assert analysis.get_observables_by_type(F_FILE) == []
+    assert any(r.levelno == logging.ERROR and r.exc_info and "unable to run exiftool" in r.getMessage()
+               for r in caplog.records)

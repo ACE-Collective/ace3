@@ -1,7 +1,6 @@
 import logging
 import time
 from multiprocessing import cpu_count
-import signal
 from typing import Optional
 
 import psutil
@@ -11,9 +10,7 @@ from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
 from saq.error.reporting import log_loop_exception
-from saq.shutdown import get_shutdown_coordinator
-from saq.util.process import kill_process_tree
-
+from saq.shutdown import get_shutdown_coordinator, is_shutting_down
 
 
 class WorkerManager:
@@ -140,9 +137,17 @@ class WorkerManager:
                 "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
             )
 
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
+        # wait for all workers to start. a worker that cannot start (its modules failed to
+        # load, say) would fail the same way if restarted, so the engine fails to start
+        # rather than waiting on it or running without it
+        failed = [worker.name for worker in self.workers if not worker.wait_for_start()]
+        if failed:
+            if is_shutting_down():
+                logging.info("shutdown requested while the workers were starting")
+                return
+
+            self.immediate_shutdown()
+            raise RuntimeError(f"workers did not start: {', '.join(failed)}")
 
         logging.info("workers initialized")
 
@@ -172,6 +177,9 @@ class WorkerManager:
                 logging.debug(
                     f"worker {worker} process {worker.process.pid} exitcode = {worker.process.exitcode}"
                 )
+                # a worker that died on its own (the analysis module monitor's os._exit, a crash, the OOM
+                # killer) leaves whatever its modules started still running, in its process group
+                worker.kill()
                 return WorkerStatus.DEAD
 
         # what is this worker doing? read once and use it for both the timeout check and
@@ -182,11 +190,7 @@ class WorkerManager:
         # is it taking too long to analyze something?
         if worker.analysis_has_timed_out(record):
             logging.warning(f"worker {worker} analysis has timed out")
-            try:
-                kill_process_tree(worker.process.pid, signal.SIGKILL)
-            except Exception as e:
-                logging.warning(f"unable to kill process {worker.process}: {e}")
-
+            worker.kill()
             return WorkerStatus.DEAD
 
         # is it using too much memory?
@@ -198,7 +202,7 @@ class WorkerManager:
                     f"worker {worker} used too much memory "
                     f"on {record if record else 'unknown work'}: {memory} KILLING"
                 )
-                kill_process_tree(worker.process.pid, signal.SIGKILL)
+                worker.kill()
                 return WorkerStatus.DEAD
 
             elif memory.rss > self.config.memory_limit_warning:
@@ -248,30 +252,14 @@ class WorkerManager:
         # start the worker in the same mode the rest of the pool is running in
         new_worker.start(execution_mode=self.execution_mode, pending_failure=pending_failure)
 
-        #
-        # this is a bit hairy
-        #
-
-        try:
-            #
-            # XXX this does not seem to be able to handle the case
-            # when a process is killed by a signal
-            #
-
-            if dead_worker.process is not None:
-                dead_worker.process.close()
-
-        except Exception as e:
-            logging.info(f"unable to close process {dead_worker.process}: {e}")
-
+        # release the dead process's pipes. it has been reaped unless a kill did not take
+        # effect within Worker.kill()'s join, which leaves a process stuck in the kernel
+        if dead_worker.process is not None:
             try:
-                # you have to do this to close *both* pipes opened
-                if dead_worker.process is not None:
-                    logging.debug(f"finalizing {dead_worker.process}")
-                    dead_worker.process._popen.finalizer() # pyright: ignore
-                    logging.debug(f"finished finalizing {dead_worker.process}")
-            except Exception as e:
-                logging.error(f"unable to finalize process: {e}")
+                dead_worker.process.close()
+            except ValueError as e:
+                logging.warning("unable to close process %s of worker %s: %s", dead_worker.process.pid,
+                                dead_worker.name, e, extra={"worker_name": dead_worker.name})
 
     def restart_workers(self):
         """Restart all workers."""
@@ -339,8 +327,7 @@ class WorkerManager:
         while time.monotonic() < deadline:
             alive = [w for w in self.workers if w.is_alive()]
             if not alive:
-                logging.info("all workers shut down")
-                return
+                break
 
             # keep enforcing analysis timeouts and memory limits while we wait
             for worker in alive:
@@ -351,11 +338,13 @@ class WorkerManager:
 
             time.sleep(poll_interval)
 
-        # anything still running has ignored the shutdown event past the budget
         for worker in self.workers:
             if worker.is_alive():
+                # it has ignored the shutdown event past the budget
                 logging.warning("worker %s did not exit in time - killing", worker.name)
-                worker.kill()
+
+            # also for one that exited: is_alive() reaped it, so check() never killed what it left in its group
+            worker.kill()
 
         logging.info("all workers shut down")
 

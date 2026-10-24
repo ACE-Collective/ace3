@@ -21,6 +21,7 @@ from aceapi_v2.svs.alerts.schemas import (
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db
+from saq.svs import association
 from saq.svs.alert_status import RunRef, alert_svs_view
 from saq.util.uuid import UUID_REGEX
 
@@ -61,10 +62,6 @@ def disassociate_alert(alert_uuid: str, body: AlertDisassociationRequest | None,
                        not_a_test: bool) -> AlertDisassociation:
     """422 for a config key (the change records who made it), 404 for an unknown alert, 409 when
     nothing holds it, or for not-a-test on an alert that isn't TEST?."""
-    # local: saq.svs.association imports the attribution and analysis stack, which imports the
-    # observables, which import aceapi_v2 while saq itself is still being imported
-    from saq.svs import association
-
     if auth.auth_user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
     alert_uuid = _alert_uuid(alert_uuid)

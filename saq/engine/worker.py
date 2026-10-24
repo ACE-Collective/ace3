@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Optional, Union
 
+import psutil
+
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -48,12 +50,32 @@ from saq.environment import ACE_MP_CONTEXT, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception
 from saq.modules.interfaces import AnalysisModuleInterface
 from saq.search.tasks import submit_index_task
-from saq.shutdown import wait_for_shared_flag
+from saq.shutdown import is_shutting_down, wait_for_shared_flag
 
-
-from saq.util.process import kill_process_tree
 from saq.util.time import local_time
 from saq.util.uuid import storage_dir_from_uuid, workload_storage_dir
+
+
+def _process_group_members(pgid: int) -> list[tuple[int, str]]:
+    """The live processes in process group pgid other than its leader, as (pid, "pid name"). Not their command
+    lines: a module can pass a secret on one (an archive password to 7z)."""
+    members = []
+    for pid in psutil.pids():
+        # by group first, so nothing is read from a process outside it
+        try:
+            if pid == pgid or os.getpgid(pid) != pgid:
+                continue
+
+            process = psutil.Process(pid)
+            if process.status() == psutil.STATUS_ZOMBIE:
+                continue
+
+            members.append((pid, f"{pid} {process.name()}"))
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue  # it exited after the listing
+
+    return members
+
 
 class Worker:
     """Responsible for maintaining an executing analysis process."""
@@ -308,28 +330,49 @@ class Worker:
         else, and there is no channel back from the manager to the worker.
         """
         self.process = ACE_MP_CONTEXT.Process(
-            target=self.worker_loop,
+            target=self._forked_worker_loop,
             name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
             kwargs={"execution_mode": execution_mode, "pending_failure": pending_failure}
         )
         self.process.start()
+        # the worker does this too, first thing. Doing it here as well means the group exists once start()
+        # returns, whichever side runs first. It cannot fail: only this thread reaps the child, a zombie
+        # still accepts it, and the child never execs or starts a session of its own
+        os.setpgid(self.process.pid, self.process.pid)
         return self.process
+
+    def _forked_worker_loop(self, execution_mode: EngineExecutionMode, pending_failure: Optional[TrackingRecord] = None):
+        # lead a process group of our own before anything starts a process, so that everything the analysis
+        # modules start is in it and kill() reaches all of it, also after this process has died. Not in
+        # worker_loop: single_threaded_start runs that in its caller's process
+        os.setpgid(0, 0)
+        self.worker_loop(execution_mode, pending_failure)
 
     def single_threaded_start(self, execution_mode: EngineExecutionMode):
         self.worker_loop(execution_mode)
 
-    def wait_for_start(self):
-        while not self._worker_startup_event.wait(30):
-            logging.warning(f"worker for {self.config.analysis_mode_priority} not starting ({self.process.pid if self.process else 'unknown'})")
+    def wait_for_start(self, timeout: float = 30) -> bool:
+        """Waits for the worker to load its modules and enter its loop. Returns False if the
+        process exited first, if shutdown was requested, or if it did not start within
+        timeout, in which case it is killed."""
+        deadline = time.monotonic() + timeout
+        while not self._worker_startup_event.wait(1):
+            if self.process is not None and not self.process.is_alive():
+                logging.error("worker %s exited with code %s before it started", self.name, self.process.exitcode,
+                              extra={"worker_name": self.name})
+                return False
 
-            try:
-                if self.process:
-                    kill_process_tree(self.process.pid, signal.SIGKILL)
-            except Exception as e:
-                logging.error(f"unable to kill process {self.process}: {e}")
+            if self.is_in_shutdown_state() or is_shutting_down():
+                logging.info("shutdown requested while worker %s was starting", self.name)
+                return False
 
-            if self.is_in_shutdown_state():
-                break
+            if time.monotonic() >= deadline:
+                logging.error("worker %s did not start within %s seconds - killing it", self.name, timeout,
+                              extra={"worker_name": self.name})
+                self.kill()
+                return False
+
+        return True
 
     def immediate_shutdown(self):
         """Stop the worker immediately."""
@@ -346,47 +389,46 @@ class Worker:
         return self.process is not None and self.process.is_alive()
 
     def kill(self):
-        """Kill the worker process and everything it spawned.
+        """SIGKILL the worker's process group: the worker, if it is still running, and every process its
+        analysis modules started that is still in the group.
 
-        The last resort of the shutdown escalation ladder, for a worker that ignored the
-        shutdown event past its deadline -- typically an analysis module in a CPU loop or
-        blocked on a socket with no timeout. The tree kill matters: analysis modules
-        launch external processes, and killing only the worker would orphan them.
+        How the manager stops a worker past its analysis timeout or memory limit, one that does not start
+        and one that ignored the shutdown event past its deadline, and how it clears up after a worker that
+        died on its own (the analysis module monitor's os._exit, a crash, the OOM killer): what that worker
+        left running was reparented to init, but it is still in the group, and the group outlives its leader
+        while it has members. A process that starts a session or group of its own has left it, and has to
+        bound what it started itself. Never raises: it runs on the manager's supervision and shutdown paths.
         """
         if self.process is None or self.process.pid is None:
             return
 
+        pgid = self.process.pid
         try:
-            kill_process_tree(self.process.pid, signal.SIGKILL)
-        except Exception as e:
-            logging.warning("unable to kill worker %s: %s", self.name, e)
-
-        try:
-            self.process.join(5)
+            # named before they are killed, because afterwards nothing is left to say what they were
+            members = _process_group_members(pgid)
         except Exception:
-            pass
+            # the kill below matters more than the list
+            logging.exception("unable to list the process group of worker %s", self.name,
+                              extra={"worker": self.name, "pid": pgid})
+            members = []
 
-    def wait(self, timeout: float = 60):
-        """Wait for this one worker to finish processing all work.
-
-        NOTE: not the shutdown path. WorkerManager.supervise_shutdown() waits on the whole
-        pool against one shared deadline; calling this per worker in a loop is what used
-        to give a pool of N workers a worst case of N x 60s against a 10s container grace
-        period. Use it for a single worker in isolation, not to stop a pool.
-        """
-        if self.process is None:
-            logging.warning("worker has no process to wait for")
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # everything in the group has already exited
+        except OSError:
+            logging.exception("unable to kill the process group of worker %s", self.name,
+                              extra={"worker": self.name, "pid": pgid})
             return
 
-        logging.info("waiting for {}...".format(self.process))
+        # bounded: only a process stuck in the kernel outlives SIGKILL for long
+        self.process.join(5)
 
-        self.process.join(timeout)
-        if self.process.is_alive():
-            if self.is_immediate_shutdown():
-                logging.warning("process {} not stopping".format(self.process))
-
-            self.process.kill()
-            self.process.join(0) # reap the zombie
+        if members:
+            logging.warning("killed %d processes in the process group of worker %s (pid %s, exit code %s): %s",
+                            len(members), self.name, pgid, self.process.exitcode, ", ".join(m for _, m in members),
+                            extra={"worker": self.name, "pid": pgid, "exit_code": self.process.exitcode,
+                                   "killed_pids": [pid for pid, _ in members]})
 
     #
     # WORKER INTERFACE

@@ -31,7 +31,7 @@ Every process has an internal shutdown deadline strictly shorter than its contai
 |---|---|
 | Ask nicely | shutdown flag; loops and modules check it and return |
 | Cancel | in-flight analysis is cancelled so it unwinds through its `finally` blocks |
-| Kill children | workers that ignore the flag past the budget are SIGKILLed as a process tree |
+| Kill children | workers that ignore the flag past the budget are SIGKILLed with their process group |
 | Force exit | a watchdog thread calls `os._exit(0)` at the deadline regardless |
 
 If any of these is reached, the ones before it failed — but the container still stops on
@@ -79,7 +79,7 @@ Three rules about it:
   The mirror is a lock-free flag, *not* a `multiprocessing.Event`, and for a sharper
   reason than the handler rule above. ACE kills processes abruptly on purpose (an
   analysis module past its limit is `os._exit(1)`ed; a worker that overruns is SIGKILLed
-  as a process tree), and mp's `Condition` registers a sleeper *before* it sleeps while
+  with its process group), and mp's `Condition` registers a sleeper *before* it sleeps while
   `notify_all()` waits for one wake per sleeper. A child killed mid-wait leaves a sleeper
   that never wakes, wedging every later `set()` — and since `Event.is_set()` takes that
   same condition's lock, a child killed while merely *reading* the mirror can wedge
@@ -116,7 +116,7 @@ to stop. Three backstops handle it, and all three now keep running *during* shut
 | Backstop | Where |
 |---|---|
 | `AnalysisModuleMonitor` calls `os._exit(1)` past `maximum_analysis_time` | `saq/engine/executor.py` |
-| `WorkerManager.check()` SIGKILLs the process tree on timeout or memory limit | `saq/engine/worker_manager.py` |
+| `WorkerManager.check()` SIGKILLs the worker's process group on timeout or memory limit, and kills what a dead worker left in it | `saq/engine/worker_manager.py` |
 | The coordinator's watchdog force-exits the process at the deadline | `saq/shutdown.py` |
 
 The second one used to stop the moment the controller loop broke for shutdown — exactly

@@ -61,12 +61,15 @@ class FakeWorker:
         return self.process
 
     def wait_for_start(self):
-        pass
+        return True
 
     def analysis_has_timed_out(self, record) -> bool:
         return False
 
     def controlled_shutdown(self):
+        pass
+
+    def kill(self):
         pass
 
     def die(self, exitcode: int = 1):
@@ -190,7 +193,8 @@ def test_restart_worker_preserves_worker_identity(manager):
 def test_restarted_worker_process_receives_execution_mode(configuration_manager):
     """End to end through the real ``Worker.start``: the mode reaches the kwargs
     of the forked ``worker_loop``, which is the only place it has any effect."""
-    with patch("saq.engine.worker.ACE_MP_CONTEXT") as mock_mp_context:
+    # the mock Process has no real pid to put in a process group of its own
+    with patch("saq.engine.worker.ACE_MP_CONTEXT") as mock_mp_context, patch("saq.engine.worker.os.setpgid"):
         manager = WorkerManager(configuration_manager, Mock(spec=NodeManagerInterface))
         manager.initialize_workers()
         # one worker per pool entry keeps the Process call list unambiguous

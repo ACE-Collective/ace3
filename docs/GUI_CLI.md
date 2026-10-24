@@ -55,9 +55,9 @@ including argparse's errors. The differences from a shell:
 | `pending` | recorded, not yet claimed by its node |
 | `running` | the node is running it |
 | `completed` | it exited; `exit_code` says how |
-| `timed_out` | stopped at its timeout: SIGTERM to it and every process it started, so ACE's own shutdown runs, then SIGKILL 30 seconds later if it is still there |
+| `timed_out` | stopped at its timeout: SIGTERM to its process group, so ACE's own shutdown runs (an engine stops its own workers, which lead process groups of their own), then SIGKILL to every process group left in its session, once it has stopped or 100 seconds later (longer than any service's shutdown deadline), whichever comes first. A process that starts a session of its own (the sandbox launcher) bounds itself |
 | `failed` | it never ran: the node could not be reached or refused, or the command could not start |
-| `abandoned` | nothing will finish it: the node's API stopped during the run, or a `pending`/`running` row is more than 120 seconds past its timeout |
+| `abandoned` | nothing will finish it: the node's API stopped during the run, or a `pending`/`running` row is more than 180 seconds past its timeout |
 
 Output beyond 1 MiB is read and dropped (`output_truncated`).
 

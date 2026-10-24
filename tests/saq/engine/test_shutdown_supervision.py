@@ -62,7 +62,9 @@ class FakeWorker:
         return self._checks <= self._exits_after
 
     def kill(self):
-        self.killed = True
+        # every worker's group is killed at the end; only a kill of one still running counts here
+        if self._exits_after is None or self._checks <= self._exits_after:
+            self.killed = True
 
 
 def make_manager(workers) -> WorkerManager:

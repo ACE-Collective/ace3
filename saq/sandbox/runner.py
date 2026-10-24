@@ -34,6 +34,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from saq.configuration.schema import SandboxConfig
@@ -170,12 +171,12 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
     ]
 
 
-# how often a wait for the launcher checks the cancel event
+# how often a wait for the launcher checks whether to cancel
 _CANCEL_POLL_SECONDS = 0.5
 
 
 class SandboxCancelled(RuntimeError):
-    """The caller's cancel event was set while the command ran; everything it started is gone."""
+    """The caller's cancel returned True while the command ran; everything it started is gone."""
 
 
 @dataclass
@@ -200,12 +201,12 @@ def _stop(process: subprocess.Popen):
         pass
 
 
-def _wait_or_cancel(process: subprocess.Popen, timeout: datetime.timedelta, cancel: threading.Event) -> bool:
+def _wait_or_cancel(process: subprocess.Popen, timeout: datetime.timedelta, cancel: Callable[[], bool]) -> bool:
     """Waits for the launcher like process.wait(timeout) does, but returns True as soon as cancel
-    is set while it still runs."""
+    returns True while it still runs."""
     deadline = time.monotonic() + timeout.total_seconds()
     while True:
-        if cancel.is_set():
+        if cancel():
             return process.poll() is None
 
         remaining = deadline - time.monotonic()
@@ -226,16 +227,17 @@ def run_sandboxed(
     workdir: str,
     timeout: datetime.timedelta,
     max_output_bytes: int,
-    cancel: threading.Event | None = None,
+    cancel: Callable[[], bool] | None = None,
 ) -> SandboxResult:
     """Run an argv wrapped by build_sandbox_argv and collect its output.
 
-    Whatever happens -- a normal exit, a timeout, too much output, the cancel event being set --
+    Whatever happens -- a normal exit, a timeout, too much output, a cancel --
     the launcher has killed everything the command started before this returns, so a process the
     command left in the background does not survive it. With no stdin_data the command reads
     /dev/null rather than inheriting ACE's stdin. env is the command's whole environment: pass only
     what it needs, never os.environ (Landlock does not filter the environment, and ACE's carries
-    secrets). Setting cancel (from another thread) stops the command and raises SandboxCancelled.
+    secrets). cancel is polled while the command runs (an Event's is_set, or an analysis module's
+    should_stop); once it returns True the command is stopped and SandboxCancelled is raised.
     """
     process = subprocess.Popen(
         argv,

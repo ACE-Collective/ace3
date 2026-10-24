@@ -415,7 +415,7 @@ def wait_for_shared_flag(flag, timeout: Optional[float] = None) -> bool:
     rather than blocking on a shared primitive on purpose. The obvious primitive is a
     multiprocessing Event, but ACE kills processes abruptly by design -- an analysis
     module that runs past its limit is ``os._exit(1)``ed, a worker that overruns is
-    SIGKILLed as a process tree -- and mp's Condition registers a sleeper before it
+    SIGKILLed with its process group -- and mp's Condition registers a sleeper before it
     sleeps, then makes ``notify_all()`` wait for one wake per sleeper. A process killed
     mid-wait leaves a sleeper that never wakes, and every later ``set()`` blocks forever.
     A byte in shared memory has nothing to orphan. The cost is SHUTDOWN_POLL_INTERVAL of

@@ -1,9 +1,7 @@
 from typing import Optional, Type
 
 from saq import Observable
-from aceapi_v2.observables.service import observable_is_interesting
-from aceapi_v2.sync import run_async_with_session
-from saq.database.database_observable import observable_is_set_for_detection
+from saq.database.database_observable import observable_is_interesting, observable_is_set_for_detection
 
 from saq.gui import ObservableAction
 
@@ -91,8 +89,7 @@ class ObservablePresenter:
     def is_interesting(self) -> bool:
         """Returns True if this observable is marked interesting."""
         if self._is_interesting is None:
-            self._is_interesting = run_async_with_session(
-                observable_is_interesting, self._observable.type, self._observable.sha256_bytes)
+            self._is_interesting = observable_is_interesting(self._observable)
 
         return self._is_interesting
 
