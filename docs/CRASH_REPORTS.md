@@ -74,10 +74,12 @@ threaded engine, which has no manager to kill it) uses one:
   the `killed` report as `thread_stacks.txt`, then deletes the source file. A `killed` report
   with no dump, for example a memory kill of a module that wasn't hung, records
   `thread_stacks.txt` in `omitted`.
-- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker, and
-  `ace crash prune`, delete files whose pid no longer exists and that are more than 10 minutes
-  old. The age guard keeps one replacement from deleting a file that another has yet to collect
-  after several workers are killed at once.
+- **Clean up.** A worker that exits cleanly deletes its own file. A starting worker deletes
+  files whose pid no longer exists and that are more than 10 minutes old. The age guard keeps one
+  replacement from deleting a file that another has yet to collect after several workers are
+  killed at once. `ace crash prune` never touches these files: it runs in the cron container,
+  which shares the node name and data volume but none of the engine's pids, so every live
+  worker's file would look stale to it.
 
 The dump starts with a `Timeout (0:00:55)!` line, followed by faulthandler's usual
 `Thread 0x... (most recent call first):` blocks. The C timer thread is not a Python thread, so
