@@ -1570,6 +1570,53 @@ analysis_module_email_analyzer:
   #   message_directionality:       # message direction, e.g. Incoming vs outbound
   #     - X-MS-Exchange-Organization-MessageDirectionality
 
+# picks the URL a phishing email lures its recipient to (docs/LURE_URL.md); in the correlation
+# module group, so only alerts are scored and have their lure crawled
+analysis_module_lure_url_analyzer:
+  name: lure_url_analyzer
+  dependencies:
+    - email_analyzer
+  python_module: saq.modules.email.lure
+  python_class: LureURLAnalyzer
+  enabled: true
+  # anchor text words that ask the recipient to click (case-insensitive substring match)
+  call_to_action_keywords:
+    - view
+    - review
+    - open
+    - sign
+    - verify
+    - download
+    - access
+    - confirm
+    - click
+    - login
+    - log in
+    - update
+    - secure
+    - document
+    - pay
+    - invoice
+    - shared
+  # words in a URL or its anchor text that mark a footer link (case-insensitive substring match)
+  noise_keywords:
+    - unsubscribe
+    - privacy
+    - terms
+    - preferences
+    - opt-out
+    - optout
+    - cookie
+    - legal
+  # domains (and their subdomains) that are never the lure
+  benign_domains:
+    - fonts.googleapis.com
+    - fonts.gstatic.com
+  # how many ranked candidates to keep, the primary included
+  max_candidates: 5
+  # add the crawl directive to the primary lure URL so phishkit records its landing page
+  crawl_primary: true
+
 analysis_module_email_archiver:
   name: email_archiver
   dependencies:
@@ -2135,6 +2182,8 @@ analysis_module_url_extraction:
     - www.w3.org
     - purl.org
     - schemas.xmlsoap.org
+    # XMP metadata namespaces in PDFs and images
+    - ns.adobe.com
   # the maximum number of urls to extract from a single file
   max_extracted_urls: 12
 
@@ -2481,6 +2530,7 @@ module_group_correlation:
     - email_thread_analyzer
     - fqdn_analyzer
     - idna_analyzer
+    - lure_url_analyzer
     - message_id_analyzer_v2
     - network_identifier
     - parse_url
