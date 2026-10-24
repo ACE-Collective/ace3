@@ -125,10 +125,9 @@ DNS_ROOT_NAME = "<root>"
 CAPINFOS_TIMEOUT_SECONDS = 30
 # copying the capture into the workdir, stopping the sandbox and parsing tshark's output, around one tshark run
 RUN_MARGIN_SECONDS = 30
-# what saq/sandbox/launcher.py says when it ends a run it did start
-LAUNCHER_RUN_VERDICTS = ("ran past its deadline", "started more than")
-# prlimit and setpriv exit with these when they cannot execute the command; tshark and capinfos never do
-EXEC_FAILURE_EXIT_CODES = (126, 127)
+# the tool never ran: the launcher could not set the sandbox up (EXIT_SANDBOX_FAILURE), or prlimit or
+# setpriv could not execute it (126, 127); tshark and capinfos never exit with these themselves
+NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
 
 # TLS handshake message types
 TLS_CLIENT_HELLO = "1"
@@ -378,13 +377,9 @@ def _run_tool(config: PcapConfig, pcap_path: str, workdir: str, command: list[st
     except RuntimeError as e:
         raise PcapError(f"{tool} failed: {e}") from e
 
-    # the tool never ran: prlimit or setpriv could not execute it (a missing binary, a wrong
-    # tshark_path), or the launcher could not set the sandbox up. The launcher's verdicts on a run
-    # that did start are a deadline or too many processes.
-    if not result.stdout.strip() and (
-            result.returncode in EXEC_FAILURE_EXIT_CODES
-            or (result.returncode == EXIT_SANDBOX_FAILURE
-                and not any(verdict in result.stderr for verdict in LAUNCHER_RUN_VERDICTS))):
+    # a missing binary, a wrong tshark_path or a node the sandbox cannot be set up on; the launcher's
+    # verdicts on a run that did start (EXIT_DEADLINE, EXIT_PROCESS_LIMIT) are the capture's problem
+    if not result.stdout.strip() and result.returncode in NODE_FAILURE_EXIT_CODES:
         raise PcapNodeError(f"{tool} could not be run in the sandbox: {result.stderr.strip()[-500:]}")
 
     # a capture cut short mid-packet exits non-zero after printing everything before the cut

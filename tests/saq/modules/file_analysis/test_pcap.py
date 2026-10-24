@@ -1,5 +1,4 @@
 import datetime
-import inspect
 import logging
 import os
 import shutil
@@ -71,8 +70,7 @@ from saq.modules.file_analysis.pcap import (
     is_keylog_file,
     read_keylog,
 )
-from saq.sandbox import launcher
-from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
+from saq.sandbox.launcher import EXIT_DEADLINE, EXIT_PROCESS_LIMIT, EXIT_SANDBOX_FAILURE
 from saq.sandbox.runner import SandboxCancelled, SandboxResult
 from saq.util.hashing import sha256_bytes
 from saq.util.uuid import get_storage_dir
@@ -1984,26 +1982,21 @@ def test_carving_never_takes_a_linked_file(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("stderr,error", [
-    # the launcher could not set the sandbox up: no capture can be dissected on this node
-    ("sandbox: cannot become a child subreaper: [Errno 1] Operation not permitted", pcap.PcapNodeError),
+@pytest.mark.parametrize("returncode,error", [
+    # the tool never ran: no capture can be dissected on this node
+    (EXIT_SANDBOX_FAILURE, pcap.PcapNodeError),
+    (126, pcap.PcapNodeError),
+    (127, pcap.PcapNodeError),
     # the launcher's verdict on a run that did start: this capture's problem
-    ("sandbox: the command started more than 64 processes", PcapError),
-    ("sandbox: the command ran past its deadline", PcapError),
+    (EXIT_PROCESS_LIMIT, PcapError),
+    (EXIT_DEADLINE, PcapError),
 ])
-def test_launcher_failure_is_told_from_a_capture_failure(monkeypatch, tmp_path, stderr, error):
+def test_launcher_failure_is_told_from_a_capture_failure(monkeypatch, tmp_path, returncode, error):
     monkeypatch.setattr(pcap, "landlock_available", lambda: True)
-    monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(EXIT_SANDBOX_FAILURE, "", stderr))
+    monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(returncode, "", "sandbox: failed"))
     with pytest.raises(error) as raised:
         pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
     assert type(raised.value) is error
-
-
-@pytest.mark.unit
-def test_launcher_still_says_what_its_run_verdicts_are():
-    # _run_tool tells a launcher verdict from a setup failure by the launcher's own wording
-    source = inspect.getsource(launcher)
-    assert all(verdict in source for verdict in pcap.LAUNCHER_RUN_VERDICTS)
 
 
 @pytest.mark.integration
