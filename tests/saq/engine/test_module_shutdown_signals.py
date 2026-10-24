@@ -328,11 +328,14 @@ def test_lost_lock_stops_a_modules_sandboxed_command(root_analysis, monkeypatch)
     monkeypatch.setattr(get_config().global_settings, "lock_keepalive_frequency", 0.1)
     observable = _schedule_sandbox_should_stop(root_analysis)
     other_lock_uuid = str(uuid.uuid4())
+    stolen = threading.Event()
 
     def steal_lock():
-        # as another node does once our lock has expired: our keepalive cannot re-acquire it
-        force_release_lock(root_analysis.uuid)
-        assert acquire_lock(root_analysis.uuid, other_lock_uuid)
+        # as another node does once our lock has expired: our keepalive cannot re-acquire it. the
+        # keepalive re-takes a lock that is free, so this repeats until it lands in between
+        wait_for_condition(lambda: force_release_lock(root_analysis.uuid)
+                           and acquire_lock(root_analysis.uuid, other_lock_uuid), timeout=10, delay=0)
+        stolen.set()
 
     thief = _when_the_command_starts(steal_lock)
 
@@ -344,6 +347,7 @@ def test_lost_lock_stops_a_modules_sandboxed_command(root_analysis, monkeypatch)
     finally:
         release_lock(root_analysis.uuid, other_lock_uuid)
 
+    assert stolen.is_set()
     # the controller stops at once in SINGLE_SHOT and kills a worker still running after its
     # shutdown budget, which leaves no analysis: a result at all means the command was stopped
     assert _sandbox_result(root_analysis, observable) == "cancelled"
