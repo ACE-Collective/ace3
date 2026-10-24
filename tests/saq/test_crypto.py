@@ -298,3 +298,119 @@ def test_key_id_is_stable_and_key_specific():
     assert get_key_id("a") != get_key_id("b")
     assert len(get_key_id()) == 16
     int(get_key_id(), 16)
+
+
+#
+# initialize_encryption: how a process gets the system key at startup
+#
+
+import logging
+
+import saq.crypto
+from saq.constants import INSTANCE_TYPE_DEV
+from saq.crypto import get_decryption_key, initialize_encryption
+from saq.environment import get_global_runtime_settings
+
+
+@pytest.fixture
+def unloaded_key(monkeypatch):
+    """The system key as a process has it before initialize_encryption runs."""
+    expected = get_aes_key("test")
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_initialized", False)
+    monkeypatch.delenv("SAQ_ENC", raising=False)
+    return expected
+
+
+@pytest.mark.integration
+def test_initialize_encryption_with_the_password(unloaded_key):
+    initialize_encryption(encryption_password_plaintext="test")
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_initialize_encryption_prompts_until_the_password_is_right(unloaded_key, monkeypatch, caplog):
+    answers = iter(["wrong", "test"])
+    monkeypatch.setattr(saq.crypto, "getpass", lambda prompt: next(answers))
+
+    with caplog.at_level(logging.ERROR):
+        initialize_encryption(prompt_for_missing_password=True)
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert [r.getMessage() for r in caplog.records] == ["invalid encryption password"]
+
+
+@pytest.mark.integration
+def test_initialize_encryption_reads_and_removes_saq_enc(unloaded_key, monkeypatch):
+    monkeypatch.setenv("SAQ_ENC", "test")
+
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    # nothing the process starts later inherits the password
+    assert "SAQ_ENC" not in os.environ
+
+
+@pytest.mark.integration
+def test_initialize_encryption_keeps_saq_enc_in_the_dev_container(unloaded_key, monkeypatch):
+    monkeypatch.setenv("SAQ_ENC", "test")
+    monkeypatch.setattr(get_global_runtime_settings(), "instance_type", INSTANCE_TYPE_DEV)
+
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key == unloaded_key
+    assert os.environ["SAQ_ENC"] == "test"
+
+
+@pytest.mark.integration
+def test_initialize_encryption_with_a_wrong_saq_enc_leaves_the_key_unloaded(unloaded_key, monkeypatch, caplog):
+    monkeypatch.setenv("SAQ_ENC", "wrong")
+
+    with caplog.at_level(logging.ERROR):
+        initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key is None
+    assert get_global_runtime_settings().encryption_initialized
+    assert [r.getMessage() for r in caplog.records] == ["encryption password is wrong"]
+
+
+@pytest.mark.integration
+def test_initialize_encryption_without_a_password_leaves_the_key_unloaded(unloaded_key):
+    initialize_encryption()
+
+    assert get_global_runtime_settings().encryption_key is None
+    assert get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_initialize_encryption_raises_what_it_cannot_handle(unloaded_key, monkeypatch, caplog):
+    def _get_aes_key(password):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(saq.crypto, "get_aes_key", _get_aes_key)
+
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
+        initialize_encryption(encryption_password_plaintext="test")
+
+    assert "unable to get encryption key: database unavailable" in caplog.text
+    assert not get_global_runtime_settings().encryption_initialized
+
+
+@pytest.mark.integration
+def test_the_decryption_key_needs_a_password_set(monkeypatch):
+    monkeypatch.setattr(saq.crypto, "encryption_key_set", lambda: False)
+
+    with pytest.raises(PasswordNotSetError):
+        get_decryption_key("test")
+
+
+@pytest.mark.integration
+def test_set_encryption_password_with_a_given_key(monkeypatch):
+    key = os.urandom(32)
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+
+    set_encryption_password("other password", key=key)
+
+    assert get_aes_key("other password") == key
