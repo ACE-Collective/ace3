@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Optional, Union
 
+import psutil
+
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -366,15 +368,22 @@ class Worker:
         if self.process is None or self.process.pid is None:
             return
 
+        # what the worker started goes first, while they can still be found under it. nothing
+        # waits for them: their zombies are reaped by whoever inherits them
         try:
-            kill_process_tree(self.process.pid, signal.SIGKILL)
-        except Exception as e:
-            logging.warning("unable to kill worker %s: %s", self.name, e)
-
-        try:
-            self.process.join(5)
-        except Exception:
+            kill_process_tree(self.process.pid, signal.SIGKILL, include_parent=False, timeout=0)
+        except psutil.NoSuchProcess:
+            # the worker exited on its own since it was last checked
             pass
+        except Exception as e:
+            logging.warning("unable to kill the processes worker %s started: %s", self.name, e)
+
+        # the worker itself is killed and reaped through multiprocessing. kill_process_tree
+        # reaps its targets with os.waitpid, after which Process can never read the exit code
+        # and reports the dead worker alive forever
+        self.process.kill()
+        # SIGKILL cannot be caught, so this only waits out an uninterruptible sleep
+        self.process.join(5)
 
     def wait(self, timeout: float = 60):
         """Wait for this one worker to finish processing all work.
