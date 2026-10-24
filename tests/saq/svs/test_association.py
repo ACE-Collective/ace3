@@ -132,21 +132,6 @@ class TestAssociate:
         assert event["alert_uuid"] == root.uuid and event["reason"] == "seen on the test VM's console"
         assert get_db().get(SVSRunResultState, run.id).stale
 
-    def test_an_alert_whose_root_fails_to_load_is_judged_by_its_insert_time(self, run, user_id, monkeypatch,
-                                                                            caplog):
-        root = _alert(host="srv-01", event_time=(datetime.now() - timedelta(seconds=30)).replace(microsecond=0))
-
-        def fail(storage_dir):
-            raise OSError(f"no root in {storage_dir}")
-
-        monkeypatch.setattr(association, "load_root", fail)
-        association.associate(run.uuid, root.uuid, person(user_id))
-
-        (row,) = _attributions(root.uuid, run.id)
-        assert row.event_time == _row(root.uuid).insert_date
-        assert any(r.levelname == "WARNING" and r.getMessage().startswith(f"unable to load alert {root.uuid}")
-                   for r in caplog.records)
-
     def test_over_the_routers_rows(self, run, user_id):
         root = _alert(marker=run.marker)
         assert [r.source for r in _attributions(root.uuid, run.id)] == ["router"]
@@ -214,8 +199,8 @@ class TestAssociate:
         (row,) = _attributions(root.uuid, run.id)
         assert row.event_time_source == "insert_time"
         assert abs(row.event_time - _row(root.uuid).insert_date) <= timedelta(seconds=1)
-        assert [r for r in caplog.records if r.levelno == logging.WARNING
-                and f"unable to load alert {root.uuid}" in r.getMessage()]
+        (record,) = [r for r in caplog.records if f"unable to load alert {root.uuid}" in r.getMessage()]
+        assert record.levelno == logging.ERROR and record.exc_info and record.alert_uuid == root.uuid
 
     def test_refused(self, user_id):
         created = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],

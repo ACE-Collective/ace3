@@ -492,7 +492,10 @@ def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> tuple[datetim
         return inserted_at, EventTimeSource.INSERT_TIME
     if event_time.tzinfo is not None:
         event_time = event_time.astimezone(get_local_timezone()).replace(tzinfo=None)
-    # the root's sources other than unset (which has no time) are this enum's by value
+    # two enums share the name: root.event_time_source is saq.constants.EventTimeSource (where the
+    # root's time came from), this function returns saq.svs.constants.EventTimeSource (which time a
+    # run recorded, insert_time included); the root's members other than unset (which has no time)
+    # are this one's by value
     return event_time, EventTimeSource(root.event_time_source)
 
 

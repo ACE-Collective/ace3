@@ -46,7 +46,6 @@ class RootAnalysis(Analysis):
                  alert_type=None, 
                  desc=None, 
                  event_time=None, 
-                 event_time_source: Optional[EventTimeSource]=None,
                  action_counters=None,
                  details=None, 
                  name=None,
@@ -80,8 +79,7 @@ class RootAnalysis(Analysis):
         self._extensions = extensions
         self._analysis_failures = analysis_failures if analysis_failures else {}
         self._event_time = event_time
-        self._event_time_source = (EventTimeSource.UNSET if event_time is None
-                                   else EventTimeSource(event_time_source or EventTimeSource.EVENT))
+        self._event_time_source = EventTimeSource.UNSET if event_time is None else EventTimeSource.EVENT
         self._name = name
         self._remediation = remediation
         self.details = details or {}

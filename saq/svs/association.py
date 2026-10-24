@@ -166,8 +166,9 @@ def _event_time(alert: _Alert) -> tuple[datetime, EventTimeSource]:
     """The alert's event time and where it came from, judged as the router judges them."""
     try:
         return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
-    except Exception as e:
-        logging.warning("unable to load alert %s for its event time; using its insert time: %s", alert.uuid, e)
+    except Exception:
+        logging.exception("unable to load alert %s for its event time; using its insert time", alert.uuid,
+                          extra={"alert_uuid": alert.uuid, "storage_dir": alert.storage_dir})
         return alert.insert_date, EventTimeSource.INSERT_TIME
 
 

@@ -552,10 +552,6 @@ class TestEventTimeSource:
     def test_the_constructor(self):
         assert RootAnalysis().event_time_source == EventTimeSource.UNSET
         assert RootAnalysis(event_time=datetime(2026, 10, 1)).event_time_source == EventTimeSource.EVENT
-        assert RootAnalysis(event_time=datetime(2026, 10, 1),
-                            event_time_source=EventTimeSource.QUERY_TIME).event_time_source == EventTimeSource.QUERY_TIME
-        # no time, no source
-        assert RootAnalysis(event_time_source=EventTimeSource.NOW).event_time_source == EventTimeSource.UNSET
 
     @pytest.mark.parametrize("source", list(EventTimeSource))
     def test_it_round_trips(self, tmp_path, source):

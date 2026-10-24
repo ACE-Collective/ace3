@@ -115,10 +115,9 @@ class _SubmittingHunt(TestHunt):
             tool="test_tool",
             tool_instance="test_tool_instance",
             alert_type="test_type",
-            # as a hunt that couldn't extract the event's timestamp
-            event_time=datetime(2026, 1, 2, tzinfo=timezone.utc),
-            event_time_source=EventTimeSource.QUERY_TIME,
             details={QUERY_DETAILS_EVENTS: [{"src": "10.0.0.1"}, {"src": "10.0.0.2"}]})
+        # as a hunt that couldn't extract the event's timestamp
+        root.set_event_time(datetime(2026, 1, 2, tzinfo=timezone.utc), EventTimeSource.QUERY_TIME)
         root.initialize_storage()
         ip = root.add_observable_by_spec(F_IPV4, "10.0.0.1", o_time=datetime(2026, 1, 2, tzinfo=timezone.utc))
         ip.add_tag("scanner")
