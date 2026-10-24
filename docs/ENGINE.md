@@ -934,6 +934,13 @@ this pass plus every earlier pass of the same logical analysis run — the initi
 new root work item (mode transition, disposition pass, analyst-requested
 analysis) starts the budget over. See §19.6.
 
+A module that runs a long, bounded step (a subprocess with a timeout) asks how
+much of this budget its current call has left with `self.time_left()`: the
+executor sets a deadline on the module's context just before the monitor starts,
+the sooner of the module's `maximum_analysis_time` and what is left of the
+cumulative fail time (not counted in an ignored mode), and clears it when the
+call returns. Outside of an engine call it returns `maximum_analysis_time`.
+
 ### 12.2 Cancellation
 
 `EngineExecutionContext.cancel_analysis()` sets a flag the main loop tests at the

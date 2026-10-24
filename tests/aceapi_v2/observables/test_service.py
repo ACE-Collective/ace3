@@ -11,7 +11,6 @@ from aceapi_v2.observables.schemas import LookupPair
 from aceapi_v2.observables.service import (
     get_interesting_observables_by_hashes,
     lookup_observables,
-    observable_is_interesting,
     set_observable_interesting,
 )
 from saq.database.model import Observable
@@ -21,62 +20,6 @@ pytestmark = pytest.mark.integration
 
 def _sha256(value: str) -> bytes:
     return hashlib.sha256(value.encode("utf8", errors="ignore")).digest()
-
-
-class TestObservableIsInteresting:
-    """Test the observable_is_interesting service function."""
-
-    @pytest.mark.asyncio
-    async def test_returns_false_when_not_exists(self, session: AsyncSession):
-        result = await observable_is_interesting(session, "ipv4", _sha256("10.0.0.1"))
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_returns_false_when_not_interesting(self, session: AsyncSession):
-        obs = Observable(
-            type="ipv4",
-            sha256=_sha256("192.168.1.1"),
-            value=b"192.168.1.1",
-            is_interesting=False,
-        )
-        session.add(obs)
-        await session.commit()
-
-        result = await observable_is_interesting(
-            session, "ipv4", _sha256("192.168.1.1")
-        )
-        assert result is False
-
-    @pytest.mark.asyncio
-    async def test_returns_true_when_interesting(self, session: AsyncSession):
-        obs = Observable(
-            type="ipv4",
-            sha256=_sha256("192.168.1.1"),
-            value=b"192.168.1.1",
-            is_interesting=True,
-        )
-        session.add(obs)
-        await session.commit()
-
-        result = await observable_is_interesting(
-            session, "ipv4", _sha256("192.168.1.1")
-        )
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_matches_on_type_and_sha256(self, session: AsyncSession):
-        """Same sha256 but different type should not match."""
-        obs = Observable(
-            type="ipv4",
-            sha256=_sha256("test"),
-            value=b"test",
-            is_interesting=True,
-        )
-        session.add(obs)
-        await session.commit()
-
-        result = await observable_is_interesting(session, "fqdn", _sha256("test"))
-        assert result is False
 
 
 class TestSetObservableInteresting:

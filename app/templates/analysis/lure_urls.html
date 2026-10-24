@@ -1,0 +1,40 @@
+{# the URL each email lures its recipient to (saq/modules/email/lure.py, docs/LURE_URL.md) #}
+{% from 'analysis/_alert_section.html' import alert_section with context %}
+{# the values a reason highlights (link text, attachment, carried URLs) are bold; every piece is escaped #}
+{% macro reasons(candidate) %}{% for segments in candidate.reason_segments %}{% if not loop.first %}; {% endif %}{% for text, bold in segments %}{% if bold %}<b>{{ text }}</b>{% else %}{{ text }}{% endif %}{% endfor %}{% endfor %}{% endmacro %}
+{% if lure_urls %}
+{% call alert_section('lure_urls', 'Lure URL', summary=('(' ~ lure_urls | length ~ ' emails)') if lure_urls | length > 1 else none) %}
+                {% for entry in lure_urls %}
+                    <div class="lure-url{% if not loop.last %} mb-3{% endif %}">
+                        {% if lure_urls | length > 1 %}
+                            <div class="small text-muted">
+                                email <a href="#{{ entry.email.uuid }}">{{ entry.subject or entry.email.file_name }}</a>
+                            </div>
+                        {% endif %}
+                        <div class="small" style="word-break: break-all;">
+                            <span class="badge text-bg-warning">lure</span>
+                            {% if entry.observable %}
+                                <a href="#{{ entry.observable.uuid }}">{{ entry.primary.url }}</a>
+                            {% else %}
+                                {{ entry.primary.url }}
+                            {% endif %}
+                        </div>
+                        <div class="small text-muted ms-3">{{ reasons(entry.primary) }}</div>
+                        {% if entry.runners_up %}
+                            <details class="small ms-3">
+                                <summary class="text-muted">{{ entry.runners_up | length }} other candidate{{ '' if entry.runners_up | length == 1 else 's' }}</summary>
+                                <table class="table table-sm table-borderless small mb-0" style="width: auto;">
+                                    {% for candidate in entry.runners_up %}
+                                        <tr>
+                                            <td class="text-muted text-end pe-2">{{ candidate.score }}</td>
+                                            <td class="pe-2" style="word-break: break-all;"><a href="#{{ candidate.observable_uuid }}" title="{{ candidate.url }}">{{ candidate.url | truncate(100, true) }}</a></td>
+                                            <td class="text-muted">{{ reasons(candidate) }}</td>
+                                        </tr>
+                                    {% endfor %}
+                                </table>
+                            </details>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+{% endcall %}
+{% endif %}

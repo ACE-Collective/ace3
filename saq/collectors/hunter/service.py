@@ -3,7 +3,7 @@ import logging
 import os
 from typing import Generator, Optional, Type, override
 
-from saq.analysis.root import Submission
+from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.base_collector import Collector, CollectorExecutionMode, CollectorService
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.submission_file_manager import SubmissionFileManager
@@ -11,12 +11,14 @@ from saq.collectors.hunter.correlation.command_types import load_command_types_f
 from saq.collectors.hunter.correlation.sandbox import prepare_sandbox
 from saq.collectors.hunter.correlation.sources import load_query_sources_from_config
 from saq.collectors.hunter.manager import HuntManager
+from saq.collectors.hunter.query_hunter import dedup_key_hunt_uuid
 from saq.configuration import get_config
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_HUNTER, ExecutionMode
 from saq.environment import get_data_dir
 from saq.service import ACEServiceInterface
+from saq.svs.attribution import record_suppressed_matches
 
 # the most submissions a single call to HunterCollector.collect() will yield
 # bounded so the collection loop keeps coming back around to report status and check
@@ -55,6 +57,25 @@ class HunterCollector(Collector):
             logging.info("hunter submission queue depth is %d", depth)
 
         yield from self.file_manager.iter_staged_submissions(limit=MAX_SUBMISSIONS_PER_COLLECTION)
+
+    @override
+    def duplicates_dropped(self, submissions: list[Submission]) -> None:
+        """Records the duplicates that fall in an svs run on one of its test hosts, so the run's
+        result can tell their hunt dropped the test's match rather than missed it (docs/SVS_RUNS.md,
+        *Results*). A failure loses only that record."""
+        by_hunt: dict[str, list[tuple[RootAnalysis, Optional[str]]]] = {}
+        for submission in submissions:
+            hunt_uuid = dedup_key_hunt_uuid(submission.key)
+            if hunt_uuid is not None:
+                by_hunt.setdefault(hunt_uuid, []).append((submission.root, submission.group_value))
+
+        for hunt_uuid, matches in by_hunt.items():
+            try:
+                record_suppressed_matches(hunt_uuid, matches, duplicate=True)
+            except Exception as e:
+                logging.exception("unable to record the duplicate matches of hunt %s for svs: %s", hunt_uuid, e,
+                                  extra={"hunt_uuid": hunt_uuid,
+                                         "dedup_keys": [root.submission_key for root, _ in matches]})
 
 class HunterServiceConfig(CollectorServiceConfiguration):
     """Hunter adds nothing to the base collector service config. Note that how often each hunt type

@@ -30,22 +30,6 @@ from saq.database.util.observable_detection import (
 )
 
 
-async def observable_is_interesting(
-    session: AsyncSession, observable_type: str, sha256_bytes: bytes
-) -> bool:
-    """Returns True if the observable is marked as interesting in the database."""
-    result = await session.execute(
-        select(DBObservable.is_interesting).where(
-            DBObservable.type == observable_type,
-            DBObservable.sha256 == sha256_bytes,
-        )
-    )
-    row = result.scalar_one_or_none()
-    if row is None:
-        return False
-    return bool(row)
-
-
 async def set_observable_interesting(
     session: AsyncSession,
     observable_type: str,

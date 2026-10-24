@@ -9,7 +9,6 @@ croniter==6.2.4
 cryptography==50.0.1
 dateparser==1.4.3
 deepmerge==3.0.1
-dhash==1.4
 diff-cover==10.6.0
 distorm3==3.5.2
 dnspython==2.8.0

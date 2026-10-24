@@ -61,7 +61,7 @@ class FakeWorker:
         return self.process
 
     def wait_for_start(self):
-        pass
+        return True
 
     def analysis_has_timed_out(self, record) -> bool:
         return False

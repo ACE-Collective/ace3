@@ -289,6 +289,22 @@ class AnalysisModule(FileWatcherMixin):
         """Set the analysis context for dependency injection."""
         self._context = context
 
+    def set_analysis_deadline(self, deadline: Optional[float]):
+        """Called by the engine around each call to analyze(), with the time.monotonic() value
+        past which the engine stops that call, or None once it has returned."""
+        self._context.analysis_deadline = deadline
+
+    def time_left(self) -> float:
+        """Returns how many seconds the current call to analyze() has before the engine stops it:
+        either the worker is killed for exceeding the module's maximum_analysis_time, or the rest
+        of the root's pass is abandoned for exceeding the mode's cumulative fail time. Negative
+        once the deadline has passed. Outside of an engine call (a unit test, the GUI) this is the
+        module's maximum_analysis_time."""
+        if self._context.analysis_deadline is None:
+            return float(self.maximum_analysis_time)
+
+        return self._context.analysis_deadline - time.monotonic()
+
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""
         if self._context is None:

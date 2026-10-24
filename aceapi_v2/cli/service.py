@@ -29,6 +29,7 @@ from aceapi_v2.sync import run_db_in_thread
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.database.model import CliExecution, Nodes
 from saq.database.pool import get_db
+from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception, log_peer_unavailable
 
@@ -272,9 +273,6 @@ def dispatch_execution(execution_id: int) -> None:
         .where(CliExecution.id == execution_id)).one()
     node_name, location = row
     context = f"starting cli execution {execution_id} on node {node_name} ({location})"
-
-    # imported here: the node manager pulls in saq.modules, which imports aceapi_v2 back (circular)
-    from saq.engine.node_manager.distributed_node_manager import translate_node
 
     try:
         ace_api.start_cli_execution(execution_id, remote_host=translate_node(location), timeout=DISPATCH_TIMEOUT)

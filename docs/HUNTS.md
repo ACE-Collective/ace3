@@ -325,6 +325,8 @@ dedup_key: "{{ user }}-{{ src_ip }}-{{ action }}"
 
 > If the `group_by` field is also set for the hunt, the computed `dedup_key` is built from the *first event* in the group.
 
+During an SVS test run, a match the collector drops as a duplicate on one of the run's test hosts is recorded for the run, so the run's result can tell the hunt dropped the test rather than missed it (`docs/SVS_RUNS.md`, *Results*).
+
 ### `query` (string)
 
 The hunt to execute.
@@ -714,7 +716,7 @@ An observable should be set to volatile if you're adding it for the purposes of 
 
 This is required if the `type` is set to `file`. This controls the name of the file used to store the contents of the data. See the section [Event Fields as File Content](#event-fields-as-file-content).
 
-The file is always stored directly in the alert's files directory: path separators (`/`, `\`), `../` and `~` in the interpolated name are replaced with `_`, so an event field that holds a path (or an attacker's file name) cannot place the file anywhere else.
+The file is always stored inside the alert's files directory: the root's file manager cleans the interpolated name, so each `/` separated part becomes a subdirectory, a `..` part becomes `_`, and `\` becomes `_`. An event field that holds a path (or an attacker's file name) cannot place the file anywhere else, and a name that is already taken by other content gets a `_NNN` suffix.
 
 ### `file_decoder` (string, optional)
 
@@ -800,7 +802,11 @@ It answers 200 `{"valid": true, ...}` or 400 `{"valid": false, "error": ...}`.
 - **Every request is audited.** One `HUNT_AUDIT {json}` line per request on the `ace.hunt_audit`
   logger (`aceapi_v2/hunt/audit.py`), shipped off-box like any other log line. It has the same identity
   fields as the AI investigation API's `AI_AUDIT` lines (`user`, `user_id`, `key_id`, `key_name`,
-  `src_ip`), plus:
+  `src_ip`), and carries in `extra={}` the actor fields that `log_audit()` records have
+  (`saq/logging.py::audit_actor`: `actor`, `actor_user_id`, `actor_key_id`, `actor_key_name`,
+  `auth_type`), so one search finds a key's hunt validations along with its other audited actions
+  that go through `log_audit()`. Beyond
+  the identity fields, the JSON has:
   - `event`: `hunt_validate` (200), `hunt_rejected` (refused before it ran) or `hunt_error` (the
     execution failed), with `status`, `detail` (the error) and `duration_ms`
   - `package`: the target, the client's `package_root`, and each asset's path, kind and sha256, so

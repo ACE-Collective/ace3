@@ -175,7 +175,7 @@ line for `GET /ace/analysis?direct=...`. The baseline above was 9.5 s
 
 There is no query logging in that window, so to attribute a render, count calls
 rather than read the log — e.g. spy on `observable_is_set_for_detection` /
-`run_async_with_session` in
+`observable_is_interesting` in
 `saq/analysis/presenter/observable_presenter.py`, which is what
 `tests/app/analysis/views/test_index.py::test_index_does_not_query_per_observable_for_actions`
 and its `..._for_disposition_history` companion do.

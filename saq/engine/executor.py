@@ -790,6 +790,21 @@ class AnalysisExecutor:
         else:
             return get_config().global_settings.maximum_analysis_time
 
+    def _get_analysis_deadline(
+        self, analysis_module: AnalysisModuleInterface, analysis_mode: str, current_total_time: float
+    ) -> float:
+        """Returns the time.monotonic() value past which a module call starting now is stopped:
+        AnalysisModuleMonitor kills the worker past the module's maximum_analysis_time, and
+        _check_for_analysis_timeout abandons the pass past the cumulative fail time."""
+        seconds_left = float(analysis_module.maximum_analysis_time)
+        if analysis_mode not in get_engine_config().analysis_modes_ignore_cumulative_timeout:
+            seconds_left = min(
+                seconds_left,
+                self._get_maximum_cumulative_analysis_fail_time(analysis_mode) - current_total_time,
+            )
+
+        return time.monotonic() + seconds_left
+
     def _get_root_save_frequency(self, analysis_mode: str) -> Optional[int]:
         """Returns the mid-pass save policy for the given analysis mode.
 
@@ -890,6 +905,7 @@ class AnalysisExecutor:
 
     def _process_generated_analysis(
         self,
+        context: EngineExecutionContext,
         analysis_result: AnalysisExecutionResult,
         root: RootAnalysis,
         work_item: WorkTarget,
@@ -938,8 +954,27 @@ class AnalysisExecutor:
         if work_item.dependency:
             # did we analyze the target analysis of a dependency?
             if work_item.dependency.ready:
+                # a target cancelled mid-run (shutdown, lost lock) has not answered yet: the
+                # dependency stays ready and is serialized that way, so the requeued pass runs
+                # the target again instead of handing the source a permanent "nothing". the
+                # cancel flag is what guarantees the loop stops rather than retrying it here
+                if (
+                    not output_analysis
+                    and analysis_result == AnalysisExecutionResult.INCOMPLETE
+                    and context.cancel_analysis_flag
+                ):
+                    logging.info(
+                        "analysis cancelled before %s answered dependency %s - leaving it unresolved",
+                        analysis_module, work_item.dependency,
+                        extra={
+                            "root_uuid": root.uuid,
+                            "module_name": analysis_module.name,
+                            "observable_uuid": work_item.observable.uuid,
+                        },
+                    )
+
                 # if we did not generate any analysis then the dependency has failed
-                if not output_analysis:
+                elif not output_analysis:
                     logging.debug(
                         "analysis module {} did not generate analysis to resolve dep {}".format(
                             analysis_module, work_item.dependency
@@ -1396,7 +1431,7 @@ class AnalysisExecutor:
                             lookup_result,
                         )
                         self._process_generated_analysis(
-                            AnalysisExecutionResult.COMPLETED, root, work_item,
+                            context, AnalysisExecutionResult.COMPLETED, root, work_item,
                             work_stack, work_stack_buffer, analysis_module,
                         )
                         self._save_root(context, root)
@@ -1435,6 +1470,16 @@ class AnalysisExecutor:
 
             # track the analysis module that is currently analyzing this work item
             self.tracking_message_manager.track_current_analysis_module(analysis_module, work_item.observable)
+
+            # tell the module how long it has (AnalysisModule.time_left()). set before the monitor
+            # starts its clock so the module's deadline is never later than the kill
+            analysis_module.set_analysis_deadline(
+                self._get_analysis_deadline(
+                    analysis_module,
+                    root.analysis_mode,
+                    total_analysis_time_seconds + (datetime.now() - start_time).total_seconds(),
+                )
+            )
 
             # start a monitor thread that will kill the process if the analysis module takes too long
             monitor = AnalysisModuleMonitor(
@@ -1583,6 +1628,7 @@ class AnalysisExecutor:
                 # make sure we stop the monitor thread
                 monitor.stop()
                 cancel_hang_stack_dump()
+                analysis_module.set_analysis_deadline(None)
 
                 # clear the tracking message for the analysis module
                 self.tracking_message_manager.clear_module_tracking()
@@ -1595,6 +1641,7 @@ class AnalysisExecutor:
                 context.cancel_analysis()
 
             self._process_generated_analysis(
+                context,
                 analysis_result,
                 root,
                 work_item,

@@ -183,7 +183,10 @@ class NetworkSemaphoreClient:
 
     def release(self):
         if not self.semaphore_acquired:
+            # nothing is held: acquire() failed or was cancelled and closed its own connection, or
+            # this was already released, and there is no failsafe thread to stop
             logging.warning(f"release called on unacquired semaphore {self.semaphore_name}")
+            return
 
         # are we releasing a fallback semaphore?
         if self.fallback_semaphore is not None:

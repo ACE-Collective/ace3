@@ -259,9 +259,8 @@ def test_wait_for_start_kills_the_group_of_a_worker_that_does_not_start(started,
     [child] = _read_pids(read_fd)
     started[1].append(child)
 
-    # it reports a start on the second wait, so the loop ends after one kill rather than 30 seconds later
-    worker._worker_startup_event = Mock(wait=Mock(side_effect=[False, True]))
-    worker.wait_for_start()
+    worker._worker_startup_event = Mock(wait=Mock(return_value=False))
+    assert worker.wait_for_start(timeout=0) is False
 
     assert worker.process.exitcode == -signal.SIGKILL
     wait_for_condition(lambda: not _is_running(child), timeout=10)

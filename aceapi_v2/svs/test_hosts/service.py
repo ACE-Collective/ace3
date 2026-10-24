@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.svs.preconditions import stale_write
 from aceapi_v2.svs.runs.service import host_busy_error
@@ -89,10 +90,10 @@ def _spec(body: TestHostRequest) -> hosts.HostSpec:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-def create_test_host(body: TestHostRequest, user_id: Optional[int], actor: Optional[str]) -> TestHost:
+def create_test_host(body: TestHostRequest, auth: ApiAuthResult) -> TestHost:
     spec = _spec(body)
     try:
-        host = hosts.create_host(spec, user_id, actor)
+        host = hosts.create_host(spec, auth)
     except hosts.DuplicateTestHost as e:
         raise HTTPException(status_code=409, detail=str(e))
     return _row(host, _username(host))
@@ -106,11 +107,11 @@ def _current_host(host_id: int) -> Optional[TestHost]:
     return _row(host, _username(host))
 
 
-def update_test_host(host_id: int, body: TestHostRequest, actor: Optional[str],
+def update_test_host(host_id: int, body: TestHostRequest, auth: ApiAuthResult,
                      precondition: Precondition = NONE) -> TestHost:
     spec = _spec(body)
     try:
-        host = hosts.update_host(host_id, spec, actor, precondition)
+        host = hosts.update_host(host_id, spec, auth, precondition)
     except hosts.UnknownTestHost as e:
         raise HTTPException(status_code=404, detail=str(e))
     except StaleWrite as e:
@@ -120,9 +121,9 @@ def update_test_host(host_id: int, body: TestHostRequest, actor: Optional[str],
     return _row(host, _username(host))
 
 
-def delete_test_host(host_id: int, actor: Optional[str]) -> None:
+def delete_test_host(host_id: int, auth: ApiAuthResult) -> None:
     try:
-        hosts.delete_host(host_id, actor)
+        hosts.delete_host(host_id, auth)
     except hosts.UnknownTestHost as e:
         raise HTTPException(status_code=404, detail=str(e))
 

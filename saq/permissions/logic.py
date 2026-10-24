@@ -9,16 +9,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _pattern_matches(pattern_major: str, pattern_minor: str, major: str, minor: str) -> bool:
+    """fnmatch a stored (major, minor) pattern against a requested permission, ignoring case. Case
+    means nothing in a permission: the grant tables' unique indexes treat case variants as one row
+    and new rows are stored lowercase, but older rows and config key scopes can be in any case."""
+    return (fnmatchcase(major.lower(), pattern_major.lower())
+            and fnmatchcase(minor.lower(), pattern_minor.lower()))
+
+
 def _evaluate_permission(user_perms, group_perms, major: str, minor: str) -> bool:
     """Apply fnmatch over the fetched (major, minor, effect) rows. DENY overrides ALLOW."""
-    # fnmatch: stored patterns (major/minor) against requested values
-    def matches(pattern_major: str, pattern_minor: str) -> bool:
-        return fnmatchcase(major, pattern_major) and fnmatchcase(minor, pattern_minor)
-
     matched_effects = [
-        effect for (p_major, p_minor, effect) in user_perms if matches(p_major, p_minor)
+        effect for (p_major, p_minor, effect) in user_perms if _pattern_matches(p_major, p_minor, major, minor)
     ] + [
-        effect for (p_major, p_minor, effect) in group_perms if matches(p_major, p_minor)
+        effect for (p_major, p_minor, effect) in group_perms if _pattern_matches(p_major, p_minor, major, minor)
     ]
 
     if not matched_effects:
@@ -77,10 +81,7 @@ def key_scope_allows(scope: list[tuple[str, str]], major: str, minor: str) -> bo
     scope is ``None`` inherits the owner's full permissions; callers skip this check when scope is
     ``None``.
     """
-    return any(
-        fnmatchcase(major, p_major) and fnmatchcase(minor, p_minor)
-        for (p_major, p_minor) in scope
-    )
+    return any(_pattern_matches(p_major, p_minor, major, minor) for (p_major, p_minor) in scope)
 
 
 def user_has_permission(

@@ -181,7 +181,7 @@ def distribute_old_alerts(days: int, dry_run: bool, distribution_target: str, ma
             if max_count > 0:
                 if alert_index > max_count:
                     logging.warning(f"stopping at max count {max_count}")
-                    return success_count
+                    break
 
             logging.info(f"uploading alert {uuid} to {distribution_target} (dry_run = {dry_run})")
             if dry_run:
@@ -246,7 +246,7 @@ def emit_cache_stats() -> None:
             },
         )
     except Exception as e:
-        logging.warning(f"failed to collect cache_stats: {e}")
+        logging.exception(f"failed to collect cache_stats: {e}")
 
 
 def gc_durable_blobs(dry_run: bool = False) -> GlobalMaintenanceStats:

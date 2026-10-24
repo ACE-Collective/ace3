@@ -74,6 +74,10 @@ class Collector(ABC):
 
     def cleanup(self) -> None:
         """Called after the collector has stopped."""
+
+    def duplicates_dropped(self, submissions: list[Submission]) -> None:
+        """Called after each collection pass with the submissions it dropped as duplicates of their
+        key, which have already been discarded from staging."""
     
     @abstractmethod
     def collect(self) -> Generator[Submission, None, None]:
@@ -489,6 +493,7 @@ class CollectorService(ACEServiceInterface):
         actually became work. They differ whenever submissions are deduplicated."""
         submissions_processed = 0
         submissions_scheduled = 0
+        duplicates: list[Submission] = []
 
         try:
             # collect submissions from the collector
@@ -503,6 +508,8 @@ class CollectorService(ACEServiceInterface):
                         shutdown, outcome = self.process_submission(submission)
                         if outcome == SUBMISSION_OUTCOME_SCHEDULED:
                             submissions_scheduled += 1
+                        elif outcome == SUBMISSION_OUTCOME_DUPLICATE:
+                            duplicates.append(submission)
 
                         if shutdown:
                             break
@@ -516,6 +523,12 @@ class CollectorService(ACEServiceInterface):
 
         except Exception as e:
             log_loop_exception(e, "error during collection")
+
+        if duplicates:
+            try:
+                self.collector.duplicates_dropped(duplicates)
+            except Exception as e:
+                log_loop_exception(e, f"unable to hand {len(duplicates)} duplicate submissions to {self.collector}")
 
         # clear expired persistent data periodically
         self.clear_expired_persistent_data()

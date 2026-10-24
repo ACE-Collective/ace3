@@ -2,8 +2,8 @@ import pytest
 
 from saq.constants import QUEUE_DEFAULT
 from saq.database.pool import get_db, get_db_connection
-from saq.database.database_observable import observable_is_set_for_detection, upsert_observable
-from saq.database.model import ObservableDetection
+from saq.database.database_observable import observable_is_interesting, observable_is_set_for_detection, upsert_observable
+from saq.database.model import Observable as DBObservable, ObservableDetection
 from saq.database.util.observable_detection import create_observable_detection
 from saq.observables import create_observable
 
@@ -62,6 +62,47 @@ def test_observable_is_set_for_detection_with_special_characters():
         create_observable_detection(observable.type, observable.value, None)
         assert observable_is_set_for_detection(observable) is True
 
+
+
+def _store_observable(observable, is_interesting: bool):
+    get_db().add(DBObservable(type=observable.type, sha256=observable.sha256_bytes,
+                              value=observable.value.encode("utf8"), is_interesting=is_interesting))
+    get_db().commit()
+
+
+@pytest.mark.integration
+def test_observable_is_interesting_not_exists():
+    assert observable_is_interesting(create_observable("ipv4", "10.0.0.1")) is False
+
+
+@pytest.mark.integration
+def test_observable_is_interesting_false():
+    observable = create_observable("ipv4", "192.168.1.1")
+    _store_observable(observable, False)
+
+    assert observable_is_interesting(observable) is False
+
+
+@pytest.mark.integration
+def test_observable_is_interesting_true():
+    observable = create_observable("ipv4", "192.168.1.1")
+    _store_observable(observable, True)
+
+    assert observable_is_interesting(observable) is True
+
+
+@pytest.mark.integration
+def test_observable_is_interesting_requires_a_matching_type():
+    """Same hash under another type is another observable."""
+    interesting = create_observable("fqdn", "shared.example.com")
+    _store_observable(interesting, True)
+
+    other_type = create_observable("url_domain", "shared.example.com")
+    assert other_type is not None
+    assert interesting.sha256_bytes == other_type.sha256_bytes
+
+    assert observable_is_interesting(interesting) is True
+    assert observable_is_interesting(other_type) is False
 
 
 @pytest.mark.integration

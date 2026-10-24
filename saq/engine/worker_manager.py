@@ -10,8 +10,7 @@ from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
 from saq.error.reporting import log_loop_exception
-from saq.shutdown import get_shutdown_coordinator
-
+from saq.shutdown import get_shutdown_coordinator, is_shutting_down
 
 
 class WorkerManager:
@@ -138,9 +137,17 @@ class WorkerManager:
                 "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
             )
 
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
+        # wait for all workers to start. a worker that cannot start (its modules failed to
+        # load, say) would fail the same way if restarted, so the engine fails to start
+        # rather than waiting on it or running without it
+        failed = [worker.name for worker in self.workers if not worker.wait_for_start()]
+        if failed:
+            if is_shutting_down():
+                logging.info("shutdown requested while the workers were starting")
+                return
+
+            self.immediate_shutdown()
+            raise RuntimeError(f"workers did not start: {', '.join(failed)}")
 
         logging.info("workers initialized")
 
@@ -245,30 +252,14 @@ class WorkerManager:
         # start the worker in the same mode the rest of the pool is running in
         new_worker.start(execution_mode=self.execution_mode, pending_failure=pending_failure)
 
-        #
-        # this is a bit hairy
-        #
-
-        try:
-            #
-            # XXX this does not seem to be able to handle the case
-            # when a process is killed by a signal
-            #
-
-            if dead_worker.process is not None:
-                dead_worker.process.close()
-
-        except Exception as e:
-            logging.info(f"unable to close process {dead_worker.process}: {e}")
-
+        # release the dead process's pipes. it has been reaped unless a kill did not take
+        # effect within Worker.kill()'s join, which leaves a process stuck in the kernel
+        if dead_worker.process is not None:
             try:
-                # you have to do this to close *both* pipes opened
-                if dead_worker.process is not None:
-                    logging.debug(f"finalizing {dead_worker.process}")
-                    dead_worker.process._popen.finalizer() # pyright: ignore
-                    logging.debug(f"finished finalizing {dead_worker.process}")
-            except Exception as e:
-                logging.error(f"unable to finalize process: {e}")
+                dead_worker.process.close()
+            except ValueError as e:
+                logging.warning("unable to close process %s of worker %s: %s", dead_worker.process.pid,
+                                dead_worker.name, e, extra={"worker_name": dead_worker.name})
 
     def restart_workers(self):
         """Restart all workers."""

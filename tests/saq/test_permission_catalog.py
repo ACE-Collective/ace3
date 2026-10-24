@@ -355,6 +355,21 @@ class TestIsGrantable:
         assert is_grantable("usr", "read") is False
         assert is_grantable("observable", "wrote") is False
 
+    def test_case_variants_are_grantable(self):
+        assert is_grantable("Signature", "READ") is True
+
+    def test_the_static_catalog_is_lowercase(self):
+        # every grant row is stored lowercase, so sync_permission_catalog keys the table on that
+        assert all(entry.major.islower() and entry.minor.islower() for entry in PERMISSION_CATALOG)
+
+
+def _add_backend(name: str) -> None:
+    get_config().raw._data[f"ai_query_backend_{name.lower()}"] = {
+        "name": name, "enabled": True,
+        "python_module": "saq.ai_query.backends.testing", "python_class": "FakeAIQueryBackend",
+    }
+    get_config().load_ai_query_backend_configs()
+
 
 @pytest.mark.integration
 class TestSyncPermissionCatalog:
@@ -377,6 +392,18 @@ class TestSyncPermissionCatalog:
         session.commit()
         assert (inserted, updated, pruned) == (0, 0, 0)
         assert session.query(AuthPermissionCatalog).count() == len(get_permission_catalog())
+
+    def test_sync_lowercases_a_backend_named_in_another_case(self):
+        _add_backend("MixedCase")
+        assert ("ai", "mixedcase") in get_catalog_pairs()
+
+        session = get_db()
+        sync_permission_catalog(session)
+        session.commit()
+        # the row came back lowercase, so a second sync finds it rather than inserting it again
+        assert sync_permission_catalog(session) == (0, 0, 0)
+        session.commit()
+        assert {(r.major, r.minor) for r in session.query(AuthPermissionCatalog).all()} == get_catalog_pairs()
 
     def test_sync_updates_changed_description(self):
         session = get_db()

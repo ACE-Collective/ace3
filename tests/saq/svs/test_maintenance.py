@@ -33,7 +33,7 @@ from saq.svs.refusals import Caller
 from saq.svs.runs import HOLDER_MAINTENANCE, HostBusy, Registration, TargetSpec, register, start
 from saq.svs.service import RunTimer
 from tests.saq.helpers import create_root_analysis, create_test_orchestrator
-from tests.saq.svs.conftest import add_catalog_test, add_test_host, attribute_to_run, started_run, sync_alert
+from tests.saq.svs.conftest import add_catalog_test, add_test_host, attribute_to_run, person, started_run, sync_alert
 
 pytestmark = pytest.mark.integration
 
@@ -232,7 +232,7 @@ def test_removing_the_test_host_ends_its_window(caplog):
     other = maintenance.open_window("srv-01", 30, "staging", LAUNCHER, now=opened)
 
     caplog.set_level(logging.INFO)
-    hosts.delete_host(_host_id("win10-01"), actor="dana")
+    hosts.delete_host(_host_id("win10-01"), person(None, "dana"))
     removed_at = datetime.now()
 
     window = _window(window.uuid)
@@ -262,7 +262,7 @@ def test_a_failed_host_removal_leaves_the_window_open(monkeypatch, caplog):
     monkeypatch.setattr(db, "commit", broken)
     caplog.set_level(logging.INFO)
     with pytest.raises(RuntimeError, match="database went away"):
-        hosts.delete_host(_host_id("win10-01"), actor="dana")
+        hosts.delete_host(_host_id("win10-01"), person(None, "dana"))
     monkeypatch.undo()
     db.rollback()
 
@@ -401,12 +401,12 @@ class TestEvaluate:
         ALERT(root)
         analyst = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
 
-        associate(run.uuid, root.uuid, analyst, "unittest")
+        associate(run.uuid, root.uuid, person(analyst))
         evaluation = evaluate(root, datetime.now())
         assert evaluation.maintenance is None
         assert {row.run_id for row in evaluation.existing if not row.removed} == {run.id}
 
-        disassociate(run.uuid, root.uuid, analyst, "unittest")
+        disassociate(run.uuid, root.uuid, person(analyst))
         assert evaluate(root, datetime.now()).maintenance.uuid == window.uuid
 
     def test_a_window_ended_early_ends_there(self, window):

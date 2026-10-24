@@ -3,6 +3,7 @@
 #
 
 from datetime import datetime
+import logging
 import os
 import shutil
 import threading
@@ -1764,6 +1765,56 @@ def test_repeated_duplicates_are_not_counted_as_scheduled_work():
     # collection_loop fall through to sleep(collection_frequency)
     assert collector_service.execute_collection_loop() == (1, 0)
     assert collector_service.execute_collection_loop() == (1, 0)
+
+
+@pytest.mark.integration
+def test_duplicates_are_handed_to_the_collector_after_the_pass():
+    """each pass hands the collector what it dropped as duplicates, and only those"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+    dropped = []
+
+    class _DedupCollector(Collector):
+        def collect(self) -> Generator[Submission, None, None]:
+            yield from file_manager.iter_staged_submissions()
+
+        def duplicates_dropped(self, submissions: list[Submission]) -> None:
+            dropped.append([submission.root.uuid for submission in submissions])
+
+    collector_service.collector = _DedupCollector()
+    create_staged_submission(file_manager, key="repeated-key")
+    assert collector_service.execute_collection_loop() == (1, 1)
+    # nothing was dropped, so the collector isn't called
+    assert dropped == []
+
+    duplicate = create_staged_submission(file_manager, key="repeated-key")
+    create_staged_submission(file_manager, key="another-key")
+    assert collector_service.execute_collection_loop() == (2, 1)
+    assert dropped == [[duplicate]]
+
+
+@pytest.mark.integration
+def test_a_collector_failing_on_its_duplicates_is_logged(caplog):
+    """a collector that raises on its duplicates doesn't break the pass"""
+    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
+    file_manager = collector_service.file_manager
+
+    class _FailingCollector(Collector):
+        def collect(self) -> Generator[Submission, None, None]:
+            yield from file_manager.iter_staged_submissions()
+
+        def duplicates_dropped(self, submissions: list[Submission]) -> None:
+            raise RuntimeError("boom")
+
+    collector_service.collector = _FailingCollector()
+    create_staged_submission(file_manager, key="repeated-key")
+    collector_service.execute_collection_loop()
+    create_staged_submission(file_manager, key="repeated-key")
+    with caplog.at_level(logging.ERROR):
+        assert collector_service.execute_collection_loop() == (1, 0)
+
+    (record,) = [r for r in caplog.records if "duplicate submissions to" in r.getMessage()]
+    assert record.levelno == logging.ERROR and record.exc_info is not None
 
 
 @pytest.mark.integration

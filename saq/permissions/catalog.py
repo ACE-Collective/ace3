@@ -119,11 +119,13 @@ def dynamic_backend_entries() -> tuple[CatalogEntry, ...]:
     except Exception:
         return ()
 
+    # lowercase, as every permission is stored (saq.database.model), or sync_permission_catalog
+    # would never find the row it wrote
     return tuple(
-        CatalogEntry("ai", backend.name,
+        CatalogEntry("ai", backend.name.lower(),
                      f"Run read-only {backend.name} queries via the AI investigation API.")
         for backend in sorted(backends, key=lambda b: b.name)
-        if ("ai", backend.name) not in CATALOG_PAIRS
+        if ("ai", backend.name.lower()) not in CATALOG_PAIRS
     )
 
 
@@ -147,7 +149,7 @@ def is_grantable(major: str, minor: str) -> bool:
     ``*:*``, ``observable:*``, ``*:read`` remain grantable even though they are not catalog rows).
     Used to *warn* (not block) on likely typos when granting permissions.
     """
-    if (major, minor) in get_catalog_pairs():
+    if (major.lower(), minor.lower()) in get_catalog_pairs():
         return True
     return any(c in major or c in minor for c in _WILDCARD_CHARS)
 
