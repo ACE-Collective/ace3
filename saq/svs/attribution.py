@@ -49,7 +49,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_identity import detection_content_hash, node_identity
 from saq.analysis.observable import Observable
-from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis
+from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4
 from saq.database.model import SVSAttribution, SVSMaintenanceWindow, SVSRun, SVSSuppressedMatch, SVSTestHost
@@ -63,7 +63,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
-    EventTimeSource,
+    AttributionTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -483,25 +483,17 @@ def alert_hosts(root: RootAnalysis) -> AlertHosts:
     return result
 
 
-def event_time_source(root: RootAnalysis) -> EventTimeSource:
-    """Where alert_event_time's answer comes from: the event's own time, the time a hunt that couldn't
-    extract it ran its query (KEY_EVENT_TIME_FALLBACK), or the alert's insert time."""
-    if root.event_time is None:
-        return EventTimeSource.INSERT_TIME
-    if (root.extensions or {}).get(KEY_EVENT_TIME_FALLBACK) == EVENT_TIME_FALLBACK_QUERY_TIME:
-        return EventTimeSource.QUERY_TIME
-    return EventTimeSource.EVENT
-
-
-def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> datetime:
-    """When the alert's event happened, as runs record time (naive, local): the root's event time
-    (for a hunt, the query's event time), or when the alert was inserted [FR-9]."""
+def alert_event_time(root: RootAnalysis, inserted_at: datetime) -> tuple[datetime, AttributionTimeSource]:
+    """When the alert's event happened, as runs record time (naive, local), and where that came from:
+    the root's event time (for a hunt, the query's event time) and its source, or when the alert was
+    inserted [FR-9]."""
     event_time = root.event_time
     if event_time is None:
-        return inserted_at
+        return inserted_at, AttributionTimeSource.INSERT_TIME
     if event_time.tzinfo is not None:
         event_time = event_time.astimezone(get_local_timezone()).replace(tzinfo=None)
-    return event_time
+    # every root source but unset (which has no time) is an attribution source by value
+    return event_time, AttributionTimeSource(root.event_time_source)
 
 
 #
@@ -561,7 +553,7 @@ class Evaluation:
     candidate_runs: list[RunSnapshot] = field(default_factory=list)
     # the alert's event time it was judged by, and where it came from, kept on each attribution
     event_time: Optional[datetime] = None
-    event_time_source: Optional[EventTimeSource] = None
+    event_time_source: Optional[AttributionTimeSource] = None
     # it has no marker and no attribution, and its event time is in a maintenance window on one of
     # its hosts: it is routed to the test queue and closed (docs/SVS_RUNS.md, *Maintenance windows*)
     maintenance: Optional[MaintenanceSnapshot] = None
@@ -726,7 +718,7 @@ def suppression_owners(roots: list[RootAnalysis],
         return [None] * len(roots)
 
     now = now or datetime.now()
-    owners = context_owners([(alert_hosts(root), alert_event_time(root, now)) for root in roots])
+    owners = context_owners([(alert_hosts(root), alert_event_time(root, now)[0]) for root in roots])
     return [owner.maintenance or owner.run
             or max(owner.candidates, key=lambda run: (run.started_at, run.id), default=None)
             for owner in owners]
@@ -740,11 +732,13 @@ def suppression_key(owner: RunSnapshot | MaintenanceSnapshot, group_value: str) 
     return f"{kind}:{owner.uuid}:{group_value}"
 
 
-def evaluate(root: RootAnalysis, event_time: datetime) -> Evaluation:
-    """Judges every marker in the alert against its run and attributes its detections. Reads the
-    database, writes nothing; the caller checks the gate (attribution_open) first."""
+def evaluate(root: RootAnalysis, event_time: datetime,
+             event_time_source: AttributionTimeSource = AttributionTimeSource.EVENT) -> Evaluation:
+    """Judges every marker in the alert against its run and attributes its detections, by the event
+    time and source alert_event_time gives. Reads the database, writes nothing; the caller checks the
+    gate (attribution_open) first."""
     evaluation = Evaluation(detections=alert_detections(root), event_time=event_time,
-                            event_time_source=event_time_source(root))
+                            event_time_source=event_time_source)
     hosts = alert_hosts(root)
     sightings = tree_sightings(root)
 
@@ -1063,7 +1057,7 @@ def record_suppressed_matches(hunt_uuid: str, matches: list[tuple[RootAnalysis, 
         return []
 
     now = now or datetime.now()
-    times = [alert_event_time(root, now) for root, _ in matches]
+    times = [alert_event_time(root, now)[0] for root, _ in matches]
     owners = context_owners([(alert_hosts(root), event_time) for (root, _), event_time in zip(matches, times)])
     first: dict[int, tuple[RunSnapshot, SuppressedMatch]] = {}
     for (root, group_value), event_time, owner in sorted(zip(matches, times, owners), key=lambda item: item[1]):

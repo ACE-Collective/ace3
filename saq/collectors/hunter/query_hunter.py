@@ -17,8 +17,6 @@ from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import (
-    EVENT_TIME_FALLBACK_QUERY_TIME,
-    KEY_EVENT_TIME_FALLBACK,
     KEY_PLAYBOOK_URL,
     KEY_TRANSACTION_ID,
     RootAnalysis,
@@ -28,7 +26,7 @@ from saq.collectors.hunter import Hunt, read_persistence_data, write_persistence
 from saq.collectors.hunter.base_hunter import HuntConfig
 from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN, EventTimeSource
 from saq.collectors.submission_file_manager import get_staging_tmp_dir
 from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
@@ -1000,8 +998,10 @@ class QueryHunt(Hunt):
 
         # map results to observables
         for event_index, event in enumerate(query_results):
-            extracted_time = self.extract_event_timestamp(event)
-            event_time = extracted_time or local_time()
+            event_time = self.extract_event_timestamp(event)
+            event_time_source = EventTimeSource.EVENT
+            if event_time is None:
+                event_time, event_time_source = local_time(), EventTimeSource.QUERY_TIME
             event = self.wrap_event(event)
 
             # use shared extraction pipeline
@@ -1052,10 +1052,7 @@ class QueryHunt(Hunt):
             if self.group_by != "ALL" and (self.group_by is None or self.group_by not in event):
                 submission = _create_submission(event)
                 submission.key = _compute_dedup_key(event)
-                submission.root.event_time = event_time
-                # SVS attribution judges windows by it, and says when it rests on the query's time
-                submission.root.set_optional_extension(
-                    KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
+                submission.root.set_event_time(event_time, event_time_source)
 
                 # Apply correlation overrides
                 if event_index in event_action_overrides:
@@ -1145,10 +1142,8 @@ class QueryHunt(Hunt):
                     # this won't really matter if the observables are temporal
                     group_root = event_grouping[grouping_target].root
                     if group_root.event_time is None or event_time < group_root.event_time:
-                        group_root.event_time = event_time
-                        # the group's time is its earliest event's: whether that one's is its own
-                        group_root.set_optional_extension(
-                            KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME if extracted_time is None else None)
+                        # and so is where it came from
+                        group_root.set_event_time(event_time, event_time_source)
 
             # apply relationships to the observables
             for submission in submissions:

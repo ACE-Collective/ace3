@@ -13,7 +13,7 @@ from datetime import datetime
 import ace_api
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IP
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_NO_SCAN, F_FILE, F_IP, EventTimeSource
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
 from saq.email_archive import archive_email
@@ -149,6 +149,22 @@ def _submit(analysis_mode=None,
                         ('submit_test.dat', fp)])
     finally:
         os.remove(temp_path)
+
+@pytest.mark.integration
+@pytest.mark.parametrize("event_time, event_time_source, expected", [
+    (_get_submit_time(), None, EventTimeSource.EVENT),
+    (_get_submit_time(), "query_time", EventTimeSource.QUERY_TIME),
+    # the time ace_api fills in is when it submitted, whatever the caller said
+    (None, None, EventTimeSource.NOW),
+    (None, "query_time", EventTimeSource.NOW),
+])
+def test_submit_event_time_source(event_time, event_time_source, expected):
+    result = ace_api.submit("testing", analysis_mode="test_empty", event_time=event_time,
+                            event_time_source=event_time_source)
+    root = RootAnalysis(storage_dir=get_storage_dir(result["result"]["uuid"]))
+    root.load()
+    assert root.event_time is not None
+    assert root.event_time_source == expected
 
 @pytest.mark.integration
 def test_submit():

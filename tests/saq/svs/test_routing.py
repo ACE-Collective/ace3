@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from saq.alert_routing import get_alert_routers, load_alert_routers, reset_alert_routers
-from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis, load_root
+from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
@@ -19,6 +19,7 @@ from saq.constants import (
     F_TEST,
     QUEUE_DEFAULT,
     SERVICE_YARA_SCANNER,
+    EventTimeSource,
 )
 from saq.database.model import Alert, AlertQueueChange, SVSAttribution, User
 from saq.database.pool import get_db
@@ -98,7 +99,7 @@ class TestFallbackEventTime:
     def test_a_hunt_that_fell_back_on_a_test_host_is_warned_about_once(self, run, caplog):
         run_uuid = run.uuid
         root = _root()
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)
         root.description = "suspicious powershell"
         root.save()
         caplog.set_level(logging.INFO)
@@ -119,7 +120,7 @@ class TestFallbackEventTime:
         root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now() + timedelta(minutes=1))
         root.initialize_storage()
         root.add_detection_point("hunt hit")
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)
         root.save()
         caplog.set_level(logging.INFO)
         ALERT(root)
@@ -136,7 +137,7 @@ class TestFallbackEventTime:
 
     def test_a_later_pass_that_changes_its_attributions_is_not_warned_about_again(self, run, caplog):
         root = _root()
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)
         root.save()
         caplog.set_level(logging.INFO)
         ALERT(root)
@@ -153,7 +154,7 @@ class TestFallbackEventTime:
     def test_a_hunt_inside_a_maintenance_window_is_warned_about(self, caplog):
         maintenance.open_window("win10-01", 30, "staging", CALLER, now=datetime.now() - timedelta(minutes=10))
         root = _root()
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)
         root.description = "suspicious powershell"
         root.save()
         caplog.set_level(logging.INFO)
@@ -170,7 +171,7 @@ class TestFallbackEventTime:
         started_run(GUID)
         started_run(GUID)
         root = _root()
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
+        root.set_event_time(root.event_time, EventTimeSource.QUERY_TIME)
         root.description = "suspicious powershell"
         root.save()
         caplog.set_level(logging.INFO)
@@ -190,6 +191,20 @@ class TestFallbackEventTime:
         with private_transaction() as session:
             assert session.execute(select(SVSAttribution.event_time_source).where(
                 SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["event"]
+
+    def test_a_time_its_producer_made_up_is_not_blamed_on_a_hunt(self, run, caplog):
+        # now is a fallback time too, but no hunt's timestamp extraction is at fault
+        root = _root()
+        root.set_event_time(root.event_time, EventTimeSource.NOW)
+        root.save()
+        caplog.set_level(logging.INFO)
+        ALERT(root)
+        sync_alert(root)
+
+        assert not [r for r in caplog.records if "without the event's own time" in r.getMessage()]
+        with private_transaction() as session:
+            assert session.execute(select(SVSAttribution.event_time_source).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars().all() == ["now"]
 
 
 class TestPreInsert:

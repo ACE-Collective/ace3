@@ -112,14 +112,17 @@ class AttributionConfidence(StrEnum):
     CONTEXT = "context"      # no marker at all: the run's target and window alone
 
 
-class EventTimeSource(StrEnum):
-    """Where the event time an alert was judged by came from (svs_attributions.event_time_source)."""
+class AttributionTimeSource(StrEnum):
+    """Where the event time an alert was judged by came from (svs_attributions.event_time_source):
+    the root's saq.constants.EventTimeSource, or its insert time when the root has none."""
     EVENT = "event"            # the event's own
     QUERY_TIME = "query_time"  # a hunt couldn't extract the event's timestamp and used its query's time
+    NOW = "now"                # nothing gave the alert a time: when its producer created it
     INSERT_TIME = "insert_time"  # the alert has no event time: when it was inserted
 
 
-FALLBACK_EVENT_TIME_SOURCES = (EventTimeSource.QUERY_TIME.value, EventTimeSource.INSERT_TIME.value)
+FALLBACK_EVENT_TIME_SOURCES = (AttributionTimeSource.QUERY_TIME.value, AttributionTimeSource.NOW.value,
+                               AttributionTimeSource.INSERT_TIME.value)
 
 
 class AttributionSource(StrEnum):

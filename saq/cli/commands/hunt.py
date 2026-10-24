@@ -134,6 +134,7 @@ def execute_hunt(args):
                 tool_instance=submission.root.tool_instance,
                 type=submission.root.alert_type,
                 event_time=submission.root.event_time,
+                event_time_source=submission.root.event_time_source.value,
                 details=submission.root.details,
                 observables=observables,
                 tags=submission.root.tags,

@@ -11,7 +11,7 @@ from flask import url_for
 
 from saq.analysis.file_manager.local_file_manager import clean_file_name
 from saq.analysis.root import RootAnalysis
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS, EventTimeSource
 from saq.database.model import Alert, ObservableComment
 from saq.database.pool import get_db
 from saq.database.util.alert import get_alert_by_uuid
@@ -98,6 +98,8 @@ class TestUploadFile:
         alert.load()  # load() returns None but populates _root_analysis
         root_analysis = alert.root_analysis
         assert root_analysis is not None
+        # nothing gave the upload a time but the upload itself
+        assert root_analysis.event_time_source == EventTimeSource.NOW
         
         # Check that the file observable was added
         file_observables = [obs for obs in root_analysis.observables if obs.type == 'file']

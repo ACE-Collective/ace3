@@ -12,7 +12,7 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.constants import F_FILE
+from saq.constants import F_FILE, EventTimeSource
 from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
@@ -78,7 +78,7 @@ def _store_upload(file_path, temp_path: str, file_name: str, comment: str, alert
         root.tool_instance = get_config().global_settings.instance_name
         root.alert_type = 'manual_upload'
         root.description = 'Manual File upload {0}'.format(file_name)
-        root.event_time = datetime.now()
+        root.set_event_time(datetime.now(), EventTimeSource.NOW)
         root.details = {'user': current_user.username, 'comment': comment}
 
         file_observable = root.add_file_observable(temp_path, file_name)

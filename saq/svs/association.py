@@ -39,12 +39,12 @@ from saq.database.pool import get_db
 from saq.database.util.alert import change_alert_owner, move_alert_to_queue, set_dispositions
 from saq.logging import log_audit
 from saq.svs.alert_status import alert_svs_statuses
-from saq.svs.attribution import alert_event_time, event_time_source, flag_changed_since_review
+from saq.svs.attribution import alert_event_time, flag_changed_since_review
 from saq.svs.constants import (
     SVS_MANUAL_ROUTER,
     AttributionConfidence,
     AttributionSource,
-    EventTimeSource,
+    AttributionTimeSource,
     RunEventKind,
     RunState,
     SVSStatus,
@@ -162,14 +162,14 @@ def _audit(message: str, run: SVSRun, alert_uuid: str, auth: "ApiAuthResult", **
     log_audit(message, auth=auth, **run_log_fields(run), alert_uuid=alert_uuid, **fields)
 
 
-def _event_time(alert: _Alert) -> tuple[datetime, EventTimeSource]:
+def _event_time(alert: _Alert) -> tuple[datetime, AttributionTimeSource]:
     """The alert's event time and where it came from, judged as the router judges them."""
     try:
-        root = load_root(alert.storage_dir)
-        return alert_event_time(root, alert.insert_date), event_time_source(root)
-    except Exception as e:
-        logging.warning("unable to load alert %s for its event time; using its insert time: %s", alert.uuid, e)
-        return alert.insert_date, EventTimeSource.INSERT_TIME
+        return alert_event_time(load_root(alert.storage_dir), alert.insert_date)
+    except Exception:
+        logging.exception("unable to load alert %s for its event time; using its insert time", alert.uuid,
+                          extra={"alert_uuid": alert.uuid, "storage_dir": alert.storage_dir})
+        return alert.insert_date, AttributionTimeSource.INSERT_TIME
 
 
 #

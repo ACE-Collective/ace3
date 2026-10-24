@@ -38,7 +38,7 @@ from saq.svs.attribution import (
     write_attributions,
 )
 from saq.svs import maintenance
-from saq.svs.constants import SVS_MANUAL_ROUTER, EventTimeSource, SVSStatus
+from saq.svs.constants import SVS_MANUAL_ROUTER, AttributionTimeSource, SVSStatus
 
 REASON_ROUTED = "every detection is attributed to SVS test run {run}"
 REASON_NO_LONGER_ATTRIBUTED = "no longer attributed to an SVS test run"
@@ -92,7 +92,7 @@ class MarkerRouter(AlertRouter):
             if alert is None:
                 return None
 
-        evaluation = evaluate(root, alert_event_time(root, alert.insert_date if alert else datetime.now()))
+        evaluation = evaluate(root, *alert_event_time(root, alert.insert_date if alert else datetime.now()))
         log_sightings(root.uuid, evaluation, stage.value)
         written = write_attributions(root.uuid, evaluation)
         self._warn_fallback_time(root, stage, evaluation, written.first)
@@ -129,7 +129,7 @@ class MarkerRouter(AlertRouter):
         event's own time: it was judged by the time the hunt ran its query, which can put it in the
         wrong window, so the hunt's timestamp extraction wants fixing. As it is created, or at the later
         pass that first attributes it, not on every pass that changes its attributions."""
-        if evaluation.event_time_source != EventTimeSource.QUERY_TIME:
+        if evaluation.event_time_source != AttributionTimeSource.QUERY_TIME:
             return
         concerned = evaluation.attributions or evaluation.maintenance is not None or evaluation.candidate_runs
         if not ((stage == RouteStage.PRE_INSERT and concerned) or first_attributed):

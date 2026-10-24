@@ -26,7 +26,8 @@ router = APIRouter(dependencies=[Security(get_current_auth)])
 async def submit(
     request: Request,
     analysis: Annotated[str, Form(description="the submission as a JSON object: description (required), "
-                                              "analysis_mode, tool, tool_instance, type, event_time, details, "
+                                              "analysis_mode, tool, tool_instance, type, event_time, event_time_source, "
+                                              "details, "
                                               "observables, tags, queue, instructions, extensions, company_id")],
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "create"))],
     file: Annotated[list[UploadFile] | None, File(description="files to add as file observables (repeat for more)")] = None,

@@ -12,11 +12,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.root import EVENT_TIME_FALLBACK_QUERY_TIME, KEY_EVENT_TIME_FALLBACK, RootAnalysis, Submission
+from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.base_collector import CollectorService
 from saq.collectors.hunter.service import HunterCollector
 from saq.configuration.config import get_config, get_service_config
-from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL, SERVICE_HUNTER
+from saq.constants import F_FQDN, F_HOSTNAME, F_IPV4, F_TEST, F_URL, SERVICE_HUNTER, EventTimeSource
 from saq.database import private_session
 from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, SVSRunResultState, SVSSuppressedMatch, User
 from saq.database.pool import get_db
@@ -37,7 +37,6 @@ from saq.svs.attribution import (
     context_claimant,
     context_owners,
     evaluate,
-    event_time_source,
     find_markers_in_data,
     record_delta_sightings,
     record_suppressed_matches,
@@ -54,7 +53,7 @@ from saq.svs.constants import (
     SIGHTINGS_EXTENSION,
     AttributionConfidence,
     AttributionSource,
-    EventTimeSource,
+    AttributionTimeSource,
     MarkerResult,
     RunEventKind,
     RunState,
@@ -207,18 +206,17 @@ class TestHosts:
 
     def test_event_time(self):
         root = RootAnalysis(uuid=str(uuid.uuid4()))
-        assert alert_event_time(root, T0) == T0
+        assert alert_event_time(root, T0) == (T0, AttributionTimeSource.INSERT_TIME)
         aware = datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc)
         root.event_time = aware
-        assert alert_event_time(root, T0) == aware.astimezone(get_local_timezone()).replace(tzinfo=None)
+        assert alert_event_time(root, T0) == (
+            aware.astimezone(get_local_timezone()).replace(tzinfo=None), AttributionTimeSource.EVENT)
 
-    def test_event_time_source(self):
+    @pytest.mark.parametrize("source", [s for s in EventTimeSource if s != EventTimeSource.UNSET])
+    def test_every_source_of_a_root_event_time_is_one_an_attribution_records(self, source):
         root = RootAnalysis(uuid=str(uuid.uuid4()))
-        assert event_time_source(root) == EventTimeSource.INSERT_TIME
-        root.event_time = T0
-        assert event_time_source(root) == EventTimeSource.EVENT
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
-        assert event_time_source(root) == EventTimeSource.QUERY_TIME
+        root.set_event_time(T0, source)
+        assert alert_event_time(root, T0) == (T0, AttributionTimeSource(source.value))
 
 
 #
@@ -611,24 +609,29 @@ class TestDatabase:
         root = self._root(run)
         event_time = _soon().replace(microsecond=0)
         root.event_time = event_time
-        write_attributions(root.uuid, evaluate(root, event_time))
+        write_attributions(root.uuid, evaluate(root, *alert_event_time(root, T0)))
         assert self._sources(root.uuid) == {"event"}
 
         # a later pass that finds the time was the hunt's query time says so
-        root.set_extension(KEY_EVENT_TIME_FALLBACK, EVENT_TIME_FALLBACK_QUERY_TIME)
-        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        root.set_event_time(event_time, EventTimeSource.QUERY_TIME)
+        assert len(write_attributions(root.uuid, evaluate(root, *alert_event_time(root, T0))).written) == 2
         assert self._sources(root.uuid) == {"query_time"}
+
+        # and one by the time its producer created it
+        root.set_event_time(event_time, EventTimeSource.NOW)
+        assert len(write_attributions(root.uuid, evaluate(root, *alert_event_time(root, T0))).written) == 2
+        assert self._sources(root.uuid) == {"now"}
 
         # rows written before the source was recorded get it on the next pass
         with private_transaction() as session:
             session.execute(SVSAttribution.__table__.update().where(
                 SVSAttribution.alert_uuid == root.uuid).values(event_time_source=None))
-        root.extensions.pop(KEY_EVENT_TIME_FALLBACK)
-        assert len(write_attributions(root.uuid, evaluate(root, event_time)).written) == 2
+        root.event_time = event_time
+        assert len(write_attributions(root.uuid, evaluate(root, *alert_event_time(root, T0))).written) == 2
         assert self._sources(root.uuid) == {"event"}
 
         # and a pass that changes nothing writes nothing
-        assert write_attributions(root.uuid, evaluate(root, event_time)).written == []
+        assert write_attributions(root.uuid, evaluate(root, *alert_event_time(root, T0))).written == []
 
     def _reviewed_run(self):
         run = started_run(GUID)

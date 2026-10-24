@@ -23,6 +23,7 @@ from saq.constants import (
     NODE_STATUS_DRAINED,
     NODE_STATUS_DRAINING,
     QUEUE_DEFAULT,
+    EventTimeSource,
 )
 from saq.database import ALERT
 from saq.database.util.node import get_node_status
@@ -99,7 +100,7 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
         raise HTTPException(status_code=400, detail="missing description field in submission")
 
     # no event time (or a null one) is now
-    event_time = get_local_timezone().localize(datetime.now())
+    event_time, event_time_source = get_local_timezone().localize(datetime.now()), EventTimeSource.NOW
     if submission.get("event_time") is not None:
         try:
             event_time = parse_event_time(submission["event_time"])
@@ -107,6 +108,14 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
             raise HTTPException(
                 status_code=400,
                 detail=f"invalid event time format for {submission['event_time']} (use {EVENT_TIME_FORMAT_JSON_TZ} format)")
+        # a submitter that substituted a time for the event's own (ace hunt --submit-alerts) says so
+        sources = [s.value for s in EventTimeSource if s != EventTimeSource.UNSET]
+        event_time_source = submission.get("event_time_source") or EventTimeSource.EVENT
+        if event_time_source not in sources:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid event_time_source {event_time_source} (use one of {', '.join(sources)})")
+        event_time_source = EventTimeSource(event_time_source)
 
     root_uuid = str(uuidlib.uuid4())
     root = RootAnalysis(uuid=root_uuid, storage_dir=storage_dir_from_uuid(root_uuid))
@@ -118,7 +127,7 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
         root.tool_instance = submission.get("tool_instance", f"api({remote_addr})")
         root.alert_type = submission.get("type", get_config().api.default_alert_type)
         root.description = submission["description"]
-        root.event_time = event_time
+        root.set_event_time(event_time, event_time_source)
         root.queue = submission.get("queue", QUEUE_DEFAULT)
         root.instructions = submission.get("instructions")
         root.extensions = submission.get("extensions")

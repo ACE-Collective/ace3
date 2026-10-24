@@ -18,7 +18,7 @@ from saq.cli.alert_sweep import (
 )
 from saq.cli.cli_main import get_cli_subparsers
 from saq.cli.cli_util import display_analysis
-from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE
+from saq.constants import ANALYSIS_MODE_CORRELATION, F_FILE, F_SUSPECT_FILE, EventTimeSource
 from saq.configuration import get_config
 from saq.database.model import Alert
 from saq.database.pool import get_db
@@ -44,7 +44,7 @@ def create_alert(args):
     root.tool_instance = 'n/a'
     root.alert_type = 'debug'
     root.description = 'Manual Alert'
-    root.event_time = datetime.datetime.now()
+    root.set_event_time(datetime.datetime.now(), EventTimeSource.NOW)
 
     root.initialize_storage()
 

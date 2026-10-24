@@ -332,6 +332,7 @@ def submit(
     queue='default', 
     instructions=None,
     extensions=None,
+    event_time_source=None,
     *args, **kwargs):
     """Submit a request to ACE for analysis and/or correlation.
     
@@ -353,6 +354,8 @@ def submit(
         this alert is about and/or how to analyze the data contained in the
         alert.
     :param str extensions: (optional) An optional free-form dictionary used to pass additional data.
+    :param str event_time_source: (optional) Where event_time came from when it is not the event's own: query_time
+        (a hunt couldn't extract the event's timestamp) or now. Default: event; always now when event_time is not given.
     :return: A result dictionary. If submission was successful, the UUID of the analysis will be contained. Like this:
         {'result': {'uuid': '960b0a0f-3ea2-465f-852f-ebccac6ae282'}}
     :rtype: dict
@@ -364,6 +367,7 @@ def submit(
     # default event time is now
     if event_time is None:
         event_time = datetime.datetime.now()
+        event_time_source = 'now'
 
     # no timezone yet?
     # convert to UTC and then to the correct datetime format string for ACE
@@ -426,6 +430,7 @@ def submit(
             'queue': queue, 
             'instructions': instructions,
             'extensions': extensions,
+            'event_time_source': event_time_source,
         }),
     }, files=files_params, method=METHOD_POST, *args, **kwargs).json()
 

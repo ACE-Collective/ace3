@@ -20,6 +20,7 @@ from saq.constants import (
     F_USER,
     NODE_STATUS_DRAINING,
     NODE_STATUS_RUNNING,
+    EventTimeSource,
 )
 from saq.database.model import Alert
 from saq.database.pool import get_db, get_db_connection
@@ -164,7 +165,22 @@ class TestSubmit:
         response = await _submit(client, _submission(event_time=None))
 
         assert response.status_code == 201
-        assert _load(response.json()["uuid"]).event_time >= before.replace(microsecond=0)
+        root = _load(response.json()["uuid"])
+        assert root.event_time >= before.replace(microsecond=0)
+        assert root.event_time_source == EventTimeSource.NOW
+
+    @pytest.mark.asyncio
+    async def test_the_event_time_source(self, client: AsyncClient):
+        response = await _submit(client, _submission())
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.EVENT
+
+        # a hunt run from the command line couldn't extract the event's time
+        response = await _submit(client, _submission(event_time_source="query_time"))
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.QUERY_TIME
+
+        # without a time there is nothing for it to describe
+        response = await _submit(client, _submission(event_time=None, event_time_source="query_time"))
+        assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.NOW
 
     @pytest.mark.asyncio
     async def test_without_files_as_a_plain_form(self, client: AsyncClient):
@@ -307,6 +323,8 @@ class TestInvalid:
         ({key: value for key, value in _submission().items() if key != "description"}, 400,
          "missing description field in submission"),
         (_submission(event_time="20189-13-143"), 400, "invalid event time format"),
+        (_submission(event_time_source="unset"), 400, "invalid event_time_source unset"),
+        (_submission(event_time_source="sometime"), 400, "invalid event_time_source sometime"),
         (_submission(observables=[{"type": F_IP, "time": EVENT_TIME}]), 400, "invalid observable"),
         (_submission(observables=[{"value": "1.2.3.4"}]), 400, "invalid observable"),
         (_submission(observables=[{"type": F_IP, "value": "1.2.3.4", "time": "INVALID_TIME"}]), 400, "invalid observable"),

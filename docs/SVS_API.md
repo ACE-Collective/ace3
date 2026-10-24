@@ -871,7 +871,7 @@ alerts by hand*), one row per (alert, detection), removed ones included, read wi
 | `signature_uuid`, `signature_family` | The detection's signature. |
 | `confidence`, `late` | `marker` or `context` (a person's association is `marker`), and whether the alert's event came after the observation window. |
 | `event_time`, `cleanup` | The alert's event time the attribution was judged by (null for attributions written before it was kept), and whether it is at or after the run's `cleanup_at`: the test's cleanup caused it (`docs/SVS_RUNS.md`, *Cleanup*). |
-| `event_time_source`, `fallback_time` | Where `event_time` came from: `event` (the event's own), `query_time` (a hunt couldn't extract it) or `insert_time` (the alert has none); null for attributions written before it was kept. `fallback_time` is true for the last two (`docs/SVS_RUNS.md`, *Fallback event times*). |
+| `event_time_source`, `fallback_time` | Where `event_time` came from: `event` (the event's own), `query_time` (a hunt couldn't extract it), `now` (nothing gave the alert a time, so its producer used the time it created it) or `insert_time` (the alert has none); null for attributions written before it was kept. `fallback_time` is true for all but `event` (`docs/SVS_RUNS.md`, *Fallback event times*). |
 | `source` | `router` (the `svs_marker` router) or `manual` (a person associated the alert). |
 | `scan_point` | Where the agreeing marker was found; null for context and for a person's association. |
 | `actor`, `actor_user`, `created_at` | Who attributed it (`svs` for the router) and when. |

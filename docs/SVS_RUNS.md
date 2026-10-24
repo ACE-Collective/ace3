@@ -604,14 +604,18 @@ the marker only in the command line should expect file detections to be attribut
 
 ### Fallback event times
 
-Windows are judged by the alert's event time, which is not always the event's own:
+Windows are judged by the alert's event time, which is not always the event's own. The root says
+where its time came from (`RootAnalysis.event_time_source`), and `alert_event_time()` returns the
+time with its source:
 
 - a hunt that can't extract an event's timestamp uses the time it processed the query's results
-  (the root carries the `event_time_fallback` extension, `query_time`);
-- an alert with no event time at all is judged by when it was inserted.
+  (`query_time`);
+- `ace correlate` without `--reference-time`, `ace alert create`, an API submission without an
+  `event_time` and a manual file upload use the time they created the alert (`now`);
+- an alert with no event time at all is judged by when it was inserted (`insert_time`).
 
-Either can put an alert in the wrong run's window, or in none. Each attribution records which clock
-it was judged by (`event_time_source`: `event`, `query_time` or `insert_time`), a result row says
+Any of them can put an alert in the wrong run's window, or in none. Each attribution records which
+clock it was judged by (`event_time_source`: `event`, `query_time`, `now` or `insert_time`), a result row says
 when any of its signature's attributions rests on a fallback (`fallback_time`), and the run page
 says so next to *late*, on the alert, its detections and the result row. A hunt that alerted on a
 test host, inside a run's or a maintenance window, by its query's time is logged at WARNING as the

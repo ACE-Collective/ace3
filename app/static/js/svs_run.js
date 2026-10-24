@@ -1041,8 +1041,9 @@
                     item.appendChild(muted(" · cleanup"));
                 }
                 if (a && a.fallback_time && !a.removed_at) {
-                    const fallback = el("span", "text-warning-emphasis", " · " + (a.event_time_source === "query_time"
-                        ? "the hunt's query time" : "the alert's insert time"));
+                    const label = {query_time: "the hunt's query time", now: "the time it was created"}[a.event_time_source]
+                        || "the alert's insert time";
+                    const fallback = el("span", "text-warning-emphasis", " · " + label);
                     fallback.title = "not the event's own time: it may have put the alert in the wrong window";
                     item.appendChild(fallback);
                 }

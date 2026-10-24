@@ -15,7 +15,7 @@ from saq.analysis.root import RootAnalysis, Submission
 from saq.cli.cli_main import get_cli_parser
 from saq.cli.commands.hunt import list_hunt_types, list_hunts, verify_hunt
 from saq.collectors.hunter.query_hunter import QUERY_DETAILS_EVENTS, QueryHunt
-from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_EXTRACT_URLS, F_FQDN, F_IPV4, R_REDIRECTED_FROM
+from saq.constants import ANALYSIS_MODE_CORRELATION, DIRECTIVE_EXTRACT_URLS, F_FQDN, F_IPV4, R_REDIRECTED_FROM, EventTimeSource
 from saq.database.model import Alert
 from saq.database.pool import get_db
 from tests.saq.collectors.hunter.test_base_hunter import TestHunt
@@ -116,6 +116,8 @@ class _SubmittingHunt(TestHunt):
             tool_instance="test_tool_instance",
             alert_type="test_type",
             details={QUERY_DETAILS_EVENTS: [{"src": "10.0.0.1"}, {"src": "10.0.0.2"}]})
+        # as a hunt that couldn't extract the event's timestamp
+        root.set_event_time(datetime(2026, 1, 2, tzinfo=timezone.utc), EventTimeSource.QUERY_TIME)
         root.initialize_storage()
         ip = root.add_observable_by_spec(F_IPV4, "10.0.0.1", o_time=datetime(2026, 1, 2, tzinfo=timezone.utc))
         ip.add_tag("scanner")
@@ -179,6 +181,8 @@ def test_execute_hunt_submit_alerts_local(submitting_hunt_type):
 
     (alert,) = get_db().query(Alert).all()
     assert alert.description == "unit_test_1 submission"
+    alert.load()
+    assert alert.root_analysis.event_time_source == EventTimeSource.QUERY_TIME
 
 
 @pytest.mark.integration
@@ -191,6 +195,7 @@ def test_execute_hunt_submit_alerts_remote(submitting_hunt_type, monkeypatch):
     ((description, kwargs),) = submissions
     assert description == "unit_test_1 submission"
     assert kwargs["remote_host"] == "ace.example.com:443"
+    assert kwargs["event_time_source"] == "query_time"
     assert kwargs["tags"] == ["hunted"]
     assert {o["value"] for o in kwargs["observables"]} >= {"10.0.0.1", "evil.example.com"}
     assert [name for name, _ in kwargs["files"]] == ["payload.txt"]
