@@ -1,8 +1,8 @@
 """A killed worker is reaped through multiprocessing, so the manager sees it die.
 
-kill_process_tree reaps what it kills with os.waitpid. A worker reaped that way never gets an
-exit code in its multiprocessing Process, which then reports it alive forever and refuses to
-close, so every worker killed for an analysis timeout or its memory use left its pipes behind.
+A worker reaped outside multiprocessing (os.waitpid) never gets an exit code in its Process,
+which then reports it alive forever and refuses to close, so every worker killed for an
+analysis timeout or its memory use left its pipes behind.
 """
 
 import logging
@@ -128,22 +128,6 @@ def test_a_worker_killed_for_its_memory_is_closed_on_restart(manager, monkeypatc
     assert not worker.is_alive()
 
     _restart_closes_the_dead_process(manager, worker, caplog)
-
-
-@pytest.mark.unit
-def test_a_failure_to_kill_what_the_worker_started_still_kills_the_worker(manager, monkeypatch, caplog):
-    worker = _started_worker(manager)
-
-    def _kill_process_tree(*args, **kwargs):
-        raise PermissionError("operation not permitted")
-
-    monkeypatch.setattr("saq.engine.worker.kill_process_tree", _kill_process_tree)
-
-    with caplog.at_level(logging.WARNING):
-        worker.kill()
-
-    assert not worker.is_alive()
-    assert any("unable to kill the processes worker any-0 started" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit

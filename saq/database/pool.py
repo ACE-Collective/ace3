@@ -3,7 +3,6 @@ from contextlib import contextmanager
 from datetime import datetime
 import logging
 import os
-import sys
 import threading
 from typing import Any, Callable
 import warnings
@@ -480,6 +479,20 @@ def initialize_database():
 # fork safety
 # ----------------------------------------------------------------------
 
+# the sockets and read buffers taken off inherited connections in a forked child, kept for the life of
+# the process so that nothing inherited is ever freed there: freeing a read buffer closes it, and freeing
+# a TLS socket that was never shut down has OpenSSL take its context's lock (see reset_database_after_fork)
+_abandoned_after_fork = []
+
+
+def _write_stderr(message: str):
+    # os.write, not sys.stderr: a thread that does not exist in a forked child can hold its buffer lock
+    try:
+        os.write(2, message.encode(errors="replace"))
+    except OSError:
+        pass  # there is nowhere left to say it
+
+
 def reset_database_after_fork():
     """Drop every database connection inherited from the parent process.
 
@@ -501,12 +514,15 @@ def reset_database_after_fork():
     close writes COM_QUIT, and a checkin writes a ROLLBACK, down a connection the parent
     is still using -- which is the damage this exists to prevent. So:
 
-    _force_close() drops this process's file descriptor and nothing else. The parent
-    still holds its own descriptor for the same socket, so the connection stays up and
-    the server is told nothing. This is the same reasoning _database_pool.close() already
-    documents. It has to happen first, before the connections become unreachable: once
-    SQLAlchemy's _finalize_fairy runs on a garbage collected connection it issues a reset
-    *and* a close on the way out, and a force closed connection makes both no-ops.
+    Each inherited connection is left the way _force_close() leaves one, with no socket and
+    no read buffer, and this process's copy of the socket's file descriptor is closed. That
+    is all: the parent still holds its own descriptor for the same socket, so the connection
+    stays up and the server is told nothing. This is the same reasoning _database_pool.close()
+    already documents. It has to happen first, before the connections become unreachable:
+    once SQLAlchemy's _finalize_fairy runs on a garbage collected connection it issues a reset
+    (a ROLLBACK) on the way out. With no socket, pymysql refuses it before writing a byte, and
+    SQLAlchemy logs that ("Exception during reset or similar") and invalidates the record,
+    whose close is then a no-op. Nothing reaches the server.
 
     engine.dispose(close=False) is then SQLAlchemy's documented after-fork call: it swaps
     in a fresh pool and abandons the inherited one rather than closing it.
@@ -515,13 +531,30 @@ def reset_database_after_fork():
     into the pool with a rollback on the way.
 
     Nothing here may use the logging module either, which is why the diagnostics below go
-    straight to sys.stderr. os.register_at_fork child handlers run inside os.fork(), before
+    straight to file descriptor 2. os.register_at_fork child handlers run inside os.fork(), before
     multiprocessing's _bootstrap calls util._run_after_forkers() -- so at this point every
     fork-aware thread-local still holds the object the child inherited from the parent. A
     root handler that talks to another process is then used over the *parent's* connection:
     the unit test MemoryLogHandler writes every record into a SyncManager list, and two
     processes on one stream socket desynchronise it exactly the way two processes on one
     MySQL socket do. Both sides block forever on a reply that was never sent.
+
+    This runs in every fork that runs Python in the child: os.fork(), the fork context
+    ACE_MP_CONTEXT is, and a subprocess started with a preexec_fn, which forks the same way
+    and runs this before it execs. Only the forking thread exists in that child, so nothing
+    here may take a lock another thread of the parent can hold at the fork: that lock is never
+    released, and the child waits for ever, before it ever execs. That rules out closing or
+    freeing an inherited read buffer, whose lock a thread waiting for a query reply holds (the
+    engine's lock keepalive thread is one every few seconds): _force_close() does both, and so
+    does pymysql's __del__. A buffer whose lock is held stays referenced by the stack of the thread
+    that held it, which the child keeps and never runs, but the sockets and buffers are also kept
+    in _abandoned_after_fork, so that nothing inherited is freed here at all (freeing a TLS socket
+    has OpenSSL take a lock as well), and the socket's descriptor is closed with os.close once
+    detach() has taken it from the socket object. It also rules out writing through sys.stderr, whose buffer lock any thread
+    writing to stderr holds. Other code that runs in such a child (other libraries' at-fork
+    hooks, a preexec_fn itself) has the same problem, so a process that runs other threads
+    still must not start a subprocess with a preexec_fn; `setpriv --pdeathsig` gives a
+    parent-death signal without one (aceapi_v2/cli/service.py).
     """
     pid = os.getpid()
 
@@ -532,15 +565,19 @@ def reset_database_after_fork():
 
     for connection in inherited:
         try:
-            connection._force_close()
+            sock, rfile = connection._sock, connection._rfile
+            connection._sock = connection._rfile = None
+            _abandoned_after_fork.append((sock, rfile))
+            if sock is not None:
+                os.close(sock.detach())
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to force close inherited connection after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to close inherited connection after fork: {e}\n")
 
     for engine in list(_db_engines):
         try:
             engine.dispose(close=False)
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
 
     for name, session in list(_db_sessions.items()):
         if session is None:
@@ -549,14 +586,14 @@ def reset_database_after_fork():
         try:
             session.registry.clear()
         except Exception as e:
-            sys.stderr.write(f"WARNING: unable to clear inherited {name} session after fork: {e}\n")
+            _write_stderr(f"WARNING: unable to clear inherited {name} session after fork: {e}\n")
 
     # the raw pymysql pools go the same way. get_pool() would rebuild them lazily on its
     # own pid check, but dropping them here means an inherited connection is never even
     # a candidate.
     _global_db_pools.clear()
 
-    sys.stderr.write(f"NOTICE: reset {len(inherited)} inherited database connections in pid {pid}\n")
+    _write_stderr(f"NOTICE: reset {len(inherited)} inherited database connections in pid {pid}\n")
 
 
 def _before_fork():

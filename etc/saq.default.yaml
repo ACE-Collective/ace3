@@ -2126,6 +2126,8 @@ analysis_module_exif:
   enabled: true
   # 80MB file limit
   file_size_limit: 83886080
+  # seconds one exiftool run may take before the file is recorded as timed out
+  timeout: 30
 
 analysis_module_pdftotext:
   name: pdftotext

@@ -1,12 +1,16 @@
+import json
 import logging
 import os
 import pprint
-from typing import override
+import subprocess
+from typing import Type, override
 
-import exiftool
+from pydantic import Field
+
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import (
     is_office_file,
     is_ole_file,
@@ -93,7 +97,45 @@ class ExifAnalysis(Analysis):
         return f"{self.display_name}: {format_item_list_for_summary(parts)}"
 
 
+def _read_metadata(stdout: bytes) -> dict:
+    """The metadata exiftool printed for the one file it was given. Raises ValueError for anything else."""
+    metadata = json.loads(stdout)
+    if not isinstance(metadata, list) or len(metadata) != 1 or not isinstance(metadata[0], dict):
+        raise ValueError(f"expected a list holding one object, not {metadata!r:.100}")
+
+    return metadata[0]
+
+
+def _failure_reason(process: subprocess.CompletedProcess) -> str:
+    # a file exiftool cannot read still gets its JSON, with the reason in ExifTool:Error and nothing on stderr
+    try:
+        reason = _read_metadata(process.stdout).get("ExifTool:Error")
+    except ValueError:
+        reason = None  # nothing was printed for the file (it vanished, or Perl died), so stderr has the reason
+
+    if reason:
+        return str(reason)
+
+    # Perl prints its warnings before the line that ended it, and this ends up in the summary
+    lines = process.stderr.decode(errors="replace").strip().splitlines()
+    if lines:
+        return lines[-1][:500]
+
+    if process.returncode < 0:
+        return f"exiftool was killed by signal {-process.returncode}"
+
+    return f"exiftool exited with status {process.returncode}"
+
+
+class ExifAnalyzerConfig(AnalysisModuleConfig):
+    timeout: int = Field(..., gt=0, description="Seconds one exiftool run may take before the file is recorded as timed out. Keep it well below maximum_analysis_time, where the worker itself is killed.")
+
+
 class ExifAnalyzer(AnalysisModule):
+
+    @classmethod
+    def get_config_class(cls) -> Type[AnalysisModuleConfig]:
+        return ExifAnalyzerConfig
 
     def verify_environment(self):
         self.verify_program_exists("exiftool")
@@ -134,23 +176,42 @@ class ExifAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
+        log_extra = {"alert_uuid": self.get_root().uuid, "path": local_file_path}
+
+        # a plain subprocess with no preexec_fn, so CPython execs exiftool without running any Python in the
+        # child first. This process has other threads, and Python run in a fork of it (every library's at-fork
+        # hooks, then the preexec_fn) can wait for ever on a lock one of them held, before the exec ever happens
+        try:
+            process = subprocess.run(["exiftool", "-j", "-G", "-n", local_file_path], capture_output=True,
+                                     timeout=self.config.timeout)
+        except subprocess.TimeoutExpired:
+            # run() has killed and reaped exiftool
+            analysis.error = f"exiftool timed out after {self.config.timeout} seconds"
+            logging.warning("exiftool timed out after %s seconds on %s", self.config.timeout, local_file_path,
+                            extra=log_extra)
+            return AnalysisExecutionResult.COMPLETED
+        except OSError as e:
+            # exiftool could not be started at all: it is gone or not executable (verify_environment found it
+            # when the module loaded), or the worker is out of processes, file descriptors or memory
+            analysis.error = f"unable to run exiftool: {e}"
+            logging.exception("unable to run exiftool on %s", local_file_path, extra=log_extra)
+            return AnalysisExecutionResult.COMPLETED
+
+        if process.returncode != 0:
+            analysis.error = _failure_reason(process)
+            logging.info(f"Exif data extraction failed for {local_file_path}: {analysis.error}", extra=log_extra)
+            return AnalysisExecutionResult.COMPLETED
 
         try:
-            with exiftool.ExifToolHelper() as et:
-                metadata = et.get_metadata(local_file_path)
-                # this should be a list of dictionaries, of which we want the first one
-                metadata = metadata[0]
-        except Exception as e:
-            analysis.details["error"] = str(e)
-            logging.info(f"Exif data extraction failed for {local_file_path}: {e}")
+            metadata = _read_metadata(process.stdout)
+        except ValueError as e:
+            # exiftool escapes whatever a file holds into valid JSON, so output it reports success with that
+            # does not parse means exiftool itself changed or broke, not that the file is bad
+            analysis.error = f"unreadable exiftool output: {e}"
+            logging.exception("unreadable exiftool output for %s", local_file_path, extra=log_extra)
             return AnalysisExecutionResult.COMPLETED
 
-        # return nicely formatted exif data
-        # exifdata =  pprint.pformat(metadata)
-
-        analysis.details["exifdata"] = metadata
-        if "Error: Exif data extraction failed for" in metadata:
-            return AnalysisExecutionResult.COMPLETED
+        analysis.exifdata = metadata
 
         target_dir = f"{local_file_path}.exif"
         os.makedirs(target_dir, exist_ok=True)

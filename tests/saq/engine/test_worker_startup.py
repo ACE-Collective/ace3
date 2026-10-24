@@ -90,7 +90,7 @@ def test_a_worker_that_does_not_start_in_time_is_killed(started_workers, caplog)
         assert _wait_for_start(worker, timeout=2) is False
 
     assert any("did not start within 2 seconds" in r.getMessage() for r in caplog.records)
-    # kill_process_tree reaps the process itself, so the pid is what tells us it is gone
+    # kill() reaps the process, so the pid is what tells us it is gone
     assert not psutil.pid_exists(worker.process.pid)
 
 
@@ -121,6 +121,9 @@ class _StartingWorker:
 
     def is_alive(self) -> bool:
         return not self.shutdown_requested
+
+    def kill(self):
+        pass
 
 
 def _manager(workers) -> WorkerManager:

@@ -189,6 +189,7 @@ Key top-level conventions:
 - `workload_manager/` — where work comes from (`database.py` for real runs, `memory.py` for tests).
 - `lock_manager/`, `node_manager/` — distributed locking and multi-node work distribution (nodes advertise themselves in the `nodes` table and can pull work from each other).
 - `configuration_manager.py` — resolves analysis mode → module set; `enable_module()` is the hook tests use.
+- Each forked worker leads its own process group, and `Worker.kill()` SIGKILLs the group: on a timeout or memory limit, past the shutdown budget, and for every worker found dead, so nothing a worker started that stays in its group outlives it. A child started in a session or group of its own (`start_new_session`, `process_group`) is out of reach of that kill and has to bound itself. A worker never starts a child that runs Python before its exec (`preexec_fn`, `os.fork()`, fork-context multiprocessing): that child runs every at-fork hook in a copy of a process whose other threads may hold any lock, and one it needs is never released (`saq/database/pool.py`'s hook takes none for that reason). Use `setpriv --pdeathsig` for a parent-death signal.
 
 Analysis caching (per-module result cache keyed on observable + module + config hash) is a significant subsystem — read `docs/ANALYSIS_CACHING.md` before touching `executor.py` cache paths or adding a cacheable module.
 

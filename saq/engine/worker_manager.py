@@ -177,6 +177,9 @@ class WorkerManager:
                 logging.debug(
                     f"worker {worker} process {worker.process.pid} exitcode = {worker.process.exitcode}"
                 )
+                # a worker that died on its own (the analysis module monitor's os._exit, a crash, the OOM
+                # killer) leaves whatever its modules started still running, in its process group
+                worker.kill()
                 return WorkerStatus.DEAD
 
         # what is this worker doing? read once and use it for both the timeout check and
@@ -324,8 +327,7 @@ class WorkerManager:
         while time.monotonic() < deadline:
             alive = [w for w in self.workers if w.is_alive()]
             if not alive:
-                logging.info("all workers shut down")
-                return
+                break
 
             # keep enforcing analysis timeouts and memory limits while we wait
             for worker in alive:
@@ -336,11 +338,13 @@ class WorkerManager:
 
             time.sleep(poll_interval)
 
-        # anything still running has ignored the shutdown event past the budget
         for worker in self.workers:
             if worker.is_alive():
+                # it has ignored the shutdown event past the budget
                 logging.warning("worker %s did not exit in time - killing", worker.name)
-                worker.kill()
+
+            # also for one that exited: is_alive() reaped it, so check() never killed what it left in its group
+            worker.kill()
 
         logging.info("all workers shut down")
 
