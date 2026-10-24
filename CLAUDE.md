@@ -231,10 +231,6 @@ The `docker-compose.yml` configuration is the open source default configuration.
 
 Phishkit has it's own CLAUDE.md file available at `phishkit/CLAUDE.md` as needed.
 
-#### Lure URL
-
-`lure_url_analyzer` (`saq/modules/email/lure.py`, `docs/LURE_URL.md`) runs in final analysis on every email of an alert (correlation module group), and scores again on each final pass. It scores the URLs in that email's own subtree, not counting crawl output or attached emails, by source (body link, PDF link, QR code, attachment), anchor text and button styling, unwrapping, carried URLs (a URL in another candidate's query string, e.g. a click tracker's destination, is folded into it) and footer/sender/static signals. It saves the primary lure URL and ranked candidates with reasons, and adds `crawl` to the primary URL. The alert page's **Lure URL** section (`build_lure_urls`, `app/templates/analysis/lure_urls.html`) shows it, inner emails first. Where it leads is left to Crawl Chains.
-
 #### Crash reports
 
 `saq/crash_report.py` records what an analysis module was doing when it failed (`docs/CRASH_REPORTS.md`):
