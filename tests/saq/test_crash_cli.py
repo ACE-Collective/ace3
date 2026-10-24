@@ -17,6 +17,7 @@ from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     find_crash_report_dir,
     get_crash_report_root_dir,
+    get_hang_stacks_dir,
     get_index_pending_dir,
     record_module_crash,
     remove_from_index_spool,
@@ -298,11 +299,19 @@ def test_report_iteration_skips_stray_files(private_root, root_analysis):
 
 
 @pytest.mark.unit
-def test_prune_reports_stale_hang_stack_dumps(private_root, monkeypatch, capsys):
-    monkeypatch.setattr("saq.crash_report.prune_stale_hang_stacks", lambda: 2)
+def test_prune_leaves_hang_stack_dumps_alone(private_root, monkeypatch):
+    # from the cron container every engine pid looks gone, so the dump file of an idle, live
+    # worker is indistinguishable from a stale one; only the engine's own workers may prune
+    monkeypatch.setattr("saq.crash_report.psutil.pid_exists", lambda pid: False)
+    os.makedirs(get_hang_stacks_dir())
+    path = os.path.join(get_hang_stacks_dir(), "12345.txt")
+    with open(path, "w"):
+        pass
+    old = 1000000000
+    os.utime(path, (old, old))
 
     assert cli_prune(Namespace(days=1, dry_run=False)) == 0
-    assert "pruned 2 stale hang stack dump(s)" in capsys.readouterr().out
+    assert os.path.exists(path)
 
 
 @pytest.mark.unit

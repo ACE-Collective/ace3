@@ -594,6 +594,10 @@ def prune_stale_hang_stacks(min_age_seconds: float = HANG_STACKS_PRUNE_MIN_AGE_S
     ``min_age_seconds``: when several workers are killed at once, their replacements start in
     some order, and the age guard keeps the first one from deleting a file the others have yet
     to collect.
+
+    Only call this from the PID namespace of the engine that owns the files. Anywhere else
+    (the cron container shares the node name and the data volume) every live worker's pid looks
+    gone, and an idle worker's open dump file would be unlinked out from under it.
     """
     removed = 0
     try:
