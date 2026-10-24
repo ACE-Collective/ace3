@@ -147,6 +147,9 @@ class RabbitMQConfig(BaseModel):
 class PhishkitConfig(BaseModel):
     max_file_age_days: int = Field(default=3, description="age in days after which phishkit input/output job directories are deleted")
 
+class JsDeobfuscatorConfig(BaseModel):
+    max_file_age_days: int = Field(default=3, description="age in days after which js-deobfuscator input/output job directories are deleted")
+
 class StorageBackendSpec(BaseModel):
     """Selects and configures a pluggable storage backend.
 
@@ -916,6 +919,7 @@ class ACEConfig(BaseModel):
     monitor: Optional[MonitorConfig] = None
     rabbitmq: Optional[RabbitMQConfig] = None
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
+    js_deobfuscator: JsDeobfuscatorConfig = Field(default_factory=JsDeobfuscatorConfig, description="js-deobfuscator subsystem configuration")
     storage: Optional[StorageConfig] = None
     s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None

@@ -10,7 +10,7 @@ from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.tracking import TrackingReader
 from saq.engine.worker import Worker
 from saq.error.reporting import log_loop_exception
-from saq.shutdown import get_shutdown_coordinator
+from saq.shutdown import get_shutdown_coordinator, is_shutting_down
 
 
 class WorkerManager:
@@ -137,9 +137,17 @@ class WorkerManager:
                 "%d analysis failure(s) could not be dispatched to a worker at startup", len(pending)
             )
 
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
+        # wait for all workers to start. a worker that cannot start (its modules failed to
+        # load, say) would fail the same way if restarted, so the engine fails to start
+        # rather than waiting on it or running without it
+        failed = [worker.name for worker in self.workers if not worker.wait_for_start()]
+        if failed:
+            if is_shutting_down():
+                logging.info("shutdown requested while the workers were starting")
+                return
+
+            self.immediate_shutdown()
+            raise RuntimeError(f"workers did not start: {', '.join(failed)}")
 
         logging.info("workers initialized")
 

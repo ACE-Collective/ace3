@@ -53,6 +53,7 @@ from saq.modules.email.constants import (
     KEY_SPF_RESULT,
 )
 from saq.observables.email import EmailFirstHopIPObservable
+from saq.util.filesystem import is_path_under
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_root_analysis
@@ -819,43 +820,9 @@ def _build_attachment_email(declared_content_type: str | None, message_id: str):
     return '\r\n'.join(headers).encode()
 
 
-def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
-    """Runs EmailAnalyzer over a synthesized email and returns the attachment observable."""
+def _analyze_raw_email(root_analysis, raw_email: bytes, name: str):
+    """Runs EmailAnalyzer over a synthesized email and returns the reloaded root and its EmailAnalysis."""
     email_path = os.path.join(get_temp_dir(), f'{name}.email.rfc822')
-    with open(email_path, 'wb') as fp:
-        fp.write(raw_email)
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(email_path)
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    reloaded = load_root(get_storage_dir(root_analysis.uuid))
-    file_observable = reloaded.get_observable(file_observable.uuid)
-    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
-    assert isinstance(email_analysis, EmailAnalysis)
-    return next(
-        (o for o in email_analysis.get_observables_by_type(F_FILE)
-         if o.file_name.endswith('invoice.html')),
-        None,
-    )
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("file_name", [".", ".."])
-def test_an_attachment_named_a_directory_is_extracted(root_analysis, file_name):
-    """"." and ".." name the files directory and its parent, which the file manager refuses, so a
-    sender naming the payload that way must not keep it from being extracted."""
-    raw_email = _build_attachment_email('text/html', f'dot-name-{len(file_name)}').replace(
-        b'filename="invoice.html"', f'filename="{file_name}"'.encode())
-    email_path = os.path.join(get_temp_dir(), 'dot_name.email.rfc822')
     with open(email_path, 'wb') as fp:
         fp.write(raw_email)
 
@@ -874,10 +841,78 @@ def test_an_attachment_named_a_directory_is_extracted(root_analysis, file_name):
     root_analysis = load_root(get_storage_dir(root_analysis.uuid))
     email_analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(EmailAnalysis)
     assert isinstance(email_analysis, EmailAnalysis)
-    attachments = [o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_name == "_"]
+    return root_analysis, email_analysis
+
+
+def _analyze_attachment_email(root_analysis, raw_email: bytes, name: str):
+    """Runs EmailAnalyzer over a synthesized email and returns the attachment observable."""
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, name)
+    return next(
+        (o for o in email_analysis.get_observables_by_type(F_FILE)
+         if o.file_name.endswith('invoice.html')),
+        None,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("file_name, stored", [
+    (".", "_"),
+    ("..", "_"),
+    ("../../escaped.html", "_/_/escaped.html"),
+    ("/tmp/escaped.html", "tmp/escaped.html"),
+    ("C:\\\\Users\\\\escaped.html", "C:_Users_escaped.html"),
+])
+def test_an_attachment_name_stays_in_the_files_directory(root_analysis, file_name, stored):
+    """The attachment's name is the sender's, so the file manager cleans it: a name of a directory
+    or one leading out of the files directory must neither escape nor keep the payload from being
+    extracted."""
+    raw_email = _build_attachment_email('text/html', f'name-{len(file_name)}').replace(
+        b'filename="invoice.html"', f'filename="{file_name}"'.encode())
+
+    root_analysis, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'attachment_name')
+
+    attachments = [o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_path == stored]
     assert len(attachments) == 1
+    assert is_path_under(attachments[0].full_path, root_analysis.file_dir)
     with open(attachments[0].full_path, 'rb') as fp:
         assert b'https://example.com/x' in fp.read()
+
+
+@pytest.mark.integration
+def test_attachments_with_the_same_name_are_kept_apart(root_analysis):
+    raw_email = _build_attachment_email('text/html', 'same-name')
+    second_part = (b'--BOUND\r\nContent-Type: text/html\r\n'
+                   b'Content-Disposition: attachment; filename="invoice.html"\r\n\r\n'
+                   b'<html><body><a href="https://example.com/second">x</a></body></html>\r\n')
+    raw_email = raw_email.replace(b'--BOUND--', second_part + b'--BOUND--')
+    assert raw_email.count(b'filename="invoice.html"') == 2
+
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'same_name')
+
+    attachments = {o.file_path: o for o in email_analysis.get_observables_by_type(F_FILE) if o.file_name.startswith("invoice")}
+    assert set(attachments) == {"invoice.html", "invoice_000.html"}
+    with open(attachments["invoice_000.html"].full_path, 'rb') as fp:
+        assert b'https://example.com/second' in fp.read()
+
+
+@pytest.mark.integration
+def test_an_attachment_under_another_attachments_name_is_extracted(root_analysis):
+    """A sender can name one attachment invoice.html and another invoice.html/payload.html, and
+    the second must not be lost because the first holds the name of its directory."""
+    raw_email = _build_attachment_email('text/html', 'nested-name')
+    second_part = (b'--BOUND\r\nContent-Type: text/html\r\n'
+                   b'Content-Disposition: attachment; filename="invoice.html/payload.html"\r\n\r\n'
+                   b'<html><body><a href="https://example.com/payload">x</a></body></html>\r\n')
+    raw_email = raw_email.replace(b'--BOUND--', second_part + b'--BOUND--')
+
+    root_analysis, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'nested_name')
+
+    attachments = {o.file_path: o for o in email_analysis.get_observables_by_type(F_FILE)}
+    assert "invoice.html" in attachments
+    payload = attachments[os.path.join("invoice_000.html", "payload.html")]
+    with open(payload.full_path, 'rb') as fp:
+        assert b'https://example.com/payload' in fp.read()
+    assert not any(o.has_tag("email_parse_incomplete") for o in root_analysis.all_observables)
 
 
 @pytest.mark.integration

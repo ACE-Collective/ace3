@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from saq.analysis.file_manager.local_file_manager import LocalFileManager
 from saq.analysis.root import load_root
 from saq.constants import DIRECTIVE_ORIGINAL_EMAIL
 from saq.engine.core import Engine
@@ -64,16 +65,14 @@ def _analyze(root_analysis, file_path: str):
 
 @pytest.fixture
 def failing_attachment(monkeypatch):
-    from saq.modules.email import rfc822
+    real_create_output_file = LocalFileManager.create_output_file
 
-    real_safe_file_name = rfc822.safe_file_name
-
-    def safe_file_name(name):
+    def create_output_file(self, name):
         if name == "boom.txt":
             raise RuntimeError("cannot extract this part")
-        return real_safe_file_name(name)
+        return real_create_output_file(self, name)
 
-    monkeypatch.setattr(rfc822, "safe_file_name", safe_file_name)
+    monkeypatch.setattr(LocalFileManager, "create_output_file", create_output_file)
 
 
 @pytest.mark.integration

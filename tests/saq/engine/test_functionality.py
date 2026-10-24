@@ -988,6 +988,59 @@ def test_wait_for_analysis_missing_analysis():
     #assert log_count("did not generate analysis to resolve dep") == 1
 
 @pytest.mark.integration
+def test_wait_for_analysis_target_cancelled(caplog):
+    # B is stopped mid-run (as at shutdown) while A waits on it: the dependency must survive
+    # the requeue unresolved, so the next pass runs B again rather than handing A nothing
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_target_cancelled')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_wait_a', 'test_groups')
+    engine.configuration_manager.enable_module('test_wait_b', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root = load_root(get_storage_dir(root.uuid))
+    observable = root.get_observable(test_observable.uuid)
+    assert [d.status for d in observable.dependencies] == ["ready"]
+    assert observable.get_analysis(WaitAnalysis_B) is None
+    assert "leaving it unresolved" in caplog.text
+
+    root.schedule()
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_wait_a', 'test_groups')
+    engine.configuration_manager.enable_module('test_wait_b', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root = load_root(get_storage_dir(root.uuid))
+    observable = root.get_observable(test_observable.uuid)
+    assert observable.get_and_load_analysis(WaitAnalysis_B)
+    assert observable.get_and_load_analysis(WaitAnalysis_A)
+    assert not [d for d in observable.dependencies if d.failed]
+
+@pytest.mark.integration
+def test_wait_for_analysis_target_incomplete(caplog):
+    # without a cancel, a target that answers INCOMPLETE with nothing still fails the dependency
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_target_incomplete')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('test_wait_a', 'test_groups')
+    engine.configuration_manager.enable_module('test_wait_b', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    observable = root.get_observable(test_observable.uuid)
+    assert [d.failure_reason for d in observable.dependencies] == ["analysis not generated"]
+    assert not observable.get_and_load_analysis(WaitAnalysis_A)
+    assert "leaving it unresolved" not in caplog.text
+
+@pytest.mark.integration
 def test_wait_for_analysis_circ_dep_chained():
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()

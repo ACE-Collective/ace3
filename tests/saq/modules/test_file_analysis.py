@@ -64,6 +64,9 @@ class TestUrlExtraction:
     def test_exclude_filtered_domains(self, test_context):
         extracted_urls_unfiltered = ['http://schemas.microsoft.com/office/2004/12/omml',
                                      'http://www.w3.org/TR/REC-html40',
+                                     # XMP metadata namespaces
+                                     'http://ns.adobe.com/xap/1.0/mm',
+                                     'http://ns.adobe.com/pdf/1.3',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/rv/19238/zdm/troubleshooting.ftl',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/rv/19238/zdm/troubleshooting.ftl',
                                      'https://voltage-pp-0000.wellsfargo.com/brand/zdm/mobile.ftl',

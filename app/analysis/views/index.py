@@ -39,6 +39,7 @@ from saq.database.database_observable import get_observable_disposition_historie
 from saq.database.util.observable_detection import get_all_observable_detections
 from aceapi_v2.observables.service import get_interesting_observables_by_hashes
 from saq.gui.alert_actions import get_alert_actions
+from saq.modules.email.lure import build_lure_urls
 from saq.modules.phishkit_chain import build_crawl_chains
 from saq.modules.util.observable_modifier import build_modifier_rule_matches
 from saq.permissions.logic import user_has_permission
@@ -402,6 +403,37 @@ def _prune(node, current_path=None):
     current_path.pop()
 
 
+def _reveal(node, uuids: set[str]):
+    """Makes the observables with these uuids, and the path to them, visible in a pruned tree."""
+    def _callback(target):
+        if target.is_analysis or target.obj.uuid not in uuids:
+            return
+        # _prune makes a path visible from the root down, so the first visible ancestor ends it
+        while target is not None and not target.visible:
+            target.visible = True
+            target = target.parent
+
+    node.walk(_callback)
+
+
+def _linked_observable_uuids(lure_urls, crawl_chains) -> set[str]:
+    """The observables the Lure URL and Crawl Chains sections link to by anchor.
+
+    Extracted URLs are volatile, so a pruned tree would leave these links nothing to jump to.
+    """
+    uuids = set()
+    for entry in lure_urls:
+        if entry.observable:
+            uuids.add(entry.observable.uuid)
+        uuids.update(candidate["observable_uuid"] for candidate in entry.runners_up)
+    for chain in crawl_chains:
+        uuids.add(chain.target.uuid)
+        if chain.screenshot:
+            uuids.add(chain.screenshot.uuid)
+        uuids.update(hop.observable.uuid for hop in chain.hops if hop.observable)
+    return uuids
+
+
 def _resolve_references(node):
     # in the case were we have a visible node that is refering to a node that is NOT visible
     # then we need to use the data of the refering node
@@ -584,6 +616,8 @@ def index():
     detection_chain_root_detections = build_root_detections(alert.root_analysis)
     detection_chain_count = count_merged_detections(detection_chain_merged_tree) + len(detection_chain_root_detections)
     crawl_chains = build_crawl_chains(alert.root_analysis)
+    lure_urls = build_lure_urls(alert.root_analysis)
+    lure_url_uuids = {entry.observable.uuid for entry in lure_urls if entry.observable}
     modifier_rule_matches = build_modifier_rule_matches(alert.root_analysis)
 
     # get all observable comments for the analysis tree
@@ -655,6 +689,7 @@ def index():
                 for child in display_tree.children:
                     child.visible = True
 
+            _reveal(display_tree, _linked_observable_uuids(lure_urls, crawl_chains))
             _resolve_references(display_tree)
 
     # For correlated-hunt alerts, group the Analysis Overview's top-level observables by
@@ -789,6 +824,8 @@ def index():
         detection_chain_module_display_name=module_display_name,
         detection_chain_observable_display_value=observable_display_value,
         crawl_chains=crawl_chains,
+        lure_urls=lure_urls,
+        lure_url_uuids=lure_url_uuids,
         modifier_rule_matches=modifier_rule_matches,
         **alert_action_context(alert),
         **detection_verdict_context(alert),

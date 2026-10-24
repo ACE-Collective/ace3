@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from flask import url_for
 
+from saq.analysis.file_manager.local_file_manager import clean_file_name
 from saq.analysis.root import RootAnalysis
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS
 from saq.database.model import Alert, ObservableComment
@@ -16,6 +17,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_temp_dir
+from saq.util.filesystem import is_path_under
 
 
 @pytest.mark.integration
@@ -109,8 +111,9 @@ class TestUploadFile:
             assert f.read() == test_content
     
     @pytest.mark.parametrize("path_in_name", [False, True])
-    def test_upload_file_name_is_not_a_path(self, web_client, tmp_path, path_in_name):
-        """The client's file name is stored as a plain file name in the alert, never as a path."""
+    def test_upload_file_name_stays_in_the_files_directory(self, web_client, tmp_path, path_in_name):
+        """The client's file name is cleaned by the root's file manager, so it can name a
+        subdirectory of the alert's files directory but never a place outside it."""
         # in a directory of its own, so that what the name points at is not the temporary copy
         name = os.path.join(f"escaped-{uuid4().hex}", "escaped.txt")
         client_name = f"../../{name}" if path_in_name else str(tmp_path / name)
@@ -126,9 +129,9 @@ class TestUploadFile:
         alert = get_alert_by_uuid(parse_qs(urlparse(result.location).query)['direct'][0])
         alert.load()
         (file_observable,) = [o for o in alert.root_analysis.observables if o.type == 'file']
-        assert "/" not in file_observable.file_path
-        assert file_observable.file_path.endswith("_" + name.replace("/", "_"))
-        assert os.path.dirname(os.path.realpath(file_observable.full_path)) == os.path.realpath(alert.root_analysis.file_dir)
+        assert file_observable.file_path == clean_file_name(client_name)
+        assert file_observable.file_path.endswith(name)
+        assert is_path_under(file_observable.full_path, alert.root_analysis.file_dir)
         assert not (tmp_path / name).parent.exists()
         assert not os.path.exists(os.path.dirname(os.path.join(alert.root_analysis.file_dir, "..", "..", name)))
 

@@ -25,8 +25,11 @@ from typing import Optional
 
 from croniter import croniter
 
+from saq.collectors.hunter.loader import load_merged_yaml
 from saq.configuration.config import get_config
 from saq.constants import TIMESPEC_TOKEN
+from saq.signatures.loaders.hunt import is_hunt_file
+from saq.signatures.loaders.util import content_hash, normalize_tags
 from saq.signatures.model import SignatureLocation, SignatureType
 from saq.util.time import create_timedelta, is_timedelta_string
 
@@ -123,12 +126,6 @@ class HuntInfo:
 
 
 def _read_hunts() -> dict[str, HuntInfo]:
-    # local: both import the saq.collectors.hunter package, which imports the collector and engine
-    # stack, which imports aceapi_v2, whose run API imports this module
-    from saq.collectors.hunter.loader import load_merged_yaml
-    from saq.signatures.loaders.hunt import is_hunt_file
-    from saq.signatures.loaders.util import content_hash, normalize_tags
-
     result: dict[str, HuntInfo] = {}
     for location in hunt_locations():
         if not os.path.isdir(location.path):
