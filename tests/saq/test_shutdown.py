@@ -220,6 +220,45 @@ def test_flag_is_visible_across_a_fork(make_coordinator):
 
 
 @pytest.mark.unit
+def test_shutdown_requested_in_a_forked_child_does_not_reach_the_parent(make_coordinator):
+    """The mirror flows down only. A child that requested shutdown on the coordinator it
+    inherited used to set the mirror it shares with its parent, so the parent, and every
+    process it forked afterwards, was shutting down too. That is how an engine started
+    with start_nonblocking() and stopped with SIGINT made the next engine forked from the
+    test process stop on arrival. The child's own later forks must still see it."""
+    coordinator = make_coordinator(deadline_seconds=5)
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # child
+        try:
+            os.close(read_fd)
+            coordinator.request_shutdown("child")
+            grandchild = os.fork()
+            if grandchild == 0:
+                os._exit(0 if coordinator.is_shutting_down else 1)
+
+            _, status = os.waitpid(grandchild, 0)
+            seen_below = os.waitstatus_to_exitcode(status) == 0
+            os.write(write_fd, b"1" if coordinator.is_shutting_down and seen_below else b"0")
+            os.close(write_fd)
+        finally:
+            os._exit(0)
+
+    os.close(write_fd)
+    try:
+        result = os.read(read_fd, 1)
+        os.waitpid(pid, 0)
+        assert result == b"1", "the child or its own fork did not see the child's shutdown"
+    finally:
+        os.close(read_fd)
+
+    assert not coordinator.is_shutting_down
+    assert not coordinator._mp_flag.value
+
+
+@pytest.mark.unit
 def test_get_shutdown_coordinator_is_a_singleton():
     first = get_shutdown_coordinator(deadline_seconds=7)
     second = get_shutdown_coordinator()

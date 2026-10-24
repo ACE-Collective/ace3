@@ -25,6 +25,7 @@ from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
 from saq.signatures.yara_inventory import reset_yara_inventory
+from saq.shutdown import reset_shutdown_coordinator
 from saq.storage.factory import reset_storage_system
 from saq.svs import attribution as svs_attribution, windows as svs_windows
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
@@ -398,6 +399,10 @@ def global_function_setup(request):
     reset_storage_system()
     reset_cas()
     reset_yara_inventory()
+    # a test that reaches get_shutdown_coordinator() in this process (supervise_shutdown(),
+    # the engine controller loop) leaves the coordinator behind, and every engine a later
+    # test forks inherits it
+    reset_shutdown_coordinator()
     # the svs attribution gate and the hunt windows are cached per process, and tests now
     # reach them through the real executor and real hunt files
     svs_attribution.clear_caches()
