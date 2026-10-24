@@ -29,6 +29,7 @@ took.
 Tests 1-3 and 7 failed before the fix with ``AttributeError``. Test 4 pins the
 positive path, tests 5-6 pin the removals.
 """
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -116,6 +117,40 @@ def test_module_shutdown_follows_shutdown_interface():
     shutdown_interface.controlled = True
     assert module.shutdown is False
     assert module.controlled_shutdown is True
+
+
+@pytest.mark.unit
+def test_module_should_stop_on_shutdown_or_cancel():
+    """One predicate for both reasons a module gives up, so it can be handed to a blocking call."""
+    shutdown_interface = FakeShutdownInterface()
+    module = make_module(create_test_context(shutdown_interface=shutdown_interface))
+    assert module.should_stop() is False
+
+    # a controlled shutdown finishes the work item in hand
+    shutdown_interface.controlled = True
+    assert module.should_stop() is False
+
+    shutdown_interface.immediate = True
+    assert module.should_stop() is True
+
+    shutdown_interface.immediate = False
+    module.cancel_analysis()
+    assert module.should_stop() is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stop", ["shutdown", "cancel"])
+def test_module_sleep_returns_once_it_should_stop(stop):
+    shutdown_interface = FakeShutdownInterface()
+    module = make_module(create_test_context(shutdown_interface=shutdown_interface))
+    if stop == "shutdown":
+        shutdown_interface.immediate = True
+    else:
+        module.cancel_analysis()
+
+    started = time.monotonic()
+    module.sleep(60)
+    assert time.monotonic() - started < 1
 
 
 @pytest.mark.unit

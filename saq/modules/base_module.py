@@ -876,6 +876,11 @@ class AnalysisModule(FileWatcherMixin):
         """Returns True if the current analysis has been canceled."""
         return self._context.cancel_analysis_flag
 
+    def should_stop(self) -> bool:
+        """Returns True if the module should abandon what it is doing: the engine is shutting down
+        or the analysis was cancelled. Pass it as the cancel of a blocking call (run_sandboxed)."""
+        return self.shutdown or self.is_canceled_analysis()
+
     def cancel_analysis_handler(self):
         """Override this function to implement custom cancel code."""
         pass
@@ -897,9 +902,7 @@ class AnalysisModule(FileWatcherMixin):
 
     def sleep(self, seconds):
         """Utility function to sleep for N seconds without blocking shutdown."""
-        while (
-            not self.shutdown and not self._context.cancel_analysis_flag and seconds > 0
-        ):
+        while not self.should_stop() and seconds > 0:
             # we also want to support sleeping for less than a second
             time.sleep(1 if seconds > 0 else seconds)
             seconds -= 1

@@ -10,6 +10,8 @@ import pytest
 
 from saq.configuration.schema import SandboxConfig
 from saq.environment import get_base_dir
+from saq.modules import AnalysisModule
+from saq.modules.config import AnalysisModuleConfig
 from saq.sandbox.launcher import NET_ABI, landlock_abi
 from saq.sandbox.runner import (
     SandboxCancelled,
@@ -134,7 +136,7 @@ def test_cancel_stops_the_command_and_everything_it_started(tmp_path):
 
         started = time.monotonic()
         with pytest.raises(SandboxCancelled):
-            run_sandboxed(argv, None, env, workdir, datetime.timedelta(seconds=60), 1024 * 1024, cancel=cancel)
+            run_sandboxed(argv, None, env, workdir, datetime.timedelta(seconds=60), 1024 * 1024, cancel=cancel.is_set)
 
         assert time.monotonic() - started < 30
         with open(pid_file) as fp:
@@ -145,14 +147,34 @@ def test_cancel_stops_the_command_and_everything_it_started(tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
-def test_an_unset_cancel_event_changes_nothing(tmp_path):
+def test_a_cancel_that_stays_false_changes_nothing(tmp_path):
     with create_workdir(str(tmp_path)) as workdir:
         argv = build_sandbox_argv([PYTHON, "-I", "-c", "print('done')"], workdir, NO_TCP_RULES,
                                   datetime.timedelta(seconds=30))
         result = run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
-                               datetime.timedelta(seconds=30), 1024 * 1024, cancel=threading.Event())
+                               datetime.timedelta(seconds=30), 1024 * 1024, cancel=threading.Event().is_set)
 
     assert (result.returncode, result.stdout.strip()) == (0, "done")
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_an_analysis_module_cancel_stops_the_command(tmp_path, test_context):
+    # what a module hands run_sandboxed, cancelled from another thread as the engine would
+    module = AnalysisModule(context=test_context, config=AnalysisModuleConfig(
+        name="test", python_module="saq.modules.base_module", python_class="AnalysisModule", enabled=True))
+    with create_workdir(str(tmp_path)) as workdir:
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", "open('started', 'w'); import time; time.sleep(60)"],
+                                  workdir, NO_TCP_RULES, datetime.timedelta(seconds=60))
+        started_file = os.path.join(workdir, "started")
+        threading.Thread(target=lambda: (_wait_for(started_file), module.cancel_analysis()), daemon=True).start()
+
+        started = time.monotonic()
+        with pytest.raises(SandboxCancelled):
+            run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
+                          datetime.timedelta(seconds=60), 1024 * 1024, cancel=module.should_stop)
+
+        assert time.monotonic() - started < 30
 
 
 def _wait_for(path: str, timeout: float = 20) -> None:
