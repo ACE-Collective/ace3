@@ -9,42 +9,6 @@ imports all of them only to print the full help.
 
 import importlib
 
-# every command module, in the order `ace --help` lists their commands
-COMMAND_MODULES = [
-    "hunt",
-    "persistence",
-    "integration",
-    "service",
-    "correlate",
-    "submit",
-    "remediation",
-    "gui_api",
-    "user",
-    "testing",
-    "alerts",
-    "cache",
-    "cas",
-    "crash",
-    "cron",
-    "encryption",
-    "company",
-    "config_cmd",
-    "misc",
-    "node",
-    "permissions",
-    "phishkit",
-    "js_deobfuscator",
-    "storage",
-    "search",
-    "nrd",
-    "observables",
-    "partitions",
-    "signatures",
-    "svs",
-    "yara",
-    "yara_qa",
-]
-
 # top-level command (and alias) -> the module that registers it; tests/saq/test_cli.py checks this against
 # what each module registers when imported alone
 COMMANDS = {
@@ -88,6 +52,9 @@ COMMANDS = {
     "yara": "yara",
     "yara-qa": "yara_qa",
 }
+
+# every command module, in the order `ace --help` lists their commands
+COMMAND_MODULES = list(dict.fromkeys(COMMANDS.values()))
 
 
 def import_command_modules(command: str | None = None) -> None:

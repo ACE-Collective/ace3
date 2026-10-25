@@ -210,7 +210,7 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 ### CLI
 
-`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `ace` imports only the module of the command it runs, which it finds in `COMMANDS` in `saq/cli/commands/__init__.py`, so a new command module goes in `COMMAND_MODULES` and its top-level commands in `COMMANDS` (`tests/saq/test_cli.py` checks both). `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `ace` imports only the module of the command it runs, which it finds in `COMMANDS` in `saq/cli/commands/__init__.py`, so a new command module's top-level commands go in `COMMANDS` (`tests/saq/test_cli.py` checks that every module is there). `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 
