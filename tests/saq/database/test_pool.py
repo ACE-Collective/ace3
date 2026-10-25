@@ -1,14 +1,51 @@
+import logging
 import threading
+
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from saq.environment import ACE_MP_CONTEXT
 
 from saq.configuration.config import get_database_config
-from saq.constants import DB_ACE
+from saq.constants import DB_ACE, DB_BROCESS, DB_EMAIL_ARCHIVE
 from saq.database import pool
-from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
-from tests.saq.helpers import log_count, recv_test_message, send_test_message
+from saq.database.pool import (
+    _build_database_url,
+    _build_engine_options,
+    _get_engine,
+    execute_with_db_cursor,
+    get_db,
+    get_db_connection,
+    initialize_database,
+    remove_all_sessions,
+)
+from saq.monitor_definitions import MONITOR_DB_POOL_AVAILABLE_COUNT, MONITOR_DB_POOL_IN_USE_COUNT
+from tests.saq.helpers import recv_test_message, send_test_message
+
+
+def _connection_id(db) -> int:
+    cursor = db.cursor()
+    cursor.execute("SELECT CONNECTION_ID()")
+    return cursor.fetchone()[0]
+
+
+@pytest.fixture
+def empty_ace_pool():
+    """The ace engine with nothing pooled, so a test can count what it checks out."""
+    remove_all_sessions()
+    engine = _get_engine(DB_ACE)
+    engine.dispose()
+    return engine
+
+
+@pytest.fixture
+def isolated_registry(monkeypatch):
+    """Copies of the session and engine registries, so a test can replace what they hold."""
+    monkeypatch.setattr(pool, "_db_sessions", dict(pool._db_sessions))
+    monkeypatch.setattr(pool, "_db_engine_by_name", dict(pool._db_engine_by_name))
+    monkeypatch.setattr(pool, "_db_engines", set(pool._db_engines))
+
 
 @pytest.mark.unit
 def test_execute_with_db_cursor():
@@ -27,231 +64,166 @@ def test_connection():
         cursor.execute("SELECT 1")
 
 @pytest.mark.unit
-def test_pooling():
-    get_pool().clear()
-    with get_db_connection() as db_1:
-        # we should have one database connection ready
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        with get_db_connection() as db_2:
-            assert get_pool().in_use_count == 2
-            assert get_pool().available_count ==0
-            assert db_1 is not db_2
+def test_engine_options_come_from_the_database_config(monkeypatch):
+    config = get_database_config(DB_ACE)
+    monkeypatch.setattr(config, "pool_size", 2)
+    monkeypatch.setattr(config, "max_overflow", 3)
+    monkeypatch.setattr(config, "max_connection_lifetime", "00:15:00")
 
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 1
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 2
+    options = _build_engine_options(config)
+    assert options["pool_size"] == 2
+    assert options["max_overflow"] == 3
+    assert options["pool_recycle"] == 900
+    assert options["isolation_level"] == "READ COMMITTED"
 
 @pytest.mark.integration
-def test_pooling_old_connection():
-    get_pool().clear()
+def test_raw_connections_come_from_the_orm_pool(empty_ace_pool):
+    assert get_db().get_bind() is empty_ace_pool
 
-    # make them invalid immediately
-    get_database_config(DB_ACE).max_connection_lifetime = "00:00:00"
+    with get_db_connection() as db:
+        raw = db.dbapi_connection
+        assert empty_ace_pool.pool.checkedout() == 1
 
-    # this is needed to reset the timeouts on the existing connections
-    reset_pools()
+    assert empty_ace_pool.pool.checkedin() == 1
 
-    with get_db_connection() as _:
-        pass
-
-    assert log_count('got new database connection to') ==  1
-
-    with get_db_connection() as _:
-        pass
-
-    assert log_count('got new database connection to') == 2
-
-    # change it back and then we should start re-using the connections again
-    get_database_config(DB_ACE).max_connection_lifetime = "00:01:00"
-    reset_pools()
-
-    with get_db_connection() as _:
-        pass
-
-    assert log_count('got new database connection to') == 3
-
-    with get_db_connection() as _:
-        pass
-
-    assert log_count('got new database connection to') == 3
+    # the only pooled connection is the one cursor code just returned
+    get_db().execute(text("SELECT 1"))
+    assert get_db().connection().connection.dbapi_connection is raw
+    remove_all_sessions()
 
 @pytest.mark.integration
-def test_pooling_without_contextmanager():
-    get_pool().clear()
-    db = get_pool().get_connection()
+@pytest.mark.parametrize("name", [DB_ACE, DB_BROCESS, DB_EMAIL_ARCHIVE])
+def test_raw_connections_share_the_engine_of_every_database(name):
+    assert _get_engine(name) is get_db(name).get_bind()
 
-    assert get_pool().in_use_count == 1
-    assert get_pool().available_count == 0
-
-    c = db.cursor()
-    c.execute("SELECT 1")
-    db.commit()
-    get_pool().return_connection(db)
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
+    with get_db_connection(name) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT DATABASE(), @@transaction_isolation")
+        assert cursor.fetchone() == (get_database_config(name).database, "READ-COMMITTED")
 
 @pytest.mark.integration
-def test_pooling_bad_sql():
-    get_pool().clear()
-    with get_db_connection() as db_1:
+def test_raw_connections_are_bounded_by_the_pool(monkeypatch):
+    config = get_database_config(DB_ACE)
+    options = {**_build_engine_options(config), "pool_size": 1, "max_overflow": 0, "pool_timeout": 0.1}
+    engine = create_engine(_build_database_url(config), **options)
+    monkeypatch.setitem(pool._db_engine_by_name, DB_ACE, engine)
 
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
+    try:
+        with get_db_connection() as first:
+            raw = first.dbapi_connection
+            with pytest.raises(PoolTimeoutError):
+                with get_db_connection():
+                    pass
 
-        with pytest.raises(Exception):
-            c = db_1.cursor()
-            c.execute("INVALID SQL")
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
+        # once it is returned it is the one handed out next
+        with get_db_connection() as second:
+            assert second.dbapi_connection is raw
+    finally:
+        engine.dispose()
 
 @pytest.mark.integration
-def test_pooling_broken_connection():
-    get_pool().clear()
-    with get_db_connection() as db_1:
+def test_returning_a_connection_rolls_back_what_was_left_uncommitted(empty_ace_pool):
+    with get_db_connection() as db:
+        raw = db.dbapi_connection
+        db.cursor().execute("INSERT INTO `config` ( `key`, `value` ) VALUES ( 'test_uncommitted', '1' )")
 
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        db_1.close()
+    with get_db_connection() as db:
+        # the same session, which would still see its own insert had it not been rolled back
+        assert db.dbapi_connection is raw
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM `config` WHERE `key` = 'test_uncommitted'")
+        assert cursor.fetchone() == (0,)
 
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 0
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
-
-    # close the connection while not being used
-    for connection in get_pool().available:
-        connection.close()
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
+def _explode(*args, **kwargs):
+    raise OSError("nope")
 
 @pytest.mark.integration
-def test_pooling_threaded():
-    get_pool().clear()
+def test_a_connection_that_cannot_roll_back_is_not_reused(empty_ace_pool, monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="sqlalchemy.pool")
+    with get_db_connection() as db:
+        broken = db.dbapi_connection
+        monkeypatch.setattr(broken, "rollback", _explode)
+        # what happens to every pooled connection when the database stops before this process does
+        monkeypatch.setattr("saq.shutdown.is_shutting_down", lambda: True)
 
-    with get_db_connection() as conn_1:
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
+    monkeypatch.undo()
 
+    # SQLAlchemy's "Exception during reset or similar", at DEBUG because it was expected
+    records = [r for r in caplog.records if r.name.startswith("sqlalchemy.pool")]
+    assert any(r.levelno == logging.DEBUG and "(shutting down): nope" in r.getMessage() for r in records)
+    assert not any(r.levelno > logging.DEBUG for r in records)
+
+    with get_db_connection() as db:
+        assert db.dbapi_connection is not broken
+        db.cursor().execute("SELECT 1")
+
+@pytest.mark.integration
+def test_get_db_connection_creates_the_ace_engine_on_first_use(isolated_registry):
+    pool._db_sessions.pop(DB_ACE, None)
+    pool._db_engine_by_name.pop(DB_ACE, None)
+
+    try:
+        with get_db_connection() as db:
+            db.cursor().execute("SELECT 1")
+
+        # and it is the engine behind get_db()'s session
+        assert get_db().get_bind() is pool._db_engine_by_name[DB_ACE]
+    finally:
+        pool._db_engine_by_name[DB_ACE].dispose()
+
+@pytest.mark.integration
+def test_threads_get_their_own_connections():
+    results = []
+
+    with get_db_connection() as first:
         def f():
-            with get_db_connection() as conn_2:
-                assert conn_1 is not conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
+            with get_db_connection() as second:
+                results.append(_connection_id(second))
 
-            # but asked a second time this should be the same as before
-            with get_db_connection() as conn_3:
-                assert conn_3 is conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
-            
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
         t = threading.Thread(target=f)
         t.start()
-        t.join()
-                
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 2
+        t.join(timeout=30)
+        assert not t.is_alive()
 
-    # make sure we can get, and use, the connection created in the other thread
-
-    conn_1 = get_pool().get_connection()
-    conn_2 = get_pool().get_connection()
-
-    assert get_pool().in_use_count == 2
-    assert get_pool().available_count == 0
-
-    c = conn_2.cursor()
-    c.execute("SELECT 1")
-    c.fetchone()
-
-    get_pool().return_connection(conn_1)
-    get_pool().return_connection(conn_2)
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 2
+        assert results and results[0] != _connection_id(first)
 
 @pytest.mark.system
-def test_pooling_multi_process(test_comms):
-    get_pool().clear()
-    with get_db_connection() as conn_1:
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
+def test_a_forked_process_gets_its_own_connections(test_comms):
+    with get_db_connection() as db:
+        parent_id = _connection_id(db)
 
         def f():
-            # once we've entered into the new process, the pool changes
-            send_test_message(get_pool().in_use_count == 0)
-            send_test_message(get_pool().available_count == 0)
-
-            # so this connection should be different than conn_1
-            with get_db_connection() as conn_2:
-                send_test_message(conn_1 is not conn_2)
-                send_test_message(get_pool().in_use_count == 1)
-                send_test_message(get_pool().available_count == 0)
-
-            send_test_message(get_pool().in_use_count == 0)
-            send_test_message(get_pool().available_count == 1)
+            with get_db_connection() as child:
+                send_test_message(_connection_id(child))
 
         process = ACE_MP_CONTEXT.Process(target=f)
         process.start()
+        child_id = recv_test_message()
+        process.join(timeout=30)
 
-        assert recv_test_message()
-        assert recv_test_message()
-        assert recv_test_message()
-        assert recv_test_message()
+        assert child_id != parent_id
+        # and the parent's connection survived the child
+        assert _connection_id(db) == parent_id
 
-        process.join()
+@pytest.mark.integration
+def test_checkout_and_checkin_report_the_pool(empty_ace_pool, monkeypatch):
+    emitted = []
+    monkeypatch.setattr(pool, "emit_monitor", lambda monitor, value, *args: emitted.append((monitor, value)))
 
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
+    with get_db_connection():
+        assert (MONITOR_DB_POOL_IN_USE_COUNT, 1) in emitted
+        assert (MONITOR_DB_POOL_AVAILABLE_COUNT, 0) in emitted
+        emitted.clear()
 
-    with get_db_connection() as conn_4:
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        assert conn_1 is conn_4
+    # what an idle process last reported: nothing in use, one available
+    assert emitted[-2:] == [(MONITOR_DB_POOL_AVAILABLE_COUNT, 1), (MONITOR_DB_POOL_IN_USE_COUNT, 0)]
 
 
 @pytest.fixture
 def no_sessions(monkeypatch):
     """Starts the test with no session or engine registered, and disposes the engines it creates."""
     monkeypatch.setattr(pool, "_db_sessions", {})
+    monkeypatch.setattr(pool, "_db_engine_by_name", {})
     monkeypatch.setattr(pool, "_db_engines", set())
     yield
     for session in pool._db_sessions.values():

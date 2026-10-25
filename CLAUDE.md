@@ -120,6 +120,8 @@ Four Alembic chains, each with its own ini, versions dir, declarative base (`saq
 
 All models live in `saq/database/model.py`. The brocess models are schema-definition only — every actual read/write goes through raw pymysql (`saq/brocess.py`, `saq/modules/email/logging.py`, `saq/modules/email/conversation.py`).
 
+Raw cursor code and the ORM share one connection pool per database per process: `get_db_connection(name)` checks a raw pymysql connection out of the same SQLAlchemy engine as `get_db(name)` (`saq/database/pool.py`), and returning it rolls back. `pool_size` + `max_overflow` in the `database_<name>:` config block is the most connections one process holds to that database; one more checkout waits 30 seconds and raises `sqlalchemy.exc.TimeoutError`. The FastAPI apps' async engine (`aceapi_v2/database.py`) is a separate aiomysql pool.
+
 The `sql/0*.sql` files only create the (empty) databases; every table comes from a migration.
 
 The email archive and analysis result cache tables are RANGE-partitioned by date and maintained by `ace partitions` (`saq/database/partitions.py`, `docs/DATABASE_PARTITIONS.md`). Never split a partition that holds rows on a live table (`REORGANIZE PARTITION`, or `PARTITION BY` on a populated table): it copies every row and blocks writes for as long as it runs. A table whose `p_catchall` has filled up is repaired with `ace partitions rebuild`.

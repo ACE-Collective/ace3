@@ -302,7 +302,8 @@ def _close_local_connections() -> None:
     DROP DATABASE waits for an exclusive metadata lock on every table in the schema, and
     any connection sitting in an open transaction that touched one holds a shared lock
     until it ends. So everything goes: the scoped sessions, the SQLAlchemy engines behind
-    them, the async engine on the background loop and the raw pymysql pools."""
+    them (which raw cursor code checks its connections out of too) and the async engine on
+    the background loop."""
     pool.remove_all_sessions()
     close_all_sessions()
 
@@ -323,8 +324,6 @@ def _close_local_connections() -> None:
             engine.dispose()
         except Exception as e:
             logging.warning("unable to dispose database engine: %s", e)
-
-    pool.reset_pools()
 
 
 def _kill_connections(cursor, grantee: str, name: str) -> int:
