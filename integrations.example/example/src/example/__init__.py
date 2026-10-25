@@ -9,8 +9,6 @@ from saq.constants import F_TEST, AnalysisExecutionResult
 from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.gui.observable_actions.base import ObservableAction
 
-from example.api.router import router as example_api_router
-
 KEY_RESULT = "result"
 
 class ExampleAnalysis(Analysis):
@@ -64,7 +62,7 @@ def register_example_blueprint(flask_app: Flask):
 register_integration_blueprint_callback(register_example_blueprint)
 
 # API routes, served under /api/v2/integrations/example
-register_integration_router("example", example_api_router)
+register_integration_router("example", "example.api.router")
 
 class ObservableActionExample(ObservableAction):
     def __init__(self, *args, **kwargs):

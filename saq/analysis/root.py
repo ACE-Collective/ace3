@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 # supported extension keys
 KEY_PLAYBOOK_URL = 'playbook_url'
 KEY_TRANSACTION_ID = 'transaction_id'
+# the template the GUI renders the alert with
+KEY_ALERT_TEMPLATE = 'alert_template'
 # collector-layer submission metadata. these live on the root (rather than on Submission) because
 # a staged submission is reconstructed from disk after a restart, and only the root is serialized.
 KEY_SUBMISSION_KEY = 'submission_key'

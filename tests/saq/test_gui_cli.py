@@ -39,7 +39,7 @@ def gui_mocks(monkeypatch):
         atexit_register=MagicMock(),
     )
     monkeypatch.setattr("werkzeug.serving.run_simple", mocks.run_simple)
-    monkeypatch.setattr("app.create_app", MagicMock())
+    monkeypatch.setattr("app.application.create_app", MagicMock())
     monkeypatch.setattr(gui_api, "start_api_v2_server", mocks.start_api_v2_server)
     monkeypatch.setattr(gui_api.atexit, "register", mocks.atexit_register)
     return mocks
@@ -140,7 +140,7 @@ def test_stop_api_v2_server_kills_a_server_that_will_not_stop():
 def test_start_gui_print_uri_paths(gui_mocks, monkeypatch, capsys):
     app = MagicMock()
     app.url_map.iter_rules.return_value = ["/ace/", "/ace/manage"]
-    monkeypatch.setattr("app.create_app", lambda: app)
+    monkeypatch.setattr("app.application.create_app", lambda: app)
 
     with pytest.raises(SystemExit) as excinfo:
         gui_api.start_gui(_gui_args(print_uri_paths=True))
@@ -155,7 +155,7 @@ def test_start_gui_print_uri_paths(gui_mocks, monkeypatch, capsys):
 @pytest.mark.unit
 def test_start_gui_serves_unknown_paths_as_not_found(gui_mocks, monkeypatch):
     app = MagicMock()
-    monkeypatch.setattr("app.create_app", lambda: app)
+    monkeypatch.setattr("app.application.create_app", lambda: app)
     gui_api.start_gui(_gui_args(api_v2=False))
 
     responses = []

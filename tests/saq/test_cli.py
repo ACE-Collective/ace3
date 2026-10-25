@@ -1,18 +1,26 @@
+import ast
 import os
+import pkgutil
+import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-import saq.cli.commands # noqa: F401
 
 from saq.analysis.root import load_root
 from saq.cli import cli_main
 from saq.cli.cli_main import get_cli_parser, get_cli_subparsers
+from saq.cli.commands import COMMAND_MODULES, COMMANDS, import_command_modules
+from saq.environment import get_base_dir
+
+# every test here reads the parsers of every command
+import_command_modules()
 from saq.constants import EventTimeSource
 
 
 @pytest.mark.unit
 def test_cli_commands_registered():
-    """Importing saq.cli.commands must register every built-in CLI command.
+    """import_command_modules() with no command must register every built-in CLI command.
 
     This guards against a command module being dropped from
     saq/cli/commands/__init__.py (or a new command module forgetting to
@@ -144,3 +152,73 @@ def test_alert_create_says_its_event_time_is_when_it_was_created(tmp_path):
     root = load_root(str(tmp_path / "alert"))
     assert root.event_time is not None
     assert root.event_time_source == EventTimeSource.NOW
+
+
+def _registered_alone(module: str) -> list[str]:
+    code = (f"import saq.cli.commands.{module}\n"
+            "from saq.cli.cli_main import get_cli_subparsers\n"
+            "print(sorted(get_cli_subparsers().choices))\n")
+    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
+                            timeout=120)
+    assert result.returncode == 0, result.stderr[-4000:]
+    return ast.literal_eval(result.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.unit
+def test_the_command_map_matches_what_each_module_registers():
+    """ace imports only the module COMMANDS names for the command it runs, so the map has to name, for
+    every top-level command and alias, the module that registers it on its own."""
+    package_dir = os.path.join(get_base_dir(), "saq", "cli", "commands")
+    assert sorted(COMMAND_MODULES) == sorted(info.name for info in pkgutil.iter_modules([package_dir]))
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        registered = dict(zip(COMMAND_MODULES, pool.map(_registered_alone, COMMAND_MODULES)))
+
+    assert {command: module for module, commands in registered.items() for command in commands} == COMMANDS
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("argv, command", [
+    (["service", "start", "engine"], "service"),
+    (["-L", "etc/logging.yaml", "--saq-home", "/opt/ace", "service", "start"], "service"),
+    (["-c", "a.yaml", "-c", "b.yaml", "alert", "create", "x"], "alert"),
+    (["-u", "alert", "service", "start"], "service"),
+    (["--force-alerts", "correlate", "-c", "x"], "correlate"),
+    (["--help"], None),
+    (["-h"], None),
+    ([], None),
+    (["-c"], None),
+])
+def test_get_command(argv, command):
+    assert cli_main.get_command(argv) == command
+
+
+@pytest.mark.unit
+def test_running_a_command_imports_only_its_module():
+    code = ("import sys\n"
+            "from saq.cli.cli_main import get_command\n"
+            "from saq.cli.commands import import_command_modules\n"
+            "import_command_modules(get_command(['service', 'start', 'network_semaphore']))\n"
+            "print(sorted(name for name in sys.modules if name.startswith('saq.cli.commands.')))\n")
+    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
+                            timeout=120)
+    assert result.returncode == 0, result.stderr[-4000:]
+    assert ast.literal_eval(result.stdout.strip().splitlines()[-1]) == ["saq.cli.commands.service"]
+
+
+@pytest.mark.unit
+def test_help_lists_every_command():
+    result = subprocess.run([sys.executable, "ace", "--help"], cwd=get_base_dir(), capture_output=True,
+                            text=True, timeout=120)
+    assert result.returncode == 0, result.stderr[-4000:]
+    for command in COMMANDS:
+        assert command in result.stdout, command
+
+
+@pytest.mark.unit
+def test_an_unknown_command_lists_every_command():
+    result = subprocess.run([sys.executable, "ace", "no-such-command"], cwd=get_base_dir(), capture_output=True,
+                            text=True, timeout=120)
+    assert result.returncode == 2
+    assert "invalid choice" in result.stderr
+    assert "yara-qa" in result.stderr and "js-deobfuscator" in result.stderr

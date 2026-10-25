@@ -8,7 +8,8 @@ traffic back onto the workers this container exists to keep free for the engines
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from aceapi_v2.application import create_app, create_engine_app
+from aceapi_v2.application import create_app
+from aceapi_v2.app_factory import create_engine_app
 
 ENGINE_APP_PREFIXES = ("/engine/", "/health/", "/common/")
 

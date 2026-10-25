@@ -1,9 +1,11 @@
 import pytest
 
+from saq.observables import type_hierarchy
 from saq.observables.type_hierarchy import (
     ObservableTypeEntry,
     ObservableTypesFile,
     TypeHierarchy,
+    get_all_valid_types,
     get_type_hierarchy,
 )
 
@@ -693,3 +695,34 @@ def test_reset_clears_reload_state():
     assert h._config_path is None
     assert h._last_mtime is None
     assert h._next_reload_check is None
+
+
+@pytest.mark.unit
+def test_bootstrapped_on_first_use(monkeypatch):
+    # nothing bootstraps the hierarchy at startup; the first accessor call reads the configuration
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    assert get_type_hierarchy() is fresh
+    assert fresh.parent_of("email_cc") == "email_address"
+
+
+@pytest.mark.unit
+def test_get_all_valid_types_bootstraps_too(monkeypatch):
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", TypeHierarchy())
+
+    assert "email_dkim_signing_domain" in get_all_valid_types()
+
+
+@pytest.mark.unit
+def test_bootstrap_waits_for_the_configuration(monkeypatch):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    with monkeypatch.context() as no_config:
+        no_config.setattr("saq.configuration.get_config", lambda: None)
+        get_type_hierarchy()
+        assert fresh.parent_of("email_cc") is None
+
+    get_type_hierarchy()
+    assert fresh.parent_of("email_cc") == "email_address"

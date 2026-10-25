@@ -397,8 +397,9 @@ markup:
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through
-the API (`aceapi_v2`), not through routes in its Flask blueprint. Register a FastAPI router when
-your package is imported, and its routes are served under `/api/v2/integrations/<name>`:
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Register the module that defines
+your FastAPI router when your package is imported, and its routes are served under
+`/api/v2/integrations/<name>`:
 
 ```python
 # src/vendor/api/router.py
@@ -419,10 +420,15 @@ async def submit(
 
 # src/vendor/__init__.py
 from aceapi_v2.integrations import register_integration_router
-from vendor.api.router import router as vendor_api_router
 
-register_integration_router("vendor", vendor_api_router)
+register_integration_router("vendor", "vendor.api.router")
 ```
+
+- **Register the module's name, not the router.** Every ACE process imports your package, but only
+  the API serves the routes. `vendor.api.router` (which must define `router`) is imported when an
+  API app is built, so the other processes never load FastAPI or your router's service layer. A
+  router module that fails to import is logged at ERROR and left out, and the API starts without
+  it. Passing the router object still works, but it costs every process that import.
 
 - **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
   The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`

@@ -2,7 +2,6 @@ import logging
 import os
 from typing import Optional, Type, override
 from pydantic import ConfigDict, Field, model_validator
-from oletools.olevba import VBA_Parser, filter_vba
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
 from saq.modules import AnalysisModule
@@ -159,6 +158,10 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         analysis = self.create_analysis(_file)
+
+        # imported here: oletools (and the XLM deobfuscator and setuptools it loads) costs ~19 MB, and the search
+        # indexer and the GUI import this module only to read OLEVBA_Analysis_v1_2
+        from oletools.olevba import VBA_Parser, filter_vba
 
         parser = None
 

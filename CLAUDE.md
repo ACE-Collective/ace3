@@ -178,7 +178,7 @@ Key top-level conventions:
 
 ### Analysis modules
 
-`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later. A module that writes a file named by analyzed content (an attachment, archive member or document part name) gets its path from `root.create_output_file(name)`, which cleans the name, keeps it inside the root's files directory and creates the file before anything is written; `create_file_path` is for names the module makes up itself.
+`saq/modules/` — subclass `AnalysisModule` (`saq/modules/base_module.py`), declare `generated_analysis_type` and `valid_observable_types`, implement `execute_analysis(observable) -> AnalysisExecutionResult` (`COMPLETED` or `INCOMPLETE`). Modules are instantiated from YAML config, never imported directly by the engine. Delayed analysis lets a module return early and be re-invoked later. A module that writes a file named by analyzed content (an attachment, archive member or document part name) gets its path from `root.create_output_file(name)`, which cleans the name, keeps it inside the root's files directory and creates the file before anything is written; `create_file_path` is for names the module makes up itself. A module imports the libraries its analyzer runs in the method that runs them (`docs/IMPORTS.md`), because the search indexer, the GUI and the API import every analysis module they read an alert of.
 
 ### Engine
 
@@ -190,6 +190,7 @@ Key top-level conventions:
 - `lock_manager/`, `node_manager/` — distributed locking and multi-node work distribution (nodes advertise themselves in the `nodes` table and can pull work from each other).
 - `configuration_manager.py` — resolves analysis mode → module set; `enable_module()` is the hook tests use.
 - Each forked worker leads its own process group, and `Worker.kill()` SIGKILLs the group: on a timeout or memory limit, past the shutdown budget, and for every worker found dead, so nothing a worker started that stays in its group outlives it. A child started in a session or group of its own (`start_new_session`, `process_group`) is out of reach of that kill and has to bound itself. A worker never starts a child that runs Python before its exec (`preexec_fn`, `os.fork()`, fork-context multiprocessing): that child runs every at-fork hook in a copy of a process whose other threads may hold any lock, and one it needs is never released (`saq/database/pool.py`'s hook takes none for that reason). Use `setpriv --pdeathsig` for a parent-death signal.
+- `Worker.start()` calls `gc.freeze()` right before the fork and `gc.unfreeze()` right after it: the worker keeps what it inherited out of its collector's reach, so its collections don't copy the pages it shares with the engine process, and the engine process still collects its own garbage. The workers load their modules after the fork (`Worker.worker_loop`).
 
 Analysis caching (per-module result cache keyed on observable + module + config hash) is a significant subsystem — read `docs/ANALYSIS_CACHING.md` before touching `executor.py` cache paths or adding a cacheable module.
 
@@ -205,11 +206,11 @@ A service is a long-running process with a `start/wait/stop` lifecycle, launched
 
 - `app/` — Flask GUI (blueprints: `main`, `auth`, `analysis`, `events`, `remediation`, `file_collection`), Jinja templates, the analyst-facing alert view.
 - `aceapi_v2/` — the FastAPI app behind `/api/v2`, router-per-resource under `aceapi_v2/<resource>/router.py`.
-- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
+- Node-to-node routes (`/api/v2/engine/*`) are served by their own container, `http-api-engine` (`aceapi_v2.app_factory.create_engine_app()`, `api_engine_uvicorn.py`), so user traffic on `http-api-v2` cannot starve the engines; nginx routes them there. Its worker count scales with the cluster and is set per node with `ACE_API_ENGINE_WORKERS` (`docs/ENGINE_API.md`).
 
 ### CLI
 
-`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `saq/cli/` holds the shared plumbing.
+`./ace` is the entry point. Each subcommand lives in its own module under `saq/cli/commands/` and registers itself through `get_cli_subparsers()`: `service start`, `gui start`, `correlate`, `submit`, `hunt ...`, `user ...`, `persistence ...`, `integration ...`, `remediation ...`, `alert ...`, and more. `ace` imports only the module of the command it runs, which it finds in `COMMANDS` in `saq/cli/commands/__init__.py`, so a new command module goes in `COMMAND_MODULES` and its top-level commands in `COMMANDS` (`tests/saq/test_cli.py` checks both). `saq/cli/` holds the shared plumbing.
 
 ### Integrations
 
@@ -349,6 +350,17 @@ The analyst's experience comes first.
 - Nothing expensive per render or per request: no process forks, file opens, or reloading a `RootAnalysis` to read one field. Persist derived values instead.
 - An analysis module avoids redundant work across observables and uses analysis caching where it fits (`docs/ANALYSIS_CACHING.md`).
 
+### What a process imports
+
+Every service, `ace` command, engine worker and API worker holds what its modules import at module level, mostly as private memory, so an import added to a module that everything loads costs every process on every node. `docs/IMPORTS.md` has the reasoning, the examples and how to measure.
+
+- A package `__init__.py` imports nothing. It re-exports through a PEP 562 `__getattr__` (`saq/analysis/__init__.py`), never under a name a submodule also has.
+- Core (`saq/`) never imports the web layer: Flask, FastAPI, `app/`, `aceapi_v2/`, `aceapi_ai/`, or `saq.gui.alert`. Integrations register API routers by module path and import Flask only under `TYPE_CHECKING`.
+- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's S3 backend, phishkit's celery) is set up on first use.
+- An analysis module imports the libraries its analyzer runs (OCR, document parsers, network clients, celery) in the method that runs them. Reading an alert imports the module of every analysis in it, in processes that never analyze.
+- A name needed only for a type annotation is imported under `TYPE_CHECKING`.
+- A new service, entry point or heavy dependency gets a line in `tests/saq/test_imports.py`, which imports in fresh interpreters.
+
 ### Keep it lean
 
 - Before writing a helper, search for an existing one and use it (e.g. `saq/gui/filter_conditions.py`, `saq/util/`). If the existing one is close but not right, extend it.
@@ -370,7 +382,7 @@ GUI code (`app/`, templates, static JS/CSS) must work, be fast, and be safe: esc
 - **Sync code in the FastAPI apps (`aceapi_v2/`, `aceapi_ai/`) reaches a thread only through `aceapi_v2.sync.run_db_in_thread`**, whether or not it touches the database: endpoints and dependencies are `async`, and nothing calls `run_in_threadpool`, `asyncio.to_thread` or `run_in_executor` directly. A `get_db()` session belongs to the pool thread and outlives the request unless it is removed, and only `run_db_in_thread` removes it (`tests/aceapi_v2/test_sync.py` enforces this). A sync `BackgroundTask` or a sync iterator given to a streaming response also runs on Starlette's pool, out of the test's sight, so it must not use `get_db()`.
 - **Alembic + ORM, never raw SQL.** Write the SQLAlchemy model in `saq/database/model.py` first, then autogenerate the migration (see Databases and migrations above) — never hand-write a migration file. Prefer the ORM session (`get_db()`) over raw cursors.
 - **Integrations stay self-contained.** Everything for `integrations/<name>/` lives under that directory — never add integration-specific symbols to `saq/constants.py`, `saq/gui/`, or `saq/configuration/schema.py`. If the extension hook you need doesn't exist, extend the core mechanism generically (no vendor name in core) and register through it.
-- **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, heavy startup cost), leave it and add a short comment saying why — no comment, no excuse.
+- **Imports at module level**, not inside functions. If an import genuinely must be local (circular import, or a heavy library only some callers need, as "What a process imports" above describes), leave it and add a short comment saying why — no comment, no excuse.
 - When possible, use the actual data types for type hints. For example, use `list` instead of the older `List`.
 
 ### Test data

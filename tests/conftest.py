@@ -28,7 +28,7 @@ from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.shutdown import reset_shutdown_coordinator
 from saq.storage.factory import reset_storage_system
 from saq.svs import attribution as svs_attribution, windows as svs_windows
-from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
+from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, initialize_base_dir, initialize_environment, set_global_runtime_settings, set_node, initialize_data_dir
 
 
 import pytest
@@ -613,6 +613,9 @@ def mock_api_call(monkeypatch):
 #
 
 def pytest_sessionstart(session):
+    # the integrations are found under SAQ_HOME, which nothing has applied yet: without this they come from the
+    # default /opt/ace, which a worktree's run would import ahead of its own
+    initialize_base_dir()
     for dir_path in get_valid_integration_dirs():
         load_integration_component_src(dir_path)
 

@@ -3,15 +3,11 @@ import os
 import tempfile
 from typing import Optional
 
-try:
-    import botocore.exceptions  # noqa
-    HAS_BOTOCORE = True
-except ImportError:
-    HAS_BOTOCORE = False
-
 from saq.configuration.config import get_config
 from saq.email_archive.local import EmailArchiveLocal
-from saq.storage.s3 import get_s3_client
+
+# the S3 client (saq.storage.s3, boto3, botocore) is imported in the methods that call S3: the email archive
+# factory imports this module in every process, and the archive is set up at startup without touching S3
 
 
 def _extract_sha256_from_file_name(file_path: str) -> str:
@@ -22,6 +18,9 @@ def _extract_sha256_from_file_name(file_path: str) -> str:
 
 class EmailArchiveS3(EmailArchiveLocal):
     def email_exists_in_s3(self, sha256_hash: str) -> bool:
+        import botocore.exceptions
+        from saq.storage.s3 import get_s3_client
+
         bucket = get_config().email_archive.s3_bucket
         s3_client = get_s3_client(region=get_config().email_archive.s3_region)
 
@@ -36,6 +35,8 @@ class EmailArchiveS3(EmailArchiveLocal):
             raise e
 
     def upload_to_s3(self, local_path: str, message_id: str, sha256_hash: str) -> bool:
+        from saq.storage.s3 import get_s3_client
+
         bucket = get_config().email_archive.s3_bucket
         metadata = { "message_id": message_id }
         logging.info("uploading email archive %s to %s with metadata %s", sha256_hash, bucket, metadata)
@@ -60,6 +61,8 @@ class EmailArchiveS3(EmailArchiveLocal):
         # this is a cheap way to avoid concurrency issues
         fd, temp_path = tempfile.mkstemp(prefix=f'archive_{sha256_hash}.', suffix='.gz.e', dir=os.path.dirname(target_path))
         os.close(fd)
+
+        from saq.storage.s3 import get_s3_client
 
         s3_client = get_s3_client(region=get_config().email_archive.s3_region)
         logging.info("downloading email archive %s to %s", sha256_hash, temp_path)

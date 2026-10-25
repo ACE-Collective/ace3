@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-import saq.cli.commands  # noqa: F401
+import saq.cli.commands.encryption  # noqa: F401 -- registers the commands
 from saq.cli.cli_main import get_cli_parser
 from saq.configuration.encryption import decrypt_password, encrypt_password, export_encrypted_passwords
 from saq.crypto import InvalidPasswordError, get_aes_key, set_encryption_password

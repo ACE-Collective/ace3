@@ -12,10 +12,8 @@ from saq.storage.local import LocalStorage
 from saq.storage.error import StorageError
 from saq.storage.types import StorageTargetType
 
-try:
-    from saq.storage.s3 import S3Storage
-except Exception:
-    S3Storage = None
+# S3Storage is not imported here: it loads boto3, and saq.storage.factory imports it when an s3 target is
+# configured
 
 __all__ = [
     'StorageFactory',
@@ -24,7 +22,6 @@ __all__ = [
     'StorageInterface',
     'StorageBackendConfig',
     'LocalStorage',
-    'S3Storage',
     'StorageError',
     'StorageTargetType',
 ]

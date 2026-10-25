@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterable, Iterator
 from typing import Optional
 
-from saq.observables.export.config import ObservableExportConfig
+from saq.configuration.schema import ObservableExportConfig
 from saq.observables.export.state import read_fingerprint, write_fingerprint
 from saq.observables.type_hierarchy import get_type_hierarchy
 

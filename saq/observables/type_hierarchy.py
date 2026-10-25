@@ -97,6 +97,8 @@ class TypeHierarchy:
         self._next_reload_check: Optional[float] = None
         self._reload_check_interval: float = 60.0
         self._reload_lock = threading.Lock()
+        # set once bootstrap_type_hierarchy() has read the configuration
+        self._bootstrapped = False
 
     def load_yaml_config(self, path: str) -> None:
         """Load the per-type YAML config and rebuild.
@@ -319,8 +321,16 @@ def get_type_hierarchy() -> TypeHierarchy:
     to the file on disk are picked up without a process restart. See
     :meth:`TypeHierarchy._maybe_reload`.
     """
+    _ensure_bootstrapped()
     _HIERARCHY._maybe_reload()
     return _HIERARCHY
+
+
+def _ensure_bootstrapped() -> None:
+    # bootstrapped on first use rather than at startup, so a process that never looks at an observable
+    # never imports saq.observables (this module's package) at all
+    if not _HIERARCHY._bootstrapped:
+        bootstrap_type_hierarchy()
 
 
 def get_all_valid_types() -> list[str]:
@@ -334,6 +344,7 @@ def get_all_valid_types() -> list[str]:
     """
     from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
 
+    _ensure_bootstrapped()
     _HIERARCHY._maybe_reload()
     return sorted(set(OBSERVABLE_TYPE_MAPPING.keys()) | _HIERARCHY.yaml_declared_types())
 
@@ -359,8 +370,10 @@ def bootstrap_type_hierarchy() -> None:
     try:
         observable_types_config = get_config().observable_types
     except AttributeError:
+        # no configuration loaded yet; the next accessor call tries again
         return
 
+    _HIERARCHY._bootstrapped = True
     _HIERARCHY._reload_check_interval = observable_types_config.reload_check_interval_seconds
 
     config_path = observable_types_config.config_path

@@ -120,7 +120,6 @@ def initialize_data_dir():
     from saq.configuration import get_config
     from saq.local_locking import get_lock_directory
     from saq.email_archive import get_email_archive_dir
-    from saq.collectors.base_collector import get_collection_error_dir
 
     data_dir = get_data_dir()
 
@@ -166,6 +165,11 @@ def initialize_data_dir():
 def get_data_dir() -> str:
     return get_global_runtime_settings().data_dir
 
+def get_collection_error_dir() -> str:
+    # imported here because saq.configuration imports this module
+    from saq.configuration import get_config
+    return os.path.join(get_data_dir(), get_config().collection.error_dir)
+
 def get_integration_dir() -> str:
     return os.path.join(get_base_dir(), "integrations")
 
@@ -206,7 +210,6 @@ def initialize_environment(
     )
     from saq.integration.integration_loader import load_integrations, initialize_integrations
     from saq.logging import deferred_startup_logging, initialize_logging
-    from saq.observables.type_hierarchy import bootstrap_type_hierarchy
 
     # nothing logged before initialize_logging() would reach the log file, fluent-bit or an
     # error report, so hold it until then
@@ -215,7 +218,6 @@ def initialize_environment(
         load_integrations()
         initialize_configuration(config_paths=config_paths)
         initialize_integrations()
-        bootstrap_type_hierarchy()
 
         get_global_runtime_settings().data_dir = data_dir if data_dir else os.path.join(
             get_base_dir(), get_config().global_settings.data_dir
@@ -364,16 +366,11 @@ def initialize_environment(
         get_global_runtime_settings().managed_network_cidrs.append(cidr.strip())
 
     # initialize other systems
-    from saq.disposition import initialize_dispositions
-    initialize_dispositions()
 
     from saq.email_archive import initialize_email_archive
     initialize_email_archive()
 
     from saq.monitor import initialize_monitoring
     initialize_monitoring()
-
-    from saq.phishkit import initialize_phishkit
-    initialize_phishkit()
 
     logging.debug("SAQ initialized")

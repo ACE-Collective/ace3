@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-# ACE CLI entrypoint. All command implementations live in saq/cli/commands/.
-# Importing saq.cli.commands registers every built-in subcommand.
+# ACE CLI entrypoint. All command implementations live in saq/cli/commands/; main() imports only the one
+# being run (saq.cli.commands.import_command_modules).
 
 from saq.cli.cli_main import main
-import saq.cli.commands  # noqa: F401  (registers the parsers as a side effect)
 
 if __name__ == '__main__':
     main()

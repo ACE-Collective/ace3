@@ -30,6 +30,6 @@ from aceapi_ai.startup_checks import run_startup_checks
 
 run_startup_checks()
 
-import aceapi_ai
+from aceapi_ai.application import create_app
 
-application = aceapi_ai.create_app()
+application = create_app()

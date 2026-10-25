@@ -16,7 +16,7 @@ from saq.analysis.detection_identity import detection_content_hash, node_identit
 from saq.analysis.module_execution_delta import ModuleExecutionDelta
 from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.analysis.presenter import create_observable_presenter
+from saq.analysis.presenter.observable_presenter import create_observable_presenter
 from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING, ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
 from saq.database.model import Alert, Observable as DBObservable
 from saq.database.pool import get_db
@@ -694,7 +694,8 @@ def test_index_does_not_query_per_observable_for_actions(
 ):
     """Rendering the analysis tree must not issue per-observable detection or
     interesting lookups -- the view batches both before building the tree."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
 
     detection_calls = []
     interesting_calls = []
@@ -707,8 +708,8 @@ def test_index_does_not_query_per_observable_for_actions(
         interesting_calls.append(observable.uuid)
         return False
 
-    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _spy_detection)
-    monkeypatch.setattr(presenter_module, "observable_is_interesting", _spy_interesting)
+    monkeypatch.setattr(database_observable, "observable_is_set_for_detection", _spy_detection)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", _spy_interesting)
 
     _run_basic_analyzer(root_analysis, test_context)
     root_analysis.save()
@@ -844,14 +845,15 @@ def test_index_mark_interesting_inserts_display_value_as_text(
 def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
     """available_actions is read three times per observable by
     default_observable.html; it must only do the lookups once."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
-    from saq.analysis.presenter import create_observable_presenter
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
 
     detection_calls = []
     monkeypatch.setattr(
-        presenter_module, "observable_is_set_for_detection",
+        database_observable, "observable_is_set_for_detection",
         lambda observable: detection_calls.append(observable.uuid) or False)
-    monkeypatch.setattr(presenter_module, "observable_is_interesting", lambda observable: False)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", lambda observable: False)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "cached_actions")
     presenter = create_observable_presenter(observable)
@@ -865,15 +867,16 @@ def test_available_actions_built_once_per_presenter(root_analysis, monkeypatch):
 @pytest.mark.unit
 def test_available_actions_uses_supplied_context(root_analysis, monkeypatch):
     """When the view supplies the batched values, no lookup is performed."""
-    import saq.analysis.presenter.observable_presenter as presenter_module
-    from saq.analysis.presenter import create_observable_presenter
+    # the presenter imports these from saq.database.database_observable when it calls them
+    import saq.database.database_observable as database_observable
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.constants import ACTION_DISABLE_DETECTION, ACTION_UNMARK_INTERESTING
 
     def _fail(*args, **kwargs):
         raise AssertionError("per-observable lookup should not run")
 
-    monkeypatch.setattr(presenter_module, "observable_is_set_for_detection", _fail)
-    monkeypatch.setattr(presenter_module, "observable_is_interesting", _fail)
+    monkeypatch.setattr(database_observable, "observable_is_set_for_detection", _fail)
+    monkeypatch.setattr(database_observable, "observable_is_interesting", _fail)
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "supplied_context")
     presenter = create_observable_presenter(
@@ -903,7 +906,7 @@ def test_available_actions_looks_up_what_is_not_supplied(root_analysis):
 def test_the_observable_menu_starts_with_an_action(root_analysis):
     """The menu opens with the detection action, not a divider, and offers no whitelisting (the
     Whitelist and Un-Whitelist actions were deleted)."""
-    from saq.analysis.presenter import create_observable_presenter
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.gui import ObservableActionSeparator
 
     observable = root_analysis.add_observable_by_spec(F_TEST, "menu")
@@ -917,7 +920,7 @@ def test_the_observable_menu_starts_with_an_action(root_analysis):
 @pytest.mark.unit
 def test_a_url_can_be_crawled(root_analysis):
     """URL observables offer the crawl action (phishkit), next to the clicker actions."""
-    from saq.analysis.presenter import create_observable_presenter
+    from saq.analysis.presenter.observable_presenter import create_observable_presenter
     from saq.constants import ACTION_CHECK_FOR_CLICKERS, ACTION_URL_CRAWL, F_URL
 
     observable = root_analysis.add_observable_by_spec(F_URL, "https://evil.example/login")

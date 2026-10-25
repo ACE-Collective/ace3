@@ -54,7 +54,7 @@ def test_get_async_scan_result_returns_none_without_calling_get(monkeypatch):
     is a plain read of the stored result key.
     """
     fake = FakeAsyncResult(ready=False)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     assert get_async_scan_result("job-1", "/tmp/does-not-matter") is None
     assert not fake.get_called, "must not block on get() for an unfinished job"
@@ -71,7 +71,7 @@ def test_get_async_scan_result_copies_files_when_ready(tmpdir, monkeypatch):
         fp.write("png")
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     output_dir = str(tmpdir / "collected")
     results = get_async_scan_result("job-1", output_dir)
@@ -93,7 +93,7 @@ def test_get_async_scan_result_honors_timeout_argument(tmpdir, monkeypatch):
     os.makedirs(source_dir)
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     get_async_scan_result("job-1", str(tmpdir / "collected"), timeout=7)
     assert fake.get_timeout == 7
@@ -121,7 +121,7 @@ def test_get_async_scan_result_binds_the_phishkit_app(monkeypatch):
         captured["app"] = app
         return FakeAsyncResult(ready=False)
 
-    monkeypatch.setattr("saq.phishkit.AsyncResult", fake_async_result)
+    monkeypatch.setattr("celery.result.AsyncResult", fake_async_result)
 
     get_async_scan_result("job-1", "/tmp/does-not-matter")
     assert captured["app"] is phishkit_app
@@ -229,3 +229,18 @@ def test_phishkit_work_tasks_stay_on_default_queue(task_name):
     from phishkit.phishkit import CONTROL_QUEUE, app
 
     assert app.amqp.router.route({}, task_name)["queue"].name != CONTROL_QUEUE
+
+
+@pytest.mark.unit
+def test_the_phishkit_app_is_pointed_at_the_configured_broker(monkeypatch):
+    # set when the app is first used, not when ACE initializes
+    from phishkit.phishkit import app as phishkit_app
+
+    rabbitmq = saq.phishkit.get_config().rabbitmq
+    monkeypatch.setattr(rabbitmq, "username", "pk-user")
+    monkeypatch.setattr(rabbitmq, "password", "pk-pass")
+    monkeypatch.setattr(rabbitmq, "host", "pk-host")
+    monkeypatch.setitem(phishkit_app.conf, "broker_url", "pyamqp://guest@nowhere//")
+
+    assert saq.phishkit._phishkit().app is phishkit_app
+    assert phishkit_app.conf.broker_url == "pyamqp://pk-user:pk-pass@pk-host//"

@@ -1,10 +1,6 @@
 """FastAPI application factory for ACE API v2."""
 
-import logging
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, Request, Security
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Security
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.analysis.router import router as analysis_router
@@ -16,12 +12,13 @@ from aceapi_v2.detection.router import router as detection_router
 from aceapi_v2.detection_points.router import router as detection_points_router
 from aceapi_v2.email.router import router as email_router
 from aceapi_v2.engine.router import router as engine_router
+from aceapi_v2.app_factory import new_app
 from aceapi_v2.events.router import router as events_router
 from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
 from aceapi_v2.hunt.router import router as hunt_router
-from aceapi_v2.integrations import router as integrations_router
+from aceapi_v2.integrations import get_integrations_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
@@ -47,68 +44,13 @@ from aceapi_v2.user_preferences.router import router as user_preferences_router
 from aceapi_v2.users.router import router as users_router
 from aceapi_v2.yara_qa.router import router as yara_qa_router
 
-logger = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan: the shutdown half is the part that matters."""
-    yield
-
-    logger.info("shutting down api")
-
-    from aceapi_v2.database import dispose_engines_for_current_loop
-    from aceapi_v2.sync import shutdown_loop
-
-    try:
-        await dispose_engines_for_current_loop()
-    except Exception as e:
-        logger.debug("error disposing async engines: %s", e)
-
-    try:
-        shutdown_loop()
-    except Exception as e:
-        logger.debug("error stopping the background event loop: %s", e)
-
-
-def _new_app(title: str, description: str) -> FastAPI:
-    """A FastAPI application under /api/v2 with the shared lifespan and exception handler."""
-    app = FastAPI(
-        title=title,
-        description=description,
-        version="2.0.0",
-        root_path="/api/v2",
-        lifespan=lifespan,
-    )
-
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception):
-        logger.error("unhandled exception processing %s %s", request.method, request.url.path, exc_info=exc)
-        return JSONResponse(status_code=500, content={"detail": "internal server error"})
-
-    return app
-
-
-def create_engine_app() -> FastAPI:
-    """Create the node-to-node application served by the http-api-engine container.
-
-    nginx routes /api/v2/engine/ to that container so that engine traffic never competes with
-    user traffic for the workers of http-api-v2 (see docs/ENGINE_API.md). It mounts nothing a
-    user would call."""
-    app = _new_app("ACE API v2 (engine)", "Analysis Correlation Engine API v2: node-to-node routes")
-    app.include_router(engine_router, prefix="/engine", tags=["engine"])
-    app.include_router(health_router, prefix="/health", tags=["health"])
-    app.include_router(common_router, prefix="/common", tags=["common"])
-    return app
-
-
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    app = _new_app("ACE API v2", "Analysis Correlation Engine API v2")
+    app = new_app("ACE API v2", "Analysis Correlation Engine API v2")
 
     # Include routers. The engine routes are mounted here too, so this app stays complete (tests,
     # ace gui start --api-v2); in the container deployment nginx sends /api/v2/engine/ to
-    # create_engine_app() instead.
+    # aceapi_v2.app_factory.create_engine_app() instead.
     app.include_router(alerts_router, prefix="/alerts", tags=["alerts"])
     # one alert's side of SVS: /alerts/{uuid}/svs
     app.include_router(svs_alerts_router, prefix="/alerts", tags=["svs"])
@@ -152,11 +94,22 @@ def create_app() -> FastAPI:
     app.include_router(user_preferences_router, prefix="/users/me/preferences", tags=["users"])
 
     # the routes of integrations, under /integrations/<name> so they never collide with these
-    app.include_router(integrations_router, prefix="/integrations", tags=["integrations"],
+    app.include_router(get_integrations_router(), prefix="/integrations", tags=["integrations"],
                        dependencies=[Security(get_current_auth)])
 
     return app
 
 
-# Create app instance for imports (used by tests)
-app = create_app()
+# The tests import an app instance as aceapi_v2.application.app. It is built on first access (PEP 562), not when
+# this module is imported: the API entry points import it to call create_app() themselves, and building it here
+# built a second application in every API worker.
+_app = None
+
+
+def __getattr__(name: str) -> FastAPI:
+    if name == "app":
+        global _app
+        if _app is None:
+            _app = create_app()
+        return _app
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

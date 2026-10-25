@@ -1,7 +1,10 @@
+import copy
 import os
 import pytest
+from pydantic import ValidationError
 
 from saq.configuration.config import get_config
+from saq.configuration.schema import ACEConfig
 from saq.database import get_db_connection
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.email_archive import (
@@ -10,6 +13,7 @@ from saq.email_archive import (
     archive_email_file,
     get_archive_path_by_hash,
     get_archived_email_server,
+    get_email_archive_dir,
     get_email_archive_local_server_name,
     get_email_archive_server_id,
     get_recipients_by_message_id,
@@ -124,3 +128,16 @@ def test_iter_decrypt_email(archived_email):
 
     assert result == [b't', b'e', b's', b't']
 
+
+@pytest.mark.unit
+def test_the_archive_dir_comes_from_the_email_archive_section(monkeypatch):
+    monkeypatch.setattr(get_config().email_archive, "archive_dir", "archive/elsewhere")
+    assert get_email_archive_dir() == os.path.join(get_data_dir(), "archive/elsewhere")
+
+
+@pytest.mark.unit
+def test_the_archive_dir_on_the_archiver_module_fails_instead_of_being_ignored():
+    data = copy.deepcopy(get_config().raw._data)
+    data["analysis_module_email_archiver"]["archive_dir"] = "archive/email"
+    with pytest.raises(ValidationError, match="email_archive.archive_dir"):
+        ACEConfig.model_validate(data)

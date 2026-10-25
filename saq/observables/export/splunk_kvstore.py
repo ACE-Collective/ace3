@@ -33,7 +33,7 @@ from saq.observables.export.base import (
     ObservableExport,
     ObservableExportList,
 )
-from saq.observables.export.config import ObservableExportConfig
+from saq.configuration.schema import ObservableExportConfig
 from saq.observables.type_hierarchy import get_type_hierarchy
 
 # the types whose pattern is matched as a substring of a longer value (a url inside a proxy log line,

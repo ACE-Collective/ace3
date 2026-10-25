@@ -106,6 +106,11 @@ class LazyConfigRegistry(Generic[ConfigT]):
 
         return resolved
 
+    def peek(self, name: str) -> ConfigT:
+        """Returns the config for name without importing its plugin module: the resolved config once it has
+        been resolved, the base config until then. Raises KeyError if the name is unknown."""
+        return self._configs[name]
+
     def values(self) -> list[ConfigT]:
         """Returns every config, fully resolved. This imports every plugin module."""
         return [self.get(name) for name in list(self._configs)]

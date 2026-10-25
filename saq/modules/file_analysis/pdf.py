@@ -4,7 +4,6 @@ import os
 import re
 from subprocess import PIPE, Popen, TimeoutExpired
 from typing import Type, override
-import pikepdf
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
@@ -135,7 +134,10 @@ class PDFAnalyzer(AnalysisModule):
                 file_observable.exclude_analysis(self)
                 file_observable.add_yara_meta("type", "document.pdf.rendered")
 
-        # use pikepdf to extract annotations, form field payloads, and JavaScript
+        # use pikepdf to extract annotations, form field payloads, and JavaScript. Imported here: the search indexer
+        # and the GUI import this module only to read PDFTextAnalysis
+        import pikepdf
+
         try:
             pdf = pikepdf.open(local_file_path)
 

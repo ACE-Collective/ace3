@@ -23,7 +23,8 @@ from saq.logging import log_audit
 from saq.svs.preconditions import NONE, Precondition, StaleWrite
 
 if TYPE_CHECKING:
-    # for the type only: importing aceapi_v2 loads the whole API app, which imports saq
+    # for the type only: importing it runs aceapi_v2/auth/__init__.py, which loads the API's authentication
+    # and the database models, and they import saq
     from aceapi_v2.auth.schemas import ApiAuthResult
 
 # the Atomic Red Team names of the platforms a test host can be (a test's supported_platforms
