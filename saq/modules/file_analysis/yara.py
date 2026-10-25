@@ -4,7 +4,6 @@ import logging
 import os
 import re
 import shutil
-from subprocess import PIPE, Popen
 from typing import override
 
 import distorm3
@@ -34,6 +33,7 @@ import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
+from saq.util.ui import hexdump
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -550,51 +550,42 @@ class YaraScanner_v3_4(AnalysisModule):
 
 
             yara_result['context'] = []
-            for position, string_id, value in yara_result['strings']:
-                # we want some context around what we matched
-                start_byte = position - self.context_bytes
-                if start_byte < 0:
-                    start_byte = 0
+            # a rule can match a string many times in one file, so the file is opened once per rule
+            # and the hex dump is built here rather than by a hexdump process per match
+            with open(local_file_path, 'rb') as fp:
+                for position, string_id, value in yara_result['strings']:
+                    # we want some context around what we matched
+                    start_byte = max(0, position - self.context_bytes)
+                    length = self.context_bytes + len(value) + self.context_bytes
 
-                length = self.context_bytes + len(value) + self.context_bytes
+                    fp.seek(start_byte)
+                    context_data = fp.read(length)
+                    yara_result['context'].append([position, string_id, value, hexdump(context_data)])
 
-                with open(local_file_path, 'rb') as fp:
-                    try:
-                        fp.seek(start_byte)
-                        context_data = fp.read(length)
-                    except Exception as e:
-                        logging.exception("unable to seek to position {} in {}: {}".format(start_byte, local_file_path, e))
-
-                    p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE)
-                    p.stdin.write(context_data)
-                    stdout, _ = p.communicate()
-                    p.wait()
-                    yara_result['context'].append([position, string_id, value, stdout])
-
-                # build disassembly output if the rule specifies this
-                if 'asm' in yara_result['tags']:
-                    decoder = None
-                    if string_id.endswith('x86'):
-                        # 32-bit x86
-                        decoder = distorm3.Decode32Bits
-                    elif string_id.endswith('x64'):
-                        decoder = distorm3.Decode64Bits
-                        # 64-bit x86
-                        pass
-                    elif string_id.endswith('A32'):
-                        # 32-bit ARM
-                        pass
-                    elif string_id.endswith('A64'):
-                        #64-bit ARM
-                        pass
-                    if decoder:
-                        try:
-                            first_instr_offset = position - start_byte
-                            # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
-                            yara_result['context'][-1].append(disassemble(_full_path, position, first_instr_offset, len(value), context_data, decoder))
-                        except Exception:
-                            logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
-                            yara_result['context'][-1].append('Failed to disassemble')
+                    # build disassembly output if the rule specifies this
+                    if 'asm' in yara_result['tags']:
+                        decoder = None
+                        if string_id.endswith('x86'):
+                            # 32-bit x86
+                            decoder = distorm3.Decode32Bits
+                        elif string_id.endswith('x64'):
+                            decoder = distorm3.Decode64Bits
+                            # 64-bit x86
+                            pass
+                        elif string_id.endswith('A32'):
+                            # 32-bit ARM
+                            pass
+                        elif string_id.endswith('A64'):
+                            #64-bit ARM
+                            pass
+                        if decoder:
+                            try:
+                                first_instr_offset = position - start_byte
+                                # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
+                                yara_result['context'][-1].append(disassemble(_full_path, start_byte, first_instr_offset, len(value), context_data, decoder))
+                            except Exception:
+                                logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
+                                yara_result['context'][-1].append('Failed to disassemble')
 
             # did this rule have any tags?
             for tag in yara_result['tags']:

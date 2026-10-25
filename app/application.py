@@ -3,7 +3,6 @@ import hashlib
 import json
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Optional
 from flask import Flask
 from markupsafe import Markup
@@ -33,24 +32,13 @@ from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
-from saq.util.ui import get_tag_css_class, get_tag_level, human_readable_size
+from saq.util.ui import get_tag_css_class, get_tag_level, hexdump, human_readable_size
 
 # TODO: find something else to use besides this LoginManager
 login_manager = LoginManager()
 # turning this off for now while I figure out how this works with load balancers
 login_manager.session_protection = None
 login_manager.login_view = 'auth.login'
-
-#
-# 01/25/2022 -- JWD - cannot get hexdump to return anything but None as a jinja filter
-# so falling back to some external command execution
-#
-
-def hexdump_wrapper(data):
-    p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    p.stdin.write(data)
-    _stdout, _stderr = p.communicate()
-    return _stdout.decode(errors='ignore')
 
 # utility functions to encoding/decoding base64 to/from strings
 def s64decode(s):
@@ -290,7 +278,7 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.filters['s64decode'] = s64decode
     flask_app.jinja_env.filters['s64encode'] = s64encode
     flask_app.jinja_env.filters['b64escape'] = b64escape
-    flask_app.jinja_env.filters['hexdump'] = hexdump_wrapper
+    flask_app.jinja_env.filters['hexdump'] = hexdump
     flask_app.jinja_env.filters['basename'] = os.path.basename
     flask_app.jinja_env.filters['human_readable_size'] = human_readable_size
     flask_app.jinja_env.filters['get_tag_css_class'] = get_tag_css_class

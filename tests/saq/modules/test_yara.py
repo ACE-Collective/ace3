@@ -34,6 +34,7 @@ from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
 from saq.svs.markers import find_markers_in_match, new_marker
+from saq.util.ui import hexdump
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanCrashed, YaraScanTimeout, YaraServiceUnavailable
@@ -491,6 +492,57 @@ def test_disassembly_failure_is_reported_and_analysis_continues(yara_service, mo
     records = [r for r in caplog.records if r.getMessage().startswith("unable to disassemble $code_x86 at 7")]
     assert len(records) == 1
     write_error_report.assert_called_once()
+
+
+@pytest.mark.integration
+def test_disassembly_by_string_suffix(yara_service, root_analysis):
+    """x86 and x64 strings are disassembled; there is no ARM decoder, so those only get the dump."""
+    yara_service(_rule("asm_rule", tags=["asm"],
+                       strings='$code_x86 = "Hello"\n        $code_x64 = "world"\n'
+                               '        $code_A32 = "Hello,"\n        $code_A64 = "world!"'))
+    observable = _scan(root_analysis)
+
+    context = {entry[1]: entry for entry in observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results[0]["context"]}
+    assert set(context) == {"$code_x86", "$code_x64", "$code_A32", "$code_A64"}
+    # the match is bolded at its own offset, and 0x48 is DEC EAX in 32-bit mode but a REX prefix in 64-bit
+    assert "<b>0x00000000     48                  DEC EAX</b>" in context["$code_x86"][4]
+    assert "<b>0x00000007     776f                JA 0x78</b>" in context["$code_x64"][4]
+    assert "INS BYTE [RDI], DX" in context["$code_x64"][4]
+    assert len(context["$code_A32"]) == 4
+    assert len(context["$code_A64"]) == 4
+
+
+@pytest.mark.integration
+def test_match_context_is_a_hexdump_of_each_match(yara_service, root_analysis):
+    yara_service(_rule("context_rule", strings='$a = "needle"'))
+    context_bytes = get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).context_bytes
+    # one match at the start of the file (no context before it) and many past the first context
+    content = b"needle" + b"".join(b"-" * 200 + b"needle" for _ in range(50))
+    observable = _scan(root_analysis, content=content, name="haystack.bin")
+
+    context = observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results[0]["context"]
+    assert len(context) == 51
+    for position, string_id, value, dump in context:
+        assert string_id == "$a"
+        assert value == b"needle"
+        start = max(0, position - context_bytes)
+        assert dump == hexdump(content[start:start + context_bytes + len(value) + context_bytes])
+
+
+@pytest.mark.integration
+def test_match_context_survives_the_alert_being_saved(yara_service, root_analysis):
+    """The context used to be the stdout bytes of hexdump, which the details encoder decodes as
+    unicode_escape, so a backslash sequence in the file came back as the character it names."""
+    yara_service(_rule("context_rule", strings='$a = "needle"'))
+    content = b"a\\nb\\tc needle"
+    observable = _scan(root_analysis, content=content, name="path.txt")
+    root_analysis.save()
+
+    root = load_root(root_analysis.storage_dir)
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(YaraScanResults_v3_4)
+    dump = analysis.scan_results[0]["context"][0][3]
+    assert dump == hexdump(content)
+    assert "|a\\nb\\tc needle|" in dump
 
 
 class TestYaraEnabledMeta:

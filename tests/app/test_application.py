@@ -3,7 +3,6 @@ import json
 import pytest
 
 from app.application import (
-    hexdump_wrapper,
     s64decode,
     s64encode,
     b64escape,
@@ -18,13 +17,8 @@ from app.application import (
 class TestUtilityFunctions:
     """Test the utility functions in app.application module."""
 
-    def test_hexdump_wrapper(self):
-        """Test hexdump_wrapper function."""
-        test_data = b"Hello World"
-        result = hexdump_wrapper(test_data)
-        
-        # Should return a string containing hexdump output
-        assert isinstance(result, str)
+    def test_hexdump_filter(self, app):
+        result = app.jinja_env.from_string("{{ data | hexdump }}").render(data=b"Hello World")
         assert result == "00000000  48 65 6c 6c 6f 20 57 6f  72 6c 64                 |Hello World|\n0000000b\n"
 
     def test_s64decode(self):
