@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, AnalysisExecutionResult
@@ -99,9 +98,15 @@ class DMGAnalyzer(AnalysisModule):
 
         # this simply creates the img file in the same folder the file is in
         # replacing .dmg with .img
-        process = Popen(["dmg2img", local_file_path], stdout=PIPE, stderr=PIPE)
-        analysis.details["stdout"], analysis.details["stderr"] = process.communicate()
         image_file = local_file_path[:-4] + ".img"
+        result = self.run_tool(["dmg2img", local_file_path], local_file_path, capture_output=True)
+        if result is None:
+            # whatever it wrote is incomplete
+            if os.path.exists(image_file):
+                os.remove(image_file)
+            return AnalysisExecutionResult.COMPLETED
+
+        analysis.details["stdout"], analysis.details["stderr"] = result.stdout, result.stderr
 
         if not os.path.exists(image_file):
             logging.debug(f"failed to create img file {image_file} from {local_file_path}")
@@ -116,12 +121,13 @@ class DMGAnalyzer(AnalysisModule):
             file_observable.redirection = _file
 
         # get the list of files
-        process = Popen(['7z', 'l', image_file], stdout=PIPE, stderr=PIPE, universal_newlines=True)
-        _stdout, _stderr = process.communicate()
+        result = self.run_tool(['7z', 'l', image_file], image_file, capture_output=True, universal_newlines=True)
+        if result is None:
+            return AnalysisExecutionResult.COMPLETED
 
         # parse the output
         file_listing = False
-        for line in _stdout.split("\n"):
+        for line in result.stdout.split("\n"):
             if line.startswith("-------------------"):
                 file_listing = not file_listing
                 continue

@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -117,13 +116,22 @@ class AutoItAnalyzer(AnalysisModule):
         analysis.output_dir = output_path
         try:
             # Store the "unautoit list" in the analysis details
-            analysis.stdout, analysis.stderr = Popen(['unautoit', 'list', local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            result = self.run_tool(['unautoit', 'list', local_file_path], local_file_path, capture_output=True)
+            if result is None:
+                analysis.error = "unautoit list timed out"
+                return AnalysisExecutionResult.COMPLETED
+
+            analysis.stdout, analysis.stderr = result.stdout, result.stderr
 
             # Decompile the executable.
             # unautoit only creates the output dir once it has parsed the file, and the listing below needs it to
             # exist even when parsing fails.
             os.makedirs(output_path)
-            _, _ = Popen(['unautoit', 'extract-all', '--output-dir', output_path, local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            if self.run_tool(['unautoit', 'extract-all', '--output-dir', output_path, local_file_path], local_file_path,
+                             capture_output=True) is None:
+                # what it extracted before it was stopped may be cut short
+                analysis.error = "unautoit extract-all timed out"
+                return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             analysis.error = str(e)
             logging.info(f'AutoIt decompilation failed for {local_file_path}')

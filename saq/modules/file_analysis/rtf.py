@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -131,9 +130,13 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         try:
-            p = Popen(['python', self.rtfobj_path, '-d', output_dir, '-s', 'all', local_file_path], 
-                      stdout=PIPE, stderr=PIPE, universal_newlines=True)
-            analysis.stdout, analysis.stderr = p.communicate()
+            p = self.run_tool(['python', self.rtfobj_path, '-d', output_dir, '-s', 'all', local_file_path],
+                              local_file_path, capture_output=True, universal_newlines=True)
+            if p is None:
+                # what it extracted before it was stopped may be cut short
+                return AnalysisExecutionResult.COMPLETED
+
+            analysis.stdout, analysis.stderr = p.stdout, p.stderr
             analysis.return_code = p.returncode
         except Exception as e:
             logging.exception("execution of {} failed: {}".format(self.rtfobj_path, e))

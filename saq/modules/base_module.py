@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import inspect
 import logging
 import os
+import subprocess
 import time
 from typing import TYPE_CHECKING, Optional, Type, Union
 from saq.analysis.analysis import Analysis
@@ -22,6 +23,11 @@ from saq.observables.type_hierarchy import get_type_hierarchy
 
 if TYPE_CHECKING:
     pass
+
+
+# how long before its call to analyze() runs out of time run_tool() stops a tool, so that the module
+# still returns before the engine's watchdog kills the whole worker
+TOOL_TIMEOUT_MARGIN_SECONDS = 5
 
 
 class AnalysisModule(FileWatcherMixin):
@@ -304,6 +310,18 @@ class AnalysisModule(FileWatcherMixin):
             return float(self.maximum_analysis_time)
 
         return self._context.analysis_deadline - time.monotonic()
+
+    def run_tool(self, args: list[str], target: str, **kwargs) -> Optional[subprocess.CompletedProcess]:
+        """Runs an external tool on target as subprocess.run(args, **kwargs) does and returns its
+        CompletedProcess, or None if it had to be stopped: a tool still running
+        TOOL_TIMEOUT_MARGIN_SECONDS before this call to analyze() runs out of time is killed, where
+        it would otherwise run until the engine kills the worker."""
+        timeout = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        try:
+            return subprocess.run(args, timeout=timeout, **kwargs)
+        except subprocess.TimeoutExpired:
+            logging.warning("%s stopped %s on %s after %.0f seconds", self, args[0], target, timeout)
+            return None
 
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""

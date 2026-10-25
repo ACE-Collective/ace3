@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import Popen
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -99,9 +98,13 @@ class MicrosoftScriptEncodingAnalyzer(AnalysisModule):
         logging.debug("attempting to decode microsoft script encoded file {} to {}".format(local_file_path, output_path))
         with open(output_path, 'wb') as fp_out:
             with open(stderr_path, 'wb') as fp_err:
-                p = Popen([self.decryption_program, local_file_path], stdout=fp_out, stderr=fp_err)
-                p.communicate()
-                p.wait()
+                result = self.run_tool([self.decryption_program, local_file_path], local_file_path,
+                                       stdout=fp_out, stderr=fp_err)
+
+        if result is None:
+            # whatever it wrote is incomplete
+            os.remove(output_path)
+            return AnalysisExecutionResult.COMPLETED
 
         if os.path.getsize(output_path):
             file_observable = analysis.add_file_observable(output_path, volatile=True)

@@ -158,7 +158,7 @@ def test_zip2john_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
             args = ["sh", "-c", "echo 'cannot read archive' >&2"]
         return real_popen(args, *a, **kw)
 
-    monkeypatch.setattr("saq.modules.email.encryption.zip.Popen", _popen)
+    monkeypatch.setattr("subprocess.Popen", _popen)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
     analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
@@ -365,7 +365,7 @@ def fake_rar(monkeypatch, tmp_path):
             args = ["echo", "payload.rar:$rar5$fakehash"]
         return real_popen(args, *a, **kw)
 
-    monkeypatch.setattr("saq.modules.email.encryption.rar.Popen", _popen)
+    monkeypatch.setattr("subprocess.Popen", _popen)
 
     archive = tmp_path / "payload.rar"
     archive.write_bytes(b"Rar!\x1a\x07\x01\x00 not really")

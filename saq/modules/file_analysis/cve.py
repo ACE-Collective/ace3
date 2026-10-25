@@ -2,7 +2,6 @@ import logging
 import os
 import re
 import shutil
-from subprocess import PIPE, Popen
 import tempfile
 from typing import override
 from saq.analysis.analysis import Analysis
@@ -98,17 +97,24 @@ class CVE_2021_30657_Analyzer(AnalysisModule):
                 file_path = m.group(1)
 
                 # extract this one file
-                process = Popen(["7z", "x", f"-o{temp_dir}", local_file_path, file_path], stdout=PIPE, stderr=PIPE)
-                _stdout, _stderr = process.communicate()
+                # out of time: the rest of the files are not checked
+                process = self.run_tool(["7z", "x", f"-o{temp_dir}", local_file_path, file_path], local_file_path,
+                                        capture_output=True)
+                if process is None:
+                    break
 
                 target_file = os.path.join(temp_dir, file_path)
                 if not os.path.exists(target_file):
-                    logging.error(f"failed to extracted {file_path}: stdout: {_stdout} stderr: {_stderr}")
+                    logging.error(f"failed to extracted {file_path}: stdout: {process.stdout} stderr: {process.stderr}")
                     continue
 
                 # check the mime type of this file
-                process = Popen(['file', '-b', '--mime-type', '-L', target_file], stdout=PIPE, stderr=PIPE, universal_newlines=True)
-                stdout, stderr = process.communicate()
+                process = self.run_tool(['file', '-b', '--mime-type', '-L', target_file], target_file,
+                                        capture_output=True, universal_newlines=True)
+                if process is None:
+                    break
+
+                stdout = process.stdout
 
                 # does this mime type have "script" in it?
                 if "script" in stdout:
