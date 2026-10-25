@@ -215,9 +215,17 @@ class ExifAnalyzer(AnalysisModule):
         os.makedirs(target_dir, exist_ok=True)
         target_file = os.path.join(target_dir, "exiftool.out")
 
-        # write pretty output to target file
-        with open(target_file, "w") as fp:
+        # pformat recurses in Python once per level of nesting, so a crafted file (a PDF /Title of 500 nested
+        # arrays) exceeds the recursion limit. repr recurses in C, much deeper than exiftool can nest within its
+        # timeout, and writes the same literals the yara rules match on, only without the line breaks
+        try:
             exifdata = pprint.pformat(metadata)
+        except RecursionError:
+            exifdata = repr(metadata)
+            logging.info("exiftool metadata of %s is nested too deeply to pretty print, writing it on one line",
+                         local_file_path, extra=log_extra)
+
+        with open(target_file, "w") as fp:
             fp.write(exifdata)
 
         analysis.details["output_dir"] = target_dir
