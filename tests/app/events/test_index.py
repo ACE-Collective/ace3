@@ -92,7 +92,10 @@ def test_event_page_by_id(web_client, parameter):
 def test_event_page_by_uuid(web_client):
     event = _event(insert_alert())
     # a uuid that starts with digits must not be read as the id those digits spell
-    event.uuid = f"{event.id}0c2e1a-719b-4f5d-b52a-feea593095fb"
+    # the id overwrites the start of the uuid instead of being prepended to it, so the uuid stays
+    # 36 characters however many events earlier tests on this worker created
+    template = "00000000-719b-4f5d-b52a-feea593095fb"
+    event.uuid = f"{event.id}{template[len(str(event.id)):]}"
     get_db().commit()
 
     response = web_client.get(url_for("events.index", direct=event.uuid))
