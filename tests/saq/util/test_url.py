@@ -1,6 +1,13 @@
-import pytest
+import logging
+from types import SimpleNamespace
 
-from saq.util.url import extract_protected_url, strip_url_credentials
+import pytest
+import requests
+
+from saq.analysis.root import RootAnalysis
+from saq.constants import F_URL
+from saq.util import url as url_module
+from saq.util.url import ProtectionType, extract_protected_url, find_all_url_domains, strip_url_credentials
 
 @pytest.mark.parametrize('source_url,expected_url', [
     ('https://no.changes.com/test', 'https://no.changes.com/test'),
@@ -13,6 +20,11 @@ from saq.util.url import extract_protected_url, strip_url_credentials
     ('https://na01.safelinks.protection.outlook.com/?url=http%3A%2F%2Fwww.getbusinessready.com.au%2FInvoice-Number-49808%2F', 'http://www.getbusinessready.com.au/Invoice-Number-49808/'),
     # Dropbox example (dl=0 -> dl=1)
     ('https://www.dropbox.com/s/ezdhsvdxf6wrxk6/RFQ-012018-000071984-13-Rev.1.zip?dl=0', 'https://www.dropbox.com/s/ezdhsvdxf6wrxk6/RFQ-012018-000071984-13-Rev.1.zip?dl=1'),
+    # the other parameters of a dropbox link are kept: a /scl/ link does not open without its rlkey
+    ('https://www.dropbox.com/scl/fi/k2h8x0q/report.pdf?rlkey=a1b2c3&st=x9y8&dl=0', 'https://www.dropbox.com/scl/fi/k2h8x0q/report.pdf?rlkey=a1b2c3&st=x9y8&dl=1'),
+    ('https://www.dropbox.com/scl/fi/k2h8x0q/report.pdf?rlkey=a1b2c3', 'https://www.dropbox.com/scl/fi/k2h8x0q/report.pdf?rlkey=a1b2c3&dl=1'),
+    ('https://www.dropbox.com/s/ezdhsvdxf6wrxk6/report.zip', 'https://www.dropbox.com/s/ezdhsvdxf6wrxk6/report.zip?dl=1'),
+    ('https://www.dropbox.com/s/ezdhsvdxf6wrxk6/report.zip?dl=1', 'https://www.dropbox.com/s/ezdhsvdxf6wrxk6/report.zip?dl=1'),
     # Google Drive example
     ('https://drive.google.com/file/d/1ls_eBCsmf3VG_e4dgQiSh_5VUM10b9s2/view', 'https://drive.google.com/uc?authuser=0&id=1ls_eBCsmf3VG_e4dgQiSh_5VUM10b9s2&export=download'),
     # Sharepoint example
@@ -43,3 +55,59 @@ def test_extract_protected_url(source_url, expected_url):
 ])
 def test_strip_url_credentials(url, expected):
     assert strip_url_credentials(url) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [None, "", "   ", b"https://example.com/", "no-scheme-or-host"])
+def test_extract_protected_url_rejects_what_is_not_a_url(value):
+    with pytest.raises(ValueError):
+        extract_protected_url(value)
+
+
+@pytest.mark.unit
+def test_extract_protected_url_cudasvc_u_parameter():
+    assert extract_protected_url("https://linkprotect.cudasvc.com/url?u=https%3A%2F%2Fexample.com%2Fa") == \
+        (ProtectionType.CUDASVC, "https://example.com/a")
+
+
+ONE_DRIVE_LINK = "https://1drv.ms/b/s!AvqIO0JVRziVa0IWW7c6GG3YkdU"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("final_url, expected", [
+    ("https://onedrive.live.com/redir?resid=95384755423B88FA!107&authkey=!AEIWW7c6GG3YkdU&ithint=file%2cpdf",
+     (ProtectionType.ONE_DRIVE, "https://onedrive.live.com/download?authkey=!AEIWW7c6GG3YkdU&resid=95384755423B88FA!107&parId=root&o=OneUp")),
+    # redirected somewhere that is not a shared file
+    ("https://onedrive.live.com/about/", (ProtectionType.UNPROTECTED, ONE_DRIVE_LINK)),
+])
+def test_one_drive_link_follows_its_redirects(monkeypatch, final_url, expected):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(url=final_url)
+
+    monkeypatch.setattr(url_module.requests, "get", fake_get)
+    assert extract_protected_url(ONE_DRIVE_LINK) == expected
+    assert calls == [{"allow_redirects": True, "timeout": 8}]
+
+
+@pytest.mark.unit
+def test_one_drive_link_that_cannot_be_fetched_is_left_alone(monkeypatch, caplog):
+    def unreachable(url, **kwargs):
+        raise requests.exceptions.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(url_module.requests, "get", unreachable)
+    with caplog.at_level(logging.INFO):
+        assert extract_protected_url(ONE_DRIVE_LINK) == (ProtectionType.UNPROTECTED, ONE_DRIVE_LINK)
+
+    assert any(f"unable to fetch final url for one drive link {ONE_DRIVE_LINK}" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_find_all_url_domains():
+    root = RootAnalysis()
+    for value in ("https://a.example.com/1", "https://a.example.com/2", "http://b.example.com/", "mailto:someone"):
+        root.add_observable_by_spec(F_URL, value)
+
+    assert find_all_url_domains(root) == {"a.example.com": 2, "b.example.com": 1}

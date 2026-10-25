@@ -133,14 +133,14 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
 
     # dropbox links
     elif parsed_url.netloc.lower().endswith('.dropbox.com'):
-        qs = parse_qs(parsed_url.query)
+        qs = parse_qs(parsed_url.query, keep_blank_values=True)
         modified = False
         if 'dl' in qs:
             if qs['dl'] == ['0']:
-                qs['dl'] = '1'
+                qs['dl'] = ['1']
                 modified = True
         else:
-            qs['dl'] = '1'
+            qs['dl'] = ['1']
             modified = True
 
         if modified:
@@ -149,7 +149,7 @@ def extract_protected_url(url: str) -> tuple[ProtectionType, str]:
                                         parsed_url.netloc,
                                         parsed_url.path,
                                         parsed_url.params,
-                                        urlencode(qs),
+                                        urlencode(qs, doseq=True),
                                         parsed_url.fragment)))
 
     # sharepoint download links
