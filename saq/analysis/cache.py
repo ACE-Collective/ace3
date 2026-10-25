@@ -405,11 +405,17 @@ def put_cached_delta(
             exc_info=True,
             extra={"module_name": module_name},
         )
-        try:
-            get_db(DB_ANALYSIS_RESULT_CACHE).rollback()
-        except Exception:
-            pass
+        _rollback_cache_session()
         return None
+
+
+def _rollback_cache_session() -> None:
+    """Roll back the analysis cache session after a failed lookup or write. Never raises: both
+    callers are on the executor's path and must not."""
+    try:
+        get_db(DB_ANALYSIS_RESULT_CACHE).rollback()
+    except Exception:
+        logging.warning("unable to roll back the analysis cache session", exc_info=True)
 
 
 def collect_stats() -> dict:
@@ -763,6 +769,9 @@ def get_cached_delta(
                 "cache_key_prefix": cache_key_prefix,
             },
         )
+        # a connection lost mid-lookup leaves the session's transaction invalid, and every
+        # later lookup and write on it fails until it is rolled back
+        _rollback_cache_session()
         return _result(None, "decode_error")
 
 
