@@ -3,8 +3,11 @@
 import shutil
 from unittest.mock import MagicMock
 
-import botocore.exceptions
 import pytest
+
+pytest.importorskip("botocore")
+
+import botocore.exceptions
 
 from saq.configuration.config import get_config
 from saq.email_archive.s3 import EmailArchiveS3
