@@ -482,12 +482,8 @@ class YaraScanner_v3_4(AnalysisModule):
                 for (position, string_name, string_value) in yara_result["strings"]:
                     yara_string_observable = analysis.add_observable_by_spec(F_YARA_STRING, create_yara_string(rule_observable.value, string_name))
 
-                try:
-                    # yara_result is a dictionary that should have a "strings" key that looks like:
-                    # 'strings': [(50, '$obsd_1', b'blah')]
-                    string_keys = set([s[1] for s in yara_result['strings']])
-                except:
-                    string_keys = []
+                # 'strings': [(50, '$obsd_1', b'blah')], checked by the service protocol (decode_matches)
+                string_keys = {s[1] for s in yara_result['strings']}
 
                 # Parse the row id out of each string key and add the corresponding type+value to
                 # this analysis.
@@ -521,7 +517,8 @@ class YaraScanner_v3_4(AnalysisModule):
                         if obs:
                             obs.add_tag(yara_result['rule'])
                     except Exception as e:
-                        logging.error(f"unable to add observable value {value}: {e}")
+                        logging.exception(f"unable to add {row.type} observable {value} of {model.__tablename__} "
+                                          f"row {row_id} matched by yara rule {yara_result['rule']}: {e}")
 
 
             # if this yara rule did not have the no_alert modifier then it becomes a detection point,

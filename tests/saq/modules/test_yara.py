@@ -1,8 +1,10 @@
+import hashlib
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -15,11 +17,16 @@ from saq.constants import (
     ANALYSIS_MODULE_YARA_SCANNER_V3_4,
     DIRECTIVE_NO_SCAN,
     DIRECTIVE_SANDBOX,
+    F_INDICATOR,
     F_SIGNATURE_ID,
+    F_URI_PATH,
     F_YARA_RULE,
+    F_YARA_STRING,
     SERVICE_YARA_SCANNER,
     AnalysisExecutionResult,
 )
+from saq.database.model import ObservableDetection
+from saq.database.pool import get_db
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -732,3 +739,191 @@ class TestYaraMarkerRule:
 
         assert not observable.detections
         assert not observable.has_directive(DIRECTIVE_SANDBOX)
+
+
+def _yara_module(root) -> YaraScanner_v3_4:
+    return YaraScanner_v3_4(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4),
+    )
+
+
+def _file_observable(root_analysis, content=b"Hello, world!\n", name="test.txt"):
+    file_path = root_analysis.create_file_path(name)
+    with open(file_path, "wb") as fp:
+        fp.write(content)
+    return root_analysis.add_file_observable(file_path)
+
+
+def _no_scan(*args, **kwargs):
+    raise AssertionError("the file should not have been scanned")
+
+
+class TestYaraScanTargets:
+    @pytest.mark.integration
+    def test_missing_file_is_logged(self, root_analysis, monkeypatch, caplog):
+        monkeypatch.setattr(yara_client, "scan_file", _no_scan)
+        observable = _file_observable(root_analysis)
+        os.remove(observable.full_path)
+
+        with caplog.at_level(logging.ERROR):
+            assert _yara_module(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+        assert any(r.getMessage().startswith("cannot find local file path") for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_empty_file_is_not_scanned(self, root_analysis, monkeypatch):
+        monkeypatch.setattr(yara_client, "scan_file", _no_scan)
+        observable = _file_observable(root_analysis, content=b"")
+
+        assert _yara_module(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+
+
+class TestYaraScanFailures:
+    @pytest.fixture
+    def failing_scan(self, monkeypatch):
+        def _crash(*args, **kwargs):
+            raise YaraScanCrashed("scanner worker died")
+
+        monkeypatch.setattr(yara_client, "scan_file", _crash)
+
+    @pytest.mark.integration
+    def test_failed_file_is_kept_for_review(self, root_analysis, failing_scan, monkeypatch, caplog):
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        before = set(os.listdir(module.scan_failure_dir))
+
+        with caplog.at_level(logging.ERROR):
+            for _ in range(2):
+                observable = _file_observable(root_analysis, name="crasher.bin")
+                assert module.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        assert observable.get_analysis(YaraScanResults_v3_4) is None
+        records = [r for r in caplog.records if r.getMessage().startswith("error scanning file")]
+        assert len(records) == 2
+        assert records[0].exc_info is not None
+
+        # the second failure of a file with the same name does not overwrite the first
+        kept = sorted(set(os.listdir(module.scan_failure_dir)) - before)
+        assert len(kept) == 2
+        assert kept[0] == "crasher.bin"
+        assert kept[1].startswith("crasher.bin_")
+
+    @pytest.mark.integration
+    def test_failed_copy_is_logged(self, root_analysis, failing_scan, monkeypatch, caplog):
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        monkeypatch.setattr("saq.modules.file_analysis.yara.shutil.copy", Mock(side_effect=OSError("disk full")))
+
+        with caplog.at_level(logging.ERROR):
+            assert module.execute_analysis(_file_observable(root_analysis, name="uncopied.bin")) == AnalysisExecutionResult.COMPLETED
+
+        assert any(r.getMessage().startswith("unable to copy") and "disk full" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_failed_file_is_not_kept_by_default(self, root_analysis, failing_scan):
+        module = _yara_module(root_analysis)
+        before = set(os.listdir(module.scan_failure_dir))
+
+        module.execute_analysis(_file_observable(root_analysis, name="not_kept.bin"))
+
+        assert set(os.listdir(module.scan_failure_dir)) == before
+
+
+class TestYaraLocalScanner:
+    @pytest.mark.integration
+    def test_released_after_its_lifetime(self, yara_service, root_analysis, caplog):
+        yara_service(_rule("hello"))
+        module = _yara_module(root_analysis)
+        module.scanner = Mock()
+        module.scanner_start_time = datetime.now() - timedelta(minutes=module.local_scanner_lifetime + 1)
+
+        with caplog.at_level(logging.INFO):
+            module.execute_analysis(_file_observable(root_analysis))
+
+        assert module.scanner is None
+        assert module.scanner_start_time is None
+        assert any(r.getMessage() == "releasing local yara scanner" for r in caplog.records)
+
+    @pytest.mark.integration
+    def test_kept_within_its_lifetime(self, yara_service, root_analysis):
+        yara_service(_rule("hello"))
+        module = _yara_module(root_analysis)
+        scanner = module.scanner = Mock()
+        module.scanner_start_time = datetime.now()
+
+        module.execute_analysis(_file_observable(root_analysis))
+
+        assert module.scanner is scanner
+        # the service answered: nothing was scanned locally
+        scanner.scan.assert_not_called()
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("modified", [True, False])
+    def test_auto_reload_reloads_changed_rules(self, root_analysis, modified):
+        module = _yara_module(root_analysis)
+        module.scanner = Mock()
+        module.scanner.check_rules.return_value = modified
+
+        module.auto_reload()
+
+        assert module.scanner.load_rules.called == modified
+
+    @pytest.mark.integration
+    def test_auto_reload_without_local_scanner(self, root_analysis):
+        module = _yara_module(root_analysis)
+        assert module.scanner is None
+        module.auto_reload()
+
+
+class TestYaraRuleStrings:
+    def _analysis(self, observable) -> YaraScanResults_v3_4:
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis is not None
+        return analysis
+
+    @pytest.mark.integration
+    def test_sip_rule_adds_indicators(self, yara_service, root_analysis):
+        yara_service(_rule("SIP_indicator", strings='$sip_123 = "Hello"\n        $other = "world"'))
+        analysis = self._analysis(_scan(root_analysis))
+
+        indicators = [o.value for o in analysis.observables if o.type == F_INDICATOR]
+        assert indicators == ["sip:123"]
+
+    @pytest.mark.integration
+    def test_unresolvable_detection_strings_are_skipped(self, yara_service, root_analysis):
+        # no such row, no id, and not a number
+        yara_service(_rule("unresolved", strings='$obsd_999999999 = "Hello"\n        $obsd_ = "world"\n'
+                                                 '        $obs_x = "Hello,"'))
+        analysis = self._analysis(_scan(root_analysis))
+
+        assert {o.type for o in analysis.observables} == {F_YARA_RULE, F_YARA_STRING}
+
+    @pytest.mark.integration
+    def test_failed_detection_observable_is_logged(self, yara_service, root_analysis, monkeypatch, caplog):
+        detection = ObservableDetection(
+            type=F_URI_PATH, value="/failed/detection",
+            value_sha256=hashlib.sha256(b"/failed/detection").digest())
+        get_db().add(detection)
+        get_db().commit()
+        yara_service(_rule("detection_rule", strings=f'$obsd_{detection.id} = "Hello"'))
+
+        add_observable_by_spec = YaraScanResults_v3_4.add_observable_by_spec
+
+        def _add(self, o_type, o_value, *args, **kwargs):
+            if o_type == F_URI_PATH:
+                raise RuntimeError("observable registry broke")
+            return add_observable_by_spec(self, o_type, o_value, *args, **kwargs)
+
+        monkeypatch.setattr(YaraScanResults_v3_4, "add_observable_by_spec", _add)
+        with caplog.at_level(logging.ERROR):
+            analysis = self._analysis(_scan(root_analysis))
+
+        # the rest of the match is still recorded
+        assert analysis.get_observables_by_type(F_YARA_RULE)
+        records = [r for r in caplog.records if r.getMessage().startswith("unable to add uri_path observable /failed/detection")]
+        assert len(records) == 1
+        assert f"row {detection.id} matched by yara rule detection_rule" in records[0].getMessage()
+        assert records[0].exc_info is not None
