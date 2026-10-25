@@ -19,6 +19,7 @@ from saq.modules.email.encryption.zip import ZipEncryptionAnalysis, ZipEncryptio
 from saq.modules.file_analysis.autoit import AutoItAnalysis, AutoItAnalyzer
 from saq.modules.file_analysis.cve import CVE_2021_30657_Analysis, CVE_2021_30657_Analyzer
 from saq.modules.file_analysis.dmg import DMGAnalysis, DMGAnalyzer
+from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.mse import MicrosoftScriptEncodingAnalysis, MicrosoftScriptEncodingAnalyzer
 from saq.modules.file_analysis.rtf import RTFOLEObjectAnalysis, RTFOLEObjectAnalyzer
 from saq.modules.file_analysis.ssdeep import SsdeepAnalysis, SsdeepAnalyzer
@@ -328,3 +329,37 @@ def test_cve_mime_type(root_analysis, fake_tools, tmpdir):
     assert _run(module, observable) < 30
     _assert_stopped(tool_dir)
     assert observable.get_analysis(CVE_2021_30657_Analysis).suspect_files == {}
+
+
+@pytest.mark.integration
+def test_file_type(root_analysis, fake_tools):
+    tool_dir = fake_tools({"file": HANG})
+    module = _module(FileTypeAnalyzer, "file_type", root_analysis)
+    _out_of_time(module)
+    observable = _file(root_analysis, "document.pdf", b"%PDF-1.4\n%%EOF\n")
+
+    assert _run(module, observable) < 30
+    # the description and the mime type
+    _assert_stopped(tool_dir, count=2)
+    analysis = observable.get_analysis(FileTypeAnalysis)
+    assert analysis.file_type == ""
+    assert analysis.mime_type == ""
+    # the checks that read the file themselves still run
+    assert analysis.is_pdf_file
+    assert observable.has_tag("pdf")
+
+
+@pytest.mark.integration
+def test_file_type_error_output(root_analysis, fake_tools, caplog):
+    fake_tools({"file": "echo 'text/plain'; echo 'file: warning' >&2"})
+    module = _module(FileTypeAnalyzer, "file_type", root_analysis)
+    observable = _file(root_analysis, "notes.txt", b"notes")
+
+    with caplog.at_level(logging.WARNING):
+        _run(module, observable)
+
+    analysis = observable.get_analysis(FileTypeAnalysis)
+    assert analysis.file_type == "text/plain"
+    assert analysis.mime_type == "text/plain"
+    warnings = [r for r in caplog.records if r.getMessage() == f"file command returned error output for {observable.full_path}"]
+    assert len(warnings) == 2
