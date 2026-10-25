@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
+#
+# usage: pcodedmp_wrapper SECONDS PCODEDMP FILE
+#
+# pcodedmp is bounded here rather than by the engine worker waiting on this pipeline, so it stops
+# even when that worker is killed while it waits. --foreground keeps timeout and pcodedmp in the
+# worker's process group, so killing the worker's group kills them too (all --foreground gives up is
+# timing out children of pcodedmp, which starts none). once pcodedmp is gone sed and egrep see EOF.
 
 # run the utility itself: its shebang names the interpreter it was installed into, which the
 # python3 on PATH is not when /venv is not activated
-"$1" "$2" | sed -ne '/^Module streams:/,$ p' | egrep '^[[:space:]]'
+timeout --foreground --signal=KILL "$1" "$2" "$3" | sed -ne '/^Module streams:/,$ p' | egrep '^[[:space:]]'
+status=("${PIPESTATUS[@]}")
+
+# 137 (128 + SIGKILL): pcodedmp was killed, so what it wrote is incomplete
+if [[ ${status[0]} -eq 137 ]]; then
+    exit 137
+fi
+
+exit "${status[2]}"
