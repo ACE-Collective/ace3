@@ -98,6 +98,58 @@ def test_other_files_are_skipped(root_analysis, tmp_path):
     assert _analyze(root_analysis, path) is False
 
 
+def _nested_title_pdf(depth: int) -> bytes:
+    """A PDF whose Info /Title is a string inside depth nested arrays."""
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [] /Count 0 >>",
+        b"<< /Title " + b"[" * depth + b"(nested title)" + b"]" * depth + b" >>",
+    ]
+    pdf = b"%PDF-1.4\n"
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(pdf))
+        pdf += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+
+    xref = len(pdf)
+    pdf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    pdf += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    pdf += b"trailer\n<< /Size %d /Root 1 0 R /Info 3 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    return pdf
+
+
+@pytest.mark.integration
+def test_deeply_nested_metadata_is_written_for_yara(root_analysis, tmp_path, caplog):
+    # deeper than pprint can recurse, and still quick for exiftool, which slows down with the square of the depth
+    depth = 500
+    path = tmp_path / "nested.pdf"
+    path.write_bytes(_nested_title_pdf(depth))
+
+    with caplog.at_level(logging.INFO):
+        analysis = _analyze(root_analysis, path)
+
+    assert isinstance(analysis, ExifAnalysis)
+    assert analysis.error is None
+    # exiftool reports the outermost one-element array as its element
+    nesting = depth - 1
+    title = analysis.exifdata["PDF:Title"]
+    for _ in range(nesting):
+        assert isinstance(title, list) and len(title) == 1
+        title = title[0]
+    assert title == "nested title"
+
+    outputs = analysis.get_observables_by_type(F_FILE)
+    assert [o.file_name for o in outputs] == ["exiftool.out"]
+    assert "type=metadata.exif" in outputs[0].yara_meta_tags
+    with open(outputs[0].full_path) as fp:
+        output = fp.read()
+    assert "'PDF:Title': " + "[" * nesting + "'nested title'" + "]" * nesting in output
+    assert "'File:FileType': 'PDF'" in output
+
+    assert any(r.levelno == logging.INFO and "nested too deeply to pretty print" in r.getMessage()
+               and r.path.endswith("nested.pdf") for r in caplog.records)
+
+
 class _RecordingPopen(subprocess.Popen):
     started = []
 
