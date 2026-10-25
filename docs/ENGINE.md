@@ -205,8 +205,9 @@ flag (consume-once) and proceeds.
 
 `Engine.main_controller_loop()` runs in the parent process:
 
-1. installs the SIGHUP handler (it only sets a flag); SIGTERM and SIGINT belong to
-   the process-wide `ShutdownCoordinator` (`saq/shutdown.py`, `docs/SHUTDOWN.md`);
+1. installs the `ShutdownCoordinator`'s SIGTERM/SIGINT handlers if the service
+   runner has not already (`saq/shutdown.py`, `docs/SHUTDOWN.md`); the engine
+   handles no signal of its own;
 2. `worker_manager.initialize_workers()` then `start_workers(execution_mode)`,
    which forks every worker and blocks until each sets its startup event;
 3. sets state `RUNNING`, node status `running`, `started_event`;
@@ -217,9 +218,7 @@ flag (consume-once) and proceeds.
      in-flight analysis is cancelled and requeued, workers are supervised against one
      shared deadline, this node's locks are released and the node is marked `stopped`;
    - `node_manager.update_node_status_and_execute_primary_routines()` (§14);
-   - `worker_manager.check_workers()` (§4.4);
-   - `SIGHUP` → `worker_manager.restart_workers()`. Config reload is stubbed out
-     (commented) — HUP recycles worker processes only.
+   - `worker_manager.check_workers()` (§4.4).
 5. on exit sets state `STOPPED` and node status `stopped`.
 
 ### 4.3 Worker pools
@@ -1535,7 +1534,7 @@ comments throughout the tests and source.
 | [19.13](ENGINE_DESIGN_NOTES.md#1913-workstack-could-not-actually-hold-analysis--fixed) | `WorkStack` could not actually hold `Analysis` | fixed |
 | [19.14](ENGINE_DESIGN_NOTES.md#1914-order-by-rand--limit-128-on-the-workload-query) | `ORDER BY RAND() ... LIMIT 128` on the workload query | **open** |
 | [19.15](ENGINE_DESIGN_NOTES.md#1915-two-context-objects-for-one-execution--fixed) | Two context objects for one execution | fixed |
-| [19.16](ENGINE_DESIGN_NOTES.md#1916-config-reload-on-sighup-is-not-implemented) | Config reload on SIGHUP is not implemented | **open** |
+| [19.16](ENGINE_DESIGN_NOTES.md#1916-config-reload-on-sighup-is-not-implemented--removed) | Config reload on SIGHUP is not implemented | removed |
 | [19.17](ENGINE_DESIGN_NOTES.md#1917-the-post-analysis-completed-skip-never-fired--fixed) | The post-analysis COMPLETED skip never fired | fixed |
 
 ---

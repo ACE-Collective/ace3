@@ -261,22 +261,6 @@ class WorkerManager:
                 logging.warning("unable to close process %s of worker %s: %s", dead_worker.process.pid,
                                 dead_worker.name, e, extra={"worker_name": dead_worker.name})
 
-    def restart_workers(self):
-        """Restart all workers."""
-        logging.info("restarting all workers")
-        
-        # stop all workers
-        for worker in self.workers:
-            worker.controlled_shutdown()
-
-        # start all workers
-        for worker in self.workers:
-            worker.start(execution_mode=self.execution_mode)
-
-        # wait for all workers to start
-        for worker in self.workers:
-            worker.wait_for_start()
-
     def immediate_shutdown(self):
         """Shutdown all workers immediately, abandoning in-flight analysis."""
         logging.info(f"shutting down {len(self.workers)} workers immediately")

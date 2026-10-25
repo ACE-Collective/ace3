@@ -2,10 +2,9 @@
 
 ``WorkerManager.start_workers(execution_mode)`` forks every worker with the mode
 the engine was started in, but the mode was only ever a parameter — nothing kept
-it. Both restart paths then started the replacement bare:
+it. The restart path then started the replacement bare:
 
     new_worker.start()          # restart_worker(), one dead worker
-    worker.start()              # restart_workers(), the SIGHUP path
 
 which falls back to ``Worker.start``'s ``EngineExecutionMode.NORMAL`` default. A
 worker replaced during a ``SINGLE_SHOT`` or ``UNTIL_COMPLETE`` run came back as a
@@ -158,19 +157,6 @@ def test_check_workers_restarts_dead_worker_with_execution_mode(manager):
     assert dead_worker not in manager.workers
     assert len(manager.workers) == 2
     assert manager.workers[-1].start_modes == [EngineExecutionMode.UNTIL_COMPLETE]
-
-
-@pytest.mark.unit
-def test_restart_workers_preserves_execution_mode(manager):
-    """The SIGHUP path recycles every worker and must not downgrade the pool."""
-    manager.start_workers(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    manager.restart_workers()
-
-    assert all(
-        worker.start_modes == [EngineExecutionMode.SINGLE_SHOT, EngineExecutionMode.SINGLE_SHOT]
-        for worker in manager.workers
-    )
 
 
 @pytest.mark.unit

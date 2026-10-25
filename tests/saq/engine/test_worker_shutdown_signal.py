@@ -104,8 +104,8 @@ def test_shutdown_signal_returns_after_the_worker_was_killed():
 
     immediate_shutdown() is the one that reproduces the historical hang -- the watcher
     thread is a registered sleeper only on that signal. controlled_shutdown() is asserted
-    alongside it because restart_workers() signals through it and both must be built out
-    of something a dead process cannot orphan.
+    alongside it because WorkerManager.controlled_shutdown() signals through it and both
+    must be built out of something a dead process cannot orphan.
     """
     worker = _make_worker()
     _kill_a_parked_worker(worker)

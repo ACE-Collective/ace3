@@ -1,6 +1,5 @@
 import logging
 import os
-import signal
 from multiprocessing import Process
 from typing import Optional, Type, Union
 
@@ -90,10 +89,6 @@ class Engine():
 
         # set once the engine has started
         self.started_event = ACE_MP_CONTEXT.Event()
-        
-        # SIGHUP is the only signal the engine handles itself (worker reload). shutdown
-        # signals belong to the process-wide ShutdownCoordinator.
-        self.sighup_received = False
 
         # initialize configuration manager
         self.configuration_manager = ConfigurationManager(self.config)
@@ -167,8 +162,9 @@ class Engine():
         """Main controller loop that manages workers and handles signals."""
         logging.info("started engine controller on process {} in mode {}".format(os.getpid(), execution_mode))
         
-        # initialize signal handlers
-        self.initialize_signal_handlers()
+        # if the engine is running outside the service runner (tests, `ace correlate`)
+        # nobody has installed the shutdown handlers yet, so do it here
+        get_shutdown_coordinator().install_signal_handlers()
         
         # initialize and start the worker manager
         self.worker_manager.initialize_workers()
@@ -203,18 +199,6 @@ class Engine():
 
                 # check workers and restart if needed
                 self.worker_manager.check_workers()
-
-                if self.sighup_received:
-                    # we re-load the config when we receive SIGHUP
-                    #logging.info("reloading engine configuration")
-                    self.sighup_received = False
-
-                    # tell the manager to reload the workers
-                    self.worker_manager.restart_workers()
-                    # and then reload the configuration
-                    # TODO: though needs to be put into allowing the configuration to be reloaded
-                    #from saq.configuration.parser import load_configuration
-                    #load_configuration()
 
                 # if this event is set then we need to exit now
                 if self.state in [EngineState.IMMEDIATE_SHUTDOWN, EngineState.CONTROLLED_SHUTDOWN]:
@@ -269,17 +253,6 @@ class Engine():
             break
         
         logging.info("single-threaded execution loop ended")
-
-    def initialize_signal_handlers(self):
-        """Initialize the signal handlers the engine owns."""
-        def handle_sighup(signum, frame):
-            self.sighup_received = True
-
-        signal.signal(signal.SIGHUP, handle_sighup)
-
-        # if the engine is running outside the service runner (tests, `ace correlate`)
-        # nobody has installed the shutdown handlers yet, so do it here
-        get_shutdown_coordinator().install_signal_handlers()
 
     # ------------------------------------------------------------
     # control methods
