@@ -8,6 +8,10 @@ from saq.environment import get_global_runtime_settings
 from saq.network_semaphore.config import NetworkSemaphoreConfig
 from saq.network_semaphore.fallback import add_undefined_fallback_semaphore, get_defined_fallback_semaphores, get_undefined_fallback_semaphores, get_undefined_fallback_semaphores_lock, maintain_undefined_semaphores
 
+# the server sends wait| every second while the semaphore is held elsewhere and answers release| at once,
+# so this much silence means the server is gone
+SOCKET_TIMEOUT_SECONDS = 30
+
 
 class NetworkSemaphoreClient:
     def __init__(self, cancel_request_callback=None):
@@ -50,10 +54,11 @@ class NetworkSemaphoreClient:
             deadline = datetime.now() + timedelta(seconds=timeout)
 
         try:
-            self.socket = socket.socket()
+            self.socket = None
             logging.debug("attempting connection to {} port {}".format(self.config.remote_address, self.config.remote_port))
 
-            self.socket.connect((self.config.remote_address, self.config.remote_port))
+            self.socket = socket.create_connection(
+                (self.config.remote_address, self.config.remote_port), timeout=SOCKET_TIMEOUT_SECONDS)
             logging.info(f"requesting semaphore {semaphore_name}")
 
             # request the semaphore
@@ -89,30 +94,16 @@ class NetworkSemaphoreClient:
                 # have we timed out waiting?
                 if deadline and datetime.now() >= deadline:
                     logging.error(f"attempt to acquire semaphore {semaphore_name} timed out")
-
-                    try:
-                        self.socket.close()
-                    except Exception:
-                        pass
-
+                    self.close_socket()
                     return False
 
             logging.debug(f"semaphore request for {semaphore_name} cancelled")
-
-            try:
-                self.socket.close()
-            except Exception:
-                pass
-
+            self.close_socket()
             return False
 
         except Exception as e:
             logging.warning(f"unable to acquire network semaphore {semaphore_name}: {e}")
-
-            try:
-                self.socket.close()
-            except Exception as e:
-                pass
+            self.close_socket()
 
             # use the fallback semaphore
             try:
@@ -150,6 +141,16 @@ class NetworkSemaphoreClient:
     def cancel_request(self):
         self.cancel_request_flag = True
 
+    def close_socket(self):
+        if self.socket is None:
+            return
+
+        try:
+            self.socket.close()
+        except OSError:
+            # the connection is being abandoned either way, and the server releases on disconnect
+            pass
+
     def failsafe_loop(self):
         # we start a side-thread to monitor this time the semaphore is held
         # we basically just log the fact that we still have it so we can
@@ -170,11 +171,7 @@ class NetworkSemaphoreClient:
             # this can happen when the remote side abruptly closes the connection
             # such as when a process gets killed
             logging.warning(f"failsafe on semaphore {self.semaphore_name} error {e}")
-
-            try:
-                self.socket.close()
-            except:
-                pass
+            self.close_socket()
 
     def start_failsafe_monitor(self):
         self.failsafe_thread = Thread(target=self.failsafe_loop, name=f"Failsafe {self.semaphore_name}")
@@ -225,10 +222,7 @@ class NetworkSemaphoreClient:
         except Exception as e:
             logging.error(f"error trying to release semaphore {self.semaphore_name}: {e}")
         finally:
-            try:
-                self.socket.close()
-            except Exception:
-                pass
+            self.close_socket()
 
             # make sure we set this so that the monitor thread exits
             self.semaphore_acquired = False
