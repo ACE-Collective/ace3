@@ -655,6 +655,25 @@ class TestApplyDeltaContractEnforcement:
         # Nothing was applied — the raise happened before tree mutation.
         assert "should-not-apply" not in target.tags
 
+    @pytest.mark.unit
+    def test_staging_dir_cleaned_up_when_a_blob_is_gone(self, tmp_path):
+        """The lookup checked every blob, but one can be collected before the replay: the files
+        staged before it must not be left in the root's storage directory."""
+        root = _make_root(tmp_path / "root")
+        target = root.add_observable_by_spec(F_FQDN, "example.com")
+        store = LocalHardlinkBlobStore(LocalHardlinkBlobStoreConfig(root_dir=str(tmp_path / "blob_store")))
+        sha = store.put(b"staged before the missing one")
+        delta = _empty_delta(target, new_observables=[
+            ObservableSpec(uuid="55555555-5555-5555-5555-555555555555", type=F_FILE, value=sha, file_path="first.txt"),
+            ObservableSpec(uuid="66666666-6666-6666-6666-666666666666", type=F_FILE, value="0" * 64, file_path="second.txt"),
+        ])
+
+        with pytest.raises(BlobNotFound):
+            apply_delta(root, target, delta, blob_store=store)
+
+        assert [d for d in os.listdir(root.storage_dir) if d.startswith(".cache_replay_")] == []
+        assert not [o for o in root.all_observables if o.type == F_FILE]
+
 
 class TestApplyDeltaRootLevel:
 

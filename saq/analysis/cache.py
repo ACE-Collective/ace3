@@ -814,16 +814,16 @@ def apply_delta(
     file_specs = delta.file_observable_specs()
     staging_dir = None
     staged_files: dict[str, str] = {}  # spec.uuid -> staged path
-    if file_specs:
-        if blob_store is None:
-            blob_store = get_blob_store()
-        staging_dir = tempfile.mkdtemp(prefix=".cache_replay_", dir=root.storage_dir)
-        for spec in file_specs:
-            staged_path = os.path.join(staging_dir, spec.uuid)
-            blob_store.materialize(spec.value, staged_path)
-            staged_files[spec.uuid] = staged_path
-
     try:
+        if file_specs:
+            if blob_store is None:
+                blob_store = get_blob_store()
+            staging_dir = tempfile.mkdtemp(prefix=".cache_replay_", dir=root.storage_dir)
+            for spec in file_specs:
+                staged_path = os.path.join(staging_dir, spec.uuid)
+                blob_store.materialize(spec.value, staged_path)
+                staged_files[spec.uuid] = staged_path
+
         # 1. Rehydrate the Analysis object first so step 2's new observables
         # can be hung off it as children (matching the live run's structure).
         # _rehydrate_analysis returns the freshly rehydrated analysis, the
