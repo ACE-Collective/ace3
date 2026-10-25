@@ -1,6 +1,8 @@
 import uuid
 
+import bcrypt
 import pytest
+from werkzeug.security import generate_password_hash
 
 from saq.database.model import Alert, User, load_alert, verify_password_hash
 from saq.database.pool import get_db
@@ -144,9 +146,6 @@ def test_users_are_equal_by_id_and_stay_hashable():
 
 @pytest.mark.unit
 def test_verify_password_hash_accepts_legacy_and_bcrypt_hashes():
-    import bcrypt
-    from werkzeug.security import generate_password_hash
-
     legacy = generate_password_hash("secret")
     assert verify_password_hash("secret", legacy) and not verify_password_hash("wrong", legacy)
 

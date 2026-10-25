@@ -354,7 +354,7 @@ The analyst's experience comes first.
 
 Every service, `ace` command, engine worker and API worker holds what its modules import at module level, mostly as private memory, so an import added to a module that everything loads costs every process on every node. `docs/IMPORTS.md` has the reasoning, the examples and how to measure.
 
-- A package `__init__.py` imports nothing. It re-exports through a PEP 562 `__getattr__` (`saq/analysis/__init__.py`), never under a name a submodule also has.
+- A package `__init__.py` runs whenever any one of its modules is imported, so it imports nothing heavier than that. A name from a module that loads more is re-exported through a PEP 562 `__getattr__` built by `saq.lazy_exports.lazy_getattr()` (`saq/analysis/__init__.py`), never under a name a submodule also has. `saq/observables/__init__.py` is the exception: its imports are what register the core observable types.
 - Core (`saq/`) never imports the web layer: Flask, FastAPI, `app/`, `aceapi_v2/`, `aceapi_ai/`, or `saq.gui.alert`. Integrations register API routers by module path and import Flask only under `TYPE_CHECKING`.
 - `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's S3 backend, phishkit's celery) is set up on first use.
 - An analysis module imports the libraries its analyzer runs (OCR, document parsers, network clients, celery) in the method that runs them. Reading an alert imports the module of every analysis in it, in processes that never analyze.

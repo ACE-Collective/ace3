@@ -3,6 +3,7 @@ import threading
 import pytest
 from sqlalchemy import text
 
+import aceapi_v2.database
 from saq.environment import ACE_MP_CONTEXT
 
 from saq.configuration.config import get_config, get_database_config
@@ -319,8 +320,6 @@ def test_registering_the_timing_listeners_again_logs_each_query_once(monkeypatch
 
 @pytest.mark.unit
 def test_the_api_engines_register_the_timing_listeners(monkeypatch):
-    import aceapi_v2.database
-
     registered = []
     monkeypatch.setattr(aceapi_v2.database, "register_sql_timing_listeners", lambda: registered.append(True))
     monkeypatch.setattr(aceapi_v2.database, "create_async_engine", lambda *args, **kwargs: object())

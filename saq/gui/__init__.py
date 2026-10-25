@@ -1,4 +1,4 @@
-import importlib
+from saq.lazy_exports import lazy_getattr
 
 # saq.gui imports nothing itself: the observable types and the integrations import their observable actions
 # from here in every process, and this init loaded saq.gui.alert with them (Flask, the database models).
@@ -34,11 +34,4 @@ _EXPORTS = {
     "translate_alert_redirect": "saq.gui.translation",
 }
 
-
-def __getattr__(name: str):
-    if name not in _EXPORTS:
-        raise AttributeError(f"module 'saq.gui' has no attribute {name!r}")
-
-    value = getattr(importlib.import_module(_EXPORTS[name]), name)
-    globals()[name] = value
-    return value
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

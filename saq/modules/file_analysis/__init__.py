@@ -1,5 +1,6 @@
-import importlib
 import warnings
+
+from saq.lazy_exports import lazy_getattr
 
 # saq.modules.file_analysis imports nothing itself: importing any one file analysis module (or one name from
 # here) ran this init, and it imported all of them. These names stay importable from saq.modules.file_analysis,
@@ -104,14 +105,7 @@ _EXPORTS = {
     "is_chm_file": "saq.modules.file_analysis.is_file_type",
 }
 
-
-def __getattr__(name: str):
-    if name not in _EXPORTS:
-        raise AttributeError(f"module 'saq.modules.file_analysis' has no attribute {name!r}")
-
-    value = getattr(importlib.import_module(_EXPORTS[name]), name)
-    globals()[name] = value
-    return value
+__getattr__ = lazy_getattr(__name__, _EXPORTS)
 
 
 warnings.filterwarnings("ignore", category=UserWarning, module='bs4')

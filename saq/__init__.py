@@ -1,4 +1,4 @@
-import importlib
+from saq.lazy_exports import lazy_getattr
 
 # saq imports nothing itself, so importing one saq module costs only what that module imports. These
 # names stay importable from saq for integrations (integrations.example uses them), each loaded the
@@ -10,11 +10,4 @@ _EXPORTS = {
     "AnalysisModule": "saq.modules.base_module",
 }
 
-
-def __getattr__(name: str):
-    if name not in _EXPORTS:
-        raise AttributeError(f"module 'saq' has no attribute {name!r}")
-
-    value = getattr(importlib.import_module(_EXPORTS[name]), name)
-    globals()[name] = value
-    return value
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

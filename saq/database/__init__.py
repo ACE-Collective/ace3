@@ -1,4 +1,4 @@
-import importlib
+from saq.lazy_exports import lazy_getattr
 
 # saq.database imports nothing itself: every process imports saq.database.pool to set up its connections,
 # and loading the models here, with the analysis tree they import, made every one of them pay for the ORM.
@@ -72,13 +72,4 @@ _EXPORTS = {
     "clear_workload_by_pid": "saq.database.util.workload",
 }
 
-
-def __getattr__(name: str):
-    if name not in _EXPORTS:
-        raise AttributeError(f"module 'saq.database' has no attribute {name!r}")
-
-    target = _EXPORTS[name]
-    module_name, attribute = target if isinstance(target, tuple) else (target, name)
-    value = getattr(importlib.import_module(module_name), attribute)
-    globals()[name] = value
-    return value
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

@@ -12,6 +12,7 @@ from saq.cli import cli_main
 from saq.cli.cli_main import get_cli_parser, get_cli_subparsers
 from saq.cli.commands import COMMAND_MODULES, COMMANDS, import_command_modules
 from saq.environment import get_base_dir
+from tests.saq.helpers import run_python
 
 # every test here reads the parsers of every command
 import_command_modules()
@@ -155,12 +156,9 @@ def test_alert_create_says_its_event_time_is_when_it_was_created(tmp_path):
 
 
 def _registered_alone(module: str) -> list[str]:
-    code = (f"import saq.cli.commands.{module}\n"
-            "from saq.cli.cli_main import get_cli_subparsers\n"
-            "print(sorted(get_cli_subparsers().choices))\n")
-    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
-                            timeout=120)
-    assert result.returncode == 0, result.stderr[-4000:]
+    result = run_python(f"import saq.cli.commands.{module}\n"
+                        "from saq.cli.cli_main import get_cli_subparsers\n"
+                        "print(sorted(get_cli_subparsers().choices))\n")
     return ast.literal_eval(result.stdout.strip().splitlines()[-1])
 
 
@@ -195,14 +193,11 @@ def test_get_command(argv, command):
 
 @pytest.mark.unit
 def test_running_a_command_imports_only_its_module():
-    code = ("import sys\n"
-            "from saq.cli.cli_main import get_command\n"
-            "from saq.cli.commands import import_command_modules\n"
-            "import_command_modules(get_command(['service', 'start', 'network_semaphore']))\n"
-            "print(sorted(name for name in sys.modules if name.startswith('saq.cli.commands.')))\n")
-    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
-                            timeout=120)
-    assert result.returncode == 0, result.stderr[-4000:]
+    result = run_python("import sys\n"
+                        "from saq.cli.cli_main import get_command\n"
+                        "from saq.cli.commands import import_command_modules\n"
+                        "import_command_modules(get_command(['service', 'start', 'network_semaphore']))\n"
+                        "print(sorted(name for name in sys.modules if name.startswith('saq.cli.commands.')))\n")
     assert ast.literal_eval(result.stdout.strip().splitlines()[-1]) == ["saq.cli.commands.service"]
 
 
