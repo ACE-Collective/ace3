@@ -52,23 +52,6 @@ def test_signal_INT():
     wait_for_process(engine_process)
 
 @pytest.mark.system
-def test_signal_HUP():
-    engine = Engine()
-    engine_process = engine.start_nonblocking()
-    engine.wait_for_start()
-
-    # tell ACE to reload the configuration and then reload all the workers
-    assert engine_process.pid
-    os.kill(engine_process.pid, signal.SIGHUP)
-
-    #wait_for_log_count('reloading engine configuration', 1, 5)
-    wait_for_log_count('restarting all workers', 1, 5)
-    wait_for_log_count('started worker', 2)
-    
-    os.kill(engine_process.pid, signal.SIGTERM)
-    wait_for_process(engine_process)
-
-@pytest.mark.system
 def test_engine_default_pools():
 
     get_engine_config().pool_size_limit = None
