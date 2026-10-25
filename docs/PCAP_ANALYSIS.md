@@ -151,7 +151,8 @@ A capture cut short mid-packet is dissected as far as it goes. When the engine s
 analysis is cancelled), the module stops the tshark run in progress through the sandbox's cancel
 and records nothing, so the capture is dissected (or the key log applied) again when the work item
 is picked up again, rather than the worker being killed at the shutdown deadline and the capture
-recorded as failed.
+recorded as failed. `pcap_analyzer` also cancels the analysis, which leaves the category modules'
+dependency on it unresolved, so they run again with it rather than recording an empty category.
 
 ## TLS decryption
 
