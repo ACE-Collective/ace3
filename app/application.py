@@ -40,9 +40,6 @@ login_manager = LoginManager()
 login_manager.session_protection = None
 login_manager.login_view = 'auth.login'
 
-def hexdump_wrapper(data):
-    return hexdump(data)
-
 # utility functions to encoding/decoding base64 to/from strings
 def s64decode(s):
     return base64.b64decode(s + '===').decode('utf8', errors='replace')
@@ -281,7 +278,7 @@ def create_app(testing: Optional[bool]=False):
     flask_app.jinja_env.filters['s64decode'] = s64decode
     flask_app.jinja_env.filters['s64encode'] = s64encode
     flask_app.jinja_env.filters['b64escape'] = b64escape
-    flask_app.jinja_env.filters['hexdump'] = hexdump_wrapper
+    flask_app.jinja_env.filters['hexdump'] = hexdump
     flask_app.jinja_env.filters['basename'] = os.path.basename
     flask_app.jinja_env.filters['human_readable_size'] = human_readable_size
     flask_app.jinja_env.filters['get_tag_css_class'] = get_tag_css_class

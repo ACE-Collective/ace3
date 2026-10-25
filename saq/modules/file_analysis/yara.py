@@ -585,7 +585,7 @@ class YaraScanner_v3_4(AnalysisModule):
                             try:
                                 first_instr_offset = position - start_byte
                                 # Add a fifth item to the context list of the last yara_result added. app/templates/analysis/yara_analysis* will render this appropriately
-                                yara_result['context'][-1].append(disassemble(_full_path, position, first_instr_offset, len(value), context_data, decoder))
+                                yara_result['context'][-1].append(disassemble(_full_path, start_byte, first_instr_offset, len(value), context_data, decoder))
                             except Exception:
                                 logging.exception(f"unable to disassemble {string_id} at {position} in {_full_path}")
                                 yara_result['context'][-1].append('Failed to disassemble')

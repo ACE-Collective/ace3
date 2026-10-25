@@ -497,8 +497,10 @@ def test_disassembly_by_string_suffix(yara_service, root_analysis):
 
     context = {entry[1]: entry for entry in observable.get_and_load_analysis(YaraScanResults_v3_4).scan_results[0]["context"]}
     assert set(context) == {"$code_x86", "$code_x64", "$code_A32", "$code_A64"}
-    assert len(context["$code_x86"]) == 5
-    assert len(context["$code_x64"]) == 5
+    # the match is bolded at its own offset, and 0x48 is DEC EAX in 32-bit mode but a REX prefix in 64-bit
+    assert "<b>0x00000000     48                  DEC EAX</b>" in context["$code_x86"][4]
+    assert "<b>0x00000007     776f                JA 0x78</b>" in context["$code_x64"][4]
+    assert "INS BYTE [RDI], DX" in context["$code_x64"][4]
     assert len(context["$code_A32"]) == 4
     assert len(context["$code_A64"]) == 4
 
