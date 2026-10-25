@@ -4,10 +4,12 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
 import zstandard
+from sqlalchemy import text
 from PIL import Image
 
 from saq.analysis.blob_store import LocalHardlinkBlobStore, LocalHardlinkBlobStoreConfig
@@ -33,7 +35,7 @@ from saq.constants import (
     F_FILE,
     AnalysisExecutionResult,
 )
-from saq.database.pool import get_db_connection
+from saq.database.pool import get_db, get_db_connection
 from saq.modules.file_analysis import QRCodeAnalysis, QRCodeAnalyzer
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
@@ -375,6 +377,78 @@ class TestPutCachedDelta:
         delta = _make_delta(module)
         assert put_cached_delta(delta, module, blob_store) is None
         assert _row_count(delta.cache_key) == 0
+
+    @pytest.mark.integration
+    def test_oversized_delta_drops_its_spilled_details(self, blob_store, monkeypatch):
+        monkeypatch.setattr(get_config().analysis_cache, "max_compressed_bytes", 50)
+        module = _make_module()
+        delta = _make_delta(module, analysis={
+            "type": "saq.modules.test:Dummy",
+            "summary": "big",
+            # 2x details_spill_bytes, so the details go to the blob store first
+            "details": {"payload": "x" * (32 * 1024)},
+        })
+        try:
+            assert put_cached_delta(delta, module, blob_store) is None
+            assert _row_count(delta.cache_key) == 0
+            assert _blob_ref_count(delta.cache_key) == 0
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_failed_unreference_is_logged(self, blob_store, monkeypatch, caplog):
+        monkeypatch.setattr(get_config().analysis_cache, "max_compressed_bytes", 50)
+        monkeypatch.setattr(blob_store, "unreference", Mock(side_effect=RuntimeError("blob_refs unavailable")))
+        module = _make_module()
+        delta = _make_delta(module, analysis={
+            "type": "saq.modules.test:Dummy",
+            "summary": "big",
+            "details": {"payload": "x" * (32 * 1024)},
+        })
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert put_cached_delta(delta, module, blob_store) is None
+
+            records = [r for r in caplog.records
+                       if r.getMessage() == "failed to unreference blob after cache-write bailout"]
+            assert len(records) == 1
+            assert records[0].exc_info is not None
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_lost_connection_fails_one_write(self, blob_store, caplog):
+        module = _make_module()
+        delta = _make_delta(module)
+        connection_id = get_db(DB_ANALYSIS_RESULT_CACHE).execute(text("SELECT CONNECTION_ID()")).scalar()
+        with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
+            db.cursor().execute(f"KILL {int(connection_id)}")
+
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert put_cached_delta(delta, module, blob_store) is None
+            records = [r for r in caplog.records if r.getMessage() == "failed to write analysis cache entry"]
+            assert len(records) == 1
+            assert records[0].module_name == module.config.name
+
+            # rolled back, so the next write reconnects
+            assert put_cached_delta(delta, module, blob_store) is not None
+            assert _row_count(delta.cache_key) == 1
+        finally:
+            _delete_cache_row(delta.cache_key)
+
+    @pytest.mark.integration
+    def test_failed_rollback_is_logged(self, blob_store, monkeypatch, caplog):
+        session = get_db(DB_ANALYSIS_RESULT_CACHE)
+        monkeypatch.setattr(session, "execute", Mock(side_effect=RuntimeError("insert failed")))
+        monkeypatch.setattr(session, "rollback", Mock(side_effect=RuntimeError("rollback failed")))
+        module = _make_module()
+        delta = _make_delta(module)
+
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store) is None
+
+        assert any(r.getMessage() == "unable to roll back the analysis cache session" for r in caplog.records)
 
 
 def _make_file_root(tmp_path):
