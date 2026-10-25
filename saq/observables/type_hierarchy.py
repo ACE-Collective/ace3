@@ -313,6 +313,10 @@ def _check_for_cycles(parent_map: dict[str, str]) -> None:
 
 _HIERARCHY = TypeHierarchy()
 
+# held for the first bootstrap, so a thread that asks while another is loading the YAML waits for it
+# instead of reading an empty registry (the hunter's hunt threads and the API's thread pool start together)
+_bootstrap_lock = threading.Lock()
+
 
 def get_type_hierarchy() -> TypeHierarchy:
     """Return the process-global type hierarchy registry.
@@ -329,8 +333,12 @@ def get_type_hierarchy() -> TypeHierarchy:
 def _ensure_bootstrapped() -> None:
     # bootstrapped on first use rather than at startup, so a process that never looks at an observable
     # never imports saq.observables (this module's package) at all
-    if not _HIERARCHY._bootstrapped:
-        bootstrap_type_hierarchy()
+    if _HIERARCHY._bootstrapped:
+        return
+
+    with _bootstrap_lock:
+        if not _HIERARCHY._bootstrapped:
+            bootstrap_type_hierarchy()
 
 
 def get_all_valid_types() -> list[str]:
@@ -373,12 +381,14 @@ def bootstrap_type_hierarchy() -> None:
         # no configuration loaded yet; the next accessor call tries again
         return
 
-    _HIERARCHY._bootstrapped = True
     _HIERARCHY._reload_check_interval = observable_types_config.reload_check_interval_seconds
 
     config_path = observable_types_config.config_path
-    if not config_path:
-        return
+    if config_path:
+        abs_path = config_path if os.path.isabs(config_path) else os.path.join(get_base_dir(), config_path)
+        _HIERARCHY.load_yaml_config(abs_path)
 
-    abs_path = config_path if os.path.isabs(config_path) else os.path.join(get_base_dir(), config_path)
-    _HIERARCHY.load_yaml_config(abs_path)
+    # set only once the load is done, so whoever sees it reads a loaded registry; set whether the load
+    # worked or not, since load_yaml_config() has logged a missing or broken file and reading it again on
+    # every call would only log it again
+    _HIERARCHY._bootstrapped = True
