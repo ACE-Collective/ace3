@@ -9,6 +9,7 @@ import os
 import os.path
 import re
 import time
+import uuid
 from typing import Type
 
 from pydantic import Field
@@ -17,7 +18,7 @@ from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.configuration.schema import SandboxConfig
-from saq.constants import F_FILE, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -38,6 +39,28 @@ class TestAnalysis(Analysis):
     @property
     def test_result(self):
         return self.details[KEY_TEST_RESULT]
+
+class CacheTestAnalysis(TestAnalysis):
+    pass
+
+class CacheTestAnalyzer(AnalysisModule):
+    """Cacheable (deterministic, additive) output for the engine's analysis cache tests. Every live
+    run records a new run_id, so a replayed analysis is told from a live one by the run_id it has."""
+
+    @property
+    def generated_analysis_type(self):
+        return CacheTestAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(test)
+        analysis.details = {"run_id": str(uuid.uuid4())}
+        fqdn = analysis.add_observable_by_spec(F_FQDN, "cache-test.example.com")
+        fqdn.add_tag("cache_test")
+        return AnalysisExecutionResult.COMPLETED
 
 class BasicTestAnalysis(TestAnalysis):
     def __init__(self, *args, **kwargs):

@@ -120,6 +120,13 @@ analysis_module_basic_test:
   python_class: BasicTestAnalyzer
   enabled: false
 
+analysis_module_cache_test:
+  name: cache_test
+  python_module: saq.modules.test
+  python_class: CacheTestAnalyzer
+  enabled: false
+  cache_ttl: 3600
+
 analysis_module_generic_test:
   name: generic_test
   python_module: saq.modules.test
