@@ -5,20 +5,22 @@ import threading
 import time
 import uuid
 
-from celery.exceptions import TimeoutError
-from celery.result import AsyncResult
-
 from saq.configuration.config import get_config
 
 
-def initialize_phishkit():
-    from phishkit.phishkit import app
-    rabbitmq_user = get_config().rabbitmq.username
-    rabbitmq_password = get_config().rabbitmq.password
-    rabbitmq_host = get_config().rabbitmq.host
-    app.conf.update({
-        "broker_url": f"pyamqp://{rabbitmq_user}:{rabbitmq_password}@{rabbitmq_host}//"
+def _phishkit():
+    """The phishkit celery module, with its app pointed at this node's broker.
+
+    Imported here, on first use, rather than when ACE initializes: celery and the phishkit app are only
+    needed by the processes that scan, and initialize_environment() runs in every one. The broker setting is
+    applied on every call; it is a dict update."""
+    from phishkit import phishkit
+
+    rabbitmq = get_config().rabbitmq
+    phishkit.app.conf.update({
+        "broker_url": f"pyamqp://{rabbitmq.username}:{rabbitmq.password}@{rabbitmq.host}//"
     })
+    return phishkit
 
 # How long a scanner_image_id probe result is reused in this process. The image changes only on
 # deploy, so a success is good for a while; a failure is retried sooner, but not on every call:
@@ -43,14 +45,14 @@ def _reset_scanner_version_cache_for_tests() -> None:
 
 
 def ping_phishkit() -> str:
-    from phishkit.phishkit import ping as pk_ping
+    pk_ping = _phishkit().ping
     # expires: a ping nobody is waiting for any more is dropped instead of executed late
     result = pk_ping.apply_async(expires=PROBE_TIMEOUT_SECONDS)
     return result.get(timeout=PROBE_TIMEOUT_SECONDS)
 
 
 def get_phishkit_scanner_image() -> dict:
-    from phishkit.phishkit import scanner_image_id as pk_scanner_image_id
+    pk_scanner_image_id = _phishkit().scanner_image_id
     result = pk_scanner_image_id.apply_async(expires=PROBE_TIMEOUT_SECONDS)
     return result.get(timeout=PROBE_TIMEOUT_SECONDS)
 
@@ -98,7 +100,7 @@ def _copy_files(source_dir: str, output_dir: str) -> list[str]:
     return files
 
 def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str | list[str]:
-    from phishkit.phishkit import scan_file as pk_scan_file
+    pk_scan_file = _phishkit().scan_file
 
     # copy the file to the shared volume so the celery worker can access it
     shared_dir = f"/phishkit/input/{uuid.uuid4()}"
@@ -117,7 +119,7 @@ def scan_file(file_path: str, output_dir: str, is_async: bool = False, timeout: 
         return _copy_files(result_dir, output_dir)
 
 def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float = 15, scanner_timeout: int = 15, proxy: str = None, proxy_fallback_to_direct: bool = False, config_path: str = None) -> str | list[str]:
-    from phishkit.phishkit import scan_url as pk_scan_url
+    pk_scan_url = _phishkit().scan_url
     result = pk_scan_url.delay(url, timeout=scanner_timeout, proxy=proxy, proxy_fallback_to_direct=proxy_fallback_to_direct, config_path=config_path)
 
     if is_async:
@@ -129,9 +131,10 @@ def scan_url(url: str, output_dir: str, is_async: bool = False, timeout: float =
 
 def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -> list[str] | None:
     """Gets the result of a scan asynchronously. Returns the list of files if the scan is complete, otherwise None."""
-    from phishkit.phishkit import app
+    from celery.exceptions import TimeoutError
+    from celery.result import AsyncResult
 
-    result = AsyncResult(result_id, app=app)
+    result = AsyncResult(result_id, app=_phishkit().app)
 
     # Ask whether the result is stored before asking for it. ready() is a plain
     # read of the backend's result key; get() instead waits on the backend's
@@ -149,7 +152,7 @@ def get_async_scan_result(result_id: str, output_dir: str, timeout: float = 1) -
 
 def maintain_files(max_file_age_days: int, timeout: float = 300) -> dict:
     """Run the phishkit file-maintenance task."""
-    from phishkit.phishkit import maintain_files as pk_maintain_files
+    pk_maintain_files = _phishkit().maintain_files
     result = pk_maintain_files.delay(max_file_age_days)
     return result.get(timeout=timeout)
 

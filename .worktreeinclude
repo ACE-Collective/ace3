@@ -1,0 +1,4 @@
+# gitignored files Claude Code copies from the main checkout into each worktree it creates
+
+# the stack's certificates: nothing, the test suite included, reaches the database without them
+ssl/

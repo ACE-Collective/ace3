@@ -138,7 +138,7 @@ def stop_api_v2_server(process: subprocess.Popen):
         process.kill()
 
 def start_gui(args):
-    from app import create_app
+    from app.application import create_app
     from werkzeug.serving import run_simple
     from werkzeug.middleware.dispatcher import DispatcherMiddleware
     from werkzeug.wrappers import Response

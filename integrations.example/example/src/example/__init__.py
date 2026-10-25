@@ -1,70 +1,28 @@
-import logging
-from typing import Optional, Type, override
+# The package init runs in every ACE process (initialize_integrations() imports it to run the
+# registration hooks below), so it imports only what registering needs. The analyzer lives in
+# example/modules.py, which the engine imports from its analysis_module_example block, and the
+# blueprint in example/app/blueprint.py, which only the GUI imports (docs/IMPORTS.md).
+from typing import TYPE_CHECKING
 
-from flask import Blueprint, Flask
+if TYPE_CHECKING:
+    from flask import Flask
+
 from aceapi_v2.integrations import register_integration_router
 from app.integration import register_integration_blueprint_callback
-from saq import Analysis, AnalysisModule, Observable
-from saq.constants import F_TEST, AnalysisExecutionResult
+from saq.constants import F_TEST
 from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.gui.observable_actions.base import ObservableAction
 
-from example.api.router import router as example_api_router
-
-KEY_RESULT = "result"
-
-class ExampleAnalysis(Analysis):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_RESULT: None
-        }
-    
-    @property
-    def result(self) -> Optional[str]:
-        return self.details.get(KEY_RESULT)
-
-    @result.setter
-    def result(self, value: str):
-        self.details[KEY_RESULT] = value
-
-    @override
-    def generate_summary(self) -> Optional[str]:
-        if self.result:
-            return f"Example Analysis: {self.result}"
-        else:
-            return None
-
-class ExampleAnalyzer(AnalysisModule):
-
-    @override
-    @property
-    def valid_observable_types(self) -> list[str]:
-        return [F_TEST]
-
-    @override
-    @property
-    def generated_analysis_type(self) -> Optional[Type[Analysis]]:
-        return ExampleAnalysis
-    
-    @override
-    def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
-        analysis = self.create_analysis(observable)
-        analysis.result = "Example Analysis Result"
-        return AnalysisExecutionResult.COMPLETED
-
-# GUI pages and the templates of the observable action; what a page or an action fetches comes
-# from the API routes below
-example_bp = Blueprint('example', __name__, url_prefix='/example', template_folder="templates")
-
-def register_example_blueprint(flask_app: Flask):
+def register_example_blueprint(flask_app: "Flask"):
+    # imported here: the blueprint module imports Flask, which only the GUI loads
     import example.app.views
+    from example.app.blueprint import example_bp
     flask_app.register_blueprint(example_bp)
 
 register_integration_blueprint_callback(register_example_blueprint)
 
 # API routes, served under /api/v2/integrations/example
-register_integration_router("example", example_api_router)
+register_integration_router("example", "example.api.router")
 
 class ObservableActionExample(ObservableAction):
     def __init__(self, *args, **kwargs):

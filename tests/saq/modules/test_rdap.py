@@ -28,27 +28,27 @@ from tests.saq.helpers import create_root_analysis
 
 def _patch_rdap(monkeypatch, fn):
     """Patch ``whoisit.domain`` and short-circuit the bootstrap check."""
-    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", fn)
+    monkeypatch.setattr("whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("whoisit.domain", fn)
 
 
 def _patch_rdap_ip(monkeypatch, fn):
     """Patch ``whoisit.ip`` and short-circuit the bootstrap check."""
-    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.ip", fn)
+    monkeypatch.setattr("whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("whoisit.ip", fn)
 
 
 def _patch_whois(monkeypatch, fn):
-    monkeypatch.setattr("saq.modules.rdap.whois.whois", fn)
+    monkeypatch.setattr("whois.whois", fn)
 
 
 def _patch_whois_must_not_be_called(monkeypatch):
     def _explode(_domain):
         raise AssertionError("whois.whois must not be called for this case")
 
-    monkeypatch.setattr("saq.modules.rdap.whois.whois", _explode)
+    monkeypatch.setattr("whois.whois", _explode)
 
 
 class _MockWhoisResult(dict):
@@ -450,7 +450,7 @@ def test_rdap_analyzer_ip_success(test_context, monkeypatch):
     _patch_whois_must_not_be_called(monkeypatch)
     # domain() must not be used for an IP observable.
     monkeypatch.setattr(
-        "saq.modules.rdap.whoisit.domain",
+        "whoisit.domain",
         lambda *_a, **_kw: (_ for _ in ()).throw(
             AssertionError("whoisit.domain must not be called for an IP")
         ),
@@ -664,8 +664,8 @@ def test_rdap_analyzer_falls_back_on_bootstrap_error(test_context, monkeypatch):
     def _bootstrap():
         raise BootstrapError("IANA endpoint unreachable")
 
-    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: False)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", _bootstrap)
+    monkeypatch.setattr("whoisit.is_bootstrapped", lambda: False)
+    monkeypatch.setattr("whoisit.bootstrap", _bootstrap)
 
     whois_data = {
         "domain_name": "example.com",
@@ -1182,13 +1182,13 @@ def test_lookup_creation_date_bootstrap_failure_goes_to_whois(monkeypatch):
     def _bootstrap():
         raise BootstrapError("bootstrap data unavailable")
 
-    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: False)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", _bootstrap)
+    monkeypatch.setattr("whoisit.is_bootstrapped", lambda: False)
+    monkeypatch.setattr("whoisit.bootstrap", _bootstrap)
 
     def _rdap_must_not_be_called(_domain, **_kw):
         raise AssertionError("whoisit.domain must not be called when bootstrap fails")
 
-    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", _rdap_must_not_be_called)
+    monkeypatch.setattr("whoisit.domain", _rdap_must_not_be_called)
 
     created = datetime(2026, 6, 15, tzinfo=timezone.utc)
     _patch_whois(monkeypatch, lambda _domain: _MockWhoisResult({"creation_date": created}))

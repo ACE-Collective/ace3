@@ -1,7 +1,7 @@
 import pytest
 
 from saq.analysis import RootAnalysis
-from saq.analysis.presenter import create_observable_presenter
+from saq.analysis.presenter.observable_presenter import create_observable_presenter
 from saq.analysis.presenter.observable_presenter import ObservablePresenter
 from saq.constants import F_EMAIL_FIRST_HOP_IP, F_IP, F_URL
 from saq.observables.network.ip import IPObservablePresenter

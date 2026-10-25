@@ -8,13 +8,20 @@ per delayed-analysis pass, per scanned observable.
 import os
 
 import pytest
+from phishkit import phishkit as phishkit_tasks
 
 import saq.phishkit
 from saq.phishkit import (
+    PROBE_TIMEOUT_SECONDS,
     SCANNER_VERSION_FAILURE_TTL_SECONDS,
     SCANNER_VERSION_SUCCESS_TTL_SECONDS,
     get_async_scan_result,
+    get_phishkit_scanner_image,
     get_phishkit_scanner_version,
+    maintain_files,
+    ping_phishkit,
+    scan_file,
+    scan_url,
 )
 
 
@@ -54,7 +61,7 @@ def test_get_async_scan_result_returns_none_without_calling_get(monkeypatch):
     is a plain read of the stored result key.
     """
     fake = FakeAsyncResult(ready=False)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     assert get_async_scan_result("job-1", "/tmp/does-not-matter") is None
     assert not fake.get_called, "must not block on get() for an unfinished job"
@@ -71,7 +78,7 @@ def test_get_async_scan_result_copies_files_when_ready(tmpdir, monkeypatch):
         fp.write("png")
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     output_dir = str(tmpdir / "collected")
     results = get_async_scan_result("job-1", output_dir)
@@ -93,7 +100,7 @@ def test_get_async_scan_result_honors_timeout_argument(tmpdir, monkeypatch):
     os.makedirs(source_dir)
 
     fake = FakeAsyncResult(ready=True, result_dir=source_dir)
-    monkeypatch.setattr("saq.phishkit.AsyncResult", lambda result_id, app=None: fake)
+    monkeypatch.setattr("celery.result.AsyncResult", lambda result_id, app=None: fake)
 
     get_async_scan_result("job-1", str(tmpdir / "collected"), timeout=7)
     assert fake.get_timeout == 7
@@ -121,7 +128,7 @@ def test_get_async_scan_result_binds_the_phishkit_app(monkeypatch):
         captured["app"] = app
         return FakeAsyncResult(ready=False)
 
-    monkeypatch.setattr("saq.phishkit.AsyncResult", fake_async_result)
+    monkeypatch.setattr("celery.result.AsyncResult", fake_async_result)
 
     get_async_scan_result("job-1", "/tmp/does-not-matter")
     assert captured["app"] is phishkit_app
@@ -229,3 +236,95 @@ def test_phishkit_work_tasks_stay_on_default_queue(task_name):
     from phishkit.phishkit import CONTROL_QUEUE, app
 
     assert app.amqp.router.route({}, task_name)["queue"].name != CONTROL_QUEUE
+
+
+@pytest.mark.unit
+def test_the_phishkit_app_is_pointed_at_the_configured_broker(monkeypatch):
+    # set when the app is first used, not when ACE initializes
+    phishkit_app = phishkit_tasks.app
+
+    rabbitmq = saq.phishkit.get_config().rabbitmq
+    monkeypatch.setattr(rabbitmq, "username", "pk-user")
+    monkeypatch.setattr(rabbitmq, "password", "pk-pass")
+    monkeypatch.setattr(rabbitmq, "host", "pk-host")
+    monkeypatch.setitem(phishkit_app.conf, "broker_url", "pyamqp://guest@nowhere//")
+
+    assert saq.phishkit._phishkit().app is phishkit_app
+    assert phishkit_app.conf.broker_url == "pyamqp://pk-user:pk-pass@pk-host//"
+
+
+class FakeResult:
+    def __init__(self, value, id="task-id"):
+        self.value = value
+        self.id = id
+        self.timeouts = []
+
+    def get(self, timeout=None):
+        self.timeouts.append(timeout)
+        return self.value
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("call, task_name", [(ping_phishkit, "ping"), (get_phishkit_scanner_image, "scanner_image_id")])
+def test_a_probe_expires_and_waits_for_the_probe_timeout(monkeypatch, call, task_name):
+    result, sent = FakeResult({"answer": task_name}), []
+    monkeypatch.setattr(getattr(phishkit_tasks, task_name), "apply_async", lambda **kwargs: sent.append(kwargs) or result)
+
+    assert call() == {"answer": task_name}
+    assert sent == [{"expires": PROBE_TIMEOUT_SECONDS}]
+    assert result.timeouts == [PROBE_TIMEOUT_SECONDS]
+
+
+@pytest.mark.unit
+def test_scan_url_copies_the_results_it_waited_for(monkeypatch, tmp_path):
+    result_dir = tmp_path / "result"
+    (result_dir / "nested").mkdir(parents=True)
+    (result_dir / "nested" / "screenshot.png").write_bytes(b"png")
+    result, sent = FakeResult(str(result_dir)), []
+    monkeypatch.setattr(phishkit_tasks.scan_url, "delay", lambda *args, **kwargs: sent.append((args, kwargs)) or result)
+
+    files = scan_url("https://example.com/", str(tmp_path / "out"), timeout=7, scanner_timeout=9, proxy="socks5://proxy:1080")
+
+    assert files == [str(tmp_path / "out" / "nested" / "screenshot.png")]
+    assert sent == [(("https://example.com/",), {"timeout": 9, "proxy": "socks5://proxy:1080",
+                                                 "proxy_fallback_to_direct": False, "config_path": None})]
+    assert result.timeouts == [7]
+
+
+@pytest.mark.unit
+def test_scan_url_async_returns_the_task_id(monkeypatch, tmp_path):
+    result = FakeResult(None, id="scan-123")
+    monkeypatch.setattr(phishkit_tasks.scan_url, "delay", lambda *args, **kwargs: result)
+
+    assert scan_url("https://example.com/", str(tmp_path), is_async=True) == "scan-123"
+    assert result.timeouts == []
+
+
+@pytest.mark.unit
+def test_scan_file_hands_the_worker_a_copy_on_the_shared_volume(monkeypatch, tmp_path):
+    sample = tmp_path / "sample.html"
+    sample.write_text("<html></html>")
+    made, copied, sent = [], [], []
+    # the shared volume is a fixed path; record what would be put there instead of writing to it
+    monkeypatch.setattr(saq.phishkit.os, "makedirs", lambda path, exist_ok=False: made.append(path))
+    monkeypatch.setattr(saq.phishkit.shutil, "copy2", lambda src, dst: copied.append((src, dst)))
+    result = FakeResult(None, id="scan-456")
+    monkeypatch.setattr(phishkit_tasks.scan_file, "delay", lambda *args, **kwargs: sent.append((args, kwargs)) or result)
+
+    assert scan_file(str(sample), str(tmp_path / "out"), is_async=True, scanner_timeout=11) == "scan-456"
+
+    [shared_dir] = made
+    assert shared_dir.startswith("/phishkit/input/")
+    shared_path = os.path.join(shared_dir, "sample.html")
+    assert copied == [(str(sample), shared_path)]
+    assert sent == [((shared_path,), {"timeout": 11, "proxy": None, "proxy_fallback_to_direct": False, "config_path": None})]
+
+
+@pytest.mark.unit
+def test_maintain_files_runs_the_task_and_waits_for_it(monkeypatch):
+    result, sent = FakeResult({"deleted": []}), []
+    monkeypatch.setattr(phishkit_tasks.maintain_files, "delay", lambda days: sent.append(days) or result)
+
+    assert maintain_files(4, timeout=30) == {"deleted": []}
+    assert sent == [4]
+    assert result.timeouts == [30]

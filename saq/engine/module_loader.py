@@ -190,9 +190,8 @@ class ModuleLoader:
     def _should_load_module(self, analysis_module_name: str) -> bool:
         """Determine if a module should be loaded based on configuration."""
         if not self.locally_enabled_modules:
-            module_config = get_config().get_analysis_module_config(analysis_module_name)
             # is this module disabled?
-            if not module_config.enabled:
+            if not get_config().is_analysis_module_enabled(analysis_module_name):
                 logging.debug(f"{analysis_module_name} is disabled")
                 return False
             

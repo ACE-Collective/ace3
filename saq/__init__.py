@@ -1,7 +1,13 @@
-from saq.analysis.analysis import Analysis # noqa: F401
-from saq.analysis.observable import Observable # noqa: F401
-from saq.analysis.root import RootAnalysis # noqa: F401
-from saq.modules.base_module import AnalysisModule # noqa: F401
+from saq.lazy_exports import lazy_getattr
 
-# this next line ensures all base observable types are registered
-import saq.observables # noqa: F401
+# saq imports nothing itself, so importing one saq module costs only what that module imports. These
+# names stay importable from saq for integrations (integrations.example uses them), each loaded the
+# first time it is asked for (PEP 562).
+_EXPORTS = {
+    "Analysis": "saq.analysis.analysis",
+    "Observable": "saq.analysis.observable",
+    "RootAnalysis": "saq.analysis.root",
+    "AnalysisModule": "saq.modules.base_module",
+}
+
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

@@ -5,7 +5,7 @@ from typing import Optional
 
 from saq.configuration import get_config
 from saq.observables.export.base import ObservableExport
-from saq.observables.export.config import ObservableExportConfig
+from saq.configuration.schema import ObservableExportConfig
 
 
 def load_observable_export_from_config(config: ObservableExportConfig) -> ObservableExport:

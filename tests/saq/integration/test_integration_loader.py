@@ -429,3 +429,25 @@ class TestLoadIntegrationFromDirectory:
 
         load_integration_from_directory(integration_dir)
         _assert_loaded(integration_dir)
+
+
+@pytest.mark.unit
+def test_the_tests_load_this_checkouts_integrations():
+    # tests/conftest.py puts every integration's source on sys.path before ACE is initialized, and the loader
+    # appends, so whatever it adds first wins. Run from a checkout other than /opt/ace (a worktree), it used to add
+    # /opt/ace's integrations, and every test imported that checkout's integration code instead of this one's
+    own = os.path.realpath(get_base_dir())
+
+    def other_checkout(path: str) -> bool:
+        # under <checkout>/integrations/, where <checkout> is an ACE checkout (it has saq/) other than this one
+        marker = f"{os.sep}integrations{os.sep}"
+        if marker not in path:
+            return False
+        checkout = path.split(marker, 1)[0]
+        return os.path.isdir(os.path.join(checkout, "saq")) and os.path.realpath(checkout) != own
+
+    others = [path for path in sys.path if other_checkout(path)]
+    loaded = [module.__file__ for module in list(sys.modules.values())
+              if other_checkout(getattr(module, "__file__", None) or "")]
+    assert not others, others
+    assert not loaded, loaded[:5]

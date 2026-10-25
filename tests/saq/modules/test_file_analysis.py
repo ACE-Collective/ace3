@@ -908,7 +908,7 @@ def test_ocr_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
     def _raise(image):
         raise RuntimeError("tesseract crashed")
 
-    monkeypatch.setattr("saq.modules.file_analysis.ocr.get_image_text", _raise)
+    monkeypatch.setattr("saq.ocr.get_image_text", _raise)
 
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()

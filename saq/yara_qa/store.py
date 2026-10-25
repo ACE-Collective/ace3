@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
@@ -48,10 +48,13 @@ from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.json_encoding import _JSONEncoder
-from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
+
+if TYPE_CHECKING:
+    # only the type: the yara service's qa recorder imports this module and uses no observables
+    from saq.observables.file import FileObservable
 
 # cas_holds.holder_kind for every yara_qa hold; the holder_id is the yara_qa_matches row id, which
 # holds both the file and the match record
@@ -85,7 +88,7 @@ class QATarget:
         return f"{self.file_name} ({self.sha256})"
 
     @classmethod
-    def from_file_observable(cls, file_observable: FileObservable, root_uuid: str) -> "QATarget":
+    def from_file_observable(cls, file_observable: "FileObservable", root_uuid: str) -> "QATarget":
         return cls(path=file_observable.full_path, sha256=file_observable.sha256_hash,
                    file_name=file_observable.file_name, file_size=file_observable.size or 0,
                    root_uuid=root_uuid, observable_uuid=file_observable.uuid)

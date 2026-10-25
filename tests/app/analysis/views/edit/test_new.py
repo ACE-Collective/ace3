@@ -272,7 +272,8 @@ def test_new_alert_api_submission_failure(web_client, target_node):
 def test_new_alert_submission_timeout_is_reported(web_client, target_node, monkeypatch, caplog, submit_type):
     """A target node that stalls times the submission out instead of holding the GUI worker."""
     post = Mock(side_effect=requests.Timeout("read timed out"))
-    monkeypatch.setattr("ace_api.requests.post", post)
+    # ace_api imports requests when it makes the call
+    monkeypatch.setattr("requests.post", post)
     write_error_report = Mock()
     monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
 

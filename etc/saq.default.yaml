@@ -896,6 +896,8 @@ email_archive:
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
+  # the directory to contain the archived emails (relative to DATA_DIR)
+  archive_dir: archive/email
 
   # s3 settings
   # controls which section of the config to use for the s3 config
@@ -1637,8 +1639,6 @@ analysis_module_email_archiver:
   python_module: saq.modules.email.archive
   python_class: EmailArchiveAction
   enabled: false
-  # the directory to contain the archived emails (relative to DATA_DIR)
-  archive_dir: archive/email
   # how long to keep archived emails (in days)
   expiration_days: 7
 

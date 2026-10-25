@@ -10,7 +10,7 @@ import pytest
 import pytz
 import yaml
 
-import saq.cli.commands  # noqa: F401
+import saq.cli.commands.hunt  # noqa: F401 -- registers the commands
 from saq.analysis.root import RootAnalysis, Submission
 from saq.cli.cli_main import get_cli_parser
 from saq.cli.commands.hunt import list_hunt_types, list_hunts, verify_hunt

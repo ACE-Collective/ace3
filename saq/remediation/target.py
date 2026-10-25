@@ -1,11 +1,12 @@
 
 import logging
-from typing import Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Optional, Protocol, runtime_checkable
 from saq.analysis.observable import Observable
-from saq.database.model import Remediation
-from saq.database.util.alert import get_alert_by_uuid
 from saq.remediation.remediator import Remediator, get_remediator_by_name
 from saq.remediation.types import RemediationAction
+
+if TYPE_CHECKING:
+    from saq.database.model import Remediation
 
 # NOTE
 # a RemediationTarget represents a potential target
@@ -51,7 +52,7 @@ class RemediationTarget:
     # Database operations
     # ------------------------------------------------------------
 
-    def get_current_remediation(self) -> Optional[Remediation]:
+    def get_current_remediation(self) -> Optional["Remediation"]:
         from saq.remediation.database import get_current_remediation
         return get_current_remediation(self)
 
@@ -122,6 +123,10 @@ def get_observable_remediation_targets(observable: Observable) -> list[Remediati
 
 def get_remediation_targets_by_alert_uuids(alert_uuids: list[str]) -> list[RemediationTarget]:
     """Returns a list of remediation targets for the given alert uuids."""
+    # imported here, like the database operations above: integrations import this module in every process
+    # to register their remediation interfaces, and only this function needs the database models
+    from saq.database.util.alert import get_alert_by_uuid
+
     targets: list[RemediationTarget] = []
     for alert_uuid in alert_uuids:
         alert = get_alert_by_uuid(alert_uuid)

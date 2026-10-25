@@ -13,10 +13,10 @@ import os
 import shutil
 import uuid
 
-from celery.exceptions import TimeoutError
-from celery.result import AsyncResult
-
 from saq.configuration.config import get_config
+
+# celery (~5 MB) is imported where a result is read: the search indexer and the GUI import the js module, and so
+# this one, only to read its analysis
 
 SHARED_INPUT_DIR = "/js-deobfuscator/input"
 
@@ -105,6 +105,8 @@ def get_async_deobfuscate_result(
     timeout: float = 1,
 ) -> list[str] | None:
     """Peek at a pending deobfuscation job. Returns None if not ready."""
+    from celery.exceptions import TimeoutError
+    from celery.result import AsyncResult
     from js_deobfuscator.js_deobfuscator import app
 
     result = AsyncResult(result_id, app=app)

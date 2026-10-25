@@ -1,13 +1,5 @@
-from typing import Optional
-
-from pydantic import BaseModel, Field
-
-
-class ObservableExportConfig(BaseModel):
-    """The base configuration of an ``observable_export_<name>:`` block."""
-
-    name: str = Field(..., description="Unique identifier for the export target.")
-    python_module: str = Field(..., description="The Python module that contains the export class.")
-    python_class: str = Field(..., description="The name of the export class inside the module.")
-    enabled: bool = Field(default=True, description="Controls whether the export target is enabled or disabled.")
-    description: Optional[str] = Field(default=None, description="A brief description of the export target.")
+# integrations import ObservableExportConfig from here. It is defined in saq.configuration.schema with the
+# other plugin base configs: config parsing validates every observable_export_ block against it, and
+# importing it from this package would run saq/observables/__init__.py, every observable type with it, in
+# every process that reads its configuration
+from saq.configuration.schema import ObservableExportConfig  # noqa: F401

@@ -19,7 +19,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, DB_ACE, NO_NODES_AVAILABLE,
 from saq.database import ALERT, execute_with_retry, get_db_connection, remove_all_sessions
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import get_collection_error_dir, get_data_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
@@ -710,7 +710,6 @@ ORDER BY
 
 def save_submission_for_review(submission: Submission):
     """Saves the given submission to data/var/collectors/error/{uuid} using pickle."""
-    from saq.collectors.base_collector import get_collection_error_dir
     error_dir = os.path.join(get_collection_error_dir(), submission.root.uuid)
     submission.root.move(error_dir)
     logging.warning(f"dumped submission to {error_dir} for review")

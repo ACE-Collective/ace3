@@ -10,7 +10,6 @@ from saq.gui import (
     ObservableActionOpenSplunkClickerSearch,
 )
 from saq.observables.generator import register_observable_type
-from urlfinderlib.url import URL
 
 from saq.util import is_subdomain
 
@@ -57,6 +56,9 @@ class URLObservable(Observable):
 
     def is_managed(self):
         """Returns True if this URL has a managed domain."""
+        # imported here: every process that loads the observable types imports this module, and urlfinderlib
+        # costs ~11 MB where nothing else needs it (the hunter)
+        from urlfinderlib.url import URL
 
         url = URL(self.value)
         for fqdn in get_config().global_settings.local_domains:

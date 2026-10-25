@@ -15,7 +15,7 @@ from saq.constants import (
 )
 from saq.database.util.observable_detection import create_observable_detection, delete_observable_detection
 from saq.observables.export.base import ExportEntry, ObservableExportList
-from saq.observables.export.config import ObservableExportConfig
+from saq.configuration.schema import ObservableExportConfig
 from saq.observables.export.manager import get_observable_exports, run_exports
 from saq.observables.export.base import select_detections
 from saq.observables.export.state import read_fingerprint, write_fingerprint

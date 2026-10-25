@@ -5,8 +5,6 @@ import sys
 import time
 
 import pymysql
-from sqlalchemy import Executable
-from sqlalchemy.exc import DBAPIError
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
 
@@ -170,6 +168,9 @@ def retry_on_deadlock(targets, *args, attempts=15, commit=False, **kwargs):
        This rolls back the thread-shared get_db() session, and with it anything else the caller had
        in progress there. A transaction of its own (saq.database.private_session) is run again with
        run_private_transaction instead."""
+    # the ORM retries import SQLAlchemy here: execute_with_retry() runs in every process, on raw cursors
+    from sqlalchemy import Executable
+    from sqlalchemy.exc import DBAPIError
 
     if not isinstance(targets, list):
         targets = [ targets ]
@@ -219,10 +220,14 @@ def retry_function_on_deadlock(function, *args, **kwargs):
     return retry_on_deadlock(function, *args, **kwargs)
 
 def retry_sql_on_deadlock(executable, *args, **kwargs):
+    from sqlalchemy import Executable
+
     assert isinstance(executable, Executable)
     return retry_on_deadlock(executable, *args, **kwargs)
 
 def retry_multi_sql_on_deadlock(executables, *args, **kwargs):
+    from sqlalchemy import Executable
+
     assert isinstance(executables, list)
     assert all([isinstance(_, Executable) for _ in executables])
     return retry_on_deadlock(executables, *args, **kwargs)

@@ -26,7 +26,7 @@ from saq.constants import (
 )
 from saq.database import remove_all_sessions
 from saq.database.util.node import get_node_status_cached, update_collector_status
-from saq.environment import get_data_dir, get_global_runtime_settings
+from saq.environment import get_collection_error_dir, get_data_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.persistence import Persistable
@@ -39,9 +39,6 @@ COLLECTOR_STATUS_REPORT_FREQUENCY = 5
 # only SCHEDULED means the submission became real work; DUPLICATE is a drop
 SUBMISSION_OUTCOME_SCHEDULED = "scheduled"
 SUBMISSION_OUTCOME_DUPLICATE = "duplicate"
-
-def get_collection_error_dir() -> str:
-    return os.path.join(get_data_dir(), get_config().collection.error_dir)
 
 class CollectorExecutionMode(Enum):
     """Enum representing the possible execution modes for a collector."""

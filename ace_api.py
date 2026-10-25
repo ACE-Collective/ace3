@@ -22,10 +22,16 @@ pip install requests pytz tzlocal~=2.1
     sys.exit(1)
 
 try:
-    import requests
     import pytz
     import tzlocal
 except ImportError:
+    dump_pip_instructions_and_die()
+
+import importlib.util
+
+# requests is imported where a call is made (_execute_api_call): ACE imports this module in every process to
+# set its defaults, and only the processes that call an ACE node need requests
+if importlib.util.find_spec("requests") is None:
     dump_pip_instructions_and_die()
 
 import argparse
@@ -38,7 +44,6 @@ import logging
 import os
 import os.path
 import pickle
-import pprint
 import shutil
 import socket
 import tarfile
@@ -213,6 +218,8 @@ def _execute_api_call(command,
             api_key = os.environ.get("ACE_API_KEY", None)
 
     ssl_verification = False
+
+    import requests  # see the note at the top of this module
 
     if method == METHOD_GET:
         func = requests.get
@@ -1378,6 +1385,8 @@ def main():
                 del os.environ[env_var]
             if env_var.upper() in os.environ:
                 del os.environ[env_var.upper()]
+
+    import pprint  # only the command line prints; ACE imports this module in every process
 
     try:
         result = args.func(args)

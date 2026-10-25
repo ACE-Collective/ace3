@@ -17,6 +17,7 @@ from pydantic import Field, model_validator
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import (
+    KEY_ALERT_TEMPLATE,
     KEY_PLAYBOOK_URL,
     KEY_TRANSACTION_ID,
     RootAnalysis,
@@ -28,7 +29,7 @@ from saq.collectors.hunter.loader import load_from_yaml
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_SIGNATURE_ID, SUMMARY_DETAIL_FORMAT_JINJA, TIMESPEC_TOKEN, EventTimeSource
 from saq.collectors.submission_file_manager import get_staging_tmp_dir
-from saq.gui.alert import KEY_ALERT_TEMPLATE, KEY_ICON_CONFIGURATION
+from saq.gui.icon import KEY_ICON_CONFIGURATION
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.observables.generator import create_observable
 from saq.signatures.model import SignatureType

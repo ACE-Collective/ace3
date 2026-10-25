@@ -1,9 +1,7 @@
 from typing import Optional, Type
 
-from saq import Observable
-from saq.database.database_observable import observable_is_interesting, observable_is_set_for_detection
-
-from saq.gui import ObservableAction
+from saq.analysis.observable import Observable
+from saq.gui.observable_actions.base import ObservableAction
 
 # Registry for custom observable presenter classes
 _OBSERVABLE_PRESENTER_REGISTRY: dict[Type[Observable], Type["ObservablePresenter"]] = {}
@@ -81,6 +79,10 @@ class ObservablePresenter:
     def is_set_for_detection(self) -> bool:
         """Returns True if this observable is enabled for future detection."""
         if self._detection_status is None:
+            # imported here, not at module level: every process imports this module (the observable types
+            # and the integrations register their presenters and actions through it), and only a presenter
+            # that has to ask the database itself needs the database models
+            from saq.database.database_observable import observable_is_set_for_detection
             self._detection_status = observable_is_set_for_detection(self._observable)
 
         return self._detection_status
@@ -89,6 +91,8 @@ class ObservablePresenter:
     def is_interesting(self) -> bool:
         """Returns True if this observable is marked interesting."""
         if self._is_interesting is None:
+            # imported here for the same reason as in is_set_for_detection
+            from saq.database.database_observable import observable_is_interesting
             self._is_interesting = observable_is_interesting(self._observable)
 
         return self._is_interesting

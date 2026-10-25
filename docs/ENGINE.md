@@ -273,6 +273,13 @@ A tool that can stay in the group should, and bound itself anyway: `bin/pcodedmp
 runs `pcodedmp` under `timeout --foreground`, so it stops at its deadline even when its
 worker is killed while it waits, and dies with the worker's group otherwise.
 
+`Worker.start()` calls `gc.freeze()` right before the fork and `gc.unfreeze()` right after
+it, in a `finally`. The worker keeps every object it inherited in the collector's permanent
+generation, which its collections never walk, so they don't copy the pages it shares with
+the engine process. The engine process gets them back at once and still collects its own
+garbage. The saving, about 27 MB per worker, shows only once a busy worker's incremental
+collector would have reached the inherited objects (`docs/IMPORTS.md`).
+
 `restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
 timeout, starts it **in the execution mode the pool was started in** (§19.11)

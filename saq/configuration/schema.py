@@ -13,7 +13,6 @@ from saq.svs.attack_files import release_path
 if TYPE_CHECKING:
     from saq.configuration.yaml_parser import YAMLConfig
     from saq.modules.config import AnalysisModuleConfig
-    from saq.observables.export.config import ObservableExportConfig
 
 # how many times a collection group retries a failed delivery before giving up on the work item.
 # each attempt is one full submit (which itself retries at the HTTP layer) plus roughly a second
@@ -67,6 +66,15 @@ class ServiceConfig(BaseModel):
     enabled: bool = Field(..., description="Controls whether the service is enabled or disabled.")
     instance_types: Optional[list[str]] = Field(default=None, description="The instance types that the service is valid for.")
     shutdown_deadline_seconds: float = Field(default=20.0, description="How long this service may take to shut down after receiving SIGTERM. Must stay below the container stop_grace_period so the process always exits before docker escalates to SIGKILL.")
+
+class ObservableExportConfig(BaseModel):
+    """The base configuration of an ``observable_export_<name>:`` block."""
+
+    name: str = Field(..., description="Unique identifier for the export target.")
+    python_module: str = Field(..., description="The Python module that contains the export class.")
+    python_class: str = Field(..., description="The name of the export class inside the module.")
+    enabled: bool = Field(default=True, description="Controls whether the export target is enabled or disabled.")
+    description: Optional[str] = Field(default=None, description="A brief description of the export target.")
 
 class DatabaseConfig(BaseModel):
     name: str = Field(..., description="The name of the database.")
@@ -344,6 +352,7 @@ class WikiConfig(BaseModel):
 class EmailArchiveConfig(BaseModel):
     target: str = Field(..., description="possible values: local, s3")
     primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
+    archive_dir: str = Field(default="archive/email", description="the directory that holds the archived emails (relative to the data directory)")
     s3_bucket: str = Field(..., description="the bucket to use for the email archive")
     s3_region: Optional[str] = Field(default=None, description="the region to use for the email archive")
     partition_retention_days: int = Field(default=30, description="days of archive and archive_index rows to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
@@ -1022,6 +1031,18 @@ class ACEConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _reject_moved_email_archive_dir(cls, data):
+        # the email archive reads its directory from its own section, so a site overlay that still sets
+        # it on the email archiver module would otherwise be silently ignored
+        if isinstance(data, dict):
+            archiver = data.get("analysis_module_email_archiver")
+            if isinstance(archiver, dict) and "archive_dir" in archiver:
+                raise ValueError("analysis_module_email_archiver.archive_dir: set email_archive.archive_dir "
+                                 "instead; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _check_svs_service(cls, data):
         """service_svs is checked as the configuration is read, not only when the service starts
         (service configs are otherwise resolved lazily): a lease its heartbeat can't keep would
@@ -1069,7 +1090,7 @@ class ACEConfig(BaseModel):
         self.__remediators: Optional[dict[str, RemediatorConfig]] = None
         self.__file_collectors: Optional[dict[str, FileCollectorConfig]] = None
         self.__external_remediation_probes: Optional[dict[str, ExternalRemediationProbeConfig]] = None
-        self.__observable_exports: Optional[LazyConfigRegistry["ObservableExportConfig"]] = None
+        self.__observable_exports: Optional[LazyConfigRegistry[ObservableExportConfig]] = None
         # (python_module, instance) -> the names of the analysis module configs in that python
         # module; storing names rather than config objects keeps this in step with
         # add_analysis_module_config() and avoids forcing resolution of every module just to
@@ -1291,6 +1312,17 @@ class ACEConfig(BaseModel):
             raise ValueError(f"analysis module config for {name} not found")
 
         return self.__analysis_modules.get(name)
+
+    def is_analysis_module_enabled(self, name: str) -> bool:
+        # enabled is on the base config, so this imports nothing; get_analysis_module_config() imports the
+        # module to validate its own config class, and the engine asks this of every module it might load
+        if self.__analysis_modules is None:
+            self._raise_raw_data_error()
+
+        if name not in self.__analysis_modules:
+            raise ValueError(f"analysis module config for {name} not found")
+
+        return self.__analysis_modules.peek(name).enabled
 
     def has_analysis_module_config(self, name: str) -> bool:
         if self.__analysis_modules is None:
@@ -1797,7 +1829,7 @@ class ACEConfig(BaseModel):
     #
 
     @property
-    def observable_exports(self) -> list["ObservableExportConfig"]:
+    def observable_exports(self) -> list[ObservableExportConfig]:
         # NOTE: this forces resolution of every observable export config, which imports
         # every export module. Prefer get_observable_export_config() for a single export.
         if self.__observable_exports is None:
@@ -1806,7 +1838,6 @@ class ACEConfig(BaseModel):
         return self.__observable_exports.values()
 
     def load_observable_export_configs(self):
-        from saq.observables.export.config import ObservableExportConfig
         self.__observable_exports = LazyConfigRegistry(ObservableExportConfig, "observable export config")
 
         for key, value in self.raw._data.items():
@@ -1817,13 +1848,13 @@ class ACEConfig(BaseModel):
             # loaded here -- see saq.configuration.lazy_registry
             self.__observable_exports.add_raw(key, value)
 
-    def add_observable_export_config(self, name: str, export_config: "ObservableExportConfig"):
+    def add_observable_export_config(self, name: str, export_config: ObservableExportConfig):
         if self.__observable_exports is None:
             self._raise_raw_data_error()
 
         self.__observable_exports.add_resolved(name, export_config)
 
-    def get_observable_export_config(self, name: str) -> "ObservableExportConfig":
+    def get_observable_export_config(self, name: str) -> ObservableExportConfig:
         if self.__observable_exports is None:
             self._raise_raw_data_error()
 

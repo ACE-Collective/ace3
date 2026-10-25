@@ -13,6 +13,11 @@
 # so a run takes a marker file on the way in and drops it on the way out: the xdist controller,
 # or the only process of a plain run. while that file exists no other run is allowed to start.
 #
+# it takes two. the one in $SAQ_HOME guards the checkout's own data directories, and every
+# container the checkout is bind mounted into sees it. the one in /tmp guards what every checkout
+# run in the same container shares: the slots' ports, and the slots' collections in the stack's
+# Qdrant. git worktrees of the main checkout run the suite in the same dev container.
+#
 # the databases are not part of this: every session provisions its own set (see
 # tests/unittest_database.py). the marker is still what makes their cleanup safe, though --
 # the process that holds it knows, before its own workers start, that every set an earlier
@@ -27,6 +32,8 @@ import sys
 from typing import Optional
 
 MARKER_FILENAME = ".pytest-running"
+# the container's own /tmp, which every checkout run in it shares and nothing outside it sees
+HOST_MARKER_PATH = "/tmp/ace-pytest-running"
 
 
 class SessionLockError(Exception):
@@ -40,6 +47,32 @@ def get_marker_path() -> str:
     This is deliberately outside of data_unittest/ -- that directory is deleted by
     execute_global_setup() at the start of the very session the marker is guarding."""
     return os.path.join(os.environ.get("SAQ_HOME", os.getcwd()), MARKER_FILENAME)
+
+
+def get_marker_paths() -> list[str]:
+    """Returns the marker files a run takes: the host's, then its checkout's."""
+    return [HOST_MARKER_PATH, get_marker_path()]
+
+
+def acquire_run():
+    """Creates every marker file a run takes, or none of them.
+
+    Raises SessionLockError, explaining the run that holds it, for the first one that exists."""
+    acquired = []
+    try:
+        for path in get_marker_paths():
+            acquire(path)
+            acquired.append(path)
+    except SessionLockError:
+        for path in acquired:
+            release(path)
+        raise
+
+
+def release_run():
+    """Removes every marker file a run takes. Only for the process that acquire_run() succeeded in."""
+    for path in get_marker_paths():
+        release(path)
 
 
 def acquire(path: Optional[str] = None) -> bool:
@@ -64,6 +97,7 @@ def acquire(path: Optional[str] = None) -> bool:
             "hostname": socket.gethostname(),
             "started": datetime.datetime.now().isoformat(),
             "argv": sys.argv,
+            "checkout": os.environ.get("SAQ_HOME", os.getcwd()),
         }, fp, indent=4)
 
     return True
@@ -134,9 +168,10 @@ def describe_holder(path: str) -> str:
         "",
         f"the ACE test suite marker file exists: {path}",
         "",
-        "the test suite is not safe to run more than once at a time -- each run deletes and",
-        "recreates its data_unittest/<slot> directories and binds fixed per-slot ports, so",
-        "concurrent runs corrupt each other. (a single run may use pytest-xdist: pytest -n auto)",
+        "the test suite is not safe to run more than once at a time in one checkout or one",
+        "container -- each run deletes and recreates its data_unittest/<slot> directories, binds",
+        "fixed per-slot ports and writes per-slot Qdrant collections, so concurrent runs corrupt",
+        "each other. (a single run may use pytest-xdist: pytest -n auto)",
         "",
     ]
 
@@ -151,6 +186,7 @@ def describe_holder(path: str) -> str:
             f"    pid:      {marker.get('pid', 'unknown')}",
             f"    hostname: {marker.get('hostname', 'unknown')}",
             f"    started:  {marker.get('started', 'unknown')}",
+            f"    checkout: {marker.get('checkout', 'unknown')}",
             f"    command:  {' '.join(marker.get('argv') or []) or 'unknown'}",
             "",
         ]

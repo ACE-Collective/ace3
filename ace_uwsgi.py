@@ -5,7 +5,7 @@ import sys
 
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.environment import initialize_environment
-import app
+from app.application import create_app
 
 # apache env vars and wsgi are different
 # so we use the location of this saq.wsgi file as the root of ACE
@@ -36,4 +36,4 @@ logging_config_path = os.environ.get(ENV_ACE_LOG_CONFIG_PATH, os.path.join("etc"
 initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path)
 
 # initialize flask
-application = app.create_app() # fix this hard coded string
+application = create_app() # fix this hard coded string

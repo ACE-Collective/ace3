@@ -11,7 +11,8 @@ from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
-from saq.analysis.presenter import create_analysis_presenter, create_observable_presenter
+from saq.analysis.presenter import create_analysis_presenter
+from saq.analysis.presenter.observable_presenter import create_observable_presenter
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES
