@@ -24,6 +24,17 @@ from saq.error.reporting import log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
 
+# (connect, read) seconds for a submission to another node. The read timeout covers the remote node
+# extracting and scheduling the upload; without one a node that stops answering holds the delivery
+# thread forever, and wait() with it.
+REMOTE_SUBMIT_TIMEOUT = (10, 300)
+
+# a node that cannot be reached, or stops answering, is an operational condition, not an ACE bug
+UNREACHABLE_NODE_ERRORS = (urllib3.exceptions.MaxRetryError,
+                           urllib3.exceptions.NewConnectionError,
+                           requests.exceptions.ConnectionError,
+                           requests.exceptions.Timeout)
+
 
 class RemoteNode:
     """Represents a remote Engine node."""
@@ -133,6 +144,7 @@ class RemoteNode:
                 move=False, # not an Alert yet
                 remote_host=self.location, # should be sent to this node
                 ssl_verification=get_config().SSL.ca_chain_path,
+                timeout=REMOTE_SUBMIT_TIMEOUT,
             )
 
             result = result['result']
@@ -627,10 +639,7 @@ ORDER BY
                                          load_seconds, time.monotonic() - submit_start_time))
                         submission_success = True
                     except Exception as e:
-                        # a node that cannot be reached is an operational condition, not an ACE bug
-                        if isinstance(e, (urllib3.exceptions.MaxRetryError,
-                                          urllib3.exceptions.NewConnectionError,
-                                          requests.exceptions.ConnectionError)):
+                        if isinstance(e, UNREACHABLE_NODE_ERRORS):
                             logging.warning("unable to submit work item {} to {} via group {}: {}".format(
                                     submission, target, self, e))
                         else:
@@ -638,10 +647,7 @@ ORDER BY
                                     submission, target, self, e))
 
                         # if we are in full delivery mode then we need to try this one again later
-                        if self.full_delivery and (isinstance(e, urllib3.exceptions.MaxRetryError) \
-                                                   or isinstance(e, urllib3.exceptions.NewConnectionError) \
-                                                   or isinstance(e, requests.exceptions.ConnectionError) \
-                                                   or isinstance(e, requests.exceptions.HTTPError)):
+                        if self.full_delivery and isinstance(e, UNREACHABLE_NODE_ERRORS + (requests.exceptions.HTTPError,)):
                             attempts = self.record_delivery_attempt(db, cursor, work_id)
                             if attempts < self.max_delivery_attempts:
                                 # this item stays LOCKED and blocks the rest of this group's
