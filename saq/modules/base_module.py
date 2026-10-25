@@ -419,7 +419,7 @@ class AnalysisModule(FileWatcherMixin):
                     if observable.type not in valid_types:
                         return False
             except Exception:
-                logging.error(
+                logging.exception(
                     "valid_observable_types returned invalid data type {} for {}".format(
                         type(valid_types), self
                     )
@@ -530,7 +530,7 @@ class AnalysisModule(FileWatcherMixin):
                         )
                         return False
             except Exception as e:
-                logging.warning(f"unable to get size of file {target_path}: {e}")
+                logging.warning(f"unable to get size of file {observable.file_path} for {self}: {e}")
 
         # are we in cooldown mode?
         # XXX side effect!
@@ -904,7 +904,7 @@ class AnalysisModule(FileWatcherMixin):
         """Utility function to sleep for N seconds without blocking shutdown."""
         while not self.should_stop() and seconds > 0:
             # we also want to support sleeping for less than a second
-            time.sleep(1 if seconds > 0 else seconds)
+            time.sleep(min(1, seconds))
             seconds -= 1
 
     def auto_reload(self):

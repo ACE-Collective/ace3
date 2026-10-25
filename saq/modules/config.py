@@ -56,3 +56,14 @@ class AnalysisModuleConfig(BaseModel):
                 f"analysis module {self.name!r}: cache_ttl cannot be set when is_grouped_by_time is True"
             )
         return self
+
+    @model_validator(mode='after')
+    def _grouping_needs_time_range(self) -> 'AnalysisModuleConfig':
+        # analysis_covered() groups observations that fall within
+        # observation_grouping_time_range of each other; without one it fails
+        # on every observable that has a time
+        if self.is_grouped_by_time and self.observation_grouping_time_range is None:
+            raise ValueError(
+                f"analysis module {self.name!r}: is_grouped_by_time requires observation_grouping_time_range"
+            )
+        return self
