@@ -21,12 +21,11 @@ With an offset of 100 the second instance's GUI is at `https://localhost:5100/ac
 > path back to the parent repo (`gitdir: /path/to/parent/.git/worktrees/<name>`). The containers
 > bind-mount only the worktree directory itself at `/opt/ace`, so that path does not exist inside
 > them and every `git` command against the checkout fails with `fatal: not a git repository`.
-> Nothing in the running stack depends on the ACE checkout being a git repository — the signature
-> and hunt repositories are separate repos with real `.git` directories and are unaffected — but
-> the test suite does, and
-> `tests/saq/configuration/test_analysis_mode_config.py::test_no_duplicate_keys_in_any_tracked_config_yaml`
-> fails on `git ls-files`. If you want a worktree anyway, also bind-mount the parent repo's `.git`
-> into the container at the same absolute path the gitdir names.
+> Neither the running stack nor the test suite needs the ACE checkout to be a git repository — the
+> signature and hunt repositories are separate repos with real `.git` directories and are
+> unaffected, and the one test that lists the tracked config files reads them from disk when git
+> cannot — but you lose `git` inside the containers. If you want a worktree anyway, also
+> bind-mount the parent repo's `.git` into the container at the same absolute path the gitdir names.
 
 ## How the isolation works
 
@@ -131,14 +130,15 @@ file's directory, which is the behaviour such a deployment already has.
 
 Two instances can run the suite at the same time. They do not share state:
 
-- the `.pytest-running` marker lives at `$SAQ_HOME/.pytest-running`, which is each stack's own
-  bind-mounted checkout (`tests/session_lock.py`);
+- the run markers live at `$SAQ_HOME/.pytest-running`, which is each stack's own
+  bind-mounted checkout, and `/tmp/ace-pytest-running`, which is each container's own
+  (`tests/session_lock.py`);
 - each session provisions its own databases on its own `ace-db`;
 - the suite's API (24443+) and network-semaphore (53560+) ports are internal to the container
   and never published to the host.
 
-`CLAUDE.md`'s rule against starting more than one run at a time is about one checkout, not one
-host.
+`CLAUDE.md`'s rule against starting more than one run at a time is about one checkout and one
+container, not one host.
 
 ## Upgrading an existing environment
 

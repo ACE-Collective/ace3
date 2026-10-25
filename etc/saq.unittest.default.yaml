@@ -747,6 +747,14 @@ analysis_module_splunk_api:
 analysis_module_user_defined_tagging:
   priority: 1
 
+# the shipped paths are in data/etc/, which docker/startup/initialize.sh creates in the instance's
+# data volume and which a git worktree does not have
+analysis_module_network_identifier:
+  csv_file: tests/data/etc/local_networks.csv
+
+analysis_module_site_tagger:
+  csv_file: tests/data/etc/site_tags.csv
+
 test_api:
   timezone: UTC
   uri: https://www.test.com

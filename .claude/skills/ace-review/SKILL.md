@@ -38,7 +38,7 @@ Then run `/venv/bin/python $S/scripts/findings.py known $B`, which writes the kn
 
 Start the test run first; it is the slow part.
 
-- **The test lock.** Check for `$SAQ_HOME/.pytest-running`. If it exists, a test run is already in progress (maybe the user's own), so don't start another. Report the tests as not run. Only one pytest run at a time, ever.
+- **The test lock.** Check for `$SAQ_HOME/.pytest-running` and, in the `dev` container, `/tmp/ace-pytest-running`. If either exists, a test run is already in progress (maybe the user's own), so don't start another. Report the tests as not run. Only one pytest run at a time, ever.
 - **Running the tests.** If `tests.txt` is non-empty, run this from `/opt/ace` with `run_in_background`:
   ```bash
   /venv/bin/pytest $(cat $B/tests.txt) -n auto $(cat $B/cov_sources.txt) --cov-report=xml:$B/coverage.xml --cov-report= -q -rfE > $B/pytest.txt 2>&1; echo "exit=$?" >> $B/pytest.txt

@@ -9,6 +9,7 @@ ran zero analysis modules and then tripped a ValueError in post-analysis.
 Nothing in the suite resolved a shipped mode against config, which is why that survived for
 months. These tests close that gap.
 """
+import glob
 import logging
 import subprocess
 
@@ -25,6 +26,21 @@ ANALYSIS_MODE_PREFIX = "analysis_mode_"
 def _shipped_config() -> dict:
     """etc/saq.default.yaml on its own, before any overlay is merged over it."""
     return yaml.safe_load(open("etc/saq.default.yaml"))
+
+
+def _tracked_config_yaml_files() -> list[str]:
+    """Every config yaml file git tracks under etc/.
+
+    Inside the dev container git cannot read a git worktree's checkout at all: its .git file
+    names the gitdir by its path on the host. There the yaml files on disk stand in, which in a
+    worktree are the tracked ones plus whatever untracked local files were put there."""
+    try:
+        return subprocess.run(
+            ["git", "ls-files", "etc/*.yaml", "etc/**/*.yaml"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+    except subprocess.CalledProcessError:
+        return sorted(glob.glob("etc/**/*.yaml", recursive=True))
 
 
 def _shipped_analysis_mode_blocks() -> dict:
@@ -106,10 +122,7 @@ def test_runtime_default_analysis_mode_resolves():
 def test_no_duplicate_keys_in_any_tracked_config_yaml(caplog):
     """A duplicate key is how the original defect got in, and YAML will not complain about one
     on its own. Load every config file we ship and assert the loader stayed quiet."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "etc/*.yaml", "etc/**/*.yaml"],
-        capture_output=True, text=True, check=True,
-    ).stdout.split()
+    tracked = _tracked_config_yaml_files()
     assert tracked, "expected to find tracked config yaml files"
 
     config = YAMLConfig()

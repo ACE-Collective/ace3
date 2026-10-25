@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import tempfile
 import uuid
 import pytest
 from sqlalchemy import select
@@ -33,12 +34,15 @@ from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import create_root_analysis, log_count, wait_for_condition
 
-UNITTEST_SOCKET_DIR = 'socket_unittest'
-
 @pytest.fixture(autouse=True, scope="function")
 def setup(datadir, monkeypatch):
-    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", UNITTEST_SOCKET_DIR)  # noqa: F821
+    # AF_UNIX paths are limited to 108 bytes, which a socket under the data directory exceeds
+    # when the checkout is a git worktree
+    socket_dir = tempfile.mkdtemp(prefix="yss-")
+    monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "socket_dir", socket_dir)
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(datadir / 'yara_rules'))
+    yield
+    shutil.rmtree(socket_dir, ignore_errors=True)
 
 def _empty_qa_spool():
     """A job left in the qa spool would be recorded during the next test, after its yara_qa rows

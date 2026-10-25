@@ -81,6 +81,9 @@ def svs_repository(rule_repo, tmp_path, monkeypatch) -> RuleRepo:
         update_frequency=60, branch="main"))
     monkeypatch.setattr(get_config().svs.yara, "repositories", [REPOSITORY])
     monkeypatch.setattr(get_config().svs.yara, "mirror_dir", str(tmp_path / "mirrors"))
+    # replay refuses a work_dir with a '.' in its path, and a git worktree's data directory
+    # (.claude/worktrees/...) has one
+    monkeypatch.setattr(get_config().svs.yara, "work_dir", str(tmp_path / "work"))
     monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", str(checkout / "yara"))
     return rule_repo
 
