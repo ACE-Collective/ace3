@@ -3,9 +3,10 @@
 create_app() includes the router get_integrations_router() returns once, under /integrations, and each
 integration's router is included into it. An integration registers its router when its package is
 imported (through its integration_<name>: block, see docs/INTEGRATIONS.md), during
-initialize_environment(), which can be after an app was built: importing aceapi_v2.application builds
-its module-level app. FastAPI resolves an included router's routes when it serves a request, so an app
-also serves the routers registered after it was built (tests/aceapi_v2/test_integrations.py checks).
+initialize_environment(). The API containers build their app after that, but anything that calls
+create_app() or reads aceapi_v2.application.app first (the test suite does) built it before. FastAPI
+resolves an included router's routes when it serves a request, so an app also serves the routers
+registered after it was built (tests/aceapi_v2/test_integrations.py checks).
 
 Every ACE process imports the integrations, and so this module, but only the API serves their routes.
 So an integration registers the name of the module that defines its router, and that module is
