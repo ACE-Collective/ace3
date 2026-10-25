@@ -15,6 +15,8 @@ ran in the ``correlation`` mode saved on disk (FR-5 in docs/SVS_FINAL_REVIEW.md)
 
 import logging
 import os
+import socket
+import threading
 import uuid as uuidlib
 from unittest.mock import Mock
 
@@ -32,6 +34,7 @@ from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.executor import AnalysisExecutor
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
+from saq.engine.workload_manager import database as workload_database
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.util import storage_dir_from_uuid
@@ -104,7 +107,7 @@ def make_manager(lock_manager: DistributedLockManager) -> DatabaseWorkloadManage
     )
 
 
-def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE):
+def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE, **kwargs):
     """Materialize a valid root at the transfer target directory, standing in
     for pulling it off the remote node."""
     root = create_root_analysis(uuid=uuid, storage_dir=target_dir, analysis_mode=saved_mode)
@@ -112,7 +115,7 @@ def fake_download(uuid, target_dir, remote_host=None, saved_mode=ANALYSIS_MODE):
     root.save()
 
 
-def fake_alert_download(uuid, target_dir, remote_host=None):
+def fake_alert_download(uuid, target_dir, remote_host=None, **kwargs):
     """An alert as it is saved on disk after its correlation pass."""
     fake_download(uuid, target_dir, remote_host, saved_mode=ANALYSIS_MODE_CORRELATION)
 
@@ -279,3 +282,80 @@ def test_clear_after_transfer_keeps_the_other_mode(dispositioned_item):
 
     assert workload_modes(uuid) == [ANALYSIS_MODE_CORRELATION]
     assert workload_node_id(uuid) == local_node_id()
+
+
+@pytest.fixture
+def silent_node(monkeypatch):
+    """A remote node that accepts connections and never answers. Returns its node id."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.2)
+    stop = threading.Event()
+    connections = []
+
+    def accept():
+        while not stop.is_set():
+            try:
+                connections.append(listener.accept()[0])
+            except TimeoutError:
+                continue
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+
+    node_id = insert_remote_node()
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("UPDATE nodes SET location = %s WHERE id = %s",
+                       (f"127.0.0.1:{listener.getsockname()[1]}", node_id))
+        db.commit()
+
+    monkeypatch.setattr(workload_database, "TRANSFER_TIMEOUT", (1, 1), raising=False)
+    yield node_id
+
+    stop.set()
+    thread.join(5)
+    for connection in connections:
+        connection.close()
+    listener.close()
+
+
+def transfer_bounded(manager, uuid, node_id):
+    """Runs the transfer in a thread and fails the test if it is still waiting on the node after 30s."""
+    result = []
+    thread = threading.Thread(target=lambda: result.append(manager.transfer_work_target(uuid, node_id)), daemon=True)
+    thread.start()
+    thread.join(30)
+    assert not thread.is_alive(), "the transfer is still waiting on the remote node"
+    return result[0]
+
+
+def test_transfer_from_a_silent_node_gives_up(silent_node, caplog):
+    uuid = str(uuidlib.uuid4())
+    insert_workload(uuid, silent_node)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.ERROR):
+        assert transfer_bounded(manager, uuid, silent_node) is None
+
+    assert any(r.getMessage().startswith(f"unable to transfer {uuid}") for r in caplog.records)
+    # nothing moved: the item stays on the remote node and can be retried
+    assert workload_node_id(uuid) == silent_node
+    assert lock_row(uuid) is None
+    assert not os.path.isdir(abs_target(uuid))
+
+
+def test_clear_on_a_silent_node_does_not_hold_the_transfer(silent_node, monkeypatch, caplog):
+    import ace_api
+
+    uuid = str(uuidlib.uuid4())
+    insert_workload(uuid, silent_node)
+    monkeypatch.setattr(ace_api, "download", fake_download)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.WARNING):
+        result = transfer_bounded(manager, uuid, silent_node)
+
+    assert result is not None and result.uuid == uuid
+    assert workload_node_id(uuid) == local_node_id()
+    assert any(r.getMessage().startswith(f"unable to clear transferred work target {uuid}")
+               for r in caplog.records)
