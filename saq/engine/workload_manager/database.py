@@ -177,6 +177,14 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 remote_host = row[0]
                 download(uuid, target_dir, remote_host=remote_host, timeout=TRANSFER_TIMEOUT)
 
+                # change the location in the analysis we moved over. this comes before the database
+                # points at the local copy: a failure from here on removes that copy, and the
+                # remote one has to still be the one the database names
+                root = RootAnalysis(storage_dir=target_dir)
+                root.load()
+                root.location = get_global_runtime_settings().saq_node
+                root.save()
+
                 # update the node (location) of this workitem to the local node
                 execute_with_retry(
                     db,
@@ -197,12 +205,6 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     (get_global_runtime_settings().saq_node, target_dir, uuid),
                 )
                 db.commit()
-
-                # load the analysis we moved over and change the location there as well
-                root = RootAnalysis(storage_dir=target_dir)
-                root.load()
-                root.location = get_global_runtime_settings().saq_node
-                root.save()
 
         except Exception as e:
             logging.exception("unable to transfer {}: {}".format(uuid, e))

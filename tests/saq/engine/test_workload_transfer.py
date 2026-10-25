@@ -27,6 +27,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import acquire_lock
 from saq.database.util.node import set_node_status
+from saq.analysis.root import RootAnalysis
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
@@ -359,3 +360,30 @@ def test_clear_on_a_silent_node_does_not_hold_the_transfer(silent_node, monkeypa
     assert workload_node_id(uuid) == local_node_id()
     assert any(r.getMessage().startswith(f"unable to clear transferred work target {uuid}")
                for r in caplog.records)
+
+
+def test_failed_location_update_leaves_the_item_on_the_remote_node(item, monkeypatch, caplog):
+    """The local copy is removed when the transfer fails, so the database must still name the
+    remote copy: the root's location is updated before the database rows are repointed."""
+    import ace_api
+
+    uuid, remote_id = item
+
+    def download_then_fill_the_disk(*args, **kwargs):
+        fake_download(*args, **kwargs)
+        monkeypatch.setattr(RootAnalysis, "save", Mock(side_effect=OSError("No space left on device")))
+
+    monkeypatch.setattr(ace_api, "download", download_then_fill_the_disk)
+    clear = Mock(return_value=True)
+    monkeypatch.setattr(ace_api, "clear", clear)
+
+    manager = make_manager(DistributedLockManager())
+    with caplog.at_level(logging.ERROR):
+        assert manager.transfer_work_target(uuid, remote_id) is None
+
+    assert any(r.getMessage().startswith(f"unable to transfer {uuid}") for r in caplog.records)
+    assert not os.path.isdir(abs_target(uuid))
+    assert workload_node_id(uuid) == remote_id
+    assert lock_row(uuid) is None
+    # the remote copy is still the only one, so it is not cleared
+    clear.assert_not_called()
