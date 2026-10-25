@@ -1,8 +1,10 @@
 import base64
 import json
 import pytest
+from sqlalchemy import text
 
 from app.application import (
+    create_app,
     s64decode,
     s64encode,
     b64escape,
@@ -11,6 +13,7 @@ from app.application import (
     dict_from_json_string,
     pprint_json_dict
 )
+from saq.database.pool import get_db
 
 
 @pytest.mark.unit
@@ -130,3 +133,13 @@ class TestJinjaFilters:
         test_dict = {"key": "value"}
         result = pprint_json_dict(test_dict)
         assert json.loads(result) == test_dict
+
+
+@pytest.mark.integration
+def test_the_gui_uses_the_ace_session_every_process_uses():
+    session = get_db()
+    create_app()
+    assert get_db() is session
+
+    # so the GUI's ORM runs at READ COMMITTED like every other engine, not the server's REPEATABLE-READ
+    assert get_db().execute(text("SELECT @@transaction_isolation")).scalar() == "READ-COMMITTED"

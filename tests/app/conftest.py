@@ -34,7 +34,7 @@ def analyst(global_setup):
 
 @pytest.fixture(autouse=True, scope="function")
 def app(global_setup):
-    flask_app = create_app(testing=True)
+    flask_app = create_app()
     flask_app.config.update({
         "TESTING": True,
         "WTF_CSRF_ENABLED": False,  # Disable CSRF for tests

@@ -1,11 +1,13 @@
 import threading
 import pytest
+from sqlalchemy import text
 
 from saq.environment import ACE_MP_CONTEXT
 
 from saq.configuration.config import get_database_config
 from saq.constants import DB_ACE
-from saq.database.pool import execute_with_db_cursor, get_db_connection, get_pool, reset_pools
+from saq.database import pool
+from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
 from tests.saq.helpers import log_count, recv_test_message, send_test_message
 
 @pytest.mark.unit
@@ -244,3 +246,37 @@ def test_pooling_multi_process(test_comms):
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
         assert conn_1 is conn_4
+
+
+@pytest.fixture
+def no_sessions(monkeypatch):
+    """Starts the test with no session or engine registered, and disposes the engines it creates."""
+    monkeypatch.setattr(pool, "_db_sessions", {})
+    monkeypatch.setattr(pool, "_db_engines", set())
+    yield
+    for session in pool._db_sessions.values():
+        session.remove()
+    for engine in pool._db_engines:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_get_db_creates_the_ace_session_on_first_request(no_sessions):
+    # like every other database's, so nothing has to register it first
+    session = get_db()
+    assert session is get_db(DB_ACE)
+
+    engine = session.get_bind()
+    assert engine in pool._db_engines
+    assert engine.url.database == get_database_config(DB_ACE).database
+    assert session.execute(text("SELECT @@transaction_isolation")).scalar() == "READ-COMMITTED"
+
+
+@pytest.mark.integration
+def test_initialize_database_creates_the_ace_session_once(no_sessions):
+    initialize_database()
+    session = pool._db_sessions[DB_ACE]
+
+    initialize_database()
+    assert pool._db_sessions[DB_ACE] is session
+    assert len(pool._db_engines) == 1

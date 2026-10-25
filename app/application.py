@@ -17,20 +17,15 @@ from app.user_preferences import get_alert_sections_preference, get_theme_prefer
 from saq.configuration.config import get_config
 from flask_config import get_flask_config
 from flask_login import LoginManager
-from flask_sqlalchemy import SQLAlchemy
 from flask_executor import Executor # XXX what is this for?
-from sqlalchemy import event
 
-from saq.database.pool import remove_all_sessions, set_db
+from saq.database.pool import remove_all_sessions
 from saq.disposition import (
     get_disposition_css,
     get_dispositions,
     get_selectable_dispositions,
     is_frozen_disposition,
 )
-from saq.environment import get_global_runtime_settings
-from saq.monitor import emit_monitor
-from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
 from saq.util.ui import get_tag_css_class, get_tag_level, hexdump, human_readable_size
 
@@ -86,12 +81,6 @@ class _ExternalLinksExtension(markdown.Extension):
 def render_markdown(text):
     return Markup(markdown.markdown(text, extensions=["extra", _ExternalLinksExtension()]))
 
-class CustomSQLAlchemy(SQLAlchemy):
-    def apply_driver_hacks(self, app, info, options):
-        # add SSL (if configured)
-        options.update(get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-        SQLAlchemy.apply_driver_hacks(self, app, info, options)
-
 def initialize_presenters():
     """Ensures that the appropriate presenters are registered for the current engine configuration."""
     from saq.engine.configuration_manager import ConfigurationManager
@@ -126,7 +115,7 @@ def static_file_version(path: str) -> Optional[str]:
         return None
 
 
-def create_app(testing: Optional[bool]=False):
+def create_app():
 
     flask_app = Flask(__name__)
     flask_app.config.from_object(get_flask_config(get_config().global_settings.instance_type))
@@ -138,28 +127,11 @@ def create_app(testing: Optional[bool]=False):
 
     login_manager.init_app(flask_app)
 
-    db = CustomSQLAlchemy(engine_options=get_flask_config(get_global_runtime_settings().instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-    if not testing:
-        # XXX hack: tests will create test contexts but the database pool is global
-        # we don't want to change it because things like collectors *also* manage the connections
-        set_db(db.session)
-
-    db.init_app(flask_app)
-
+    # the GUI uses the same thread-local sessions (saq.database.pool) as every other ACE process,
+    # so each request releases them when it ends
     @flask_app.teardown_appcontext
     def _remove_all_sessions(exception):
-        # release thread-local sessions for every registered engine, not just
-        # the ace session that flask-sqlalchemy manages on its own
         remove_all_sessions()
-
-    with flask_app.app_context():
-        @event.listens_for(db.engine, 'checkin')
-        def checkin(dbapi_connection, connection_record):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, db.engine.pool.status())
-
-        @event.listens_for(db.engine, 'checkout')
-        def checkout(dbapi_connection, connection_record, connection_proxy):
-            emit_monitor(MONITOR_SQLALCHEMY_DB_POOL_STATUS, db.engine.pool.status())
 
     # XXX what is this for?
     executor = Executor()
