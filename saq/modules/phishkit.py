@@ -433,7 +433,7 @@ class PhishkitAnalyzer(AnalysisModule):
                 "total_bytes_downloaded": (analysis.metrics or {}).get("total_bytes_downloaded"),
             })
         except Exception as e:
-            logging.error(f"failed to send scan_outcome to fluent-bit for {observable}: {e}")
+            logging.exception(f"failed to send scan_outcome to fluent-bit for {observable}: {e}")
 
     def on_cache_hit(self, root, observable: Observable) -> None:
         """A cached PhishkitAnalysis was replayed instead of running a live scan.
@@ -458,7 +458,7 @@ class PhishkitAnalyzer(AnalysisModule):
                 "saved_duration_seconds": metrics.get("scan_duration_seconds"),
             })
         except Exception as e:
-            logging.error(f"failed to send cache_served to fluent-bit for {observable}: {e}")
+            logging.exception(f"failed to send cache_served to fluent-bit for {observable}: {e}")
 
     def _emit_scan_dispatched(self, observable: Observable, analysis: "PhishkitAnalysis") -> None:
         """Emit a scan-dispatch event to fluent-bit. Pair with _emit_scan_outcome.
@@ -479,7 +479,7 @@ class PhishkitAnalyzer(AnalysisModule):
                 "proxy_fallback_enabled": self.config.proxy_fallback_to_direct,
             })
         except Exception as e:
-            logging.error(f"failed to send scan_dispatched to fluent-bit for {observable}: {e}")
+            logging.exception(f"failed to send scan_dispatched to fluent-bit for {observable}: {e}")
 
     def _top_level_content_type(self, output_dir: str) -> Optional[str]:
         """Returns the lowercased content type of the top-level response, or None if unknown.
@@ -538,7 +538,7 @@ class PhishkitAnalyzer(AnalysisModule):
             with open(bodies_path, "r", errors="ignore") as fp:
                 corpus = fp.read()
         except Exception as e:
-            logging.error(f"failed to read {RESPONSE_BODIES_NAME} for {observable}: {e}")
+            logging.exception(f"failed to read {RESPONSE_BODIES_NAME} for {observable}: {e}")
             return
 
         for body in re.split(r"\n\nMARKER URL: \S+\n\n", corpus):
@@ -678,9 +678,9 @@ class PhishkitAnalyzer(AnalysisModule):
                                     **stats,
                                 })
                         except Exception as e:
-                            logging.error(f"failed to send metrics to fluent-bit for {observable}: {e}")
+                            logging.exception(f"failed to send metrics to fluent-bit for {observable}: {e}")
                 except Exception as e:
-                    logging.error(f"failed to read metrics.json for {observable}: {e}")
+                    logging.exception(f"failed to read metrics.json for {observable}: {e}")
             elif os.path.basename(file_path) == "proxy.json":
                 try:
                     with open(file_path, "r") as fp:
@@ -692,7 +692,7 @@ class PhishkitAnalyzer(AnalysisModule):
                         proxy_status["host"] = self._redact_proxy_credentials(host)
                     analysis.proxy_status = proxy_status
                 except Exception as e:
-                    logging.error(f"failed to read proxy.json for {observable}: {e}")
+                    logging.exception(f"failed to read proxy.json for {observable}: {e}")
             else:
                 relative_path = os.path.join("phishkit", analysis.job_id, os.path.relpath(file_path, analysis.output_dir))
                 file_observable = analysis.add_file_observable(file_path, relative_path)
@@ -776,7 +776,7 @@ class PhishkitAnalyzer(AnalysisModule):
                                 if obs:
                                     obs.display_type = "Phishkit Request URL"
             except Exception as e:
-                logging.error(f"failed to extract MARKER URLs from {RESPONSE_BODIES_NAME} for {observable}: {e}")
+                logging.exception(f"failed to extract MARKER URLs from {RESPONSE_BODIES_NAME} for {observable}: {e}")
 
         # extract URL observables from every request entry in requests.json.
         # The MARKER URL pass above only covers URLs whose response bodies
@@ -806,7 +806,7 @@ class PhishkitAnalyzer(AnalysisModule):
                     if obs:
                         obs.display_type = "Phishkit Request URL"
             except Exception as e:
-                logging.error(f"failed to extract URLs from requests.json for {observable}: {e}")
+                logging.exception(f"failed to extract URLs from requests.json for {observable}: {e}")
 
         # extract URL observables from the *content* of the captured bodies.
         #
@@ -861,7 +861,7 @@ class PhishkitAnalyzer(AnalysisModule):
 
             except Exception as e:
                 error_msg = f"failed to scan URL {observable.value}: {str(e)}"
-                logging.error(error_msg)
+                logging.exception(error_msg)
                 analysis.error = error_msg
                 self._emit_scan_outcome(observable, analysis, "failed")
                 return AnalysisExecutionResult.COMPLETED

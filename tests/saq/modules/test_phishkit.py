@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import subprocess
 import tempfile
@@ -23,6 +24,7 @@ from saq.modules.phishkit import (
     FIELD_STDERR,
     FIELD_PROXY_STATUS,
     OCR_SKIP_CONTENT_TYPES,
+    RESPONSE_BODIES_NAME,
     SCAN_TYPE_URL,
     SCAN_TYPE_FILE
 )
@@ -539,7 +541,7 @@ def test_phishkit_analyzer_execute_analysis_url_with_crawl_directive(monkeypatch
 
 
 @pytest.mark.integration
-def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context):
+def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context, caplog):
     """Test URL analysis with error."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
@@ -557,9 +559,11 @@ def test_phishkit_analyzer_execute_analysis_url_error(monkeypatch, test_context)
     analyzer = PhishkitAnalyzer(
         get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
         context=create_test_context(root=root))
-    result = analyzer.execute_analysis(url_observable)
+    with caplog.at_level(logging.ERROR):
+        result = analyzer.execute_analysis(url_observable)
     
     assert result == AnalysisExecutionResult.COMPLETED
+    _assert_logged_with_traceback(caplog, "failed to scan URL https://example.com/phish: Network error")
     
     analysis = url_observable.get_and_load_analysis(PhishkitAnalysis)
     assert analysis is not None
@@ -2432,3 +2436,118 @@ def test_phishkit_cache_replays_dom_document_url(monkeypatch, tmp_path):
     relationship = dom_observable.get_relationship_by_type(R_DOWNLOADED_FROM)
     assert relationship is not None
     assert relationship.target.value == document_url
+
+
+def _failure_records(caplog, message: str) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if message in r.getMessage()]
+
+
+def _assert_logged_with_traceback(caplog, message: str):
+    records = _failure_records(caplog, message)
+    assert records, f"nothing logged containing {message!r}"
+    assert all(r.levelno == logging.ERROR and r.exc_info is not None for r in records)
+
+
+@pytest.mark.integration
+def test_phishkit_unreadable_scan_output_is_logged_with_traceback(monkeypatch, test_context, tmp_path, caplog):
+    """Each artifact the worker wrote that cannot be read is logged with its traceback, and the
+    rest of the results are still processed."""
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    analysis = PhishkitAnalysis()
+    analysis.job_id = "test-job-unreadable"
+    analysis.output_dir = str(tmp_path)
+    url_observable.add_analysis(analysis)
+
+    exit_code_file = tmp_path / "exit.code"
+    exit_code_file.write_text("0")
+    metrics_file = tmp_path / "metrics.json"
+    metrics_file.write_text("{not json")
+    proxy_file = tmp_path / "proxy.json"
+    proxy_file.write_text("{not json")
+    # a list of something other than request entries
+    (tmp_path / "requests.json").write_text(json.dumps(["https://example.com/next"]))
+    # neither pass over the captured bodies can open them
+    (tmp_path / RESPONSE_BODIES_NAME).mkdir()
+
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                        lambda job_id, output_dir, timeout=1: [str(exit_code_file), str(metrics_file), str(proxy_file)])
+    analyzer = PhishkitAnalyzer(
+        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
+        context=create_test_context(root=root))
+
+    with caplog.at_level(logging.ERROR):
+        assert analyzer.continue_analysis(url_observable, analysis) == AnalysisExecutionResult.COMPLETED
+
+    for message in (
+        f"failed to read metrics.json for {url_observable}",
+        f"failed to read proxy.json for {url_observable}",
+        f"failed to extract URLs from requests.json for {url_observable}",
+        f"failed to extract MARKER URLs from {RESPONSE_BODIES_NAME} for {url_observable}",
+        f"failed to read {RESPONSE_BODIES_NAME} for {url_observable}",
+    ):
+        _assert_logged_with_traceback(caplog, message)
+
+    assert analysis.exit_code == 0
+    assert analysis.metrics is None
+    assert analysis.proxy_status is None
+    assert analysis.scan_result == f"successfully scanned {url_observable}"
+
+
+@pytest.fixture
+def failing_fluent_sender(monkeypatch):
+    """Turns fluent-bit metrics on and returns a factory that makes an analyzer whose sender's
+    emit() raises."""
+    config = get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER)
+    monkeypatch.setattr(config, "fluent_bit_metrics_enabled", True)
+    monkeypatch.setattr(config, "fluent_bit_hostname", "127.0.0.1")
+    monkeypatch.setattr(config, "fluent_bit_port", 1)
+    def _make(root) -> PhishkitAnalyzer:
+        analyzer = PhishkitAnalyzer(config, context=_create_delaying_context(root))
+        analyzer.fluent_bit_metrics_sender.close()
+        monkeypatch.setattr(analyzer.fluent_bit_metrics_sender, "emit", MagicMock(side_effect=OSError("buffer overflow")))
+        return analyzer
+
+    return _make
+
+
+@pytest.mark.integration
+def test_phishkit_fluent_bit_failures_do_not_fail_the_scan(monkeypatch, test_context, tmp_path, failing_fluent_sender, caplog):
+    root = create_root_analysis(analysis_mode='test_single')
+    root.initialize_storage()
+    url_observable = root.add_observable_by_spec(F_URL, "https://example.com/phish")
+    url_observable.add_directive(DIRECTIVE_CRAWL)
+    analyzer = failing_fluent_sender(root)
+
+    monkeypatch.setattr("saq.modules.phishkit.scan_url", lambda url, output_dir, is_async=True, **kwargs: "test-job-fluent")
+    with caplog.at_level(logging.ERROR):
+        assert analyzer.execute_analysis(url_observable) == AnalysisExecutionResult.INCOMPLETE
+
+    analysis = url_observable.get_and_load_analysis(PhishkitAnalysis)
+    assert analysis.job_id == "test-job-fluent"
+    assert analysis.error is None
+    assert len(_delayed_analysis_requests(root)) == 1
+    _assert_logged_with_traceback(caplog, f"failed to send scan_dispatched to fluent-bit for {url_observable}")
+
+    analysis.output_dir = str(tmp_path)
+    exit_code_file = tmp_path / "exit.code"
+    exit_code_file.write_text("0")
+    metrics_file = tmp_path / "metrics.json"
+    metrics_file.write_text(json.dumps({"total_bytes_downloaded": 10, "domain_stats": {"example.com": {"requests": 1}}}))
+    monkeypatch.setattr("saq.modules.phishkit.get_async_scan_result",
+                        lambda job_id, output_dir, timeout=1: [str(exit_code_file), str(metrics_file)])
+
+    with caplog.at_level(logging.ERROR):
+        assert analyzer.continue_analysis(url_observable, analysis) == AnalysisExecutionResult.COMPLETED
+        analyzer.on_cache_hit(root, url_observable)
+
+    # the metrics were read even though they could not be sent
+    assert analysis.metrics["total_bytes_downloaded"] == 10
+    assert analysis.scan_result == f"successfully scanned {url_observable}"
+    for message in (
+        f"failed to send metrics to fluent-bit for {url_observable}",
+        f"failed to send scan_outcome to fluent-bit for {url_observable}",
+        f"failed to send cache_served to fluent-bit for {url_observable}",
+    ):
+        _assert_logged_with_traceback(caplog, message)
