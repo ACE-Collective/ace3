@@ -18,6 +18,12 @@ from saq.engine.workload_manager.interface import WorkloadManagerInterface
 from saq.environment import get_global_runtime_settings
 from saq.util import storage_dir_from_uuid
 
+# (connect, read) seconds for the calls that pull a work item from another node. The remote node
+# tars the whole storage directory before it sends the first byte, so the read timeout leaves room
+# for a large root; without one a peer that stops answering holds this worker, and the item's lock,
+# forever.
+TRANSFER_TIMEOUT = (10, 300)
+
 
 class DatabaseWorkloadManager(WorkloadManagerInterface):
     """Manages workload and queue operations for the analysis engine."""
@@ -169,7 +175,15 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     return False
 
                 remote_host = row[0]
-                download(uuid, target_dir, remote_host=remote_host)
+                download(uuid, target_dir, remote_host=remote_host, timeout=TRANSFER_TIMEOUT)
+
+                # change the location in the analysis we moved over. this comes before the database
+                # points at the local copy: a failure from here on removes that copy, and the
+                # remote one has to still be the one the database names
+                root = RootAnalysis(storage_dir=target_dir)
+                root.load()
+                root.location = get_global_runtime_settings().saq_node
+                root.save()
 
                 # update the node (location) of this workitem to the local node
                 execute_with_retry(
@@ -191,12 +205,6 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                     (get_global_runtime_settings().saq_node, target_dir, uuid),
                 )
                 db.commit()
-
-                # load the analysis we moved over and change the location there as well
-                root = RootAnalysis(storage_dir=target_dir)
-                root.load()
-                root.location = get_global_runtime_settings().saq_node
-                root.save()
 
         except Exception as e:
             logging.exception("unable to transfer {}: {}".format(uuid, e))
@@ -224,7 +232,7 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
         # so we are the authoritative owner of this work item. tell the remote node to
         # delete its now-stale copy, but treat this strictly as best-effort cleanup
         try:
-            if not clear(uuid, self.lock_manager.lock_uuid, remote_host=remote_host):
+            if not clear(uuid, self.lock_manager.lock_uuid, remote_host=remote_host, timeout=TRANSFER_TIMEOUT):
                 logging.warning(
                     "remote clear of transferred work target {} on {} did not succeed "
                     "(remote copy may already be gone); continuing".format(uuid, remote_host)
