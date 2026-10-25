@@ -23,7 +23,9 @@ from saq.git import (
     get_configured_repos,
     get_remote_url,
     get_repo_root,
+    kill_timed_out_process,
 )
+from tests.saq.helpers import wait_for_condition
 
 
 @pytest.mark.unit
@@ -1437,3 +1439,110 @@ class TestGitCommandTimeout:
 
         assert not psutil.pid_exists(killed), f"{killed} survived the timeout"
         assert not psutil.pid_exists(helper), f"helper {helper} survived the timeout"
+
+
+def _service_repo(name):
+    repo = GitRepo(config=GitRepoConfig(
+        name=name,
+        description=name,
+        local_path=f"/path/to/{name}",
+        git_url=f"https://github.com/user/{name}.git",
+        update_frequency=3600,
+        branch="main",
+    ))
+    repo.update = MagicMock()
+    return repo
+
+
+def _run_bounded(target, timeout=10):
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
+@pytest.mark.unit
+class TestGitManagerService:
+    def test_single_threaded_updates_every_repo_once_and_finishes(self, monkeypatch, caplog):
+        repos = [_service_repo("first"), _service_repo("second")]
+        repos[0].update.side_effect = RuntimeError("boom")
+        monkeypatch.setattr("saq.git.get_configured_repos", lambda: repos)
+        service = GitManagerService()
+
+        try:
+            with caplog.at_level(logging.INFO):
+                assert _run_bounded(service.start_single_threaded), "start_single_threaded() did not return"
+                assert _run_bounded(service.wait), "wait() did not return after the single-threaded pass"
+        finally:
+            # on failure, release the update loop still waiting out update_frequency
+            service.stop()
+
+        # a failing repo does not stop the next one from being updated
+        repos[0].update.assert_called_once_with()
+        repos[1].update.assert_called_once_with()
+        assert any("unexpected error updating repo first" in r.message for r in caplog.records)
+        assert not any("idling until stopped" in r.message for r in caplog.records)
+
+    def test_start_runs_a_thread_per_repo_until_stopped(self, monkeypatch, caplog):
+        repos = [_service_repo("first"), _service_repo("second")]
+        monkeypatch.setattr("saq.git.get_configured_repos", lambda: repos)
+        service = GitManagerService()
+
+        assert service.start()
+        assert service.wait_for_start(timeout=1)
+        wait_for_condition(lambda: all(repo.update.called for repo in repos))
+        assert set(service.threads) == {"first", "second"}
+
+        service.stop()
+        with caplog.at_level(logging.INFO):
+            assert _run_bounded(service.wait), "wait() did not return after stop()"
+
+        assert not any(thread.is_alive() for thread in service.threads.values())
+        assert any("git repo manager thread second finished" in r.message for r in caplog.records)
+        # each thread updated once and then waited out update_frequency
+        assert all(repo.update.call_count == 1 for repo in repos)
+
+
+@pytest.mark.unit
+class TestFailurePaths:
+    def test_gitrepo_is_not_equal_to_other_types(self):
+        assert _service_repo("repo") != "repo"
+
+    @patch("saq.git.os.getpgid", side_effect=PermissionError())
+    def test_kill_tolerates_a_child_that_already_exited(self, mock_getpgid):
+        process = MagicMock(pid=4321)
+        process.kill.side_effect = ProcessLookupError()
+
+        kill_timed_out_process(process)
+
+        process.kill.assert_called_once_with()
+
+    @patch("saq.git.os.getpgid", return_value=4321)
+    @patch("saq.git.os.killpg")
+    @patch("saq.git.subprocess.Popen")
+    def test_read_after_kill_timing_out_is_logged(self, mock_popen, mock_killpg, mock_getpgid, caplog):
+        first = subprocess.TimeoutExpired(cmd="git", timeout=30)
+        process = MagicMock(pid=4321)
+        process.communicate.side_effect = [first, subprocess.TimeoutExpired(cmd="git", timeout=30)]
+        mock_popen.return_value.__enter__.return_value = process
+
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+                _service_repo("repo")._run_git_command(["fetch", "--all"], "fetch failed")
+
+        # the command's own timeout is what the caller sees
+        assert exc_info.value is first
+        assert any("timed out reading the output of git fetch --all after killing it" in r.message
+                   for r in caplog.records)
+
+    @pytest.mark.parametrize("helper, message", [
+        (get_commit_hash, "failed to get commit hash for /some/repo"),
+        (get_repo_root, "failed to get repo root for /some/repo"),
+        (get_remote_url, "failed to run git remote get-url origin for /some/repo"),
+    ])
+    def test_helpers_return_none_when_git_cannot_run(self, helper, message, caplog):
+        with patch("saq.git.subprocess.run", side_effect=FileNotFoundError("git")):
+            with caplog.at_level(logging.WARNING):
+                assert helper("/some/repo") is None
+
+        assert any(message in r.message for r in caplog.records)
