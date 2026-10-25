@@ -1,9 +1,14 @@
 import hashlib
+import logging
 import os
+import shutil
+import signal
 import stat
+import uuid
 import zipfile
 from glob import glob
 
+import psutil
 import pytest
 
 from saq.analysis.root import load_root
@@ -12,6 +17,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.crash_report import get_crash_report_root_dir
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.environment import get_data_dir
 from saq.modules.file_analysis.archive import ArchiveAnalysis, ArchiveAnalyzer, order_archive_file_list
 from saq.modules.file_analysis.file_type import FileTypeAnalysis
 from saq.util.uuid import get_storage_dir
@@ -269,3 +275,128 @@ def test_a_symlink_member_is_skipped(root_analysis, tmp_path, caplog):
     assert "a.lnk" not in extracted_names
     assert hashlib.sha256(b"secret").hexdigest() not in os.listdir(root_analysis.hardcopy_dir)
 
+
+
+@pytest.fixture
+def hanging_tools(monkeypatch):
+    """Puts an unrar, unzip, unace and 7z that never finish first on the PATH. Each records its pid.
+    They live under the data directory because /tmp is mounted noexec."""
+    tool_dir = os.path.join(get_data_dir(), f"hanging-tools-{uuid.uuid4()}")
+    os.makedirs(tool_dir)
+    pid_file = os.path.join(tool_dir, "pids")
+    for tool in ("unrar", "unzip", "unace", "7z"):
+        tool_path = os.path.join(tool_dir, tool)
+        with open(tool_path, "w") as fp:
+            fp.write(f"#!/bin/sh\necho $$ >> {pid_file}\nexec sleep 60\n")
+        os.chmod(tool_path, 0o755)
+
+    monkeypatch.setenv("PATH", f"{tool_dir}{os.pathsep}{os.environ['PATH']}")
+    pids = []
+
+    def _pids() -> list[int]:
+        if os.path.exists(pid_file):
+            with open(pid_file) as fp:
+                pids[:] = [int(line) for line in fp if line.strip()]
+        return pids
+
+    yield _pids
+
+    # what a failing run left behind
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # killed and reaped, as it should be
+
+    shutil.rmtree(tool_dir, ignore_errors=True)
+
+
+def _archive_observable(root_analysis, name: str, file_type: str, mime_type: str):
+    file_path = root_analysis.create_file_path(name)
+    with open(file_path, "wb") as fp:
+        fp.write(b"not really an archive")
+
+    observable = root_analysis.add_file_observable(file_path)
+    file_type_analysis = FileTypeAnalysis()
+    file_type_analysis.details = {"type": file_type, "mime": mime_type}
+    observable.add_analysis(file_type_analysis)
+    return observable
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name,file_type,mime_type,tool", [
+    ("sample.rar", "RAR archive data, v5", "application/x-rar", "unrar"),
+    ("sample.xlsx", "Microsoft Excel 2007+", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "unzip"),
+    ("sample.ace", "ACE archive data", "application/octet-stream", "unace"),
+    ("sample.zip", "Zip archive data", "application/zip", "7z"),
+])
+def test_a_listing_that_times_out_is_killed(root_analysis, hanging_tools, monkeypatch, caplog, name, file_type, mime_type, tool):
+    analyzer = ArchiveAnalyzer(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
+    monkeypatch.setattr(analyzer.config, "timeout", 1)
+    observable = _archive_observable(root_analysis, name, file_type, mime_type)
+
+    with caplog.at_level(logging.WARNING):
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    assert observable.get_analysis(ArchiveAnalysis) is None
+    (pid,) = hanging_tools()
+    # killed and reaped before execute_analysis returned
+    assert not psutil.pid_exists(pid)
+    assert any(r.getMessage() == f"timed out listing the files in {observable.full_path} with {tool}"
+               for r in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("excluded,expected", [
+    ("application/x-shockwave-flash,application/x-mach-binary", ["application/x-shockwave-flash", "application/x-mach-binary"]),
+    ("application/x-shockwave-flash, ", ["application/x-shockwave-flash"]),
+    ("", []),
+])
+def test_excluded_mime_types(root_analysis, monkeypatch, excluded, expected):
+    analyzer = ArchiveAnalyzer(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
+    monkeypatch.setattr(analyzer.config, "excluded_mime_types", excluded)
+
+    assert analyzer.excluded_mime_types == expected
+
+
+@pytest.mark.integration
+def test_no_excluded_mime_types_still_extracts(root_analysis, tmp_path, monkeypatch):
+    """An empty entry used to match every mime type, so nothing was extracted at all."""
+    zip_path = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("one.txt", "one")
+        archive.writestr("two.txt", "two")
+
+    monkeypatch.setattr(get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE), "excluded_mime_types", "")
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(zip_path))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_FILE_TYPE, "test_groups")
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_ARCHIVE, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(ArchiveAnalysis)
+    assert analysis
+    assert sorted(analysis.extracted_files) == ["one.txt", "two.txt"]
+
+
+@pytest.mark.integration
+def test_ole_file_is_skipped_without_excluded_mime_types(root_analysis, monkeypatch):
+    analyzer = ArchiveAnalyzer(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
+    monkeypatch.setattr(analyzer.config, "excluded_mime_types", "")
+    observable = _archive_observable(root_analysis, "sample.doc", "Composite Document File V2 Document", "application/x-ole-storage")
+    with open(observable.full_path, "wb") as fp:
+        fp.write(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_analysis(ArchiveAnalysis) is None

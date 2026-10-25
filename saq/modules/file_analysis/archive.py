@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from subprocess import PIPE, Popen, TimeoutExpired
-from typing import Type, override
+from typing import Optional, Type, override
 import zipfile
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -173,7 +173,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
     @property
     def excluded_mime_types(self):
-        return [x.strip() for x in self.config.excluded_mime_types.split(',')]
+        # every mime type starts with an empty entry (a trailing comma, or "" for none at all)
+        return [x.strip() for x in self.config.excluded_mime_types.split(',') if x.strip()]
 
     @property
     def generated_analysis_type(self):
@@ -183,6 +184,20 @@ class ArchiveAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
         
+
+    def _list_files(self, params: list[str], local_file_path: str) -> Optional[bytes]:
+        """Returns what the archive listing command prints, or None if it did not finish in time."""
+        p = Popen(params, stdout=PIPE, stderr=PIPE)
+        try:
+            stdout, _ = p.communicate(timeout=self.timeout)
+        except TimeoutExpired:
+            # communicate() leaves the process running when it times out
+            p.kill()
+            p.communicate()
+            logging.warning("timed out listing the files in %s with %s", local_file_path, params[0])
+            return None
+
+        return stdout
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -213,10 +228,10 @@ class ArchiveAnalyzer(AnalysisModule):
                 logging.debug("skipping excluded mime type {} on archive file {}".format(excluded_mime_type, _file))
                 return AnalysisExecutionResult.COMPLETED
 
-            # we also do not extract OLE compound documents (we have other modules that do a better job)
-            if is_ole_file(local_file_path) and not is_msi_file(local_file_path):
-                logging.debug("skipping archive extraction of OLE file {}".format(_file))
-                return AnalysisExecutionResult.COMPLETED
+        # we also do not extract OLE compound documents (we have other modules that do a better job)
+        if is_ole_file(local_file_path) and not is_msi_file(local_file_path):
+            logging.debug("skipping archive extraction of OLE file {}".format(_file))
+            return AnalysisExecutionResult.COMPLETED
 
         # special logic for cab files
         is_cab_file = 'ms-cab' in file_type_analysis.mime_type.lower()
@@ -253,11 +268,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
         if is_rar_file:
             logging.debug("using unrar to extract files from {}".format(local_file_path))
-            p = Popen(['unrar', 'la', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out tryign to extract files from {} with unrar".format(local_file_path))
+            stdout = self._list_files(['unrar', 'la', local_file_path], local_file_path)
+            if stdout is None:
                 return AnalysisExecutionResult.COMPLETED
 
             if b'is not RAR archive' in stdout:
@@ -286,11 +298,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
         elif is_zip_file:
             logging.debug("using unzip to extract files from {}".format(local_file_path))
-            p = Popen(['unzip', '-l', '-P', 'infected', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out trying to list files from {} with unzip".format(local_file_path))
+            stdout = self._list_files(['unzip', '-l', '-P', 'infected', local_file_path], local_file_path)
+            if stdout is None:
                 return AnalysisExecutionResult.COMPLETED
 
             if b'End-of-central-directory signature not found.' in stdout:
@@ -332,12 +341,8 @@ class ArchiveAnalyzer(AnalysisModule):
             is_office_document |= (ole_object_regex.search(stdout) is not None)
                 
         elif is_ace_file:
-            p = Popen(['unace', 'l', local_file_path], stdout=PIPE, stderr=PIPE)
-
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.error("timed out trying to extract files from {} with 7z".format(local_file_path))
+            stdout = self._list_files(['unace', 'l', local_file_path], local_file_path)
+            if stdout is None:
                 return AnalysisExecutionResult.COMPLETED
 
             for line in stdout.split(b'\n'):
@@ -348,11 +353,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
         else:
             logging.debug("using 7z to extract files from {}".format(local_file_path))
-            p = Popen(['7z', '-y', '-pinfected', 'l', local_file_path], stdout=PIPE, stderr=PIPE)
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.warning("timed out trying to extract files from {} with 7z".format(local_file_path))
+            stdout = self._list_files(['7z', '-y', '-pinfected', 'l', local_file_path], local_file_path)
+            if stdout is None:
                 return AnalysisExecutionResult.COMPLETED
 
             if b'Error: Can not open file as archive' in stdout:
