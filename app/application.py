@@ -3,7 +3,6 @@ import hashlib
 import json
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Optional
 from flask import Flask
 from markupsafe import Markup
@@ -33,7 +32,7 @@ from saq.environment import get_global_runtime_settings
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util.relative_time import is_relative_time, resolve_date_range_for_display
-from saq.util.ui import get_tag_css_class, get_tag_level, human_readable_size
+from saq.util.ui import get_tag_css_class, get_tag_level, hexdump, human_readable_size
 
 # TODO: find something else to use besides this LoginManager
 login_manager = LoginManager()
@@ -41,16 +40,8 @@ login_manager = LoginManager()
 login_manager.session_protection = None
 login_manager.login_view = 'auth.login'
 
-#
-# 01/25/2022 -- JWD - cannot get hexdump to return anything but None as a jinja filter
-# so falling back to some external command execution
-#
-
 def hexdump_wrapper(data):
-    p = Popen(['hexdump', '-C'], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    p.stdin.write(data)
-    _stdout, _stderr = p.communicate()
-    return _stdout.decode(errors='ignore')
+    return hexdump(data)
 
 # utility functions to encoding/decoding base64 to/from strings
 def s64decode(s):

@@ -1,3 +1,5 @@
+from collections.abc import Iterable, Iterator
+
 from saq.configuration.config import get_config
 
 
@@ -87,3 +89,37 @@ def get_tag_score(tag_name: str) -> int:
         return 10
     else:
         return 0
+
+
+def _hexdump_line(offset: int, chunk: bytes) -> str:
+    hex_bytes = [f"{byte:02x} " for byte in chunk]
+    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
+    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
+    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
+
+
+def hexdump_lines(chunks: Iterable[bytes]) -> Iterator[str]:
+    """The lines `hexdump -C` prints for data given as 16 byte chunks (the last one may be shorter):
+    16 bytes a line as the offset, the bytes in hex and the printable ones as text, a run of lines
+    repeating the one before it as a single "*", and the length last."""
+    offset = 0
+    previous = None
+    squeezing = False
+    for chunk in chunks:
+        if chunk == previous:
+            if not squeezing:
+                yield "*\n"
+                squeezing = True
+        else:
+            yield _hexdump_line(offset, chunk)
+            squeezing = False
+        previous = chunk
+        offset += len(chunk)
+
+    if offset:
+        yield f"{offset:08x}\n"
+
+
+def hexdump(data: bytes) -> str:
+    """data as `hexdump -C` prints it."""
+    return "".join(hexdump_lines(data[i:i + 16] for i in range(0, len(data), 16)))

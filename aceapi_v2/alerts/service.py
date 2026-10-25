@@ -66,6 +66,7 @@ from saq.search.tasks import submit_index_task
 from saq.search.types import SearchFilters
 from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
+from saq.util.ui import hexdump_lines
 from saq.util.uuid import is_uuid
 
 from aceapi_v2.alerts.schemas import (
@@ -444,38 +445,16 @@ def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str
 _HEXDUMP_BATCH_LINES = 4096
 
 
-def _hexdump_line(offset: int, chunk: bytes) -> str:
-    hex_bytes = [f"{byte:02x} " for byte in chunk]
-    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
-    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
-    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
-
-
 def hexdump(path: str) -> Iterator[str]:
-    """The file as `hexdump -C` prints it, in batches of lines: 16 bytes a line as the offset,
-    the bytes in hex and the printable ones as text, a run of lines repeating the one before it
-    as a single "*", and the length last."""
+    """The file as `hexdump -C` prints it, in batches of lines."""
     lines: list[str] = []
-    offset = 0
-    previous = None
-    squeezing = False
     with open(path, "rb") as fp:
-        while chunk := fp.read(16):
-            if chunk == previous:
-                if not squeezing:
-                    lines.append("*\n")
-                    squeezing = True
-            else:
-                lines.append(_hexdump_line(offset, chunk))
-                squeezing = False
-            previous = chunk
-            offset += len(chunk)
+        for line in hexdump_lines(iter(lambda: fp.read(16), b"")):
+            lines.append(line)
             if len(lines) >= _HEXDUMP_BATCH_LINES:
                 yield "".join(lines)
                 lines = []
 
-    if offset:
-        lines.append(f"{offset:08x}\n")
     if lines:
         yield "".join(lines)
 
