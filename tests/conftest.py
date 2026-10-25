@@ -620,16 +620,17 @@ def pytest_sessionstart(session):
         load_integration_component_src(dir_path)
 
 #
-# one *run* of the test suite at a time per checkout: a run may spread over pytest-xdist
-# workers (each one its own databases, data directory, ports and log file, keyed by its
-# slot -- see tests/unittest_session.py), but two runs would collide on all of those, and
-# the stale-database sweep below is only safe when nothing else is provisioning. a marker
-# file makes that constraint mechanical instead of a rule people remember; see
-# tests/session_lock.py. under xdist the controller takes it and the workers ride on it.
+# one *run* of the test suite at a time per checkout and per container: a run may spread over
+# pytest-xdist workers (each one its own databases, data directory, ports and log file, keyed
+# by its slot -- see tests/unittest_session.py), but two runs would collide on the slot's
+# data directory, ports and Qdrant collections, and the stale-database sweep below is only
+# safe when nothing else is provisioning. marker files make that constraint mechanical
+# instead of a rule people remember; see tests/session_lock.py. under xdist the controller
+# takes them and the workers ride on them.
 #
 
-# True only if *this* process created the marker file. pytest_unconfigure runs even when
-# pytest_configure raised, so without this a blocked session would delete the live session's marker.
+# True only if *this* process created the marker files. pytest_unconfigure runs even when
+# pytest_configure raised, so without this a blocked session would delete the live session's markers.
 SESSION_LOCK_HELD = False
 
 def pytest_configure(config):
@@ -640,7 +641,7 @@ def pytest_configure(config):
         return
 
     try:
-        session_lock.acquire()
+        session_lock.acquire_run()
     except session_lock.SessionLockError as e:
         # UsageError exits before collection, before any database access and before the
         # data_unittest/ wipe, and prints the message without a traceback
@@ -682,6 +683,6 @@ def pytest_unconfigure(config):
         unittest_database.drop_current()
     finally:
         if SESSION_LOCK_HELD:
-            session_lock.release()
+            session_lock.release_run()
             SESSION_LOCK_HELD = False
 

@@ -63,19 +63,23 @@ There is no configured linter/formatter in the repo.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-Start only one *run* of the test suite at a time. The slots of one run are distinct, but a second run would reuse them. This is per checkout, not per host: two ACE instances can each run the suite concurrently, because the marker lives at `$SAQ_HOME/.pytest-running` (each instance's own bind-mounted checkout), the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+Start only one *run* of the test suite at a time per checkout and per container. The slots of one run are distinct, but a second run would reuse them: in the same checkout, their data directories; in the same container, their ports and their Qdrant collections, even from another checkout (a git worktree). Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
 
-This is enforced. `tests/session_lock.py` creates a marker file at
-`$SAQ_HOME/.pytest-running` when a run starts (the xdist controller, or the only process of
-a plain run) and removes it when the run ends (including on Ctrl-C and collection errors).
-While that file exists **no** other run may start — `pytest_configure` in `tests/conftest.py`
-fails the run with exit code 4 before collection, before any database access and before any
-data directory is wiped. There is no bypass flag. The marker records the pid, hostname, start
-time and command line of the process that created it, and the error message says whether
-that process is still running or whether the marker was left behind by a run that was killed.
-In the latter case, clear it with `rm /opt/ace/.pytest-running`. Holding the marker is also
-what makes it safe for a run to drop the databases an earlier, killed run left behind: the
-holder sweeps the registry in `pytest_configure`, before any of its workers provision.
+This is enforced. `tests/session_lock.py` creates two marker files when a run starts (the
+xdist controller, or the only process of a plain run): `/tmp/ace-pytest-running`, in the
+container's own `/tmp`, and `$SAQ_HOME/.pytest-running`, in the checkout every container of
+the stack mounts. It removes both when the run ends (including on Ctrl-C and collection
+errors). While either file exists **no** other run that would see it may start —
+`pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before collection,
+before any database access and before any data directory is wiped. There is no bypass flag.
+A marker records the pid, hostname, start time, checkout and command line of the process that
+created it, and the error message says whether that process is still running or whether the
+marker was left behind by a run that was killed. In the latter case, clear it with the `rm`
+the message prints. Holding the checkout's marker is also what makes it safe for a run to drop
+the databases an earlier, killed run of that checkout left behind: the holder sweeps the
+checkout's registry in `pytest_configure`, before any of its workers provision.
+
+**From a git worktree.** A worktree under `.claude/worktrees/<name>/` runs the suite in the same `dev` container with `SAQ_HOME` pointed at it: `cd /opt/ace/.claude/worktrees/<name> && SAQ_HOME=$PWD /venv/bin/pytest -n auto`. It needs the main checkout's `ssl/`, which `.worktreeinclude` has Claude Code copy into each worktree it creates (copy it by hand into one made with `git worktree add`). Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read it inside the container (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
 
 ### The standard analysis-module test
 
