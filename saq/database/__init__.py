@@ -1,4 +1,4 @@
-from saq.database.pool import get_db, set_db, get_db_connection, initialize_database, remove_all_sessions, reset_pools, get_pool
+from saq.database.pool import get_db, get_db_connection, initialize_database, remove_all_sessions, reset_pools, get_pool
 from saq.database.retry import execute_with_retry, retry, retry_sql_on_deadlock
 
 from saq.database.model import Alert

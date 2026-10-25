@@ -3,7 +3,6 @@ import os
 
 import pytest
 
-from flask_config import Config
 from saq.configuration.config import get_database_config
 from saq.constants import DB_ACE
 from saq.database import pool
@@ -47,8 +46,6 @@ def test_engine_options_client_certificate_without_ca(ace_config):
 
     assert _build_engine_options(ace_config)["connect_args"]["ssl"] == {
         "cert": os.path.join(get_base_dir(), "etc/ssl/client.pem"), "key": "/etc/ssl/client.key"}
-    assert Config().SQLALCHEMY_DATABASE_OPTIONS["connect_args"]["ssl"] == {
-        "cert": os.path.join(get_base_dir(), "etc/ssl/client.pem"), "key": "/etc/ssl/client.key"}
 
 
 @pytest.mark.unit
@@ -58,15 +55,12 @@ def test_engine_options_ssl(ace_config):
     ace_config.ssl_key = None
 
     assert _build_engine_options(ace_config)["connect_args"]["ssl"] == {"ca": "/etc/ssl/ca.pem"}
-    assert Config().SQLALCHEMY_DATABASE_OPTIONS["connect_args"]["ssl"] == {"ca": "/etc/ssl/ca.pem"}
 
     # a unix socket is never TLS
     ace_config.unix_socket = "/var/run/mysqld/mysqld.sock"
     assert "ssl" not in _build_engine_options(ace_config)["connect_args"]
-    assert "ssl" not in Config().SQLALCHEMY_DATABASE_OPTIONS["connect_args"]
     assert _build_database_url(ace_config).endswith(
         f"@localhost/{ace_config.database}?unix_socket=/var/run/mysqld/mysqld.sock&charset=utf8mb4")
-    assert Config().SQLALCHEMY_DATABASE_URI == _build_database_url(ace_config)
 
 
 @pytest.mark.unit

@@ -20,9 +20,8 @@ from sqlalchemy.exc import DisconnectionError
 from sqlalchemy.orm.scoping import scoped_session
 from sqlalchemy.orm.session import sessionmaker
 
-# registry of SQLAlchemy ORM scoped sessions keyed by database config name
-# the "ace" session is registered by initialize_database(); sessions for other
-# databases are created lazily on first get_db() request
+# registry of SQLAlchemy ORM scoped sessions keyed by database config name, each created
+# (with its own engine) on its first get_db() request
 _db_sessions: dict[str, scoped_session] = {}
 _db_sessions_lock = threading.RLock()
 
@@ -50,8 +49,7 @@ def get_db(name: str = "ace") -> scoped_session:
     """returns the SQLAlchemy scoped session for the named database
 
     get_db() with no argument returns the "ace" session
-    sessions for other configured databases are created lazily (with their own
-    engine) on first request."""
+    sessions are created lazily (each with its own engine) on first request."""
     if name is None:
         name = "ace"
 
@@ -60,17 +58,9 @@ def get_db(name: str = "ace") -> scoped_session:
         if session is not None:
             return session
 
-        # the "ace" session is created by initialize_database() using the flask config
-        if name == "ace":
-            return None
-
         session = _db_sessions[name] = scoped_session(sessionmaker(bind=_create_engine_for(name)))
         logging.debug("created new scoped session for database %s", name)
         return session
-
-def set_db(value):
-    with _db_sessions_lock:
-        _db_sessions["ace"] = value
 
 def _log_pool_issue(message: str, e: Exception):
     """Log a connection-pool problem at a level that matches whether we expected it.
@@ -411,10 +401,7 @@ def _build_database_url(database_config) -> str:
 
 
 def _build_engine_options(database_config) -> dict:
-    """builds the create_engine kwargs for the given database config
-
-    mirrors the SQLALCHEMY_DATABASE_OPTIONS that flask_config builds for the
-    ace database so that alternate databases get the same pooling behavior."""
+    """builds the create_engine kwargs for the given database config"""
     options: dict[str, Any] = {
         "pool_recycle": 60 * 10,  # 10 minute connection pool recycle
         "pool_timeout": 30,
@@ -441,7 +428,7 @@ def _build_engine_options(database_config) -> dict:
 
 
 def _create_engine_for(name: str):
-    """creates a SQLAlchemy engine for the named (non-ace) database config"""
+    """creates a SQLAlchemy engine for the named database config"""
     database_config = get_config().get_database_config(name)
     engine = create_engine(
         _build_database_url(database_config),
@@ -454,20 +441,12 @@ def _create_engine_for(name: str):
 def initialize_database():
     """Initializes database connections by creating the SQLAlchemy engine and session objects."""
 
-    from flask_config import get_flask_config
-
     # see https://github.com/PyMySQL/PyMySQL/issues/644
     # /usr/local/lib/python3.6/dist-packages/pymysql/cursors.py:170: Warning: (1300, "Invalid utf8mb4 character string: '800363'")
     warnings.filterwarnings(action='ignore', message='.*Invalid utf8mb4 character string.*')
 
-    if get_db() is None:
-        engine = create_engine(
-            get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_URI,
-            isolation_level='READ COMMITTED',
-            **get_flask_config(get_config().global_settings.instance_type).SQLALCHEMY_DATABASE_OPTIONS)
-
-        _attach_engine_listeners(engine)
-        set_db(scoped_session(sessionmaker(bind=engine)))
+    if "ace" not in _db_sessions:
+        get_db()
 
     else:
         # if you call this a second time it just closes all the sessions
