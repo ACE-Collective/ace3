@@ -68,7 +68,8 @@ class EmailLoggingAnalyzer(AnalysisModule):
             if self.config.fluent_bit_tags.headers:
                 self.fluent_bit_headers_sender = sender.FluentSender(
                     self.config.fluent_bit_tags.headers,
-                    host=self.config.fluent_bit_hostname)
+                    host=self.config.fluent_bit_hostname,
+                    port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.lookalike:
                 self.fluent_bit_lookalike_sender = sender.FluentSender(
