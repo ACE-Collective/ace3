@@ -1,5 +1,7 @@
 import logging
 import os
+import socket
+import threading
 from threading import Event
 from unittest.mock import Mock
 import uuid as uuid_module
@@ -7,7 +9,8 @@ import pytest
 import requests
 
 from saq.analysis.root import RootAnalysis
-from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
+from saq.collectors import remote_node as remote_node_module
+from saq.collectors.remote_node import UNREACHABLE_NODE_ERRORS, RemoteNode, RemoteNodeGroup
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, DB_ACE, NO_NODES_AVAILABLE, NO_WORK_AVAILABLE
 from saq.database.pool import execute_with_db_cursor, get_db_connection
 from saq.database.util.alert import get_alert_by_uuid
@@ -617,6 +620,8 @@ def test_dead_lettered_item_does_not_block_following_work(monkeypatch, remote_no
 @pytest.mark.parametrize("error, level, reported", [
     # a node that cannot be reached is an operational condition: a warning, no error report
     (requests.exceptions.ConnectionError("target is unreachable"), logging.WARNING, False),
+    # and so is one that stops answering
+    (requests.exceptions.ReadTimeout("read timed out"), logging.WARNING, False),
     (RuntimeError("bad submission"), logging.ERROR, True),
 ])
 def test_failed_delivery_reports_only_unexpected_errors(monkeypatch, remote_node_group, caplog, error, level, reported):
@@ -775,3 +780,80 @@ def test_clear_work_locks_spares_another_nodes_locks(remote_node_group):
         cursor = db.cursor()
         cursor.execute("SELECT lock_uuid FROM work_distribution WHERE work_id = %s", (theirs_id,))
         assert cursor.fetchone()[0] == other_lock
+
+
+@pytest.fixture
+def silent_node_location():
+    """host:port of a socket that accepts connections and never answers."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(0.2)
+    stop = threading.Event()
+    connections = []
+
+    def accept():
+        while not stop.is_set():
+            try:
+                connections.append(listener.accept()[0])
+            except TimeoutError:
+                continue
+
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    yield f"127.0.0.1:{listener.getsockname()[1]}"
+
+    stop.set()
+    thread.join(5)
+    for connection in connections:
+        connection.close()
+    listener.close()
+
+
+@pytest.mark.integration
+def test_submit_remote_to_a_silent_node_gives_up(root_analysis, silent_node_location, monkeypatch):
+    monkeypatch.setattr(remote_node_module, "REMOTE_SUBMIT_TIMEOUT", (1, 1), raising=False)
+    node = RemoteNode(2, "silent", silent_node_location, 1, local_time(), ANALYSIS_MODE_ANALYSIS, 1)
+    submission = root_analysis.create_submission()
+    errors = []
+    duplicated = []
+    duplicate = RootAnalysis.duplicate
+
+    def tracking_duplicate(self):
+        duplicated.append(duplicate(self))
+        return duplicated[-1]
+
+    monkeypatch.setattr(RootAnalysis, "duplicate", tracking_duplicate)
+
+    def submit():
+        try:
+            node.submit_remote(submission)
+        except Exception as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=submit, daemon=True)
+    thread.start()
+    thread.join(30)
+    assert not thread.is_alive(), "the submission is still waiting on the remote node"
+
+    # the delivery loop treats this as an unreachable node, not an ACE bug
+    assert len(errors) == 1 and isinstance(errors[0], UNREACHABLE_NODE_ERRORS)
+    # the copy made for the upload is removed
+    assert not os.path.exists(duplicated[0].storage_dir)
+
+
+@pytest.mark.integration
+def test_delivery_that_times_out_is_retried(monkeypatch, remote_node_group):
+    _ensure_live_any_mode_node()
+
+    def _times_out(self, submission):
+        raise requests.exceptions.ReadTimeout("read timed out")
+
+    monkeypatch.setattr(RemoteNode, "submit", _times_out)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        work_id, _ = insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4()))
+
+    assert _work_distribution_row(remote_node_group, work_id) == ("LOCKED", 1)
