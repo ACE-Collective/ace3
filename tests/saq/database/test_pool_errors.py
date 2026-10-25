@@ -53,8 +53,9 @@ def test_engine_options_ssl(ace_config):
     # a unix socket is never TLS
     ace_config.unix_socket = "/var/run/mysqld/mysqld.sock"
     assert "ssl" not in _build_engine_options(ace_config)["connect_args"]
-    assert _build_database_url(ace_config).endswith(
-        f"@localhost/{ace_config.database}?unix_socket=/var/run/mysqld/mysqld.sock&charset=utf8mb4")
+    url = _build_database_url(ace_config)
+    assert (url.host, url.port, url.database) == ("localhost", None, ace_config.database)
+    assert url.query == {"unix_socket": "/var/run/mysqld/mysqld.sock", "charset": "utf8mb4"}
 
 
 def _reset_record() -> logging.LogRecord:

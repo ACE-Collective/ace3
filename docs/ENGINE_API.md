@@ -69,22 +69,26 @@ and P grows with both the number of nodes and their core counts.
 
 ### What one worker can carry
 
-`upload` and `clear` use the synchronous `get_db()` pool (`saq/database/pool.py`). That pool
-holds 5 connections plus 10 overflow per process, and waits 30 seconds for a free one before it
-fails. One uvicorn worker therefore runs about **15** of these at once. A `download` builds the
-tar in a thread (anyio's 40-thread limit per worker) and then streams it asynchronously. It is
-mostly disk I/O and cheaper than an upload.
+`upload` and `clear` use the synchronous database pool (`saq/database/pool.py`), which the ORM and
+raw cursor code share: 5 connections plus 10 overflow per process by default. An `upload` holds
+two of them at once (it looks the alert up through the ORM, then schedules it through a cursor),
+so `run_db_in_thread` (`aceapi_v2/sync.py`) runs at most half the pool, **7** calls, at once per
+uvicorn worker and queues the rest. A `download` builds the tar in one of those 7 slots too, and
+then streams it asynchronously. It is mostly disk I/O and cheaper than an upload.
 
 Size each node at
 
-    ACE_API_ENGINE_WORKERS ≈ max(4, ceil(P / 15))
+    ACE_API_ENGINE_WORKERS ≈ max(4, ceil(P / 7))
 
 | cluster | P (pulling from one node) | workers |
 |---|---|---|
 | single node | 0 (it only serves itself and collectors) | 4 |
-| 3 nodes × 16 cores | ~32 | 4 |
-| 6 nodes × 16 cores | ~80 | 6 |
-| 10 nodes × 32 cores | ~290 | 20 |
+| 3 nodes × 16 cores | ~32 | 5 |
+| 6 nodes × 16 cores | ~80 | 12 |
+| 10 nodes × 32 cores | ~290 | 42 |
+
+Raising `pool_size` or `max_overflow` in the `database_ace:` block raises the per-worker figure
+with it (half of their sum), for every process on the node.
 
 These are upper bounds: P counts every peer worker pulling from the same node at the same time.
 That happens when one node holds the backlog, for example a node that collects but does little
@@ -99,8 +103,8 @@ total under `max_connections` (3600 by default, `etc/mysqld/conf.d/config.cnf`).
 
 ### Signs that it is undersized
 
-- `data/logs/ace-api-engine`: `QueuePool limit of size 5 overflow 10 reached` (a request waited
-  30 seconds for a database connection), or 5xx responses on `upload`/`clear`.
+- `upload`/`download`/`clear` taking far longer than the work they do (requests queued for one of
+  a worker's 7 slots), or 5xx responses on them.
 - the engine log: `unable to transfer <uuid>` on the nodes pulling from this one.
 - the collector logs: `work item ... stays locked for retry by group ...` warnings, and in the
   worst case `failed delivery N times via group ..., giving up and marking ERROR`.

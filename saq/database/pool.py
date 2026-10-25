@@ -6,7 +6,7 @@ from typing import Any, Callable
 import warnings
 import weakref
 
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import URL, Engine, create_engine, event
 
 from saq.configuration.config import get_config
 from saq.monitor import emit_monitor
@@ -179,21 +179,28 @@ def _attach_engine_listeners(engine):
             raise DisconnectionError(message)
 
 
-def _build_database_url(database_config) -> str:
-    """builds a SQLAlchemy connection URL for the given database config"""
+def _build_database_url(database_config) -> URL:
+    """builds a SQLAlchemy connection URL for the given database config
+
+    URL.create() rather than a formatted string: a password with "@", "%" or "/" in it has to
+    reach the server as written, as it did when cursor code passed it to pymysql directly."""
     if database_config.unix_socket:
-        return "mysql+pymysql://{username}:{password}@localhost/{database}?unix_socket={unix_socket}&charset=utf8mb4".format(
+        return URL.create(
+            "mysql+pymysql",
             username=database_config.username,
             password=database_config.password,
-            unix_socket=database_config.unix_socket,
-            database=database_config.database)
+            host="localhost",
+            database=database_config.database,
+            query={"unix_socket": database_config.unix_socket, "charset": "utf8mb4"})
 
-    return "mysql+pymysql://{username}:{password}@{hostname}:{port}/{database}?charset=utf8mb4".format(
+    return URL.create(
+        "mysql+pymysql",
         username=database_config.username,
         password=database_config.password,
-        hostname=database_config.hostname,
+        host=database_config.hostname,
         port=database_config.port,
-        database=database_config.database)
+        database=database_config.database,
+        query={"charset": "utf8mb4"})
 
 
 def _build_engine_options(database_config) -> dict:

@@ -4,9 +4,12 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable, Coroutine
+from functools import cache
 from typing import Any, TypeVar
 
 from aceapi_v2.database import get_async_session
+from saq.configuration.config import get_database_config
+from saq.constants import DB_ACE
 from saq.database.pool import remove_all_sessions
 
 T = TypeVar("T")
@@ -52,6 +55,17 @@ def shutdown_loop(timeout: float = 5.0):
     loop.call_soon_threadsafe(loop.stop)
 
 
+@cache
+def _db_thread_slots() -> threading.BoundedSemaphore:
+    """How many run_db_in_thread() calls may run at once in this process: half the connections the
+    ace pool holds, so that every one of them can hold a get_db() connection and a
+    get_db_connection() one together, as acquire_lock() and add_workload() after an ORM read do.
+    Admit more and each can hold one connection while it waits for a second that none of them
+    returns, until all of them fail on the pool's 30 second timeout."""
+    config = get_database_config(DB_ACE)
+    return threading.BoundedSemaphore(max(1, (config.pool_size + config.max_overflow) // 2))
+
+
 async def run_db_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run sync code in a worker thread with no get_db() session carried over from earlier work.
 
@@ -59,13 +73,20 @@ async def run_db_in_thread(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T
     database (tests/aceapi_v2/test_sync.py): a get_db() session belongs to the pool
     thread and outlives the call unless it is removed, and whether fn reaches get_db() is rarely
     visible at the call site. It is removed before fn as well as after, so a session that other
-    code left on this thread, possibly holding a dropped connection, never reaches fn."""
+    code left on this thread, possibly holding a dropped connection, never reaches fn.
+
+    It also limits how many calls run at once (_db_thread_slots()); the rest wait for a slot."""
+    slots = _db_thread_slots()
+
     def _wrapped() -> T:
-        remove_all_sessions()
-        try:
-            return fn(*args, **kwargs)
-        finally:
+        # bounded by the calls that hold the slots, each of which gets its connections within the
+        # pool's 30 second timeout or fails
+        with slots:
             remove_all_sessions()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                remove_all_sessions()
 
     return await asyncio.to_thread(_wrapped)
 

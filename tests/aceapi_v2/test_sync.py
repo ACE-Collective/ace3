@@ -1,6 +1,7 @@
 import ast
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,9 +9,14 @@ import pytest
 from fastapi.dependencies.models import _is_async_gen_callable, _is_coroutine_callable
 from sqlalchemy import text
 
+from aceapi_v2 import sync
 from aceapi_v2.application import app as v2_app
 from aceapi_v2.sync import run_db_in_thread
-from saq.database.pool import get_db
+from saq.configuration.config import get_database_config
+from saq.constants import DB_ACE
+from saq.database import pool
+from saq.database.pool import get_db, get_db_connection
+from tests.saq.helpers import WaitTimedOutError, wait_for_condition
 from tests.saq.test_permission_catalog import _iter_effective_routes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +67,70 @@ def test_run_db_in_thread_never_sees_a_session_left_on_its_thread(leave_session)
     left, (session, value) = asyncio.run(_run())
     assert session is not left
     assert value == 1
+
+
+@pytest.fixture
+def ace_pool_of_two(monkeypatch):
+    """A fresh ace engine that holds two connections and waits 2 seconds for one, not 30."""
+    config = get_database_config(DB_ACE)
+    monkeypatch.setattr(config, "pool_size", 1)
+    monkeypatch.setattr(config, "max_overflow", 1)
+    build_engine_options = pool._build_engine_options
+    monkeypatch.setattr(pool, "_build_engine_options", lambda c: {**build_engine_options(c), "pool_timeout": 2})
+    monkeypatch.setattr(pool, "_db_sessions", {})
+    monkeypatch.setattr(pool, "_db_engine_by_name", {})
+    monkeypatch.setattr(pool, "_db_engines", set())
+    sync._db_thread_slots.cache_clear()
+    yield
+    for engine in pool._db_engines:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_calls_holding_an_orm_and_a_cursor_connection_cannot_exhaust_the_pool(ace_pool_of_two):
+    holding = []
+    holding_lock = threading.Lock()
+
+    def _orm_then_cursor():
+        # the ORM session keeps its connection until the call ends, as an alert lookup does
+        # before acquire_lock()
+        get_db().execute(text("SELECT 1"))
+        with holding_lock:
+            holding.append(threading.get_ident())
+
+        # give the other call the chance to take the pool's second connection, as it would
+        # if both were let in
+        try:
+            wait_for_condition(lambda: len(holding) == 2, timeout=1)
+        except WaitTimedOutError:
+            pass
+
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SELECT 1")
+            return cursor.fetchone()[0]
+
+    async def _run():
+        return await asyncio.gather(run_db_in_thread(_orm_then_cursor), run_db_in_thread(_orm_then_cursor))
+
+    # one call at a time (half the pool), so neither waits on a connection the other holds
+    assert sync._db_thread_slots()._initial_value == 1
+    assert asyncio.run(_run()) == [1, 1]
+
+
+@pytest.mark.unit
+def test_db_thread_slots_are_half_the_ace_pool(monkeypatch):
+    config = get_database_config(DB_ACE)
+    monkeypatch.setattr(config, "pool_size", 5)
+    monkeypatch.setattr(config, "max_overflow", 10)
+    sync._db_thread_slots.cache_clear()
+    assert sync._db_thread_slots()._initial_value == 7
+
+    # never none at all
+    monkeypatch.setattr(config, "pool_size", 1)
+    monkeypatch.setattr(config, "max_overflow", 0)
+    sync._db_thread_slots.cache_clear()
+    assert sync._db_thread_slots()._initial_value == 1
 
 
 @pytest.mark.unit

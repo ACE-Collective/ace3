@@ -407,6 +407,11 @@ def global_function_setup(request):
     # reach them through the real executor and real hunt files
     svs_attribution.clear_caches()
     svs_windows.clear_cache()
+    # sized from the database config, which a test may change. only reset when something
+    # imported it: importing aceapi_v2 pulls the whole FastAPI application in
+    sync_module = sys.modules.get("aceapi_v2.sync")
+    if sync_module is not None:
+        sync_module._db_thread_slots.cache_clear()
 
     # XXX we're initializing AND THEN we're resetting the database
 
