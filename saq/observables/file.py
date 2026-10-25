@@ -14,6 +14,7 @@ from saq.gui import ObservableActionCollectFile, ObservableActionSeparator
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.generator import register_observable_type
 from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256, is_sha256_hex
+from saq.util.ui import human_readable_size
 
 KEY_MD5_HASH = "md5_hash"
 KEY_SHA1_HASH = "sha1_hash"
@@ -277,6 +278,12 @@ class FileObservable(Observable):
         if self._mime_type:
             return self._mime_type
 
+        if not os.path.exists(self.path):
+            # `file` reports a missing path on stdout with exit status 0, so its answer would be
+            # taken (and serialized) as the mime type; a missing file has none
+            logging.debug("unable to determine mime type of %s: file does not exist", self.path)
+            return None
+
         p = Popen(['file', '-b', '--mime-type', '-L', self.path], stdout=PIPE, stderr=PIPE)
         stdout, stderr = p.communicate()
 
@@ -313,14 +320,10 @@ class FileObservable(Observable):
     @property
     def ext(self) -> Optional[str]:
         """Returns the file extension of this file in lower case, or None if it doesn't have one."""
-        if '.' not in self.full_path:
+        if '.' not in self.file_name:
             return None
 
-        try:
-            return os.path.basename(self.full_path).split('.')[-1].lower()
-        except Exception as e:
-            logging.error(f"unable to get file extension of {self.full_path}: {e}")
-            return None
+        return self.file_name.split('.')[-1].lower()
 
     @property
     def exists(self) -> bool:
@@ -332,20 +335,10 @@ class FileObservable(Observable):
 
     @property
     def human_readable_size(self) -> str:
-        from math import log2
-
         if self.size is None:
             return ""
 
-        _suffixes = ["bytes", "K", "M", "G", "T", "E", "Z"]
-
-        # determine binary order in steps of size 10 
-        # (coerce to int, // still returns a float)
-        order = int(log2(self.size) / 10) if self.size else 0
-        # format file size
-        # (.4g results in rounded numbers for exact matches and max 3 decimals, 
-        # should never resort to exponent values)
-        return "{:.4g} {}".format(self.size / (1 << (order * 10)), _suffixes[order])
+        return human_readable_size(self.size)
 
     @property
     def is_image(self) -> bool:
