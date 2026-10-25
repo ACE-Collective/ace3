@@ -1278,7 +1278,10 @@ class PcapAnalyzer(AnalysisModule):
             index = dissect(config, path, f"{path}.pcap_objects", stopping=self.should_stop)
             embedded = read_embedded_secrets(path, config.max_keylog_size, stopping=self.should_stop)
         except SandboxCancelled as e:
-            # no analysis yet, so the capture is dissected again when the work item is picked up again
+            # no analysis yet, so the capture is dissected again when the work item is picked up again.
+            # the engine leaves a dependency on a target unresolved only when its cancel flag is set,
+            # and a shutdown can reach this module before the worker's watcher sets it
+            self.cancel_analysis()
             logging.info("%s", e, extra={"pcap_sha256": _file.sha256_hash})
             return AnalysisExecutionResult.INCOMPLETE
         except PcapNodeError as e:
@@ -1374,26 +1377,10 @@ class PcapCategoryAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         self.wait_for_analysis(_file, PcapAnalysis)
-        return self._add_category(_file, final=False)
-
-    def execute_final_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-        # only reached when execute_analysis left the capture INCOMPLETE
-        if not os.path.isfile(_file.full_path) or not is_pcap_file(_file.full_path):
-            return AnalysisExecutionResult.COMPLETED
-        return self._add_category(_file, final=True)
-
-    def _add_category(self, _file: FileObservable, final: bool) -> AnalysisExecutionResult:
-        if not _file.get_analysis(PcapAnalysis):
-            # pcap_analyzer was stopped (the engine shutting down) or has not run in this pass yet,
-            # e.g. after a dependency on it failed when it stopped. INCOMPLETE records nothing, so this
-            # runs again in final analysis, or when the work item is picked up again, instead of
-            # recording that the capture has nothing in this category.
-            if not final or self.should_stop():
-                return AnalysisExecutionResult.INCOMPLETE
-            return AnalysisExecutionResult.COMPLETED
-
         pcap_analysis = _get_pcap_analysis(_file)
-        # the dissection failed: its error is on the PCAP Analysis node
+        # pcap_analyzer produced nothing, or the dissection failed and its error is on the PCAP
+        # Analysis node. a pcap_analyzer stopped mid-run never gets here: it cancels the analysis,
+        # which leaves the dependency unresolved for the requeued pass
         if pcap_analysis is None:
             return AnalysisExecutionResult.COMPLETED
 

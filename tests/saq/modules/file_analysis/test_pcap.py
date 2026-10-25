@@ -1901,12 +1901,15 @@ def test_pcap_analyzer_records_nothing_when_the_engine_stops(monkeypatch, caplog
     _shutting_down(monkeypatch, PcapAnalyzer)
     root = _new_root()
     observable = root.add_file_observable(NETWORK_PCAP)
+    analyzer = _adapter(PcapAnalyzer, root)
     with caplog.at_level(logging.INFO):
-        assert _adapter(PcapAnalyzer, root).execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.INCOMPLETE
 
     # no analysis: the capture is dissected again when the work item is picked up again
     assert observable.get_analysis(PcapAnalysis) is None
     assert "the engine is shutting down" in caplog.text
+    # cancelled, so a dependency on it stays unresolved even before the engine cancels
+    assert analyzer.is_canceled_analysis()
 
 
 @pytest.mark.unit
@@ -2081,35 +2084,67 @@ def test_embedded_secrets_scan_stops_with_the_engine(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_category_without_pcap_analysis_records_nothing(monkeypatch):
-    # pcap_analyzer stopped as the engine shut down: the dependency on it failed, so the wait
-    # returns nothing, and no "no analysis" marker may be left for the requeued work item
+def test_category_without_pcap_analysis_adds_nothing(monkeypatch):
+    # pcap_analyzer answered without an analysis: a stopped one leaves the dependency unresolved
+    # rather than returning here, so this capture has nothing in the category
     monkeypatch.setattr(pcap.PcapCategoryAnalyzer, "wait_for_analysis", lambda self, *args, **kwargs: None)
     root = _new_root()
     capture = root.add_file_observable(NETWORK_PCAP)
     analyzer = _adapter(pcap.PcapCategoryAnalyzer, root, ANALYSIS_MODULE_PCAP_DNS)
-    assert analyzer.execute_analysis(capture) == AnalysisExecutionResult.INCOMPLETE
+    assert analyzer.execute_analysis(capture) == AnalysisExecutionResult.COMPLETED
     assert not capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
 
-    # in final analysis: still stopping, still nothing; otherwise the category has nothing to add
-    _shutting_down(monkeypatch, pcap.PcapCategoryAnalyzer)
-    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.INCOMPLETE
-    monkeypatch.setattr(pcap.PcapCategoryAnalyzer, "shutdown", property(lambda self: False))
-    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.COMPLETED
-    assert not capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
+
+def _run_dns_engine():
+    engine = Engine()
+    for module in (ANALYSIS_MODULE_PCAP_ANALYZER, ANALYSIS_MODULE_PCAP_DNS):
+        engine.configuration_manager.enable_module(module, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
 
 @pytest.mark.integration
-def test_category_runs_in_final_analysis_once_the_capture_is_dissected():
-    root = _new_root()
-    capture = root.add_file_observable(NETWORK_PCAP)
-    assert _adapter(PcapAnalyzer, root).execute_analysis(capture) == AnalysisExecutionResult.COMPLETED
-    capture.get_analysis(PcapAnalysis).completed = True
+def test_category_is_added_after_pcap_analyzer_is_stopped(root_analysis, monkeypatch, caplog):
+    # pcap_analyzer sees the shutdown itself (module.shutdown) before the worker's watcher has
+    # cancelled the engine: pcap_dns's dependency on it must still survive the requeue unresolved
+    state = {"runs": 0, "shutdown": False}
+    execute_analysis = PcapAnalyzer.execute_analysis
 
-    analyzer = _adapter(pcap.PcapCategoryAnalyzer, root, ANALYSIS_MODULE_PCAP_DNS)
-    assert analyzer.execute_final_analysis(capture) == AnalysisExecutionResult.COMPLETED
-    dns = capture.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
+    def _execute_analysis(self, _file):
+        # run 1 is the plain pass and answers nothing, so pcap_dns waits on it; run 2 resolves that
+        # dependency and is stopped by the shutdown; run 3 is the requeued pass
+        state["runs"] += 1
+        if state["runs"] == 1:
+            return AnalysisExecutionResult.INCOMPLETE
+        state["shutdown"] = state["runs"] == 2
+        return execute_analysis(self, _file)
+
+    monkeypatch.setattr(PcapAnalyzer, "execute_analysis", _execute_analysis)
+    monkeypatch.setattr(PcapAnalyzer, "shutdown", property(lambda self: state["shutdown"]))
+
+    root_analysis.analysis_mode = "test_groups"
+    capture = root_analysis.add_file_observable(NETWORK_PCAP)
+    root_analysis.save()
+    root_analysis.schedule()
+    with caplog.at_level(logging.INFO):
+        _run_dns_engine()
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    observable = root.get_observable(capture.uuid)
+    assert state["runs"] == 2
+    assert [d.status for d in observable.dependencies] == ["ready"]
+    assert observable.get_analysis(PcapAnalysis) is None
+    # not even a "no analysis" marker, which would keep pcap_dns from running again
+    assert observable.get_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS) is None
+    assert "leaving it unresolved" in caplog.text
+
+    root.schedule()
+    _run_dns_engine()
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    observable = root.get_observable(capture.uuid)
+    dns = observable.get_and_load_analysis(PcapCategoryAnalysis, instance=CATEGORY_DNS)
     assert "www.pcap-dns.example" in _values(dns, F_FQDN)
+    assert not [d for d in observable.dependencies if d.failed]
 
 
 @pytest.mark.unit
