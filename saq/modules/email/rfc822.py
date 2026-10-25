@@ -905,6 +905,10 @@ class EmailAnalysis(Analysis):
             if _file.type != F_FILE:
                 continue
 
+            # the analyzer writes these next to the email whatever the email file is called
+            if _file.has_yara_meta("type", "email.headers") or _file.has_yara_meta("type", "email.combined"):
+                continue
+
             # skip any file with an auto-generated name (these are typically part of the body)
             # XXX hack
             if "email.rfc822" in _file.file_name:
@@ -1192,10 +1196,7 @@ class EmailAnalyzer(AnalysisModule):
         # if we know this is an office365 journaled email AND we did not find the "meta block"
         # then at least log that something is wrong
         if is_office365 and not o365_meta_part:
-            try:
-                message_id = parsed_email['message-id']
-            except:
-                message_id = "unknown"
+            message_id = parsed_email['message-id'] or "unknown"
 
             logging.info(f"unable to find meta block for message-id {message_id} in {self.get_root().storage_dir}")
 
