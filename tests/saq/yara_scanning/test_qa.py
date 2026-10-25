@@ -2,7 +2,10 @@
 
 import errno
 import json
+import logging
 import os
+import threading
+from types import SimpleNamespace
 from typing import Optional
 
 import pytest
@@ -19,8 +22,10 @@ from saq.yara_scanning.qa import (
     QARecorder,
     QASpooler,
     count_jobs,
+    run_recorder,
     select_qa_matches,
 )
+from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows, qa_match_result
 
 OTHER_UUID = "6b1d8f2a-2d54-4b4a-9e7c-3a2c4d5e6f70"
@@ -319,3 +324,141 @@ def test_orphans_are_swept(spool_dir, scanned, monkeypatch):
     monkeypatch.setattr(qa, "ORPHAN_AGE_SECONDS", -10)
     QARecorder(spool_dir).sweep_orphans()
     assert sorted(os.listdir(spool_dir)) == kept
+
+
+@pytest.fixture
+def recorded(monkeypatch) -> list[str]:
+    """Stands in for the store: the rules of the matches recorded, in order."""
+    result = []
+
+    def record(match_result, target):
+        result.append(match_result["rule"])
+        return SimpleNamespace(status="recorded")
+
+    monkeypatch.setattr(qa, "record_qa_match_or_raise", record)
+    return result
+
+
+@pytest.mark.unit
+def test_recorder_stops_between_jobs(spool_dir, scanned, recorded):
+    _spool(spool_dir, scanned, [qa_match_result(rule="first")])
+    _spool(spool_dir, scanned, [qa_match_result(rule="second")])
+    answers = iter([False, True])
+
+    assert QARecorder(spool_dir).process_once(lambda: next(answers))
+    assert recorded == ["first"]
+    assert len(_names(spool_dir, JOB_SUFFIX)) == 1
+
+
+@pytest.mark.unit
+def test_a_job_another_recorder_claimed_is_skipped(spool_dir, recorded):
+    assert QARecorder(spool_dir).process_job("1-2-3")
+    assert recorded == []
+
+
+@pytest.mark.unit
+def test_a_job_of_another_version_is_dropped(spool_dir, scanned, recorded, caplog):
+    _spool(spool_dir, scanned, [qa_match_result()])
+    (job_name,) = _names(spool_dir, JOB_SUFFIX)
+    job_path = os.path.join(spool_dir, job_name)
+    with open(job_path) as fp:
+        job = json.load(fp)
+
+    with open(job_path, "w") as fp:
+        json.dump({**job, "v": 2}, fp)
+
+    assert QARecorder(spool_dir).process_once(_not_stopping)
+    assert os.listdir(spool_dir) == []
+    assert recorded == []
+    assert any("unsupported version 2" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+@pytest.mark.unit
+def test_a_match_that_cannot_be_stored_does_not_hold_up_the_rest(spool_dir, scanned, recorded, monkeypatch, caplog):
+    _spool(spool_dir, scanned, [qa_match_result(rule="broken"), qa_match_result(rule="fine")])
+    record = qa.record_qa_match_or_raise
+
+    def broken_rule_fails(match_result, target):
+        if match_result["rule"] == "broken":
+            raise ValueError("cannot store this one")
+
+        return record(match_result, target)
+
+    monkeypatch.setattr(qa, "record_qa_match_or_raise", broken_rule_fails)
+    assert QARecorder(spool_dir).process_once(_not_stopping)
+
+    assert recorded == ["fine"]
+    assert os.listdir(spool_dir) == []
+    (failure,) = [r for r in caplog.records if "unable to record yara qa match of rule broken" in r.getMessage()]
+    assert failure.levelno == logging.ERROR and failure.exc_info is not None
+
+
+# long enough for the recorder to notice its control pipe and return
+RECORDER_BOUND_SECONDS = 10
+
+
+@pytest.fixture
+def recorder(spool_dir, monkeypatch):
+    """Runs run_recorder in a thread of the test process, and returns (thread, control pipe write
+    end, results); the thread is gone by the end of the test."""
+    # the recorder renices its process, which here is the test's
+    monkeypatch.setattr(qa.os, "nice", lambda increment: 0)
+    monkeypatch.setattr(qa, "POLL_INTERVAL", 0.05)
+    ctl_r, ctl_w = os.pipe()
+    results = []
+    thread = threading.Thread(target=lambda: results.append(run_recorder(spool_dir, ctl_r)), daemon=True)
+    thread.start()
+
+    yield thread, ctl_w, results
+
+    try:
+        os.write(ctl_w, b"x")
+    except OSError:
+        pass  # the test closed it
+
+    thread.join(RECORDER_BOUND_SECONDS)
+    os.close(ctl_r)
+    try:
+        os.close(ctl_w)
+    except OSError:
+        pass  # the test closed it
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("told", [True, False], ids=["told to stop", "manager gone"])
+def test_recorder_runs_until_its_control_pipe_is_readable(spool_dir, scanned, recorded, recorder, told):
+    thread, ctl_w, results = recorder
+    _spool(spool_dir, scanned, [qa_match_result()])
+    wait_for_condition(lambda: os.listdir(spool_dir) == [], timeout=RECORDER_BOUND_SECONDS)
+    assert recorded == ["qa_rule"]
+    assert thread.is_alive()
+
+    if told:
+        os.write(ctl_w, b"x")
+    else:
+        os.close(ctl_w)
+
+    thread.join(RECORDER_BOUND_SECONDS)
+    assert not thread.is_alive()
+    assert results == [0]
+
+
+@pytest.mark.unit
+def test_recorder_keeps_running_through_a_failed_pass(spool_dir, scanned, recorded, recorder, caplog):
+    thread, ctl_w, results = recorder
+    # once a job is recorded the recorder is in its loop
+    _spool(spool_dir, scanned, [qa_match_result(rule="before")])
+    wait_for_condition(lambda: os.listdir(spool_dir) == [], timeout=RECORDER_BOUND_SECONDS)
+
+    os.rmdir(spool_dir)
+    wait_for_condition(lambda: any(r.getMessage().startswith("recording yara qa matches") for r in caplog.records),
+                       timeout=RECORDER_BOUND_SECONDS)
+
+    os.mkdir(spool_dir)
+    _spool(spool_dir, scanned, [qa_match_result(rule="after")])
+    wait_for_condition(lambda: os.listdir(spool_dir) == [], timeout=RECORDER_BOUND_SECONDS)
+    assert recorded == ["before", "after"]
+    assert thread.is_alive()
+
+    (failure, *_) = [r for r in caplog.records if r.getMessage().startswith("recording yara qa matches")]
+    assert failure.levelno == logging.ERROR and failure.exc_info is not None
