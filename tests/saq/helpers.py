@@ -6,6 +6,8 @@ from multiprocessing import Manager, Pipe, Process, RLock
 import multiprocessing.util
 import os
 import secrets
+import subprocess
+import sys
 
 import time
 from typing import List, Union
@@ -410,6 +412,15 @@ def add_fp_alert():
 class WaitTimedOutError(Exception):
     pass
 
+def run_python(code: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    """Runs code in a fresh interpreter from the base dir and fails the test if it fails. Import tests run
+    this way because the test process has imported nearly everything before a test starts, which hides an
+    import cycle or a heavy import."""
+    result = subprocess.run([sys.executable, "-c", code], cwd=get_base_dir(), capture_output=True, text=True,
+                            timeout=timeout)
+    assert result.returncode == 0, result.stderr[-4000:]
+    return result
+
 def wait_for_condition(condition, timeout=5, delay=0.1):
     """Waits for condition to return True. 
         condition is checked every delay seconds until it return True or timeout seconds have elapsed."""
@@ -478,12 +489,12 @@ def execute_api_server(listen_address=None, listen_port=None, ssl_cert=None, ssl
     # Serve the v2 app at /api/v2, where nginx puts it on a node: `ace_api` builds every URL
     # as https://host/api/v2/...
 
-    import aceapi_v2
+    import aceapi_v2.application
     import uvicorn
     from fastapi import FastAPI
 
     root = FastAPI()
-    root.mount('/api/v2', aceapi_v2.create_app())
+    root.mount('/api/v2', aceapi_v2.application.create_app())
 
     if listen_address is None:
         listen_address = get_config().api.listen_address

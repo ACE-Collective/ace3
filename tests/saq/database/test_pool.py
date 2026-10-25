@@ -1,10 +1,12 @@
+import logging
 import threading
 import pytest
 from sqlalchemy import text
 
+import aceapi_v2.database
 from saq.environment import ACE_MP_CONTEXT
 
-from saq.configuration.config import get_database_config
+from saq.configuration.config import get_config, get_database_config
 from saq.constants import DB_ACE
 from saq.database import pool
 from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
@@ -273,10 +275,55 @@ def test_get_db_creates_the_ace_session_on_first_request(no_sessions):
 
 
 @pytest.mark.integration
-def test_initialize_database_creates_the_ace_session_once(no_sessions):
+def test_initialize_database_leaves_the_ace_session_to_first_use(no_sessions):
+    # building the engine imports SQLAlchemy, which a process that never queries through the ORM does not need
     initialize_database()
-    session = pool._db_sessions[DB_ACE]
+    assert DB_ACE not in pool._db_sessions
+    assert not pool._db_engines
 
+    session = get_db()
     initialize_database()
     assert pool._db_sessions[DB_ACE] is session
     assert len(pool._db_engines) == 1
+
+
+@pytest.mark.unit
+def test_sql_exec_times_logged_when_enabled(monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", True)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message.startswith("START QUERY SELECT 1") for message in messages)
+    assert any(message.startswith("END QUERY") and "SELECT 1" in message for message in messages)
+
+
+@pytest.mark.unit
+def test_sql_exec_times_not_logged_when_disabled(monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", False)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    assert not [record for record in caplog.records if "QUERY" in record.getMessage()]
+
+
+@pytest.mark.unit
+def test_registering_the_timing_listeners_again_logs_each_query_once(monkeypatch, caplog):
+    pool.register_sql_timing_listeners()
+    pool.register_sql_timing_listeners()
+    monkeypatch.setattr(get_config().global_settings, "log_sql_exec_times", True)
+    with caplog.at_level(logging.DEBUG):
+        get_db().execute(text("SELECT 1"))
+
+    assert len([record for record in caplog.records if record.getMessage().startswith("START QUERY SELECT 1")]) == 1
+
+
+@pytest.mark.unit
+def test_the_api_engines_register_the_timing_listeners(monkeypatch):
+    registered = []
+    monkeypatch.setattr(aceapi_v2.database, "register_sql_timing_listeners", lambda: registered.append(True))
+    monkeypatch.setattr(aceapi_v2.database, "create_async_engine", lambda *args, **kwargs: object())
+
+    aceapi_v2.database.create_engine_for("ace")
+    assert registered == [True]
+

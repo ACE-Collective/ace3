@@ -4,16 +4,13 @@ import re
 from flask import url_for
 import pytz
 from typing import Optional
-from saq import RootAnalysis
+from saq.analysis.root import KEY_ALERT_TEMPLATE, RootAnalysis
 from saq.analysis.presenter import register_analysis_presenter, AnalysisPresenter
 from saq.configuration.config import get_config
 from saq.constants import EVENT_TIME_FORMAT, EVENT_TIME_FORMAT_TZ
 from saq.database.model import Alert
 from saq.environment import get_base_dir
 from saq.gui.icon import BlueprintFileLocation, IconConfiguration, KEY_ICON_CONFIGURATION
-
-# supported extension keys
-KEY_ALERT_TEMPLATE = "alert_template"
 
 class GUIAlert(Alert):
 

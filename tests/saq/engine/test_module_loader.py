@@ -153,3 +153,31 @@ def test_enabled_and_disabled_reference_to_removed_module_is_skipped(caplog):
 def test_has_analysis_module_config():
     assert get_config().has_analysis_module_config(get_config().analysis_modules[0].name)
     assert not get_config().has_analysis_module_config("removed_module")
+
+
+@pytest.mark.unit
+def test_a_disabled_module_is_not_imported():
+    # the engine asks this of every module an analysis mode names; a disabled one is skipped on its base config,
+    # so its python module (one that doesn't exist, here) is never imported
+    get_config().raw._data["analysis_module_test_disabled_missing"] = {
+        "name": "test_disabled_missing", "python_module": "saq.modules.does_not_exist", "python_class": "Nothing",
+        "enabled": False}
+    get_config().load_analysis_module_configs()
+
+    assert _module_loader(ANALYSIS_MODE_ANALYSIS)._should_load_module("test_disabled_missing") is False
+    assert get_config().is_analysis_module_enabled("test_disabled_missing") is False
+
+
+@pytest.mark.unit
+def test_a_module_disabled_after_it_was_resolved_is_not_loaded():
+    # ace correlate --disable-all sets enabled on the resolved configs; the loader has to read those back
+    name = get_config().analysis_modules[0].name
+    get_config().get_analysis_module_config(name).enabled = False
+
+    assert _module_loader(ANALYSIS_MODE_ANALYSIS)._should_load_module(name) is False
+
+
+@pytest.mark.unit
+def test_is_analysis_module_enabled_rejects_an_unknown_module():
+    with pytest.raises(ValueError):
+        get_config().is_analysis_module_enabled("removed_module")

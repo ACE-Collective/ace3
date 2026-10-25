@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-import saq.cli.commands  # noqa: F401
+import saq.cli.commands.correlate  # noqa: F401 -- registers the commands
 from saq.analysis.root import RootAnalysis, load_root
 from saq.cli.cli_main import get_cli_parser
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_IPV4, F_TEST, EventTimeSource

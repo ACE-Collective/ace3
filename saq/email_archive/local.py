@@ -32,7 +32,7 @@ class EmailArchiveLocal(EmailArchiveInterface):
 
     def get_archive_dir(self) -> str:
         """Returns the relative path of the email archive directory (relative to get_data_dir())"""
-        return get_config().get_analysis_module_config('email_archiver').archive_dir
+        return get_config().email_archive.archive_dir
 
     def get_email_archive_dir(self) -> str:
         """Returns the full path to the email archive directory."""

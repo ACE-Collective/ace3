@@ -1,2 +1,3 @@
-from app.application import create_app, login_manager
-from app.orm_events import before_cursor_execute, after_cursor_execute
+# deliberately imports nothing: integrations import app.integration from every ACE process to register
+# their blueprints, and anything imported here would load the whole GUI into each of those processes.
+# The application is app.application.create_app().

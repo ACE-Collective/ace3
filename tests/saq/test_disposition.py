@@ -12,6 +12,7 @@ from saq.configuration.config import get_config, get_engine_config
 from saq.configuration.schema import ACEConfig, DispositionConfig, REMOVED_DISPOSITION_CONFIG_KEYS
 from saq.constants import DISPOSITION_DELIVERY, DISPOSITION_FALSE_POSITIVE, DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Event
+from saq.engine.core import Engine
 from saq.disposition import (
     DEFAULT_DISPOSITION_CSS,
     DISPOSITION_CLASS_FP,
@@ -21,7 +22,7 @@ from saq.disposition import (
     get_disposition_rank,
     get_dispositions,
     get_selectable_dispositions,
-    initialize_dispositions,
+    validate_stop_analysis_on_dispositions,
     is_frozen_disposition,
     is_selectable_disposition,
     is_valid_disposition,
@@ -173,13 +174,22 @@ class TestValidation:
         assert list(config.dispositions)[-1] == "NEW_ONE"
 
 
-class TestInitialize:
-    def test_a_typo_in_stop_analysis_on_dispositions_fails(self, monkeypatch):
+class TestStopAnalysisOnDispositions:
+    def test_a_typo_fails(self, monkeypatch):
         engine_config = get_engine_config()
         monkeypatch.setattr(engine_config, "stop_analysis_on_dispositions",
                             ["FALSE_POSITIVE", "FALSE_POSTIVE"])
         with pytest.raises(ValueError, match="FALSE_POSTIVE"):
-            initialize_dispositions()
+            validate_stop_analysis_on_dispositions()
+
+    def test_configured_dispositions_pass(self, monkeypatch):
+        monkeypatch.setattr(get_engine_config(), "stop_analysis_on_dispositions", ["FALSE_POSITIVE"])
+        validate_stop_analysis_on_dispositions()
+
+    def test_a_typo_stops_the_engine_from_being_created(self, monkeypatch):
+        monkeypatch.setattr(get_engine_config(), "stop_analysis_on_dispositions", ["FALSE_POSTIVE"])
+        with pytest.raises(ValueError, match="FALSE_POSTIVE"):
+            Engine()
 
 
 class _RollUpEvent:

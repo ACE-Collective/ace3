@@ -6,7 +6,8 @@ from typing import Generator, override
 import pytest
 
 from saq.analysis.root import RootAnalysis, Submission
-from saq.collectors.base_collector import CollectorService, get_collection_error_dir
+from saq.collectors.base_collector import CollectorService
+from saq.environment import get_collection_error_dir
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.remote_node import save_submission_for_review
 from saq.configuration import get_config

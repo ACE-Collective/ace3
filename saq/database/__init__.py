@@ -1,28 +1,75 @@
-from saq.database.pool import get_db, get_db_connection, initialize_database, remove_all_sessions, reset_pools, get_pool
-from saq.database.retry import execute_with_retry, retry, retry_sql_on_deadlock
+from saq.lazy_exports import lazy_getattr
 
-from saq.database.model import Alert
-from saq.database.model import Campaign
-from saq.database.model import Company, CompanyMapping
-from saq.database.model import Config
-from saq.database.model import DelayedAnalysis
-from saq.database.model import DetectionPoint as db_DetectionPoint
-from saq.database.model import Event, EventStatus, EventType, EventPreventionTool, EventRemediation, EventRiskLevel, EventVector
-from saq.database.model import Lock, LockedException
-from saq.database.model import Malware, ThreatType, Threat
-from saq.database.model import ObservableMapping, ObservableRemediationMapping, ObservableTagMapping, ObservableTagIndex, TagMapping, CompanyMapping, EventMapping, EventTagMapping, MalwareMapping
-from saq.database.model import Nodes
-from saq.database.model import Observable, ObservableDetection
-from saq.database.model import Persistence, PersistenceSource
-from saq.database.model import Remediation
-from saq.database.model import Tag
-from saq.database.model import User, Owner, DispositionBy, RemediatedBy, Comment
-from saq.database.model import Workload
+# saq.database imports nothing itself: every process imports saq.database.pool to set up its connections,
+# and loading the models here, with the analysis tree they import, made every one of them pay for the ORM.
+# These names stay importable from saq.database, each loaded the first time it is asked for (PEP 562).
+# (saq.database.retry.retry is not one: importing the saq.database.retry module binds that name to the module)
+_EXPORTS = {
+    "get_db": "saq.database.pool",
+    "get_db_connection": "saq.database.pool",
+    "initialize_database": "saq.database.pool",
+    "remove_all_sessions": "saq.database.pool",
+    "reset_pools": "saq.database.pool",
+    "get_pool": "saq.database.pool",
+    "execute_with_retry": "saq.database.retry",
+    "retry_sql_on_deadlock": "saq.database.retry",
+    "Alert": "saq.database.model",
+    "Campaign": "saq.database.model",
+    "Company": "saq.database.model",
+    "CompanyMapping": "saq.database.model",
+    "Config": "saq.database.model",
+    "DelayedAnalysis": "saq.database.model",
+    "db_DetectionPoint": ("saq.database.model", "DetectionPoint"),
+    "Event": "saq.database.model",
+    "EventStatus": "saq.database.model",
+    "EventType": "saq.database.model",
+    "EventPreventionTool": "saq.database.model",
+    "EventRemediation": "saq.database.model",
+    "EventRiskLevel": "saq.database.model",
+    "EventVector": "saq.database.model",
+    "Lock": "saq.database.model",
+    "LockedException": "saq.database.model",
+    "Malware": "saq.database.model",
+    "ThreatType": "saq.database.model",
+    "Threat": "saq.database.model",
+    "ObservableMapping": "saq.database.model",
+    "ObservableRemediationMapping": "saq.database.model",
+    "ObservableTagMapping": "saq.database.model",
+    "ObservableTagIndex": "saq.database.model",
+    "TagMapping": "saq.database.model",
+    "EventMapping": "saq.database.model",
+    "EventTagMapping": "saq.database.model",
+    "MalwareMapping": "saq.database.model",
+    "Nodes": "saq.database.model",
+    "Observable": "saq.database.model",
+    "ObservableDetection": "saq.database.model",
+    "Persistence": "saq.database.model",
+    "PersistenceSource": "saq.database.model",
+    "Remediation": "saq.database.model",
+    "Tag": "saq.database.model",
+    "User": "saq.database.model",
+    "Owner": "saq.database.model",
+    "DispositionBy": "saq.database.model",
+    "RemediatedBy": "saq.database.model",
+    "Comment": "saq.database.model",
+    "Workload": "saq.database.model",
+    "ALERT": "saq.database.util.alert",
+    "set_dispositions": "saq.database.util.alert",
+    "set_disposition_reviews": "saq.database.util.alert",
+    "add_delayed_analysis_request": "saq.database.util.delayed_analysis",
+    "clear_delayed_analysis_requests": "saq.database.util.delayed_analysis",
+    "acquire_lock": "saq.database.util.locking",
+    "release_lock": "saq.database.util.locking",
+    "force_release_lock": "saq.database.util.locking",
+    "clear_expired_locks": "saq.database.util.locking",
+    "initialize_node": "saq.database.util.node",
+    "get_available_nodes": "saq.database.util.node",
+    "sync_observable": "saq.database.util.sync",
+    "add_observable_tag_mapping": "saq.database.util.tag_mapping",
+    "add_event_tag_mapping": "saq.database.util.tag_mapping",
+    "remove_observable_tag_mapping": "saq.database.util.tag_mapping",
+    "add_workload": "saq.database.util.workload",
+    "clear_workload_by_pid": "saq.database.util.workload",
+}
 
-from saq.database.util.alert import ALERT, set_dispositions, set_disposition_reviews
-from saq.database.util.delayed_analysis import add_delayed_analysis_request, clear_delayed_analysis_requests
-from saq.database.util.locking import acquire_lock, release_lock, force_release_lock, clear_expired_locks
-from saq.database.util.node import initialize_node, get_available_nodes
-from saq.database.util.sync import sync_observable
-from saq.database.util.tag_mapping import add_observable_tag_mapping, add_event_tag_mapping, remove_observable_tag_mapping
-from saq.database.util.workload import add_workload, clear_workload_by_pid
+__getattr__ = lazy_getattr(__name__, _EXPORTS)

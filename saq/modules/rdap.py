@@ -47,17 +47,6 @@ import logging
 from datetime import datetime, timezone
 from typing import NamedTuple
 
-import tldextract
-import whois
-import whoisit
-from whois.exceptions import PywhoisError
-from whoisit.errors import (
-    BootstrapError,
-    QueryError,
-    ResourceDoesNotExist,
-    UnsupportedError,
-)
-
 from saq.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
     AnalysisPresenter,
@@ -66,6 +55,9 @@ from saq.analysis.presenter.analysis_presenter import (
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.util.strings import format_item_list_for_summary
+
+# whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
+# query: the search indexer and the GUI import this module only to read RdapAnalysis
 
 KEY_ERROR = "error"
 KEY_LOOKUP_PROTOCOL = "lookup_protocol"
@@ -151,6 +143,8 @@ def _registrable_domain(value: str) -> str:
     unchanged when no public suffix is identifiable (bare hostnames,
     internal names), matching ``saq/nrd/util.py``'s handling.
     """
+    import tldextract
+
     normalized = (value or "").strip().lower().rstrip(".")
     if not normalized:
         return value
@@ -165,6 +159,9 @@ def _ensure_rdap_bootstrap() -> str | None:
     bootstrap attempts are cheap because ``whoisit`` caches state in
     module-level globals.
     """
+    import whoisit
+    from whoisit.errors import BootstrapError
+
     try:
         if not whoisit.is_bootstrapped():
             whoisit.bootstrap()
@@ -202,6 +199,11 @@ def lookup_domain_creation_date(domain: str) -> DomainCreationLookup:
     An authoritative RDAP "domain not found" is terminal (no WHOIS attempt),
     matching ``RdapAnalyzer``'s handling.
     """
+    import whois
+    import whoisit
+    from whois.exceptions import PywhoisError
+    from whoisit.errors import QueryError, ResourceDoesNotExist, UnsupportedError
+
     memoized = _creation_date_memo.get(domain)
     if memoized is not None:
         return memoized
@@ -626,6 +628,9 @@ class RdapAnalyzer(AnalysisModule):
             a free-form error string for any other failure (caller
                 will fall back to WHOIS).
         """
+        import whoisit
+        from whoisit.errors import QueryError, ResourceDoesNotExist, UnsupportedError
+
         try:
             if is_ip:
                 result = whoisit.ip(query_target, include_raw=True)
@@ -710,6 +715,9 @@ class RdapAnalyzer(AnalysisModule):
         ``observable``). Returns ``None`` on success or an error string
         on failure.
         """
+        import whois
+        from whois.exceptions import PywhoisError
+
         try:
             whois_result = whois.whois(query_domain)
         except PywhoisError as e:

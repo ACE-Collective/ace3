@@ -934,7 +934,6 @@ CONFIG_APIKEYS = "apikeys"
 
 # email archive (module)
 CONFIG_EMAIL_ARCHIVE_MODULE = "analysis_module_email_archiver"
-CONFIG_EMAIL_ARCHIVE_MODULE_DIR = "archive_dir"
 
 # email archive
 CONFIG_EMAIL_ARCHIVE = "email_archive"

@@ -6,7 +6,6 @@ import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.constants import F_URL
-from saq.util import url as url_module
 from saq.util.url import ProtectionType, extract_protected_url, find_all_url_domains, strip_url_credentials
 
 @pytest.mark.parametrize('source_url,expected_url', [
@@ -87,7 +86,7 @@ def test_one_drive_link_follows_its_redirects(monkeypatch, final_url, expected):
         calls.append(kwargs)
         return SimpleNamespace(url=final_url)
 
-    monkeypatch.setattr(url_module.requests, "get", fake_get)
+    monkeypatch.setattr(requests, "get", fake_get)
     assert extract_protected_url(ONE_DRIVE_LINK) == expected
     assert calls == [{"allow_redirects": True, "timeout": 8}]
 
@@ -97,7 +96,7 @@ def test_one_drive_link_that_cannot_be_fetched_is_left_alone(monkeypatch, caplog
     def unreachable(url, **kwargs):
         raise requests.exceptions.ConnectTimeout("timed out")
 
-    monkeypatch.setattr(url_module.requests, "get", unreachable)
+    monkeypatch.setattr(requests, "get", unreachable)
     with caplog.at_level(logging.INFO):
         assert extract_protected_url(ONE_DRIVE_LINK) == (ProtectionType.UNPROTECTED, ONE_DRIVE_LINK)
 

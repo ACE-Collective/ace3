@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 
 from saq.constants import NODE_STATUS_RUNNING, NODE_STATUS_STOPPED
+from saq.disposition import validate_stop_analysis_on_dispositions
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.worker_manager import WorkerManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
@@ -75,6 +76,8 @@ class Engine():
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+
+        validate_stop_analysis_on_dispositions()
 
         self.state = EngineState.INITIALIZING
         self.execution_mode = execution_mode

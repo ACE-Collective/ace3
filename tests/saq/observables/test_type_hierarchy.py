@@ -1,11 +1,19 @@
+import logging
+import sys
+import threading
+
 import pytest
 
+from saq.configuration.config import get_config
+from saq.observables import type_hierarchy
 from saq.observables.type_hierarchy import (
     ObservableTypeEntry,
     ObservableTypesFile,
     TypeHierarchy,
+    get_all_valid_types,
     get_type_hierarchy,
 )
+from tests.saq.helpers import wait_for_condition
 
 
 @pytest.mark.unit
@@ -693,3 +701,93 @@ def test_reset_clears_reload_state():
     assert h._config_path is None
     assert h._last_mtime is None
     assert h._next_reload_check is None
+
+
+@pytest.mark.unit
+def test_bootstrapped_on_first_use(monkeypatch):
+    # nothing bootstraps the hierarchy at startup; the first accessor call reads the configuration
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    assert get_type_hierarchy() is fresh
+    assert fresh.parent_of("email_cc") == "email_address"
+
+
+@pytest.mark.unit
+def test_get_all_valid_types_bootstraps_too(monkeypatch):
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", TypeHierarchy())
+
+    assert "email_dkim_signing_domain" in get_all_valid_types()
+
+
+@pytest.mark.unit
+def test_bootstrap_waits_for_the_configuration(monkeypatch):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    with monkeypatch.context() as no_config:
+        no_config.setattr("saq.configuration.get_config", lambda: None)
+        get_type_hierarchy()
+        assert fresh.parent_of("email_cc") is None
+
+    get_type_hierarchy()
+    assert fresh.parent_of("email_cc") == "email_address"
+
+
+def _in_function(thread: threading.Thread, name: str) -> bool:
+    frame = sys._current_frames().get(thread.ident)
+    while frame is not None:
+        if frame.f_code.co_name == name:
+            return True
+        frame = frame.f_back
+    return False
+
+
+@pytest.mark.unit
+def test_a_thread_that_asks_during_the_first_bootstrap_waits_for_it(monkeypatch):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+
+    loading, release = threading.Event(), threading.Event()
+    load = fresh.load_yaml_config
+
+    def held_load(path):
+        loading.set()
+        assert release.wait(timeout=30)
+        load(path)
+
+    monkeypatch.setattr(fresh, "load_yaml_config", held_load)
+
+    first = threading.Thread(target=get_type_hierarchy)
+    second_result = []
+    second = threading.Thread(target=lambda: second_result.append(get_all_valid_types()))
+    try:
+        first.start()
+        assert loading.wait(timeout=30)
+
+        second.start()
+        # the second caller is held at the bootstrap, not handed the registry the first one is still loading
+        wait_for_condition(lambda: second_result or _in_function(second, "_ensure_bootstrapped"))
+        assert not second_result, "the second caller read the registry before the first had loaded it"
+    finally:
+        release.set()
+        first.join(timeout=30)
+        if second.ident is not None:
+            second.join(timeout=30)
+
+    assert "email_from" in second_result[0]
+    assert "command_line" in second_result[0]
+
+
+@pytest.mark.unit
+def test_a_missing_config_file_is_bootstrapped_once(monkeypatch, tmp_path, caplog):
+    fresh = TypeHierarchy()
+    monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
+    monkeypatch.setattr(get_config().observable_types, "config_path", str(tmp_path / "missing.yaml"))
+
+    with caplog.at_level(logging.ERROR):
+        get_type_hierarchy()
+        get_type_hierarchy()
+
+    assert fresh._bootstrapped
+    assert len([r for r in caplog.records if "observable types config not found" in r.getMessage()]) == 1

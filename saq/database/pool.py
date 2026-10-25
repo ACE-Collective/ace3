@@ -4,30 +4,33 @@ from datetime import datetime
 import logging
 import os
 import threading
-from typing import Any, Callable
+import time
+from typing import TYPE_CHECKING, Any, Callable
 import warnings
 import weakref
 
 import pymysql
-from sqlalchemy import Engine, create_engine, event
 
 from saq.configuration.config import get_config
 from saq.monitor import emit_monitor
 from saq.monitor_definitions import MONITOR_DB_POOL_AVAILABLE_COUNT, MONITOR_DB_POOL_IN_USE_COUNT, MONITOR_SQLALCHEMY_DB_POOL_STATUS
 from saq.util import abs_path, create_timedelta
 
-from sqlalchemy.exc import DisconnectionError
-from sqlalchemy.orm.scoping import scoped_session
-from sqlalchemy.orm.session import sessionmaker
+if TYPE_CHECKING:
+    from sqlalchemy import Engine
+    from sqlalchemy.orm.scoping import scoped_session
+
+# SQLAlchemy is imported only where an engine or a session is built: every process imports this module for its
+# raw connections (node registration, the email archive), and only the ones that query through the ORM need it
 
 # registry of SQLAlchemy ORM scoped sessions keyed by database config name, each created
 # (with its own engine) on its first get_db() request
-_db_sessions: dict[str, scoped_session] = {}
+_db_sessions: dict[str, "scoped_session"] = {}
 _db_sessions_lock = threading.RLock()
 
 # every SQLAlchemy engine this module creates, so that reset_database_after_fork() can
 # find them all. guarded by _db_sessions_lock along with _db_sessions
-_db_engines: set[Engine] = set()
+_db_engines: set["Engine"] = set()
 
 # every DBAPI connection opened in this process, tagged with the pid that opened it, so
 # that a forked child can neutralise the ones it inherited before anything touches them.
@@ -45,7 +48,7 @@ def _track_connection(connection):
     except Exception as e:
         logging.debug("unable to track database connection: %s", e)
 
-def get_db(name: str = "ace") -> scoped_session:
+def get_db(name: str = "ace") -> "scoped_session":
     """returns the SQLAlchemy scoped session for the named database
 
     get_db() with no argument returns the "ace" session
@@ -58,9 +61,15 @@ def get_db(name: str = "ace") -> scoped_session:
         if session is not None:
             return session
 
-        session = _db_sessions[name] = scoped_session(sessionmaker(bind=_create_engine_for(name)))
+        session = _db_sessions[name] = _new_session(_create_engine_for(name))
         logging.debug("created new scoped session for database %s", name)
         return session
+
+def _new_session(engine) -> "scoped_session":
+    from sqlalchemy.orm.scoping import scoped_session
+    from sqlalchemy.orm.session import sessionmaker
+
+    return scoped_session(sessionmaker(bind=engine))
 
 def _log_pool_issue(message: str, e: Exception):
     """Log a connection-pool problem at a level that matches whether we expected it.
@@ -358,9 +367,12 @@ def _attach_engine_listeners(engine):
     it cannot see a connection that was already checked out when the fork happened, and
     pool_pre_ping writes to the socket before it ever runs. reset_database_after_fork()
     is what actually keeps the two processes apart."""
+    from sqlalchemy import event
+    from sqlalchemy.exc import DisconnectionError
 
     with _db_sessions_lock:
         _db_engines.add(engine)
+        register_sql_timing_listeners()
 
     @event.listens_for(engine, 'connect')
     def connect(dbapi_connection, connection_record):
@@ -381,6 +393,41 @@ def _attach_engine_listeners(engine):
             message = f"connection record belongs to pid {connection_record.info['pid']} attempting to check out in pid {pid}"
             logging.debug(message)
             raise DisconnectionError(message)
+
+
+def _log_sql_exec_times() -> bool:
+    """Whether query timing is enabled.
+
+    These listeners are registered on the Engine class, so they fire for *every* engine in
+    the process, including ones created before the configuration is loaded (the test suite
+    seeds its per-session databases that way). No configuration means no timing."""
+    config = get_config()
+    return config is not None and config.global_settings.log_sql_exec_times
+
+
+def register_sql_timing_listeners():
+    """Registers the query timing listeners on the Engine class, once per process.
+
+    Called for every engine ACE builds (here, and the API's async engines in aceapi_v2.database) rather
+    than when this module is imported, which would import SQLAlchemy into every process."""
+    from sqlalchemy import Engine, event
+
+    with _db_sessions_lock:
+        if not event.contains(Engine, "before_cursor_execute", _before_cursor_execute):
+            event.listen(Engine, "before_cursor_execute", _before_cursor_execute)
+            event.listen(Engine, "after_cursor_execute", _after_cursor_execute)
+
+
+def _before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _log_sql_exec_times():
+        context._query_start_time = time.time()
+        logging.debug("START QUERY {} ({})".format(statement, parameters))
+
+
+def _after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    if _log_sql_exec_times():
+        total = time.time() - context._query_start_time
+        logging.debug("END QUERY {:02f} {} ({})".format(total * 1000, statement, parameters))
 
 
 def _build_database_url(database_config) -> str:
@@ -429,6 +476,8 @@ def _build_engine_options(database_config) -> dict:
 
 def _create_engine_for(name: str):
     """creates a SQLAlchemy engine for the named database config"""
+    from sqlalchemy import create_engine
+
     database_config = get_config().get_database_config(name)
     engine = create_engine(
         _build_database_url(database_config),
@@ -439,20 +488,19 @@ def _create_engine_for(name: str):
 
 
 def initialize_database():
-    """Initializes database connections by creating the SQLAlchemy engine and session objects."""
+    """Prepares the database connections. get_db() creates the "ace" session on first use: building it
+    imports SQLAlchemy, which a process that never queries through the ORM does not need."""
 
     # see https://github.com/PyMySQL/PyMySQL/issues/644
     # /usr/local/lib/python3.6/dist-packages/pymysql/cursors.py:170: Warning: (1300, "Invalid utf8mb4 character string: '800363'")
     warnings.filterwarnings(action='ignore', message='.*Invalid utf8mb4 character string.*')
 
-    if "ace" not in _db_sessions:
-        get_db()
-
-    else:
-        # if you call this a second time it just closes all the sessions
-        # this (currently) happens in unit testing
-        from sqlalchemy.orm.session import close_all_sessions
-        close_all_sessions()
+    with _db_sessions_lock:
+        if "ace" in _db_sessions:
+            # if you call this a second time it just closes all the sessions
+            # this (currently) happens in unit testing
+            from sqlalchemy.orm.session import close_all_sessions
+            close_all_sessions()
 
 # ----------------------------------------------------------------------
 # fork safety

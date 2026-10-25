@@ -71,12 +71,13 @@ def get_disposition_class(disposition: Optional[str]) -> Optional[str]:
     return get_config().disposition_classification.get(disposition)
 
 
-def initialize_dispositions():
-    """Checks the disposition configuration once per process and records the classification.
+def validate_stop_analysis_on_dispositions():
+    """Checks that every disposition the engine's stop_analysis_on_dispositions names is configured.
 
-    The engine's stop_analysis_on_dispositions lives in the engine's service config, which the
-    main config schema does not validate, so a typo there is caught here rather than silently
-    never matching.
+    The setting lives in the engine's service config, which the main config schema does not
+    validate, so a typo there is caught when an Engine is created rather than silently never
+    matching. Only the engine reads it, and resolving the engine's service config imports the
+    engine, so no other process checks it.
     """
     unknown = [d for d in get_engine_config().stop_analysis_on_dispositions if not is_valid_disposition(d)]
     if unknown:

@@ -7,7 +7,6 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
 import bcrypt
-from flask_login import UserMixin
 from sqlalchemy import (
     BINARY,
     BLOB,
@@ -55,7 +54,6 @@ from sqlalchemy.orm import (
     validates,
 )
 from sqlalchemy.orm.session import Session
-from werkzeug.security import check_password_hash as werkzeug_check_password_hash
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable as _Observable
@@ -90,7 +88,9 @@ def verify_password_hash(plain_password: str, hashed_password: str) -> bool:
         # Bcrypt hash ($2a$, $2b$, $2y$)
         return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
     else:
-        # Legacy werkzeug hash (pbkdf2, scrypt, etc.)
+        # Legacy werkzeug hash (pbkdf2, scrypt, etc.). Imported here: only these hashes need werkzeug,
+        # and every process imports this module.
+        from werkzeug.security import check_password_hash as werkzeug_check_password_hash
         return werkzeug_check_password_hash(hashed_password, plain_password)
 
 
@@ -3644,9 +3644,33 @@ class Tag(Base):
     def init_on_load(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-class User(UserMixin, Base):
+class User(Base):
 
     __tablename__ = 'users'
+
+    # what Flask-Login expects of a user object, as flask_login.UserMixin defines it; defined here so
+    # importing the models does not import Flask
+    __hash__ = object.__hash__
+
+    @property
+    def is_active(self) -> bool:
+        return True
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.is_active
+
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
+    def get_id(self) -> str:
+        return str(self.id)
+
+    def __eq__(self, other):
+        if isinstance(other, User):
+            return self.get_id() == other.get_id()
+        return NotImplemented
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)

@@ -127,6 +127,26 @@ def test_values_reuses_cached_instance(registry):
 
 
 @pytest.mark.unit
+def test_peek_does_not_resolve(registry, import_counter):
+    """peek() hands back the base config until the name is resolved, and the resolved one after"""
+    registry.add_raw("fake_one", raw_config("one", enabled=False))
+
+    base = registry.peek("one")
+    assert type(base) is FakeBaseConfig
+    assert base.enabled is False
+    assert import_counter == []
+    assert not registry.is_resolved("one")
+
+    resolved = registry.get("one")
+    resolved.enabled = True
+    assert registry.peek("one") is resolved
+    assert registry.peek("one").enabled is True
+
+    with pytest.raises(KeyError):
+        registry.peek("missing")
+
+
+@pytest.mark.unit
 def test_get_unknown_name_raises_key_error(registry):
     with pytest.raises(KeyError):
         registry.get("missing")

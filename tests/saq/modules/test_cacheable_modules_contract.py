@@ -75,16 +75,16 @@ def _check_rdap_analyzer(test_context, monkeypatch):
         },
         "raw": {"objectClassName": "domain"},
     }
-    monkeypatch.setattr("saq.modules.rdap.whoisit.is_bootstrapped", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.bootstrap", lambda: True)
-    monkeypatch.setattr("saq.modules.rdap.whoisit.domain", lambda _d, **_kw: fake_rdap)
+    monkeypatch.setattr("whoisit.is_bootstrapped", lambda: True)
+    monkeypatch.setattr("whoisit.bootstrap", lambda: True)
+    monkeypatch.setattr("whoisit.domain", lambda _d, **_kw: fake_rdap)
 
     def _whois_must_not_be_called(_domain):
         raise AssertionError(
             "whois.whois must not be called when RDAP succeeds"
         )
 
-    monkeypatch.setattr("saq.modules.rdap.whois.whois", _whois_must_not_be_called)
+    monkeypatch.setattr("whois.whois", _whois_must_not_be_called)
 
     root = create_root_analysis()
     root.initialize_storage()
@@ -227,7 +227,7 @@ def _check_ocr(test_context, monkeypatch):
     from saq.modules.file_analysis.ocr import OCRAnalyzer
 
     monkeypatch.setattr(
-        "saq.modules.file_analysis.ocr.get_image_text",
+        "saq.ocr.get_image_text",
         lambda _image: "EXTRACTED TEXT https://example.com/",
     )
 

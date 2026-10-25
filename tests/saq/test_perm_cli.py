@@ -2,7 +2,7 @@
 
 import pytest
 
-import saq.cli.commands  # noqa: F401 -- registers the commands
+import saq.cli.commands.permissions  # noqa: F401 -- registers the commands
 from saq.cli.cli_main import get_cli_parser
 from saq.database.model import AuthGroup, AuthPermissionCatalog
 from saq.database.pool import get_db

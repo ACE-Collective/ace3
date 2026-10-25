@@ -5,7 +5,7 @@
 # F_* string identifiers stay in code, but everything
 # else about each type lives here.
 #
-# Loaded by saq.observables.type_hierarchy.bootstrap_type_hierarchy at startup.
+# Loaded by saq.observables.type_hierarchy.bootstrap_type_hierarchy on first use.
 # The path is configured by observable_types.config_path in saq.default.yaml
 # and defaults to this file. 
 

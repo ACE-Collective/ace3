@@ -11,7 +11,7 @@ def register_analysis_presenter(
     analysis_class: Type["Analysis"], presenter_class: Type["AnalysisPresenter"]
 ):
     """Register a custom presenter for a specific analysis class."""
-    from saq import Analysis
+    from saq.analysis.analysis import Analysis
     assert issubclass(analysis_class, Analysis)
     assert issubclass(presenter_class, AnalysisPresenter)
     _ANALYSIS_PRESENTER_REGISTRY[analysis_class] = presenter_class

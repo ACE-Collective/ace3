@@ -3,7 +3,7 @@ import uuid
 import pytest
 import yaml
 
-import saq.cli.commands  # noqa: F401
+import saq.cli.commands.config_cmd  # noqa: F401 -- registers the commands
 from saq.cli.cli_main import get_cli_parser
 from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config

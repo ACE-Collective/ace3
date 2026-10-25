@@ -590,7 +590,7 @@ class TestUnhandledException:
             base_url="http://test",
             headers={"x-ace-auth": valid_api_key},
         ) as client:
-            with caplog.at_level(logging.ERROR, logger="aceapi_v2.application"):
+            with caplog.at_level(logging.ERROR, logger="aceapi_v2.app_factory"):
                 response = await client.get(f"/alerts/{VALID_UUID}/download")
 
         # the catch-all handler returns a consistent JSON 500 body
@@ -599,9 +599,9 @@ class TestUnhandledException:
 
         # the exception was logged at ERROR with a traceback by the app handler
         records = [
-            r for r in caplog.records if r.name == "aceapi_v2.application"
+            r for r in caplog.records if r.name == "aceapi_v2.app_factory"
         ]
-        assert records, "expected an aceapi_v2.application log record"
+        assert records, "expected an aceapi_v2.app_factory log record"
         record = records[-1]
         assert record.levelno == logging.ERROR
         assert isinstance(record.exc_info[1], RuntimeError)

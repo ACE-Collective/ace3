@@ -306,8 +306,8 @@ def _close_local_connections() -> None:
     pool.remove_all_sessions()
     close_all_sessions()
 
-    # importing aceapi_v2 pulls the whole FastAPI application in through the package
-    # __init__, so only shut the background loop down if something already started it
+    # the background loop exists only once something has imported aceapi_v2.sync, and importing it
+    # here would load the async database layer for nothing, so only shut the loop down if it is loaded
     sync_module = sys.modules.get("aceapi_v2.sync")
     if sync_module is not None:
         try:

@@ -90,7 +90,6 @@ zstandard
 
 # LLM stuff
 numpy
-pandas
 tqdm
 qdrant-client
 

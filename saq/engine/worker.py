@@ -1,5 +1,6 @@
 import ctypes
 from datetime import datetime, timedelta
+import gc
 import logging
 from multiprocessing import Process
 import os
@@ -334,7 +335,14 @@ class Worker:
             name="Worker [{}]".format(self.config.analysis_mode_priority if self.config.analysis_mode_priority else "any"),
             kwargs={"execution_mode": execution_mode, "pending_failure": pending_failure}
         )
-        self.process.start()
+        # frozen objects are never walked by the collector, so the worker's collections leave the pages it shares
+        # with this process alone instead of copying every one that holds a tracked object. This process unfreezes
+        # at once, so it still collects its own garbage; the worker keeps them frozen
+        gc.freeze()
+        try:
+            self.process.start()
+        finally:
+            gc.unfreeze()
         # the worker does this too, first thing. Doing it here as well means the group exists once start()
         # returns, whichever side runs first. It cannot fail: only this thread reaps the child, a zombie
         # still accepts it, and the child never execs or starts a session of its own

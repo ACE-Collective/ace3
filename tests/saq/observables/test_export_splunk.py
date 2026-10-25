@@ -8,7 +8,7 @@ from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_FROM, F_EMAIL_REPLY_TO, F_TES
 from saq.database.model import ObservableDetection
 from saq.database.pool import get_db
 from saq.database.util.observable_detection import create_observable_detection
-from saq.observables.export.config import ObservableExportConfig
+from saq.configuration.schema import ObservableExportConfig
 from saq.observables.export.manager import get_observable_exports, run_exports
 from saq.observables.export.splunk_kvstore import (
     SplunkKVStoreExport,

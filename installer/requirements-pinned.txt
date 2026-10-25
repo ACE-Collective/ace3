@@ -90,7 +90,6 @@ zstandard==0.25.0
 
 # LLM stuff
 numpy==2.5.3
-pandas==3.0.5
 tqdm==4.70.1
 qdrant-client==1.19.0
 

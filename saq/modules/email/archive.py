@@ -96,7 +96,6 @@ KEY_ARCHIVE_PATH = "archive_path"
 KEY_HASH = "hash"
 
 class EmailArchiveActionConfig(AnalysisModuleConfig):
-    archive_dir: str = Field(..., description="The directory to contain the archived emails (relative to DATA_DIR).")
     expiration_days: int = Field(..., description="The number of days to keep archived emails.")
 
 class EmailArchiveResults(Analysis):

@@ -70,7 +70,7 @@ introduces a cycle) leaves the prior in-memory state intact and logs an
 error.
 
 Set `reload_check_interval_seconds` to `0` (or any non-positive value) to
-disable runtime reload entirely — the registry then loads once at startup
+disable runtime reload entirely — the registry then loads once, on first use,
 and never refreshes, matching the behavior before this feature shipped.
 
 The `/observable_types/` API endpoint applies its own short TTL cache
@@ -273,4 +273,4 @@ email addresses.
 | Display-label fallback                   | `saq/analysis/observable.py` (`Observable.display_type`)                                        |
 | `observable_modifier` rule matching      | `saq/modules/util/observable_modifier.py` (`RuleConditions.evaluate`, `evaluate_early`)         |
 | Detection export type selection          | `saq/observables/export/base.py` (`select_detections`), used by the yara and splunk targets      |
-| Bootstrap at startup                     | `saq/environment.py` (`initialize_environment` calls `bootstrap_type_hierarchy`)                |
+| Bootstrap on first use                   | `saq/observables/type_hierarchy.py` (`get_type_hierarchy()` and `get_all_valid_types()` call `bootstrap_type_hierarchy()` once the configuration is loaded) |
