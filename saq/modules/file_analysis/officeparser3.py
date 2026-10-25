@@ -167,11 +167,9 @@ class OfficeParserAnalyzer3(AnalysisModule):
             _file.add_tag('officeparser_failed')
             _file.add_directive(DIRECTIVE_SANDBOX)
 
-            #try:
-                #p.kill()
-            #except:
-                #pass
-
+            # communicate() leaves the process running when it times out, and the one below then
+            # waited for it with no limit at all
+            p.kill()
             stdout, stderr = p.communicate()
 
         manifest_path = os.path.join(officeparser_output_dir, 'manifest')
