@@ -15,8 +15,12 @@ from saq.modules.file_analysis.is_file_type import is_office_file
 from saq.observables.file import FileObservable
 
 
-# how long pcodedmp gets on one file (in seconds)
+# how long pcodedmp gets on one file (in seconds), enforced by bin/pcodedmp_wrapper
 PCODEDMP_TIMEOUT = 30
+# how much longer than that the module waits for the wrapper before giving up on it
+PCODEDMP_WAIT_MARGIN = 5
+# what bin/pcodedmp_wrapper exits with when pcodedmp was killed
+PCODEDMP_KILLED = 137
 
 KEY_TOTAL_HEX_STRINGS = "total_hex_strings"
 KEY_LARGEST_HEX_STRING = "largest_hex_string"
@@ -247,21 +251,23 @@ class PCodeAnalyzer(AnalysisModule):
 
         with open(stderr_path, 'wb') as stderr_fp:
             with open(stdout_path, 'wb') as stdout_fp:
-                # we use a wrapper program to filter out only the .bas lines. it is a pipeline, so it
-                # gets its own process group: on a timeout the whole pipeline is killed, not just bash
-                p = Popen([os.path.join(get_base_dir(), 'bin', 'pcodedmp_wrapper'), 
-                           self.pcodedmp_path, local_file_path], stdout=stdout_fp, stderr=stderr_fp,
-                          start_new_session=True)
-                timed_out = False
+                # we use a wrapper program to filter out only the .bas lines. it also stops pcodedmp
+                # at PCODEDMP_TIMEOUT, so the pipeline stays in the worker's process group and is
+                # bounded even when the worker is killed while it waits here
+                p = Popen([os.path.join(get_base_dir(), 'bin', 'pcodedmp_wrapper'), str(PCODEDMP_TIMEOUT),
+                           self.pcodedmp_path, local_file_path], stdout=stdout_fp, stderr=stderr_fp)
                 try:
-                    p.wait(timeout=PCODEDMP_TIMEOUT)
+                    p.wait(timeout=PCODEDMP_TIMEOUT + PCODEDMP_WAIT_MARGIN)
                 except TimeoutExpired:
-                    logging.warning(f"pcodedmp timed out after {PCODEDMP_TIMEOUT} seconds on {local_file_path}")
-                    timed_out = True
-                    os.killpg(p.pid, signal.SIGKILL)
+                    # a backstop that keeps the module from waiting forever. only bash can be killed
+                    # here (the rest of the pipeline shares the worker's group); pcodedmp still ends at
+                    # its own deadline, and sed and egrep with it
+                    logging.exception(f"pcodedmp_wrapper did not exit on {local_file_path}, killing it")
+                    p.kill()
                     p.wait()
 
-        if timed_out:
+        if p.returncode in (PCODEDMP_KILLED, -signal.SIGKILL):
+            logging.warning(f"pcodedmp timed out after {PCODEDMP_TIMEOUT} seconds on {local_file_path}")
             # whatever it wrote is incomplete
             os.remove(stdout_path)
             os.remove(stderr_path)

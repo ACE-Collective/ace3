@@ -267,10 +267,11 @@ them (pid and process name). A leftover named like the engine itself (`python3`)
 a copy of the worker that never reached its exec, which is what a child that runs
 Python before its exec in a threaded process does when it deadlocks on a lock another
 thread held at the fork (see `saq/database/pool.py`'s `reset_database_after_fork`). A process that starts a session
-or group of its own has left the group, and nothing here kills it. The sandbox launcher
-bounds itself (it is a subreaper and stops everything at its `--deadline`); `pcodedmp`
-is bounded only by its worker's own 30-second wait, so it outlives a worker that is
-killed while it runs.
+or group of its own has left the group, and nothing here kills it, so it has to bound
+itself: the sandbox launcher is a subreaper and stops everything at its `--deadline`.
+A tool that can stay in the group should, and bound itself anyway: `bin/pcodedmp_wrapper`
+runs `pcodedmp` under `timeout --foreground`, so it stops at its deadline even when its
+worker is killed while it waits, and dies with the worker's group otherwise.
 
 `restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
