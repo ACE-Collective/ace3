@@ -41,7 +41,7 @@ def fake_dmg2img(monkeypatch):
             args = ["echo", "dmg2img converted"]
         return real_popen(args, *a, **kw)
 
-    monkeypatch.setattr("saq.modules.file_analysis.dmg.Popen", _popen)
+    monkeypatch.setattr("subprocess.Popen", _popen)
 
 
 @pytest.mark.integration

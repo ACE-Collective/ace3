@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from subprocess import PIPE, Popen
 from typing import Type
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -88,9 +87,12 @@ class SsdeepAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         logging.debug("analyzing file {}".format(local_file_path))
-        p = Popen(['ssdeep', '-m', self.ssdeep_hashes, local_file_path], 
-            stdout=PIPE, stderr=PIPE, universal_newlines=True)
-        (stdout, stderr) = p.communicate()
+        p = self.run_tool(['ssdeep', '-m', self.ssdeep_hashes, local_file_path], local_file_path,
+                          capture_output=True, universal_newlines=True)
+        if p is None:
+            return AnalysisExecutionResult.COMPLETED
+
+        stdout, stderr = p.stdout, p.stderr
 
         if p.returncode != 0:
             # a missing or unreadable hashes file fails every file, so an operator has to hear about it

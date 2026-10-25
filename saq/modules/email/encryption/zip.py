@@ -177,8 +177,13 @@ class ZipEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = Popen([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
+        p = self.run_tool([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], _file.full_path,
+                          capture_output=True)
+        if p is None:
+            analysis.error = "zip2john timed out"
+            return AnalysisExecutionResult.COMPLETED
+
+        stdout, stderr = p.stdout, p.stderr
 
         # did we get the hash?
         if not stdout:

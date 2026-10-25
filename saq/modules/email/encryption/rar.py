@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 
 from pydantic import Field
@@ -173,8 +172,13 @@ class RarEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = Popen([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], stdout=PIPE, stderr=PIPE)
-        stdout, stderr = p.communicate()
+        p = self.run_tool([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], _file.full_path,
+                          capture_output=True)
+        if p is None:
+            analysis.error = "rar2john timed out"
+            return AnalysisExecutionResult.COMPLETED
+
+        stdout, stderr = p.stdout, p.stderr
 
         # did we get the hash?
         if not stdout:

@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-from subprocess import PIPE, Popen
 from typing import override
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
@@ -85,9 +84,12 @@ class UPXAnalyzer(AnalysisModule):
 
     def test_upx(self, path):
         """Returns True if the upx command returns OK for the file at path."""
-        _stdout, _stderr = Popen(['upx', '-t', path], stdout=PIPE, stderr=PIPE).communicate()
+        result = self.run_tool(['upx', '-t', path], path, capture_output=True)
+        if result is None:
+            return False
+
         ok_regex = re.compile(b'^testing .* \\[OK\\]$', re.M)
-        return ok_regex.search(_stdout) is not None
+        return ok_regex.search(result.stdout) is not None
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         local_file_path = _file.full_path
@@ -104,7 +106,15 @@ class UPXAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
         output_path = f'{local_file_path}.upx.exe'
         try:
-            analysis.details['stdout'], analysis.details['stderr'] = Popen(['upx', '-d', f'-o{output_path}', local_file_path], stdout=PIPE, stderr=PIPE).communicate()
+            result = self.run_tool(['upx', '-d', f'-o{output_path}', local_file_path], local_file_path, capture_output=True)
+            if result is None:
+                analysis.details['error'] = "upx -d timed out"
+                # whatever it wrote is incomplete
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return AnalysisExecutionResult.COMPLETED
+
+            analysis.details['stdout'], analysis.details['stderr'] = result.stdout, result.stderr
             analysis.details['output_file'] = os.path.basename(output_path)
         except Exception as e:
             analysis.details['error'] = str(e)

@@ -940,6 +940,9 @@ executor sets a deadline on the module's context just before the monitor starts,
 the sooner of the module's `maximum_analysis_time` and what is left of the
 cumulative fail time (not counted in an ignored mode), and clears it when the
 call returns. Outside of an engine call it returns `maximum_analysis_time`.
+`self.run_tool(args, target, **kwargs)` runs an external tool that way: as `subprocess.run()`, killed
+`TOOL_TIMEOUT_MARGIN_SECONDS` before the call runs out of time (and logged), returning `None`, so
+that the module can still return before the watchdog kills the worker.
 
 ### 12.2 Cancellation
 
