@@ -11,6 +11,8 @@ from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE, R_EXTRACTED_FROM
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.file_type import FileTypeAnalyzer
+from saq.modules.file_analysis.hash import FileHashAnalyzer
 from saq.modules.file_analysis.is_file_type import (
     is_office_file,
     is_ole_file,
@@ -149,10 +151,6 @@ class ExifAnalyzer(AnalysisModule):
         return F_FILE
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
-
-        from saq.modules.file_analysis.hash import FileHashAnalyzer
-        from saq.modules.file_analysis.file_type import FileTypeAnalyzer
-
         local_file_path = _file.full_path
         if not os.path.exists(local_file_path):
             logging.error(f"cannot find local file path {local_file_path}")
