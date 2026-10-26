@@ -1,12 +1,20 @@
+import base64
+
 import pytest
 
+from saq.analysis.root import load_root
 from saq.configuration.config import get_config
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanResults_v3_4_Presenter
+from tests.saq.modules.test_yara import _rule, _scan, signature_dir, socket_dir, write_rules  # noqa: F401 (fixtures)
 
 
 def _render(app, scan_result: dict) -> str:
     analysis = YaraScanResults_v3_4()
     analysis.scan_results = [scan_result]
+    return _render_analysis(app, analysis)
+
+
+def _render_analysis(app, analysis: YaraScanResults_v3_4) -> str:
     template = app.jinja_env.get_template("analysis/yara_analysis_v3_4.html")
     return template.render(analysis=analysis, analysis_presenter=YaraScanResults_v3_4_Presenter(analysis),
                            ace_config=get_config())
@@ -24,6 +32,7 @@ def _scan_result(**kwargs) -> dict:
         "tags": [],
         "strings": [[7, "$a", "world"]],
         "context": [[7, "$a", "world", HEXDUMP]],
+        "match_context": [{"data": base64.b64encode(b"Hello, world!\n").decode(), "match_offset": 7, "match_length": 5}],
         "string_patterns": {"$a": '"wor<ld" nocase'},
     }
     result.update(kwargs)
@@ -85,7 +94,7 @@ def test_string_match_identifier_has_one_dollar(app):
 
 @pytest.mark.integration
 def test_string_match_value_shows_whitespace(app):
-    result = _scan_result(context=[[12, "$nl", "!\n", HEXDUMP]], string_patterns={})
+    result = _scan_result(context=[[12, "$nl", "!\n", HEXDUMP]], match_context=[], string_patterns={})
     html = _render(app, result)
     assert 'value <b>!<span class="yara-ws">\u240a</span></b>' in html
 
@@ -97,3 +106,32 @@ def test_string_match_hexdump_is_highlighted(app):
     assert '<pre class="yara-hexdump">00000000' in html
     assert ("00000000  48 65 6c 6c 6f 2c 20 <mark>77  6f 72 6c 64</mark> 21 0a        "
             "|Hello, <mark>world</mark>!.|") in html
+
+
+@pytest.mark.integration
+def test_meta_keeps_non_ascii_text(app):
+    html = _render(app, _scan_result(meta={"description": "Zugangsdaten f\u00fcr Kunden"}))
+    assert "Zugangsdaten f\u00fcr Kunden" in html
+
+
+@pytest.mark.integration
+def test_result_saved_before_match_context_shows_the_stored_dump(app):
+    html = _render(app, _scan_result(match_context=None))
+    assert '<pre class="yara-hexdump">00000000  48 65 6c 6c 6f 2c 20 77  6f 72 6c 64 21 0a        |Hello, world!.|' in html
+    assert "<mark>" not in html
+
+
+@pytest.mark.integration
+def test_scanned_saved_and_reloaded_result_renders(app, socket_dir, write_rules, root_analysis):
+    """The view reads what a scan saved, after it went through the alert's JSON."""
+    write_rules(_rule("reloaded_rule", strings='$a = "world" nocase'))
+    observable = _scan(root_analysis, content=b"Hello, world!\n")
+    root_analysis.save()
+
+    reloaded = load_root(root_analysis.storage_dir)
+    analysis = reloaded.get_observable(observable.uuid).get_and_load_analysis(YaraScanResults_v3_4)
+    html = _render_analysis(app, analysis)
+
+    assert "pattern <code>&#34;world&#34; nocase</code>" in html
+    assert "|Hello, <mark>world</mark>!.|" in html
+    assert 'value <b>world</b>' in html

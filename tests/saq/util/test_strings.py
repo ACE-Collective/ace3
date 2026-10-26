@@ -1,9 +1,12 @@
+import subprocess
+
 import pytest
 
 from saq.util.strings import (
     decode_ascii_hex,
     decode_base64,
     format_item_list_for_summary,
+    hexdump_line,
     is_base64,
 )
 
@@ -219,3 +222,23 @@ class TestIsBase64:
             # Also test without padding
             encoded_no_pad = encoded.rstrip('=')
             assert is_base64(encoded_no_pad) is True
+
+@pytest.mark.unit
+@pytest.mark.parametrize("data", [b"Hello, world!\n", bytes(range(32)), b"0123456789abcdef0123"])
+def test_hexdump_line_matches_hexdump(data):
+    expected = subprocess.run(["hexdump", "-C"], input=data, capture_output=True, check=True).stdout.decode()
+    lines = [hexdump_line(offset, data[offset:offset + 16]) for offset in range(0, len(data), 16)]
+    assert "\n".join(lines) + f"\n{len(data):08x}\n" == expected
+
+
+@pytest.mark.unit
+def test_hexdump_line_marks_a_range_in_html():
+    line = hexdump_line(16, b"ab<cdefghijklmno", range(18, 26), html=True)
+    assert line == ("00000010  61 62 <mark>3c 63 64 65 66 67  68 69</mark> 6a 6b 6c 6d 6e 6f  "
+                    "|ab<mark>&lt;cdefghi</mark>jklmno|")
+
+
+@pytest.mark.unit
+def test_hexdump_line_escapes_html_and_ignores_marks_in_text():
+    assert hexdump_line(0, b"<", range(0, 1), html=True).endswith("|<mark>&lt;</mark>|")
+    assert hexdump_line(0, b"<", range(0, 1)).endswith("|<|")

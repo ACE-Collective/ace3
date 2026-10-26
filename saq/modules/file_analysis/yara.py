@@ -1,5 +1,7 @@
+import base64
 from datetime import datetime
 import gc
+import json
 import logging
 import os
 import re
@@ -13,8 +15,8 @@ from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
-from saq.configuration.config import get_analysis_module_config, get_service_config
-from saq.constants import ANALYSIS_MODULE_YARA_SCANNER_V3_4, SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
+from saq.configuration.config import get_service_config
+from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_data_dir
@@ -23,7 +25,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
-from saq.signatures.loaders.yara import rule_string_patterns
+from saq.signatures.loaders.yara import attach_string_patterns, compiled_string_patterns, read_string_patterns
 from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
@@ -35,7 +37,7 @@ from saq.yara_scanning.service import get_validated_git_repo_dirs
 import yara
 import yara_scanner
 
-from saq.util.strings import format_item_list_for_summary
+from saq.util.strings import format_item_list_for_summary, hexdump_line
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -94,20 +96,6 @@ def _yara_detection_details(file_observable: FileObservable, match_result: dict,
         "namespace": _relative_namespace(match_result.get("namespace"), signature_dir),
         "rule_uuid": (match_result.get("meta") or {}).get("uuid") or None,
     }
-
-
-def _matched_string_patterns(match_result: dict) -> dict[str, str]:
-    """identifier -> pattern for each string of the rule that matched, shown with the string matches
-    in the GUI. Read when the file is scanned, so it is the rule as it was when it matched."""
-    try:
-        patterns = rule_string_patterns(match_result.get("namespace"), match_result["rule"])
-    except Exception:
-        logging.exception("unable to read the string patterns of yara rule %s", match_result.get("rule"),
-                          extra={"yara_rule": match_result.get("rule"), "path": match_result.get("namespace")})
-        return {}
-
-    matched = {string[1] for string in match_result.get("strings") or []}
-    return {identifier: pattern for identifier, pattern in patterns.items() if identifier in matched}
 
 
 def is_yara_detection(detection: DetectionPoint) -> bool:
@@ -238,6 +226,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
         # in the case where the yara scanning server is unavailable a local scanner is used
         self.scanner = None
+        # the string patterns of the rules the local scanner compiled
+        self.local_string_patterns = {}
 
         # we use it for N minutes defined in the configuration
         self.scanner_start_time = None
@@ -251,7 +241,9 @@ class YaraScanner_v3_4(AnalysisModule):
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
+        patterns_read = read_string_patterns(self.scanner)
         self.scanner.load_rules()
+        self.local_string_patterns = compiled_string_patterns(patterns_read)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
 
@@ -365,6 +357,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 try:
                     matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
+                    attach_string_patterns(result, self.local_string_patterns)
                 except yara.TimeoutError as e:
                     logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
                     matches_found = False
@@ -568,9 +561,9 @@ class YaraScanner_v3_4(AnalysisModule):
 
 
 
-            yara_result['string_patterns'] = _matched_string_patterns(yara_result)
-
             yara_result['context'] = []
+            # aligned with context: the bytes around each match and where in them the match is
+            yara_result['match_context'] = []
             for position, string_id, value in yara_result['strings']:
                 # we want some context around what we matched
                 start_byte = position - self.context_bytes
@@ -591,6 +584,10 @@ class YaraScanner_v3_4(AnalysisModule):
                     stdout, _ = p.communicate()
                     p.wait()
                     yara_result['context'].append([position, string_id, value, stdout])
+                    yara_result['match_context'].append({
+                        "data": base64.b64encode(context_data).decode("ascii"),
+                        "match_offset": position - start_byte,
+                        "match_length": len(value)})
 
                 # build disassembly output if the rule specifies this
                 if 'asm' in yara_result['tags']:
@@ -628,10 +625,6 @@ class YaraScanner_v3_4(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
 
-# one line of `hexdump -C`: offset, up to 16 hex bytes, then the ascii column between bars
-_HEXDUMP_LINE = re.compile(r"^([0-9a-f]{8})  ((?:[0-9a-f]{2} {1,2})+) *\|(.*)\|$")
-
-
 def _visible_char(c: str) -> str | None:
     """The symbol shown for a non-printing character, or None for one shown as is."""
     if ord(c) < 0x20:
@@ -662,93 +655,19 @@ def visible_match_value(value) -> Markup:
     return Markup("").join(result)
 
 
-def _parse_hexdump(hexdump: str) -> list[tuple[int, bytes] | str]:
-    """The lines of a `hexdump -C` output: (offset, bytes) for a data line, the line itself for
-    anything else (the `*` hexdump puts in place of repeated lines, and the final offset)."""
-    result = []
-    for line in hexdump.splitlines():
-        m = _HEXDUMP_LINE.match(line)
-        result.append((int(m.group(1), 16), bytes.fromhex(m.group(2))) if m else line)
-
-    return result
+# the most string matches of one rule shown with a highlighted hex dump; past that, the dump is shown
+# as it was stored, so a rule matching thousands of times doesn't slow down every render
+MAX_HIGHLIGHTED_MATCHES = 100
 
 
-def _locate_match(lines: list, value_bytes: bytes, expected_offset: int) -> int | None:
-    """Where in the dump the matched bytes are: at expected_offset when they are there, otherwise at
-    their only occurrence in the dump, otherwise None."""
-    data = {}
-    for line in lines:
-        if isinstance(line, tuple):
-            for index, byte in enumerate(line[1]):
-                data[line[0] + index] = byte
-
-    def matches_at(offset: int) -> bool:
-        # bytes hidden behind a `*` can't be checked, so only the ones shown have to agree
-        shown = [(data[offset + i], b) for i, b in enumerate(value_bytes) if offset + i in data]
-        return bool(shown) and all(a == b for a, b in shown)
-
-    if matches_at(expected_offset):
-        return expected_offset
-
-    dump = bytes(data.get(i, 0) for i in range(max(data) + 1)) if data else b""
-    first = dump.find(value_bytes)
-    if first != -1 and dump.find(value_bytes, first + 1) == -1:
-        return first
-
-    return None
-
-
-def _hexdump_line(offset: int, line_bytes: bytes, marked: range) -> Markup:
-    """One `hexdump -C` line rebuilt with the bytes in marked wrapped in <mark>, in both columns."""
-    hex_cells, ascii_cells = [], []
-    for index in range(16):
-        separator = "  " if index == 8 else (" " if index else "")
-        if index >= len(line_bytes):
-            hex_cells.append((separator + "  ", False))
-            continue
-
-        byte = line_bytes[index]
-        is_marked = offset + index in marked
-        hex_cells.append((separator, is_marked and offset + index - 1 in marked))
-        hex_cells.append((f"{byte:02x}", is_marked))
-        ascii_cells.append((chr(byte) if 0x20 <= byte < 0x7f else ".", is_marked))
-
-    def render(cells) -> Markup:
-        result, run, run_marked = [], [], False
-        for text, is_marked in cells + [("", None)]:
-            if is_marked != run_marked and run:
-                joined = escape("".join(run))
-                result.append(Markup("<mark>{}</mark>").format(joined) if run_marked else joined)
-                run = []
-            run_marked = is_marked
-            run.append(text)
-
-        return Markup("").join(result)
-
-    return Markup("{:08x}  {}  |{}|").format(offset, render(hex_cells), render(ascii_cells))
-
-
-def highlight_hexdump(context: list, context_bytes: int) -> Markup:
-    """The `hexdump -C` of a string match's context ([position, identifier, value, hexdump, ...])
-    with the matched bytes marked. The dump starts context_bytes before the match, or at the start
-    of the file. The saved value went through unicode_escape (saq.json_encoding), which is lossy for
-    a match holding a backslash; when the bytes can't be found in the dump it is shown unmarked."""
-    position, _, value, hexdump = context[:4]
-    if isinstance(hexdump, bytes):
-        hexdump = hexdump.decode("latin-1")
-
-    lines = _parse_hexdump(hexdump)
-    try:
-        value_bytes = str(value).encode("latin-1")
-    except UnicodeEncodeError:
-        value_bytes = b""
-
-    start = _locate_match(lines, value_bytes, min(position, context_bytes)) if value_bytes else None
-    marked = range(start, start + len(value_bytes)) if start is not None else range(0)
-
-    rendered = [_hexdump_line(line[0], line[1], marked) if isinstance(line, tuple) else escape(line)
-                for line in lines]
-    return Markup("\n").join(rendered)
+def highlight_hexdump(match_context: dict) -> Markup:
+    """The hex dump of the bytes around a string match (a match_context entry), with the match
+    marked."""
+    data = base64.b64decode(match_context["data"])
+    marked = range(match_context["match_offset"], match_context["match_offset"] + match_context["match_length"])
+    lines = [hexdump_line(offset, data[offset:offset + 16], marked, html=True) for offset in range(0, len(data), 16)]
+    lines.append(f"{len(data):08x}")
+    return Markup("\n".join(lines))
 
 
 class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
@@ -761,8 +680,17 @@ class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
     def visible_value(self, value) -> Markup:
         return visible_match_value(value)
 
-    def highlighted_hexdump(self, context: list) -> Markup:
-        return highlight_hexdump(context, get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).context_bytes)
+    def meta_json(self, meta: dict) -> str:
+        return json.dumps(meta, indent=4, sort_keys=True, ensure_ascii=False, default=str)
+
+    def hexdump(self, yara_result: dict, index: int) -> Markup:
+        """The hex dump of the index'th string match. Results saved before match_context existed
+        have only the plain dump."""
+        match_contexts = yara_result.get("match_context") or []
+        if index < len(match_contexts) and index < MAX_HIGHLIGHTED_MATCHES:
+            return highlight_hexdump(match_contexts[index])
+
+        return escape(yara_result["context"][index][3])
 
 
 register_analysis_presenter(YaraScanResults_v3_4, YaraScanResults_v3_4_Presenter)

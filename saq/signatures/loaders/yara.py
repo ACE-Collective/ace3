@@ -26,6 +26,7 @@ import os
 from dataclasses import replace
 
 import plyara
+import plyara.exceptions
 
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.git_context import GitContext
@@ -86,16 +87,21 @@ def _rule_source(source_lines: list[str], parsed_rule: dict) -> str | None:
     return "".join(source_lines[start_line - 1:stop_line])
 
 
-def parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
-    """Returns every trackable rule in one .yar file. git_context stamps the version and makes
-    source_path relative; SVS validation (saq/svs/yara/replay.py) passes its own for an exported
-    commit, which is in no git repository."""
+def _read_and_parse(path: str) -> tuple[str, list[dict]]:
+    """The source of a rule file and the rules plyara parses out of it."""
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
         source = fp.read()
 
     # plyara accumulates parsed rules across calls, so it needs to be a new
     # instance per file (see saq.submission_filter for the same pattern)
-    parsed_rules = plyara.Plyara().parse_string(source)
+    return source, plyara.Plyara().parse_string(source)
+
+
+def parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
+    """Returns every trackable rule in one .yar file. git_context stamps the version and makes
+    source_path relative; SVS validation (saq/svs/yara/replay.py) passes its own for an exported
+    commit, which is in no git repository."""
+    source, parsed_rules = _read_and_parse(path)
     source_lines = source.splitlines(keepends=True)
     source_path = git_context.relative_path(path)
 
@@ -171,72 +177,80 @@ def _format_string_pattern(string: dict) -> str:
     return " ".join([value, *(string.get("modifiers") or [])])
 
 
+# (namespace, rule name) -> string identifier -> pattern, for the rules a scanner compiled
+StringPatterns = dict[tuple[str, str], dict[str, str]]
+
+# rule file path -> (identity when read, namespace, rule name -> string identifier -> pattern)
+StringPatternRead = dict[str, tuple[FileIdentity, str, dict[str, dict[str, str]]]]
+
+
 def _parse_string_patterns(path: str) -> dict[str, dict[str, str]]:
     """rule name -> string identifier -> pattern, for every rule in one rule file. Anonymous
     strings ($) are left out: a match names them only as $, so a match can't tell them apart."""
-    with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
-        source = fp.read()
-
-    result = {}
-    for parsed_rule in plyara.Plyara().parse_string(source):
-        result[parsed_rule.get("rule_name")] = {
+    _, parsed_rules = _read_and_parse(path)
+    return {
+        parsed_rule.get("rule_name"): {
             string["name"]: _format_string_pattern(string)
             for string in parsed_rule.get("strings") or []
             if string.get("name") and string["name"] != "$"}
+        for parsed_rule in parsed_rules}
+
+
+def read_string_patterns(scanner) -> StringPatternRead:
+    """Reads the string patterns of the rule files a yara_scanner.YaraScanner is about to compile,
+    because yara can't return them with a match. Call it right before load_rules() and pass the
+    result to compiled_string_patterns() right after. The patterns are only shown to analysts, so
+    this never raises: a failure must not keep the rules from loading."""
+    try:
+        namespaces = scanner.get_namespace_dict()
+    except Exception:
+        logging.exception("unable to list the yara rule files to read their string patterns")
+        return {}
+
+    result = {}
+    for namespace, paths in namespaces.items():
+        for path in paths:
+            try:
+                result[path] = (_file_identity(path), namespace, _parse_string_patterns(path))
+            except (plyara.exceptions.ParseError, OSError) as e:
+                # plyara lags yara's grammar, so a file yara compiles can still fail here, and a file
+                # can go away between being listed and read: its rules are shown without patterns
+                logging.warning("unable to read the yara string patterns in %s: %s", path, e, extra={"path": path})
+            except Exception:
+                logging.exception("unable to read the yara string patterns in %s", path, extra={"path": path})
 
     return result
 
 
-# rule file path -> (identity when parsed, its string patterns). see rule_string_patterns
-_string_pattern_cache: dict[str, tuple[FileIdentity, dict[str, dict[str, str]]]] = {}
+def compiled_string_patterns(read: StringPatternRead) -> StringPatterns:
+    """The patterns read_string_patterns() read, without those of any file that changed since,
+    because the scanner may have compiled the changed file instead."""
+    result = {}
+    for path, (identity, namespace, rules) in read.items():
+        try:
+            unchanged = _file_identity(path) == identity
+        except OSError:
+            unchanged = False
 
-
-def _cached_string_patterns(path: str) -> dict[str, dict[str, str]]:
-    identity = _file_identity(path)
-    cached = _string_pattern_cache.get(path)
-    if cached is not None and cached[0] == identity:
-        return cached[1]
-
-    try:
-        patterns = _parse_string_patterns(path)
-    except Exception as e:
-        # the patterns are only shown to the analyst, and yara compiled this file even if plyara
-        # can't parse it. cached as empty so the warning comes once per version of the file
-        logging.warning("unable to parse yara string patterns from %s: %s", path, e, extra={"path": path})
-        patterns = {}
-
-    _string_pattern_cache[path] = (identity, patterns)
-    return patterns
-
-
-def rule_string_patterns(namespace: str | None, rule_name: str) -> dict[str, str]:
-    """The string patterns (identifier -> pattern as written) of the rule a yara match names, read
-    from rule source because yara can't return them. namespace is the match's, which the scanner
-    names after the absolute path of the rule file or directory it loaded the rule from. Returns
-    {} when the rule's source can't be found. Each file is parsed again only when it changes."""
-    if not namespace or not os.path.isabs(namespace):
-        return {}
-
-    if os.path.isdir(namespace):
-        paths = [os.path.join(namespace, file_name) for file_name in sorted(os.listdir(namespace))
-                 if file_name.lower().endswith(YARA_FILE_EXTENSIONS)]
-    else:
-        paths = [namespace]
-
-    for path in paths:
-        if not os.path.isfile(path):
+        if not unchanged:
+            logging.info("yara rule file %s changed while its rules compiled: its string patterns are not shown",
+                         path, extra={"path": path})
             continue
 
-        patterns = _cached_string_patterns(path)
-        if rule_name in patterns:
-            return patterns[rule_name]
+        for rule_name, patterns in rules.items():
+            result[(namespace, rule_name)] = patterns
 
-    return {}
+    return result
 
 
-def reset_rule_string_pattern_cache() -> None:
-    """Used by tests."""
-    _string_pattern_cache.clear()
+def attach_string_patterns(matches: list[dict], string_patterns: StringPatterns) -> None:
+    """Adds string_patterns (identifier -> pattern) to each match in YaraScanner.scan_results, for
+    the strings that matched."""
+    for match in matches:
+        patterns = string_patterns.get((match.get("namespace"), match.get("rule"))) or {}
+        matched = {string[1] for string in match.get("strings") or []}
+        match["string_patterns"] = {identifier: pattern for identifier, pattern in patterns.items()
+                                    if identifier in matched}
 
 
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:

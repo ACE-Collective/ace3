@@ -32,7 +32,7 @@
         {% if yara_result['meta'] | count > 0 %}
         <tr>
             <td>meta</td>
-            <td><pre class="mb-0 yara-meta">{% for line in (yara_result['meta'] | pprint_json_dict).splitlines() %}<span class="yara-meta-line">{{line}}</span>
+            <td><pre class="mb-0 yara-meta">{% for line in analysis_presenter.meta_json(yara_result['meta']).splitlines() %}<span class="yara-meta-line">{{line}}</span>
 {% endfor %}</pre></td>
         </tr>
         {% endif %}
@@ -66,7 +66,7 @@
                                 {% if s[1] in string_patterns %}
                                 <br>pattern <code>{{string_patterns[s[1]]}}</code>
                                 {% endif %}
-                                <pre class="yara-hexdump">{{analysis_presenter.highlighted_hexdump(s)}}</pre>
+                                <pre class="yara-hexdump">{{analysis_presenter.hexdump(yara_result, loop.index0)}}</pre>
                                 {% if s|length > 4 %}
                                     Disassembly<pre>{{s[4]|safe}}</pre>
                                 {% endif %}

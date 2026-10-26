@@ -24,7 +24,6 @@ from saq.database.util.user_management import add_user
 from saq.email_archive import initialize_email_archive
 from saq.engine.tracking import clear_all_tracking
 from saq.cas import reset_cas
-from saq.signatures.loaders.yara import reset_rule_string_pattern_cache
 from saq.signatures.yara_inventory import reset_yara_inventory
 from saq.storage.factory import reset_storage_system
 from saq.svs import attribution as svs_attribution, windows as svs_windows
@@ -399,7 +398,6 @@ def global_function_setup(request):
     reset_storage_system()
     reset_cas()
     reset_yara_inventory()
-    reset_rule_string_pattern_cache()
     # the svs attribution gate and the hunt windows are cached per process, and tests now
     # reach them through the real executor and real hunt files
     svs_attribution.clear_caches()

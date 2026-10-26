@@ -1,5 +1,6 @@
 import base64
 import logging
+from html import escape
 
 def format_item_list_for_summary(item_list: list[str], max_items: int = 20) -> str:
     """Returns a string of the first max_items items in the list, separated by commas.
@@ -74,3 +75,33 @@ def is_base64(value: str) -> bool:
     except Exception:
         return False
 
+
+
+def hexdump_line(offset: int, chunk: bytes, marked: range = range(0), html: bool = False) -> str:
+    """One line of `hexdump -C` for up to 16 bytes at offset. With html, the text is escaped and
+    the bytes whose offsets are in marked are wrapped in <mark> in both columns."""
+    hex_cells, text_cells = [], []
+    for index in range(16):
+        separator = "  " if index == 8 else (" " if index else "")
+        if index >= len(chunk):
+            hex_cells.append((separator + "  ", False))
+            continue
+
+        is_marked = html and offset + index in marked
+        hex_cells.append((separator, is_marked and offset + index - 1 in marked))
+        hex_cells.append((f"{chunk[index]:02x}", is_marked))
+        text_cells.append((chr(chunk[index]) if 0x20 <= chunk[index] < 0x7f else ".", is_marked))
+
+    def render(cells: list[tuple[str, bool]]) -> str:
+        if not html:
+            return "".join(text for text, _ in cells)
+
+        result = []
+        for text, is_marked in cells:
+            text = escape(text)
+            result.append(f"<mark>{text}</mark>" if is_marked else text)
+
+        # a run of marked cells is one mark
+        return "".join(result).replace("</mark><mark>", "")
+
+    return f"{offset:08x}  {render(hex_cells)}  |{render(text_cells)}|"

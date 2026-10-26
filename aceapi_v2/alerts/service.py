@@ -66,6 +66,7 @@ from saq.search.types import SearchFilters
 from saq.svs.alert_status import alert_svs_statuses
 from saq.util import local_time
 from saq.util.uuid import is_uuid
+from saq.util.strings import hexdump_line
 
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
@@ -449,13 +450,6 @@ def resolve_alert_image(alert_uuid: str, observable_uuid: str) -> tuple[str, str
 _HEXDUMP_BATCH_LINES = 4096
 
 
-def _hexdump_line(offset: int, chunk: bytes) -> str:
-    hex_bytes = [f"{byte:02x} " for byte in chunk]
-    hex_area = "".join(hex_bytes[:8]) + " " + "".join(hex_bytes[8:])
-    printable = "".join(chr(byte) if 0x20 <= byte < 0x7f else "." for byte in chunk)
-    return f"{offset:08x}  {hex_area:<49} |{printable}|\n"
-
-
 def hexdump(path: str) -> Iterator[str]:
     """The file as `hexdump -C` prints it, in batches of lines: 16 bytes a line as the offset,
     the bytes in hex and the printable ones as text, a run of lines repeating the one before it
@@ -471,7 +465,7 @@ def hexdump(path: str) -> Iterator[str]:
                     lines.append("*\n")
                     squeezing = True
             else:
-                lines.append(_hexdump_line(offset, chunk))
+                lines.append(hexdump_line(offset, chunk) + "\n")
                 squeezing = False
             previous = chunk
             offset += len(chunk)
