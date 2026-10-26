@@ -103,6 +103,8 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         from saq.modules.email.rfc822 import EmailAnalysis
         from saq.modules.email.archive import EmailArchiveResults
+        # url_extraction imports urlfinderlib, which only the engine needs
+        from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 
         analysis = email_file.get_and_load_analysis(EmailAnalysis)
         if not analysis:
@@ -127,35 +129,41 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         # look for url extracted as well
         extracted_urls = []
+        url_extractions = []
 
         # find all urls starting from this analysis
         def _callback(target):
-            nonlocal extracted_urls
             if isinstance(target, Observable) and target.type == F_URL:
                 extracted_urls.append(target.value)
+            elif isinstance(target, URLExtractionAnalysis):
+                url_extractions.append(target)
 
         recurse_tree(analysis, _callback)
+
+        # url_extraction makes observables of only the first max_extracted_urls urls of a file,
+        # but its details list every url it found
+        for url_extraction in url_extractions:
+            try:
+                # the engine flushes analysis details to disk as it goes
+                if not url_extraction.load_details():
+                    raise RuntimeError(f"unable to load {url_extraction.external_details_path}")
+
+                extracted_urls.extend(url_extraction.urls)
+            except Exception as e:
+                # the urls that became observables are still logged
+                logging.exception(f"unable to read the urls extracted from {url_extraction.observable} for {email_file}: {e}",
+                                  extra={"root_uuid": self.get_root().uuid,
+                                         "observable_uuid": email_file.uuid,
+                                         "path": url_extraction.external_details_path})
+
         # remove duplicates
         extracted_urls = list(set(extracted_urls))
-
-        # since we only extract urls from emails we just find them all in the entire analysis tree
-        #for url_extraction in self.get_root().all_analysis:
-            #if not isinstance(url_extraction, URLExtractionAnalysis):
-                #continue
-
-            #if url_extraction.details is not None:
-                #extracted_urls.extend(url_extraction.details)
 
         # log where we ended up archiving the email
         archive_path = None
         archive_results = email_file.get_and_load_analysis(EmailArchiveResults)
         if archive_results:
             archive_path = archive_results.archive_path
-
-        #url_extraction = email_file.get_and_load_analysis(URLExtractionAnalysis)
-        #if url_extraction and url_extraction.details:
-            # get all the URLs extracted
-            #extracted_urls = url_extraction.details
 
         # so all we need to do now is figure out how to write the data from
         # multiple processes to the same place without collision
