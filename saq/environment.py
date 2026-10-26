@@ -197,7 +197,6 @@ def initialize_environment(
     temp_dir=None,
     config_paths=None,
     logging_config_path=None,
-    encryption_password_plaintext=None,
     force_alerts=False,
 ):
     """Initializes ACE."""
@@ -258,7 +257,7 @@ def initialize_environment(
     from saq.crypto import initialize_encryption
 
     # TODO update this logic and deal with missing and invalid passwords
-    initialize_encryption(encryption_password_plaintext=encryption_password_plaintext)
+    initialize_encryption()
 
     # resolve any encrypted values that were referenced in the config
     resolve_configuration(get_config())

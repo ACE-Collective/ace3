@@ -146,6 +146,24 @@ def test_cli_runs_from_saq_home(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("argv", [
+    ["-p"],
+    ["--provide-decryption-password"],
+    ["-Psecret"],
+    ["--set-decryption-password=secret"],
+])
+def test_the_decryption_password_options_are_gone(argv, capsys):
+    """ace -p prompted for the encryption password with a getpass that was never imported, so it only
+    ever crashed with a NameError (#1027), and nothing ever read what ace -P was given; both are gone
+    and argparse rejects them."""
+    with pytest.raises(SystemExit) as exc_info:
+        get_cli_parser().parse_args([*argv, "config"])
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.unit
 def test_alert_create_says_its_event_time_is_when_it_was_created(tmp_path):
     args = get_cli_parser().parse_args(["alert", "create", str(tmp_path / "alert")])
     args.func(args)
