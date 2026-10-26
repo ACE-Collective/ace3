@@ -1,18 +1,30 @@
 import logging
 import os
+from email.message import EmailMessage
 from unittest.mock import Mock
 
 import pytest
 from fluent import sender as fluent_sender
 
+from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, DIRECTIVE_ORIGINAL_EMAIL, F_URL
+from saq.constants import (
+    ANALYSIS_MODULE_EMAIL_LOGGER,
+    ANALYSIS_MODULE_URL_EXTRACTION,
+    ANALYSIS_TYPE_MAILBOX,
+    DIRECTIVE_ORIGINAL_EMAIL,
+    F_URL,
+)
+from saq.engine.core import Engine
+from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_base_dir
 from saq.modules.email import logging as email_logging
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.constants import KEY_LOG_ENTRY
 from saq.modules.email.logging import EmailLoggingAnalyzer, FluentBitTags
 from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
+from saq.util.uuid import get_storage_dir
 from tests.saq.test_util import create_test_context
 
 TAGS = FluentBitTags(main="main", urls="urls", headers="headers", lookalike="lookalike")
@@ -147,6 +159,101 @@ def test_entry_without_message_id_goes_to_the_main_source_only(root_analysis, em
     assert records_for(emitted, "urls") == []
     assert records_for(emitted, "headers") == []
     assert any(r.getMessage().startswith("missing message_id for") for r in caplog.records)
+
+
+def add_url_extraction(root, email_observable, urls, observable_urls):
+    """Adds a part to the email that url_extraction found urls in, with its details flushed to disk
+    as the engine leaves them."""
+    path = root.create_file_path("test.email.rfc822.unknown_text_html_000.html")
+    with open(path, "wb") as fp:
+        fp.write(b"<html></html>")
+
+    part = email_observable.get_analysis(EmailAnalysis).add_file_observable(path)
+    url_extraction = URLExtractionAnalysis()
+    part.add_analysis(url_extraction)
+    url_extraction.urls = list(urls)
+    for url in observable_urls:
+        url_extraction.add_observable_by_spec(F_URL, url)
+
+    root.analysis_tree_manager.flush_analysis_details(url_extraction)
+    return url_extraction
+
+
+@pytest.mark.unit
+def test_url_log_includes_urls_that_did_not_become_observables(root_analysis, emitted):
+    email_observable = add_email(root_analysis, log_entry(), urls=["http://email.example/"])
+    add_url_extraction(root_analysis, email_observable,
+                       urls=["http://a.example/", "http://b.example/", "http://c.example/"],
+                       observable_urls=["http://a.example/"])
+
+    make_analyzer(root_analysis).execute_post_analysis()
+
+    assert sorted(r["url"] for r in records_for(emitted, "urls")) == [
+        "http://a.example/", "http://b.example/", "http://c.example/", "http://email.example/"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("details", ["missing", "unloadable", "unexpected"])
+def test_unreadable_url_extraction_details_fall_back_to_the_observables(root_analysis, emitted, caplog, details):
+    email_observable = add_email(root_analysis, log_entry())
+    url_extraction = add_url_extraction(root_analysis, email_observable,
+                                        urls=["http://a.example/", "http://b.example/"],
+                                        observable_urls=["http://a.example/"])
+    details_path = os.path.join(get_base_dir(), root_analysis.storage_dir, ".ace", url_extraction.external_details_path)
+    if details == "missing":
+        os.remove(details_path)
+    else:
+        with open(details_path, "w") as fp:
+            # an unexpected shape loads, but has no urls key
+            fp.write("{not json" if details == "unloadable" else '["http://b.example/"]')
+
+    with caplog.at_level(logging.ERROR):
+        make_analyzer(root_analysis).execute_post_analysis()
+
+    assert [r["url"] for r in records_for(emitted, "urls")] == ["http://a.example/"]
+    [record] = [r for r in caplog.records if r.getMessage().startswith("unable to read the urls extracted from")]
+    assert record.levelno == logging.ERROR and record.exc_info
+    assert record.root_uuid == root_analysis.uuid
+    assert record.observable_uuid == email_observable.uuid
+    assert record.path == url_extraction.external_details_path
+
+
+@pytest.mark.integration
+def test_engine_logs_every_url_past_the_observable_cap(root_analysis, tmp_path, emitted):
+    max_extracted_urls = get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION).max_extracted_urls
+    urls = [f"https://site{i}.example.com/page" for i in range(max_extracted_urls + 3)]
+
+    message = EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "rcpt@example.com"
+    message["Subject"] = "many links"
+    message["Message-ID"] = "<many-links@example.com>"
+    message.set_content("see the html part")
+    message.add_alternative("<html><body>{}</body></html>".format(
+        "".join(f'<a href="{url}">link</a>' for url in urls)), subtype="html")
+    path = tmp_path / "message.email.rfc822"
+    path.write_bytes(bytes(message))
+
+    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
+    root_analysis.analysis_mode = "test_groups"
+    email_observable = root_analysis.add_file_observable(str(path))
+    email_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    for module in ("file_type", "email_analyzer", "url_extraction", "email_logger"):
+        engine.configuration_manager.enable_module(module, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    # the cap held: only some of the urls became observables
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    assert len(root.get_observables_by_type(F_URL)) == max_extracted_urls
+
+    urls_tag = get_analysis_module_config(ANALYSIS_MODULE_EMAIL_LOGGER).fluent_bit_tags.urls
+    url_records = records_for(emitted, urls_tag)
+    assert sorted(r["url"] for r in url_records) == sorted(urls)
+    assert all(r["message_id"] == "<many-links@example.com>" for r in url_records)
 
 
 @pytest.mark.unit
