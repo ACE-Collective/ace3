@@ -22,8 +22,6 @@ def _add_global_arguments(target: argparse.ArgumentParser):
         help="The user name of the ACE user executing the command. This information is required for some commands.")
     target.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
         help="Force all analysis to always generate an alert.")
-    target.add_argument('-p', '--provide-decryption-password', required=False, action='store_true', dest='provide_decryption_password', default=False,
-        help="Prompt for the decryption password. Read README.CRYPTO for details.")
     target.add_argument('-P', '--set-decryption-password', dest='set_decryption_password', default=None,
         help="Provide the decryption password on the command line. Not secure at all. Don't do it.")
     target.add_argument('--trace', required=False, action='store_true', dest='trace', default=False,
@@ -74,16 +72,11 @@ def main():
     initialize_base_dir(args.saq_home)
     os.chdir(get_base_dir())
 
-    encryption_password_plaintext = None
-    if args.provide_decryption_password:
-        encryption_password_plaintext = getpass.getpass(prompt="Enter the encryption password:")
-
     # initialize saq
     initialize_environment(
         saq_home=get_base_dir(),
         config_paths=args.config_paths,
         logging_config_path=args.logging_config_path,
-        encryption_password_plaintext=encryption_password_plaintext,
         force_alerts=args.force_alerts,
     )
 
