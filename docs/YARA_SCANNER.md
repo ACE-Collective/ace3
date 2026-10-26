@@ -82,6 +82,13 @@ Matched string data is binary. It travels as `[offset, identifier, base64]` and 
 it back into the `(offset, identifier, bytes)` tuple, so a match looks exactly like
 `YaraScanner.scan_results`. Nothing is pickled in either direction.
 
+Yara can't return the pattern a string was written with, so the module reads it from the rule's
+source: it adds `string_patterns` (identifier → pattern, e.g. `"$a": "\"foo\" nocase"`) to each
+saved match, for the strings that matched, and the GUI shows it next to each string match. The
+match's `namespace` names the rule file or directory, which `rule_string_patterns()`
+(`saq/signatures/loaders/yara.py`) parses with plyara, again only when a file changes. Anonymous
+(`$`) strings get no pattern, and results saved before this have none.
+
 ## What the engine does when something fails
 
 `saq/yara_scanning/client.py` raises a different exception for each outcome, and none of them is

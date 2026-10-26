@@ -161,6 +161,84 @@ def _parse_rule_file_cached(path: str, git_context: GitContext, parse_cache: Par
     ]
 
 
+def _format_string_pattern(string: dict) -> str:
+    """Rebuilds a string's pattern as written in the rule. plyara keeps a text string's escapes but
+    drops its quotes; hex and regex values come back with their braces and slashes."""
+    value = string.get("value") or ""
+    if string.get("type") == "text":
+        value = f'"{value}"'
+
+    return " ".join([value, *(string.get("modifiers") or [])])
+
+
+def _parse_string_patterns(path: str) -> dict[str, dict[str, str]]:
+    """rule name -> string identifier -> pattern, for every rule in one rule file. Anonymous
+    strings ($) are left out: a match names them only as $, so a match can't tell them apart."""
+    with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
+        source = fp.read()
+
+    result = {}
+    for parsed_rule in plyara.Plyara().parse_string(source):
+        result[parsed_rule.get("rule_name")] = {
+            string["name"]: _format_string_pattern(string)
+            for string in parsed_rule.get("strings") or []
+            if string.get("name") and string["name"] != "$"}
+
+    return result
+
+
+# rule file path -> (identity when parsed, its string patterns). see rule_string_patterns
+_string_pattern_cache: dict[str, tuple[FileIdentity, dict[str, dict[str, str]]]] = {}
+
+
+def _cached_string_patterns(path: str) -> dict[str, dict[str, str]]:
+    identity = _file_identity(path)
+    cached = _string_pattern_cache.get(path)
+    if cached is not None and cached[0] == identity:
+        return cached[1]
+
+    try:
+        patterns = _parse_string_patterns(path)
+    except Exception as e:
+        # the patterns are only shown to the analyst, and yara compiled this file even if plyara
+        # can't parse it. cached as empty so the warning comes once per version of the file
+        logging.warning("unable to parse yara string patterns from %s: %s", path, e, extra={"path": path})
+        patterns = {}
+
+    _string_pattern_cache[path] = (identity, patterns)
+    return patterns
+
+
+def rule_string_patterns(namespace: str | None, rule_name: str) -> dict[str, str]:
+    """The string patterns (identifier -> pattern as written) of the rule a yara match names, read
+    from rule source because yara can't return them. namespace is the match's, which the scanner
+    names after the absolute path of the rule file or directory it loaded the rule from. Returns
+    {} when the rule's source can't be found. Each file is parsed again only when it changes."""
+    if not namespace or not os.path.isabs(namespace):
+        return {}
+
+    if os.path.isdir(namespace):
+        paths = [os.path.join(namespace, file_name) for file_name in sorted(os.listdir(namespace))
+                 if file_name.lower().endswith(YARA_FILE_EXTENSIONS)]
+    else:
+        paths = [namespace]
+
+    for path in paths:
+        if not os.path.isfile(path):
+            continue
+
+        patterns = _cached_string_patterns(path)
+        if rule_name in patterns:
+            return patterns[rule_name]
+
+    return {}
+
+
+def reset_rule_string_pattern_cache() -> None:
+    """Used by tests."""
+    _string_pattern_cache.clear()
+
+
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:
     """Resolves git_repo_dirs entries - a subdirectory name, a relative path or an
     absolute one - the same way YaraScanner._resolve_signature_subdir does."""

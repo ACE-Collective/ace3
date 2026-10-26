@@ -23,7 +23,7 @@ from saq.constants import (
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
+from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4, highlight_hexdump, visible_match_value
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
 from saq.svs.markers import find_markers_in_match, new_marker
@@ -732,3 +732,124 @@ class TestYaraMarkerRule:
 
         assert not observable.detections
         assert not observable.has_directive(DIRECTIVE_SANDBOX)
+
+
+class TestYaraStringPatterns:
+    """The pattern of each string that matched is stored with the match, for the GUI."""
+
+    @pytest.mark.integration
+    def test_patterns_of_matched_strings_are_stored(self, yara_service, root_analysis):
+        yara_service(_rule("pattern_rule", strings='$a = "Hello" nocase\n        $b = { 77 6F 72 6C 64 }\n        $c = "not in the file"'))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        # $c did not match, so its pattern is not kept
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello" nocase', "$b": "{ 77 6F 72 6C 64 }"}
+
+    @pytest.mark.integration
+    def test_patterns_are_stored_by_the_local_scanner(self, socket_dir, write_rules, root_analysis):
+        write_rules(_rule("local_rule"))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello, world!"'}
+
+    @pytest.mark.integration
+    def test_pattern_lookup_failure_is_reported_and_analysis_continues(self, yara_service, monkeypatch, caplog, root_analysis):
+        yara_service(_rule("pattern_rule"))
+
+        def failing_lookup(namespace, rule_name):
+            raise RuntimeError("lookup failed")
+
+        monkeypatch.setattr("saq.modules.file_analysis.yara.rule_string_patterns", failing_lookup)
+        write_error_report = Mock()
+        monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+        with caplog.at_level(logging.ERROR):
+            observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {}
+        assert root_analysis.has_detections()
+        records = [r for r in caplog.records if r.getMessage() == "unable to read the string patterns of yara rule pattern_rule"]
+        assert len(records) == 1
+        assert records[0].yara_rule == "pattern_rule"
+        write_error_report.assert_called_once()
+
+
+
+# ---------------------------------------------------------------------------
+# how a string match is drawn in the GUI
+# ---------------------------------------------------------------------------
+def _hexdump(data: bytes) -> str:
+    return subprocess.run(["hexdump", "-C"], input=data, capture_output=True, check=True).stdout.decode()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [
+    ("plain", "plain"),
+    # the space itself stays, so find in page and copy see it; css draws the dot
+    ("a b", 'a<span class="yara-sp"> </span>b'),
+    ("\n\n", '<span class="yara-ws">\u240a</span><span class="yara-ws">\u240a</span>'),
+    ("\t\r\x00\x7f", '<span class="yara-ws">\u2409</span><span class="yara-ws">\u240d</span>'
+                     '<span class="yara-ws">\u2400</span><span class="yara-ws">\u2421</span>'),
+    ("\x85\u200b", '<span class="yara-ws">\\x85</span><span class="yara-ws">\\u200b</span>'),
+    ("<b>&", "&lt;b&gt;&amp;"),
+    ("caf\u00e9", "caf\u00e9"),
+])
+def test_visible_match_value(value, expected):
+    assert str(visible_match_value(value)) == expected
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_marks_a_match_across_lines():
+    data = b"A" * 10 + b"needle-that-spans-two-lines" + b"B" * 10
+    html = str(highlight_hexdump([10, "$a", "needle-that-spans-two-lines", _hexdump(data)], 64))
+
+    assert html.splitlines() == [
+        "00000000  41 41 41 41 41 41 41 41  41 41 <mark>6e 65 65 64 6c 65</mark>  |AAAAAAAAAA<mark>needle</mark>|",
+        "00000010  <mark>2d 74 68 61 74 2d 73 70  61 6e 73 2d 74 77 6f 2d</mark>  |<mark>-that-spans-two-</mark>|",
+        "00000020  <mark>6c 69 6e 65 73</mark> 42 42 42  42 42 42 42 42 42 42     |<mark>lines</mark>BBBBBBBBBB|",
+        "0000002f",
+    ]
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_match_after_leading_context():
+    """The dump starts context_bytes before the match, so the match is context_bytes in."""
+    data = b"x" * 70 + b"needle" + b"y" * 20
+    context = data[70 - 16:]
+    html = str(highlight_hexdump([70, "$a", "needle", _hexdump(context)], 16))
+    assert "00000010  <mark>6e 65 65 64 6c 65</mark> 79 79" in html
+    assert html.count("<mark>") == 2
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_finds_a_unique_match_when_context_bytes_changed():
+    context = b"x" * 32 + b"needle" + b"y" * 32
+    html = str(highlight_hexdump([500, "$a", "needle", _hexdump(context)], 64))
+    assert "|<mark>needle</mark>yyyyyyyyyy|" in html
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_marks_a_match_partly_behind_a_repeat():
+    """hexdump replaces repeated lines with *; the bytes it still shows are marked."""
+    data = b"\x00" * 48 + b"tail"
+    html = str(highlight_hexdump([0, "$zeros", "\x00" * 40, _hexdump(data)], 64))
+    lines = html.splitlines()
+    assert lines[0].startswith("00000000  <mark>00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00</mark>")
+    assert lines[1] == "*"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["not there", "\\n", "\u4e2d"])
+def test_highlight_hexdump_leaves_an_unlocatable_match_unmarked(value):
+    dump = _hexdump(b"Hello, world!\n")
+    assert str(highlight_hexdump([7, "$a", value, dump], 64)) + "\n" == dump
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_escapes_and_accepts_bytes():
+    dump = _hexdump(b"<script>")
+    html = str(highlight_hexdump([0, "$a", "<script>", dump.encode()], 64))
+    assert "|<mark>&lt;script&gt;</mark>|" in html

@@ -21,6 +21,8 @@ from saq.signatures.loaders import (
     load_yara_signatures,
 )
 from saq.signatures.loaders.builtin import BUILTIN_SOURCE_PATH
+from saq.signatures.loaders import yara as yara_loader
+from saq.signatures.loaders.yara import rule_string_patterns
 from saq.signatures.model import SignatureType
 
 TEST_GIT_REMOTE = "git@example.com:atu/test-signatures.git"
@@ -700,3 +702,98 @@ def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
     os.remove(os.path.join(signature_repo, "yara", "bv", "rules.yar"))
     assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == []
     assert cache == {}
+
+
+PATTERN_RULES = r"""
+rule pattern_rule
+{
+    strings:
+        $text = "say \"hi\"" nocase wide
+        $hex = { 4D 5A ?? 90 }
+        $re = /ab+c[0-9]/i
+        $xor = "key" xor(0x01-0xff) private
+        $ = "anonymous"
+    condition:
+        any of them
+}
+
+rule other_rule
+{
+    strings:
+        $a = "other"
+    condition:
+        $a
+}
+"""
+
+
+def _write_rule_file(directory, name: str, source: str) -> str:
+    path = os.path.join(str(directory), name)
+    with open(path, "w") as fp:
+        fp.write(source)
+
+    return path
+
+
+@pytest.mark.unit
+def test_rule_string_patterns_from_a_rule_directory(tmp_path):
+    _write_rule_file(tmp_path, "a.yar", 'rule unrelated { strings: $u = "u" condition: $u }')
+    _write_rule_file(tmp_path, "b.yara", PATTERN_RULES)
+    _write_rule_file(tmp_path, "notes.txt", "not a rule file")
+
+    assert rule_string_patterns(str(tmp_path), "pattern_rule") == {
+        "$text": '"say \\"hi\\"" nocase wide',
+        "$hex": "{ 4D 5A ?? 90 }",
+        "$re": "/ab+c[0-9]/i",
+        "$xor": '"key" xor(0x01-0xff) private',
+    }
+    assert rule_string_patterns(str(tmp_path), "other_rule") == {"$a": '"other"'}
+
+
+@pytest.mark.unit
+def test_rule_string_patterns_from_a_rule_file(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    assert rule_string_patterns(path, "other_rule") == {"$a": '"other"'}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("namespace", [None, "", "default", "relative/dir"])
+def test_rule_string_patterns_needs_an_absolute_namespace(namespace):
+    assert rule_string_patterns(namespace, "pattern_rule") == {}
+
+
+@pytest.mark.unit
+def test_rule_string_patterns_unknown_rule_or_path(tmp_path):
+    _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    assert rule_string_patterns(str(tmp_path), "missing_rule") == {}
+    assert rule_string_patterns(str(tmp_path / "gone"), "pattern_rule") == {}
+
+
+@pytest.mark.unit
+def test_rule_string_patterns_unparseable_file_warns_once(tmp_path, caplog):
+    path = _write_rule_file(tmp_path, "broken.yar", "rule broken { strings: $a = condition: }")
+
+    with caplog.at_level(logging.WARNING):
+        assert rule_string_patterns(path, "broken") == {}
+        assert rule_string_patterns(path, "broken") == {}
+
+    records = [r for r in caplog.records if r.getMessage().startswith(f"unable to parse yara string patterns from {path}")]
+    assert len(records) == 1
+    assert records[0].path == path
+
+
+@pytest.mark.unit
+def test_rule_string_patterns_reparses_only_a_changed_file(tmp_path, monkeypatch):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    parsed = []
+    original = yara_loader._parse_string_patterns
+    monkeypatch.setattr(yara_loader, "_parse_string_patterns", lambda p: parsed.append(p) or original(p))
+
+    assert rule_string_patterns(path, "other_rule") == {"$a": '"other"'}
+    assert rule_string_patterns(path, "other_rule") == {"$a": '"other"'}
+    assert parsed == [path]
+
+    _write_rule_file(tmp_path, "rules.yar", 'rule other_rule { strings: $a = "changed" condition: $a }')
+    # the mtime may not move within the clock's resolution, the size does
+    assert rule_string_patterns(path, "other_rule") == {"$a": '"changed"'}
+    assert parsed == [path, path]
