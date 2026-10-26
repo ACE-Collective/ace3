@@ -22,8 +22,6 @@ def _add_global_arguments(target: argparse.ArgumentParser):
         help="The user name of the ACE user executing the command. This information is required for some commands.")
     target.add_argument('--force-alerts', required=False, dest='force_alerts', default=False, action='store_true',
         help="Force all analysis to always generate an alert.")
-    target.add_argument('-P', '--set-decryption-password', dest='set_decryption_password', default=None,
-        help="Provide the decryption password on the command line. Not secure at all. Don't do it.")
     target.add_argument('--trace', required=False, action='store_true', dest='trace', default=False,
         help="Enable execution tracing (debugging option).")
     target.add_argument('-D', '--debug', required=False, action='store_true', dest='debug_on_error', default=False,

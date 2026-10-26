@@ -130,7 +130,7 @@ def decrypt_file(args):
     sys.exit(0)
 
 decrypt_file_parser = encryption_sp.add_parser('decrypt',
-    help="Decrypts the given file with the password set with set-decryption-password.")
+    help="Decrypts the given file with the system encryption key, or with --password or --prompt.")
 decrypt_file_parser.add_argument('source_path', help="The file to decrypt from.")
 decrypt_file_parser.add_argument('target_path', help="The file to saved the decrypted data to.")
 decrypt_file_parser.add_argument('--password', help="Use the given password to decrypt the file.")
