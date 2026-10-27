@@ -3,53 +3,57 @@
         brocess-db-revision brocess-db-upgrade brocess-db-downgrade brocess-db-check \
         email-archive-db-revision email-archive-db-upgrade email-archive-db-downgrade email-archive-db-check
 
+# runs in this checkout's dev container, from this checkout's own path in it, so a git worktree
+# runs its own code (bin/exec-in-container.sh)
+EXEC = bin/exec-in-container.sh
+
 db-revision:
-	docker compose exec dev /venv/bin/alembic -c alembic/ace.ini revision --autogenerate -m "$(MESSAGE)"
+	$(EXEC) '/venv/bin/alembic -c alembic/ace.ini revision --autogenerate -m "$(MESSAGE)"'
 
 db-upgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/ace.ini upgrade head
+	$(EXEC) '/venv/bin/alembic -c alembic/ace.ini upgrade head'
 
 db-downgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/ace.ini downgrade -1
+	$(EXEC) '/venv/bin/alembic -c alembic/ace.ini downgrade -1'
 
 db-seed:
-	docker compose exec dev /venv/bin/python bin/seed_database.py
+	$(EXEC) '/venv/bin/python bin/seed_database.py'
 
 db-check:
-	docker compose exec dev /venv/bin/python bin/check_model_drift.py
+	$(EXEC) '/venv/bin/python bin/check_model_drift.py'
 
 cache-db-revision:
-	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini revision --autogenerate -m "$(MESSAGE)"
+	$(EXEC) '/venv/bin/alembic -c alembic/analysis_cache.ini revision --autogenerate -m "$(MESSAGE)"'
 
 cache-db-upgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini upgrade head
+	$(EXEC) '/venv/bin/alembic -c alembic/analysis_cache.ini upgrade head'
 
 cache-db-downgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/analysis_cache.ini downgrade -1
+	$(EXEC) '/venv/bin/alembic -c alembic/analysis_cache.ini downgrade -1'
 
 cache-db-check:
-	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database cache
+	$(EXEC) '/venv/bin/python bin/check_model_drift.py --database cache'
 
 brocess-db-revision:
-	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini revision --autogenerate -m "$(MESSAGE)"
+	$(EXEC) '/venv/bin/alembic -c alembic/brocess.ini revision --autogenerate -m "$(MESSAGE)"'
 
 brocess-db-upgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini upgrade head
+	$(EXEC) '/venv/bin/alembic -c alembic/brocess.ini upgrade head'
 
 brocess-db-downgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/brocess.ini downgrade -1
+	$(EXEC) '/venv/bin/alembic -c alembic/brocess.ini downgrade -1'
 
 brocess-db-check:
-	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database brocess
+	$(EXEC) '/venv/bin/python bin/check_model_drift.py --database brocess'
 
 email-archive-db-revision:
-	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini revision --autogenerate -m "$(MESSAGE)"
+	$(EXEC) '/venv/bin/alembic -c alembic/email_archive.ini revision --autogenerate -m "$(MESSAGE)"'
 
 email-archive-db-upgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini upgrade head
+	$(EXEC) '/venv/bin/alembic -c alembic/email_archive.ini upgrade head'
 
 email-archive-db-downgrade:
-	docker compose exec dev /venv/bin/alembic -c alembic/email_archive.ini downgrade -1
+	$(EXEC) '/venv/bin/alembic -c alembic/email_archive.ini downgrade -1'
 
 email-archive-db-check:
-	docker compose exec dev /venv/bin/python bin/check_model_drift.py --database email-archive
+	$(EXEC) '/venv/bin/python bin/check_model_drift.py --database email-archive'
