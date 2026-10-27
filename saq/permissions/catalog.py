@@ -30,7 +30,8 @@ class CatalogEntry:
 # `admin:read` is the umbrella gate for the /admin GUI area; it is enforced by the admin blueprint's
 # before_request guard (app/admin/views/access.py:24) rather than a require_permission decorator, so
 # it has no decorator call site. `signature:read` is likewise the umbrella gate for the /signatures
-# GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `cas:hold`
+# GUI area (app/signatures/views/access.py), and is also enforced by the yara-qa API routes. `ai:read` is enforced by the out-of-repo AI container. `file_collection:create`
+# is enforced by integrations, on the API routes through which callers request their collectors' work. `cas:hold`
 # and `cas:purge` have no in-repo enforcement site yet: `ace cas hold|purge` record --actor without
 # checking, and the entries exist so an API surface can enforce them without a catalog migration
 # (docs/CAS.md). Every other entry has at least one in-repo enforcement site.
@@ -63,6 +64,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("engine", "upload", "Upload a work item's storage directory to a node (node-to-node)."),
     CatalogEntry("event", "read", "View events, details, and export event data."),
     CatalogEntry("event", "write", "Create and modify events."),
+    CatalogEntry("file_collection", "create", "Request file collections from hosts through the API; a collector may run a script on the host to produce the file."),
     CatalogEntry("file_collection", "read", "Read file collection requests and history."),
     CatalogEntry("file_collection", "write", "Stop, retry and delete file collection requests on the File Collections page."),
     CatalogEntry("hunt", "write", "Compile and execute hunts via the hunt-validation API endpoint."),

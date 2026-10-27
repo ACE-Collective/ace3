@@ -27,6 +27,7 @@ COMMANDS = {
     "cache": "cache",
     "cas": "cas",
     "crash": "crash",
+    "file-collection": "file_collection",
     "cron": "cron",
     "enc": "encryption",
     "encryption": "encryption",

@@ -18,7 +18,8 @@ from saq.file_collection.filters import file_collection_filter_conditions
 from saq.gui.filter_screens import FILE_COLLECTIONS_SCREEN
 
 
-def _row(row) -> FileCollectionRow:
+def file_collection_row(row) -> FileCollectionRow:
+    """The API row of a (FileCollection, requester display name) result row."""
     collection, requested_by = row
     return FileCollectionRow(
         id=collection.id, collector=collection.name, observable_type=collection.type,
@@ -35,7 +36,7 @@ def prepare_listing(f: list[str], tz: tzinfo) -> Listing:
     for condition in file_collection_filter_conditions(filter_entries(FILE_COLLECTIONS_SCREEN, f), tz):
         statement = statement.where(condition)
 
-    return Listing(statement=statement, id_column=FileCollection.id, to_row=_row)
+    return Listing(statement=statement, id_column=FileCollection.id, to_row=file_collection_row)
 
 
 def _require(collection_id: int) -> FileCollection:

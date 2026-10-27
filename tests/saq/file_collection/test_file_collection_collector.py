@@ -10,6 +10,7 @@ from saq.database.pool import get_db
 from saq.file_collection.collector import FileCollectionCollector
 from saq.file_collection.database import queue_file_collection
 from saq.file_collection.interface import FileCollectionListener
+from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
 
 
@@ -75,6 +76,38 @@ def test_collect_single_work_item(db_alert):
         text("SELECT lock_time <= NOW() FROM file_collection WHERE id = :id"),
         {"id": collection_id},
     ).scalar() == 1
+
+
+@pytest.mark.integration
+def test_collect_work_item_without_alert():
+    """A collection no alert asked for gets this node's directory for it, not an alert's."""
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+    )
+
+    collector = FileCollectionCollector()
+    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    tasks = collector.collect_work_items()
+    assert len(tasks) == 1
+    assert tasks[0].alert_uuid is None
+    assert tasks[0].storage_dir == unattached_storage_dir(collection_id)
+
+
+@pytest.mark.integration
+def test_collect_work_item_with_missing_alert():
+    """A collection whose alert is gone is not handed out."""
+    queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=str(uuid4()),
+    )
+
+    collector = FileCollectionCollector()
+    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    assert not collector.collect_work_items()
 
 
 @pytest.mark.integration
