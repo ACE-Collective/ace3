@@ -1523,6 +1523,17 @@ class EmailAnalyzer(AnalysisModule):
         # we use this later when we write the log message
         attachments = [] # of ( size, type, name, sha256 )
 
+        # (maintype, subtype) -> how many unnamed parts of that type were stored
+        unnamed_part_counts = {}
+
+        def _unnamed_part_name(target, ext: str) -> str:
+            # numbered per type, because EmailAnalysis.body and attachment_names tell the first part of a
+            # type by its _000 (the file manager's own suffix for a taken name would keep the _000)
+            key = (target.get_content_maintype(), target.get_content_subtype())
+            index = unnamed_part_counts.get(key, 0)
+            unnamed_part_counts[key] = index + 1
+            return '{}.unknown_{}_{}_{:03}{}'.format(_file.file_path, key[0], key[1], index, ext)
+
         def __recursive_parser(target):
             nonlocal target_message_id
 
@@ -1569,12 +1580,10 @@ class EmailAnalyzer(AnalysisModule):
                     file_name = re.sub(r'[\r\n]', '', file_name)
 
                 else:
-                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
-                                                                           target.get_content_subtype(), unknown_ext)
+                    file_name = _unnamed_part_name(target, unknown_ext)
 
                 if not file_name:
-                    file_name = '{}.unknown_{}_{}_000{}'.format(_file.file_path, target.get_content_maintype(),
-                                                                           target.get_content_subtype(), unknown_ext)
+                    file_name = _unnamed_part_name(target, unknown_ext)
 
                 # figure out what the payload should be
                 if target.get_content_type() == 'message/rfc822':
