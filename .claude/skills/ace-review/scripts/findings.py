@@ -26,9 +26,13 @@ rechecked: fixed or open), and the flaws the batch verifier kept into flaws.json
 counts only the votes cast.
 
 finish reads ranked.json: the survivors after duplicates are merged, each one that is
-an earlier finding again marked "repeats": "<id>". It drops the repeats, numbers the rest
-R<round>-<n> into verified.json, and writes summary.json, whose verdict_floor counts
-earlier findings still open like new ones. summary.json marks the round finished.
+an earlier finding again marked "repeats": "<id>", and each new one with the lead's
+"bucket" (act on, consider or noted) and "judgment". It refuses a bucket the rubric
+forbids, drops the repeats, numbers new findings R<round>-<n> and pre-existing ones
+P<round>-<n> into verified.json, and writes summary.json. Its verdict_floor counts the
+act-on findings and the earlier ones still open; its chains give each finding whose
+"answers" names the earlier finding it came from (a fix round's) its depth, the number
+of fixes in a row that each left a new finding. summary.json marks the round finished.
 The design flaws are GitHub issues labeled "design flaw" in core's repo, whatever repo is
 reviewed. known writes the ones a reviewer may match a flaw to (open, or closed as not
 planned, which is a flaw found wrong) to known-flaws.json, numbered by issue. finish
@@ -68,6 +72,7 @@ import sys
 SEVERITIES = ("blocker", "fix-first", "nit")
 DIMENSIONS = ("uptime", "logging", "tests", "performance", "correctness", "design")
 ORIGINS = ("new", "pre-existing")
+BUCKETS = ("act on", "consider", "noted")
 ANSWERS = ("fixed", "wrong", "intentional", "didn't matter")
 RULE_ANSWERS = ("accepted", "rejected")
 FLAW_SIZES = ("small", "medium", "large")
@@ -103,6 +108,33 @@ def problems(finding: dict) -> list[str]:
              (("severity", SEVERITIES), ("origin", ORIGINS), ("dimension", DIMENSIONS)) if finding.get(field) not in allowed]
     found += [f"no {field}" for field in ("file", "title", "evidence") if not finding.get(field)]
     return found
+
+
+def judgment_problems(finding: dict, previous: dict[str, dict]) -> list[str]:
+    """What is wrong with the lead's bucket for a new finding: the rubric's rules it may not override."""
+    bucket = finding.get("bucket")
+    if bucket not in BUCKETS:
+        return [f"bucket={bucket!r}"]
+    found = [] if finding.get("judgment") else ["no judgment"]
+    if bucket == "act on" and finding["severity"] == "nit":
+        found.append("a nit is never act on")
+    if bucket == "act on" and finding.get("verdict") == "PLAUSIBLE":
+        found.append("a PLAUSIBLE finding is consider at most")
+    if bucket != "act on" and finding["severity"] == "blocker" and finding.get("verdict") == "CONFIRMED":
+        found.append("a confirmed blocker is always act on")
+    if finding.get("answers") and finding["answers"] not in previous:
+        found.append(f"answers={finding['answers']!r} is no earlier finding")
+    return found
+
+
+def chain_depth(answers: str | None, previous: dict[str, dict]) -> int:
+    """How many fixes in a row each left a new finding, ending with the one that answers answers."""
+    depth = 0
+    # an id names an earlier round, so the chain ends; the bound only guards a hand-edited ledger
+    while answers in previous and depth <= len(previous):
+        depth += 1
+        answers = previous[answers].get("answers")
+    return depth
 
 
 def flaw_problems(flaw: dict) -> list[str]:
@@ -320,24 +352,37 @@ def finish(bundle: str) -> dict:
     ranked = load(os.path.join(bundle, "ranked.json"))
     if ranked is None:
         sys.exit(f"no ranked.json in {bundle}")
-    if bad := [f"ranked.json[{i}]: {', '.join(p)}" for i, f in enumerate(ranked) if (p := problems(f))]:
-        sys.exit("malformed ranked findings:\n" + "\n".join(bad))
     previous = {f["id"]: f for f in load(os.path.join(bundle, "previous.json"), [])}
+    bad = []
+    for index, finding in enumerate(ranked):
+        found = problems(finding)
+        if not found and finding["origin"] == "new" and finding.get("repeats") not in previous:
+            found = judgment_problems(finding, previous)
+        if found:
+            bad.append(f"ranked.json[{index}]: {', '.join(found)}")
+    if bad:
+        sys.exit("malformed ranked findings:\n" + "\n".join(bad))
     carried = {c["id"]: c["status"] for c in load(os.path.join(bundle, "carried.json"), [])}
 
-    verified, repeats = [], 0
+    number = target.get("round", 1)
+    verified, numbered, repeats = [], collections.Counter(), 0
     for finding in ranked:
         if finding.get("repeats") in previous:
             repeats += 1
             continue
-        verified.append({**{k: v for k, v in finding.items() if k != "repeats"}, "id": f"R{target.get('round', 1)}-{len(verified) + 1}"})
+        # a pre-existing finding is for the backlog, so it is numbered apart from what the branch fixes
+        prefix = "R" if finding["origin"] == "new" else "P"
+        numbered[prefix] += 1
+        verified.append({**{k: v for k, v in finding.items() if k != "repeats"}, "id": f"{prefix}{number}-{numbered[prefix]}"})
+    new = [f for f in verified if f["origin"] == "new"]
     still_open = [previous[fid] for fid, status in carried.items() if status == "open" and fid in previous]
-    blocking = [f for f in verified if f["origin"] == "new"] + still_open
-    severities = {f["severity"] for f in blocking}
-    floor = "rework" if "blocker" in severities else "fix-first" if "fix-first" in severities else "ship"
+    severities = {f["severity"] for f in new if f["bucket"] == "act on"} | {f["severity"] for f in still_open}
+    floor = "rework" if "blocker" in severities else "fix-first" if severities else "ship"
     summary = {
-        "round": target.get("round", 1),
-        "new": {s: sum(1 for f in verified if f["origin"] == "new" and f["severity"] == s) for s in SEVERITIES},
+        "round": number,
+        "new": {s: sum(1 for f in new if f["severity"] == s) for s in SEVERITIES},
+        "buckets": {b: sum(1 for f in new if f["bucket"] == b) for b in BUCKETS},
+        "chains": [{"id": f["id"], "answers": f["answers"], "depth": chain_depth(f["answers"], previous)} for f in new if f.get("answers")],
         "pre_existing": sum(1 for f in verified if f["origin"] == "pre-existing"),
         "still_open": [{"id": f["id"], "severity": f["severity"], "file": f.get("file"), "line": f.get("line"), "title": f["title"]} for f in still_open],
         "fixed": sorted(fid for fid, status in carried.items() if status == "fixed"),

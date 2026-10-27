@@ -10,7 +10,7 @@ Start here. From `pr.md` and `log.txt`, write `$B/intent.md`, at most three line
 
 1. The problem the change says it solves, in one line. If neither file says, write that and skip the rest.
 2. Whether the diff solves it: solved, partly (and what's left), or not.
-3. For a bug fix: the mechanism that caused the bug, and whether the change removes it or works around the symptom (catching the exception, special-casing the input that crashed, retrying around the failure). Then name the test that fails on the merge-base code, and its assertion.
+3. For a bug fix: the mechanism that caused the bug, and whether the change removes it or works around the symptom (catching the exception, special-casing the input that crashed, retrying around the failure). Then name the test that fails on the merge-base code, and its assertion. Say whether the mechanism is *shown* (a run on the unfixed code fails for the stated reason, in `pr.md`, `log.txt`, or a script you ran under `$B/` without editing the repo) or only *argued* from reading code.
 
 A change that doesn't do what it says, or that works around a symptom whose cause can be found and fixed within the change, is a finding ranked by what the remaining bug does. When the cause is a flaw in ACE's design that fixing would be work of its own, write it to `$B/flaws-correctness.json` instead (rubric.md, "Design flaws worked around"), and say so in line 3. A bug fix with no test that would fail without it is a fix-first with `dimension: tests`.
 
