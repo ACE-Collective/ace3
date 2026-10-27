@@ -30,7 +30,7 @@ The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, w
 
 - `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
 - the `tests/test_external_integration_*` links into those repositories
-- `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree
+- `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
 
 Run it by hand in a worktree made with `git worktree add`. For `git` to work on a worktree inside `dev`, which `diff-cover` needs, mount the main checkout's `.git` at its host path in `docker-compose.override.yml` and recreate `dev`:
 
