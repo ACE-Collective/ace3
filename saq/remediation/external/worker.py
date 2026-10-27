@@ -1,20 +1,15 @@
-"""Worker pool that executes one probe per item, then delegates persistence to
+"""Executes one probe per item, then delegates persistence to
 :mod:`saq.remediation.external.persistence`.
 
-Mirrors :mod:`saq.file_collection.worker`. The decision rules
-(FOUND_EVENTS/NOT_FOUND/PENDING/TRANSIENT_ERROR → row state) live in the
-persistence helper so that synchronous-first-probe callers (analysis modules)
-make identical writes.
+The decision rules (FOUND_EVENTS/NOT_FOUND/PENDING/TRANSIENT_ERROR → row
+state) live in the persistence helper so that synchronous-first-probe callers
+(analysis modules) make identical writes.
 """
 from datetime import UTC, datetime, timedelta
 import logging
-from queue import Empty, Queue
-from threading import Event, Thread
-from typing import Optional
 
-from saq.database.pool import remove_all_sessions
+from saq.queue_service import QueueWorker
 from saq.remediation.external.database import find_superseding_confirmation
-from saq.remediation.external.interface import CheckListener
 from saq.remediation.external.persistence import (
     finalize_expired,
     finalize_superseded,
@@ -27,101 +22,39 @@ from saq.remediation.external.types import (
     ProbeOutcomeKind,
     ProbeTarget,
 )
-from saq.shutdown import is_shutting_down
 
 
-class ExternalRemediationCheckWorker(CheckListener):
+class ExternalRemediationCheckWorker(QueueWorker[CheckWorkItem]):
     """One worker = one probe = N threads pulling from a shared in-memory queue."""
 
     def __init__(self, probe: ExternalRemediationProbe):
+        super().__init__()
         self.probe = probe
-        self.work_queue: Queue[CheckWorkItem] = Queue()
-        self.worker_threads: list[Thread] = []
-        self.startup_events: list[Event] = []
-        self.shutdown_event = Event()
-        self.queue_wait_timeout = 1
+
+    @property
+    def name(self) -> str:
+        return self.probe.name
+
+    @property
+    def thread_count(self) -> int:
+        return self.probe.thread_count
 
     def get_backoff_delays(self) -> tuple[int, int]:
         """The probe's configured retry backoff, consumed by the collector's
         eligibility check."""
         return (self.probe.initial_delay_seconds, self.probe.max_delay_seconds)
 
-    def handle_external_check_request(self, work_item: CheckWorkItem):
-        if work_item.probe_name != self.probe.name:
-            raise ValueError(
-                f"probe name {work_item.probe_name} does not match worker probe {self.probe.name}"
-            )
-        logging.info(
-            f"received external remediation check for {self.probe.name} "
-            f"{work_item.observable_type} {work_item.observable_value}"
+    def describe(self, work_item: CheckWorkItem) -> str:
+        return (
+            f"external remediation check {work_item.id} ({work_item.probe_name} "
+            f"{work_item.observable_type} {work_item.observable_value})"
         )
-        self.work_queue.put(work_item)
 
-    def start(self):
-        logging.info(
-            f"starting {self.probe.thread_count} threads for probe {self.probe.name}"
-        )
-        for index in range(self.probe.thread_count):
-            startup_event = Event()
-            self.startup_events.append(startup_event)
-            thread = Thread(
-                target=self.worker_loop,
-                name=f"ExternalRemediationCheckWorker-{self.probe.name}-{index}",
-                args=(startup_event,),
-            )
-            self.worker_threads.append(thread)
-            thread.start()
+    def log_extra(self, work_item: CheckWorkItem) -> dict:
+        return {"alert_uuid": work_item.alert_uuid}
 
-    def start_single_threaded(self):
-        # with the shutdown event set each pass of the loop takes at most one item; the
-        # process-wide flag is what a signal sets while this runs on the main thread
-        self.stop()
-        while not self.work_queue.empty() and not is_shutting_down():
-            self.worker_loop(Event())
-
-    def wait_for_start(self, timeout: float) -> bool:
-        for index, ev in enumerate(self.startup_events):
-            if not ev.wait(timeout):
-                logging.error(f"probe worker {self.probe.name}/{index} did not start")
-                return False
-        return True
-
-    def stop(self):
-        self.shutdown_event.set()
-
-    def wait(self):
-        for thread in self.worker_threads:
-            thread.join()
-
-    def worker_loop(self, startup_event: Event):
-        startup_event.set()
-        while True:
-            work: Optional[CheckWorkItem] = None
-            try:
-                work = self.work_queue.get(timeout=self.queue_wait_timeout)
-            except Empty:
-                pass
-
-            try:
-                if work:
-                    self.process(work)
-            except Exception as e:
-                logging.exception(
-                    f"error processing external remediation check {work.id} ({self.probe.name} "
-                    f"{work.observable_type} {work.observable_value}): {e}",
-                    extra={"alert_uuid": work.alert_uuid},
-                )
-            finally:
-                if work:
-                    # a failed commit leaves this thread's session needing a rollback, and every
-                    # later check on the thread would fail on it until the service restarts
-                    try:
-                        remove_all_sessions()
-                    except Exception as e:
-                        logging.exception(f"error removing database connection: {e}")
-
-            if self.shutdown_event.is_set():
-                break
+    def process_one(self, work_item: CheckWorkItem):
+        self.process(work_item)
 
     def process(self, work: CheckWorkItem):
         """Run one probe attempt for ``work`` and persist the outcome."""

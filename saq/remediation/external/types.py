@@ -119,3 +119,8 @@ class CheckWorkItem(BaseModel):
     max_retries: int
     deadline: datetime
     context: Optional[dict] = None
+
+    @property
+    def name(self) -> str:
+        """The worker the queue service hands this item to."""
+        return self.probe_name

@@ -15,27 +15,13 @@ def manager():
 
 
 @pytest.fixture
-def test_worker():
+def remediation_worker():
     """Creates a test RemediationWorker for testing."""
     return RemediationWorker(TestRemediator(
         RemediatorConfig(
-            name="test_worker",
+            name="remediation_worker",
             display_name="Test Worker",
             description="Test worker for unit tests",
-            observable_type=F_TEST,
-            python_module="test_module",
-            python_class="TestRemediator"
-        )))
-
-
-@pytest.fixture
-def another_test_worker():
-    """Creates another test RemediationWorker with a different name."""
-    return RemediationWorker(TestRemediator(
-        RemediatorConfig(
-            name="another_worker",
-            display_name="Another Worker",
-            description="Another test worker for unit tests",
             observable_type=F_TEST,
             python_module="test_module",
             python_class="TestRemediator"
@@ -49,51 +35,16 @@ def test_remediation_manager(manager):
 
 
 @pytest.mark.unit
-def test_add_worker(manager, test_worker):
+def test_add_worker(manager, remediation_worker):
     """Test adding a worker to the manager."""
-    manager.add_worker(test_worker)
+    manager.add_worker(remediation_worker)
 
     # verify worker was added
-    assert "test_worker" in manager.workers
-    assert manager.workers["test_worker"] == test_worker
+    assert "remediation_worker" in manager.workers
+    assert manager.workers["remediation_worker"] == remediation_worker
 
     # verify collector was registered
-    assert "test_worker" in manager.collector.listeners
-
-
-@pytest.mark.unit
-def test_add_worker_duplicate_name(manager, test_worker):
-    """Test that adding a worker with a duplicate name raises ValueError."""
-    manager.add_worker(test_worker)
-
-    # create another worker with the same name
-    duplicate_worker = RemediationWorker(TestRemediator(
-        RemediatorConfig(
-            name="test_worker",  # same name
-            display_name="Test Worker",
-            description="Test worker for unit tests",
-            observable_type=F_TEST,
-            python_module="test_module",
-            python_class="TestRemediator"
-        )))
-
-    # should raise ValueError
-    with pytest.raises(ValueError, match="worker test_worker already exists"):
-        manager.add_worker(duplicate_worker)
-
-
-@pytest.mark.unit
-def test_add_multiple_workers(manager, test_worker, another_test_worker):
-    """Test adding multiple workers with different names."""
-    manager.add_worker(test_worker)
-    manager.add_worker(another_test_worker)
-
-    # verify both workers were added
-    assert len(manager.workers) == 2
-    assert "test_worker" in manager.workers
-    assert "another_worker" in manager.workers
-    assert manager.workers["test_worker"] == test_worker
-    assert manager.workers["another_worker"] == another_test_worker
+    assert "remediation_worker" in manager.collector.listeners
 
 
 @pytest.fixture

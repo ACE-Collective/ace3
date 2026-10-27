@@ -1,14 +1,11 @@
 from typing import Protocol
 
 from saq.file_collection.types import FileCollectionWorkItem
+from saq.queue_service import QueueListener
 
 
-class FileCollectionListener(Protocol):
-    """Protocol for classes that want to receive file collection work items."""
-
-    def handle_file_collection_request(self, work_item: FileCollectionWorkItem):
-        """Called when a file collection request is ready to be processed."""
-        ...
+class FileCollectionListener(QueueListener[FileCollectionWorkItem], Protocol):
+    """What FileCollectionCollector needs of the listeners it dispatches to."""
 
     def pending_collection_ids(self) -> set[int]:
         """Returns the ids of the file collections this listener has accepted but not yet finished

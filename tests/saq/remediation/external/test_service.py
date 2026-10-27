@@ -178,7 +178,7 @@ def test_start_single_threaded_stops_on_shutdown(make_check, probe_sections, mon
     ids = [make_check().id for _ in range(3)]
     # shutdown is requested (as a signal would) while the first item is being worked
     checks = iter([False])
-    monkeypatch.setattr("saq.remediation.external.worker.is_shutting_down", lambda: next(checks, True))
+    monkeypatch.setattr("saq.queue_service.is_shutting_down", lambda: next(checks, True))
 
     service = ExternalRemediationCheckService()
     service.start_single_threaded()
@@ -226,6 +226,6 @@ def test_service_passes_config_to_manager(service_config, no_probes):
     service_config.initial_retry_delay_seconds = 12
     service_config.max_retry_delay_seconds = 13
 
-    collector = ExternalRemediationCheckService()._create_manager(service_config).collector
+    collector = ExternalRemediationCheckService().create_manager().collector
 
     assert (collector.lock_timeout_seconds, collector.initial_retry_delay_seconds, collector.max_retry_delay_seconds) == (11, 12, 13)
