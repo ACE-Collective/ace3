@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from pydantic import ValidationError
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.module_path import MODULE_PATH
@@ -148,3 +149,46 @@ def test_module_whose_analysis_type_cannot_be_read_is_logged_and_skipped(config,
     assert records[0].exc_info is not None
     assert records[0].analysis_module == "init_state"
     assert records[0].module_path == MODULE_PATH(SecondAnalysis)
+
+
+def config_with_overlay(tmp_path, overlay: str) -> ACEConfig:
+    overlay_path = tmp_path / "overlay.yaml"
+    overlay_path.write_text(overlay)
+    raw_config = load_configuration(config_paths=[str(overlay_path)])
+    result = ACEConfig.model_validate(raw_config._data)
+    result.raw = raw_config
+    return result
+
+
+@pytest.mark.unit
+def test_undeclared_module_config_key_fails_validation(tmp_path):
+    # the key the shipped zip_encryption_analyzer block set for years, which nothing read
+    config = config_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  timeout: 30\n")
+
+    # parsing only checks the base config, which knows nothing of the module's own keys
+    assert config.is_analysis_module_enabled("zip_encryption_analyzer")
+
+    with pytest.raises(ValidationError) as exc_info:
+        config.get_analysis_module_config("zip_encryption_analyzer")
+
+    assert exc_info.value.errors()[0]["loc"] == ("timeout",)
+    assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
+
+
+@pytest.mark.unit
+def test_declared_module_config_key_is_kept(tmp_path):
+    config = config_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  extract_timeout: 30\n")
+    assert config.get_analysis_module_config("zip_encryption_analyzer").extract_timeout == 30
+
+
+@pytest.mark.unit
+def test_config_class_that_allows_extra_keys_keeps_them(tmp_path):
+    config = config_with_overlay(tmp_path, "analysis_module_file_hash_analyzer:\n  ignore_pattern_test: '*.test'\n")
+    assert config.get_analysis_module_config("file_hash_analyzer").ignore_pattern_test == "*.test"
+
+
+@pytest.mark.unit
+def test_base_module_config_rejects_undeclared_key():
+    with pytest.raises(ValidationError, match="semaphore"):
+        AnalysisModuleConfig(name="shodan", python_module=__name__, python_class="FirstAnalyzer",
+                             enabled=True, semaphore="shodan")
