@@ -103,7 +103,8 @@ class URLExtractionAnalyzer(AnalysisModule):
             try:
                 res = get_tld(url, as_object=True)
             except Exception as e:
-                logging.info("Failed to get TLD on url:{} - {}".format(url, e))
+                # every url whose host is an IP address or a bare name lands here
+                logging.debug("Failed to get TLD on url:{} - {}".format(url, e))
                 if 'no_tld' not in _groupings:
                     _groupings['no_tld'] = []
                 _groupings['no_tld'].append(url)
@@ -130,9 +131,6 @@ class URLExtractionAnalyzer(AnalysisModule):
                 interesting_url_order.append(url)
 
         interesting_url_order.extend(image_urls)
-        if len(interesting_url_order) != len(extracted_urls):
-            logging.error("URLs went missing during ordering. Resturning origional list.")
-            return extracted_urls
         return interesting_url_order, _groupings
 
     def filter_excluded_domains(self, url):
@@ -145,7 +143,8 @@ class URLExtractionAnalyzer(AnalysisModule):
 
         try:
             parsed_url = urlparse(url)
-        except:
+        except ValueError:
+            # a malformed IPv6 host, which no excluded domain can match
             return True
 
         # empty URL
