@@ -1,5 +1,7 @@
+import base64
 from datetime import datetime
 import gc
+import json
 import logging
 import os
 import re
@@ -7,6 +9,7 @@ import shutil
 from typing import override
 
 import distorm3
+from markupsafe import Markup, escape
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import DetectionPoint
@@ -21,6 +24,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
+from saq.signatures.loaders.yara import attach_string_patterns, compiled_string_patterns, read_string_patterns
 from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
@@ -33,7 +37,7 @@ import yara
 import yara_scanner
 
 from saq.util.strings import format_item_list_for_summary
-from saq.util.ui import hexdump
+from saq.util.ui import hexdump, hexdump_line_html
 
 
 def _rule_queue(match_result: dict) -> str | None:
@@ -222,6 +226,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
         # in the case where the yara scanning server is unavailable a local scanner is used
         self.scanner = None
+        # the string patterns of the rules the local scanner compiled
+        self.local_string_patterns = {}
 
         # we use it for N minutes defined in the configuration
         self.scanner_start_time = None
@@ -235,7 +241,9 @@ class YaraScanner_v3_4(AnalysisModule):
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
+        patterns_read = read_string_patterns(self.scanner)
         self.scanner.load_rules()
+        self.local_string_patterns = compiled_string_patterns(patterns_read)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
 
@@ -349,6 +357,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 try:
                     matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
+                    attach_string_patterns(result, self.local_string_patterns)
                 except yara.TimeoutError as e:
                     logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
                     matches_found = False
@@ -550,6 +559,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
 
             yara_result['context'] = []
+            # aligned with context: the bytes around each match and where in them the match is
+            yara_result['match_context'] = []
             # a rule can match a string many times in one file, so the file is opened once per rule
             # and the hex dump is built here rather than by a hexdump process per match
             with open(local_file_path, 'rb') as fp:
@@ -561,6 +572,10 @@ class YaraScanner_v3_4(AnalysisModule):
                     fp.seek(start_byte)
                     context_data = fp.read(length)
                     yara_result['context'].append([position, string_id, value, hexdump(context_data)])
+                    yara_result['match_context'].append({
+                        "data": base64.b64encode(context_data).decode("ascii"),
+                        "match_offset": position - start_byte,
+                        "match_length": len(value)})
 
                     # build disassembly output if the rule specifies this
                     if 'asm' in yara_result['tags']:
@@ -598,12 +613,72 @@ class YaraScanner_v3_4(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
 
+def _visible_char(c: str) -> str | None:
+    """The symbol shown for a non-printing character, or None for one shown as is."""
+    if ord(c) < 0x20:
+        # the unicode control pictures: ␀ for 0x00 through ␟ for 0x1f, so \n is ␊ and \t is ␉
+        return chr(0x2400 + ord(c))
+    if ord(c) == 0x7f:
+        return "\u2421"
+    if not c.isprintable():
+        return f"\\x{ord(c):02x}" if ord(c) <= 0xff else f"\\u{ord(c):04x}"
+
+    return None
+
+
+def visible_match_value(value) -> Markup:
+    """A matched string value with its whitespace and non-printing characters drawn as dimmed
+    symbols, the way an editor shows whitespace, so a value of only newlines isn't blank."""
+    result = []
+    for c in str(value):
+        if c == " ":
+            # the space stays in the page, with the dot drawn over it by css, so find in page and
+            # copying still see a space
+            result.append(Markup('<span class="yara-sp"> </span>'))
+            continue
+
+        symbol = _visible_char(c)
+        result.append(escape(c) if symbol is None else Markup('<span class="yara-ws">{}</span>').format(symbol))
+
+    return Markup("").join(result)
+
+
+# the most string matches of one rule shown with a highlighted hex dump; past that, the dump is shown
+# as it was stored, so a rule matching thousands of times doesn't slow down every render
+MAX_HIGHLIGHTED_MATCHES = 100
+
+
+def highlight_hexdump(match_context: dict) -> Markup:
+    """The hex dump of the bytes around a string match (a match_context entry), with the match
+    marked."""
+    data = base64.b64decode(match_context["data"])
+    marked = range(match_context["match_offset"], match_context["match_offset"] + match_context["match_length"])
+    lines = [hexdump_line_html(offset, data[offset:offset + 16], marked) for offset in range(0, len(data), 16)]
+    lines.append(f"{len(data):08x}")
+    return Markup("\n".join(lines))
+
+
 class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
     """Presenter for YaraScanResults_v3_4."""
-    
+
     @property
     def template_path(self) -> str:
         return "analysis/yara_analysis_v3_4.html"
+
+    def visible_value(self, value) -> Markup:
+        return visible_match_value(value)
+
+    def meta_json(self, meta: dict) -> str:
+        return json.dumps(meta, indent=4, sort_keys=True, ensure_ascii=False, default=str)
+
+    def hexdump(self, yara_result: dict, index: int) -> Markup:
+        """The hex dump of the index'th string match. Results saved before match_context existed
+        have only the plain dump."""
+        match_contexts = yara_result.get("match_context") or []
+        if index < len(match_contexts) and index < MAX_HIGHLIGHTED_MATCHES:
+            return highlight_hexdump(match_contexts[index])
+
+        return escape(yara_result["context"][index][3])
 
 
 register_analysis_presenter(YaraScanResults_v3_4, YaraScanResults_v3_4_Presenter)

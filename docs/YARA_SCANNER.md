@@ -82,6 +82,19 @@ Matched string data is binary. It travels as `[offset, identifier, base64]` and 
 it back into the `(offset, identifier, bytes)` tuple, so a match looks exactly like
 `YaraScanner.scan_results`. Nothing is pickled in either direction.
 
+Yara can't return the pattern a string was written with, so a generation reads the string patterns
+of the rule files it is about to compile (plyara, `read_string_patterns()` in
+`saq/signatures/loaders/yara.py`), and the workers add `string_patterns` (identifier → pattern,
+e.g. `"$a": "\"foo\" nocase"`) to each match, for the strings that matched. The patterns are those
+of the rules that matched, not of the file as it is on disk later: a file that changed between being
+read and compiled gets none. The local fallback scanner does the same. The module saves them with
+the match and the GUI shows them next to each string match. Anonymous (`$`) strings get no pattern,
+and results saved before this have none. A rule file plyara can't parse, though yara compiles it,
+is logged at WARNING and its rules are shown without patterns.
+
+The module also saves, for each string match, the bytes around it (`match_context`: base64 `data`,
+`match_offset`, `match_length`), from which the GUI draws the hex dump with the match marked.
+
 ## What the engine does when something fails
 
 `saq/yara_scanning/client.py` raises a different exception for each outcome, and none of them is

@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from saq.util.ui import hexdump, hexdump_lines
+from saq.util.ui import hexdump, hexdump_line_html, hexdump_lines
 
 
 def _real_hexdump(content: bytes) -> str:
@@ -36,3 +36,16 @@ def test_hexdump_lines_takes_chunks():
         "00000020  21                                                |!|\n",
         "00000021\n",
     ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("chunk", [b"Hello, world!\n", bytes(range(16)), b"0123456789"])
+def test_hexdump_line_html_unmarked_is_the_plain_line(chunk):
+    assert hexdump_line_html(32, chunk, range(0)) == hexdump(b"\x00" * 32 + chunk).splitlines()[2]
+
+
+@pytest.mark.unit
+def test_hexdump_line_html_marks_a_range():
+    line = hexdump_line_html(16, b"ab<cdefghijklmno", range(18, 26))
+    assert line == ("00000010  61 62 <mark>3c 63 64 65 66 67  68 69</mark> 6a 6b 6c 6d 6e 6f  "
+                    "|ab<mark>&lt;cdefghi</mark>jklmno|")
