@@ -123,15 +123,35 @@ def test_score_candidates_prefers_the_call_to_action():
 
 @pytest.mark.unit
 def test_score_candidates_uses_the_settings_weights():
+    # a distinct power of two per weight, so a score says exactly which weights were applied
+    settings = LureURLSettings(
+        call_to_action_keywords=["review"], noise_keywords=["unsubscribe"], benign_domains=["fonts.googleapis.com"],
+        weights={"qr": 1, "body": 2, "attachment": 4, "clickable": 8, "button": 16, "call_to_action": 32,
+                 "only_domain": 64, "unwrapped": 128, "detection": 256, "not_a_link": 512, "sender_domain": 1024,
+                 "noise": 2048, "static": 4096, "benign": 8192})
     root = RootAnalysis()
-    lure_candidate = _candidate(root, LURE, [SOURCE_BODY], in_parsed_body=True,
-                                anchor=Anchor("Review Document", True))
-    settings = LureURLSettings(call_to_action_keywords=["review"], noise_keywords=[], benign_domains=[],
-                               weights={"body": 1, "clickable": 2, "button": 4, "call_to_action": 8, "only_domain": 16})
+    lure_candidate = _candidate(root, LURE, [SOURCE_BODY], in_parsed_body=True, anchor=Anchor("Review Document", True),
+                                wrapped_by="https://nam01.safelinks.protection.outlook.com/?url=x")
+    lure_candidate.observable.add_detection_point("known bad")
+    qr = _candidate(root, "https://qr.example.com/a", [SOURCE_QR], in_parsed_body=True)
+    logo = _candidate(root, "https://www.example.com/logo.png", [SOURCE_BODY], in_parsed_body=True)
+    footer = _candidate(root, "https://www.example.com/unsubscribe", [SOURCE_ATTACHMENT],
+                        attachments=["statement.pdf"], pdf_link=True)
+    font = _candidate(root, "https://fonts.googleapis.com/css", [SOURCE_ATTACHMENT], attachments=["page.html"])
 
     score_candidates([lure_candidate], set(), settings)
+    score_candidates([qr, logo, footer, font], {"example.com"}, settings)
 
-    assert lure_candidate.score == 31
+    # body + clickable + button + call_to_action + only_domain + unwrapped + detection
+    assert lure_candidate.score == 506
+    # qr + sender_domain
+    assert qr.score == 1025
+    # body + not_a_link + sender_domain + static
+    assert logo.score == 5634
+    # attachment + clickable + sender_domain + noise
+    assert footer.score == 3084
+    # attachment + benign
+    assert font.score == 8196
 
 
 @pytest.mark.unit
