@@ -76,7 +76,7 @@ Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-There is no configured linter/formatter in the repo.
+There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 

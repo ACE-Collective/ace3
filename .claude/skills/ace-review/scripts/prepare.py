@@ -3,6 +3,11 @@
 
     prepare.py --list
     prepare.py [--repo PATH] [--base REF | --range A..B] [--full] [--state-dir DIR]
+    prepare.py --check [--repo PATH] [--base REF | --range A..B]
+
+--check is for the author, before asking for a review: it prints what the mechanical
+checks below find in the lines the change adds, each with the fix it expects, writes
+no bundle, and exits 1 when it finds anything.
 
 Plain git only, so it works for core, signatures/ and integration repos hosted
 anywhere. Every review of a branch is a round, in its own bundle directory
@@ -26,11 +31,12 @@ one is redone in place. The bundle gets:
                        than core)
     rule-changes.patch what the change does to the CLAUDE.md rule sections or to the
                        skill itself, when it does anything
-    leads.json         added lines that match a mechanical check, and doc lines that name a
-                       path, function or config key the change removes
+    leads.json         added lines that match a mechanical check, functions the change adds
+                       that repeat another function's body, and doc lines that name a path,
+                       function or config key the change removes
     previous.json      round 2 on: every finding of earlier rounds and its status, one of
-                       open, fixed, dismissed (by the user's answer) or seen (nits and
-                       pre-existing findings, never rechecked)
+                       open (the lead's act on), fixed, dismissed (by the user's answer) or
+                       seen (consider, noted and pre-existing findings, never rechecked)
     delta.patch        round 2 on, when the merge-base hasn't moved: what changed since the
                        last finished round (delta-files.txt lists the files)
 """
@@ -47,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 
 import yaml
 
@@ -64,6 +71,26 @@ WAIT_METHODS = {"join", "wait", "acquire", "communicate", "result"}
 SUBPROCESS_CALLS = {"subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output"}
 HTTP_CALL = re.compile(r"(requests|httpx)\.(get|post|put|patch|delete|head|options|request)")
 THREAD_HOPS = {"run_in_threadpool", "to_thread", "run_in_executor"}
+# a shorter function is a copy by coincidence more often than by pasting
+COPY_MIN_STATEMENTS = 3
+# what --check tells the author to do about each kind of lead
+CHECK_FIXES = {
+    "bare-except": "catch the exception you expect, and log it with logging.exception() or re-raise it",
+    "silent-except": "log it with logging.exception(), re-raise it, or add a comment saying why silence is right",
+    "raise-without-from": "raise the new exception `from e`",
+    "print-exc": "use logging.exception() instead of traceback.print_exc()",
+    "error-without-traceback": "use logging.exception(), or exc_info=True (log_loop_exception() in a long-running loop)",
+    "sleep-in-test": "wait with wait_for_condition() or wait_for_log_count() from tests/saq/helpers.py",
+    "thread-hop": "reach a thread only through aceapi_v2.sync.run_db_in_thread",
+    "shell-true": "pass an argument list without shell=True",
+    "unbounded-wait": "give it a timeout, or a comment naming what bounds it",
+    "no-timeout": "give the call a timeout",
+    "offset-paging": "page by keyset (aceapi_v2/common/listing.py)",
+    "local-import": "import at module level, or add a comment saying why the import must be local",
+    "copied-function": "call or move the existing function instead of copying it",
+    "stale-reference": "update the doc line that still names what the change removes",
+    "unmarked-test": "add a unit, integration or system marker, or the test never runs",
+}
 
 
 def git(repo: str, *args: str, check: bool = True) -> str:
@@ -279,7 +306,9 @@ def build_previous(state: str) -> tuple[list[dict], dict[str, str], list[dict]]:
             continue
         counts = {"round": number, "blocker": 0, "fix-first": 0, "nit": 0}
         for finding in load_json(os.path.join(path, "verified.json"), []):
-            blocking = finding.get("origin") == "new" and finding.get("severity") in ("blocker", "fix-first")
+            # a round finished before the lead judged findings has no bucket: its blockers and fix-firsts held the PR
+            bucket = finding.get("bucket") or ("act on" if finding.get("severity") in ("blocker", "fix-first") else "noted")
+            blocking = finding.get("origin") == "new" and bucket == "act on"
             ledger[finding["id"]] = {**finding, "round": number, "status": "open" if blocking else "seen"}
             if finding.get("origin") == "new" and finding.get("severity") in counts:
                 counts[finding["severity"]] += 1
@@ -533,6 +562,50 @@ def scan_python(path: str, source: str, added: set[int]) -> list[dict]:
     return scanner.leads
 
 
+def function_key(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """What a function and a copy of it share under any name or docstring, or None for one too short to judge."""
+    body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+    if sum(isinstance(inner, ast.stmt) for stmt in body for inner in ast.walk(stmt)) < COPY_MIN_STATEMENTS:
+        return None
+    return ast.dump(node.args) + ast.dump(ast.Module(body=body, type_ignores=[]))
+
+
+def functions(source: str | None):
+    try:
+        # a file elsewhere in the tree with an invalid escape is not the change's to report
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source or "")
+    except (SyntaxError, ValueError):
+        return  # a file that doesn't parse fails its own tests
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield node
+
+
+def copied_functions(repo: str, tree: str, added: dict[str, set[int]], head_text) -> list[dict]:
+    """Functions the change adds whose arguments and body repeat another function in the repo."""
+    new = [(path, node, key) for path, lines in added.items() if path.endswith(".py")
+           for node in functions(head_text(path)) if node.lineno in lines and (key := function_key(node))]
+    if not new:
+        return []
+    wanted = {key for _, _, key in new}
+    found: dict[str, list[tuple[str, int, str]]] = {}
+    for path in git(repo, "ls-tree", "-r", "--name-only", tree).splitlines():
+        if path.endswith(".py"):
+            for node in functions(head_text(path)):
+                if (key := function_key(node)) in wanted:
+                    found.setdefault(key, []).append((path, node.lineno, node.name))
+    leads = []
+    for path, node, key in new:
+        others = [other for other in found.get(key, []) if other[:2] != (path, node.lineno)]
+        if others:
+            other_path, other_line, other_name = others[0]
+            leads.append({"check": "copied-function", "dimension": "design", "file": path, "line": node.lineno,
+                          "text": f"{node.name} repeats {other_path}:{other_line} {other_name}"})
+    return leads
+
+
 # --- stale references -----------------------------------------------------------------
 
 
@@ -651,6 +724,35 @@ def stale_references(refs: list[dict], docs: list[str], head_text, added: dict[s
     return leads
 
 
+def find_leads(repo: str, tree: str, merge_base: str, changed: list[tuple[str, str, str]], head_text,
+               full_added: dict[str, set[int]], scan_added: dict[str, set[int]]) -> list[dict]:
+    """The leads among the lines of scan_added that the change adds, and the doc lines left naming what it removes."""
+    added = {path: full_added.get(path, set()) & lines for path, lines in scan_added.items()}
+    leads = []
+    for status, _, path in changed:
+        if status[0] != "D" and path.endswith(".py") and added.get(path):
+            leads.extend(scan_python(path, head_text(path) or "", added[path]))
+    leads.extend(copied_functions(repo, tree, added, head_text))
+    refs = removed_refs(repo, tree, merge_base, changed, head_text)
+    if refs:
+        docs = [p for p in git(repo, "ls-tree", "-r", "--name-only", tree).splitlines()
+                if p.endswith(".md") and not p.startswith("tests/") and not os.path.basename(p).startswith("CHANGELOG")]
+        leads.extend(stale_references(refs, docs, head_text, full_added))
+    return leads
+
+
+def check(repo: str, tree: str, merge_base: str, changed: list[tuple[str, str, str]], diff: str, head_text) -> int:
+    """Print what the mechanical checks find in the lines the change adds, each with its fix; 1 if anything."""
+    added = added_lines(diff)
+    leads = sorted(find_leads(repo, tree, merge_base, changed, head_text, added, added), key=lambda lead: (lead["file"], lead["line"]))
+    found = [f"{lead['file']}:{lead['line']}  {lead['check']}  {lead['text']}\n    fix: {CHECK_FIXES[lead['check']]}" for lead in leads]
+    for status, _, path in changed:
+        if not status.startswith("D") and os.path.basename(path).startswith("test_") and path.endswith(".py"):
+            found += [f"{test}  unmarked-test\n    fix: {CHECK_FIXES['unmarked-test']}" for test in unmarked_tests(path, head_text(path))]
+    print("\n".join(found + [f"{len(found)} line(s) to fix or justify" if found else "nothing found"]))
+    return 1 if found else 0
+
+
 # --- main -----------------------------------------------------------------------------
 
 
@@ -670,6 +772,8 @@ def main() -> None:
     parser.add_argument("--range", help="explicit A..B range instead of merge-base..HEAD")
     parser.add_argument("--full", action="store_true", help="review the whole change, not only what changed since the last round")
     parser.add_argument("--state-dir", default=os.path.join(SAQ_HOME, "local", "ace-review"))
+    parser.add_argument("--check", action="store_true",
+                        help="print what the mechanical checks find in the lines the change adds, with their fixes; write no bundle")
     args = parser.parse_args()
 
     if args.list:
@@ -713,20 +817,23 @@ def main() -> None:
         with open(full, encoding="utf-8", errors="replace") as fp:
             return fp.read()
 
+    # diffing against the snapshot tree takes in uncommitted and untracked work
+    diff = git(repo, "diff", *DIFF_FLAGS, merge_base, tree)
+    changed: list[tuple[str, str, str]] = []
+    for line in git(repo, "diff", *DIFF_FLAGS, "--name-status", merge_base, tree).splitlines():
+        parts = line.split("\t")
+        changed.append((parts[0], parts[1], parts[-1]))
+    if args.check:
+        sys.exit(check(repo, tree, merge_base, changed, diff, head_text))
+
     label = f"range-{args.range}" if args.range else (branch if branch != "HEAD" else head[:12])
     state = os.path.join(args.state_dir, safe_name(f"{os.path.basename(repo)}-{label}"))
     number, out, previous_dir = next_round(state)
     previous_target = load_json(os.path.join(previous_dir, "target.json"), {}) if previous_dir else {}
 
-    # diffing against the snapshot tree takes in uncommitted and untracked work
-    diff = git(repo, "diff", *DIFF_FLAGS, merge_base, tree)
     write(out, "diff.patch", diff)
     write(out, "stat.txt", git(repo, "diff", *DIFF_FLAGS, "--stat", merge_base, tree))
     write(out, "log.txt", git(repo, "log", "--no-merges", "--format=--- %h %an%n%B", f"{merge_base}..{head}"))
-    changed: list[tuple[str, str, str]] = []
-    for line in git(repo, "diff", *DIFF_FLAGS, "--name-status", merge_base, tree).splitlines():
-        parts = line.split("\t")
-        changed.append((parts[0], parts[1], parts[-1]))
     write(out, "files.txt", "".join(f"{status}\t{path}\n" for status, _, path in changed))
 
     delta, delta_reason, delta_diff, unchanged = False, None, "", False
@@ -792,18 +899,7 @@ def main() -> None:
 
     # in a delta round, only what changed since the last round can produce a new lead
     full_added = added_lines(diff)
-    scan_added = added_lines(delta_diff) if delta else full_added
-    leads = []
-    for status, _, path in changed:
-        if status[0] != "D" and path.endswith(".py"):
-            added = full_added.get(path, set()) & scan_added.get(path, set())
-            if added:
-                leads.extend(scan_python(path, head_text(path) or "", added))
-    refs = removed_refs(repo, tree, merge_base, changed, head_text)
-    if refs:
-        docs = [p for p in git(repo, "ls-tree", "-r", "--name-only", tree).splitlines()
-                if p.endswith(".md") and not p.startswith("tests/") and not os.path.basename(p).startswith("CHANGELOG")]
-        leads.extend(stale_references(refs, docs, head_text, full_added))
+    leads = find_leads(repo, tree, merge_base, changed, head_text, full_added, added_lines(delta_diff) if delta else full_added)
     write(out, "leads.json", leads)
 
     target = {
