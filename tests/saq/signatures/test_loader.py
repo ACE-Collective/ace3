@@ -8,6 +8,7 @@ import hashlib
 import logging
 import os
 import subprocess
+from unittest.mock import Mock
 
 import pytest
 
@@ -21,6 +22,13 @@ from saq.signatures.loaders import (
     load_yara_signatures,
 )
 from saq.signatures.loaders.builtin import BUILTIN_SOURCE_PATH
+from saq.signatures.loaders import yara as yara_loader
+from saq.signatures.loaders.yara import (
+    MAX_RULE_SOURCE_BYTES,
+    attach_rule_details,
+    compiled_rule_details,
+    read_rule_details,
+)
 from saq.signatures.model import SignatureType
 
 TEST_GIT_REMOTE = "git@example.com:atu/test-signatures.git"
@@ -700,3 +708,180 @@ def test_yara_parse_cache_reuses_unchanged_files(signature_repo, monkeypatch):
     os.remove(os.path.join(signature_repo, "yara", "bv", "rules.yar"))
     assert load_yara_signatures(_yara_dir(signature_repo), parse_cache=cache) == []
     assert cache == {}
+
+
+PATTERN_RULES = r"""
+rule pattern_rule
+{
+    strings:
+        $text = "say \"hi\"" nocase wide
+        $hex = { 4D 5A ?? 90 }
+        $re = /ab+c[0-9]/i
+        $xor = "key" xor(0x01-0xff) private
+        $ = "anonymous"
+    condition:
+        any of them
+}
+
+rule other_rule
+{
+    strings:
+        $a = "other"
+    condition:
+        $a
+}
+"""
+
+
+def _write_rule_file(directory, name: str, source: str) -> str:
+    path = os.path.join(str(directory), name)
+    with open(path, "w") as fp:
+        fp.write(source)
+
+    return path
+
+
+class _Scanner:
+    """Stands in for yara_scanner.YaraScanner, which lists its rule files by namespace."""
+
+    def __init__(self, namespaces=None, error=None):
+        self.namespaces = namespaces or {}
+        self.error = error
+
+    def get_namespace_dict(self):
+        if self.error:
+            raise self.error
+
+        return self.namespaces
+
+
+def _read(namespaces) -> dict:
+    return compiled_rule_details(read_rule_details(_Scanner(namespaces)))
+
+
+def _patterns(details: dict) -> dict:
+    return {key: rule["patterns"] for key, rule in details.items()}
+
+
+@pytest.mark.unit
+def test_rule_details_of_every_rule_by_namespace(tmp_path):
+    first = _write_rule_file(tmp_path, "a.yar", PATTERN_RULES)
+    second = _write_rule_file(tmp_path, "b.yar", 'rule other_rule { strings: $b = "b" condition: $b }')
+
+    assert _patterns(_read({"ns1": [first], "ns2": [second]})) == {
+        ("ns1", "pattern_rule"): {
+            "$text": '"say \\"hi\\"" nocase wide',
+            "$hex": "{ 4D 5A ?? 90 }",
+            "$re": "/ab+c[0-9]/i",
+            "$xor": '"key" xor(0x01-0xff) private',
+        },
+        ("ns1", "other_rule"): {"$a": '"other"'},
+        # the same rule name in another namespace is another rule
+        ("ns2", "other_rule"): {"$b": '"b"'},
+    }
+
+
+@pytest.mark.unit
+def test_rule_details_carry_each_rule_source(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    details = _read({"ns": [path]})
+
+    other = details[("ns", "other_rule")]["source"]
+    assert other["file"] == "rules.yar"
+    assert other["start_line"] == PATTERN_RULES.splitlines().index("rule other_rule") + 1
+    assert other["text"] == 'rule other_rule\n{\n    strings:\n        $a = "other"\n    condition:\n        $a\n}\n'
+    assert details[("ns", "pattern_rule")]["source"]["text"].startswith("rule pattern_rule\n")
+
+
+@pytest.mark.unit
+def test_rule_source_over_the_cap_is_not_kept(tmp_path, caplog):
+    strings = "".join(f'        $s{i} = "{"x" * 60}"\n' for i in range(MAX_RULE_SOURCE_BYTES // 70 + 1))
+    path = _write_rule_file(tmp_path, "big.yar", f"rule big_rule\n{{\n    strings:\n{strings}    condition:\n        any of them\n}}\n")
+
+    with caplog.at_level(logging.INFO):
+        details = _read({"ns": [path]})
+
+    assert details[("ns", "big_rule")]["source"] is None
+    # the patterns are still kept
+    assert details[("ns", "big_rule")]["patterns"]["$s0"] == '"' + "x" * 60 + '"'
+    assert [r.yara_rule for r in caplog.records if "its source is not shown" in r.getMessage()] == ["big_rule"]
+
+
+@pytest.mark.unit
+def test_rule_source_with_bytes_that_are_not_utf8(tmp_path):
+    path = str(tmp_path / "latin1.yar")
+    with open(path, "wb") as fp:
+        fp.write(b'rule latin1_rule { meta: author = "caf\xe9" strings: $a = "a" condition: $a }\n')
+
+    text = _read({"ns": [path]})[("ns", "latin1_rule")]["source"]["text"]
+    assert "caf\ufffd" in text
+    text.encode("utf-8")
+
+
+@pytest.mark.unit
+def test_rule_details_of_a_file_changed_while_compiling_are_dropped(tmp_path, caplog):
+    changed = _write_rule_file(tmp_path, "changed.yar", PATTERN_RULES)
+    unchanged = _write_rule_file(tmp_path, "unchanged.yar", 'rule kept { strings: $k = "k" condition: $k }')
+    removed = _write_rule_file(tmp_path, "removed.yar", 'rule gone { strings: $g = "g" condition: $g }')
+    read = read_rule_details(_Scanner({"ns": [changed, unchanged, removed]}))
+
+    # what the scanner compiles now is not what was read
+    _write_rule_file(tmp_path, "changed.yar", 'rule other_rule { strings: $a = "edited" condition: $a }')
+    os.remove(removed)
+
+    with caplog.at_level(logging.INFO):
+        assert _patterns(compiled_rule_details(read)) == {("ns", "kept"): {"$k": '"k"'}}
+
+    assert {r.path for r in caplog.records if "changed while its rules compiled" in r.getMessage()} == {changed, removed}
+
+
+@pytest.mark.unit
+def test_rule_details_skip_a_file_plyara_cannot_parse(tmp_path, caplog):
+    broken = _write_rule_file(tmp_path, "broken.yar", "rule broken { strings: $a = condition: }")
+    good = _write_rule_file(tmp_path, "good.yar", 'rule good { strings: $g = "g" condition: $g }')
+    missing = str(tmp_path / "missing.yar")
+
+    with caplog.at_level(logging.WARNING):
+        assert _patterns(_read({"ns": [broken, good, missing]})) == {("ns", "good"): {"$g": '"g"'}}
+
+    # expected failures: plyara lags yara's grammar, and a file can go away
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to read the yara rules in")]
+    assert {(r.path, r.levelno) for r in records} == {(broken, logging.WARNING), (missing, logging.WARNING)}
+
+
+@pytest.mark.unit
+def test_rule_details_unexpected_failure_is_logged_with_traceback(tmp_path, monkeypatch, caplog):
+    path = _write_rule_file(tmp_path, "rules.yar", PATTERN_RULES)
+    monkeypatch.setattr(yara_loader, "_parse_rule_details", Mock(side_effect=RuntimeError("parser bug")))
+
+    with caplog.at_level(logging.ERROR):
+        assert _read({"ns": [path]}) == {}
+
+    records = [r for r in caplog.records if r.getMessage() == f"unable to read the yara rules in {path}"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    assert records[0].exc_info[0] is RuntimeError
+
+
+@pytest.mark.unit
+def test_rule_details_never_raise_when_the_rule_files_cannot_be_listed(caplog):
+    with caplog.at_level(logging.ERROR):
+        assert read_rule_details(_Scanner(error=RuntimeError("no listing"))) == {}
+
+    records = [r for r in caplog.records if r.getMessage() == "unable to list the yara rule files to read their rules"]
+    assert len(records) == 1 and records[0].exc_info[0] is RuntimeError
+
+
+@pytest.mark.unit
+def test_attach_rule_details_keeps_the_matched_strings_and_the_source():
+    source = {"file": "a.yar", "start_line": 1, "text": "rule rule_a {}"}
+    details = {("ns", "rule_a"): {"patterns": {"$a": '"a"', "$b": '"b"'}, "source": source}}
+    matches = [
+        {"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"a"), (5, "$a", b"a")]},
+        {"namespace": "other", "rule": "rule_a", "strings": [(0, "$a", b"a")]},
+    ]
+
+    attach_rule_details(matches, details)
+
+    assert [m["string_patterns"] for m in matches] == [{"$a": '"a"'}, {}]
+    assert [m["rule_source"] for m in matches] == [source, None]

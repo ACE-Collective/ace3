@@ -21,7 +21,7 @@ from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
-from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork
+from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
@@ -222,6 +222,27 @@ def test_scan_file(make_server, rules_dir, target):
     assert match["namespace"] == rules_dir
     assert match["commit"] is None
     assert match["strings"] == [(10, "$a", b"MATCH_A")]
+    # the pattern of each matched string, from the source the generation compiled
+    assert match["string_patterns"] == {"$a": '"MATCH_A"'}
+    assert match["rule_source"] == {"file": "a.yar", "start_line": RULE_A.splitlines().index("rule rule_a {") + 1,
+                                    "text": RULE_A.lstrip("\n")}
+
+
+@pytest.mark.unit
+def test_scan_attaches_rule_details():
+    class _Scanner:
+        scan_results = [{"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"MATCH_A")]}]
+
+        def scan(self, path, **kwargs):
+            return True
+
+    settings = ScannerSettings(socket_dir="/tmp", signature_dir="/tmp", git_repo_dirs=(), worker_count=1,
+                               update_frequency=60, default_timeout=5, compile_timeout=60, io_timeout=5,
+                               max_data_bytes=1024, max_requests_per_worker=0, backlog=1)
+    response = _scan_in_worker(_Scanner(), settings, {("ns", "rule_a"): {"patterns": {"$a": '"MATCH_A"', "$b": '"B"'}, "source": None}},
+                               {"op": protocol.OP_SCAN_FILE, "path": "/tmp/x"}, None)
+
+    assert response["matches"][0]["string_patterns"] == {"$a": '"MATCH_A"'}
 
 
 @pytest.mark.integration
@@ -347,6 +368,20 @@ def test_hot_reload_without_downtime(make_server, rules_dir, target):
     # which is what a worker kept alive by a stray copy of its control pipe would take)
     wait_for_condition(lambda: len(_generations(server)) == 1, timeout=3)
     assert not first_generation & {process.pid for process in _generations(server)}
+
+
+@pytest.mark.integration
+def test_reload_serves_the_edited_rules_details(make_server, rules_dir, target):
+    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
+    server = make_server()
+    assert server.wait_for_start(30)
+    assert _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A"'}
+
+    edited = RULE_A.replace('"MATCH_A"', '"MATCH_A" nocase')
+    _write(os.path.join(rules_dir, "a.yar"), edited)
+
+    wait_for_condition(lambda: _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A" nocase'}, timeout=30)
+    assert _scan(server, target)[0]["rule_source"]["text"] == edited.lstrip("\n")
 
 
 @pytest.mark.integration

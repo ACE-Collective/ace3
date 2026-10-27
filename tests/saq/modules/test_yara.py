@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import logging
 import os
@@ -30,7 +31,13 @@ from saq.database.pool import get_db
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.yara import YaraScanResults_v3_4, YaraScanner_v3_4
+from saq.modules.file_analysis.yara import (
+    YaraScanResults_v3_4,
+    YaraScanResults_v3_4_Presenter,
+    YaraScanner_v3_4,
+    highlight_hexdump,
+    visible_match_value,
+)
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.svs.marker_rule import MARKER_RULE_NAME, marker_rule_path
 from saq.svs.markers import find_markers_in_match, new_marker
@@ -891,12 +898,14 @@ class TestYaraLocalScanner:
         module = _yara_module(root_analysis)
         module.scanner = Mock()
         module.scanner_start_time = datetime.now() - timedelta(minutes=module.local_scanner_lifetime + 1)
+        module.local_rule_details = {"rule.yar": object()}
 
         with caplog.at_level(logging.INFO):
             module.execute_analysis(_file_observable(root_analysis))
 
         assert module.scanner is None
         assert module.scanner_start_time is None
+        assert module.local_rule_details == {}
         assert any(r.getMessage() == "releasing local yara scanner" for r in caplog.records)
 
     @pytest.mark.integration
@@ -979,3 +988,138 @@ class TestYaraRuleStrings:
         assert len(records) == 1
         assert f"row {detection.id} matched by yara rule detection_rule" in records[0].getMessage()
         assert records[0].exc_info is not None
+
+
+class TestYaraStringPatterns:
+    """The pattern of each string that matched is stored with the match, for the GUI."""
+
+    @pytest.mark.integration
+    def test_patterns_of_matched_strings_are_stored(self, yara_service, root_analysis):
+        yara_service(_rule("pattern_rule", strings='$a = "Hello" nocase\n        $b = { 77 6F 72 6C 64 }\n        $c = "not in the file"'))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        # $c did not match, so its pattern is not kept
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello" nocase', "$b": "{ 77 6F 72 6C 64 }"}
+
+    @pytest.mark.integration
+    def test_patterns_are_stored_by_the_local_scanner(self, socket_dir, write_rules, root_analysis):
+        write_rules(_rule("local_rule"))
+        observable = _scan(root_analysis)
+
+        analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello, world!"'}
+        assert analysis.scan_results[0]["rule_source"]["text"] == _rule("local_rule")
+
+    @pytest.mark.integration
+    def test_patterns_are_those_of_the_rules_that_matched(self, yara_service, write_rules, root_analysis):
+        """The service keeps matching with the rules it compiled until it notices a change, so the
+        patterns come from that source, not from the file as it is on disk when the file is scanned."""
+        yara_service(_rule("edited_rule", strings='$a = "Hello"'))
+        write_rules(_rule("edited_rule", strings='$a = "Hello" nocase'))
+
+        analysis = _scan(root_analysis).get_and_load_analysis(YaraScanResults_v3_4)
+        assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello"'}
+        assert analysis.scan_results[0]["rule_source"] == {
+            "file": "test.yar", "start_line": 1, "text": _rule("edited_rule", strings='$a = "Hello"')}
+
+    @pytest.mark.integration
+    def test_match_context_is_stored(self, yara_service, root_analysis):
+        yara_service(_rule("context_rule", strings='$a = "world"'))
+        content = b"x" * 100 + b"Hello, world!\n"
+        analysis = _scan(root_analysis, content=content).get_and_load_analysis(YaraScanResults_v3_4)
+
+        context_bytes = get_analysis_module_config(ANALYSIS_MODULE_YARA_SCANNER_V3_4).context_bytes
+        start = 107 - context_bytes
+        assert analysis.scan_results[0]["match_context"] == [{
+            "data": base64.b64encode(content[start:107 + 5 + context_bytes]).decode("ascii"),
+            "match_offset": context_bytes,
+            "match_length": 5,
+        }]
+
+
+# ---------------------------------------------------------------------------
+# how a string match is drawn in the GUI
+# ---------------------------------------------------------------------------
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [
+    ("plain", "plain"),
+    # the space itself stays, so find in page and copy see it; css draws the dot
+    ("a b", 'a<span class="yara-sp"> </span>b'),
+    ("\n\n", '<span class="yara-ws">\u240a</span><span class="yara-ws">\u240a</span>'),
+    ("\t\r\x00\x7f", '<span class="yara-ws">\u2409</span><span class="yara-ws">\u240d</span>'
+                     '<span class="yara-ws">\u2400</span><span class="yara-ws">\u2421</span>'),
+    ("\x85\u200b", '<span class="yara-ws">\\x85</span><span class="yara-ws">\\u200b</span>'),
+    ("<b>&", "&lt;b&gt;&amp;"),
+    ("caf\u00e9", "caf\u00e9"),
+])
+def test_visible_match_value(value, expected):
+    assert str(visible_match_value(value)) == expected
+
+
+def _match_context(data: bytes, match_offset: int, match_length: int) -> dict:
+    return {"data": base64.b64encode(data).decode("ascii"), "match_offset": match_offset, "match_length": match_length}
+
+
+@pytest.mark.unit
+def test_highlight_hexdump_marks_a_match_across_lines():
+    data = b"A" * 10 + b"needle-that-spans-two-lines" + b"<" * 10
+    html = str(highlight_hexdump(_match_context(data, 10, 27)))
+
+    assert html.splitlines() == [
+        "00000000  41 41 41 41 41 41 41 41  41 41 <mark>6e 65 65 64 6c 65</mark>  |AAAAAAAAAA<mark>needle</mark>|",
+        "00000010  <mark>2d 74 68 61 74 2d 73 70  61 6e 73 2d 74 77 6f 2d</mark>  |<mark>-that-spans-two-</mark>|",
+        "00000020  <mark>6c 69 6e 65 73</mark> 3c 3c 3c  3c 3c 3c 3c 3c 3c 3c     |<mark>lines</mark>&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;|",
+        "0000002f",
+    ]
+
+
+@pytest.mark.unit
+def test_hexdump_highlights_from_match_context():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "plain dump <b>"]],
+              "match_context": [_match_context(b"Hello, world!\n", 7, 5)]}
+
+    assert "|Hello, <mark>world</mark>!.|" in str(presenter.hexdump(result, 0))
+
+
+@pytest.mark.unit
+def test_hexdump_saved_before_match_context_is_shown_as_stored():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "plain dump <b>"]]}
+
+    assert str(presenter.hexdump(result, 0)) == "plain dump &lt;b&gt;"
+
+
+@pytest.mark.unit
+def test_hexdump_highlights_at_most_max_highlighted_matches(monkeypatch):
+    monkeypatch.setattr("saq.modules.file_analysis.yara.MAX_HIGHLIGHTED_MATCHES", 1)
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    result = {"context": [[7, "$a", "world", "first"], [7, "$a", "world", "second"]],
+              "match_context": [_match_context(b"Hello, world!\n", 7, 5)] * 2}
+
+    assert "<mark>" in str(presenter.hexdump(result, 0))
+    assert str(presenter.hexdump(result, 1)) == "second"
+
+
+@pytest.mark.unit
+def test_rule_source_lines_mark_the_matched_strings_declarations():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    text = 'rule r\n{\n    strings:\n        $a = "a"\n        $ab = "ab"\n        $ = "anon"\n    condition:\n        $a and $ab\n}\n'
+    result = {"strings": [[0, "$a", "a"], [9, "$", "anon"]], "rule_source": {"file": "r.yar", "start_line": 1, "text": text}}
+
+    assert presenter.rule_source_lines(result) == [
+        ("rule r", False), ("{", False), ("    strings:", False),
+        ('        $a = "a"', True),
+        # a longer identifier with the same prefix, and anonymous strings, are not the matched one
+        ('        $ab = "ab"', False), ('        $ = "anon"', False),
+        ("    condition:", False),
+        # a string used in the condition is not its declaration
+        ("        $a and $ab", False), ("}", False),
+    ]
+
+
+@pytest.mark.unit
+def test_meta_json_keeps_non_ascii_text():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    assert presenter.meta_json({"description": "f\u00fcr", "a": 1}) == '{\n    "a": 1,\n    "description": "f\u00fcr"\n}'
