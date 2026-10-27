@@ -10,7 +10,7 @@ def queue_file_collection(
     collector_name: str,
     observable_type: str,
     observable_value: str,
-    alert_uuid: str,
+    alert_uuid: Optional[str] = None,
     user_id: Optional[int] = None,
     max_retries: int = 10
 ) -> int:
@@ -20,18 +20,16 @@ def queue_file_collection(
         collector_name: Name of the FileCollector to use (e.g., 'falcon_file_collection').
         observable_type: The observable type (e.g., 'file_location').
         observable_value: The observable value (e.g., 'hostname@/path/to/file').
-        alert_uuid: UUID of the originating alert.
+        alert_uuid: UUID of the originating alert, or None for a collection no alert asked for
+            (an API caller's). Its file is kept in the node's data directory instead of the
+            alert's, and removed after service_file_collection.retention_days
+            (saq.file_collection.storage).
         user_id: ID of the user who requested collection (optional for automated).
         max_retries: Maximum number of retry attempts.
 
     Returns:
         The database ID of the created file collection request.
-
-    Raises:
-        ValueError: If alert_uuid is not provided.
     """
-    if not alert_uuid:
-        raise ValueError("alert_uuid is required for file collection")
     file_collection = FileCollection(
         name=collector_name,
         type=observable_type,
@@ -52,7 +50,10 @@ def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
     Call this immediately after queue_file_collection(). If an older pending
     (NEW or IN_PROGRESS) request exists for the same (name, type, key), the
     just-queued request is deleted and the older request's ID is returned so the
-    caller attaches to it. Otherwise the given ID is returned unchanged.
+    caller attaches to it. Otherwise the given ID is returned unchanged. A request
+    with an alert only attaches to another alert's, and one without only to another
+    without, because the two keep their files in different places for different
+    lengths of time (saq.file_collection.storage).
 
     The just-queued request is only deleted while it is still NEW and unlocked.
     If the collector loop already picked it up, it is kept (a brief duplicate is
@@ -69,6 +70,7 @@ def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
             FileCollection.name == own.name,
             FileCollection.type == own.type,
             FileCollection.key == own.key,
+            _has_alert(own.alert_uuid is not None),
             FileCollection.status.in_([
                 FileCollectionStatus.NEW.value,
                 FileCollectionStatus.IN_PROGRESS.value,
@@ -86,6 +88,10 @@ def resolve_duplicate_pending_file_collection(collection_id: int) -> int:
         return earlier.id
 
     return collection_id
+
+
+def _has_alert(with_alert: bool):
+    return FileCollection.alert_uuid.isnot(None) if with_alert else FileCollection.alert_uuid.is_(None)
 
 
 def get_file_collection(collection_id: int) -> Optional[FileCollection]:
@@ -134,6 +140,7 @@ def get_pending_file_collection_by_observable(
     observable_type: str,
     observable_value: str,
     alert_uuid: Optional[str] = None,
+    with_alert: bool = True,
 ) -> Optional[FileCollection]:
     """Returns any pending (NEW or IN_PROGRESS) file collection request for the observable.
 
@@ -146,6 +153,10 @@ def get_pending_file_collection_by_observable(
         observable_value: The observable value.
         alert_uuid: Optional alert UUID to filter by. When None, pending requests
             from any alert are considered.
+        with_alert: False to consider only requests no alert asked for (an API
+            caller's) instead. A request with an alert never converges on one without,
+            or the other way round: their files are kept in different places for
+            different lengths of time (saq.file_collection.storage).
 
     Returns:
         The matching pending FileCollection, or None.
@@ -169,7 +180,7 @@ def get_pending_file_collection_by_observable(
 
     # cross-alert lookup: return the oldest pending request so that all
     # concurrent callers converge on the same collection
-    return query.order_by(FileCollection.id.asc()).first()
+    return query.filter(_has_alert(with_alert)).order_by(FileCollection.id.asc()).first()
 
 
 def get_file_collection_history(collection_id: int) -> list[FileCollectionHistory]:

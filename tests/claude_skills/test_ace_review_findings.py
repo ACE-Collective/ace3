@@ -31,6 +31,12 @@ def finding(**fields):
             "title": "a claim", "evidence": "saq/x.py:1 does it", "impact": "it breaks", "fix": "do less", **fields}
 
 
+def judged(bucket=None, **fields):
+    """A survivor as the lead leaves it in ranked.json."""
+    survivor = finding(**fields)
+    return {**survivor, "bucket": bucket or ("noted" if survivor["severity"] == "nit" else "act on"), "judgment": "why it goes there"}
+
+
 def earlier(fid, status, **fields):
     return {**finding(**fields), "id": fid, "round": 1, "status": status}
 
@@ -222,21 +228,25 @@ def test_finish_drops_repeats_numbers_the_rest_and_counts_what_is_still_open(bun
     write_json(bundle / "carried.json", [{"id": "R1-1", "status": "open"}])
     write_json(bundle / "rejected.json", [{"cid": "C9"}])
     write_json(bundle / "ranked.json", [
-        finding(title="new one", cid="C1"),
+        judged(title="new one", cid="C1"),
         finding(title="the old nit again", severity="nit", repeats="R1-2"),
         finding(title="old code", origin="pre-existing", severity="nit"),
+        judged(title="another new one", severity="nit"),
     ])
 
     summary = findings.finish(str(bundle))
 
     verified = read_json(bundle / "verified.json")
-    assert [(f["id"], f["title"]) for f in verified] == [("R2-1", "new one"), ("R2-2", "old code")]
+    # a pre-existing finding is numbered apart, so "fix the R findings" never reaches it
+    assert [(f["id"], f["title"]) for f in verified] == [("R2-1", "new one"), ("P2-1", "old code"), ("R2-2", "another new one")]
     assert all("repeats" not in f for f in verified)
     assert read_json(bundle / "summary.json") == summary
     assert datetime.datetime.fromisoformat(summary.pop("finished_at")).tzinfo is not None
     assert summary == {
         "round": 2,
-        "new": {"blocker": 0, "fix-first": 1, "nit": 0},
+        "new": {"blocker": 0, "fix-first": 1, "nit": 1},
+        "buckets": {"act on": 1, "consider": 0, "noted": 1},
+        "chains": [],
         "pre_existing": 1,
         "still_open": [{"id": "R1-1", "severity": "blocker", "file": "saq/x.py", "line": 1, "title": "a claim"}],
         "fixed": [],
@@ -248,12 +258,16 @@ def test_finish_drops_repeats_numbers_the_rest_and_counts_what_is_still_open(bun
 
 
 @pytest.mark.parametrize("ranked, carried, floor", [
-    ([finding(severity="nit")], [], "ship"),
+    ([judged(severity="nit")], [], "ship"),
+    ([judged()], [], "fix-first"),
+    ([judged(bucket="consider", verdict="PLAUSIBLE")], [], "ship"),
+    ([judged(severity="blocker", bucket="consider", verdict="PLAUSIBLE")], [], "ship"),
+    ([judged(severity="blocker")], [], "rework"),
     ([finding(severity="blocker", origin="pre-existing")], [], "ship"),
     ([], [{"id": "R1-1", "status": "fixed"}], "ship"),
     ([], [{"id": "R1-1", "status": "open"}], "fix-first"),
 ])
-def test_the_verdict_floor_counts_only_new_and_still_open_findings(bundle, ranked, carried, floor):
+def test_the_verdict_floor_counts_only_act_on_and_still_open_findings(bundle, ranked, carried, floor):
     write_json(bundle / "previous.json", [earlier("R1-1", "open")])
     write_json(bundle / "carried.json", carried)
     write_json(bundle / "ranked.json", ranked)
@@ -267,6 +281,35 @@ def test_finish_refuses_malformed_ranked_findings(bundle):
     with pytest.raises(SystemExit, match=r"ranked.json\[0\]: origin='old'"):
         findings.finish(str(bundle))
     assert not (bundle / "summary.json").exists()
+
+
+@pytest.mark.parametrize("survivor, message", [
+    (finding(), "bucket=None"),
+    ({**judged(), "judgment": ""}, "no judgment"),
+    (judged(bucket="act on", severity="nit"), "a nit is never act on"),
+    (judged(bucket="act on", verdict="PLAUSIBLE"), "a PLAUSIBLE finding is consider at most"),
+    (judged(bucket="consider", severity="blocker", verdict="CONFIRMED"), "a confirmed blocker is always act on"),
+    (judged(answers="R1-9"), "answers='R1-9' is no earlier finding"),
+])
+def test_finish_refuses_a_bucket_the_rubric_forbids(bundle, survivor, message):
+    write_json(bundle / "previous.json", [earlier("R1-1", "fixed")])
+    write_json(bundle / "ranked.json", [survivor])
+
+    with pytest.raises(SystemExit, match=rf"ranked.json\[0\]: .*{message}"):
+        findings.finish(str(bundle))
+    assert not (bundle / "summary.json").exists()
+
+
+def test_finish_measures_how_many_fixes_deep_each_chain_is(bundle):
+    # R1-1's fix left R2-1, and R2-1's fix left R3-1; R1-2 came from no fix
+    write_json(bundle / "target.json", {"round": 4})
+    write_json(bundle / "previous.json", [earlier("R1-1", "fixed"), earlier("R1-2", "fixed"),
+                                          earlier("R2-1", "fixed", answers="R1-1"), earlier("R3-1", "fixed", answers="R2-1")])
+    write_json(bundle / "ranked.json", [judged(answers="R3-1"), judged(answers="R1-2"), judged()])
+
+    summary = findings.finish(str(bundle))
+
+    assert summary["chains"] == [{"id": "R4-1", "answers": "R3-1", "depth": 3}, {"id": "R4-2", "answers": "R1-2", "depth": 1}]
 
 
 def test_answer_records_one_answer_per_finding(bundle):
@@ -313,7 +356,7 @@ def test_the_command_line_runs_a_round_from_findings_to_answers(bundle, monkeypa
     for k in (1, 2, 3):
         vote(bundle, "C1", k, "CONFIRMED", "blocker")
     assert run("tally", str(bundle), "--allow-missing")["survivors"] == 1
-    write_json(bundle / "ranked.json", read_json(bundle / "survivors.json"))
+    write_json(bundle / "ranked.json", [{**s, "bucket": "act on", "judgment": "it hangs the engine"} for s in read_json(bundle / "survivors.json")])
     assert run("finish", str(bundle))["verdict_floor"] == "rework"
     assert run("answer", str(bundle), "R2-1", "didn't matter", "--note", "cosmetic") == {
         "id": "R2-1", "answer": "didn't matter", "note": "cosmetic"

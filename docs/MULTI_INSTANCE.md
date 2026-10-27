@@ -113,6 +113,11 @@ cd /opt/ace2 && make db-upgrade
 cd /opt/ace2 && bin/ace-shutdown.sh
 ```
 
+A git worktree under a checkout has no stack of its own. In a worktree, `get-dev-container.sh` and
+`get-ace-container.sh` find the stack of the checkout the worktree was made from, and
+`exec-in-container.sh` runs its command from the worktree's own path in the container, with
+`SAQ_HOME` set to that path.
+
 They find the stack by asking compose (`docker compose ps -q <service>`), which means they
 resolve whichever compose file that checkout would use by default. A deployment that runs its
 own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,

@@ -8,13 +8,13 @@ ACE (Analysis Correlation Engine) 3.x — a security alert analysis and correlat
 
 ## Repo layout
 
-A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions.
+A working tree usually spans more than one upstream repo. This repo is the open-source ACE core; `signatures/` and each tree under `integrations/` are gitignored here but separately versioned, so their changes never appear in the outer `git status` and `grep`/`rg` skip them by default. Check them explicitly (`git -C signatures status`) and give them their own commits and PR descriptions. A git worktree gets a worktree of each integration repository of its own (see *From a git worktree* below).
 
 Known flaws in ACE's design that changes have had to work around are GitHub issues labeled `design flaw` (`gh issue list --label "design flaw"`), each describing the workaround that first ran into it. `/ace-review` files them. Before you write a workaround, check whether it is for one of them, and if so, follow the workaround its issue describes rather than inventing another.
 
 ## Environment
 
-Development happens **inside the `dev` container** (this is where Claude Code normally runs — check with `ls /.dockerenv`). `SAQ_HOME=/opt/ace`, Python 3.14 in `/venv`, user `ace`.
+Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. Claude Code runs either in that container (`ls /.dockerenv` succeeds) or on the host. The desktop app runs it on the macOS host, in a git worktree under `.claude/worktrees/`. On the host, run container commands through `bin/exec-in-container.sh`. The host shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`). macOS has no `timeout` command.
 
 From the host:
 ```bash
@@ -23,6 +23,23 @@ bin/attach-container.sh            # interactive shell in dev (falls back to ace
 bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in dev
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
+
+**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From a worktree, `bin/exec-in-container.sh` and the Makefile targets run there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code. `docker compose exec dev` runs the main checkout's code.
+
+The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, which adds what git does not track:
+
+- `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
+- the `tests/test_external_integration_*` links into those repositories
+- `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
+
+Run it by hand in a worktree made with `git worktree add`. For `git` to work on a worktree inside `dev`, which `diff-cover` needs, mount the main checkout's `.git` at its host path in `docker-compose.override.yml` and recreate `dev`:
+
+```yaml
+services:
+  dev:
+    volumes:
+      - ./.git:/absolute/host/path/to/the/checkout/.git
+```
 
 More than one ACE stack can run on a host: `ACE_STACK` (default `ace`) is the compose project
 name, and so the prefix on every container, the network and all ten named volumes. Only five host
@@ -37,7 +54,7 @@ before this: the volume names changed, so an existing stack has to be brought do
 
 ## Testing
 
-Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, prefix each one with `docker compose exec dev /venv/bin/` (or run it through `bin/exec-in-container.sh`).
+Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, run each one through `bin/exec-in-container.sh`, which in a git worktree runs the worktree's code.
 
 ```bash
 pytest                                    # default: -m "unit or integration or system" over tests/
@@ -59,7 +76,7 @@ Tests use `data_unittest/` as the data dir, driven by `etc/saq.unittest.default.
 
 ACE "integrations" tests are accessed through the `test_external_integration_*` symlinks. Never try to run these tests using their actual paths, *always* use the symlinks to access ACE integration tests.
 
-There is no configured linter/formatter in the repo.
+There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
 **Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `data_unittest/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
@@ -79,7 +96,7 @@ the message prints. Holding the checkout's marker is also what makes it safe for
 the databases an earlier, killed run of that checkout left behind: the holder sweeps the
 checkout's registry in `pytest_configure`, before any of its workers provision.
 
-**From a git worktree.** A worktree under `.claude/worktrees/<name>/` runs the suite in the same `dev` container with `SAQ_HOME` pointed at it: `cd /opt/ace/.claude/worktrees/<name> && SAQ_HOME=$PWD /venv/bin/pytest -n auto`. It needs the main checkout's `ssl/`, which `.worktreeinclude` has Claude Code copy into each worktree it creates (copy it by hand into one made with `git worktree add`). Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read it inside the container (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` has Claude Code copy into each worktree it creates (copy it by hand into one made with `git worktree add`). Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read it inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
 
 ### The standard analysis-module test
 
@@ -140,6 +157,8 @@ make cache-db-revision MESSAGE="..." / cache-db-upgrade / cache-db-check
 make brocess-db-revision MESSAGE="..." / brocess-db-upgrade / brocess-db-check
 make db-seed
 ```
+
+From a git worktree they run the worktree's models and migrations, but against the stack's shared databases. A worktree's migration applied there with `db-upgrade` leaves the main checkout's alembic on a revision it does not have, so downgrade it before you leave the worktree.
 
 Migrations are applied at startup by `docker/startup/setup.sh` (the `ace-setup` service), one `upgrade head` per chain.
 

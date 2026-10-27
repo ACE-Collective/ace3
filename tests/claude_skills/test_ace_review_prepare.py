@@ -4,6 +4,7 @@ throwaway git repos: rounds and their deltas, the base-branch rules, and the mec
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -98,9 +99,10 @@ def finish_round(target, ranked=()):
     return read_json(target, "verified.json")
 
 
-def finding(title, severity="fix-first", origin="new"):
+def finding(title, severity="fix-first", origin="new", bucket=None):
     return {"dimension": "logging", "severity": severity, "origin": origin, "file": "saq/worker.py", "line": 3,
-            "title": title, "evidence": "saq/worker.py:3", "impact": "hidden failure", "fix": "log it"}
+            "title": title, "evidence": "saq/worker.py:3", "impact": "hidden failure", "fix": "log it",
+            "bucket": bucket or ("noted" if severity == "nit" else "act on"), "judgment": "the lead's reason"}
 
 
 def test_the_first_round_bundles_committed_uncommitted_and_untracked_work(repo, review):
@@ -290,7 +292,7 @@ def test_the_second_round_reviews_the_delta_and_carries_the_first_rounds_finding
     # the bare except was the first round's lead; only what the delta adds can be one now
     assert [(lead["file"], lead["check"]) for lead in read_json(second, "leads.json")] == [("saq/second.py", "unbounded-wait")]
     previous = {f["id"]: f for f in read_json(second, "previous.json")}
-    assert {fid: f["status"] for fid, f in previous.items()} == {"R1-1": "open", "R1-2": "seen", "R1-3": "dismissed", "R1-4": "seen"}
+    assert {fid: f["status"] for fid, f in previous.items()} == {"R1-1": "open", "R1-2": "seen", "R1-3": "dismissed", "P1-1": "seen"}
     assert previous["R1-3"]["answer"] == "wrong" and previous["R1-3"]["answer_note"] == "the join has a deadline upstream"
     assert second["history"] == [{"round": 1, "blocker": 1, "fix-first": 1, "nit": 1}]
     # the same rule edit, accepted after the first round, is what the second round judges by
@@ -314,6 +316,22 @@ def test_a_finding_rechecked_as_fixed_is_closed_in_the_next_round(repo, review):
     third = review()
 
     assert [(f["id"], f["status"]) for f in read_json(third, "previous.json")] == [("R1-1", "fixed")]
+
+
+def test_only_what_the_lead_said_to_act_on_is_rechecked(repo, review):
+    write(repo, "saq/worker.py", "def run():\n    try:\n        return 1\n    except:\n        return None\n")
+    first = review()
+    finish_round(first, [finding("holds the PR"), finding("the user's call", bucket="consider")])
+    # a round finished before the lead judged findings: its fix-first held the PR
+    legacy = Path(first["bundle"]).parent / "round-0"
+    legacy.mkdir()
+    (legacy / "verified.json").write_text(json.dumps([{k: v for k, v in finding("old fix-first").items() if k != "bucket"} | {"id": "R0-1"}]))
+    (legacy / "summary.json").write_text("{}")
+
+    write(repo, "saq/second.py", "X = 1\n")
+    second = review()
+
+    assert {f["id"]: f["status"] for f in read_json(second, "previous.json")} == {"R0-1": "open", "R1-1": "open", "R1-2": "seen"}
 
 
 def test_a_changed_rule_edit_needs_a_new_decision(repo, review):
@@ -445,6 +463,68 @@ def test_stale_references_are_capped_per_reference(repo, review):
 
     assert len(leads) == prepare.STALE_HITS_PER_REF
     assert {lead["hits"] for lead in leads} == {15}
+
+
+HELPER = """def make_tool(path, name):
+    tool = path / name
+    tool.write_text("#!/bin/sh\\n")
+    tool.chmod(0o755)
+    return tool
+"""
+
+
+def test_a_function_that_repeats_another_is_a_lead(repo, review):
+    git(repo, "switch", "-q", "main")
+    write(repo, "tests/saq/test_tools.py", HELPER + "\n\ndef short():\n    return 1\n")
+    commit(repo, "upstream helper")
+    git(repo, "switch", "-q", "mw/topic")
+    git(repo, "rebase", "-q", "main")
+    # renamed and given a docstring, it is still the same function; a one-line function is too short to judge
+    copy = HELPER.replace("make_tool(path, name):", 'fake_tool(path, name):\n    """A tool that does nothing."""')
+    write(repo, "tests/saq/test_other.py", copy + "\n\ndef also_short():\n    return 1\n")
+
+    target = review()
+
+    assert [(lead["file"], lead["line"], lead["text"]) for lead in read_json(target, "leads.json") if lead["check"] == "copied-function"] == [
+        ("tests/saq/test_other.py", 1, "fake_tool repeats tests/saq/test_tools.py:1 make_tool"),
+    ]
+
+
+def run_check(repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["prepare.py", "--repo", str(repo), "--base", "main", "--check", "--state-dir", str(tmp_path / "state")])
+    with pytest.raises(SystemExit) as exit_info:
+        prepare.main()
+    return exit_info.value.code
+
+
+def test_check_prints_each_lead_with_its_fix_and_writes_nothing(repo, tmp_path, monkeypatch, capsys):
+    write(repo, "saq/worker.py", "import logging\n\ndef run():\n    try:\n        return 1\n    except ValueError as e:\n        logging.error('failed: %s', e)\n")
+    write(repo, "tests/saq/test_worker.py", "def test_run():\n    pass\n")
+
+    assert run_check(repo, tmp_path, monkeypatch) == 1
+
+    assert capsys.readouterr().out.splitlines() == [
+        "saq/worker.py:7  error-without-traceback  logging.error('failed: %s', e)",
+        "    fix: use logging.exception(), or exc_info=True (log_loop_exception() in a long-running loop)",
+        "tests/saq/test_worker.py:1 test_run  unmarked-test",
+        "    fix: add a unit, integration or system marker, or the test never runs",
+        "2 line(s) to fix or justify",
+    ]
+    assert not (tmp_path / "state").exists()
+
+
+def test_check_on_a_change_with_nothing_to_flag_exits_zero(repo, tmp_path, monkeypatch, capsys):
+    write(repo, "saq/new.py", "X = 1\n")
+
+    assert run_check(repo, tmp_path, monkeypatch) == 0
+
+    assert capsys.readouterr().out == "nothing found\n"
+
+
+def test_every_check_has_a_fix_to_print():
+    checks = set(re.findall(r'self\.lead\(node, "([a-z-]+)"', Path(prepare.__file__).read_text()))
+
+    assert checks and checks | {"copied-function", "stale-reference", "unmarked-test"} == set(prepare.CHECK_FIXES)
 
 
 def test_added_lines_follows_hunks_and_ignores_header_lookalikes():

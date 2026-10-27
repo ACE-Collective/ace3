@@ -10,6 +10,7 @@ from sqlalchemy.sql import func
 from saq.database.model import Alert, FileCollection
 from saq.database.pool import get_db, remove_all_sessions
 from saq.file_collection.interface import FileCollectionListener
+from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem
 from saq.util.time import calculate_backoff_delay
 
@@ -17,13 +18,18 @@ from saq.util.time import calculate_backoff_delay
 def create_file_collection_work_item(file_collection: FileCollection) -> Optional[FileCollectionWorkItem]:
     """Creates a FileCollectionWorkItem from a FileCollection database object.
 
-    Returns None if the associated alert cannot be found.
+    The collected file goes in the alert's storage directory, or for a collection no alert asked
+    for, in this node's directory for it (saq.file_collection.storage). Returns None if the
+    associated alert cannot be found.
     """
-    # Look up the alert to get its storage_dir
-    alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
-    if alert is None:
-        logging.error(f"Alert {file_collection.alert_uuid} not found for file collection {file_collection.id}")
-        return None
+    if file_collection.alert_uuid is None:
+        storage_dir = unattached_storage_dir(file_collection.id)
+    else:
+        alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
+        if alert is None:
+            logging.error(f"Alert {file_collection.alert_uuid} not found for file collection {file_collection.id}")
+            return None
+        storage_dir = alert.storage_dir
 
     return FileCollectionWorkItem(
         id=file_collection.id,
@@ -31,7 +37,7 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
         type=file_collection.type,
         key=file_collection.key,
         alert_uuid=file_collection.alert_uuid,
-        storage_dir=alert.storage_dir,
+        storage_dir=storage_dir,
         retry_count=file_collection.retry_count,
         max_retries=file_collection.max_retries,
         lock=file_collection.lock,

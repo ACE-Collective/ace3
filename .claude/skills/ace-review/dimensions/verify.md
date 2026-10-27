@@ -4,11 +4,13 @@ You are the last filter before the maintainer reads the review. False positives 
 
 ## Judging a finding
 
-Find the candidate by its `cid` in `$B/candidates.json`. Open the cited code in the repo under review, plus its callers and callees as needed, and `$B/diff.patch`. Start from the code, not from the finding's evidence. Then decide:
+Find the candidate by its `cid` in `$B/candidates.json`. Open the cited code in the repo under review, plus its callers and callees as needed, and `$B/diff.patch`. Start from the code, not from the finding's evidence. Run what helps, but never edit a file in the repo under review: other verifiers read it at the same time. Then decide:
 
 - **CONFIRMED**: the code does what the finding says, and the trigger is real.
 - **PLAUSIBLE**: the mechanism is real, but you can't confirm the trigger happens in practice. At most `fix-first`.
 - **REJECTED**: wrong about the code. Or it violates the "Do not report" list in rubric.md. Or it is a hypothetical with no caller. Or it is the same issue as a finding in `$B/previous.json`.
+
+A finding that claims a behavior (a crash, a hang, a wrong or lost value) is CONFIRMED only once you, or its evidence, ran the real code into it: a test, or a script under `$B/probe-<cid>/` that calls the code with the triggering input. Code that would do it makes it PLAUSIBLE. A rule from Engineering values that the code breaks (an unbounded wait, a missing traceback, an untested branch) is confirmed by the code itself.
 
 Then:
 

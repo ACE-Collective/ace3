@@ -181,12 +181,16 @@ integrations/*
 .claude/settings.local.json
 .claude/skills/*
 !.claude/skills/ace-review/
+!.claude/skills/bug-fix/
+!.claude/skills/tdd/
+!.claude/skills/unslop/
 CLAUDE.local.md
 
 # local area for hosting local development/testing stuff
 workspace/
 ssh/
-local/
+# no trailing slash: in a worktree, local is a symlink to the main checkout's (bin/setup-worktree.sh)
+/local
 
 # local docker compose overrides (auto-merged by docker compose; dev-only)
 docker-compose.override.yml

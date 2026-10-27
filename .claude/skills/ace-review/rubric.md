@@ -2,9 +2,7 @@
 
 ## Who this review is for
 
-The maintainer wants to know whether a change can ship and what must change first. They have stopped reading diffs. Every finding costs them attention, so a finding has to be about something they care about, be backed by the code, and say concretely what goes wrong.
-
-Their priorities, in order: **uptime > logging > tests > performance**, then keeping the code lean. A correctness bug ranks by what it does to one of those. A bug that hangs a service is an uptime blocker; a wrong value shown on one GUI page is a fix-first.
+The maintainer has stopped reading diffs and wants to know whether a change can ship and what must change first. Every finding costs their attention, so it is about something they care about, backed by the code, and says what goes wrong. Their priorities: **uptime > logging > tests > performance**, then lean code. A correctness bug ranks by what it does to one of those. A bug that hangs a service is an uptime blocker; a wrong value shown on one GUI page is a fix-first.
 
 ## Severity
 
@@ -27,21 +25,27 @@ Their priorities, in order: **uptime > logging > tests > performance**, then kee
   - It's a real bug with limited blast radius.
 - **nit**: worth one line, never blocks. Examples: a comment or docstring that only restates the code, a needless module or exception class, a small duplication, a misleading name.
 
-Keep nits few. Report at most about 5 per review, and pick the ones that best illustrate a habit worth correcting.
+## Lead judgment
+
+Severity says how bad a finding would be; whether it holds the PR is the lead's call. After verification each new survivor goes in one bucket, with a one-line `judgment`:
+
+- **act on**: it holds the PR. Every confirmed blocker. A fix-first whose impact names harm on a path the change makes run in production (a hang or crash, a lost or wrong record, a failure nobody hears about), or a test gap that would let this change's own fix or new behavior break unseen.
+- **consider**: real, and fixing it now is the user's call. Every PLAUSIBLE finding, since its trigger isn't shown. A fix-first on a path nothing reaches today, or whose fix costs more than the harm it prevents.
+- **noted**: the nits. Keep about 5, the ones that best show a habit worth correcting.
+
+Six reviewers each fill a list, so some findings are always left over. A round whose survivors are all consider and noted is a ship: say so.
 
 ## Verdict
 
-- **rework**: any verified blocker, or the change is so far from the conventions that fixing it item by item is the wrong approach (e.g. a whole new Flask API), or a bug fix works around a symptom whose cause can be found and fixed within the change.
-- **fix-first**: any verified fix-first finding.
-- **ship**: everything else. A review may be "ship" with nits.
-
-A finding still open from an earlier round counts as if it were new.
+- **rework**: an act-on blocker, or the change is so far from the conventions that fixing it item by item is the wrong approach (e.g. a whole new Flask API), or a bug fix works around a symptom whose cause can be found and fixed within the change.
+- **fix-first**: an act-on finding, or one from an earlier round still open.
+- **ship**: everything else, consider and noted findings included.
 
 When the tests weren't run (lock held, range not checked out), the verdict may not be "ship". Say "fix-first: tests not verified" unless the change has no code (docs only). Likewise, while `rule_changes_status` is `pending` say "fix-first: rule changes need your decision", and when it is `rejected` the rule changes are a fix-first finding of their own.
 
 ## Design flaws worked around
 
-Sometimes a change is shaped by a flaw in ACE's design rather than by a mistake of its own: it has to work around how ACE already is. The maintainer must hear about every such flaw. They decide whether to stop and fix the flaw first or keep going, and either way the flaw is tracked as a GitHub issue labeled `design flaw` in core's repo, to fix later. They are moving fast, so a flaw is never a reason to hold the change up by itself.
+Sometimes a change is shaped by a flaw in ACE's design rather than by a mistake of its own. The maintainer hears about every such flaw and decides whether to stop or keep going; either way it becomes a `design flaw` issue in core's repo. A flaw never holds the change up by itself.
 
 A design flaw is in the code on the base branch, not in the change, and fixing it is a piece of work of its own, beyond what this change should take on. Signs of one:
 - The change special-cases a type, mode, module or caller because a shared abstraction doesn't fit it.
@@ -54,7 +58,6 @@ A design flaw is in the code on the base branch, not in the change, and fixing i
 
 Keep the categories apart:
 - A bug or a convention broken by the change itself is a **finding**.
-- A local defect in old code that the change edits is a **pre-existing finding**.
 - A symptom whose cause the change could fix itself is a finding (and a rework, per the verdict above), not a flaw.
 - A flaw is reported **as well as** any finding on the workaround. The workaround is judged as code like anything else: a clean workaround of a real flaw has no finding at all.
 
@@ -63,7 +66,7 @@ For each flaw, size the real fix:
 - **medium**: several modules or a migration, but bounded.
 - **large**: cross-cutting, many callers, or migrating existing data.
 
-Then recommend **stop** or **keep going**:
+Then recommend **stop** (pause this branch and fix the flaw first, in its own PR, never here) or **keep going**:
 - Recommend stop when the fix is small, when the workaround would spread (other code will copy it, it is a pattern other authors will follow), or when it writes data in a shape that is costly to migrate later.
 - Recommend keep going when the fix is medium or large and the workaround is contained and easy to remove once the flaw is fixed.
 
@@ -85,7 +88,7 @@ Report only flaws that this change actually works around, with the code that doe
 
 A finding is **new** if the change introduced or modified the offending lines, or if the change made pre-existing code reachable in a new way (e.g. it now calls an old function with a new input that breaks it).
 
-A finding is **pre-existing** if the offending code was already there and the change only touches the same function or file. Pre-existing findings go in their own report section, never affect the verdict, and are limited to the functions the change edits (not the whole file). They're for the maintainer's backlog, not for the author.
+A finding is **pre-existing** if the offending code was already there and the change only touches the same function or file. Pre-existing findings are limited to the functions the change edits (not the whole file), get `P` ids, never affect the verdict, and are never fixed in the branch: they are filed for the maintainer's backlog. A fix round reports none.
 
 ## Findings schema
 
@@ -107,7 +110,7 @@ Each reviewer writes a JSON array to `$B/findings-<dim>.json`:
 ]
 ```
 
-Write `[]` if there's nothing. Don't pad.
+In a fix round, `answers` names the earlier finding whose fix put the code there. Write `[]` if there's nothing. Don't pad.
 
 A reviewer that finds a design flaw also writes `$B/flaws-<dim>.json`, an array of:
 
@@ -144,13 +147,13 @@ Write no file when there are none.
 <one entry per flaw in summary.json whose status is undecided:>
 - **<id>: <title>** (<fix_size> fix, <"new" | the issue link>): <the flaw, one or two lines>. *Here:* <what the change does around it, `file:line`>. *Real fix:* <fix>. *Recommend:* **<stop | keep going>**, <why>.
 <then one line per flaw that already has an issue: "Also works around #<issue>: <title>. *Recommend:* **<stop | keep going>**, <why>.">
-<end with: "Answer each new one with defer (keep going, fix later), address (stop and fix it first) or wrong; defer and address file it as a public issue in ACE-Collective/ace3." When `known` reported an error, say that the reviewers had no known flaws to match against, so a flaw listed as new may already have an issue.>
+<end with: "Answer each new one with defer (keep going, fix it later), address (pause this branch; the fix is its own PR, which lands first) or wrong; defer and address file it as a public issue in ACE-Collective/ace3." When `known` reported an error, say that the reviewers had no known flaws to match against, so a flaw listed as new may already have an issue.>
 
 **Verdict: <SHIP | FIX-FIRST | REWORK>**: <2-4 sentences: the one or two things that decide it>
 
-**Step back:** <only from round 4 on, when the verdict isn't ship: the new findings per round from target.json's history, and the part of the change that keeps producing them. Another fix round is unlikely to converge; reconsider that part's approach.>
+**Step back:** <when a chain in summary.json is 2 or more deep: its ids, and that its fixes share a wrong premise, so take them out of this branch and give the first finding its own PR rather than a third fix. Otherwise only from round 4 on, when the verdict isn't ship: the new findings per round from target.json's history, and the part of the change that keeps producing them.>
 
-**Intent:** <intent.md in one or two lines: the stated problem, and whether the change solves it at its cause>
+**Intent:** <intent.md in one or two lines (a fix round with no correctness reviewer reuses the last round's): the stated problem, whether the change solves it at its cause, and whether that cause is shown or argued>
 
 ## Checks
 - Tests: <N passed, M failed, K skipped, exit code / "not run: <reason>">, <files run>
@@ -158,21 +161,21 @@ Write no file when there are none.
 - Unmarked tests: <none | list>
 - Migrations: <n/a | single head per chain | FORKED: ...>; model drift: <n/a | clean | DRIFT: ...>
 - PR description Testing section: <present | missing>
-- Review: <full | delta since round N-1 | full, because <delta_reason>>
+- Review: <full | fix round since round N-1, new work: <files | none> | full, because <delta_reason>>
 
 ## Still open from earlier rounds
 - **<id>: <title>** (`file:line`, <severity>)
 
-## Findings
-### Blockers
-1. **<id>: <title>** (`file:line`, <dimension>): <evidence>. *Impact:* <impact>. *Fix:* <fix>
-### Fix first
-...
-### Nits
+## Act on
+1. **<id>: <title>** (`file:line`, <severity>, <dimension>; <"from the fix for <answers>" when set>): <evidence>. *Impact:* <impact>. *Fix:* <fix>. *Why it holds the PR:* <judgment>
+## Consider
+<the same, ending *Why it can wait:* <judgment>>
+## Noted
 ...
 
-## Pre-existing, nearby (not blocking)
-- `file:line` (<dimension>): <title>, <one line>
+## Pre-existing, for the backlog
+- **<P id>** `file:line` (<dimension>): <title>, <one line>
+<end with: "These are not for this branch. File them as issues?">
 
 <sub>Dropped as unverified: N (and N design flaws). Not repeated from earlier rounds: N. Fixed since the last round: <ids>. Bundle: $B</sub>
 ```
