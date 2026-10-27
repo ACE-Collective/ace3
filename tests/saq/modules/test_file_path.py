@@ -1,10 +1,19 @@
 import pytest
 
 from saq.analysis.root import load_root
-from saq.constants import F_FILE_NAME, F_FILE_PATH, F_USER
+from saq.configuration.config import get_config
+from saq.constants import (
+    ANALYSIS_MODULE_FILE_LOCATION_ANALYSIS,
+    ANALYSIS_MODULE_FILE_PATH_ANALYSIS,
+    F_FILE_LOCATION,
+    F_FILE_NAME,
+    F_FILE_PATH,
+    F_HOSTNAME,
+    F_USER,
+)
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.modules.file_path import FilePathAnalysis
+from saq.modules.file_path import FileLocationAnalysis, FilePathAnalysis
 from saq.util.uuid import get_storage_dir
 
 
@@ -68,3 +77,64 @@ def test_a_bare_file_name_is_not_analyzed(root_analysis):
 @pytest.mark.unit
 def test_summary_without_anything_extracted():
     assert FilePathAnalysis().generate_summary() is None
+
+
+def _analyze_file_location(root_analysis, file_location, *module_names):
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_FILE_LOCATION, file_location)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    for module_name in module_names:
+        engine.configuration_manager.enable_module(module_name, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    return root_analysis.get_observable(observable.uuid).get_and_load_analysis(FileLocationAnalysis)
+
+
+@pytest.mark.parametrize("file_location, hostname, file_path", [
+    (r"ws-1234@C:\Users\bob\Downloads\setup.msi", "ws-1234", r"C:\Users\bob\Downloads\setup.msi"),
+    ("web01.example.com@/var/tmp/payload.sh", "web01.example.com", "/var/tmp/payload.sh"),
+    # only the first @ separates the hostname from the path
+    ("web01@/home/bob/backup@2026/notes.txt", "web01", "/home/bob/backup@2026/notes.txt"),
+])
+@pytest.mark.integration
+def test_file_location_adds_hostname_and_file_path(root_analysis, file_location, hostname, file_path):
+    analysis = _analyze_file_location(root_analysis, file_location, ANALYSIS_MODULE_FILE_LOCATION_ANALYSIS)
+
+    assert isinstance(analysis, FileLocationAnalysis)
+    assert analysis.hostname == hostname
+    assert analysis.file_path == file_path
+    assert _values(analysis, F_HOSTNAME) == [hostname]
+    assert _values(analysis, F_FILE_PATH) == [file_path]
+    assert analysis.generate_summary() == f"File Location Analysis: hostname {hostname} file path {file_path}"
+
+
+@pytest.mark.integration
+def test_file_location_path_is_analyzed_as_a_file_path(root_analysis):
+    analysis = _analyze_file_location(
+        root_analysis,
+        r"ws-1234@C:\Users\bob\Downloads\setup.msi",
+        ANALYSIS_MODULE_FILE_LOCATION_ANALYSIS,
+        ANALYSIS_MODULE_FILE_PATH_ANALYSIS,
+    )
+
+    file_path = analysis.get_observable_by_type(F_FILE_PATH)
+    file_path_analysis = file_path.get_and_load_analysis(FilePathAnalysis)
+    assert isinstance(file_path_analysis, FilePathAnalysis)
+    assert _values(file_path_analysis, F_FILE_NAME) == ["setup.msi"]
+    assert _values(file_path_analysis, F_USER) == ["bob"]
+
+
+@pytest.mark.unit
+def test_file_location_summary_without_anything_extracted():
+    assert FileLocationAnalysis().generate_summary() is None
+
+
+@pytest.mark.unit
+def test_file_location_analysis_runs_wherever_file_path_analysis_does():
+    modules = get_config().get_module_group_config("file").modules
+    assert ANALYSIS_MODULE_FILE_LOCATION_ANALYSIS in modules
+    assert ANALYSIS_MODULE_FILE_PATH_ANALYSIS in modules

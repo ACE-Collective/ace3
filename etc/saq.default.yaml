@@ -1648,6 +1648,12 @@ analysis_module_encrypted_archive_analyzer:
   python_class: EncryptedArchiveAnalyzer
   enabled: true
 
+analysis_module_file_location_analysis:
+  name: file_location_analysis
+  python_module: saq.modules.file_path
+  python_class: FileLocationAnalyzer
+  enabled: true
+
 analysis_module_file_path_analysis:
   name: file_path_analysis
   python_module: saq.modules.file_path
@@ -2575,6 +2581,7 @@ module_group_file:
     - extracted_ole_analyzer
     - extracted_rtf_analyzer
     - file_hash_analyzer
+    - file_location_analysis
     - file_path_analysis
     - file_type
     - har_extraction
