@@ -342,6 +342,7 @@ class YaraScanner_v3_4(AnalysisModule):
                         logging.info("releasing local yara scanner")
                         self.scanner = None
                         self.scanner_start_time = None
+                        self.local_rule_details = {}
                         gc.collect()
 
             except YaraScanTimeout as e:
@@ -647,8 +648,9 @@ def visible_match_value(value) -> Markup:
 _STRING_DECLARATION = re.compile(r"^\s*(\$[A-Za-z0-9_]+)\s*=")
 
 
-# the most string matches of one rule shown with a highlighted hex dump; past that, the dump is shown
-# as it was stored, so a rule matching thousands of times doesn't slow down every render
+# the most string matches of one rule shown with a highlighted hex dump and visible whitespace; past
+# that, the dump is shown as it was stored and the value plainly escaped, so a rule matching
+# thousands of times doesn't slow down every render
 MAX_HIGHLIGHTED_MATCHES = 100
 
 
@@ -669,8 +671,12 @@ class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
     def template_path(self) -> str:
         return "analysis/yara_analysis_v3_4.html"
 
-    def visible_value(self, value) -> Markup:
-        return visible_match_value(value)
+    def visible_value(self, value, index: int) -> Markup:
+        """The index'th string match's value, with its whitespace drawn up to MAX_HIGHLIGHTED_MATCHES."""
+        if index < MAX_HIGHLIGHTED_MATCHES:
+            return visible_match_value(value)
+
+        return escape(value)
 
     def meta_json(self, meta: dict) -> str:
         return json.dumps(meta, indent=4, sort_keys=True, ensure_ascii=False, default=str)

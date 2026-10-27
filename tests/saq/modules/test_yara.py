@@ -898,12 +898,14 @@ class TestYaraLocalScanner:
         module = _yara_module(root_analysis)
         module.scanner = Mock()
         module.scanner_start_time = datetime.now() - timedelta(minutes=module.local_scanner_lifetime + 1)
+        module.local_rule_details = {"rule.yar": object()}
 
         with caplog.at_level(logging.INFO):
             module.execute_analysis(_file_observable(root_analysis))
 
         assert module.scanner is None
         assert module.scanner_start_time is None
+        assert module.local_rule_details == {}
         assert any(r.getMessage() == "releasing local yara scanner" for r in caplog.records)
 
     @pytest.mark.integration

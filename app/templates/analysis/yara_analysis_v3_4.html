@@ -82,7 +82,7 @@
                                 {% for s in yara_result['context'] %}
                         {% if s | count > 0 %}
                             <li class="list-group-item">
-                                position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2])}}</b>
+                                position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2], loop.index0)}}</b>
                                 {% if s[1] in string_patterns %}
                                 <br>pattern <code>{{string_patterns[s[1]]}}</code>
                                 {% endif %}
@@ -96,7 +96,7 @@
                             {% else %}
                                 {% for s in yara_result['strings'] %}
                                 {% if s | count > 0 %}
-                                    <li class="list-group-item">position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2])}}</b>
+                                    <li class="list-group-item">position <b>{{s[0]}}</b> string <b>{{s[1]}}</b> value <b>{{analysis_presenter.visible_value(s[2], loop.index0)}}</b>
                                     {% if s[1] in string_patterns %}
                                     <br>pattern <code>{{string_patterns[s[1]]}}</code>
                                     {% endif %}

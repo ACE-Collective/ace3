@@ -105,6 +105,23 @@ def test_string_match_value_shows_whitespace(app):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("key", ["context", "strings"])
+def test_string_match_values_past_the_cap_are_shown_plain(app, monkeypatch, key):
+    monkeypatch.setattr("saq.modules.file_analysis.yara.MAX_HIGHLIGHTED_MATCHES", 1)
+    matches = [[7, "$a", "a <b>", HEXDUMP], [9, "$a", "c <d>", HEXDUMP]]
+    result = _scan_result(strings=[m[:3] for m in matches], match_context=[], string_patterns={})
+    if key == "context":
+        result["context"] = matches
+    else:
+        del result["context"]
+
+    html = _render(app, result)
+
+    assert 'value <b>a<span class="yara-sp"> </span>&lt;b&gt;</b>' in html
+    assert "value <b>c &lt;d&gt;</b>" in html
+
+
+@pytest.mark.integration
 def test_string_match_hexdump_is_highlighted(app):
     html = _render(app, _scan_result())
     # the class that takes bootstrap's padding off the marks, which would misalign the columns

@@ -371,6 +371,20 @@ def test_hot_reload_without_downtime(make_server, rules_dir, target):
 
 
 @pytest.mark.integration
+def test_reload_serves_the_edited_rules_details(make_server, rules_dir, target):
+    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
+    server = make_server()
+    assert server.wait_for_start(30)
+    assert _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A"'}
+
+    edited = RULE_A.replace('"MATCH_A"', '"MATCH_A" nocase')
+    _write(os.path.join(rules_dir, "a.yar"), edited)
+
+    wait_for_condition(lambda: _scan(server, target)[0]["string_patterns"] == {"$a": '"MATCH_A" nocase'}, timeout=30)
+    assert _scan(server, target)[0]["rule_source"]["text"] == edited.lstrip("\n")
+
+
+@pytest.mark.integration
 def test_rules_that_do_not_compile_keep_the_previous_rules(make_server, rules_dir, target):
     _write(os.path.join(rules_dir, "a.yar"), RULE_A)
     server = make_server()
