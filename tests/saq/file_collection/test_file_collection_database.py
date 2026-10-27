@@ -411,6 +411,75 @@ def test_resolve_duplicate_pending_file_collection_ignores_completed_older():
 
 
 @pytest.mark.integration
+def test_get_pending_file_collection_by_observable_cross_alert_skips_alertless():
+    """An alert's lookup never converges on a request no alert asked for: its file would be pruned."""
+    queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_alertless",
+    )
+
+    assert get_pending_file_collection_by_observable(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/cross_alert_alertless",
+    ) is None
+
+
+@pytest.mark.integration
+def test_get_pending_file_collection_by_observable_without_alert():
+    """with_alert=False finds only the requests no alert asked for."""
+    queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/alertless",
+        alert_uuid="alert-uuid-alertless-1",
+    )
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/alertless",
+    )
+
+    result = get_pending_file_collection_by_observable(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/alertless",
+        with_alert=False,
+    )
+
+    assert result is not None
+    assert result.id == collection_id
+
+
+@pytest.mark.integration
+def test_resolve_duplicate_pending_file_collection_keeps_alert_and_alertless_apart():
+    """A request with an alert and one without never attach to each other, in either order."""
+    alertless_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_kinds",
+    )
+    alert_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_kinds",
+        alert_uuid="alert-uuid-resolve-kinds",
+    )
+    later_alertless_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/resolve_kinds",
+    )
+
+    assert resolve_duplicate_pending_file_collection(alert_id) == alert_id
+    assert get_file_collection(alert_id) is not None
+    # the later alert-less request attaches to the earlier alert-less one, not to the alert's
+    assert resolve_duplicate_pending_file_collection(later_alertless_id) == alertless_id
+    assert get_file_collection(later_alertless_id) is None
+
+
+@pytest.mark.integration
 def test_cancel_file_collection():
     collection_id = queue_file_collection(
         collector_name="test_collector",
