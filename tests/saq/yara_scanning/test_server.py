@@ -224,10 +224,12 @@ def test_scan_file(make_server, rules_dir, target):
     assert match["strings"] == [(10, "$a", b"MATCH_A")]
     # the pattern of each matched string, from the source the generation compiled
     assert match["string_patterns"] == {"$a": '"MATCH_A"'}
+    assert match["rule_source"] == {"file": "a.yar", "start_line": RULE_A.splitlines().index("rule rule_a {") + 1,
+                                    "text": RULE_A.lstrip("\n")}
 
 
 @pytest.mark.unit
-def test_scan_attaches_string_patterns():
+def test_scan_attaches_rule_details():
     class _Scanner:
         scan_results = [{"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"MATCH_A")]}]
 
@@ -237,7 +239,7 @@ def test_scan_attaches_string_patterns():
     settings = ScannerSettings(socket_dir="/tmp", signature_dir="/tmp", git_repo_dirs=(), worker_count=1,
                                update_frequency=60, default_timeout=5, compile_timeout=60, io_timeout=5,
                                max_data_bytes=1024, max_requests_per_worker=0, backlog=1)
-    response = _scan_in_worker(_Scanner(), settings, {("ns", "rule_a"): {"$a": '"MATCH_A"', "$b": '"B"'}},
+    response = _scan_in_worker(_Scanner(), settings, {("ns", "rule_a"): {"patterns": {"$a": '"MATCH_A"', "$b": '"B"'}, "source": None}},
                                {"op": protocol.OP_SCAN_FILE, "path": "/tmp/x"}, None)
 
     assert response["matches"][0]["string_patterns"] == {"$a": '"MATCH_A"'}

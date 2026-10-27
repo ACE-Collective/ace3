@@ -177,54 +177,79 @@ def _format_string_pattern(string: dict) -> str:
     return " ".join([value, *(string.get("modifiers") or [])])
 
 
-# (namespace, rule name) -> string identifier -> pattern, for the rules a scanner compiled
-StringPatterns = dict[tuple[str, str], dict[str, str]]
+# the largest rule source sent with a match, which keeps it in the alert; generated rules such as
+# observable_export's can hold thousands of strings
+MAX_RULE_SOURCE_BYTES = 50 * 1024
 
-# rule file path -> (identity when read, namespace, rule name -> string identifier -> pattern)
-StringPatternRead = dict[str, tuple[FileIdentity, str, dict[str, dict[str, str]]]]
+# rule name -> {"patterns": {string identifier -> pattern}, "source": {"file", "start_line", "text"} or None}
+RuleDetails = dict[str, dict]
 
+# (namespace, rule name) -> the details of the rules a scanner compiled
+CompiledRuleDetails = dict[tuple[str, str], dict]
 
-def _parse_string_patterns(path: str) -> dict[str, dict[str, str]]:
-    """rule name -> string identifier -> pattern, for every rule in one rule file. Anonymous
-    strings ($) are left out: a match names them only as $, so a match can't tell them apart."""
-    _, parsed_rules = _read_and_parse(path)
-    return {
-        parsed_rule.get("rule_name"): {
-            string["name"]: _format_string_pattern(string)
-            for string in parsed_rule.get("strings") or []
-            if string.get("name") and string["name"] != "$"}
-        for parsed_rule in parsed_rules}
+# rule file path -> (identity when read, namespace, the details of its rules)
+RuleDetailsRead = dict[str, tuple[FileIdentity, str, RuleDetails]]
 
 
-def read_string_patterns(scanner) -> StringPatternRead:
-    """Reads the string patterns of the rule files a yara_scanner.YaraScanner is about to compile,
-    because yara can't return them with a match. Call it right before load_rules() and pass the
-    result to compiled_string_patterns() right after. The patterns are only shown to analysts, so
-    this never raises: a failure must not keep the rules from loading."""
+def _parse_rule_details(path: str) -> RuleDetails:
+    """The string patterns and source of every rule in one rule file. Anonymous strings ($) get no
+    pattern: a match names them only as $, so a match can't tell them apart. A rule whose source
+    is over MAX_RULE_SOURCE_BYTES gets none."""
+    source, parsed_rules = _read_and_parse(path)
+    source_lines = source.splitlines(keepends=True)
+    result = {}
+    for parsed_rule in parsed_rules:
+        name = parsed_rule.get("rule_name")
+        rule_source = _rule_source(source_lines, parsed_rule)
+        if rule_source is not None and len(rule_source.encode("utf-8", errors="surrogateescape")) > MAX_RULE_SOURCE_BYTES:
+            logging.info("yara rule %s in %s is over %d bytes: its source is not shown", name, path,
+                         MAX_RULE_SOURCE_BYTES, extra={"path": path, "yara_rule": name})
+            rule_source = None
+
+        result[name] = {
+            "patterns": {string["name"]: _format_string_pattern(string)
+                         for string in parsed_rule.get("strings") or []
+                         if string.get("name") and string["name"] != "$"},
+            "source": None if rule_source is None else {
+                "file": os.path.basename(path),
+                "start_line": parsed_rule["start_line"],
+                # surrogates stand for bytes that aren't utf-8, which the alert's JSON can't hold
+                "text": rule_source.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace"),
+            },
+        }
+
+    return result
+
+
+def read_rule_details(scanner) -> RuleDetailsRead:
+    """Reads the string patterns and source of the rules in the files a yara_scanner.YaraScanner is
+    about to compile, because yara can't return them with a match. Call it right before
+    load_rules() and pass the result to compiled_rule_details() right after. The details are only
+    shown to analysts, so this never raises: a failure must not keep the rules from loading."""
     try:
         namespaces = scanner.get_namespace_dict()
     except Exception:
-        logging.exception("unable to list the yara rule files to read their string patterns")
+        logging.exception("unable to list the yara rule files to read their rules")
         return {}
 
     result = {}
     for namespace, paths in namespaces.items():
         for path in paths:
             try:
-                result[path] = (_file_identity(path), namespace, _parse_string_patterns(path))
+                result[path] = (_file_identity(path), namespace, _parse_rule_details(path))
             except (plyara.exceptions.ParseError, OSError) as e:
                 # plyara lags yara's grammar, so a file yara compiles can still fail here, and a file
-                # can go away between being listed and read: its rules are shown without patterns
-                logging.warning("unable to read the yara string patterns in %s: %s", path, e, extra={"path": path})
+                # can go away between being listed and read: its rules are shown without details
+                logging.warning("unable to read the yara rules in %s: %s", path, e, extra={"path": path})
             except Exception:
-                logging.exception("unable to read the yara string patterns in %s", path, extra={"path": path})
+                logging.exception("unable to read the yara rules in %s", path, extra={"path": path})
 
     return result
 
 
-def compiled_string_patterns(read: StringPatternRead) -> StringPatterns:
-    """The patterns read_string_patterns() read, without those of any file that changed since,
-    because the scanner may have compiled the changed file instead."""
+def compiled_rule_details(read: RuleDetailsRead) -> CompiledRuleDetails:
+    """The details read_rule_details() read, without those of any file that changed since, because
+    the scanner may have compiled the changed file instead."""
     result = {}
     for path, (identity, namespace, rules) in read.items():
         try:
@@ -233,24 +258,25 @@ def compiled_string_patterns(read: StringPatternRead) -> StringPatterns:
             unchanged = False
 
         if not unchanged:
-            logging.info("yara rule file %s changed while its rules compiled: its string patterns are not shown",
+            logging.info("yara rule file %s changed while its rules compiled: its rules are shown without details",
                          path, extra={"path": path})
             continue
 
-        for rule_name, patterns in rules.items():
-            result[(namespace, rule_name)] = patterns
+        for rule_name, details in rules.items():
+            result[(namespace, rule_name)] = details
 
     return result
 
 
-def attach_string_patterns(matches: list[dict], string_patterns: StringPatterns) -> None:
-    """Adds string_patterns (identifier -> pattern) to each match in YaraScanner.scan_results, for
-    the strings that matched."""
+def attach_rule_details(matches: list[dict], rule_details: CompiledRuleDetails) -> None:
+    """Adds to each match in YaraScanner.scan_results string_patterns (identifier -> pattern, for
+    the strings that matched) and rule_source (the rule's source, or None)."""
     for match in matches:
-        patterns = string_patterns.get((match.get("namespace"), match.get("rule"))) or {}
+        details = rule_details.get((match.get("namespace"), match.get("rule"))) or {}
         matched = {string[1] for string in match.get("strings") or []}
-        match["string_patterns"] = {identifier: pattern for identifier, pattern in patterns.items()
+        match["string_patterns"] = {identifier: pattern for identifier, pattern in (details.get("patterns") or {}).items()
                                     if identifier in matched}
+        match["rule_source"] = details.get("source")
 
 
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:

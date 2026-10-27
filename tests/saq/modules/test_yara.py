@@ -1007,6 +1007,7 @@ class TestYaraStringPatterns:
 
         analysis = observable.get_and_load_analysis(YaraScanResults_v3_4)
         assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello, world!"'}
+        assert analysis.scan_results[0]["rule_source"]["text"] == _rule("local_rule")
 
     @pytest.mark.integration
     def test_patterns_are_those_of_the_rules_that_matched(self, yara_service, write_rules, root_analysis):
@@ -1017,6 +1018,8 @@ class TestYaraStringPatterns:
 
         analysis = _scan(root_analysis).get_and_load_analysis(YaraScanResults_v3_4)
         assert analysis.scan_results[0]["string_patterns"] == {"$a": '"Hello"'}
+        assert analysis.scan_results[0]["rule_source"] == {
+            "file": "test.yar", "start_line": 1, "text": _rule("edited_rule", strings='$a = "Hello"')}
 
     @pytest.mark.integration
     def test_match_context_is_stored(self, yara_service, root_analysis):
@@ -1095,6 +1098,23 @@ def test_hexdump_highlights_at_most_max_highlighted_matches(monkeypatch):
 
     assert "<mark>" in str(presenter.hexdump(result, 0))
     assert str(presenter.hexdump(result, 1)) == "second"
+
+
+@pytest.mark.unit
+def test_rule_source_lines_mark_the_matched_strings_declarations():
+    presenter = YaraScanResults_v3_4_Presenter(YaraScanResults_v3_4())
+    text = 'rule r\n{\n    strings:\n        $a = "a"\n        $ab = "ab"\n        $ = "anon"\n    condition:\n        $a and $ab\n}\n'
+    result = {"strings": [[0, "$a", "a"], [9, "$", "anon"]], "rule_source": {"file": "r.yar", "start_line": 1, "text": text}}
+
+    assert presenter.rule_source_lines(result) == [
+        ("rule r", False), ("{", False), ("    strings:", False),
+        ('        $a = "a"', True),
+        # a longer identifier with the same prefix, and anonymous strings, are not the matched one
+        ('        $ab = "ab"', False), ('        $ = "anon"', False),
+        ("    condition:", False),
+        # a string used in the condition is not its declaration
+        ("        $a and $ab", False), ("}", False),
+    ]
 
 
 @pytest.mark.unit

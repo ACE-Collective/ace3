@@ -24,7 +24,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
-from saq.signatures.loaders.yara import attach_string_patterns, compiled_string_patterns, read_string_patterns
+from saq.signatures.loaders.yara import attach_rule_details, compiled_rule_details, read_rule_details
 from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
@@ -226,8 +226,8 @@ class YaraScanner_v3_4(AnalysisModule):
 
         # in the case where the yara scanning server is unavailable a local scanner is used
         self.scanner = None
-        # the string patterns of the rules the local scanner compiled
-        self.local_string_patterns = {}
+        # the string patterns and sources of the rules the local scanner compiled
+        self.local_rule_details = {}
 
         # we use it for N minutes defined in the configuration
         self.scanner_start_time = None
@@ -241,9 +241,9 @@ class YaraScanner_v3_4(AnalysisModule):
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
-        patterns_read = read_string_patterns(self.scanner)
+        details_read = read_rule_details(self.scanner)
         self.scanner.load_rules()
-        self.local_string_patterns = compiled_string_patterns(patterns_read)
+        self.local_rule_details = compiled_rule_details(details_read)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
 
@@ -357,7 +357,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 try:
                     matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
-                    attach_string_patterns(result, self.local_string_patterns)
+                    attach_rule_details(result, self.local_rule_details)
                 except yara.TimeoutError as e:
                     logging.warning("local yara scanner timed out scanning file %s: %s", local_file_path, e)
                     matches_found = False
@@ -643,6 +643,10 @@ def visible_match_value(value) -> Markup:
     return Markup("").join(result)
 
 
+# a line of a rule's strings section that declares a named string: `$name = ...`
+_STRING_DECLARATION = re.compile(r"^\s*(\$[A-Za-z0-9_]+)\s*=")
+
+
 # the most string matches of one rule shown with a highlighted hex dump; past that, the dump is shown
 # as it was stored, so a rule matching thousands of times doesn't slow down every render
 MAX_HIGHLIGHTED_MATCHES = 100
@@ -670,6 +674,16 @@ class YaraScanResults_v3_4_Presenter(AnalysisPresenter):
 
     def meta_json(self, meta: dict) -> str:
         return json.dumps(meta, indent=4, sort_keys=True, ensure_ascii=False, default=str)
+
+    def rule_source_lines(self, yara_result: dict) -> list[tuple[str, bool]]:
+        """The lines of the rule's source, each with whether it declares a string that matched."""
+        matched = {string[1] for string in yara_result.get("strings") or []}
+        result = []
+        for line in yara_result["rule_source"]["text"].splitlines():
+            declaration = _STRING_DECLARATION.match(line)
+            result.append((line, bool(declaration) and declaration.group(1) in matched))
+
+        return result
 
     def hexdump(self, yara_result: dict, index: int) -> Markup:
         """The hex dump of the index'th string match. Results saved before match_context existed
