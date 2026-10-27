@@ -785,6 +785,46 @@ def test_html_fragment_body_gets_html_extension(root_analysis):
     assert plain_body.has_directive(DIRECTIVE_PREVIEW)
 
 
+@pytest.mark.integration
+def test_unnamed_parts_of_one_type_are_numbered(root_analysis):
+    """Every unnamed part is stored as <email>.unknown_<type>_<subtype>_NNN<ext>, numbered per type,
+    and the body is chosen by that number: with no html part and more than one plain text part, the
+    first plain text part is skipped and the second one is the body. The file manager's suffix for a
+    taken name kept the _000 in every name, so no part was the body."""
+    msg = MIMEMultipart('mixed')
+    msg['From'] = 'attacker@example.com'
+    msg['To'] = 'victim@company.com'
+    msg['Subject'] = 'two plain parts'
+    msg['Message-ID'] = '<two-plain-parts@example.com>'
+    msg.attach(MIMEText('first plain part', 'plain'))
+    msg.attach(MIMEText('second plain part', 'plain'))
+    msg.attach(MIMEText('third plain part', 'plain'))
+
+    _, email_analysis = _analyze_raw_email(root_analysis, msg.as_bytes(), 'two_plain_parts')
+
+    names = sorted(o.file_name for o in email_analysis.get_observables_by_type(F_FILE)
+                   if '.unknown_' in o.file_name)
+    assert names == ['two_plain_parts.email.rfc822.unknown_text_plain_000.txt',
+                     'two_plain_parts.email.rfc822.unknown_text_plain_001.txt',
+                     'two_plain_parts.email.rfc822.unknown_text_plain_002.txt']
+    assert email_analysis.body is not None
+    assert email_analysis.body.file_name == 'two_plain_parts.email.rfc822.unknown_text_plain_001.txt'
+    assert email_analysis.body_text == 'first plain part'
+
+
+@pytest.mark.integration
+def test_an_attachment_whose_name_decodes_to_nothing_is_numbered_like_an_unnamed_part(root_analysis):
+    raw_email = _build_attachment_email('text/html', 'empty-name').replace(
+        b'filename="invoice.html"', b'filename="=?utf-8?q??="')
+
+    _, email_analysis = _analyze_raw_email(root_analysis, raw_email, 'empty_name')
+
+    names = sorted(o.file_name for o in email_analysis.get_observables_by_type(F_FILE)
+                   if '.unknown_' in o.file_name)
+    assert names == ['empty_name.email.rfc822.unknown_text_html_000.html',
+                     'empty_name.email.rfc822.unknown_text_plain_000.txt']
+
+
 def _build_attachment_email(declared_content_type: str | None, message_id: str):
     """Synthesizes an email with one HTML attachment whose Content-Type header is
     set verbatim to declared_content_type (None omits the header entirely).
