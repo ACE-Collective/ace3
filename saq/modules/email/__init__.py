@@ -7,5 +7,6 @@ from saq.modules.email.message_id import MessageIDAnalysisV2, MessageIDAnalyzerV
 from saq.modules.email.logging import EmailLoggingAnalysis, EmailLoggingAnalyzer
 from saq.modules.email.correlation import URLEmailPivotAnalysis_v2, URLEmailPivotAnalyzer
 from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis, MSOfficeEncryptionAnalyzer
+from saq.modules.email.encryption.pdf import PDFEncryptionAnalysis, PDFEncryptionAnalyzer
 from saq.modules.email.encryption.zip import ZipEncryptionAnalysis, ZipEncryptionAnalyzer
 from saq.modules.email.encryption.rar import RarEncryptionAnalysis, RarEncryptionAnalyzer

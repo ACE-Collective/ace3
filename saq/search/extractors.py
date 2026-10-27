@@ -21,6 +21,7 @@ from saq.modules.email.constants import (
     KEY_TO,
 )
 from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis
+from saq.modules.email.encryption.pdf import PDFEncryptionAnalysis
 from saq.modules.email.encryption.rar import RarEncryptionAnalysis
 from saq.modules.email.encryption.zip import ZipEncryptionAnalysis
 from saq.modules.email.rfc822 import EmailAnalysis
@@ -149,6 +150,7 @@ def _extract_email_body_details(analysis, context: ExtractContext):
 register_extractor(ZipEncryptionAnalysis)(_extract_email_body_details)
 register_extractor(RarEncryptionAnalysis)(_extract_email_body_details)
 register_extractor(MSOfficeEncryptionAnalysis)(_extract_email_body_details)
+register_extractor(PDFEncryptionAnalysis)(_extract_email_body_details)
 
 
 @register_extractor(XMLPlainTextAnalysis)

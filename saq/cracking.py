@@ -7,7 +7,40 @@ import re
 from subprocess import PIPE, Popen
 from typing import Optional
 
+from html2text import html2text
+
+from saq.analysis.search import search_down
+
 whitespace_re = re.compile(r'\s')
+
+
+def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_limit: int,
+                        list_limit: int) -> tuple[bool, Optional[str], list[str]]:
+    """Harvest candidate passwords from the body of the email that carried the given file.
+
+    Returns (email_present, email_body, words): whether a carrying EmailAnalysis was found,
+    the html-to-text email body (truncated to byte_limit) or None, and the wordlist generated
+    from it. Used by every encryption analyzer that cracks an attachment with a password that
+    the sender wrote in the email body.
+    """
+    # local import: saq.modules.email imports saq.cracking, so importing it at module level
+    # here would be a circular import
+    from saq.modules.email.rfc822 import EmailAnalysis
+
+    email = search_down(file_observable, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
+    if not email:
+        return False, None, []
+
+    if not email.body:
+        return True, None, []
+
+    with open(email.body.full_path, 'r', errors='ignore') as fp:
+        logging.debug("parsing {} for html".format(email.body.value))
+        email_body = html2text(fp.read())[:byte_limit]
+
+    words = generate_wordlist(text_content=email_body, range_low=range_low,
+                              range_high=range_high, byte_limit=byte_limit, list_limit=list_limit)
+    return True, email_body, words
 
 def generate_wordlist(
         text_file: Optional[str]=None, 

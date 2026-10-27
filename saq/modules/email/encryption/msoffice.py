@@ -7,14 +7,11 @@ import msoffcrypto
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, generate_wordlist
+from saq.cracking import crack_password, wordlist_from_email
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-
-from html2text import html2text
 
 from saq.observables.file import FileObservable
 
@@ -154,7 +151,6 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:
@@ -211,23 +207,10 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             analysis.word_list = ['VelvetSweatshop', '/01Hannes Ruescher/01']
 
             # we'll try to find additional passwords by looking at the plain text and html of the email, if they exist
-            email = search_down(_file, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
-            if email:
-                analysis.email = True
-
-                # email needs to have a body
-                if email.body:
-
-                    # convert html to text
-                    with open(email.body.full_path, 'r', errors='ignore') as fp:
-                        logging.debug("parsing {} for html".format(email.body.value))
-                        analysis.email_body = html2text(fp.read())[:self.byte_limit]
-
-                    analysis.word_list.extend(generate_wordlist(text_content=analysis.email_body,
-                                                                range_low=self.range_low,
-                                                                range_high=self.range_high,
-                                                                byte_limit=self.byte_limit,
-                                                                list_limit=self.list_limit))
+            analysis.email, analysis.email_body, email_words = wordlist_from_email(
+                _file, range_low=self.range_low, range_high=self.range_high,
+                byte_limit=self.byte_limit, list_limit=self.list_limit)
+            analysis.word_list.extend(email_words)
 
             wordlist_path = f'{_file.full_path}.wordlist'
             with open(wordlist_path, 'w') as fp:

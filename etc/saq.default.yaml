@@ -2350,6 +2350,25 @@ analysis_module_rar_encryption_analyzer:
   # full path to john the ripper binary
   john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
 
+analysis_module_pdf_encryption_analyzer:
+  name: pdf_encryption_analyzer
+  python_module: saq.modules.email.encryption.pdf
+  python_class: PDFEncryptionAnalyzer
+  enabled: true
+  # for scanning the email for wordlists
+  # what is the minimum
+  range_low: 4
+  # and maximum size of the passwords to try
+  range_high: 11
+  # how many bytes into the email do you want to look?
+  byte_limit: 1024
+  # and what is the maximum size of the word list created?
+  list_limit: 5000
+  # full path to john the ripper binary
+  john_bin_path: /opt/tools/john-1.9.0-jumbo-1/run
+  # full path to the pdf2john.pl hash extractor (ships with john; the .py variant needs pyhanko)
+  pdf2john_path: /opt/tools/john-1.9.0-jumbo-1/run/pdf2john.pl
+
 analysis_module_alert_added_to_event:
   name: alert_added_to_event
   python_module: saq.modules.event
@@ -2603,6 +2622,7 @@ module_group_file:
     - pcap_tls_decryption
     - pcodedmp
     - pdf_analyzer
+    - pdf_encryption_analyzer
     - pdftotext
     - phishkit_analyzer
     - qrcode
