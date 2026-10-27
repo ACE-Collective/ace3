@@ -1357,6 +1357,11 @@ custom_alerts:
   # ;-separated list of dirs containing all custom alert views, default = analysis/custom
   dirs: 
     - analysis/custom
+  # alert templates, by jinja name, to offer in the Manual Analysis "Alert Template" list besides
+  # analysis/alert.html; list only templates that render any alert's details (an integration
+  # appends its own here)
+  #   - myintegration/my_alert.html
+  selectable_templates: []
 
 # all deprecated custom_alert view definitions -- move old values here for full coverage
 custom_alerts_backward_compatibility:

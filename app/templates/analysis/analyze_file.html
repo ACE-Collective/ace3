@@ -53,6 +53,20 @@
       </tr>
       <tr>
         <th style="padding-right:10px;">
+          Alert Template
+          <a href="#" tabindex="0" class="ms-1" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="right" title="Alert Template Help" data-bs-content="The template the alert page is shown with. Automatic uses the standard alert template (analysis/alert.html) unless this ACE has a template set up for manual alerts."><i class="bi bi-question-circle"></i></a>
+        </th>
+        <td style="width:100%;padding-bottom:4px;">
+          <select class="form-control" name="new_alert_template">
+            <option value="" selected>Automatic</option>
+          {% for alert_template in alert_templates %}
+            <option value="{{alert_template}}">{{alert_template}}</option>
+          {% endfor %}
+          </select>
+        </td>
+      </tr>
+      <tr>
+        <th style="padding-right:10px;">
           Node
           <a href="#" tabindex="0" class="ms-1" data-bs-toggle="popover" data-bs-trigger="focus" data-bs-placement="right" title="Node Help" data-bs-content="Select which ACE node should process this alert. Different nodes may be responsible for different network segments or organizational units."><i class="bi bi-question-circle"></i></a>
         </th>

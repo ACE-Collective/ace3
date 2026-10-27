@@ -5,7 +5,7 @@ from flask import url_for
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
-from saq.gui.alert import KEY_ALERT_TEMPLATE, GUIAlert, GUIAlertPresenter
+from saq.gui.alert import KEY_ALERT_TEMPLATE, GUIAlert, GUIAlertPresenter, get_selectable_alert_templates
 
 
 @pytest.fixture
@@ -58,6 +58,35 @@ def test_unreadable_template_directory_is_logged(custom_templates, monkeypatch, 
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
     assert records[0].exc_info is not None
+
+
+@pytest.mark.unit
+def test_selectable_templates_are_the_standard_template_and_the_listed_ones(custom_templates, monkeypatch):
+    # templates found in custom_alerts.dirs are not offered: most read details only their own alert type has
+    monkeypatch.setattr(get_config().custom_alerts, "selectable_templates",
+                        ["analysis/custom/saq_debug.html", "analysis/alert.html"])
+
+    assert get_selectable_alert_templates() == ["analysis/alert.html", "analysis/custom/saq_debug.html"]
+
+
+@pytest.mark.unit
+def test_listed_template_the_gui_cannot_load_is_left_out_and_reported(monkeypatch, caplog):
+    monkeypatch.setattr(get_config().custom_alerts, "selectable_templates", ["no_such/template.html"])
+
+    with caplog.at_level(logging.ERROR):
+        assert get_selectable_alert_templates() == ["analysis/alert.html"]
+
+    records = [r for r in caplog.records if getattr(r, "template", None) == "no_such/template.html"]
+    assert len(records) == 1
+    assert records[0].levelno == logging.ERROR
+    # without a traceback ErrorReportHandler writes no error report
+    assert records[0].exc_info is not None
+
+
+@pytest.mark.unit
+def test_selectable_templates_without_custom_alert_config(monkeypatch):
+    monkeypatch.setattr(get_config(), "custom_alerts", None)
+    assert get_selectable_alert_templates() == ["analysis/alert.html"]
 
 
 def _alert(**kwargs):

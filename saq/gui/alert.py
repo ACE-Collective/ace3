@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from flask import url_for
+from flask import current_app, url_for
+from jinja2 import TemplateNotFound
 import pytz
 from typing import Optional
 from saq.analysis.root import KEY_ALERT_TEMPLATE, RootAnalysis
@@ -189,6 +190,30 @@ class GUIAlertPresenter(AnalysisPresenter):
 
         # Default fallback
         return "analysis/alert.html"
+
+
+def get_selectable_alert_templates() -> list[str]:
+    """Returns the alert templates an analyst can pick for a manual analysis submission.
+    Must be called with a flask app context."""
+    # only listed templates: most custom alert templates read details only their own alert type has
+    templates = ["analysis/alert.html"]
+    if get_config().custom_alerts is None:
+        return templates
+
+    jinja_env = current_app.jinja_env
+    for template in get_config().custom_alerts.selectable_templates:
+        if template in templates:
+            continue
+
+        try:
+            jinja_env.loader.get_source(jinja_env, template)
+        except TemplateNotFound:
+            logging.exception(f"selectable alert template {template} does not exist", extra={"template": template})
+            continue
+
+        templates.append(template)
+
+    return templates
 
 register_analysis_presenter(RootAnalysis, GUIAlertPresenter)
 #register_analysis_presenter(GUIAlert, GUIAlertPresenter)
