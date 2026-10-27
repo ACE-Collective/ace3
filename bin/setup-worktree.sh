@@ -14,7 +14,15 @@
 # the hook hands to Claude as context.
 #
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+# as a hook, set up the directory the session works in, which the hook input names as "cwd": the
+# desktop app runs a worktree session's hooks from the main checkout, which is where this script
+# is then. By hand, set up the checkout the script is in.
+dir=$(dirname "${BASH_SOURCE[0]}")/..
+if [ ! -t 0 ]; then
+    cwd=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("cwd", ""))' 2>/dev/null)
+    [ -n "$cwd" ] && dir=$cwd
+fi
+cd "$dir" || exit 1
 
 # outside a git repository there is nothing to set up, and failing would show as a hook error at
 # the start of every session
