@@ -10,7 +10,7 @@ def queue_file_collection(
     collector_name: str,
     observable_type: str,
     observable_value: str,
-    alert_uuid: str,
+    alert_uuid: Optional[str] = None,
     user_id: Optional[int] = None,
     max_retries: int = 10
 ) -> int:
@@ -20,18 +20,16 @@ def queue_file_collection(
         collector_name: Name of the FileCollector to use (e.g., 'falcon_file_collection').
         observable_type: The observable type (e.g., 'file_location').
         observable_value: The observable value (e.g., 'hostname@/path/to/file').
-        alert_uuid: UUID of the originating alert.
+        alert_uuid: UUID of the originating alert, or None for a collection no alert asked for
+            (an API caller's). Its file is kept in the node's data directory instead of the
+            alert's, and removed after service_file_collection.retention_days
+            (saq.file_collection.storage).
         user_id: ID of the user who requested collection (optional for automated).
         max_retries: Maximum number of retry attempts.
 
     Returns:
         The database ID of the created file collection request.
-
-    Raises:
-        ValueError: If alert_uuid is not provided.
     """
-    if not alert_uuid:
-        raise ValueError("alert_uuid is required for file collection")
     file_collection = FileCollection(
         name=collector_name,
         type=observable_type,

@@ -44,24 +44,19 @@ def test_queue_file_collection():
     assert file_collection.retry_count == 0
 
 
-@pytest.mark.unit
-def test_queue_file_collection_requires_alert_uuid():
-    """Verify that alert_uuid is required."""
-    with pytest.raises(ValueError, match="alert_uuid is required"):
-        queue_file_collection(
-            collector_name="test_collector",
-            observable_type=F_FILE_LOCATION,
-            observable_value="host@/path/to/file",
-            alert_uuid="",
-        )
+@pytest.mark.integration
+def test_queue_file_collection_without_alert():
+    """An API caller's collection has no alert."""
+    collection_id = queue_file_collection(
+        collector_name="test_collector",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        user_id=None,
+    )
 
-    with pytest.raises(ValueError, match="alert_uuid is required"):
-        queue_file_collection(
-            collector_name="test_collector",
-            observable_type=F_FILE_LOCATION,
-            observable_value="host@/path/to/file",
-            alert_uuid=None,
-        )
+    file_collection = get_file_collection(collection_id)
+    assert file_collection.alert_uuid is None
+    assert file_collection.status == FileCollectionStatus.NEW.value
 
 
 @pytest.mark.integration

@@ -29,6 +29,11 @@ class FileCollectionServiceConfig(ServiceConfig):
         default=604800,
         description="Maximum total time to keep retrying collection (7 days default)."
     )
+    retention_days: int = Field(
+        default=7,
+        description="Days to keep the files of collections no alert asked for (saq.file_collection.storage); "
+                    "an alert's collected files are kept as long as the alert."
+    )
 
 
 class FileCollectionService(ACEServiceInterface):
