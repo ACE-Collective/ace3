@@ -117,7 +117,7 @@ An integration's routes move into the integration, not into `aceapi_v2/`: a pack
 ### Auth
 
 - `Security(get_current_auth)` accepts API key (`x-ace-auth` header), JWT bearer token, or Flask session cookie.
-- `get_current_auth` (`aceapi_v2/dependencies.py`) relies on `ApiAuthResult.__bool__` (defined in `aceapi_v2/auth/schemas.py`) returning false for the empty sentinel returned by `verify_api_key` on unmatched credentials — otherwise invalid API keys would pass the dependency.
+- `get_current_auth` (`aceapi_v2/dependencies.py`) relies on `ApiAuthResult.__bool__` (defined in `saq/auth.py`) returning false for the empty sentinel returned by `verify_api_key` on unmatched credentials — otherwise invalid API keys would pass the dependency.
 
 ### CSRF — read this before migrating a GUI route
 
