@@ -40,6 +40,25 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# The dev container mounts the main checkout at /opt/ace, so a git worktree under it is at
+# /opt/ace/<its path in the main checkout>. Run there, with SAQ_HOME and PYTHONPATH on it, so the
+# command runs this checkout's code rather than the main checkout's.
+WORKDIR=/opt/ace
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+if [ "$common_dir" != "$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" ]; then
+    checkout=$(pwd -P)
+    main=$(cd "$common_dir/.." && pwd -P)
+    case $checkout in
+        "$main"/*)
+            WORKDIR="/opt/ace/${checkout#"$main"/}"
+            ;;
+        *)
+            echo "Error: $checkout is not inside $main, so the dev container cannot see it"
+            exit 1
+            ;;
+    esac
+fi
+
 # Get the container name
 CONTAINER=$(bin/get-dev-container.sh)
 
@@ -54,4 +73,4 @@ fi
 #echo ""
 
 # Execute the command in the container, sourcing load_environment first
-docker exec $INTERACTIVE $TTY -u $USER "$CONTAINER" bash -c "source load_environment && source /venv/bin/activate && $*"
+docker exec $INTERACTIVE $TTY -u $USER -w "$WORKDIR" -e SAQ_HOME="$WORKDIR" -e PYTHONPATH="$WORKDIR" "$CONTAINER" bash -c "source load_environment && source /venv/bin/activate && $*"
