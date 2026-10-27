@@ -123,32 +123,51 @@ def test_score_candidates_prefers_the_call_to_action():
 
 @pytest.mark.unit
 def test_score_candidates_uses_the_settings_weights():
-    # a distinct power of two per weight, so a score says exactly which weights were applied
+    # a distinct power of two per weight, so a score says exactly which weights were applied, and no two weights
+    # fire on the same set of candidates, so two weights trading places changes some score
     settings = LureURLSettings(
         call_to_action_keywords=["review"], noise_keywords=["unsubscribe"], benign_domains=["fonts.googleapis.com"],
         weights={"qr": 1, "body": 2, "attachment": 4, "clickable": 8, "button": 16, "call_to_action": 32,
                  "only_domain": 64, "unwrapped": 128, "detection": 256, "not_a_link": 512, "sender_domain": 1024,
                  "noise": 2048, "static": 4096, "benign": 8192})
     root = RootAnalysis()
+    wrapper = "https://nam01.safelinks.protection.outlook.com/?url=x"
     lure_candidate = _candidate(root, LURE, [SOURCE_BODY], in_parsed_body=True, anchor=Anchor("Review Document", True),
-                                wrapped_by="https://nam01.safelinks.protection.outlook.com/?url=x")
+                                wrapped_by=wrapper)
     lure_candidate.observable.add_detection_point("known bad")
+    plain_cta = _candidate(root, "https://f.example.org/x", [SOURCE_BODY], in_parsed_body=True,
+                           anchor=Anchor("Review", False))
+    flagged_button = _candidate(root, "https://g.example.info/x", [SOURCE_BODY], in_parsed_body=True,
+                                anchor=Anchor("Open", True))
+    flagged_button.observable.add_detection_point("known bad")
+    plain_text_link = _candidate(root, "https://www.example.com/j", [SOURCE_BODY], wrapped_by=wrapper)
+    plain_text_link.observable.add_detection_point("known bad")
     qr = _candidate(root, "https://qr.example.com/a", [SOURCE_QR], in_parsed_body=True)
     logo = _candidate(root, "https://www.example.com/logo.png", [SOURCE_BODY], in_parsed_body=True)
+    pixel = _candidate(root, "https://www.example.com/pixel", [SOURCE_BODY], in_parsed_body=True)
     footer = _candidate(root, "https://www.example.com/unsubscribe", [SOURCE_ATTACHMENT],
                         attachments=["statement.pdf"], pdf_link=True)
     font = _candidate(root, "https://fonts.googleapis.com/css", [SOURCE_ATTACHMENT], attachments=["page.html"])
 
-    score_candidates([lure_candidate], set(), settings)
-    score_candidates([qr, logo, footer, font], {"example.com"}, settings)
+    # one at a time: only_domain depends on which other links are scored with a candidate
+    for candidate in (lure_candidate, plain_cta, flagged_button, plain_text_link, qr, logo, pixel, footer, font):
+        score_candidates([candidate], {"example.com"}, settings)
 
     # body + clickable + button + call_to_action + only_domain + unwrapped + detection
     assert lure_candidate.score == 506
+    # body + clickable + call_to_action + only_domain
+    assert plain_cta.score == 106
+    # body + clickable + button + only_domain + detection
+    assert flagged_button.score == 346
+    # body + unwrapped + detection + sender_domain
+    assert plain_text_link.score == 1410
     # qr + sender_domain
     assert qr.score == 1025
     # body + not_a_link + sender_domain + static
     assert logo.score == 5634
-    # attachment + clickable + sender_domain + noise
+    # body + not_a_link + sender_domain
+    assert pixel.score == 1538
+    # attachment + clickable (a PDF link) + sender_domain + noise
     assert footer.score == 3084
     # attachment + benign
     assert font.score == 8196
