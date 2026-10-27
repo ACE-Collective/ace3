@@ -1,4 +1,5 @@
 import logging
+import os
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -22,7 +23,8 @@ from saq.modules.email.lure import (
     CandidateCollector,
     LureURLAnalysis,
     LureURLAnalyzer,
-    LureURLConfig,
+    LureURLSettings,
+    load_lure_settings,
     build_lure_urls,
     parse_body_anchors,
     reason_segments,
@@ -56,11 +58,7 @@ LURE_HTML = f"""<html><body>
 <p><a href="{PRIVACY}">Privacy</a> | <a href="{UNSUBSCRIBE}">Unsubscribe</a></p>
 </body></html>"""
 
-CONFIG = LureURLConfig(
-    name="lure_url_analyzer",
-    python_module="saq.modules.email.lure",
-    python_class="LureURLAnalyzer",
-    enabled=True,
+SETTINGS = LureURLSettings(
     call_to_action_keywords=["review", "view", "sign"],
     noise_keywords=["unsubscribe", "privacy"],
     benign_domains=["fonts.googleapis.com"],
@@ -105,7 +103,7 @@ def test_score_candidates_prefers_the_call_to_action():
     privacy = _candidate(root, PRIVACY, [SOURCE_BODY], in_parsed_body=True, anchor=Anchor("Privacy", False))
     logo = _candidate(root, LOGO, [SOURCE_BODY], in_parsed_body=True)
 
-    score_candidates([lure_candidate, privacy, logo], {"example.com"}, CONFIG)
+    score_candidates([lure_candidate, privacy, logo], {"example.com"}, SETTINGS)
 
     assert lure_candidate.reasons == [
         "found in the email body",
@@ -124,6 +122,19 @@ def test_score_candidates_prefers_the_call_to_action():
 
 
 @pytest.mark.unit
+def test_score_candidates_uses_the_settings_weights():
+    root = RootAnalysis()
+    lure_candidate = _candidate(root, LURE, [SOURCE_BODY], in_parsed_body=True,
+                                anchor=Anchor("Review Document", True))
+    settings = LureURLSettings(call_to_action_keywords=["review"], noise_keywords=[], benign_domains=[],
+                               weights={"body": 1, "clickable": 2, "button": 4, "call_to_action": 8, "only_domain": 16})
+
+    score_candidates([lure_candidate], set(), settings)
+
+    assert lure_candidate.score == 31
+
+
+@pytest.mark.unit
 def test_score_candidates_other_signals():
     root = RootAnalysis()
     qr = _candidate(root, "https://qr.example.net/a", [SOURCE_QR], in_parsed_body=True)
@@ -133,7 +144,7 @@ def test_score_candidates_other_signals():
     wrapped.observable.add_detection_point("known bad")
     benign = _candidate(root, "https://fonts.googleapis.com/css", [SOURCE_BODY])
 
-    score_candidates([qr, attached, wrapped, benign], set(), CONFIG)
+    score_candidates([qr, attached, wrapped, benign], set(), SETTINGS)
 
     # a QR code in an image is never a link in the body
     assert qr.reasons == ["decoded from a QR code"]
@@ -150,7 +161,7 @@ def test_score_candidates_pdf_link_carrying_urls():
     tracker = _candidate(root, TRACKER, [SOURCE_ATTACHMENT], attachments=["statement.pdf"], pdf_link=True,
                          carries=["https://evil.example.net/login", "https://decoy.example.org/home"])
 
-    score_candidates([tracker], set(), CONFIG)
+    score_candidates([tracker], set(), SETTINGS)
 
     assert tracker.reasons == [
         "found in attachment statement.pdf",
@@ -172,7 +183,7 @@ def test_highlights_link_text():
     root = RootAnalysis()
     candidate = _candidate(root, LURE, [SOURCE_BODY], in_parsed_body=True, anchor=Anchor("Review Document", True))
 
-    score_candidates([candidate], set(), CONFIG)
+    score_candidates([candidate], set(), SETTINGS)
 
     assert candidate.highlights[candidate.reasons.index("clickable link with text 'Review Document'")] == [
         "Review Document"]
@@ -209,7 +220,7 @@ def test_only_external_domain_counts_links_only():
     # the logo comes from a CDN, which is not a link the recipient follows
     cdn_logo = _candidate(root, "https://cdn.example.org/logo.png", [SOURCE_BODY], in_parsed_body=True)
 
-    score_candidates([lure_candidate, cdn_logo], set(), CONFIG)
+    score_candidates([lure_candidate, cdn_logo], set(), SETTINGS)
 
     assert "the only linked external domain" in lure_candidate.reasons
 
@@ -355,7 +366,7 @@ def test_collector_pdf_link_carrying_urls(root_analysis, tmp_path):
     assert tracker.attachments == ["statement.pdf"]
     assert candidates["http://www.example.com/ns/metadata"].pdf_link is False
 
-    score_candidates(list(candidates.values()), set(), CONFIG)
+    score_candidates(list(candidates.values()), set(), SETTINGS)
     assert tracker.score > candidates["http://www.example.com/ns/metadata"].score
 
 
@@ -468,11 +479,16 @@ def test_module_rescores_when_a_later_final_pass_adds_urls(root_analysis, tmp_pa
     assert caplog.text.count(f"is {LURE}") == 1
 
 
+def _settings_file(tmp_path, monkeypatch, text: str) -> Path:
+    path = tmp_path / "lure_url.yaml"
+    path.write_text(text)
+    monkeypatch.setattr(get_analysis_module_config("lure_url_analyzer"), "config_path", str(path))
+    return path
+
+
 @pytest.mark.integration
 def test_module_crawl_primary_off_and_max_candidates(root_analysis, tmp_path, monkeypatch):
-    config = get_analysis_module_config("lure_url_analyzer")
-    monkeypatch.setattr(config, "crawl_primary", False)
-    monkeypatch.setattr(config, "max_candidates", 2)
+    _settings_file(tmp_path, monkeypatch, "crawl_primary: false\nmax_candidates: 2\n")
     email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, LURE_HTML)
     urls = _extracted(body, LURE, PRIVACY, UNSUBSCRIBE, LOGO)
 
@@ -483,6 +499,110 @@ def test_module_crawl_primary_off_and_max_candidates(root_analysis, tmp_path, mo
     assert len(analysis.candidates) == 2
     assert not any(url.has_directive(DIRECTIVE_CRAWL) for url in urls)
 
+
+@pytest.mark.unit
+def test_shipped_settings_file_holds_the_builtin_defaults():
+    assert get_analysis_module_config("lure_url_analyzer").config_path == "etc/lure_url.yaml"
+    settings = load_lure_settings("etc/lure_url.yaml")
+
+    # the file deployments copy into analyst_data must start from the same values ACE uses without it
+    assert settings == LureURLSettings()
+    assert "fonts.gstatic.com" in settings.benign_domains
+    assert settings.weights.qr == 35 and settings.weights.benign == -50
+    assert settings.min_primary_score == 1
+
+
+@pytest.mark.unit
+def test_settings_file_keys_left_out_keep_their_defaults(tmp_path):
+    path = tmp_path / "lure_url.yaml"
+    path.write_text("benign_domains: [example.net]\nnoise_keywords:\nweights:\n  qr: 50\n")
+
+    settings = load_lure_settings(str(path))
+
+    assert settings.benign_domains == ["example.net"]
+    assert settings.noise_keywords == []
+    assert "invoice" in settings.call_to_action_keywords
+    assert settings.weights.qr == 50
+    assert settings.weights.body == 20
+    assert settings.max_candidates == 5
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("text", [
+    "benign_domain: [example.net]\n",
+    "weights:\n  qrr: 50\n",
+    "max_candidates: 0\n",
+    "benign_domains: [\n",
+    "- not a mapping\n",
+])
+def test_settings_file_that_does_not_load(tmp_path, caplog, text):
+    path = tmp_path / "lure_url.yaml"
+    path.write_text(text)
+
+    assert load_lure_settings(str(path)) is None
+
+    [record] = [r for r in caplog.records if "unable to load lure url settings" in r.getMessage()]
+    assert record.levelno == logging.ERROR and record.exc_info
+    assert record.path == str(path)
+
+
+@pytest.mark.integration
+def test_module_reloads_the_settings_file_and_keeps_the_last_good_one(root_analysis, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "check_watched_files_frequency", 0)
+    path = _settings_file(tmp_path, monkeypatch, "min_primary_score: 1000\n")
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, LURE_HTML)
+    _extracted(body, LURE, PRIVACY, UNSUBSCRIBE, LOGO)
+    module = _module(root_analysis)
+
+    def edit(text: str, mtime: int):
+        path.write_text(text)
+        # the watcher notices a change by its mtime, which can be unchanged within one tick
+        os.utime(path, (mtime, mtime))
+        module.wrapped_module.check_watched_files()
+        module.execute_final_analysis(email_file)
+        return email_file.get_analysis(LureURLAnalysis).primary
+
+    module.execute_final_analysis(email_file)
+    assert email_file.get_analysis(LureURLAnalysis).primary is None
+
+    # a bad edit is rejected whole, and the tuning already in effect stays (the defaults would
+    # call LURE the primary)
+    assert edit("min_primary_score: [\n", 1_000_000) is None
+    assert any(r.levelno == logging.ERROR and "unable to load lure url settings" in r.getMessage()
+               for r in caplog.records)
+
+    with caplog.at_level(logging.INFO):
+        assert edit("min_primary_score: 1\n", 2_000_000)["url"] == LURE
+    assert f"loaded lure url settings from {path}" in caplog.text
+
+
+@pytest.mark.integration
+def test_module_missing_settings_file_uses_the_builtin_defaults(root_analysis, tmp_path, monkeypatch, caplog):
+    missing = tmp_path / "missing.yaml"
+    monkeypatch.setattr(get_analysis_module_config("lure_url_analyzer"), "config_path", str(missing))
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, LURE_HTML)
+    [lure_url] = _extracted(body, LURE)
+
+    _module(root_analysis).execute_final_analysis(email_file)
+
+    assert email_file.get_analysis(LureURLAnalysis).primary["url"] == LURE
+    assert lure_url.has_directive(DIRECTIVE_CRAWL)
+    [record] = [r for r in caplog.records if "does not exist" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.path == str(missing)
+
+
+@pytest.mark.integration
+def test_module_blank_config_path_uses_the_builtin_defaults(root_analysis, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_analysis_module_config("lure_url_analyzer"), "config_path", "")
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, LURE_HTML)
+    _extracted(body, LURE)
+    module = _module(root_analysis)
+
+    module.execute_final_analysis(email_file)
+
+    assert email_file.get_analysis(LureURLAnalysis).primary["url"] == LURE
+    assert module.wrapped_module.watched_files == {}
 
 @pytest.mark.unit
 def test_lure_module_runs_only_on_alerts():
