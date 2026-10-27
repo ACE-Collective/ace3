@@ -1,12 +1,15 @@
 
+import logging
 import os
+
+from unittest.mock import Mock
 
 import pytest
 from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
 from saq.modules.file_analysis.dotnet import De4dotAnalysis
 from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
@@ -207,6 +210,129 @@ class TestUrlExtraction:
 
         urls = self._run_url_extraction(root_analysis, target_path)
         assert 'https://example.net/sh"' in urls
+
+    @pytest.mark.unit
+    def test_order_urls_by_interest_puts_images_last_and_keeps_urls_without_a_tld(self, test_context, caplog):
+        urls = ['https://example.com/logo.png',
+                'http://192.0.2.1/payload.exe',
+                'https://example.com/login',
+                'http://localhost/x']
+
+        analyzer = URLExtractionAnalyzer(
+            context=test_context,
+            config=get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION))
+        with caplog.at_level(logging.INFO):
+            ordered, grouped = analyzer.order_urls_by_interest(urls)
+
+        assert ordered == ['https://example.com/login',
+                           'http://192.0.2.1/payload.exe',
+                           'http://localhost/x',
+                           'https://example.com/logo.png']
+        assert grouped == {'example.com': ['https://example.com/logo.png', 'https://example.com/login'],
+                           'no_tld': ['http://192.0.2.1/payload.exe', 'http://localhost/x']}
+        # every url with an IP address for a host has no TLD, so this is not worth an INFO record
+        assert not [r for r in caplog.records if r.levelno >= logging.INFO]
+
+    @pytest.mark.unit
+    def test_filter_excluded_domains_keeps_what_it_cannot_match(self, test_context, monkeypatch):
+        config = get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)
+        analyzer = URLExtractionAnalyzer(context=test_context, config=config)
+
+        # urlparse raises ValueError on a malformed IPv6 host
+        assert analyzer.filter_excluded_domains('http://[::1/path')
+        assert analyzer.filter_excluded_domains('http://[bogus]/path')
+        # no host at all
+        assert analyzer.filter_excluded_domains('mailto:user@example.com')
+
+        monkeypatch.setattr(config, "excluded_domains", [])
+        assert analyzer.filter_excluded_domains('http://schemas.microsoft.com/office/2004/12/omml')
+
+    @pytest.mark.unit
+    def test_summary_skips_urls_it_cannot_parse(self):
+        analysis = URLExtractionAnalysis()
+        assert analysis.generate_summary() is None
+
+        analysis.urls = ['http://[::1/path', 'https://b.example.com/x', 'https://a.example.com/y']
+        assert analysis.generate_summary() == "URL Extraction Analysis (a.example.com, b.example.com)"
+
+    def _url_extraction_analyzer(self, root_analysis, config=None):
+        return AnalysisModuleAdapter(URLExtractionAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=config or get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)))
+
+    def _file_with_type(self, root_analysis, path, mime="text/plain"):
+        file_observable = root_analysis.add_file_observable(path)
+        file_type_analysis = FileTypeAnalysis()
+        file_observable.add_analysis(file_type_analysis)
+        file_type_analysis.details = {"type": "", "mime": mime}
+        return file_observable
+
+    @pytest.mark.unit
+    def test_relative_urls_resolve_against_the_url_the_html_was_downloaded_from(self, tmpdir, root_analysis):
+        target_path = str(tmpdir / "page.html")
+        with open(target_path, "w") as fp:
+            fp.write('<html><body><a href="/login.php">sign in</a></body></html>')
+
+        file_observable = self._file_with_type(root_analysis, target_path, mime="text/html")
+        url_observable = root_analysis.add_observable_by_spec(F_URL, "https://phish.example.com/landing/")
+        file_observable.add_relationship(R_DOWNLOADED_FROM, url_observable)
+
+        assert self._url_extraction_analyzer(root_analysis).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = file_observable.get_and_load_analysis(URLExtractionAnalysis)
+        assert "https://phish.example.com/login.php" in analysis.urls
+
+    @pytest.mark.unit
+    def test_files_it_does_not_read(self, tmpdir, root_analysis, monkeypatch, caplog):
+        analyzer = self._url_extraction_analyzer(root_analysis)
+
+        no_file_type_path = str(tmpdir / "no_file_type.txt")
+        with open(no_file_type_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        no_file_type = root_analysis.add_file_observable(no_file_type_path)
+
+        empty_path = str(tmpdir / "empty.txt")
+        open(empty_path, "w").close()
+        empty = self._file_with_type(root_analysis, empty_path)
+
+        missing_path = str(tmpdir / "missing.txt")
+        with open(missing_path, "w") as fp:
+            fp.write("https://example.com/b\n")
+        missing = self._file_with_type(root_analysis, missing_path)
+        os.remove(missing.full_path)
+
+        with caplog.at_level(logging.ERROR):
+            for file_observable in (no_file_type, empty, missing):
+                assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+                assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+
+        assert f"cannot find local file path for {missing}" in [r.getMessage() for r in caplog.records]
+
+    @pytest.mark.unit
+    def test_a_file_over_the_size_limit_is_skipped(self, tmpdir, root_analysis, monkeypatch):
+        config = get_analysis_module_config(ANALYSIS_MODULE_URL_EXTRACTION)
+        monkeypatch.setattr(config, "max_file_size", 0)
+        target_path = str(tmpdir / "large.txt")
+        with open(target_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        file_observable = self._file_with_type(root_analysis, target_path)
+
+        assert self._url_extraction_analyzer(root_analysis, config).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+
+    @pytest.mark.unit
+    def test_a_urlfinderlib_failure_is_logged(self, tmpdir, root_analysis, monkeypatch, caplog):
+        monkeypatch.setattr("saq.modules.file_analysis.url_extraction.find_urls", Mock(side_effect=ValueError("bad markup")))
+        target_path = str(tmpdir / "page.txt")
+        with open(target_path, "w") as fp:
+            fp.write("https://example.com/a\n")
+        file_observable = self._file_with_type(root_analysis, target_path)
+
+        with caplog.at_level(logging.WARNING):
+            assert self._url_extraction_analyzer(root_analysis).execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        assert file_observable.get_and_load_analysis(URLExtractionAnalysis) is None
+        assert any(f"failed to extract urls from {file_observable.full_path}: bad markup" in r.getMessage() for r in caplog.records)
 
 
 
