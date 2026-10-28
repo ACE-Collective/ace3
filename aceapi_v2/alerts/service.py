@@ -19,7 +19,7 @@ from saq.analysis.observable import Observable
 from saq.analysis.root import load_file_observable
 from saq.clicker_detection.config import build_splunk_clicker_search_urls, load_clicker_config
 from saq.clicker_detection.timeline import REGISTERED_CLICKER_PROVIDERS
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
@@ -576,11 +576,12 @@ def clicker_searches(alert_uuid: str, observable_uuid: str) -> list[ClickerSearc
     an analyst can run them without the check. Empty when none is configured for its type."""
     observable = load_observable(alert_uuid, observable_uuid)
 
-    try:
-        module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
-    except Exception:
-        # the Splunk clicker module is not configured on this node
+    # no block means the Splunk clicker module is not configured on this node; a block that fails
+    # validation raises instead, since an empty list would read as "no searches for this observable"
+    if not get_config().has_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME):
         return []
+
+    module_config = get_analysis_module_config(CLICKER_SPLUNK_MODULE_NAME)
 
     config = load_clicker_config(module_config.config_path)
     return [ClickerSearch(name=search["name"], url=search["url"])
