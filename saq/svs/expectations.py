@@ -88,11 +88,6 @@ def _last_known(signature_uuid: str, run_id: Optional[int] = None) -> tuple[Opti
     return family, None
 
 
-def _audit(message: str, auth: Optional[ApiAuthResult], **fields) -> None:
-    # fields name the actor and actor_user_id too, for a caller that passes no auth
-    log_audit(message, auth=auth, **fields)
-
-
 #
 # expectations (svs:run_manage)
 #
@@ -178,7 +173,8 @@ def set_expectation(test_guid: str, signature_uuid: str, state: str, user_id: in
     mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
 
-    _audit("svs expectation decided", auth, **{
+    # the actor and actor_user_id are named too, for a caller that passes no auth
+    log_audit("svs expectation decided", auth=auth, **{
         **(run_log_fields(run) if run is not None else {}), "svs_test": test.guid, "platform": platform,
         "signature_uuid": signature_uuid, "state": state.value, "reason": reason, "actor": actor,
         "actor_user_id": user_id})
@@ -197,8 +193,8 @@ def remove_expectation(test_guid: str, platform: str, signature_uuid: str, user_
     db.delete(expectation)
     mark_runs_stale(db, SVSRun.test_guid == test.guid, SVSRun.platform == platform)
     db.commit()
-    _audit("svs expectation removed", auth, svs_test=test.guid, platform=platform,
-           signature_uuid=expectation.signature_uuid, state=state, actor=actor, actor_user_id=user_id)
+    log_audit("svs expectation removed", auth=auth, svs_test=test.guid, platform=platform,
+              signature_uuid=expectation.signature_uuid, state=state, actor=actor, actor_user_id=user_id)
 
 
 #
@@ -243,9 +239,9 @@ def set_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str] = 
     mark_runs_stale(db, *_ignored_runs(test_guid))
     db.commit()
 
-    _audit("svs signature ignored", auth, svs_test=test_guid, signature_uuid=signature_uuid,
-           scope=(IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, reason=reason, actor=actor,
-           actor_user_id=user_id)
+    log_audit("svs signature ignored", auth=auth, svs_test=test_guid, signature_uuid=signature_uuid,
+              scope=(IgnoreScope.TEST if test_guid else IgnoreScope.GLOBAL).value, reason=reason, actor=actor,
+              actor_user_id=user_id)
     return get_ignore(signature_uuid, test_guid)
 
 
@@ -259,8 +255,8 @@ def remove_ignore(signature_uuid: str, user_id: int, *, test_guid: Optional[str]
     db.delete(ignore)
     mark_runs_stale(db, *_ignored_runs(test_guid))
     db.commit()
-    _audit("svs signature no longer ignored", auth, svs_test=test_guid, signature_uuid=ignore.signature_uuid,
-           scope=ignore.scope, actor=actor, actor_user_id=user_id)
+    log_audit("svs signature no longer ignored", auth=auth, svs_test=test_guid, signature_uuid=ignore.signature_uuid,
+              scope=ignore.scope, actor=actor, actor_user_id=user_id)
 
 
 #
@@ -295,8 +291,8 @@ def set_test_settings(test_guid: str, user_id: int, *, observation_minutes: Opti
     values = {"observation_minutes": observation_minutes, "holds_host": bool(holds_host), "set_by_user_id": user_id}
     db.execute(mysql_insert(SVSTestSettings).values(test_guid=test.guid, **values).on_duplicate_key_update(**values))
     db.commit()
-    _audit("svs test settings changed", auth, svs_test=test.guid, observation_minutes=observation_minutes,
-           holds_host=bool(holds_host), actor=actor, actor_user_id=user_id)
+    log_audit("svs test settings changed", auth=auth, svs_test=test.guid, observation_minutes=observation_minutes,
+              holds_host=bool(holds_host), actor=actor, actor_user_id=user_id)
     return get_test_settings(test.guid)
 
 
@@ -311,7 +307,7 @@ def remove_test_settings(test_guid: str, user_id: int, *, actor: Optional[str] =
         db.rollback()
         raise UnknownDecision(f"test {test.guid} has no settings")
     db.commit()
-    _audit("svs test settings removed", auth, svs_test=test.guid, actor=actor, actor_user_id=user_id)
+    log_audit("svs test settings removed", auth=auth, svs_test=test.guid, actor=actor, actor_user_id=user_id)
 
 
 #

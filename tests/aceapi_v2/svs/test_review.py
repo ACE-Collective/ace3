@@ -54,7 +54,8 @@ def _ended(signature_uuid=None) -> SVSRun:
 
 
 @pytest.mark.asyncio
-async def test_review(client: AsyncClient, test_user):
+async def test_review(client: AsyncClient, test_user, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = _ended(RULE)
     response = await client.post(f"/svs/runs/{run.uuid}/review")
     assert response.status_code == 409
@@ -71,6 +72,8 @@ async def test_review(client: AsyncClient, test_user):
     assert (body["re_review"], body["counts"], body["alerts_closed"]) == (False, {"hit": 1}, 1)
     assert (body["run"]["state"], body["run"]["reviewer"], body["run"]["owner"]) == (
         "reviewed", test_user.username, test_user.username)
+    # the automation user writes the SIMULATED disposition, but the record names the key that reviewed
+    assert audit_actors(caplog, "alert dispositioned") == [client_actor]
 
     assert (await client.post(f"/svs/runs/{uuid.uuid4()}/review")).status_code == 404
     started = started_run(GUID)
@@ -123,6 +126,7 @@ async def test_bulk_actions(client: AsyncClient, test_user, client_actor, caplog
     assert response.json()["done"] == [ended.uuid]
     detail = (await client.get(f"/svs/runs/{ended.uuid}")).json()
     assert (detail["state"], detail["close_reason"], detail["owner"]) == ("closed", "a bad run", test_user.username)
+    assert audit_actors(caplog, "alert dispositioned") == [client_actor]
 
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": ["not-a-uuid"]})).status_code == 400
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": []})).status_code == 422

@@ -199,7 +199,7 @@ def close_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[
     become SIMULATED. An Ended run needs the reason."""
     now = now or datetime.now()
     return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.close_by_person(run_uuid, actor, user_id, reason, now), now, auth)
+                 lambda run_uuid: runs.close_by_person(run_uuid, actor, user_id, reason, now, auth=auth), now, auth)
 
 
 #
@@ -328,7 +328,7 @@ def review(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
 
     alerts_closed = fp_verdicts = 0
     try:
-        alerts_closed = runs.close_reviewed_run_alerts(run, actor)
+        alerts_closed = runs.close_reviewed_run_alerts(run, actor, auth=auth)
         targets = ignored_detections(db, run)
         if targets:
             fp_verdicts = set_verdicts(targets, VERDICT_FP, user_id, analyst=False, auth=auth).changed

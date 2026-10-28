@@ -38,6 +38,7 @@ from typing import Any, Iterable, Optional
 
 from sqlalchemy import and_, case, null, or_, select, update
 
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import (
@@ -288,7 +289,7 @@ def _still_fully_attributed(alert_uuids: list[str]) -> set[str]:
 
 
 def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *, comment: Optional[str] = None,
-                  reviewed: bool = False) -> int:
+                  reviewed: bool = False, auth: Optional[ApiAuthResult] = None) -> int:
     """Gives the alerts SIMULATED, through the disposition writer analysts use, as the automation
     user. An alert dispositioned or taken by an analyst in the meantime is left alone, and so is
     one no longer fully attributed: checked again under the alert's row lock, which disassociating
@@ -299,7 +300,7 @@ def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *
     result = set_dispositions(
         alert_uuids, DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
         user_comment=comment or f"closed with SVS test run {run.uuid}", system=True,
-        expected_dispositions={DISPOSITION_OPEN}, eligible=_still_fully_attributed)
+        expected_dispositions={DISPOSITION_OPEN}, eligible=_still_fully_attributed, auth=auth)
     closed = result.permitted
     left_alone = sorted(set(result.skipped) | set(result.unexpected) | set(result.ineligible))
     if closed:
@@ -314,22 +315,23 @@ def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *
     return len(closed)
 
 
-def close_run_alerts(run: SVSRun, actor: str = TIMER_ACTOR) -> int:
+def close_run_alerts(run: SVSRun, actor: str = TIMER_ACTOR, *, auth: Optional[ApiAuthResult] = None) -> int:
     """Gives SIMULATED to the alerts of a run that was just closed: those fully attributed, open
     and not taken by an analyst (docs/SVS.md, Part 3, *Test alerts downstream*). Nothing is learned
     from them: an alert attributed to a run that is not reviewed has no verdicts and no capture.
     An alert attributed after this is closed by the timers' sweep (close_late_alerts). Returns how
     many it closed."""
     return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
-                         actor, late=False)
+                         actor, late=False, auth=auth)
 
 
-def close_reviewed_run_alerts(run: SVSRun, actor: str) -> int:
+def close_reviewed_run_alerts(run: SVSRun, actor: str, *, auth: Optional[ApiAuthResult] = None) -> int:
     """Gives SIMULATED to the alerts of a run that was just reviewed (saq/svs/review.py), as closing
     it would, with a comment naming the review. Their YARA hits are captured now that the run is
     reviewed, so the review must be committed first. Returns how many it closed."""
     return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
-                         actor, late=False, comment=f"reviewed with SVS test run {run.uuid} by {actor}", reviewed=True)
+                         actor, late=False, comment=f"reviewed with SVS test run {run.uuid} by {actor}", reviewed=True,
+                         auth=auth)
 
 
 def close_late_alerts() -> int:
@@ -363,11 +365,11 @@ def on_run_ended(run: SVSRun) -> None:
         logging.exception("unable to compute the result of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
 
-def _after_close(run: SVSRun, actor: str = TIMER_ACTOR) -> None:
+def _after_close(run: SVSRun, actor: str = TIMER_ACTOR, *, auth: Optional[ApiAuthResult] = None) -> None:
     """Closes the alerts of a run whose close was committed. A failure never undoes the close: the
     timers' late-alert sweep closes those alerts on its next pass."""
     try:
-        close_run_alerts(run, actor)
+        close_run_alerts(run, actor, auth=auth)
     except Exception as e:
         get_db().rollback()
         logging.exception("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
@@ -827,7 +829,7 @@ def cancel_by_person(run_uuid: str, actor: str, user_id: int, now: Optional[date
 
 
 def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
-                    now: Optional[datetime] = None) -> SVSRun:
+                    now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> SVSRun:
     """A person discards a run (saq/svs/review.py): Ended, Canceled or Error -> Closed, and its
     alerts are closed as SIMULATED. Nothing is learned from it. An Ended run needs a reason, since
     it waited for a review [MGT-3]. Raises UnknownRun, RunStateConflict, ReasonRequired."""
@@ -845,7 +847,7 @@ def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[st
         raise RunStateConflict(run.uuid, run.state, "close")
     get_db().commit()
     log_transition(run, from_state.value, RunState.CLOSED.value, actor, run.close_reason)
-    _after_close(run, actor)
+    _after_close(run, actor, auth=auth)
     return run
 
 
