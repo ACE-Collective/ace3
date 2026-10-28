@@ -5,6 +5,7 @@ import sys
 import time
 
 import pymysql
+from pymysql.constants import SERVER_STATUS
 from saq.configuration.config import get_config
 from saq.database.pool import get_db
 
@@ -65,7 +66,13 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
        SQL statements, and params is a matching list of tuples of parameters.
        
        Returns the rowcount for a single statement, or a list of rowcount for multiple statements,
-       or the result of the function call."""
+       or the result of the function call.
+
+       The unit of retry is the transaction: pass all of it, as a list of statements or as a
+       function that is safe to run again from its start. A deadlock rolls back the whole
+       transaction, so when db already had uncommitted writes before this call, the deadlock is
+       raised rather than retried, and the caller's transaction has to run again. A function
+       that calls execute_with_retry inside one that does gets exactly that."""
 
     assert callable(sql_or_func) or isinstance(sql_or_func, str) or isinstance(sql_or_func, list)
     assert params is None or isinstance(params, tuple) or ( 
@@ -85,6 +92,11 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
         if len(sql_or_func) != len(params):
             raise ValueError("the length of sql statements does not match the length of parameter tuples: {} {}".format(
                              sql_or_func, params))
+
+    # pymysql takes the status from OK packets only, so a transaction that has only read rows is
+    # not seen here. It has no writes a retry of this call alone could lose.
+    in_transaction = bool(db.server_status & SERVER_STATUS.SERVER_STATUS_IN_TRANS)
+
     count = 1
     while True:
         try:
@@ -109,6 +121,12 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
         except pymysql.err.OperationalError as e:
             # see http://stackoverflow.com/questions/25026244/how-to-get-the-mysql-type-of-error-with-pymysql
             # to explain e.args[0]
+            if (e.args[0] == 1213 or e.args[0] == 1205) and in_transaction:
+                # the transaction's owner rolls back (InnoDB already has, for 1213) and runs it again
+                logging.warning("deadlock ({}) in a transaction begun before this call -- not trying again, "
+                                "the transaction has to run again from its start".format(e.args[0]))
+                raise e
+
             if (e.args[0] == 1213 or e.args[0] == 1205) and count < attempts:
                 logging.warning("deadlock detected -- trying again (attempt #{})".format(count))
                 try:

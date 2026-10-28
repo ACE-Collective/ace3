@@ -395,41 +395,41 @@ def record_thread(context: ThreadContext) -> None:
         logging.debug("skipping thread store - missing thread_id or message_id")
         return
 
-    with get_db_connection(name="brocess") as db:
-        cursor = db.cursor()
-
-        # record the message. on a duplicate (the same message reprocessed) leave the row unchanged.
-        execute_with_retry(db, cursor, """
+    # record the message. on a duplicate (the same message reprocessed) leave the row unchanged.
+    sql = ["""
 INSERT INTO email_thread_message (
     thread_id, thread_id_hash, message_id, message_id_hash, in_reply_to,
     normalized_subject, normalized_subject_hash, from_address, from_domain, direction, message_date )
 VALUES (
     %s, UNHEX(SHA2(%s, 256)), %s, UNHEX(SHA2(%s, 256)), %s,
     %s, UNHEX(SHA2(%s, 256)), %s, %s, %s, %s )
-ON DUPLICATE KEY UPDATE id = id""", (
-            context.thread_id, context.thread_id,
-            context.message_id, context.message_id,
-            context.in_reply_to,
-            context.normalized_subject or None, context.normalized_subject or None,
-            context.from_address, context.from_domain,
-            context.direction, context.message_date))
+ON DUPLICATE KEY UPDATE id = id"""]
+    params = [(
+        context.thread_id, context.thread_id,
+        context.message_id, context.message_id,
+        context.in_reply_to,
+        context.normalized_subject or None, context.normalized_subject or None,
+        context.from_address, context.from_domain,
+        context.direction, context.message_date)]
 
-        # record each participant domain. rows are per-message (entry_hash covers the message id),
-        # so re-processing the same message must leave the row alone rather than double-count it.
-        for participant in context.participants:
-            execute_with_retry(db, cursor, """
+    # record each participant domain. rows are per-message (entry_hash covers the message id),
+    # so re-processing the same message must leave the row alone rather than double-count it.
+    for participant in context.participants:
+        sql.append("""
 INSERT INTO email_thread_domain (
     thread_id, thread_id_hash, message_id_hash, domain, address, role, entry_hash, numseen, firstseendate )
 VALUES (
     %s, UNHEX(SHA2(%s, 256)), UNHEX(SHA2(%s, 256)), %s, %s, %s,
     UNHEX(SHA2(CONCAT_WS(0x1f, %s, %s, %s, %s), 256)), 1, NOW() )
-ON DUPLICATE KEY UPDATE id = id""", (
-                context.thread_id, context.thread_id,
-                context.message_id,
-                participant.domain, participant.address, participant.role,
-                context.message_id, participant.domain, participant.address, participant.role))
+ON DUPLICATE KEY UPDATE id = id""")
+        params.append((
+            context.thread_id, context.thread_id,
+            context.message_id,
+            participant.domain, participant.address, participant.role,
+            context.message_id, participant.domain, participant.address, participant.role))
 
-        db.commit()
+    with get_db_connection(name="brocess") as db:
+        execute_with_retry(db, db.cursor(), sql, params, commit=True)
 
 
 def _collapse_thread_domains(rows) -> list:

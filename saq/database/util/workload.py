@@ -62,21 +62,3 @@ ON DUPLICATE KEY UPDATE uuid=uuid""", (root.uuid, get_global_runtime_settings().
         logging.info("added {} to workload with analysis mode {} company_id {}".format(
                       root.uuid, root.analysis_mode, root.company_id))
 
-def clear_workload_by_pid(pid):
-    """Utility function that clears (deletes) any workload items currently being processed by the given process
-       identified by pid. This is accomplished by querying the lock_owner column of the locks table and then
-       find workload items for the uuids found.
-
-       This is typically used to clear out error conditions."""
-    
-    with get_db_connection() as db:
-        c = db.cursor()
-        c.execute("SELECT uuid FROM locks WHERE lock_owner LIKE CONCAT('%%-', %s)", (pid,))
-        for row in c:
-            uuid = row[0]
-            logging.warning(f"clearing workload item {uuid}")
-            execute_with_retry(db, c, "DELETE FROM workload WHERE uuid = %s", (uuid,))
-
-        logging.warning(f"clearing locks for pid {pid}")
-        execute_with_retry(db, c, "DELETE FROM locks WHERE lock_owner LIKE CONCAT('%%-', %s)", (pid,))
-        db.commit()

@@ -17,6 +17,7 @@ from saq.modules.email.conversation import (
     parse_message_id_list,
     record_thread,
 )
+from tests.saq.helpers import inject_deadlock
 
 
 def _context(thread_id, method, message_id, normalized_subject, participants, **kwargs):
@@ -187,6 +188,22 @@ def test_thread_store_round_trip():
     assert "company.com" in established
     # the reply's own look-a-like domain is not yet recorded (recording happens after scoring)
     assert "examp1e.com" not in established
+
+
+@pytest.mark.integration
+def test_record_thread_runs_again_from_the_start_after_a_deadlock(monkeypatch):
+    root = _context(
+        "<deadlock@example.com>", "self", "<deadlock@example.com>", "invoice question",
+        [Participant("ceo@example.com", "example.com", "from"),
+         Participant("cfo@company.com", "company.com", "to")])
+
+    # the second participant's row is the deadlock victim, after the message row and the first one's were written
+    failed = inject_deadlock(monkeypatch, "INSERT INTO email_thread_domain", skip=1)
+    record_thread(root)
+
+    assert len(failed) == 1
+    assert get_thread_message_count("<deadlock@example.com>") == 1
+    assert {d.domain for d in get_established_domains(root)} == {"example.com", "company.com"}
 
 
 @pytest.mark.integration

@@ -17,6 +17,7 @@ from saq.modules.email.archive import EmailArchiveAction, EmailArchiveResults, E
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_str
 from saq.util.time import local_time
+from tests.saq.helpers import inject_deadlock
 from tests.saq.test_util import create_test_context
 
 TEST_MESSAGE_ID = "<test-message-id>"
@@ -194,6 +195,28 @@ def test_post_analysis_indexes_the_urls_found_under_each_archived_email(root_ana
         cursor = db.cursor()
         cursor.execute("SELECT COUNT(*) FROM archive_index WHERE field = 'url'")
         assert cursor.fetchone()[0] == 1
+
+@pytest.mark.integration
+def test_indexing_the_urls_runs_again_from_the_start_after_a_deadlock(root_analysis, monkeypatch):
+    analyzer = EmailArchiveAction(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
+
+    archived = _email_file(root_analysis, "archived.rfc822")
+    assert analyzer.execute_analysis(archived) == AnalysisExecutionResult.COMPLETED
+    archive_results = archived.get_analysis(EmailArchiveResults)
+    content_analysis = Analysis()
+    archived.add_analysis(content_analysis)
+    content_analysis.add_observable_by_spec(F_URL, "http://first.example.com/")
+    content_analysis.add_observable_by_spec(F_URL, "http://second.example.com/")
+
+    # the second URL's row is the deadlock victim, after the first one's was written
+    failed = inject_deadlock(monkeypatch, "INSERT IGNORE INTO archive_index", skip=1)
+    analyzer.index_email(archived)
+
+    assert len(failed) == 1
+    assert _url_index_count(archive_results.archive_id, "http://first.example.com/") == 1
+    assert _url_index_count(archive_results.archive_id, "http://second.example.com/") == 1
 
 @pytest.mark.unit
 @pytest.mark.parametrize("message_id,env_rcpt_to,expected_log_fragment", [

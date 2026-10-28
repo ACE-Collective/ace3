@@ -39,7 +39,7 @@ from saq.engine.workload_manager import database as workload_database
 from saq.engine.workload_manager.database import DatabaseWorkloadManager
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.util import storage_dir_from_uuid
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, inject_deadlock
 
 pytestmark = pytest.mark.integration
 
@@ -387,3 +387,16 @@ def test_failed_location_update_leaves_the_item_on_the_remote_node(item, monkeyp
     assert lock_row(uuid) is None
     # the remote copy is still the only one, so it is not cleared
     clear.assert_not_called()
+
+
+def test_transfer_runs_its_database_updates_again_from_the_start_after_a_deadlock(item, monkeypatch):
+    uuid, _ = item
+    monkeypatch.setattr("ace_api.clear", lambda *a, **k: True)
+    # the last of the three UPDATEs is the deadlock victim, after the workload row was repointed
+    failed = inject_deadlock(monkeypatch, "UPDATE alerts SET location")
+
+    manager = make_manager(DistributedLockManager())
+    assert manager.transfer_work_target(uuid, workload_node_id(uuid)) is not None
+
+    assert len(failed) == 1
+    assert workload_node_id(uuid) == local_node_id()

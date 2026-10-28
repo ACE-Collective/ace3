@@ -173,25 +173,25 @@ def assign_node_analysis_modes(node_id: Optional[int]=None, analysis_modes: Opti
     if node_id is None:
         node_id = get_global_runtime_settings().saq_node_id
 
+    # if we don't specificy any modes, then the default is to accept all modes
+    any_mode = 1 if not analysis_modes else 0
+    sql = [
+        "UPDATE nodes SET any_mode = %s WHERE id = %s",
+        "DELETE FROM node_modes WHERE node_id = %s",
+        "DELETE FROM node_modes_excluded WHERE node_id = %s",
+    ]
+    params = [(any_mode, node_id), (node_id,), (node_id,)]
+
+    for mode in analysis_modes or []:
+        sql.append("INSERT INTO node_modes ( node_id, analysis_mode ) VALUES ( %s, %s )")
+        params.append((node_id, mode))
+
+    for excluded_mode in excluded_analysis_modes or []:
+        sql.append("INSERT INTO node_modes_excluded ( node_id, analysis_mode ) VALUES ( %s, %s )")
+        params.append((node_id, excluded_mode))
+
     with get_db_connection() as db:
-        cursor = db.cursor()
-
-        # if we don't specificy any modes, then the default is to accept all modes
-        any_mode = 1 if not analysis_modes else 0
-        execute_with_retry(db, cursor, "UPDATE nodes SET any_mode = %s WHERE id = %s", (any_mode, node_id))
-
-        execute_with_retry(db, cursor, "DELETE FROM node_modes WHERE node_id = %s", (node_id,))
-        execute_with_retry(db, cursor, "DELETE FROM node_modes_excluded WHERE node_id = %s", (node_id,))
-
-        if analysis_modes:
-            for mode in analysis_modes:
-                execute_with_retry(db, cursor, "INSERT INTO node_modes ( node_id, analysis_mode ) VALUES ( %s, %s )", (node_id, mode))
-
-        if excluded_analysis_modes:
-            for excluded_mode in excluded_analysis_modes:
-                execute_with_retry(db, cursor, "INSERT INTO node_modes_excluded ( node_id, analysis_mode ) VALUES ( %s, %s )", (node_id, excluded_mode))
-
-        db.commit()
+        execute_with_retry(db, db.cursor(), sql, params, commit=True)
 
 #
 # node status management (see the node drain feature)
