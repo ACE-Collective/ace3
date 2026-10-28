@@ -8,7 +8,7 @@ import saq.error.reporting
 import saq.shutdown
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir, get_data_dir
-from saq.error.reporting import ErrorReportHandler, log_loop_exception, write_error_report
+from saq.error.reporting import ErrorReportHandler, log_loop_exception, log_peer_unavailable, write_error_report
 from saq.logging import _install_error_report_handler, suppress_external_logging, transaction_id
 from saq.monitor import enable_monitor_cache, get_emitter
 from saq.monitor_definitions import MONITOR_ERROR_REPORT
@@ -226,3 +226,89 @@ def test_log_loop_exception_puts_extra_on_record(reports, monkeypatch, caplog, s
     records = [r for r in caplog.records if r.getMessage().startswith("doing work")]
     assert len(records) == 1
     assert records[0].alert_uuid == "uuid-1"
+
+
+class _ClientTransportError(Exception):
+    """A client library's transport error, which is not an OSError (httpx, azure-core)."""
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_accepts_the_callers_client_errors(reports, caplog):
+    caplog.set_level(logging.INFO)
+    assert log_peer_unavailable(_ClientTransportError("connect failed"), "reading x", unreachable=(_ClientTransportError,))
+
+    assert reports == []
+    records = [r for r in caplog.records if r.getMessage().startswith("reading x")]
+    assert [(r.levelno, r.getMessage()) for r in records] == [(logging.WARNING, "reading x unavailable: connect failed")]
+
+
+class _ClientAuthenticationError(Exception):
+    """What a client raises in place of the transport error it hit (azure-identity's credentials)."""
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_follows_the_cause_chain(reports, caplog):
+    try:
+        try:
+            raise _ClientTransportError("connect failed")
+        except _ClientTransportError as cause:
+            raise _ClientAuthenticationError("token request failed") from cause
+    except _ClientAuthenticationError as e:
+        wrapped = e
+
+    caplog.set_level(logging.INFO)
+    assert log_peer_unavailable(wrapped, "reading x", unreachable=(_ClientTransportError,))
+
+    assert reports == []
+    records = [r for r in caplog.records if r.getMessage().startswith("reading x")]
+    assert [r.levelno for r in records] == [logging.WARNING]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error", [ConnectionResetError("reset"), TimeoutError("timed out")])
+def test_log_peer_unavailable_accepts_connection_errors(error, reports, caplog):
+    caplog.set_level(logging.INFO)
+    assert log_peer_unavailable(error, "reading x")
+
+    assert reports == []
+    records = [r for r in caplog.records if r.getMessage().startswith("reading x")]
+    assert [r.levelno for r in records] == [logging.WARNING]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("error", [
+    FileNotFoundError(2, "No such file or directory", "/opt/ace/ssl/client.pem"),
+    PermissionError(13, "Permission denied", "/opt/ace/ssl/client.pem"),
+])
+def test_log_peer_unavailable_rejects_local_file_errors(error, caplog):
+    caplog.set_level(logging.INFO)
+    assert not log_peer_unavailable(error, "reading x")
+
+    assert [r for r in caplog.records if r.getMessage().startswith("reading x")] == []
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_rejects_a_wrapped_local_file_error(caplog):
+    try:
+        try:
+            raise FileNotFoundError(2, "No such file or directory", "/opt/ace/ssl/client.pem")
+        except FileNotFoundError as cause:
+            raise _ClientAuthenticationError("token request failed") from cause
+    except _ClientAuthenticationError as e:
+        wrapped = e
+
+    caplog.set_level(logging.INFO)
+    assert not log_peer_unavailable(wrapped, "reading x", unreachable=(_ClientTransportError,))
+
+    assert [r for r in caplog.records if r.getMessage().startswith("reading x")] == []
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_client_error_during_shutdown(reports, monkeypatch, caplog):
+    monkeypatch.setattr(saq.shutdown, "is_shutting_down", lambda: True)
+    caplog.set_level(logging.INFO)
+    assert log_peer_unavailable(_ClientTransportError("connect failed"), "reading x", unreachable=(_ClientTransportError,))
+
+    assert reports == []
+    records = [r for r in caplog.records if r.getMessage().startswith("reading x")]
+    assert [(r.levelno, r.getMessage()) for r in records] == [(logging.INFO, "reading x unavailable during shutdown: connect failed")]
