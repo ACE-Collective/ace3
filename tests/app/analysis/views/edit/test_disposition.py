@@ -9,7 +9,7 @@ from saq.disposition import get_selectable_dispositions
 from saq.database.model import Alert, Comment, Workload
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, insert_alert, make_simulated
 
 
 @pytest.mark.integration
@@ -365,7 +365,7 @@ def test_set_disposition_exception_reporting(mock_write_error_report, web_client
 
 
 @pytest.mark.integration
-def test_set_disposition_audit_logging(web_client, caplog):
+def test_set_disposition_audit_logging(web_client, session_actor, caplog):
     """Test that disposition changes are properly audit logged."""
     alert = insert_alert()
     
@@ -390,6 +390,8 @@ def test_set_disposition_audit_logging(web_client, caplog):
     assert DISPOSITION_FALSE_POSITIVE in audit_log.message
     assert alert.uuid in audit_log.message
     assert "Audit test comment" in audit_log.message
+    assert (*audit_actor_of(audit_log), audit_log.alert_uuids, audit_log.disposition) == (
+        *session_actor, [alert.uuid], DISPOSITION_FALSE_POSITIVE)
 
     # the per-alert line carries the fields in extra={}; it is the only record
     # that survives once an IGNORE'd alert is deleted

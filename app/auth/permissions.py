@@ -4,7 +4,14 @@ from functools import wraps
 from flask import abort, request
 from flask_login import current_user, login_required
 
+from aceapi_v2.auth.schemas import ApiAuthResult
+from aceapi_v2.auth.utils import session_auth
 from saq.permissions.logic import user_has_permission
+
+
+def current_user_auth() -> ApiAuthResult:
+    """The logged-in user as the actor of a saq.logging.log_audit() record."""
+    return session_auth(current_user.id, current_user.username)
 
 
 def require_permission(major: str, minor: str):

@@ -18,6 +18,7 @@ from saq.database.util.alert import get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_temp_dir
 from saq.util.filesystem import is_path_under
+from tests.saq.helpers import audit_actor_of, audit_record
 
 
 @pytest.mark.integration
@@ -508,16 +509,17 @@ class TestUploadFileRecordsTheAnalyst:
     """An uploaded file is the analyst's addition: it says who added it, it is audited, it is
     analyzed, and the form's comment lands on the file."""
 
-    def test_new_alert_upload_is_marked_added_by(self, web_client, caplog):
+    def test_new_alert_upload_is_marked_added_by(self, web_client, session_actor, caplog):
         caplog.set_level(logging.INFO)
         alert_uuid = _new_alert_uuid(web_client)
 
         _, file_observable = _file_observable(alert_uuid, 'first.txt')
         assert file_observable.added_by == 'john'
         assert file_observable.added_time is not None
-        assert f"AUDIT: user john uploaded file first.txt as new alert {alert_uuid}" in caplog.text
+        audit = audit_record(caplog, f"user john uploaded file first.txt as new alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.file_name) == (*session_actor, alert_uuid, "first.txt")
 
-    def test_existing_alert_upload_is_marked_added_by(self, web_client, caplog):
+    def test_existing_alert_upload_is_marked_added_by(self, web_client, session_actor, caplog):
         alert_uuid = _new_alert_uuid(web_client)
         caplog.set_level(logging.INFO)
 
@@ -527,7 +529,8 @@ class TestUploadFileRecordsTheAnalyst:
         _, file_observable = _file_observable(alert_uuid, 'later.txt')
         assert file_observable.added_by == 'john'
         assert file_observable.added_time is not None
-        assert f"AUDIT: user john uploaded file later.txt to alert {alert_uuid}" in caplog.text
+        audit = audit_record(caplog, f"user john uploaded file later.txt to alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.file_name) == (*session_actor, alert_uuid, "later.txt")
 
     def test_upload_to_dispositioned_alert_is_analyzed_in_correlation(self, web_client):
         alert_uuid = _new_alert_uuid(web_client)
@@ -542,7 +545,8 @@ class TestUploadFileRecordsTheAnalyst:
         assert alert.root_analysis.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert alert.root_analysis.state.get(STATE_ANALYST_REQUESTED_ANALYSIS) is True
 
-    def test_comment_is_an_observable_comment_on_the_file(self, web_client):
+    def test_comment_is_an_observable_comment_on_the_file(self, web_client, session_actor, caplog):
+        caplog.set_level(logging.INFO)
         alert_uuid = _new_alert_uuid(web_client, comment='new alert upload note')
         _upload(web_client, b'uploaded during triage', 'later.txt', alert_uuid=alert_uuid,
                 comment='captured from the detonation VM')
@@ -553,6 +557,9 @@ class TestUploadFileRecordsTheAnalyst:
             assert comment.user.username == 'john'
             assert comment.observable.type == 'file'
             assert comment.observable.value.decode() == file_observable.value
+            audit = audit_record(caplog, f"user john added comment {text} to observable file")
+            assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_type, audit.observable_value) == (
+                *session_actor, alert_uuid, "file", file_observable.value)
 
     def test_empty_comment_adds_no_observable_comment(self, web_client):
         alert_uuid = _new_alert_uuid(web_client)

@@ -7,12 +7,13 @@ import pytest
 from saq.database.pool import get_db
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
 
 
 @pytest.mark.integration
-def test_add_tag_success(web_client):
+def test_add_tag_success(web_client, session_actor, caplog):
     """Test successfully adding a tag to an alert."""
+    caplog.set_level(logging.INFO)
     alert = insert_alert()
     
     response = web_client.post(url_for("analysis.add_tag"), data={
@@ -30,6 +31,8 @@ def test_add_tag_success(web_client):
     gui_alert = db.query(GUIAlert).filter(GUIAlert.uuid == alert.uuid).one()
     gui_alert.load()
     assert gui_alert.root_analysis.has_tag("malware")
+    audit = audit_record(caplog, "user john added tags ['malware']")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.tags) == (*session_actor, [alert.uuid], ["malware"])
 
 
 @pytest.mark.integration
@@ -398,7 +401,7 @@ def test_tag_change_failure_is_logged_with_its_traceback(web_client, monkeypatch
 
 
 @pytest.mark.integration
-def test_remove_tag_audit_names_every_tag(web_client, caplog):
+def test_remove_tag_audit_names_every_tag(web_client, session_actor, caplog):
     alert = insert_alert()
 
     with caplog.at_level(logging.INFO):
@@ -408,3 +411,5 @@ def test_remove_tag_audit_names_every_tag(web_client, caplog):
     [record] = [r for r in caplog.records if r.getMessage().startswith("AUDIT: ") and "removed tags" in r.getMessage()]
     assert "['malware', 'phish']" in record.getMessage()
     assert alert.uuid in record.getMessage()
+    assert (*audit_actor_of(record), record.alert_uuids, record.tags) == (
+        *session_actor, [alert.uuid], ["malware", "phish"])

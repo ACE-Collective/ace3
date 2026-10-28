@@ -2,7 +2,7 @@ import logging
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
 from app.alert_ownership import confirmed_takes_from_form
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.database.model import Alert
 from saq.database.pool import get_db
@@ -10,6 +10,7 @@ from saq.database.util.alert import describe_skipped, set_dispositions
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import VerdictNotAllowed, clear_verdict, confirm_alert, set_verdict
 from saq.disposition import DISPOSITION_CLASS_TP, get_disposition_class, is_selectable_disposition
+from saq.logging import log_audit
 
 
 def apply_detection_verdicts(alert_uuid: str, form) -> None:
@@ -70,7 +71,9 @@ def set_disposition():
         ownership = set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment,
                                      confirmed_takes=confirmed_takes_from_form(request.form))
         comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
-        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(ownership.permitted)} to {disposition} {comment_clause}")
+        log_audit("user %s set disposition of alerts %s to %s %s", current_user.username,
+                  ",".join(ownership.permitted), disposition, comment_clause,
+                  auth=current_user_auth(), alert_uuids=ownership.permitted, disposition=disposition)
         message = "disposition set for {} alerts".format(len(ownership.permitted))
         skipped = describe_skipped(ownership)
         flash(f"{message}; {skipped}" if skipped else message)

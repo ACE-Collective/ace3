@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from unittest.mock import patch
 from uuid import uuid4
@@ -11,6 +13,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
+from tests.saq.helpers import audit_actor_of, audit_record
 
 
 @pytest.fixture
@@ -242,8 +245,9 @@ class TestAddObservable:
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
-    def test_successful_observable_addition(self, web_client, alert, basic_form_data):
+    def test_successful_observable_addition(self, web_client, session_actor, alert, basic_form_data, caplog):
         """Test successful addition of an observable."""
+        caplog.set_level(logging.INFO)
         response = web_client.post(url_for('analysis.add_observable'), data={
             **basic_form_data,
             'add_observable_directives': 'no_scan, not_a_directive',
@@ -254,6 +258,12 @@ class TestAddObservable:
         observable = root.get_observable_by_type('ipv4')
         assert observable.value == '192.168.1.1'
         assert observable.directives == ['no_scan']
+        added = audit_record(caplog, "user john added observable (ipv4,192.168.1.1,")
+        assert (*audit_actor_of(added), added.alert_uuid, added.observable_type, added.observable_value) == (
+            *session_actor, alert.uuid, "ipv4", "192.168.1.1")
+        directed = audit_record(caplog, "user john added directives ['no_scan']")
+        assert (*audit_actor_of(directed), directed.alert_uuid, directed.observable_uuid, directed.directives) == (
+            *session_actor, alert.uuid, observable.uuid, ["no_scan"])
         # switched back into correlation mode and queued for the analysis the analyst asked for
         assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert root.state[STATE_ANALYST_REQUESTED_ANALYSIS] is True
