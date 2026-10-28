@@ -149,13 +149,13 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
                     log_connection_lost(e, "database connection lost")
                     raise e
 
-                if not callable(sql_or_func):
-                    i = 0
-                    for _sql, _params in zip(sql_or_func, params):
-                        logging.warning("FAILED STATEMENT #{} ({}) SQL {} PARAMS {}".format(
-                            i, e.args[0] if e.args else "unknown", _sql,
-                            ','.join([str(_) for _ in _params])))
-                        i += 1
+                # results has a rowcount for each statement that ran before the one that failed
+                # (none failed when the commit did)
+                if not callable(sql_or_func) and len(results) < len(sql_or_func):
+                    i = len(results)
+                    logging.warning("FAILED STATEMENT #{} ({}) SQL {} PARAMS {}".format(
+                        i, e.args[0] if e.args else "unknown", sql_or_func[i],
+                        ','.join([str(_) for _ in params[i]])))
 
                     # TODO log innodb lock status
                 raise e
