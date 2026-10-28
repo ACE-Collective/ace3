@@ -175,17 +175,18 @@ def get_alert_version(alert_uuid: str) -> str:
     return version
 
 
-def set_alert_owner(alert_uuids: list[str], owner_id: int | None, acting_user_id: int,
+def set_alert_owner(alert_uuids: list[str], owner_id: int | None, auth: ApiAuthResult,
                     take_owned: dict[str, int]) -> SetOwnerResult:
     """Gives the alerts to owner_id (see change_alert_owner) and reports what was left alone,
-    worded as the GUI tells the analyst."""
+    worded as the GUI tells the analyst. auth must have a user."""
+    acting_user_id = auth.auth_user_id
     new_owner = None
     if owner_id is not None:
         new_owner = get_db().get(User, owner_id)
         if new_owner is None or not new_owner.enabled:
             raise HTTPException(status_code=422, detail=f"user {owner_id} does not exist or is disabled")
 
-    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned)
+    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned, auth=auth)
 
     skipped = describe_skipped(ownership)
     message = None

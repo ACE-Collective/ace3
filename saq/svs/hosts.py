@@ -263,7 +263,7 @@ def delete_host(host_id: int, auth: Optional[ApiAuthResult] = None) -> None:
     host = get_host(host_id, lock=True)
     extra = _audit_extra(host)
     db = get_db()
-    with ending_host_windows(host, auth.auth_name if auth else "unknown") as windows:
+    with ending_host_windows(host, auth.auth_name if auth else "unknown", auth=auth) as windows:
         db.delete(host)
         db.commit()
     log_audit("svs test host removed", auth=auth, **extra, ended_maintenance=[w.uuid for w in windows])

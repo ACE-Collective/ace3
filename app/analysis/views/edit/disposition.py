@@ -26,12 +26,12 @@ def apply_detection_verdicts(alert_uuid: str, form) -> None:
     marked_fp = set(form.getlist("verdict_fp"))
     for row in list_alert_detection_points(alert_id):
         if row["content_hash"] in marked_fp:
-            set_verdict(alert_id, row["content_hash"], "fp", current_user.id)
+            set_verdict(alert_id, row["content_hash"], "fp", current_user.id, auth=current_user_auth())
         elif row["override"] == "fp":
-            clear_verdict(alert_id, row["content_hash"], current_user.id)
+            clear_verdict(alert_id, row["content_hash"], current_user.id, auth=current_user_auth())
 
     if form.get("verdict_confirm"):
-        confirm_alert(alert_id, current_user.id)
+        confirm_alert(alert_id, current_user.id, auth=current_user_auth())
 
 @analysis.route('/set_disposition', methods=['POST'])
 @require_permission('alert', 'write')
@@ -69,7 +69,7 @@ def set_disposition():
     logging.debug("user {} updating {} alerts to {}".format(current_user.username, len(alert_uuids), disposition))
     try:
         ownership = set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment,
-                                     confirmed_takes=confirmed_takes_from_form(request.form))
+                                     confirmed_takes=confirmed_takes_from_form(request.form), auth=current_user_auth())
         comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
         log_audit("user %s set disposition of alerts %s to %s %s", current_user.username,
                   ",".join(ownership.permitted), disposition, comment_clause,

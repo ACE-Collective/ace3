@@ -1,6 +1,7 @@
 """A person's actions on runs through the API (docs/SVS_API.md, *Run actions*): bulk take-ownership,
 end, cancel and close, review, and comments."""
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -10,6 +11,7 @@ from httpx import AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.svs.runs import service
 from aceapi_v2.svs.runs.schemas import BulkRunRequest
 from saq.alert_routing import reset_alert_routers
@@ -20,7 +22,7 @@ from saq.database.util.alert import ALERT
 from saq.database.util.user_management import add_user
 from saq.svs import runs
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import audit_actors, create_root_analysis
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 pytestmark = pytest.mark.integration
@@ -53,7 +55,8 @@ def _ended(signature_uuid=None) -> SVSRun:
 
 
 @pytest.mark.asyncio
-async def test_review(client: AsyncClient, test_user):
+async def test_review(client: AsyncClient, test_user, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = _ended(RULE)
     response = await client.post(f"/svs/runs/{run.uuid}/review")
     assert response.status_code == 409
@@ -70,6 +73,8 @@ async def test_review(client: AsyncClient, test_user):
     assert (body["re_review"], body["counts"], body["alerts_closed"]) == (False, {"hit": 1}, 1)
     assert (body["run"]["state"], body["run"]["reviewer"], body["run"]["owner"]) == (
         "reviewed", test_user.username, test_user.username)
+    # the automation user writes the SIMULATED disposition, but the record names the key that reviewed
+    assert audit_actors(caplog, "alert dispositioned") == [client_actor]
 
     assert (await client.post(f"/svs/runs/{uuid.uuid4()}/review")).status_code == 404
     started = started_run(GUID)
@@ -78,7 +83,8 @@ async def test_review(client: AsyncClient, test_user):
 
 
 @pytest.mark.asyncio
-async def test_review_takes_from_a_confirmed_owner(client: AsyncClient):
+async def test_review_takes_from_a_confirmed_owner(client: AsyncClient, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = _ended()
     bob = add_user("bob", "bob@localhost", "Bob", "bob")
     db = get_db()
@@ -89,10 +95,12 @@ async def test_review_takes_from_a_confirmed_owner(client: AsyncClient):
     assert response.status_code == 409 and response.json()["detail"]["owner"] == "bob"
     response = await client.post(f"/svs/runs/{run.uuid}/review", json={"confirmed_take_from": "bob"})
     assert response.status_code == 200, response.text
+    assert audit_actors(caplog, "svs run ownership taken") == [client_actor]
 
 
 @pytest.mark.asyncio
-async def test_bulk_actions(client: AsyncClient, test_user):
+async def test_bulk_actions(client: AsyncClient, test_user, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     ended, started = _ended(), started_run(GUID)
     bob = add_user("bob", "bob@localhost", "Bob", "bob")
     db = get_db()
@@ -103,11 +111,14 @@ async def test_bulk_actions(client: AsyncClient, test_user):
     assert response.status_code == 200, response.text
     assert response.json() == {"done": [ended.uuid], "left_alone": {started.uuid: "bob"}, "conflicts": {},
                                "unknown": []}
+    assert audit_actors(caplog, "svs run ownership taken") == [client_actor]
 
     response = await client.post("/svs/runs/bulk/cancel", json={
         "run_ids": [started.uuid, ended.uuid], "confirmed_takes": {started.uuid: "bob"}})
     body = response.json()
     assert body["done"] == [started.uuid] and ended.uuid in body["conflicts"]
+    # cancelling took the started run from bob
+    assert audit_actors(caplog, "svs run ownership taken") == [client_actor] * 2
 
     response = await client.post("/svs/runs/bulk/close", json={"run_ids": [ended.uuid, started.uuid]})
     body = response.json()
@@ -116,12 +127,18 @@ async def test_bulk_actions(client: AsyncClient, test_user):
     assert response.json()["done"] == [ended.uuid]
     detail = (await client.get(f"/svs/runs/{ended.uuid}")).json()
     assert (detail["state"], detail["close_reason"], detail["owner"]) == ("closed", "a bad run", test_user.username)
+    assert audit_actors(caplog, "alert dispositioned") == [client_actor]
 
     still_running = started_run(GUID, hostname="win10-02")
-    response = await client.post("/svs/runs/bulk/end", json={"run_ids": [still_running.uuid]})
+    db.execute(update(SVSRun).where(SVSRun.id == still_running.id).values(owner_id=bob.id))
+    db.commit()
+    response = await client.post("/svs/runs/bulk/end", json={
+        "run_ids": [still_running.uuid], "confirmed_takes": {still_running.uuid: "bob"}})
     assert "needs a reason" in response.json()["conflicts"][still_running.uuid]
-    response = await client.post("/svs/runs/bulk/end", json={"run_ids": [still_running.uuid], "reason": "nothing fired"})
+    response = await client.post("/svs/runs/bulk/end", json={
+        "run_ids": [still_running.uuid], "reason": "nothing fired", "confirmed_takes": {still_running.uuid: "bob"}})
     assert response.status_code == 200 and response.json()["done"] == [still_running.uuid]
+    assert audit_actors(caplog, "svs run ownership taken")[-1] == client_actor
     detail = (await client.get(f"/svs/runs/{still_running.uuid}")).json()
     assert (detail["state"], detail["end_reason"]) == ("ended", "nothing fired")
     assert detail["observation_ends_at"] == detail["ended_at"]
@@ -149,7 +166,8 @@ async def test_left_alone_is_a_confirmation(client: AsyncClient, test_user):
 
 
 @pytest.mark.asyncio
-async def test_comments(client: AsyncClient, test_user):
+async def test_comments(client: AsyncClient, test_user, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = started_run(GUID)
     response = await client.post(f"/svs/runs/{run.uuid}/comments", json={"comment": "agent restarted mid-run"})
     assert response.status_code == 201, response.text
@@ -161,6 +179,9 @@ async def test_comments(client: AsyncClient, test_user):
     assert [c["comment"] for c in (await client.get(f"/svs/runs/{run.uuid}/comments")).json()] == ["rerun it"]
     assert (await client.post(f"/svs/runs/{run.uuid}/comments", json={"comment": "   "})).status_code == 422
     assert (await client.delete(f"/svs/runs/{run.uuid}/comments/{comment['id']}")).status_code == 204
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("AUDIT: svs run comment")] == [
+        "AUDIT: svs run comment added", "AUDIT: svs run comment changed", "AUDIT: svs run comment deleted"]
+    assert audit_actors(caplog, "svs run comment") == [client_actor] * 3
     assert (await client.delete(f"/svs/runs/{run.uuid}/comments/{comment['id']}")).status_code == 404
     assert (await client.get(f"/svs/runs/{uuid.uuid4()}/comments")).status_code == 404
 
@@ -184,5 +205,5 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
 
 def test_a_config_key_is_refused():
     with pytest.raises(HTTPException) as e:
-        service.take_runs(BulkRunRequest(run_ids=[str(uuid.uuid4())]), None, "ci")
+        service.take_runs(BulkRunRequest(run_ids=[str(uuid.uuid4())]), ApiAuthResult(auth_type="config", auth_name="ci"))
     assert e.value.status_code == 422

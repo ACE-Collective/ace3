@@ -17,7 +17,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
-from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated
 
 
 @pytest.mark.integration
@@ -52,6 +52,7 @@ def test_review_disposition_correct_single_alert(web_client, session_actor, capl
     audit = audit_record(caplog, "user john reviewed disposition of alerts")
     assert (*audit_actor_of(audit), audit.alert_uuids, audit.review_result, audit.corrected_disposition) == (
         *session_actor, [alert.uuid], DISPOSITION_REVIEW_CORRECT, None)
+    assert audit_actors(caplog, "alert disposition reviewed") == [session_actor]
 
 
 @pytest.mark.integration

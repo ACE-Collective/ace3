@@ -16,6 +16,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aceapi_v2.application import app
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common import listing
 from aceapi_v2.svs.samples import service
 from saq.cas import Hold, get_cas
@@ -28,7 +29,7 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actor_of, audit_record
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -644,13 +645,14 @@ class TestActionAccess:
 
     def test_a_key_without_a_user_cannot_act(self):
         # a config API key authenticates with no user, and every action records who took it
+        config_key = ApiAuthResult(auth_type="config", auth_name="cfg")
         calls = [
-            lambda: service.relabel_sample("ab" * 32, RULE_UUID, "fp", None),
-            lambda: service.reset_sample_label("ab" * 32, RULE_UUID, None),
-            lambda: service.confirm_sample("ab" * 32, RULE_UUID, None),
-            lambda: service.retire_sample("ab" * 32, RULE_UUID, "obsolete", None),
-            lambda: service.unretire_sample("ab" * 32, RULE_UUID, None),
-            lambda: service.delete_sample_file("ab" * 32, "privacy", None, None),
+            lambda: service.relabel_sample("ab" * 32, RULE_UUID, "fp", config_key),
+            lambda: service.reset_sample_label("ab" * 32, RULE_UUID, config_key),
+            lambda: service.confirm_sample("ab" * 32, RULE_UUID, config_key),
+            lambda: service.retire_sample("ab" * 32, RULE_UUID, "obsolete", config_key),
+            lambda: service.unretire_sample("ab" * 32, RULE_UUID, config_key),
+            lambda: service.delete_sample_file("ab" * 32, "privacy", config_key),
         ]
         for call in calls:
             with pytest.raises(HTTPException) as error:
@@ -679,7 +681,8 @@ class TestLabelActions:
             assert relabel.status_code == 409 and refusal in relabel.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_relabel_reset_and_confirm(self, client: AsyncClient):
+    async def test_relabel_reset_and_confirm(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
         path = f"/svs/samples/{sha256}/{RULE_UUID}"
 
@@ -695,6 +698,10 @@ class TestLabelActions:
         response = await client.delete(f"{path}/label")
         assert response.status_code == 200, response.text
         assert (response.json()["label"], response.json()["label_source"]) == ("tp", "inherited_multi")
+        for action in ("confirmed", "relabeled", "label reset"):
+            assert audit_actors(caplog, f"svs sample {action}") == [client_actor]
+        # the verdicts written under each action name the key too
+        assert audit_actors(caplog, "detection verdict changed") == [client_actor] * 3
 
     @pytest.mark.asyncio
     async def test_skipped_detections_say_why(self, client: AsyncClient):
@@ -727,7 +734,8 @@ class TestLabelActions:
 
 class TestRetirement:
     @pytest.mark.asyncio
-    async def test_retire_and_unretire(self, client: AsyncClient):
+    async def test_retire_and_unretire(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID])
         path = f"/svs/samples/{sha256}/{RULE_UUID}"
 
@@ -743,6 +751,8 @@ class TestRetirement:
         assert (response.json()["retired"], response.json()["unretired_by"]) == (False, "unittest")
         assert (await client.get(path)).json()["retired"] is False
         assert (await client.delete(f"{path}/retirement")).status_code == 404
+        assert audit_actors(caplog, "svs sample retired") == [client_actor]
+        assert audit_actors(caplog, "svs sample unretired") == [client_actor]
 
     @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):
@@ -773,6 +783,7 @@ class TestDeletion:
         assert (*audit_actor_of(audit), audit.sha256) == (*client_actor, sha256.upper())
         assert (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).status_code == 404
         assert not get_cas().pool("svs_samples").exists(sha256)
+        assert audit_actors(caplog, "svs sample deleted") == [client_actor]
 
         deletions = (await client.get("/svs/samples/deletions")).json()
         assert [row["sha256"] for row in deletions["data"]] == [sha256]

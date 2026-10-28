@@ -25,7 +25,7 @@ from saq.database.model import AuthApiKey
 from saq.database.util.alert import ALERT
 from saq.util import sha256_str
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import create_root_analysis, insert_alert
+from tests.saq.helpers import audit_actors, create_root_analysis, insert_alert
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -66,7 +66,8 @@ def _run():
 
 @pytest.mark.asyncio
 async def test_associate_and_disassociate(client: AsyncClient, test_user, session: AsyncSession, valid_api_key,
-                                          caplog):
+                                          client_actor, caplog):
+    caplog.set_level(logging.INFO)
     run = _run()
     alert_uuid = _alert(host="srv-01")
 
@@ -91,6 +92,8 @@ async def test_associate_and_disassociate(client: AsyncClient, test_user, sessio
     assert (response.json()["queue"], response.json()["svs_status"]) == (QUEUE_DEFAULT, None)
     (row,) = (await client.get(f"/svs/runs/{run.uuid}/attributions")).json()["data"]
     assert (row["removed_by_user"], row["removal_reason"]) == (test_user.username, "wrong run")
+    # moved to the svs queue and back
+    assert audit_actors(caplog, "alert moved to queue") == [client_actor] * 2
     # the body is optional
     assert (await client.post(f"/svs/runs/{run.uuid}/alerts/{alert_uuid}/associate")).status_code == 200
 

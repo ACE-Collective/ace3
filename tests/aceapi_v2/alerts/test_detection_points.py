@@ -1,5 +1,6 @@
 """GET /api/v2/alerts/{uuid}/detection-points and the verdict writes under it (docs/SVS.md, Part 1)."""
 
+import logging
 import uuid
 
 import pytest
@@ -7,10 +8,11 @@ from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.detection_points import service
 from saq.database.model import DetectionPointVerdictHistory
 from saq.database.pool import get_db
-from tests.saq.helpers import insert_alert_with_detections
+from tests.saq.helpers import audit_actors, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
 
@@ -50,7 +52,7 @@ class TestAccess:
         # config API keys authenticate as nobody, and a verdict records who set it
         alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
         with pytest.raises(HTTPException) as e:
-            service.set_detection_verdict(alert.uuid, "0" * 64, "fp", None)
+            service.set_detection_verdict(alert.uuid, "0" * 64, "fp", ApiAuthResult(auth_type="config", auth_name="cfg"))
         assert e.value.status_code == 422
 
 
@@ -86,7 +88,8 @@ class TestList:
 
 class TestVerdicts:
     @pytest.mark.asyncio
-    async def test_set_and_clear(self, client: AsyncClient):
+    async def test_set_and_clear(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
         content_hash = (await _rows(client, alert))[0]["content_hash"]
 
@@ -106,6 +109,7 @@ class TestVerdicts:
             .where(DetectionPointVerdictHistory.alert_id == alert.id)
             .order_by(DetectionPointVerdictHistory.id)).all()
         assert [tuple(c) for c in changes] == [(None, "fp"), ("fp", None)]
+        assert audit_actors(caplog, "detection verdict changed") == [client_actor] * 2
 
     @pytest.mark.asyncio
     async def test_fp_alert_refuses_overrides(self, client: AsyncClient):
@@ -129,10 +133,12 @@ class TestVerdicts:
                                  json={"verdict": "fp"})).status_code == 404
 
     @pytest.mark.asyncio
-    async def test_confirm(self, client: AsyncClient):
+    async def test_confirm(self, client: AsyncClient, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
 
         response = await client.post(_path(alert, "/confirm"))
         assert response.status_code == 200, response.text
         assert response.json() == {"confirmed": 2}
+        assert audit_actors(caplog, "detection verdict changed") == [client_actor] * 2
         assert {(row["verdict"], row["verdict_source"]) for row in await _rows(client, alert)} == {("tp", "explicit")}

@@ -1,5 +1,7 @@
 """The disposition dialog's detection verdict step (POST /set_disposition with verdict_* fields)."""
 
+import logging
+
 import pytest
 from flask import url_for
 from sqlalchemy import select
@@ -7,7 +9,7 @@ from sqlalchemy import select
 from saq.database.model import DetectionPointVerdictHistory
 from saq.database.pool import get_db
 from saq.detection_verdicts.query import list_alert_detection_points
-from tests.saq.helpers import insert_alert_with_detections
+from tests.saq.helpers import audit_actors, insert_alert_with_detections
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +31,8 @@ def _post(web_client, alert, disposition="DELIVERY", **fields):
     return response
 
 
-def test_marked_detections_become_fp_and_the_rest_confirmed(web_client):
+def test_marked_detections_become_fp_and_the_rest_confirmed(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert = insert_alert_with_detections(MULTI)
     noise = _rows(alert)["generic logo rule"]["content_hash"]
 
@@ -38,6 +41,8 @@ def test_marked_detections_become_fp_and_the_rest_confirmed(web_client):
     rows = _rows(alert)
     assert (rows["generic logo rule"]["verdict"], rows["generic logo rule"]["verdict_source"]) == ("fp", "explicit")
     assert (rows["phish kit"]["verdict"], rows["phish kit"]["verdict_source"]) == ("tp", "explicit")
+    # one FP set, one TP confirmed
+    assert audit_actors(caplog, "detection verdict changed") == [session_actor] * 2
 
 
 def test_an_unopened_section_changes_nothing(web_client):
@@ -50,7 +55,8 @@ def test_an_unopened_section_changes_nothing(web_client):
     assert get_db().execute(select(DetectionPointVerdictHistory)).first() is None
 
 
-def test_unchecking_clears_an_earlier_fp(web_client):
+def test_unchecking_clears_an_earlier_fp(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert = insert_alert_with_detections(MULTI)
     noise = _rows(alert)["generic logo rule"]["content_hash"]
     _post(web_client, alert, verdict_listed="1", verdict_fp=[noise])
@@ -59,6 +65,7 @@ def test_unchecking_clears_an_earlier_fp(web_client):
     _post(web_client, alert, verdict_listed="1")
 
     assert _rows(alert)["generic logo rule"]["override"] is None
+    assert audit_actors(caplog, "detection verdict changed") == [session_actor] * 2
 
 
 def test_no_verdict_step_for_an_fp_disposition(web_client):

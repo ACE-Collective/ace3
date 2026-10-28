@@ -14,7 +14,7 @@ from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
 from saq.util import sha256_str
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert
 
 pytestmark = pytest.mark.integration
 
@@ -118,7 +118,8 @@ async def test_take_leaves_an_alert_another_analyst_owns_alone(client: AsyncClie
 
 
 @pytest.mark.asyncio
-async def test_take_a_confirmed_alert(client: AsyncClient, other_analyst):
+async def test_take_a_confirmed_alert(client: AsyncClient, other_analyst, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     owned = insert_alert()
     _owned_by(owned, other_analyst.id)
 
@@ -126,6 +127,7 @@ async def test_take_a_confirmed_alert(client: AsyncClient, other_analyst):
 
     assert response.json()["applied"] == [owned.uuid]
     assert _owner_of(owned) == _caller_id()
+    assert audit_actors(caplog, "alert ownership taken") == [client_actor]
 
 
 @pytest.mark.asyncio

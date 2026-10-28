@@ -10,6 +10,7 @@ from typing import Optional
 
 from sqlalchemy import Select, and_, or_, select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import (
     CHANGED_SINCE_SETTLE_SECONDS,
     InvalidListingRequest,
@@ -118,13 +119,13 @@ def _current_ignore(signature_uuid: str, test_guid: Optional[str]) -> Optional[I
         return None
 
 
-def set_ignore(signature_uuid: str, body: IgnoreRequest, user_id: Optional[int], actor: Optional[str],
+def set_ignore(signature_uuid: str, body: IgnoreRequest, auth: ApiAuthResult,
                test_guid: Optional[str] = None, precondition: Precondition = NONE) -> Ignore:
     """A test's ignore (svs:run_manage), or a global one when test_guid is None (svs:admin)."""
-    user_id = require_user(user_id)
+    user_id = require_user(auth.auth_user_id)
     try:
-        ignore = expectations.set_ignore(signature_uuid, user_id, test_guid=test_guid, reason=body.reason, actor=actor,
-                                         precondition=precondition)
+        ignore = expectations.set_ignore(signature_uuid, user_id, test_guid=test_guid, reason=body.reason,
+                                         actor=auth.auth_name, precondition=precondition, auth=auth)
     except (expectations.UnknownTest, expectations.InvalidDecision) as e:
         raise decision_errors(e)
     except StaleWrite as e:
@@ -132,10 +133,9 @@ def set_ignore(signature_uuid: str, body: IgnoreRequest, user_id: Optional[int],
     return _ignore(ignore)
 
 
-def remove_ignore(signature_uuid: str, user_id: Optional[int], actor: Optional[str],
-                  test_guid: Optional[str] = None) -> None:
-    user_id = require_user(user_id)
+def remove_ignore(signature_uuid: str, auth: ApiAuthResult, test_guid: Optional[str] = None) -> None:
+    user_id = require_user(auth.auth_user_id)
     try:
-        expectations.remove_ignore(signature_uuid, user_id, test_guid=test_guid, actor=actor)
+        expectations.remove_ignore(signature_uuid, user_id, test_guid=test_guid, actor=auth.auth_name, auth=auth)
     except (expectations.UnknownTest, expectations.UnknownDecision, expectations.InvalidDecision) as e:
         raise decision_errors(e)

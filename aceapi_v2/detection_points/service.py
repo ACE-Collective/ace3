@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import Select, exists, or_, select
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common.listing import InvalidListingRequest, decode_cursor, encode_cursor, rows_to_csv
 from aceapi_v2.detection_points.schemas import (
     DETECTION_POINT_ROW_CSV_FIELDS,
@@ -83,11 +84,11 @@ def _require_user(user_id: int | None) -> int:
     return user_id
 
 
-def set_detection_verdict(alert_uuid: str, content_hash: str, verdict: str, user_id: int | None) -> DetectionPointRow:
-    user_id = _require_user(user_id)
+def set_detection_verdict(alert_uuid: str, content_hash: str, verdict: str, auth: ApiAuthResult) -> DetectionPointRow:
+    user_id = _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        set_verdict(alert_id, content_hash, verdict, user_id)
+        set_verdict(alert_id, content_hash, verdict, user_id, auth=auth)
     except DetectionNotFound:
         raise HTTPException(status_code=404, detail="detection not found")
     except VerdictNotAllowed as e:
@@ -96,11 +97,11 @@ def set_detection_verdict(alert_uuid: str, content_hash: str, verdict: str, user
     return _detection_point(alert_id, content_hash)
 
 
-def clear_detection_verdict(alert_uuid: str, content_hash: str, user_id: int | None) -> DetectionPointRow:
-    user_id = _require_user(user_id)
+def clear_detection_verdict(alert_uuid: str, content_hash: str, auth: ApiAuthResult) -> DetectionPointRow:
+    user_id = _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        clear_verdict(alert_id, content_hash, user_id)
+        clear_verdict(alert_id, content_hash, user_id, auth=auth)
     except DetectionNotFound:
         raise HTTPException(status_code=404, detail="detection not found")
     except VerdictNotAllowed as e:
@@ -109,11 +110,11 @@ def clear_detection_verdict(alert_uuid: str, content_hash: str, user_id: int | N
     return _detection_point(alert_id, content_hash)
 
 
-def confirm_detection_verdicts(alert_uuid: str, user_id: int | None) -> ConfirmResult:
-    user_id = _require_user(user_id)
+def confirm_detection_verdicts(alert_uuid: str, auth: ApiAuthResult) -> ConfirmResult:
+    user_id = _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        return ConfirmResult(confirmed=confirm_alert(alert_id, user_id))
+        return ConfirmResult(confirmed=confirm_alert(alert_id, user_id, auth=auth))
     except VerdictNotAllowed as e:
         raise HTTPException(status_code=409, detail=str(e))
 

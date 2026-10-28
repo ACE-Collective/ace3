@@ -24,6 +24,7 @@ from typing import Optional
 from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_IGNORE, DISPOSITION_OPEN
 from saq.database.model import Alert, SVSAttribution, SVSMaintenanceAlert, SVSMaintenanceWindow, SVSTestHost
@@ -31,6 +32,7 @@ from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.database.util.alert import set_dispositions
 from saq.error.reporting import log_loop_exception
+from saq.logging import log_audit
 from saq.svs.hosts import InvalidTestHost, get_host, match_target, split_hostname
 from saq.svs.refusals import Caller, refuse
 from saq.svs.runs import TIMER_ACTOR, HostBusy, host_holders, lock_hosts
@@ -64,10 +66,11 @@ def _log_fields(window: SVSMaintenanceWindow) -> dict:
     return {"svs_maintenance": window.uuid, "host": window.host, "reason": window.reason}
 
 
-def _audit(message: str, window: SVSMaintenanceWindow, actor: str, **fields) -> None:
-    logging.info("AUDIT: %s: %s on test host %s by %s", message, window.uuid, window.host, actor,
-                 extra={**_log_fields(window), "actor": actor, "opened_at": window.opened_at.isoformat(),
-                        "ends_at": window.ends_at.isoformat(), **fields})
+def _audit(message: str, window: SVSMaintenanceWindow, actor: str, auth: Optional[ApiAuthResult], **fields) -> None:
+    # actor is the name the window records, the timer's included, which has no auth
+    log_audit("%s: %s on test host %s by %s", message, window.uuid, window.host, actor, auth=auth,
+              **_log_fields(window), actor=actor, opened_at=window.opened_at.isoformat(),
+              ends_at=window.ends_at.isoformat(), **fields)
 
 
 def _resolve(host_ref: str, caller: Caller, what: str, payload: dict, now: datetime) -> SVSTestHost:
@@ -125,7 +128,8 @@ def open_window(host_ref: str, minutes: int, reason: str, caller: Caller,
         ends_at=now + timedelta(minutes=minutes))
     db.add(window)
     db.commit()
-    _audit("svs maintenance window opened", window, caller.name, minutes=minutes, caller_address=caller.address)
+    _audit("svs maintenance window opened", window, caller.name, caller.auth, minutes=minutes,
+           caller_address=caller.address)
     return window
 
 
@@ -148,7 +152,7 @@ def end_window(host_ref: str, caller: Caller, now: Optional[datetime] = None) ->
 
     _end(window, caller.name, now)
     db.commit()
-    _audit("svs maintenance window ended", window, caller.name, ended_at=window.ended_at.isoformat())
+    _audit("svs maintenance window ended", window, caller.name, caller.auth, ended_at=window.ended_at.isoformat())
     return window
 
 
@@ -161,7 +165,8 @@ def _end(window: SVSMaintenanceWindow, actor: str, now: datetime) -> None:
 
 
 @contextmanager
-def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] = None) -> Iterator[list[SVSMaintenanceWindow]]:
+def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] = None, *,
+                        auth: Optional[ApiAuthResult] = None) -> Iterator[list[SVSMaintenanceWindow]]:
     """Ends the test host's open windows on the caller's session, for hosts.delete_host, which
     removes the host and commits inside the block while it holds the host's row lock. A window
     outliving its host would go on closing the alerts of a host nobody tests, and nothing could end
@@ -179,7 +184,7 @@ def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] =
         _end(window, actor, now)
     yield windows
     for window in windows:
-        _audit("svs maintenance window ended", window, actor, ended_at=window.ended_at.isoformat(),
+        _audit("svs maintenance window ended", window, actor, auth, ended_at=window.ended_at.isoformat(),
                ended_because="test host removed")
 
 
@@ -261,7 +266,7 @@ def expire_windows(now: Optional[datetime] = None) -> int:
             continue
         db.commit()
         count += 1
-        _audit("svs maintenance window expired", window, TIMER_ACTOR)
+        _audit("svs maintenance window expired", window, TIMER_ACTOR, None)
     return count
 
 

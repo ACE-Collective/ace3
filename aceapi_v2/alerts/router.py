@@ -138,7 +138,7 @@ async def set_alert_owner(
         raise HTTPException(status_code=400, detail="changing an alert's owner needs a caller that is a user")
 
     result = await run_db_in_thread(
-        service.set_alert_owner, body.alert_uuids, body.owner_id, auth.auth_user_id, body.take_owned)
+        service.set_alert_owner, body.alert_uuids, body.owner_id, auth, body.take_owned)
     log_audit("user %s set the owner of alerts %s to %s",
               auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody",
               auth=auth, alert_uuids=result.applied, owner_id=body.owner_id)
@@ -531,8 +531,7 @@ async def set_detection_point_verdict(
     confirms it. 409 on an FP or unclassified alert (correct the alert's disposition instead) and
     on an alert whose disposition only ACE sets."""
     return await run_db_in_thread(
-        detection_points_service.set_detection_verdict, alert_uuid, content_hash, body.verdict,
-        auth.auth_user_id)
+        detection_points_service.set_detection_verdict, alert_uuid, content_hash, body.verdict, auth)
 
 
 @router.delete("/{alert_uuid}/detection-points/{content_hash}/verdict", response_model=DetectionPointRow)
@@ -543,7 +542,7 @@ async def clear_detection_point_verdict(
 ) -> DetectionPointRow:
     """Remove the explicit verdict on one detection, so it inherits from the alert again."""
     return await run_db_in_thread(
-        detection_points_service.clear_detection_verdict, alert_uuid, content_hash, auth.auth_user_id)
+        detection_points_service.clear_detection_verdict, alert_uuid, content_hash, auth)
 
 
 @router.post("/{alert_uuid}/detection-points/confirm", response_model=ConfirmResult)
@@ -554,4 +553,4 @@ async def confirm_detection_point_verdicts(
     """Confirm every unconfirmed inherited TP on the alert (source inherited_multi): each becomes
     an explicit TP, which weighs more when signature changes are tested."""
     return await run_db_in_thread(
-        detection_points_service.confirm_detection_verdicts, alert_uuid, auth.auth_user_id)
+        detection_points_service.confirm_detection_verdicts, alert_uuid, auth)

@@ -579,7 +579,7 @@ ACE itself, not only to SVS. [D-13, ART-15]
     `svs_test` tag. Hunt alerts are analyzed after insert and engine-converted alerts get a
     correlation pass, so a mismatch still surfaces before an analyst sees the alert. [FR-3]
   - A decision there moves the existing alert through `move_alert_to_queue(alert, queue, reason,
-    actor)`. That new core primitive updates the column and `root.queue`, touches the alert,
+    auth)`. That new core primitive updates the column and `root.queue`, touches the alert,
     refreshes the search payload, writes an audit line, and records the previous queue and that
     the move was SVS's.
 - **An alert that is not `OPEN`, or that an analyst owns, is never moved.** It gets its SVS status

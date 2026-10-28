@@ -108,15 +108,14 @@ async def set_expectation(guid: str, platform: str, signature_uuid: str, body: E
     unknown test; 422 for a platform the test doesn't support, a run_id that isn't one of the test's
     runs on the platform, or a config key (a decision records who made it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
     return await run_db_in_thread(expectations_service.set_expectation, guid, platform, signature_uuid, body,
-                                  auth.auth_user_id, auth.auth_name, precondition)
+                                  auth, precondition)
 
 
 @router.delete("/{guid}/expectations/{platform}/{signature_uuid}", status_code=204)
 async def remove_expectation(guid: str, platform: str, signature_uuid: str, auth: ManageAuth) -> Response:
     """Remove a decision: the signature is a candidate again the next time a run on the platform
     fires it."""
-    await run_db_in_thread(expectations_service.remove_expectation, guid, platform, signature_uuid,
-                           auth.auth_user_id, auth.auth_name)
+    await run_db_in_thread(expectations_service.remove_expectation, guid, platform, signature_uuid, auth)
     return Response(status_code=204)
 
 
@@ -124,14 +123,13 @@ async def remove_expectation(guid: str, platform: str, signature_uuid: str, auth
 async def set_test_ignore(guid: str, signature_uuid: str, body: IgnoreRequest, auth: ManageAuth,
                           precondition: WritePrecondition) -> Ignore:
     """Ignore a signature during the test's runs; setting it again replaces its reason. 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
-    return await run_db_in_thread(ignores_service.set_ignore, signature_uuid, body, auth.auth_user_id,
-                                  auth.auth_name, guid, precondition)
+    return await run_db_in_thread(ignores_service.set_ignore, signature_uuid, body, auth, guid, precondition)
 
 
 @router.delete("/{guid}/ignores/{signature_uuid}", status_code=204)
 async def remove_test_ignore(guid: str, signature_uuid: str, auth: ManageAuth) -> Response:
     """Stop ignoring a signature during the test's runs; 404 when it isn't."""
-    await run_db_in_thread(ignores_service.remove_ignore, signature_uuid, auth.auth_user_id, auth.auth_name, guid)
+    await run_db_in_thread(ignores_service.remove_ignore, signature_uuid, auth, guid)
     return Response(status_code=204)
 
 
@@ -149,14 +147,13 @@ async def set_test_settings(guid: str, body: TestSettingsRequest, auth: ManageAu
     """Set the settings of the test's runs registered from now on, replacing what was set: the
     observation window (null for the computed one; 422 outside 1 minute to the configured ceiling)
     and holds_host."""
-    return await run_db_in_thread(expectations_service.set_test_settings, guid, body, auth.auth_user_id,
-                                  auth.auth_name)
+    return await run_db_in_thread(expectations_service.set_test_settings, guid, body, auth)
 
 
 @router.delete("/{guid}/settings", status_code=204)
 async def remove_test_settings(guid: str, auth: ManageAuth) -> Response:
     """Back to the computed window and holds_host false; 404 when the test has no settings."""
-    await run_db_in_thread(expectations_service.remove_test_settings, guid, auth.auth_user_id, auth.auth_name)
+    await run_db_in_thread(expectations_service.remove_test_settings, guid, auth)
     return Response(status_code=204)
 
 

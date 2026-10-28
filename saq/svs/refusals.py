@@ -14,7 +14,7 @@ The table is written here only.
 import ipaddress
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -22,6 +22,7 @@ from sqlalchemy import delete, update
 from sqlalchemy.exc import IntegrityError
 
 from saq.analysis.root import RootAnalysis
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, F_HOSTNAME, F_IPV4, F_USER, QUEUE_DEFAULT
 from saq.database.model import SVSRegistrationRefusal
@@ -51,6 +52,8 @@ class Caller:
     user_id: Optional[int] = None
     key_id: Optional[int] = None
     address: Optional[str] = None
+    # the credential, for the actor fields of an AUDIT record (saq.logging.log_audit)
+    auth: Optional[ApiAuthResult] = field(default=None, compare=False)
 
 
 def _host_key(hostname: str) -> str:
