@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.134] - 2026-10-28
+
+- [Fail clicker searches on an invalid Splunk clicker config](https://github.com/ACE-Collective/ace3/pull/1070)
+- [Test the file collection pending-id order, log queue loop failures with log_loop_exception](https://github.com/ACE-Collective/ace3/pull/1067)
+- [Let analysts tune the lure URL analyzer without an ACE release](https://github.com/ACE-Collective/ace3/pull/1065)
+- [Let analysts choose the alert template for a Manual Analysis submission](https://github.com/ACE-Collective/ace3/pull/1062)
+- [Name the hunt in the hunt manager's failure logs](https://github.com/ACE-Collective/ace3/pull/1061)
+- [Test the archive analyzer's untested paths, and log its failures usefully](https://github.com/ACE-Collective/ace3/pull/1059)
+- [Leave symlink targets alone when fixing extracted-file permissions](https://github.com/ACE-Collective/ace3/pull/1058)
+- [Number unnamed email parts per type again, so a message with several plain parts has a body](https://github.com/ACE-Collective/ace3/pull/1057)
+- [Reject analysis module config keys the config class doesn't declare](https://github.com/ACE-Collective/ace3/pull/1056)
+- [Build remediation, external checks and file collection on one queue service](https://github.com/ACE-Collective/ace3/pull/1055)
+- [Move ApiAuthResult into saq so core can import it](https://github.com/ACE-Collective/ace3/pull/1054)
+- [Quiet url extraction's per-url TLD log, narrow its bare except, drop a dead branch](https://github.com/ACE-Collective/ace3/pull/1053)
+- [Decrypt password-protected PDFs with a password from the carrying email](https://github.com/ACE-Collective/ace3/pull/1052)
+- [Add hostname and file_path observables under file_location](https://github.com/ACE-Collective/ace3/pull/1050)
+- [Set up desktop worktree sessions, and stop auto mode asking about writes to local/](https://github.com/ACE-Collective/ace3/pull/1049)
+- [Make /ace-review rounds converge, and give authors its checks](https://github.com/ACE-Collective/ace3/pull/1048)
+- [General improvements to Yara Scan Results view](https://github.com/ACE-Collective/ace3/pull/1046)
+
 ## [3.0.133] - 2026-10-27
 
 - [Make git worktrees work with the dev stack](https://github.com/ACE-Collective/ace3/pull/1045)
