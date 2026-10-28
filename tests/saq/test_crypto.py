@@ -273,6 +273,53 @@ def test_decrypt_in_place(tmp_path):
 
 
 @pytest.mark.unit
+def test_encrypt_without_the_key_leaves_nothing_at_the_target(tmp_path, monkeypatch):
+    # the email archive takes an existing target to mean the email is already archived
+    source = tmp_path / "plain"
+    source.write_bytes(b"plaintext")
+    target = tmp_path / "plain.e"
+    monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
+
+    with pytest.raises(PasswordNotSetError):
+        encrypt(str(source), str(target))
+
+    assert not target.exists()
+    assert [p.name for p in tmp_path.iterdir()] == ["plain"]
+
+
+@pytest.mark.unit
+def test_encrypt_that_fails_partway_leaves_the_old_target_alone(tmp_path, monkeypatch):
+    source = tmp_path / "plain"
+    source.write_bytes(os.urandom(CHUNK_SIZE * 3))
+    target = tmp_path / "plain.e"
+    target.write_bytes(b"what was there before")
+
+    def _fail_partway(fp_in, fp_out, **kwargs):
+        fp_out.write(b"part of the ciphertext")
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(saq.crypto, "encrypt_stream", _fail_partway)
+
+    with pytest.raises(OSError):
+        encrypt(str(source), str(target))
+
+    assert target.read_bytes() == b"what was there before"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plain", "plain.e"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("function", [encrypt, decrypt])
+def test_a_missing_source_leaves_no_temp_file_or_open_descriptor(tmp_path, function):
+    open_before = len(os.listdir("/proc/self/fd"))
+
+    with pytest.raises(FileNotFoundError):
+        function(str(tmp_path / "missing"), str(tmp_path / "out"))
+
+    assert list(tmp_path.iterdir()) == []
+    assert len(os.listdir("/proc/self/fd")) == open_before
+
+
+@pytest.mark.unit
 def test_encrypt_with_explicit_password_uses_that_key():
     plaintext = b"secret"
     encrypted = io.BytesIO()
