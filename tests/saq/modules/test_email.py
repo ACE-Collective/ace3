@@ -481,11 +481,10 @@ def test_archive_2(root_analysis, datadir):
         row = cursor.fetchone()
         assert row
 
-@pytest.mark.skip()
 @pytest.mark.integration
-def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
+def test_an_email_that_could_not_be_archived_has_no_results_and_no_index(root_analysis, monkeypatch, datadir):
 
-    # disable archive encryption
+    # archiving fails: the email cannot be encrypted without the key
     monkeypatch.setattr(get_global_runtime_settings(), "encryption_key", None)
 
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
@@ -507,12 +506,13 @@ def test_archive_no_local_archive(root_analysis, monkeypatch, datadir):
 
     file_observable = root_analysis.get_observable(file_observable.uuid)
     assert file_observable
-    archive_results = file_observable.get_and_load_analysis(EmailArchiveResults)
-    assert isinstance(archive_results, EmailArchiveResults)
-    archive_results.load_details()
-    
-    # the details is typicaly the path to the archive but will be None here since it's disabled
-    assert archive_results.archive_id is None
+    assert not file_observable.get_and_load_analysis(EmailArchiveResults)
+    # the email's URLs were found, and none was indexed under an archive that does not exist
+    assert root_analysis.find_observable(lambda o: o.type == F_URL)
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM archive_index")
+        assert cursor.fetchone()[0] == 0
 
 @pytest.mark.integration
 def test_email_pivot(root_analysis, datadir):

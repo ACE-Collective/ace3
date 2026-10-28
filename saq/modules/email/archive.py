@@ -197,11 +197,13 @@ class EmailArchiveAction(AnalysisModule):
             logging.error(f"unable to archive {_file} - {missing_reason} - saved to {review_path} for review")
             return AnalysisExecutionResult.COMPLETED
 
-        analysis = self.create_analysis(_file)
-        assert isinstance(analysis, EmailArchiveResults)
-
         insert_date = local_time()
         archive_result = archive_email(_file.full_path, email_analysis.message_id, email_analysis.env_rcpt_to, insert_date)
+
+        # only once the email is archived: post-analysis indexes the URLs under every
+        # EmailArchiveResults it finds, and one left by a failed archive has no archive_id
+        analysis = self.create_analysis(_file)
+        assert isinstance(analysis, EmailArchiveResults)
         analysis.hash = archive_result.hash
         analysis.archive_id = archive_result.archive_id
         analysis.archive_path = archive_result.archive_path
