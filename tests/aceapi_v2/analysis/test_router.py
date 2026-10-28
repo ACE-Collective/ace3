@@ -30,7 +30,7 @@ from saq.environment import get_data_dir, get_global_runtime_settings, get_local
 from saq.json_encoding import _JSONEncoder
 from saq.util.filesystem import is_path_under
 from saq.util.uuid import get_storage_dir
-from tests.aceapi_v2.conftest import audit_actor_of, audit_record
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 

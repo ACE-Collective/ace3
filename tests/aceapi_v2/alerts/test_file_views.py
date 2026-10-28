@@ -16,8 +16,7 @@ from aceapi_v2.alerts.service import hexdump
 from saq.constants import F_TEST
 from saq.database.util.alert import ALERT
 from saq.environment import get_temp_dir
-from tests.aceapi_v2.conftest import audit_actor_of, audit_record
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import audit_actor_of, audit_record, create_root_analysis
 
 pytestmark = pytest.mark.integration
 

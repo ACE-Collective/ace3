@@ -27,7 +27,8 @@ from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,

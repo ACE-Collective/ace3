@@ -650,3 +650,14 @@ def create_test_worker(name: str = "test") -> Worker:
 def create_test_orchestrator() -> AnalysisOrchestrator:
     """A real AnalysisOrchestrator, built the way a single threaded engine worker builds it."""
     return create_test_worker().analysis_orchestrator
+
+
+def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRecord:
+    """The one AUDIT record whose message starts with "AUDIT: <prefix>"."""
+    (record,) = [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+    return record
+
+
+def audit_actor_of(record: logging.LogRecord) -> tuple:
+    """(actor, actor_user_id, actor_key_id, auth_type) of a saq.logging.log_audit() record."""
+    return record.actor, record.actor_user_id, record.actor_key_id, record.auth_type

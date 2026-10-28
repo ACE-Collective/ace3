@@ -28,8 +28,7 @@ from saq.database.model import (
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_base_dir
 from saq.search.tasks import submit_index_task
-from tests.aceapi_v2.conftest import audit_actor_of, audit_record
-from tests.saq.helpers import insert_alert, make_simulated, workload_count
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated, workload_count
 
 pytestmark = pytest.mark.integration
 

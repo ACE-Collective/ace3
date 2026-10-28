@@ -16,7 +16,8 @@ from saq.database.model import FileCollection, FileCollectionHistory, User
 from saq.database.pool import get_db
 from saq.file_collection.database import queue_file_collection
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
-from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 

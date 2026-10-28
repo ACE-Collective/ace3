@@ -1,8 +1,6 @@
 import hashlib
-import logging
 from collections.abc import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from itsdangerous import URLSafeTimedSerializer
@@ -58,17 +56,6 @@ async def add_analyst_group(session: AsyncSession, user: User) -> AuthGroup:
         session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
     await session.flush()
     return group
-
-
-def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRecord:
-    """The one AUDIT record whose message starts with "AUDIT: <prefix>"."""
-    (record,) = [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
-    return record
-
-
-def audit_actor_of(record: logging.LogRecord) -> tuple:
-    """(actor, actor_user_id, actor_key_id, auth_type) of a log_audit() record."""
-    return record.actor, record.actor_user_id, record.actor_key_id, record.auth_type
 
 
 def make_flask_session_cookie(user_id) -> str:

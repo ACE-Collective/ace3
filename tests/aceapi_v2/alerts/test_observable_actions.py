@@ -32,8 +32,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.modules.test import CustomReqFalseAnalysis, DeclaredNoProduceAnalysis
-from tests.aceapi_v2.conftest import audit_actor_of, audit_record
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import audit_actor_of, audit_record, create_root_analysis
 
 pytestmark = pytest.mark.integration
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import AuthUserPermission, ObservableDetection, User
-from tests.aceapi_v2.conftest import audit_actor_of
+from tests.saq.helpers import audit_actor_of
 
 pytestmark = pytest.mark.integration
 

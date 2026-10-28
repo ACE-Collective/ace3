@@ -23,7 +23,7 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.environment import get_data_dir, get_global_runtime_settings
-from tests.aceapi_v2.conftest import audit_actor_of, audit_record
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 

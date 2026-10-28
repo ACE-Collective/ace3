@@ -20,7 +20,8 @@ from saq.svs.validations import claim, complete, corpus_version, engine_fingerpr
 from saq.svs.yara.corpus import Skipped
 from saq.svs.yara.diff import Category, Outcome, ResultRow
 from saq.svs.yara.replay import FileError, ReplayResult, SideReport
-from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record
 from tests.saq.svs.conftest import OTHER_RULE_UUID, RULE_UUID
 # the repository fixtures SVS validates against
 from tests.saq.svs.yara.conftest import REPOSITORY, rule_repo, stored_sample, svs_repository  # noqa: F401

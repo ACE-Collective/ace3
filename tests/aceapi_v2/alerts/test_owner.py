@@ -13,8 +13,8 @@ from saq.database.model import Alert, User
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
 from saq.util import sha256_str
-from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
-from tests.saq.helpers import insert_alert
+from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
 
 pytestmark = pytest.mark.integration
 
