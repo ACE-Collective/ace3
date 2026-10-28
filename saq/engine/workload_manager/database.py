@@ -406,7 +406,7 @@ LIMIT 128""".format(
                 # is a two-step process -- they can be completed and cleared in between those two steps
 
                 c2 = db.cursor()
-                c2.execute("SELECT uuid FROM workload WHERE id = %s", _id)
+                c2.execute("SELECT uuid FROM workload WHERE id = %s", (_id,))
                 verify = c2.fetchone()
                 if not verify:
                     logging.info(
