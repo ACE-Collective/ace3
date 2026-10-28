@@ -9,10 +9,12 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
+from aceapi_v2.application import app
 from saq.analysis.root import load_root
-from saq.configuration.config import get_analysis_module_config, get_splunk_config
+from saq.configuration.config import get_analysis_module_config, get_config, get_splunk_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     DIRECTIVE_CLICKER_DETECTION,
@@ -224,11 +226,31 @@ class TestClickerSearches:
 
     @pytest.mark.asyncio
     async def test_none_when_the_splunk_module_is_not_configured(self, client: AsyncClient, alert):
-        with patch("aceapi_v2.alerts.service.get_analysis_module_config", side_effect=ValueError("not configured")):
-            response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
+        del get_config().raw._data["analysis_module_clicker_detection_splunk"]
+        get_config().load_analysis_module_configs()
+
+        response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
 
         assert response.status_code == 200
         assert response.json()["data"] == []
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_splunk_module_config_is_an_error(self, _override_db_session, valid_api_key: str,
+                                                               alert, caplog):
+        get_config().raw._data["analysis_module_clicker_detection_splunk"]["api_name"] = ["not", "a", "name"]
+        get_config().load_analysis_module_configs()
+
+        # starlette re-raises after the catch-all handler has built the 500
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test",
+                               headers={"x-ace-auth": valid_api_key}) as client:
+            with caplog.at_level(logging.ERROR):
+                response = await client.get(_path(alert.uuid, alert.observables.url.uuid, "clicker-searches"))
+
+        # not an empty list, which reads as "no searches for this observable"
+        assert response.status_code == 500
+        (record,) = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert isinstance(record.exc_info[1], ValidationError)
 
     @pytest.mark.asyncio
     async def test_unknown_observable(self, client: AsyncClient, alert):
