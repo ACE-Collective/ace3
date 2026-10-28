@@ -59,7 +59,6 @@ class Observable(BaseNode):
         self._ignored = False
 
         self._cache_id = None
-        self._faqueue_hits = None
         self._faqueue_search_url = None
         self._matching_events_by_status = None
 
@@ -83,14 +82,6 @@ class Observable(BaseNode):
     def disposition_history(self):
         from saq.database.database_observable import get_observable_disposition_history
         return get_observable_disposition_history(self)
-
-    @property
-    def faqueue_hits(self):
-        return self._faqueue_hits
-
-    @faqueue_hits.setter
-    def faqueue_hits(self, value):
-        self._faqueue_hits = value
 
     @property
     def faqueue_search_url(self):
