@@ -44,7 +44,7 @@ def test_saq_does_not_import_the_api():
     # aceapi_v2 imports the analysis tree and saq.svs at module level, so saq importing aceapi_v2
     # back makes a cycle that breaks whichever side is imported first
     run_python("import sys\n"
-               "import saq, saq.svs.association, saq.svs.attribution, saq.svs.maintenance\n"
+               "import saq, saq.logging, saq.svs.association, saq.svs.attribution, saq.svs.hosts, saq.svs.maintenance\n"
                "api = sorted(name for name in sys.modules if name.split('.')[0] == 'aceapi_v2')\n"
                "assert not api, api\n")
 

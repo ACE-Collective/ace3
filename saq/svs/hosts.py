@@ -13,19 +13,15 @@ import ipaddress
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from sqlalchemy.exc import IntegrityError
 
+from saq.auth import ApiAuthResult
 from saq.database.model import SVSTestHost
 from saq.database.pool import get_db
 from saq.logging import log_audit
 from saq.svs.preconditions import NONE, Precondition, StaleWrite
-
-if TYPE_CHECKING:
-    # for the type only: importing it runs aceapi_v2/auth/__init__.py, which loads the API's authentication
-    # and the database models, and they import saq
-    from aceapi_v2.auth.schemas import ApiAuthResult
 
 # the Atomic Red Team names of the platforms a test host can be (a test's supported_platforms
 # also names cloud platforms, which are not hosts)
@@ -228,7 +224,7 @@ def _commit(host: SVSTestHost) -> None:
     db.refresh(host)
 
 
-def create_host(spec: HostSpec, auth: Optional["ApiAuthResult"] = None) -> SVSTestHost:
+def create_host(spec: HostSpec, auth: Optional[ApiAuthResult] = None) -> SVSTestHost:
     """Adds a test host. Raises DuplicateTestHost when its short name is taken."""
     # created_at is stored to the second and MySQL rounds a fraction up: floored, it is never after
     # the updated_at the server stamps on the same insert
@@ -240,7 +236,7 @@ def create_host(spec: HostSpec, auth: Optional["ApiAuthResult"] = None) -> SVSTe
     return host
 
 
-def update_host(host_id: int, spec: HostSpec, auth: Optional["ApiAuthResult"] = None,
+def update_host(host_id: int, spec: HostSpec, auth: Optional[ApiAuthResult] = None,
                 precondition: Precondition = NONE) -> SVSTestHost:
     """Replaces a test host's fields. Raises UnknownTestHost, DuplicateTestHost, StaleWrite."""
     # a write from a form loaded before someone else changed the host is refused, not applied over it
@@ -257,7 +253,7 @@ def update_host(host_id: int, spec: HostSpec, auth: Optional["ApiAuthResult"] = 
     return host
 
 
-def delete_host(host_id: int, auth: Optional["ApiAuthResult"] = None) -> None:
+def delete_host(host_id: int, auth: Optional[ApiAuthResult] = None) -> None:
     """Removes a test host and ends its open maintenance window. Runs keep the targets they were
     registered with. Raises UnknownTestHost."""
     # imported here: saq.svs.maintenance imports this module

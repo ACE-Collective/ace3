@@ -26,12 +26,13 @@ its commit.
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
 from saq.analysis.root import load_root
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_OPEN, DISPOSITION_SIMULATED
 from saq.database.model import Alert, AlertQueueChange, DetectionPoint, SVSAttribution, SVSRun
@@ -52,11 +53,6 @@ from saq.svs.constants import (
 from saq.svs.result_state import mark_runs_stale
 from saq.svs.run_events import new_run_event, run_log_fields
 from saq.svs.runs import get_run
-
-if TYPE_CHECKING:
-    # for the type only: importing it runs aceapi_v2/auth/__init__.py, which loads the API's authentication
-    # and the database models, and they import saq
-    from aceapi_v2.auth.schemas import ApiAuthResult
 
 # the name of the marker router's alert_routers entry (etc/saq.default.yaml): a move into the test
 # queue it made, or one a person made here, is what disassociating undoes
@@ -159,7 +155,7 @@ def _changed(run: SVSRun, session) -> None:
     mark_runs_stale(session, run_ids=[run.id])
 
 
-def _audit(message: str, run: SVSRun, alert_uuid: str, auth: "ApiAuthResult", **fields) -> None:
+def _audit(message: str, run: SVSRun, alert_uuid: str, auth: ApiAuthResult, **fields) -> None:
     log_audit(message, auth=auth, **run_log_fields(run), alert_uuid=alert_uuid, **fields)
 
 
@@ -177,7 +173,7 @@ def _event_time(alert: _Alert) -> tuple[datetime, AttributionTimeSource]:
 # associating
 #
 
-def associate(run_uuid: str, alert_uuid: str, auth: "ApiAuthResult", reason: Optional[str] = None,
+def associate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None,
               now: Optional[datetime] = None) -> AssociationResult:
     """Attributes every detection of the alert to the run, by hand, and moves the alert to the test
     queue when it is now fully attributed. auth is the user making the change. Raises UnknownRun,
@@ -248,7 +244,7 @@ def _previous_queue(alert: _Alert) -> Optional[str]:
     return from_queue
 
 
-def disassociate(run_uuid: str, alert_uuid: str, auth: "ApiAuthResult", reason: Optional[str] = None, *,
+def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None, *,
                  not_a_test: bool = False, now: Optional[datetime] = None) -> AssociationResult:
     """Removes the alert's attributions to the run, by hand: the router never attributes the alert
     to the run again. An alert that is no longer fully attributed is given back: OPEN if it was
@@ -319,7 +315,7 @@ def disassociate(run_uuid: str, alert_uuid: str, auth: "ApiAuthResult", reason: 
 # keeping a context attribution
 #
 
-def keep(run_uuid: str, alert_uuid: str, auth: "ApiAuthResult", now: Optional[datetime] = None) -> AssociationResult:
+def keep(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, now: Optional[datetime] = None) -> AssociationResult:
     """Confirms the alert's context attributions to the run: it is the run's. Raises UnknownRun,
     UnknownAlert, AssociationConflict (no context attribution to keep)."""
     user_id, actor = auth.auth_user_id, auth.auth_name
@@ -352,7 +348,7 @@ def keep(run_uuid: str, alert_uuid: str, auth: "ApiAuthResult", now: Optional[da
 # from the alert's side
 #
 
-def disassociate_alert(alert_uuid: str, auth: "ApiAuthResult", reason: Optional[str] = None, *,
+def disassociate_alert(alert_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None, *,
                        not_a_test: bool = False, now: Optional[datetime] = None) -> AlertDisassociationResult:
     """Disassociates the alert from every run that holds it, oldest run first, so it is given back
     to analysts (docs/SVS_RUNS.md, *Associating alerts by hand*). not_a_test applies only to a TEST?
