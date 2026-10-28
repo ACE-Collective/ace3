@@ -3,8 +3,8 @@
 A launcher outside ACE registers a run for one catalog test against one or more test hosts, gets
 its marker, starts it, may report how the test executed, and may cancel it. service_svs moves runs
 on by time: a run never started goes to Error and is closed, a started run ends when its
-observation window passes, and a canceled or failed run is closed when its attribution window
-passes. An Ended run waits for a person.
+observation window passes (or earlier, when a person ends it), and a canceled or failed run is
+closed when its attribution window passes. An Ended run waits for a person.
 
 Every state change is a conditional update on the state the caller saw (`… WHERE id=? AND
 state=?`), so a timer firing twice, or a launcher call racing a timer, changes the run once
@@ -21,7 +21,7 @@ start refuse a host another run holds, so context attribution never has two runs
 A launcher can also validate a registration: decide() works out everything registering would
 decide, and only reads, so a dry run creates no run, refusal or alert.
 
-A person cancels and closes runs through saq/svs/review.py, which also takes runs and reviews them.
+A person ends, cancels and closes runs through saq/svs/review.py, which also takes runs and reviews them.
 
 svs_runs, svs_run_targets and svs_run_events are written here, except for what attribution writes
 (saq/svs/attribution.py: its own events, and the changed-since-review flag of a reviewed run), what
@@ -150,7 +150,7 @@ class HostBusy(Exception):
 
 
 class ReasonRequired(ValueError):
-    """Closing an ended run needs a reason."""
+    """Ending a run early, or closing an ended run, needs a reason."""
 
 
 class RunStateConflict(Exception):
@@ -828,6 +828,32 @@ def cancel_by_person(run_uuid: str, actor: str, user_id: int, now: Optional[date
     return run
 
 
+def end_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
+                  now: Optional[datetime] = None) -> SVSRun:
+    """A person ends a Started run now rather than waiting out its observation window, because they
+    know nothing more will fire: Started -> Ended, as the timer would, so it is reviewed like any
+    other run (docs/SVS_RUNS.md, *Reviewing runs*). Its observation window ends now, which ends
+    its claim on its hosts unless its test holds them; its attribution window is left as it was, so
+    an alert that fires anyway is still the run's, as late. Needs a reason, since a signature that
+    hadn't had time to fire is missing from its result. Raises UnknownRun, RunStateConflict,
+    ReasonRequired."""
+    # to the second, as start() does: an alert of the second the run ended in is not late
+    now = (now or datetime.now()).replace(microsecond=0)
+    run = get_run(run_uuid)
+    if run.state != RunState.STARTED:
+        raise RunStateConflict(run.uuid, run.state, "end")
+    reason = (reason or "").strip() or None
+    if reason is None:
+        raise ReasonRequired(f"run {run.uuid} is still observing: ending it early needs a reason")
+
+    # the timers may not have ended a run whose window already passed: that end stands
+    ends_at = min(now, run.observation_ends_at)
+    if not _end(run, now, actor, actor_user_id=user_id, reason=reason,
+                values={"observation_ends_at": ends_at, "end_reason": reason}):
+        raise RunStateConflict(run.uuid, run.state, "end")
+    return run
+
+
 def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
                     now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> SVSRun:
     """A person discards a run (saq/svs/review.py): Ended, Canceled or Error -> Closed, and its
@@ -902,13 +928,17 @@ def _time_out(run: SVSRun, now: datetime) -> bool:
     return True
 
 
-def _end(run: SVSRun, now: datetime) -> bool:
-    if not _transition(run, RunState.STARTED, RunState.ENDED, TIMER_ACTOR, values={"ended_at": now}, now=now):
+def _end(run: SVSRun, now: datetime, actor: str = TIMER_ACTOR, *, actor_user_id: Optional[int] = None,
+         reason: Optional[str] = None, values: Optional[dict] = None) -> bool:
+    """Started -> Ended, by the timers or by a person (end_by_person). Returns False, changing
+    nothing, when the run is not Started (anymore)."""
+    if not _transition(run, RunState.STARTED, RunState.ENDED, actor, actor_user_id=actor_user_id, reason=reason,
+                       now=now, values={"ended_at": now, **(values or {})}):
         get_db().rollback()
         return False
     mark_runs_stale(get_db(), run_ids=[run.id])
     get_db().commit()
-    log_transition(run, RunState.STARTED.value, RunState.ENDED.value, TIMER_ACTOR)
+    log_transition(run, RunState.STARTED.value, RunState.ENDED.value, actor, reason)
     on_run_ended(run)
     return True
 

@@ -18,6 +18,7 @@ import pytest
 from saq.configuration.schema import SandboxConfig
 from saq.sandbox.launcher import (
     EXIT_DEADLINE,
+    EXIT_KILLED,
     EXIT_PROCESS_LIMIT,
     EXIT_SANDBOX_FAILURE,
     EXIT_STOPPED,
@@ -39,10 +40,17 @@ print(child.pid, flush=True)
 """
 
 
-def _launcher_argv(*command: str, max_processes: int = 16, deadline: float = 60, tcp_ports: str | None = None) -> list[str]:
-    options = [f"--max-processes={max_processes}", f"--deadline={deadline}"]
+def _launcher_argv(*command: str, max_processes: int | None = 16, deadline: float = 60, tcp_ports: str | None = None,
+                   term_grace: float | None = None, unconfined: bool = False) -> list[str]:
+    options = [f"--deadline={deadline}"]
+    if max_processes is not None:
+        options.append(f"--max-processes={max_processes}")
     if tcp_ports is not None:
         options.append(f"--tcp-ports={tcp_ports}")
+    if term_grace is not None:
+        options.append(f"--term-grace={term_grace}")
+    if unconfined:
+        options.append("--unconfined")
     return [sandbox_python(), "-I", "-S", LAUNCHER, *options, "--", *command]
 
 
@@ -82,11 +90,22 @@ class TestExitStatus:
         assert result.returncode == EXIT_SANDBOX_FAILURE
         assert "cannot run /nonexistent/command" in result.stderr
 
-    def test_malformed_arguments(self):
-        result = subprocess.run([sandbox_python(), "-I", "-S", LAUNCHER, "--", "/bin/true"],
+    @pytest.mark.parametrize("options,message", [
+        ([], "--deadline"),
+        (["--deadline=60", "--max-procs=4"], "unknown option"),
+        (["--deadline=60", "--unconfined", "--tcp-ports=443"], "--tcp-ports needs the Landlock domain"),
+    ])
+    def test_malformed_arguments(self, options, message):
+        result = subprocess.run([sandbox_python(), "-I", "-S", LAUNCHER, *options, "--", "/bin/true"],
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == EXIT_SANDBOX_FAILURE
         assert "usage" in result.stderr
+        assert message in result.stderr
+
+    def test_without_a_process_cap(self):
+        code = "import subprocess, sys\n" \
+               "for p in [subprocess.Popen([sys.executable, '-c', 'pass']) for _ in range(4)]: p.wait()"
+        assert _launch(PYTHON, "-c", code, max_processes=None).returncode == 0
 
     def test_ignored_signals_are_reset_for_the_command(self):
         # python ignores SIGPIPE and SIGXFSZ; the command must get the defaults (RLIMIT_FSIZE relies on SIGXFSZ)
@@ -122,6 +141,14 @@ class TestCleanup:
         assert result.returncode == EXIT_DEADLINE
         assert "past its deadline" in result.stderr
 
+    def test_process_left_running_in_another_group_is_killed_when_the_command_exits(self):
+        code = "import subprocess\n" \
+               "p = subprocess.Popen(['sleep', '300'], process_group=0)\n" \
+               "print(p.pid, flush=True)"
+        result = _launch(PYTHON, "-c", code)
+        assert result.returncode == 0
+        wait_for_condition(lambda: not _alive(int(result.stdout)), timeout=10)
+
     def test_process_cap(self):
         code = "import subprocess, sys, time\n" \
                "children = [subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)']) for _ in range(8)]\n" \
@@ -129,6 +156,101 @@ class TestCleanup:
         result = _launch(PYTHON, "-c", code, max_processes=4)
         assert result.returncode == EXIT_PROCESS_LIMIT
         assert "more than 4 processes" in result.stderr
+
+
+# prints its pid, then on SIGTERM prints "stopping" and exits with 7
+_STOPS_ON_SIGTERM = """
+import os, signal, sys, time
+def _term(*args):
+    # not print: the SIGTERM can land while the print of the pid is still flushing, and stdout is not reentrant
+    os.write(1, b"stopping\\n")
+    sys.exit(7)
+signal.signal(signal.SIGTERM, _term)
+print(os.getpid(), flush=True)
+# short sleeps: a SIGTERM that lands before a long one starts would wait for it to end
+while True:
+    time.sleep(0.1)
+"""
+
+_IGNORES_SIGTERM = """
+import os, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+print(os.getpid(), flush=True)
+time.sleep(300)
+"""
+
+
+def _started(*command: str, **kwargs) -> tuple[subprocess.Popen, int]:
+    """The launcher, started in a session of its own as the GUI CLI starts it, and the pid the command printed."""
+    process = subprocess.Popen(_launcher_argv(*command, **kwargs), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=True)
+    return process, int(process.stdout.readline())
+
+
+@pytest.mark.unit
+class TestGracefulStop:
+    def test_stop_sigterms_the_command_first(self):
+        process, _ = _started(PYTHON, "-c", _STOPS_ON_SIGTERM, term_grace=30)
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == EXIT_STOPPED
+        assert stdout == "stopping\n"
+        assert "did not stop" not in stderr
+
+    def test_without_a_grace_the_command_is_killed(self):
+        process, _ = _started(PYTHON, "-c", _STOPS_ON_SIGTERM)
+        process.send_signal(signal.SIGTERM)
+        stdout, _ = process.communicate(timeout=15)
+        assert process.returncode == EXIT_STOPPED
+        assert stdout == ""
+
+    def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(self):
+        process, command = _started(PYTHON, "-c", _IGNORES_SIGTERM, term_grace=0.5)
+        process.send_signal(signal.SIGTERM)
+        _, stderr = process.communicate(timeout=15)
+        assert process.returncode == EXIT_KILLED
+        assert "did not stop within 0.5 seconds of SIGTERM" in stderr
+        assert not _alive(command)
+
+    def test_sigterm_reaches_the_commands_group_but_not_the_launcher(self):
+        # the command leads a group of its own, so its SIGTERM does not stop the launcher halfway
+        code = "import subprocess, sys\n" \
+               f"child = subprocess.Popen([sys.executable, '-c', {_STOPS_ON_SIGTERM!r}])\n" \
+               "child.wait()"
+        process, _ = _started(PYTHON, "-c", code, term_grace=30)
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == EXIT_STOPPED
+        assert stdout == "stopping\n"
+        assert "did not stop" not in stderr
+
+    def test_the_deadline_sigterms_the_command_first(self):
+        result = _launch(PYTHON, "-c", _STOPS_ON_SIGTERM, deadline=1, term_grace=30)
+        assert result.returncode == EXIT_DEADLINE
+        assert result.stdout.splitlines()[1] == "stopping"
+
+    def test_what_left_the_session_is_killed_after_a_graceful_stop(self):
+        # the pid _started reads is the one _ESCAPE prints: the escaped process's
+        process, escaped = _started(PYTHON, "-c", _ESCAPE + "import time; time.sleep(300)", _marker(), term_grace=30)
+        assert _alive(escaped)
+        process.send_signal(signal.SIGTERM)
+        _, stderr = process.communicate(timeout=15)
+        # the command stopped, but what it left had to be killed, which the caller is told
+        assert process.returncode == EXIT_KILLED
+        assert "killed 1 processes the command left running" in stderr
+        assert "did not stop" not in stderr
+        assert not _alive(escaped)
+
+    def test_cleanup_survives_a_closed_output(self):
+        # the API worker that read the launcher's output died, and its parent-death SIGTERM arrives
+        # with nobody reading: the launcher's own messages must not stop it killing what is left
+        code = _ESCAPE + "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"
+        process, escaped = _started(PYTHON, "-c", code, _marker(), term_grace=0.5)
+        process.stdout.close()
+        process.stderr.close()
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=15) == EXIT_KILLED
+        assert not _alive(escaped)
 
 
 # connects to each port given on 127.0.0.1 and prints port:outcome
@@ -201,6 +323,13 @@ def test_command_cannot_signal_a_process_outside_it():
     # the test process is outside the command's domain; the launcher's own child is inside it
     assert _launch(PYTHON, "-c", code, str(os.getpid())).stdout.strip() == "refused"
     assert _launch("/bin/sh", "-c", "kill -0 $$ && echo signalled").stdout.strip() == "signalled"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(landlock_abi() < SCOPE_ABI, reason=f"signal scoping needs Landlock ABI {SCOPE_ABI} (Linux 6.12)")
+def test_an_unconfined_command_can_signal_a_process_outside_it():
+    code = "import os, sys\nos.kill(int(sys.argv[1]), 0)\nprint('signalled')"
+    assert _launch(PYTHON, "-c", code, str(os.getpid()), unconfined=True).stdout.strip() == "signalled"
 
 
 @pytest.mark.unit

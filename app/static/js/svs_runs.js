@@ -4,7 +4,7 @@
 // Both views are shells over /api/v2/svs/runs, called from the browser with the Flask session
 // cookie, and FilterListPages (filter_list_page.js) on the svs_runs filter screen, so they share the
 // saved filters and the filters carry over from one to the other. Runs opens on Needs attention.
-// With svs:run_manage, runs can be taken, canceled and closed in bulk; a run someone else owns is
+// With svs:run_manage, runs can be taken, ended early, canceled and closed in bulk; a run someone else owns is
 // only acted on once the person confirms taking it from them. Every value shown came from a
 // launcher, a catalog or a person, so it is placed as text, never markup.
 
@@ -14,7 +14,7 @@
     const STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
         started: {css: "text-primary", title: "running: its observation window is open"},
-        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed; it waits for a review"},
+        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed, or a person ended it early; it waits for a review"},
         reviewed: {css: "text-success", title: "signed off"},
         canceled: {css: "text-muted", title: "canceled; it still attributes alerts until its attribution window ends"},
         error: {css: "text-danger fw-semibold", title: "the launcher reported a failure, or never started it"},
@@ -122,6 +122,7 @@
         const node = el("div");
         const name = el("span", state.css, row.state);
         name.title = state.title + (row.error_reason ? ": " + row.error_reason : "") +
+            (row.end_reason ? ": ended early: " + row.end_reason : "") +
             (row.close_reason ? ": " + row.close_reason : "");
         node.appendChild(name);
         if (row.changed_since_review) {
@@ -374,6 +375,21 @@
                 run: function(keys, rows) {
                     message("");
                     return bulk(settings, "take-ownership", "Took", rows, null);
+                },
+            },
+            {
+                label: "End now…",
+                title: "End the selected started runs now instead of when their observation windows pass, to review them",
+                run: function(keys, rows) {
+                    message("");
+                    return ask("End " + plural(rows.length, "run") + " now",
+                               "The runs end now and wait for review. An expected signature that hasn't had time to " +
+                               "fire is missing from a run's result; an alert that fires anyway is still attributed, " +
+                               "as late. Runs that aren't started are left as they are.",
+                               rows, "End the runs", {required: true, hint: "Why nothing more will fire."})
+                        .then(function(answer) {
+                            return answer ? bulk(settings, "end", "Ended", rows, answer.reason) : false;
+                        });
                 },
             },
             {

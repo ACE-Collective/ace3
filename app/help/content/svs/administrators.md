@@ -58,7 +58,7 @@ does nothing until you grant it.
 | Permission | Grants |
 |---|---|
 | `svs:run_read` | The SVS area (Runs, Tests, Coverage, Worklist), run and test pages, the catalog, the test hosts list, and their read APIs |
-| `svs:run_manage` | Taking ownership of, canceling, closing and reviewing runs; a test's expectations, ignores and observation window; resolving worklist rows; associating alerts with runs by hand |
+| `svs:run_manage` | Taking ownership of, ending early, canceling, closing and reviewing runs; a test's expectations, ignores and observation window; resolving worklist rows; associating alerts with runs by hand |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores; retiring and deleting YARA samples |
 | `svs:run_register` | The launcher's calls: validate, register, start, executed, cancel |
 | `svs:validate` | Requesting a YARA validation and reading its status (counts and rule names only) |

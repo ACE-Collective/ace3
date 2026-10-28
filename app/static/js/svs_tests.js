@@ -31,7 +31,7 @@
     const RUN_STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
         started: {css: "text-primary", title: "running: its observation window is open"},
-        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed; it waits for a review"},
+        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed, or a person ended it early; it waits for a review"},
         reviewed: {css: "text-success", title: "signed off"},
         canceled: {css: "text-muted", title: "canceled; it still attributes alerts until its attribution window ends"},
         error: {css: "text-danger fw-semibold", title: "the launcher reported a failure, or never started it"},
@@ -121,6 +121,7 @@
         const info = RUN_STATES[row.state] || {css: "", title: ""};
         const node = el("span", info.css, row.state);
         node.title = info.title + (row.error_reason ? ": " + row.error_reason : "") +
+            (row.end_reason ? ": ended early: " + row.end_reason : "") +
             (row.close_reason ? ": " + row.close_reason : "");
         return node;
     }

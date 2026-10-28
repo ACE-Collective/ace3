@@ -236,7 +236,7 @@ def _row_values(row) -> dict:
         technique_name=technique_name, platform=run.platform, marker=run.marker, targets=[_target(t) for t in run.targets],
         launcher=run.launcher, batch_id=run.batch_id, created_at=run.created_at, started_at=run.started_at,
         executed_at=run.executed_at, exit_code=run.exit_code, cleanup_at=run.cleanup_at, ended_at=run.ended_at,
-        canceled_at=run.canceled_at,
+        end_reason=run.end_reason, canceled_at=run.canceled_at,
         closed_at=run.closed_at, observation_ends_at=run.observation_ends_at,
         attribution_ends_at=run.attribution_ends_at, error_reason=run.error_reason, close_reason=run.close_reason,
         owner=owner, reviewer=reviewer, reviewed_at=run.reviewed_at, changed_since_review=run.changed_since_review,
@@ -949,6 +949,12 @@ def cancel_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
     user_id = _require_user(auth.auth_user_id)
     return _bulk_result(review.cancel_runs(_run_ids(body), user_id, auth.auth_name, _confirmed_takes(body),
                                            auth=auth))
+
+
+def end_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
+    user_id = _require_user(auth.auth_user_id)
+    return _bulk_result(review.end_runs(_run_ids(body), user_id, auth.auth_name, body.reason,
+                                        _confirmed_takes(body), auth=auth))
 
 
 def close_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:

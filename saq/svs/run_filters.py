@@ -119,7 +119,8 @@ def run_filter_condition(entry: dict, tz: tzinfo = pytz.utc) -> ColumnElement[bo
         condition = _user(SVSRun.reviewer_id, values)
     elif name == "Reason":
         condition = or_(*[or_(SVSRun.close_reason.contains(value, autoescape=True),
-                              SVSRun.error_reason.contains(value, autoescape=True)) for value in values])
+                              SVSRun.error_reason.contains(value, autoescape=True),
+                              SVSRun.end_reason.contains(value, autoescape=True)) for value in values])
     elif name == "Changed Since Review":
         condition = _flag(SVSRun.changed_since_review.is_(True), values)
     elif name == "Has Open Alerts":

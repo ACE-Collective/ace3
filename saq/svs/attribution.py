@@ -39,7 +39,7 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Iterator, Optional
 
@@ -264,7 +264,9 @@ class TargetSnapshot:
 
 @dataclass(frozen=True)
 class RunSnapshot:
-    """What attribution needs of a run. Once the run has started none of it changes."""
+    """What attribution needs of a run. Once the run has started none of it changes, except
+    observation_ends_at when a person ends the run early: so a write judges lateness by the run's
+    row (_write_attributions), never by a snapshot, which may be cached."""
     id: int
     uuid: str
     test_guid: str
@@ -874,18 +876,18 @@ def write_attributions(alert_uuid: str, evaluation: Evaluation, now: Optional[da
     return result
 
 
-def _lock_runs(session, alert_uuid: str, run_ids: Iterable[int]) -> None:
+def _lock_runs(session, alert_uuid: str, run_ids: Iterable[int]) -> dict[int, Optional[datetime]]:
     """Locks, in id order, the runs a write of the alert's attributions can touch: run_ids and the
     runs of its existing rows. Every attribution row takes a shared lock on its run (the foreign
     key), and marking the run changed or stale needs an exclusive one, so two alerts of one run
     written at once would each hold the first and wait for the second: taken first, the run's lock
-    makes them wait their turn instead."""
-    session.execute(
-        select(SVSRun.id)
+    makes them wait their turn instead. Returns each run's observation_ends_at as committed now."""
+    return dict(session.execute(
+        select(SVSRun.id, SVSRun.observation_ends_at)
         .where(or_(SVSRun.id.in_(sorted(set(run_ids))),
                    SVSRun.id.in_(select(SVSAttribution.run_id).where(SVSAttribution.alert_uuid == alert_uuid))))
         .order_by(SVSRun.id)
-        .with_for_update()).all()
+        .with_for_update()).all())
 
 
 def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
@@ -894,10 +896,17 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
     outside the session. Returns what it changed, the runs involved by id, and the runs it marked
     changed since review."""
     result = WriteResult()
-    desired = {(a.run.id, a.content_hash): a for a in evaluation.attributions}
     runs = {a.run.id: a.run for a in evaluation.attributions}
-
-    _lock_runs(session, alert_uuid, runs)
+    observation_ends = _lock_runs(session, alert_uuid, runs)
+    desired = {}
+    for a in evaluation.attributions:
+        # judged late by the run's observation window as it is now, not as the evaluation's snapshot
+        # had it: a person may have ended the run early since (saq.svs.runs.end_by_person), and this
+        # process may have cached its marker's snapshot from before
+        ends_at = observation_ends.get(a.run.id, a.run.observation_ends_at)
+        if evaluation.event_time is not None:
+            a = replace(a, late=ends_at is not None and evaluation.event_time > ends_at)
+        desired[(a.run.id, a.content_hash)] = a
     rows = {(row.run_id, row.content_hash): row for row in session.execute(
         select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid)).scalars()}
 

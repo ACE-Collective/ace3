@@ -119,7 +119,7 @@ class EmailArchiveLocal(EmailArchiveInterface):
                     # and then get rid of the unencrypted version
                     os.remove(compressed_path)
 
-        # if we can't get the lock it means it's already been written
+        # another process is archiving the same email right now
         except LocalLockError: # pragma: nocover
             logging.debug(f"unable to obtain local lock on archive file {file_path}")
 
