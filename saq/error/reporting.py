@@ -156,7 +156,31 @@ def log_loop_exception(e: Exception, context: str, extra: Optional[dict] = None)
     logging.error("%s: %s", context, e, exc_info=e, extra=extra)
 
 
-def log_peer_unavailable(e: Exception, context: str) -> bool:
+# OSErrors that a misconfigured local path raises (a client certificate, a key file). A peer
+# being down never raises one, and an operator needs to hear about them as errors
+_LOCAL_FILE_ERRORS = (
+    FileNotFoundError,
+    PermissionError,
+    IsADirectoryError,
+    NotADirectoryError,
+    FileExistsError,
+)
+
+
+def _is_peer_unavailable(e: BaseException, unreachable: tuple[type[BaseException], ...]) -> bool:
+    # client libraries wrap a transport failure in an exception of their own and keep the
+    # original as __cause__ (azure-identity's credentials raise ClientAuthenticationError)
+    types = _EXPECTED_SHUTDOWN_ERRORS + unreachable
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, types) and not isinstance(e, _LOCAL_FILE_ERRORS):
+            return True
+        e = e.__cause__
+    return False
+
+
+def log_peer_unavailable(e: Exception, context: str, unreachable: tuple[type[BaseException], ...] = ()) -> bool:
     """Log a connection-level failure to a peer service, returning True if it was one.
 
     Use for the narrower case of a call to a specific peer (redis, qdrant, a remote ACE
@@ -164,12 +188,17 @@ def log_peer_unavailable(e: Exception, context: str) -> bool:
     because the peer being down is an operational condition rather than an ACE bug. This
     generalizes the pattern already used in saq/collectors/remote_node.py.
 
+    `unreachable` names the transport errors of the caller's client library that are not
+    OSErrors (httpx.TransportError, azure-core's ServiceRequestError). An exception counts
+    when it, or an exception in its __cause__ chain, is one of these or a connection-level
+    OSError; a missing or unreadable local file never counts.
+
     Returns False without logging if the exception is not connection-level, so the
     caller can fall through to its normal handling.
     """
     from saq.shutdown import is_shutting_down
 
-    if not isinstance(e, _EXPECTED_SHUTDOWN_ERRORS):
+    if not _is_peer_unavailable(e, unreachable):
         return False
 
     if is_shutting_down():
