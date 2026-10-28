@@ -207,3 +207,84 @@ def test_retry_sql_on_deadlock_executes_the_statement_on_the_session(rows):
     retry_sql_on_deadlock(statement, commit=True)
 
     assert _owners(rows)["a"] == "sql"
+
+
+def _lock_exists(uuid: str) -> bool:
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM locks WHERE uuid = %s", (uuid,))
+        return cursor.fetchone()[0] == 1
+
+
+@pytest.mark.integration
+def test_a_deadlock_in_a_transaction_begun_before_the_call_is_raised_and_nothing_commits(rows, caplog):
+    earlier = str(uuid4())
+    errors = []
+
+    def victim():
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            execute_with_retry(db, cursor, INSERT_LOCK, (earlier,))
+            try:
+                execute_with_retry(db, cursor,
+                    [UPDATE_OWNER, UPDATE_OWNER],
+                    [("victim", rows["b"]), ("victim", rows["a"])])
+                db.commit()
+            except pymysql.err.OperationalError as e:
+                errors.append(e)
+
+    _deadlock_against(rows, victim)
+
+    # InnoDB rolled back the INSERT with the rest: running only the UPDATEs again would commit them without it
+    assert [e.args[0] for e in errors] == [1213]
+    assert not _lock_exists(earlier)
+    assert _owners(rows) == {"a": "main", "b": "main", "h1": "main", "h2": "main", "h3": "main"}
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "deadlock (1213) in a transaction begun before this call -- not trying again, "
+        "the transaction has to run again from its start"]
+
+
+@pytest.mark.integration
+def test_a_function_runs_again_from_its_start_when_a_statement_inside_it_deadlocks(rows):
+    earlier = str(uuid4())
+    calls = []
+
+    def insert_then_update_b_then_a(db, cursor):
+        calls.append(1)
+        execute_with_retry(db, cursor, INSERT_LOCK, (earlier,))
+        execute_with_retry(db, cursor,
+            [UPDATE_OWNER, UPDATE_OWNER],
+            [("victim", rows["b"]), ("victim", rows["a"])])
+
+    def victim():
+        with get_db_connection() as db:
+            execute_with_retry(db, db.cursor(), insert_then_update_b_then_a, commit=True)
+
+    _deadlock_against(rows, victim)
+
+    assert len(calls) == 2
+    assert _lock_exists(earlier)
+    assert _owners(rows) == {"a": "victim", "b": "victim", "h1": "main", "h2": "main", "h3": "main"}
+
+
+@pytest.mark.integration
+def test_a_lock_wait_timeout_in_a_transaction_begun_before_the_call_is_not_retried(rows, caplog):
+    with get_db_connection() as holder:
+        holder.cursor().execute(UPDATE_OWNER, ("holder", rows["a"]))
+
+        with get_db_connection() as db:
+            cursor = db.cursor()
+            cursor.execute("SET SESSION innodb_lock_wait_timeout = 1")
+            try:
+                cursor.execute(UPDATE_OWNER, ("earlier", rows["b"]))
+                with pytest.raises(pymysql.err.OperationalError) as e:
+                    execute_with_retry(db, cursor, UPDATE_OWNER, ("waiter", rows["a"]))
+            finally:
+                cursor.execute("SET SESSION innodb_lock_wait_timeout = DEFAULT")
+
+        holder.rollback()
+
+    assert e.value.args[0] == 1205
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "deadlock (1205) in a transaction begun before this call -- not trying again, "
+        "the transaction has to run again from its start"]

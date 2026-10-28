@@ -12,6 +12,7 @@ from saq.analysis.search import recurse_tree
 from saq.constants import DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, EMAIL_ARCHIVE_FIELD_URL, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
 from saq.crypto import decrypt
 from saq.database.pool import get_db_connection
+from saq.database.retry import execute_with_retry
 from saq.email_archive import archive_email, index_email_archive
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.modules import AnalysisModule
@@ -223,15 +224,15 @@ class EmailArchiveAction(AnalysisModule):
                     
         recurse_tree(_file, _callback)
 
-        with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-            cursor = db.cursor()
+        # update the fast search indexes
+        insert_date = local_time()
 
-            # update the fast search indexes
-            insert_date = local_time()
+        def _index(db, cursor):
             for field, email_property in transactions:
                 index_email_archive(db, cursor, analysis.archive_id, field, email_property, insert_date)
 
-            db.commit()
+        with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+            execute_with_retry(db, db.cursor(), _index, commit=True)
 
     # url and content data found in attachments can (will) be added after we
     # initially record the archive analysis

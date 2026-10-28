@@ -39,6 +39,8 @@ from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 import psutil
+import pymysql
+import pymysql.cursors
 import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -177,6 +179,28 @@ def process_is_gone(pid: int) -> bool:
     except psutil.NoSuchProcess:
         return True
 
+
+def inject_deadlock(monkeypatch: pytest.MonkeyPatch, sql_fragment: str, skip: int = 0) -> list[str]:
+    """Fails one raw cursor statement containing sql_fragment, after letting the first skip of them
+    run, the way InnoDB fails a deadlock victim: the whole transaction is rolled back and 1213 is
+    raised. Returns the list the failed statement is appended to."""
+    failed = []
+    seen = 0
+    execute = pymysql.cursors.Cursor.execute
+
+    def deadlocking_execute(cursor, query, args=None):
+        nonlocal seen
+        if sql_fragment in query and not failed:
+            seen += 1
+            if seen > skip:
+                failed.append(query)
+                cursor.connection.rollback()
+                raise pymysql.err.OperationalError(1213, "Deadlock found when trying to get lock; try restarting transaction")
+
+        return execute(cursor, query, args)
+
+    monkeypatch.setattr(pymysql.cursors.Cursor, "execute", deadlocking_execute)
+    return failed
 
 def wait_for_condition(condition, timeout=5, delay=0.1):
     """Waits for condition to return True. 

@@ -189,22 +189,18 @@ class DatabaseWorkloadManager(WorkloadManagerInterface):
                 execute_with_retry(
                     db,
                     c,
-                    "UPDATE workload SET node_id = %s, storage_dir = %s WHERE uuid = %s",
-                    (get_global_runtime_settings().saq_node_id, target_dir, uuid),
+                    [
+                        "UPDATE workload SET node_id = %s, storage_dir = %s WHERE uuid = %s",
+                        "UPDATE delayed_analysis SET node_id = %s, storage_dir = %s WHERE uuid = %s",
+                        "UPDATE alerts SET location = %s, storage_dir = %s WHERE uuid = %s",
+                    ],
+                    [
+                        (get_global_runtime_settings().saq_node_id, target_dir, uuid),
+                        (get_global_runtime_settings().saq_node_id, target_dir, uuid),
+                        (get_global_runtime_settings().saq_node, target_dir, uuid),
+                    ],
+                    commit=True,
                 )
-                execute_with_retry(
-                    db,
-                    c,
-                    "UPDATE delayed_analysis SET node_id = %s, storage_dir = %s WHERE uuid = %s",
-                    (get_global_runtime_settings().saq_node_id, target_dir, uuid),
-                )
-                execute_with_retry(
-                    db,
-                    c,
-                    "UPDATE alerts SET location = %s, storage_dir = %s WHERE uuid = %s",
-                    (get_global_runtime_settings().saq_node, target_dir, uuid),
-                )
-                db.commit()
 
         except Exception as e:
             logging.exception("unable to transfer {}: {}".format(uuid, e))

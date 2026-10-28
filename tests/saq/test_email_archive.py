@@ -24,6 +24,7 @@ from saq.email_archive import (
 from saq.email_archive.types import EmailArchiveTargetType
 from saq.environment import get_data_dir
 from saq.util.time import local_time
+from tests.saq.helpers import inject_deadlock
 
 @pytest.fixture(autouse=True, scope="function", params=[EmailArchiveTargetType.LOCAL])
 def patch_email_archive_target_type(monkeypatch, request):
@@ -141,3 +142,21 @@ def test_the_archive_dir_on_the_archiver_module_fails_instead_of_being_ignored()
     data["analysis_module_email_archiver"]["archive_dir"] = "archive/email"
     with pytest.raises(ValidationError, match="email_archive.archive_dir"):
         ACEConfig.model_validate(data)
+
+@pytest.mark.integration
+def test_archive_email_runs_again_from_the_start_after_a_deadlock(tmpdir, monkeypatch):
+    email = tmpdir / "email"
+    email.write_binary(b"test")
+
+    # the recipient's history row is the deadlock victim, after the archive and index rows were written
+    failed = inject_deadlock(monkeypatch, "INSERT INTO email_history")
+    result = archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], local_time())
+
+    assert len(failed) == 1
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM archive WHERE archive_id = %s", (result.archive_id,))
+        assert cursor.fetchone()[0] == 1
+
+    assert get_archived_email_path(TEST_MESSAGE_ID) == result.archive_path
+    assert get_recipients_by_message_id(TEST_MESSAGE_ID) == [TEST_RECIPIENT]

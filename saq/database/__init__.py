@@ -69,7 +69,6 @@ _EXPORTS = {
     "add_event_tag_mapping": "saq.database.util.tag_mapping",
     "remove_observable_tag_mapping": "saq.database.util.tag_mapping",
     "add_workload": "saq.database.util.workload",
-    "clear_workload_by_pid": "saq.database.util.workload",
 }
 
 __getattr__ = lazy_getattr(__name__, _EXPORTS)

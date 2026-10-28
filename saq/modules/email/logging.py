@@ -330,24 +330,27 @@ class EmailLoggingAnalyzer(AnalysisModule):
         if not mail_from:
             return
 
+        sql = []
+        params = []
+        for email_address in entry['env_rcpt_to']:
+            email_address = normalize_email_address(email_address)
+            if not email_address:
+                continue
+
+            sql.append("""INSERT INTO smtplog ( source, destination, numconnections, firstconnectdate )
+                          VALUES (%s, %s, 1, UNIX_TIMESTAMP(NOW()))
+                          ON DUPLICATE KEY UPDATE numconnections = numconnections + 1""")
+            params.append((
+                mail_from.encode("utf-8", errors="replace")[:255],
+                email_address.encode("utf-8", errors="replace")[:255],
+            ))
+
+        if not sql:
+            return
+
         try:
             with get_db_connection(name='brocess') as db:
-                c = db.cursor()
-                for email_address in entry['env_rcpt_to']:
-                    email_address = normalize_email_address(email_address)
-                    if not email_address:
-                        continue
-
-                    sql = """INSERT INTO smtplog ( source, destination, numconnections, firstconnectdate )
-                             VALUES (%s, %s, 1, UNIX_TIMESTAMP(NOW()))
-                             ON DUPLICATE KEY UPDATE numconnections = numconnections + 1"""
-                    params = (
-                        mail_from.encode("utf-8", errors="replace")[:255],
-                        email_address.encode("utf-8", errors="replace")[:255],
-                    )
-                    execute_with_retry(db, c, sql, params)
-
-                db.commit()
+                execute_with_retry(db, db.cursor(), sql, params, commit=True)
 
         except Exception as e:
             logging.exception("unable to update brocess: {}".format(e))

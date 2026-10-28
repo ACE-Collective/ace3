@@ -67,12 +67,15 @@ class EmailArchiveLocal(EmailArchiveInterface):
         insert_date = insert_date.replace(microsecond=0)
 
         hash = self.archive_email_file(file_path, message_id)
-        with get_db_connection(DB_EMAIL_ARCHIVE) as db:
-            cursor = db.cursor()
+
+        def _insert(db, cursor) -> int:
             archive_id = self.insert_email_archive(db, cursor, hash, insert_date)
             self.index_email_archive(db, cursor, archive_id, EMAIL_ARCHIVE_FIELD_MESSAGE_ID, message_id, insert_date)
             self.index_email_history(db, cursor, message_id, recipients, insert_date)
-            db.commit()
+            return archive_id
+
+        with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+            archive_id = execute_with_retry(db, db.cursor(), _insert, commit=True)
 
         return ArchiveEmailResult(archive_id=archive_id, hash=hash, archive_path=self.get_archive_path_by_hash(hash), insert_date=insert_date)
 

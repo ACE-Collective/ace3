@@ -8,6 +8,7 @@ from fluent import sender as fluent_sender
 
 from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config
+from saq.database.pool import get_db_connection
 from saq.constants import (
     ANALYSIS_MODULE_EMAIL_LOGGER,
     ANALYSIS_MODULE_URL_EXTRACTION,
@@ -25,6 +26,7 @@ from saq.modules.email.logging import EmailLoggingAnalyzer, FluentBitTags
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import inject_deadlock
 from tests.saq.test_util import create_test_context
 
 TAGS = FluentBitTags(main="main", urls="urls", headers="headers", lookalike="lookalike")
@@ -349,11 +351,12 @@ def test_entry_timestamp(entry, expected):
 
 
 @pytest.mark.unit
-def test_brocess_export_without_a_sender_does_nothing(root_analysis, monkeypatch):
+@pytest.mark.parametrize("mail_from,env_rcpt_to", [("", ["rcpt@example.com"]), ("sender@example.com", ["", " "])])
+def test_brocess_export_without_a_sender_or_a_recipient_does_nothing(root_analysis, monkeypatch, mail_from, env_rcpt_to):
     get_db_connection = Mock()
     monkeypatch.setattr(email_logging, "get_db_connection", get_db_connection)
 
-    make_analyzer(root_analysis).export_to_brocess({"mail_from": "", "env_rcpt_to": ["rcpt@example.com"]})
+    make_analyzer(root_analysis).export_to_brocess({"mail_from": mail_from, "env_rcpt_to": env_rcpt_to})
 
     get_db_connection.assert_not_called()
 
@@ -369,12 +372,27 @@ def test_brocess_export_failure_is_logged(root_analysis, monkeypatch, caplog):
     assert record.exc_info is not None
 
 
-@pytest.mark.integration
-def test_brocess_export_skips_empty_recipients(root_analysis, monkeypatch):
-    execute_with_retry = Mock()
-    monkeypatch.setattr(email_logging, "execute_with_retry", execute_with_retry)
+def smtplog_rows() -> list[tuple]:
+    with get_db_connection(name="brocess") as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT source, destination, numconnections FROM smtplog ORDER BY destination")
+        return [(bytes(source), bytes(destination), count) for source, destination, count in cursor.fetchall()]
 
+
+@pytest.mark.integration
+def test_brocess_export_skips_empty_recipients(root_analysis):
     make_analyzer(root_analysis).export_to_brocess(log_entry(env_rcpt_to=["", "rcpt@example.com"]))
 
-    [call] = execute_with_retry.call_args_list
-    assert call.args[3] == (b"sender@example.com", b"rcpt@example.com")
+    assert smtplog_rows() == [(b"sender@example.com", b"rcpt@example.com", 1)]
+
+
+@pytest.mark.integration
+def test_brocess_export_runs_again_from_the_start_after_a_deadlock(root_analysis, monkeypatch):
+    # the second recipient's row is the deadlock victim, after the first one's was written
+    failed = inject_deadlock(monkeypatch, "INSERT INTO smtplog", skip=1)
+    make_analyzer(root_analysis).export_to_brocess(log_entry(env_rcpt_to=["a@example.com", "b@example.com"]))
+
+    assert len(failed) == 1
+    assert smtplog_rows() == [
+        (b"sender@example.com", b"a@example.com", 1),
+        (b"sender@example.com", b"b@example.com", 1)]
