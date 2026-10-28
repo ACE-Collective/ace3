@@ -394,6 +394,27 @@ markup:
   `renderJsonTree()` node (`app/static/js/ace.js`) is also searchable, so raw events stay
   findable inside a collapsed section.
 
+## Offering an alert template for manual analysis
+
+The **Alert Template** list on the Manual Analysis page offers `analysis/alert.html` and the names
+in `custom_alerts.selectable_templates`. Templates in `custom_alerts.dirs` are not offered unless
+they are listed, because most of them read details only their own alert type has and fail on a
+manual alert. List only a template that renders any alert's details. The default,
+**Automatic**, stores no template, so the alert page looks one up for the `manual` alert type as
+for any other alert: `analysis/alert.html`, unless the site has a `manual.html` in
+`custom_alerts.dirs` or maps `manual` in `custom_alerts_backward_compatibility`. To offer an
+integration's alert template there, append its Jinja name in the integration's config:
+
+```yaml
+custom_alerts:
+  selectable_templates:
+    - vendor/vendor_alert.html
+```
+
+A name the GUI cannot load is left out of the list and logged at ERROR with an error report. The chosen template is
+stored in the alert's `alert_template` extension, which is how a hunt's `alert_template` setting
+(`docs/HUNTS.md`) works as well. A submitted value that is not in the list is refused.
+
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through

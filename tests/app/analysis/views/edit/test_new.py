@@ -11,7 +11,7 @@ import requests
 from flask import url_for
 
 from app.analysis.views.edit.new import SUBMIT_TIMEOUT
-from saq.analysis.root import load_root
+from saq.analysis.root import KEY_ALERT_TEMPLATE, load_root
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, F_IPV4, create_file_location
 from saq.database.model import Alert, Company, Nodes
@@ -103,6 +103,95 @@ def test_file_route_get(web_client, target_node):
 
     assert response.status_code == 200
     assert f'value="{target_node}"'.encode() in response.data
+
+
+LISTED_TEMPLATE = 'analysis/custom/saq_debug.html'
+
+
+@pytest.fixture
+def listed_template(monkeypatch):
+    """A template listed in custom_alerts.selectable_templates that renders any alert's details."""
+    monkeypatch.setattr(get_config().custom_alerts, 'selectable_templates', [LISTED_TEMPLATE])
+    return LISTED_TEMPLATE
+
+
+@pytest.mark.integration
+def test_file_route_offers_alert_templates_with_automatic_selected(web_client, target_node, listed_template):
+    response = web_client.get(url_for('analysis.file'))
+
+    assert response.status_code == 200
+    assert b'<option value="" selected>Automatic</option>' in response.data
+    assert b'<option value="analysis/alert.html">analysis/alert.html</option>' in response.data
+    assert f'<option value="{listed_template}">{listed_template}</option>'.encode() in response.data
+    # a custom template that is only in custom_alerts.dirs is not offered
+    assert b'analysis/custom/http.html' not in response.data
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('submit_type', ['single', 'multiple'])
+def test_new_alert_with_a_chosen_alert_template(web_client, mock_api_call, target_node, listed_template, submit_type):
+    web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template=listed_template,
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1\n192.168.1.2',
+        observable_data_sep_0='multi',
+        submit_type=submit_type))
+
+    alerts = _alerts()
+    assert len(alerts) == (1 if submit_type == 'single' else 2)
+    for alert in alerts:
+        assert load_root(alert.storage_dir).extensions == {KEY_ALERT_TEMPLATE: listed_template}
+
+
+@pytest.mark.integration
+def test_alert_page_renders_with_the_chosen_alert_template(web_client, mock_api_call, target_node, listed_template):
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template=listed_template,
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1'))
+
+    page = web_client.get(url_for('analysis.index', direct=_alert_uuid(response)))
+
+    assert page.status_code == 200
+    assert b'This is a debugging alert.' in page.data
+
+
+@pytest.mark.integration
+def test_new_alert_with_automatic_alert_template_sets_none(web_client, mock_api_call, target_node):
+    response = web_client.post(url_for('analysis.new_alert'), data=_form(
+        target_node,
+        new_alert_template='',
+        observables_types_0='ipv4',
+        observables_values_0='192.168.1.1'))
+
+    root = _submitted_root(response)
+    assert KEY_ALERT_TEMPLATE not in (root.extensions or {})
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('template', [
+    '../../etc/passwd',
+    # in custom_alerts.dirs but not listed: it reads details a manual alert does not have
+    'analysis/custom/http.html',
+])
+def test_new_alert_with_an_unknown_alert_template_is_refused(web_client, mock_api_call, target_node, analyst, caplog, template):
+    with caplog.at_level(logging.WARNING):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            new_alert_template=template,
+            observables_types_0='ipv4',
+            observables_values_0='192.168.1.1'))
+
+    assert response.status_code == 302
+    assert 'manage' in response.location
+    assert _alerts() == []
+    assert _flashes(web_client) == [f'unknown alert template {template}']
+    records = [r for r in caplog.records if getattr(r, 'template', None) == template]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].user == 'john'
 
 
 @pytest.mark.integration

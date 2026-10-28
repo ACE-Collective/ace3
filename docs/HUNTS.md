@@ -475,7 +475,7 @@ Submissions to ACE become alerts by setting the analysis mode to correlation. Th
 
 ### `alert_template` (string, optional)
 
-This advanced setting is used to control which ACE template the hunt should use. This is subject to change in future versions.
+This advanced setting is used to control which ACE template the hunt should use. This is subject to change in future versions. An analyst can pick one for a manual analysis submission from the same templates (see "Offering an alert template for manual analysis" in `docs/INTEGRATIONS.md`).
 
 ### `icon_configuration` (dict, optional)
 

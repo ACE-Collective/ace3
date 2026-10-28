@@ -410,6 +410,7 @@ class SIPYaraExportConfig(BaseModel):
 class CustomAlertsConfig(BaseModel):
     template_dir: str = Field(..., description="directory containing all flask views")
     dirs: list[str] = Field(..., description="list of dirs containing all custom alert views")
+    selectable_templates: list[str] = Field(default_factory=list, description="alert templates (jinja names) analysts can pick for a manual analysis submission besides analysis/alert.html")
 
 class SettingsConfig(BaseModel):
     refresh_seconds: int = Field(..., description="how often to refresh settings (in seconds)")

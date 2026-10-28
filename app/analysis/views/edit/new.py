@@ -12,6 +12,7 @@ from aceapi_v2.observable_types.service import get_observable_types
 from aceapi_v2.sync import run_async
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
+from saq.analysis.root import KEY_ALERT_TEMPLATE
 from saq.configuration.config import get_config
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
@@ -25,6 +26,7 @@ from saq.database.model import Alert, new_alert_version
 from saq.database.pool import get_db, get_db_connection
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_temp_dir
+from saq.gui.alert import get_selectable_alert_templates
 from saq.util import format_iso8601, local_time
 from saq.util.filesystem import abs_path
 from saq.util.hashing import sha256_file
@@ -78,6 +80,18 @@ ORDER BY
         return redirect(url_for('analysis.manage'))
 
     comment = ''
+
+    # the choice is rendered with {% include %}, so only a template the form offered is accepted
+    alert_template = request.form.get('new_alert_template', '')
+    extensions = None
+    if alert_template:
+        if alert_template not in get_selectable_alert_templates():
+            logging.warning(f"user {current_user.username} submitted unknown alert template {alert_template}",
+                            extra={"template": alert_template, "user": current_user.username})
+            flash(f"unknown alert template {alert_template}")
+            return redirect(url_for('analysis.manage'))
+
+        extensions = {KEY_ALERT_TEMPLATE: alert_template}
 
     tool = "gui"
     tool_instance = get_config().global_settings.instance_name
@@ -227,6 +241,7 @@ ORDER BY
                     tags = tags,
                     queue = queue,
                     files = all_files,
+                    extensions = extensions,
                     api_key = get_config().api.api_key,
                     timeout = SUBMIT_TIMEOUT)
 
@@ -254,6 +269,7 @@ ORDER BY
                         queue = queue,
                         # only attach this observable's own file(s)
                         files = entry['files'],
+                        extensions = extensions,
                         api_key = get_config().api.api_key,
                         timeout = SUBMIT_TIMEOUT)
 
@@ -331,4 +347,5 @@ ORDER BY
                            queue=current_user.queue,
                            tab='advanced',
                            timezones=pytz.common_timezones,
+                           alert_templates=get_selectable_alert_templates(),
                            observable_types=run_async(get_observable_types()))
