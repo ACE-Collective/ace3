@@ -135,5 +135,9 @@ The file is watched and reloaded on change, so an edit applies on the module's n
 pass without a restart; a successful load is logged at INFO with its path. A file that does not
 parse or validate, including one with an unknown or misspelled key, is rejected whole: the
 settings already in effect stay, and the error is logged at ERROR with its traceback and `path`.
-A `config_path` that does not exist is logged at ERROR once, and the module runs on the built-in
-values until the file appears.
+Those settings are kept only in the running worker's memory: a worker that starts while the
+file is invalid (an engine restart, or a worker replaced after a timeout, memory limit or
+refresh) runs on the built-in values until the file is fixed, so while a bad file is in place
+the workers of one engine can score differently.
+A `config_path` that does not exist is logged at ERROR with a traceback once, and the module runs
+on the built-in values until the file appears.

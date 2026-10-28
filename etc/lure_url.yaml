@@ -11,7 +11,8 @@
 # A key left out of the file keeps its built-in default; a list given here replaces the default
 # list rather than adding to it. A file that fails to parse or validate (including an unknown or
 # misspelled key) is rejected as a whole, the settings already in effect stay in place, and the
-# error is logged.
+# error is logged. Only a running worker keeps its settings this way: a worker that starts while
+# the file is invalid uses the built-in values until the file is fixed.
 #
 # Every candidate URL starts at 0 and gets the weight of each signal that applies to it. The
 # highest score wins. A winner below min_primary_score is not called the lure.

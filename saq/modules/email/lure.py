@@ -592,9 +592,11 @@ class LureURLAnalyzer(AnalysisModule):
             self._settings_watched = True
             path = abs_path(self.config.config_path)
             # the file watcher skips a missing file without a word
-            if not os.path.exists(path):
-                logging.error(f"lure url settings file {path} does not exist; using the built-in defaults until it does",
-                              extra={"path": path})
+            try:
+                os.stat(path)
+            except OSError:
+                logging.exception(f"lure url settings file {path} does not exist or cannot be read; using the built-in defaults until it does",
+                                  extra={"path": path})
             # loads the settings now if the file exists, and again whenever it changes
             self.watch_file(path, self._load_settings)
 

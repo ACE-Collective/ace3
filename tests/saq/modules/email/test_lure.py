@@ -24,6 +24,7 @@ from saq.modules.email.lure import (
     LureURLAnalysis,
     LureURLAnalyzer,
     LureURLSettings,
+    LureURLWeights,
     load_lure_settings,
     build_lure_urls,
     parse_body_anchors,
@@ -567,6 +568,15 @@ def test_settings_file_keys_left_out_keep_their_defaults(tmp_path):
 
 
 @pytest.mark.unit
+def test_settings_file_blank_weights_keep_their_defaults(tmp_path):
+    # an analyst who comments out every weight leaves `weights:` with nothing under it
+    path = tmp_path / "lure_url.yaml"
+    path.write_text("weights:\n")
+
+    assert load_lure_settings(str(path)).weights == LureURLWeights()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("text", [
     "benign_domain: [example.net]\n",
     "weights:\n  qrr: 50\n",
@@ -627,7 +637,8 @@ def test_module_missing_settings_file_uses_the_builtin_defaults(root_analysis, t
     assert email_file.get_analysis(LureURLAnalysis).primary["url"] == LURE
     assert lure_url.has_directive(DIRECTIVE_CRAWL)
     [record] = [r for r in caplog.records if "does not exist" in r.getMessage()]
-    assert record.levelno == logging.ERROR
+    # the traceback is what gets the record an error report
+    assert record.levelno == logging.ERROR and record.exc_info
     assert record.path == str(missing)
 
 
