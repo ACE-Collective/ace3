@@ -11,6 +11,7 @@ The maintainer has stopped reading diffs and wants to know whether a change can 
   - It can lose or corrupt data, or deadlock or long-lock a live table.
   - A migration forks the chain or drifts from the model.
   - It hides a failure from operators on a path that matters.
+  - It can drop an event that should alert on a path that runs in production: a filter, exclusion or suppression that matches too much, or a cached answer one of them reads after the data behind it changed.
   - Tests fail.
   - New behavior has no tests at all.
   - It is a security hole: missing permission check, injection, XSS, or secrets in logs.
@@ -29,7 +30,7 @@ The maintainer has stopped reading diffs and wants to know whether a change can 
 
 Severity says how bad a finding would be; whether it holds the PR is the lead's call. After verification each new survivor goes in one bucket, with a one-line `judgment`:
 
-- **act on**: it holds the PR. Every confirmed blocker. A fix-first whose impact names harm on a path the change makes run in production (a hang or crash, a lost or wrong record, a failure nobody hears about), or a test gap that would let this change's own fix or new behavior break unseen.
+- **act on**: it holds the PR. Every confirmed blocker. A fix-first whose impact names harm on a path the change makes run in production (a hang or crash, a lost or wrong record, a dropped alert, a failure nobody hears about), or a test gap that would let this change's own fix or new behavior break unseen.
 - **consider**: real, and fixing it now is the user's call. Every PLAUSIBLE finding, since its trigger isn't shown. A fix-first on a path nothing reaches today, or whose fix costs more than the harm it prevents.
 - **noted**: the nits. Keep about 5, the ones that best show a habit worth correcting.
 
@@ -81,7 +82,7 @@ Report only flaws that this change actually works around, with the code that doe
 - Log message formatting (f-string vs `%s` vs `.format()`).
 - `typing.List`/`Optional` vs `list` / `X | None` in lines the change didn't write.
 - Anything a formatter would fix: whitespace, quote style, import order (there is no formatter configured).
-- Hypothetical problems with no path in this codebase ("if someone later calls this with None..."). Name the caller or input that triggers it, or drop it.
+- Hypothetical problems with no path in this codebase ("if someone later calls this with None..."). Name the caller or input that triggers it, or drop it. The consumer the PR description names counts as a caller, and so does the usage the change's own docs or examples recommend. A problem that appears when someone follows them is not hypothetical.
 - Files under `etc/saq.yaml` (dev-only overlay) or `etc/saq.unittest.default.yaml`, judged as if they were production config.
 
 ## New vs pre-existing
@@ -135,6 +136,25 @@ A reviewer that finds a design flaw also writes `$B/flaws-<dim>.json`, an array 
 
 Write no file when there are none.
 
+## Dismissals
+
+A reviewer that saw a harm in the change and decided not to report it writes it to `$B/dismissed-<dim>.json`: a trade-off it took to be someone else's choice, a problem it judged to have no caller yet, a cost it judged too small. List only those, not every check that came up clean; most rounds have none. The batch verifier tries to show each dismissal wrong, the way it tries a finding, and a dismissal it overturns comes back as a finding.
+
+```json
+[
+  {
+    "dimension": "the reviewer's dimension",
+    "file": "path relative to the repo under review",
+    "line": 123,
+    "title": "one line, the problem seen (<= 80 chars)",
+    "harm": "what would go wrong, for whom, and what triggers it",
+    "why_not": "why it was not reported"
+  }
+]
+```
+
+Write no file when there are none.
+
 ## Report template
 
 ```markdown
@@ -167,7 +187,7 @@ Write no file when there are none.
 - **<id>: <title>** (`file:line`, <severity>)
 
 ## Act on
-1. **<id>: <title>** (`file:line`, <severity>, <dimension>; <"from the fix for <answers>" when set>): <evidence>. *Impact:* <impact>. *Fix:* <fix>. *Why it holds the PR:* <judgment>
+1. **<id>: <title>** (`file:line`, <severity>, <dimension>; <"from the fix for <answers>" when set>; <"dismissed by the <dimension> reviewer, overturned" when it has a dismissal>): <evidence>. *Impact:* <impact>. *Fix:* <fix>. *Why it holds the PR:* <judgment>
 ## Consider
 <the same, ending *Why it can wait:* <judgment>>
 ## Noted
@@ -177,7 +197,7 @@ Write no file when there are none.
 - **<P id>** `file:line` (<dimension>): <title>, <one line>
 <end with: "These are not for this branch. File them as issues?">
 
-<sub>Dropped as unverified: N (and N design flaws). Not repeated from earlier rounds: N. Fixed since the last round: <ids>. Bundle: $B</sub>
+<sub>Dropped as unverified: N (and N design flaws). Dismissals: N upheld, N overturned. Not repeated from earlier rounds: N. Fixed since the last round: <ids>. Bundle: $B</sub>
 ```
 
 Number each finding with its `id` from `verified.json`, so the user can answer it by id. Leave out an empty section's heading rather than writing "none", except under Checks.

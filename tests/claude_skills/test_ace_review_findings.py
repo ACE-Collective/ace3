@@ -74,7 +74,7 @@ def test_collect_plans_three_votes_for_a_blocker_and_batches_the_rest(bundle):
 
     plan = findings.collect(str(bundle))
 
-    assert plan == {"single": [{"cid": "C1", "votes": 3}, {"cid": "C2", "votes": 1}], "batch": ["C3", "C4"], "carry": ["R1-1"], "flaws": []}
+    assert plan == {"single": [{"cid": "C1", "votes": 3}, {"cid": "C2", "votes": 1}], "batch": ["C3", "C4"], "carry": ["R1-1"], "flaws": [], "dismissed": []}
     assert read_json(bundle / "plan.json") == plan
     assert [c["source"] for c in read_json(bundle / "candidates.json")] == ["findings-uptime.json"] * 4
     assert list((bundle / "verify").iterdir()) == []
@@ -195,12 +195,90 @@ def test_tally_reads_the_batch_and_the_rechecked_findings(bundle):
 
     result = findings.tally(str(bundle))
 
-    assert result == {"survivors": 1, "rejected": 1, "carried": 2, "flaws": 0, "rejected_flaws": 0, "missing": []}
+    assert result == {"survivors": 1, "rejected": 1, "carried": 2, "flaws": 0, "rejected_flaws": 0,
+                      "dismissals": {"upheld": 0, "overturned": 0}, "missing": []}
     assert read_json(bundle / "rejected.json") == [{
         "cid": "C1", "dimension": "design", "severity": "nit", "file": "saq/x.py", "line": 1, "title": "a claim",
         "reason": "a formatter would fix it",
     }]
     assert [c["status"] for c in read_json(bundle / "carried.json")] == ["fixed", "open"]
+
+
+def dismissal(**fields):
+    return {"dimension": "performance", "file": "saq/z.py", "line": 3, "title": "a day-old answer can filter an event",
+            "harm": "a range removed from a trusted location stays trusted for a day", "why_not": "the hunt chose 1d", **fields}
+
+
+def test_collect_numbers_the_dismissals_for_the_batch_verifier(bundle):
+    write_json(bundle / "dismissed-performance.json", [dismissal()])
+    write_json(bundle / "dismissed-correctness.json", [dismissal(dimension="correctness"), dismissal(dimension="correctness")])
+
+    plan = findings.collect(str(bundle))
+
+    assert plan["dismissed"] == ["D1", "D2", "D3"]
+    assert [(d["did"], d["source"]) for d in read_json(bundle / "dismissal-candidates.json")] == [
+        ("D1", "dismissed-correctness.json"), ("D2", "dismissed-correctness.json"), ("D3", "dismissed-performance.json"),
+    ]
+
+
+def test_collect_refuses_malformed_dismissals(bundle):
+    write_json(bundle / "dismissed-performance.json", [dismissal(dimension="speed", why_not="")])
+
+    with pytest.raises(SystemExit, match=r"dismissed-performance.json\[0\]: dimension='speed', no why_not"):
+        findings.collect(str(bundle))
+
+
+def test_an_overturned_dismissal_joins_the_survivors_and_an_upheld_one_does_not(bundle):
+    # no findings at all: the dismissals alone make tally read the batch verifier's file
+    write_json(bundle / "dismissed-performance.json", [dismissal(title="upheld one"), dismissal()])
+    findings.collect(str(bundle))
+    write_json(bundle / "verify" / "batch.json", {"dismissed": [
+        {"did": "D1", "verdict": "UPHELD", "reason": "the cost is real"},
+        {"did": "D2", "verdict": "CONFIRMED", "reason": "the 1d was chosen for a slow search",
+         "finding": finding(dimension="correctness", title="a stale trusted answer filters events")},
+    ]})
+
+    result = findings.tally(str(bundle))
+
+    assert result["dismissals"] == {"upheld": 1, "overturned": 1}
+    assert result["survivors"] == 1
+    survivor = read_json(bundle / "survivors.json")[0]
+    assert (survivor["cid"], survivor["title"], survivor["verdict"]) == ("D2", "a stale trusted answer filters events", "CONFIRMED")
+    assert survivor["dismissal"] == {"dimension": "performance", "title": "a day-old answer can filter an event", "why_not": "the hunt chose 1d"}
+    assert [(d["did"], d["outcome"]) for d in read_json(bundle / "dismissals.json")] == [("D1", "upheld"), ("D2", "overturned")]
+
+
+def test_an_overturned_dismissal_tops_out_at_fix_first(bundle):
+    write_json(bundle / "dismissed-uptime.json", [dismissal(dimension="uptime")])
+    findings.collect(str(bundle))
+    write_json(bundle / "verify" / "batch.json", {"dismissed": [
+        {"did": "D1", "verdict": "CONFIRMED", "reason": "it hangs", "finding": finding(severity="blocker")},
+    ]})
+
+    findings.tally(str(bundle))
+
+    assert read_json(bundle / "survivors.json")[0]["severity"] == "fix-first"
+
+
+def test_tally_stops_at_a_missing_or_malformed_dismissal_vote(bundle):
+    write_json(bundle / "dismissed-performance.json", [dismissal(), dismissal(), dismissal()])
+    findings.collect(str(bundle))
+    write_json(bundle / "verify" / "batch.json", {"dismissed": [
+        {"did": "D2", "verdict": "CONFIRMED", "reason": "real", "finding": finding(evidence="")},
+        {"did": "D3", "verdict": "REJECTED", "reason": "wrong word"},
+    ]})
+
+    with pytest.raises(SystemExit) as exit_info:
+        findings.tally(str(bundle))
+    message = str(exit_info.value)
+    assert "verify/batch.json: dismissal D1\n" in message
+    assert "verify/batch.json: dismissal D2 finding: no evidence" in message
+    assert "verify/batch.json: dismissal D3 verdict='REJECTED'" in message
+
+    result = findings.tally(str(bundle), allow_missing=True)
+
+    assert result["survivors"] == 0
+    assert [d["outcome"] for d in read_json(bundle / "dismissals.json")] == ["not judged"] * 3
 
 
 def test_survivors_are_ranked_by_origin_severity_and_dimension(bundle):
@@ -352,7 +430,7 @@ def test_the_command_line_runs_a_round_from_findings_to_answers(bundle, monkeypa
         return json.loads(capsys.readouterr().out)
 
     write_json(bundle / "findings-uptime.json", [finding(severity="blocker")])
-    assert run("collect", str(bundle)) == {"single": [{"cid": "C1", "votes": 3}], "batch": [], "carry": [], "flaws": []}
+    assert run("collect", str(bundle)) == {"single": [{"cid": "C1", "votes": 3}], "batch": [], "carry": [], "flaws": [], "dismissed": []}
     for k in (1, 2, 3):
         vote(bundle, "C1", k, "CONFIRMED", "blocker")
     assert run("tally", str(bundle), "--allow-missing")["survivors"] == 1
