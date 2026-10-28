@@ -207,4 +207,4 @@ docker compose logs -f myservice
 | `search_indexer`     | `saq.search.service.SearchIndexService`        | `service_search_indexer`     |
 | `svs`                | `saq.svs.service.SVSService`                   | `service_svs`                |
 
-`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/service.py` is the simplest possible "wrap a manager" pattern.
+`saq/monitoring/service.py` is a good reference for a service that itself loads a configurable set of named sub-workers; `saq/remediation/` is the smallest service built on `saq/queue_service.py`.

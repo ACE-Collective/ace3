@@ -5,6 +5,7 @@ from typing import Optional
 
 import pytest
 
+import saq.shutdown
 from saq.queue_service import QueueCollector, QueueManager, QueueService, QueueWorker
 from tests.saq.helpers import wait_for_condition
 
@@ -309,6 +310,24 @@ def test_worker_loop_logs_failed_item_and_resets_session(session_resets, caplog)
     # once after each item, failed or not
     assert len(session_resets) == 2
 
+
+
+@pytest.mark.unit
+def test_worker_loop_logs_failed_item_at_info_during_shutdown(session_resets, monkeypatch, caplog):
+    # a peer stopped alongside the service is not a failure to report
+    monkeypatch.setattr(saq.shutdown, "is_shutting_down", lambda: True)
+    caplog.set_level(logging.INFO)
+    worker = FakeWorker(fail_ids=(1,))
+    worker.handle_request(Item(1, "fake"))
+
+    worker.stop()
+    worker.worker_loop(Event())
+
+    records = [r for r in caplog.records if "error processing fake item 1" in r.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.INFO
+    assert records[0].exc_info is None
+    assert records[0].alert_uuid == "uuid-1"
 
 @pytest.mark.unit
 def test_worker_loop_without_work_leaves_session_alone(session_resets):

@@ -214,3 +214,15 @@ def test_log_loop_exception_during_shutdown(reports, monkeypatch, caplog):
     assert len(records) == 1
     assert records[0].levelno == logging.INFO
     assert records[0].exc_info is None
+
+
+@pytest.mark.parametrize("shutting_down", [False, True])
+@pytest.mark.unit
+def test_log_loop_exception_puts_extra_on_record(reports, monkeypatch, caplog, shutting_down):
+    monkeypatch.setattr(saq.shutdown, "is_shutting_down", lambda: shutting_down)
+    caplog.set_level(logging.INFO)
+    log_loop_exception(RuntimeError("loop failed"), "doing work", extra={"alert_uuid": "uuid-1"})
+
+    records = [r for r in caplog.records if r.getMessage().startswith("doing work")]
+    assert len(records) == 1
+    assert records[0].alert_uuid == "uuid-1"
