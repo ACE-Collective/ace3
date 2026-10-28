@@ -129,9 +129,12 @@ class RunRow(BaseModel):
     cleanup_at: Optional[datetime] = Field(default=None, description="when the launcher said the test's cleanup began: "
                                                                      "detections after it are the cleanup's")
     ended_at: Optional[datetime] = None
+    end_reason: Optional[str] = Field(default=None, description="why a person ended it before its observation window "
+                                                                "passed; null when the window passed")
     canceled_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
-    observation_ends_at: Optional[datetime] = Field(default=None, description="when a started run ends")
+    observation_ends_at: Optional[datetime] = Field(default=None, description="when a started run ends; moved to the "
+                                                                              "end when a person ends it early")
     attribution_ends_at: Optional[datetime] = Field(default=None, description="until when alerts are attributed to it")
     error_reason: Optional[str] = None
     close_reason: Optional[str] = None
@@ -412,7 +415,8 @@ class BulkRunRequest(BaseModel):
         description="run id -> the username of the person the caller agreed to take the run from; a run someone "
                     "else owns is left alone without it")
     reason: Optional[str] = Field(default=None, max_length=4096,
-                                  description="close only: why; required for an ended run, which waits for a review")
+                                  description="end and close only: why; required to end a run, and to close an ended "
+                                              "run, which waits for a review")
 
 
 class BulkRunResult(BaseModel):

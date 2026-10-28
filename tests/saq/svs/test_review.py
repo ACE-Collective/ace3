@@ -162,6 +162,19 @@ class TestCancelAndClose:
         assert (closed.state, closed.close_reason) == (RunState.CLOSED, "the test VM was rebuilt mid-run")
         assert _row(alert_uuid).disposition == DISPOSITION_SIMULATED
 
+    def test_ending_runs_early(self, user_id, bob):
+        ended = _ended(_run())
+        started, bobs = _run(), _run()
+        _set_owner(bobs, bob.id)
+        assert "needs a reason" in review.end_runs([started.uuid], user_id, ACTOR).conflicts[started.uuid]
+
+        result = review.end_runs([started.uuid, ended.uuid, bobs.uuid], user_id, ACTOR, reason="the test failed")
+        assert (result.done, list(result.conflicts), result.left_alone) == ([started.uuid], [ended.uuid], {bobs.uuid: "bob"})
+        run = _run_row(started)
+        assert (run.state, run.end_reason) == (RunState.ENDED, "the test failed")
+        # its result was computed: it can be reviewed now
+        assert review.review(started.uuid, user_id, ACTOR).run.state == RunState.REVIEWED
+
     def test_a_run_someone_else_owns_needs_confirmation(self, user_id, bob):
         run = _run()
         runs.cancel(run.uuid, LAUNCHER)

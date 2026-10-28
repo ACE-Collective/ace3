@@ -19,7 +19,7 @@ reasoning are in `docs/SVS.md`; the API's data dictionary is `docs/SVS_API.md`.
 |---|---|
 | `svs:run_register` | The launcher's run lifecycle calls, and opening and ending a test host's maintenance windows |
 | `svs:run_read` | The Runs and Tests screens, run pages, the catalog, the test hosts, coverage, and their read APIs |
-| `svs:run_manage` | Ownership, cancel, close, review; a test's expectations, ignores and settings; manual association |
+| `svs:run_manage` | Ownership, ending early, cancel, close, review; a test's expectations, ignores and settings; manual association |
 | `svs:admin` | Adding, changing and removing test hosts; global ignores (and, for YARA, retiring and deleting samples) |
 | `alert:write` (existing) | From an alert's page, *Disassociate from run* and *Not a test* (*Test alerts in the alert list and on the alert page*) |
 
@@ -351,8 +351,8 @@ curl -X DELETE https://ace.example/api/v2/svs/test-hosts/win10-art-01/maintenanc
 | State | Reached by | Then |
 |---|---|---|
 | `created` | registration | `start`, `cancel`, or the start timeout |
-| `started` | `start` | the observation window passes → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
-| `ended` | the observation window passed | waits for a person, who reviews or closes it (*Reviewing runs*) |
+| `started` | `start` | the observation window passes, or a person ends it early → `ended`; `executed` with a failure → `error`; `cancel` → `canceled` |
+| `ended` | the observation window passed, or a person ended it early | waits for a person, who reviews or closes it (*Reviewing runs*) |
 | `reviewed` | a person signed its result off | reviewed again after a late change |
 | `canceled` | `cancel` (the launcher or a person) | `closed` when the attribution window passes, or by a person |
 | `error` | `executed` reported a failure, or `start` never came | `closed` when the attribution window passes, or by a person |
@@ -398,7 +398,8 @@ A run has two windows, both starting at `start`:
   run ended but inside it is still attributed, as *late*.
 
 The lengths are fixed at registration, so a run's windows don't move when hunts, expectations or
-settings change while it runs.
+settings change while it runs. The one exception is a person ending the run early, which ends its
+observation window then (*Reviewing runs*).
 
 ```yaml
 svs:
@@ -481,8 +482,9 @@ the number of runs that need attention, when any do.
 - **Batches** shows the same runs, one row per batch, summed: the runs by state, how many need
   attention, and the expected hits and missing signatures. The filters carry over between the two
   views, and opening a batch lists its runs.
-- **Bulk actions** need `svs:run_manage`. Select runs on the page, then *Take ownership*, *Cancel*
-  or *Close* them.
+- **Bulk actions** need `svs:run_manage`. Select runs on the page, then *Take ownership*, *End now*,
+  *Cancel* or *Close* them.
+  - *End now* asks for a reason (*Reviewing runs*, below).
   - *Close* asks for a reason, which an ended run needs (*Reviewing runs*, below).
   - A run someone else owns is not touched until you confirm, in a second dialog, that you take it
     from them.
@@ -506,7 +508,7 @@ its result is being recomputed.
 - **The header** has the test, the run's state, and a timeline of its observation and attribution
   windows. Below it are the marker, targets, platform, launcher and batch (which opens the batch's runs),
   the windows' lengths, the owner, and the launcher's exit code, errors, the test's output and `extra`.
-- **Its actions** need `svs:run_manage`: *Take ownership*, *Cancel* and *Close*, as in bulk, and
+- **Its actions** need `svs:run_manage`: *Take ownership*, *End now*, *Cancel* and *Close*, as in bulk, and
   *Mark reviewed* (*Review again* on a reviewed run).
   - The page lists what still stands in the way of a review: candidates to decide, context-only
     alerts to keep or mark not a test, a result being recomputed. *Mark reviewed* is enabled once
@@ -690,8 +692,9 @@ None of this runs while no run is registered or inside its attribution window: e
 the database at most every `gate_cache_seconds` whether one is, and scans nothing while none is.
 Registering a run opens the gate before its test fires. A marker is looked up in the database the
 first time a process sees it; only runs that have started are kept in each process's cache, since
-nothing attribution needs of them changes afterwards, and a marker the cache doesn't have always
-goes to the database.
+nothing attribution needs of them changes afterwards except `observation_ends_at`, which a person
+ending the run early moves (so lateness is judged from the run's row when attributions are
+written, never from the cache), and a marker the cache doesn't have always goes to the database.
 
 ```yaml
 svs:
@@ -953,8 +956,24 @@ took it.
   person confirmed taking it from them (`confirmed_takes`), and it then becomes theirs; a run whose
   owner's account is disabled or gone counts as nobody's. *Take ownership* (`bulk/take-ownership`)
   does only that. Reviewing a run also takes it when nobody owns it.
+- **End now** (`bulk/end`) ends a started run before its observation window passes, for when the
+  person knows nothing more will fire: a first run waiting out the slowest hunt, say, whose test
+  plainly failed or whose expected signatures have all fired. The run becomes `ended`, as the
+  timer would make it, and is reviewed like any other run. It needs a reason, kept as the run's
+  `end_reason` and shown on the run page as *Ended early*.
+  - **Its observation window ends now** (`observation_ends_at`). An expected signature that hasn't
+    had time to fire is `missing` from the result, so a review of the run judges the test by it.
+  - **Its claim on its hosts ends** with it, so the launcher can start the next run on them, unless
+    its test holds the host (*One run per test host*).
+  - **Its attribution window is unchanged.** An alert the test causes anyway is still the run's, as
+    `late`, and marks a reviewed run *changed since review*, so an early end that was wrong shows up
+    rather than landing in triage. Once another run starts on the host, an alert without a marker
+    is that run's.
+  - **The launcher's `executed` and `cleanup` calls** apply only to a started run, so after an early
+    end they answer 409. End a run after the launcher is done with it.
 - **Cancel** (`bulk/cancel`) is the launcher's cancel, by a person: a created or started run is
-  canceled, and one that never started is closed at once.
+  canceled, and one that never started is closed at once. Nothing is learned from a canceled run;
+  to keep what a run found, end it instead.
 - **Close** (`bulk/close`) discards an ended, canceled or failed run: its fully attributed open
   alerts become `SIMULATED`, and nothing is learned from it. An ended run waited for a review, so
   closing it instead needs a reason.

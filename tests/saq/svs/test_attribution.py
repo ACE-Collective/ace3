@@ -63,7 +63,7 @@ from saq.svs.constants import (
 from saq.svs.expectations import set_test_settings
 from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import new_marker
-from saq.svs.runs import Registration, TargetSpec, register, start
+from saq.svs.runs import Registration, TargetSpec, end_by_person, register, start
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
 
 MARKER = "svs-" + "a" * 26
@@ -580,6 +580,24 @@ class TestDatabase:
         with private_transaction() as session:
             return set(session.execute(select(SVSAttribution.event_time).where(
                 SVSAttribution.alert_uuid == alert_uuid)).scalars())
+
+    def test_late_is_judged_by_the_run_as_written_not_by_a_cached_snapshot(self):
+        """A person may end a run early after this process cached its marker: an alert after the end
+        is late, as it is in a process that looks the marker up afresh."""
+        started = datetime.now().replace(microsecond=0) - timedelta(minutes=30)
+        run = started_run(GUID, now=started)
+        root = self._root(run)
+        # cached with the observation window the run started with
+        resolve_markers([run.marker])
+        user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+        end_by_person(run.uuid, "unittest", user_id, "nothing fired", now=started + timedelta(minutes=10))
+
+        evaluation = evaluate(root, started + timedelta(minutes=20))
+        assert not any(a.late for a in evaluation.attributions)
+        assert [a.late for a in write_attributions(root.uuid, evaluation).written] == [True, True]
+        with private_transaction() as session:
+            assert set(session.execute(select(SVSAttribution.late).where(
+                SVSAttribution.alert_uuid == root.uuid)).scalars()) == {True}
 
     @pytest.mark.parametrize("fraction, stored", [(400000, 0), (600000, 1)])
     def test_the_event_time_is_kept_as_stored(self, fraction, stored):

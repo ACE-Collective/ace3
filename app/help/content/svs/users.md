@@ -27,7 +27,7 @@ you don't see is usually a permission you don't hold.
 | Permission | Lets you |
 |---|---|
 | `svs:run_read` | Open the SVS area: Runs, Tests, Coverage and Worklist, every run page and test page |
-| `svs:run_manage` | Take ownership of runs, cancel, close and review them; decide candidates; keep or mark not-a-test on alerts; associate alerts by hand; comment; set a test's expectations, ignores and observation window; resolve worklist rows |
+| `svs:run_manage` | Take ownership of runs, end them early, cancel, close and review them; decide candidates; keep or mark not-a-test on alerts; associate alerts by hand; comment; set a test's expectations, ignores and observation window; resolve worklist rows |
 | `svs:admin` | Manage test hosts; ignore a signature for every test; retire and delete samples |
 | `signature:read` | Open the Signatures area: Samples, Validations and Yara QA Results |
 | `signature:download` | Download sample files (as zips protected with the password `infected`) |
@@ -164,7 +164,8 @@ ends. For a test with expectations it is the latency of the slowest expected sig
 floor and a ceiling; for a test nobody has reviewed yet it is the slowest hunt's latency, because
 the first run is the one that discovers what fires. The **attribution window** is longer: an alert
 that arrives after the run ended but inside it still counts, as *late*. Both are fixed when the run
-is registered.
+is registered. If you know nothing more will fire, you can end the run early instead of waiting
+(see [Ending a run early](#ending-a-run-early)).
 
 ## Following runs
 
@@ -208,8 +209,8 @@ many need attention. It is the quickest way to see how last night's batch went.
 
 ![The Batches view](images/runs-batches.png)
 
-Select runs with their check boxes to act on several at once: *Take ownership*, *Cancel* or
-*Close*. Review is never a bulk action, because each run's result has to be looked at.
+Select runs with their check boxes to act on several at once: *Take ownership*, *End now*,
+*Cancel* or *Close*. Review is never a bulk action, because each run's result has to be looked at.
 
 ![The Actions menu with one run selected](images/runs-actions.png)
 
@@ -223,7 +224,7 @@ left of a one-hour window, with one alert attributed so far.
 From top to bottom:
 
 1. **The header**: the test, its technique and the run's state, and the actions you may take
-   (*Take ownership*, *Cancel*, *Close*, *Mark reviewed*).
+   (*Take ownership*, *End now*, *Cancel*, *Close*, *Mark reviewed*).
 2. **The timeline**: registered, started, observation ends, ended, attribution ends. The bar fills
    as time passes, and a started run shows its time left.
 3. **The facts**: the test and the catalog commit it was registered at, the marker (with a copy
@@ -364,13 +365,32 @@ and reviewed it; the dot under *Earlier runs* is Alice's first run, a hit.
 - **Comments.** Leave a comment whenever a result needs explaining: a missing signature you are
   chasing, a host problem, a decision you weren't sure about.
 
+## Ending a run early
+
+A run waits out its whole observation window, and a first run waits for the slowest hunt, which can
+be a day or more. When you know nothing more is going to fire (the test plainly failed, or every
+expected signature already has), click **End now…** on a started run, or select several runs and
+use *End now* from the Actions menu. Say why: the reason is kept with the run and shown as *Ended
+early* on its page.
+
+The run becomes *ended* right away and is reviewed like any other run:
+
+- Its result is computed now. An expected signature that hadn't had time to fire is *missing*, and
+  reviewing the run signs that off, so end a run only when you are sure.
+- Its test host is free for the next run, unless the test holds its host.
+- An alert the test causes anyway is still attributed to the run, as *late*, until its attribution
+  window ends. If you already reviewed the run, it shows up as *changed since review*.
+
+Ending a run is not canceling it: nothing is learned from a canceled run.
+
 ## Closing and canceling runs
 
 Not every run deserves a review.
 
 | Action | When | What it does |
 |---|---|---|
-| **Cancel** | The run is created or started and you want to stop it | The run is canceled. It keeps attributing until its attribution window passes, because the test may have fired anyway. A run that never started is closed at once |
+| **End now** | The run is started and nothing more will fire | The run ends now and waits for review. See [Ending a run early](#ending-a-run-early) |
+| **Cancel** | The run is created or started and you want to stop it, and learn nothing from it | The run is canceled. It keeps attributing until its attribution window passes, because the test may have fired anyway. A run that never started is closed at once |
 | **Close** | The run ended, was canceled or failed, and nothing should be learned from it | Its fully attributed open alerts become `SIMULATED`, and the run is final. Nothing is learned: no expectations, no samples, no verdicts |
 | **Review** | The run ended and its result is worth keeping | See [Reviewing a run](#reviewing-a-run) |
 

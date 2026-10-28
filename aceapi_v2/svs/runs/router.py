@@ -10,7 +10,7 @@ test's earlier runs, and the feeds of those over every run needs svs:run_read; t
 the runs that the count and the batches (one row per batch_id) are over. A person's
 actions need svs:run_manage: associating an alert with a run by hand, disassociating it, marking it
 not a test and keeping a context attribution (docs/SVS_RUNS.md, *Associating alerts by hand*), and
-taking, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
+taking, ending early, canceling, closing and reviewing runs and commenting on them (*Reviewing runs*).
 """
 
 from datetime import datetime
@@ -107,6 +107,14 @@ async def cancel_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Cancel the runs (created or started), as the launcher would. A run someone else owns is left
     alone unless confirmed_takes names that owner, and then becomes the caller's."""
     return await run_db_in_thread(service.cancel_runs, body, auth.auth_user_id, auth.auth_name)
+
+
+@router.post("/bulk/end", response_model=BulkRunResult)
+async def end_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
+    """End the runs (started) now, before their observation windows pass, so they can be reviewed: for
+    when nothing more will fire. Needs a reason. Their attribution windows are unchanged, so an alert
+    that fires anyway is still attributed, as late. Ownership as for cancel."""
+    return await run_db_in_thread(service.end_runs, body, auth.auth_user_id, auth.auth_name)
 
 
 @router.post("/bulk/close", response_model=BulkRunResult)

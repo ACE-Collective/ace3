@@ -1,12 +1,13 @@
 """What a person does to a test run (docs/SVS_RUNS.md, *Reviewing runs*; docs/SVS.md, Part 3 and
-Part 5): take it, cancel it, close it, and review it.
+Part 5): take it, end it early, cancel it, close it, and review it.
 
 - **Ownership** works as it does for alerts (saq.database.util.alert.check_alert_ownership): a run
   someone else owns is changed only when the person confirmed taking it from them, and then becomes
   theirs; a run whose owner's account is disabled or gone counts as nobody's. Reviewing a run also
   takes it when nobody owns it.
-- **Cancel** and **close** are the lifecycle's own (saq/svs/runs.py). Closing discards the run:
-  its alerts become SIMULATED and nothing is learned from it.
+- **End**, **cancel** and **close** are the lifecycle's own (saq/svs/runs.py). Ending a Started run
+  early makes it Ended now, to be reviewed; closing discards the run: its alerts become SIMULATED and
+  nothing is learned from it.
 - **Review** signs the run's result off: an Ended run becomes Reviewed, and a Reviewed run can be
   reviewed again, which replaces what was signed off (a late alert or a manual association after
   the review marks it changed since review). It needs the result to be current, every candidate
@@ -184,6 +185,15 @@ def cancel_runs(run_uuids: list[str], user_id: int, actor: str, confirmed_takes:
     now = now or datetime.now()
     return _bulk(run_uuids, user_id, actor, confirmed_takes,
                  lambda run_uuid: runs.cancel_by_person(run_uuid, actor, user_id, now), now)
+
+
+def end_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[str] = None,
+             confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None) -> BulkResult:
+    """Ends the runs (Started) now, before their observation windows pass, for review. Needs the
+    reason."""
+    now = now or datetime.now()
+    return _bulk(run_uuids, user_id, actor, confirmed_takes,
+                 lambda run_uuid: runs.end_by_person(run_uuid, actor, user_id, reason, now), now)
 
 
 def close_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[str] = None,

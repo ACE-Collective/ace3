@@ -12,7 +12,7 @@ from sqlalchemy import inspect, select
 
 from saq.configuration.config import get_config
 from saq.constants import ENV_ACE_IS_PRIMARY_NODE
-from saq.database.model import Alert, SVSRegistrationRefusal, SVSRun, SVSRunEvent
+from saq.database.model import Alert, SVSRegistrationRefusal, SVSRun, SVSRunEvent, User
 from saq.database.pool import get_db
 from saq.svs import runs
 from saq.svs import service as svs_service
@@ -521,6 +521,120 @@ def test_cancel_before_start_closes_the_run():
     assert [(e.from_state, e.to_state) for e in _events(run.uuid) if e.kind == RunEventKind.TRANSITION] == [
         (RunState.CREATED, RunState.CANCELED), (RunState.CANCELED, RunState.CLOSED)]
     assert HOOKS == [("closed", run.uuid)]
+
+
+#
+# a person ending a run early
+#
+
+def _user_id() -> int:
+    return get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+
+
+def test_a_person_ends_a_started_run_early(caplog):
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    caplog.set_level(logging.INFO)
+
+    # to the second, as start is
+    runs.end_by_person(run.uuid, "alice", _user_id(), "  the test failed: nothing will fire ",
+                       now=T0 + timedelta(minutes=10, milliseconds=600))
+
+    run = _state(run.uuid)
+    end = T0 + timedelta(minutes=10)
+    assert (run.state, run.ended_at, run.observation_ends_at, run.end_reason) == (
+        RunState.ENDED, end, end, "the test failed: nothing will fire")
+    # an alert the test causes anyway is still the run's, as late
+    assert run.attribution_ends_at == T0 + timedelta(hours=25)
+    event = _events(run.uuid)[-1]
+    assert (event.kind, event.from_state, event.to_state, event.actor, json.loads(event.details)) == (
+        RunEventKind.TRANSITION, RunState.STARTED, RunState.ENDED, "alice",
+        {"reason": "the test failed: nothing will fire"})
+    (record,) = [r for r in caplog.records if getattr(r, "to_state", None) == RunState.ENDED]
+    assert (record.svs_run, record.actor, record.reason) == (run.uuid, "alice", "the test failed: nothing will fire")
+    # its result is computed now, and the timers have nothing left to do with it
+    assert HOOKS == [("ended", run.uuid)]
+    assert run_timers(T0 + timedelta(hours=2)).ended == 0
+    assert HOOKS == [("ended", run.uuid)]
+
+
+def test_ending_a_run_early_needs_a_started_run_and_a_reason():
+    run = register(_registration(), LAUNCHER, now=T0)
+    with pytest.raises(RunStateConflict):
+        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0)
+
+    start(run.uuid, LAUNCHER, now=T0)
+    with pytest.raises(runs.ReasonRequired):
+        runs.end_by_person(run.uuid, "alice", _user_id(), "  ", now=T0 + timedelta(minutes=1))
+    assert _state(run.uuid).state == RunState.STARTED
+
+    run_timers(T0 + timedelta(hours=1))
+    with pytest.raises(RunStateConflict):
+        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1, minutes=1))
+    assert _state(run.uuid).end_reason is None
+    with pytest.raises(UnknownRun):
+        runs.end_by_person("00000000-0000-4000-8000-000000000000", "alice", _user_id(), "nothing fired")
+
+
+def test_ending_a_run_the_timers_end_meanwhile_is_a_conflict(monkeypatch):
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+    get_run = runs.get_run
+
+    def timers_of_another_process():
+        try:
+            run_timers(T0 + timedelta(hours=1))
+        finally:
+            get_db().remove()
+
+    # the timers end it in their own session, so the run end_by_person read still says Started
+    def read_then_the_timers_end_it(run_uuid):
+        read = get_run(run_uuid)
+        timers = threading.Thread(target=timers_of_another_process)
+        timers.start()
+        timers.join(30)
+        assert not timers.is_alive()
+        return read
+
+    monkeypatch.setattr(runs, "get_run", read_then_the_timers_end_it)
+    with pytest.raises(RunStateConflict):
+        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1))
+    monkeypatch.undo()
+
+    # the timers' end stands, once
+    run = _state(run.uuid)
+    assert (run.end_reason, run.ended_at) == (None, T0 + timedelta(hours=1))
+    assert [e.actor for e in _events(run.uuid) if e.to_state == RunState.ENDED] == ["svs"]
+
+
+def test_ending_a_run_whose_window_passed_before_the_timers_ended_it_keeps_its_window():
+    run = register(_registration(), LAUNCHER, now=T0)
+    start(run.uuid, LAUNCHER, now=T0)
+
+    runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1, minutes=5))
+    run = _state(run.uuid)
+    assert (run.observation_ends_at, run.ended_at) == (T0 + timedelta(hours=1), T0 + timedelta(hours=1, minutes=5))
+
+
+def test_a_run_ended_early_frees_its_hosts():
+    first = register(_registration(), LAUNCHER, now=T0)
+    start(first.uuid, LAUNCHER, now=T0)
+    runs.end_by_person(first.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(minutes=10))
+
+    second = register(_registration(), LAUNCHER, now=T0 + timedelta(minutes=11))
+    start(second.uuid, LAUNCHER, now=T0 + timedelta(minutes=11))
+    assert _state(second.uuid).state == RunState.STARTED
+
+
+def test_a_run_ended_early_whose_test_holds_the_host_still_holds_it():
+    set_test_settings(GUID, None, holds_host=True)
+    first = register(_registration(), LAUNCHER, now=T0)
+    start(first.uuid, LAUNCHER, now=T0)
+    runs.end_by_person(first.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(minutes=10))
+
+    with pytest.raises(HostBusy) as error:
+        register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))
+    assert error.value.holders == [HostHolder("win10-01", first.uuid, RunState.ENDED, T0 + timedelta(hours=25))]
 
 
 #
