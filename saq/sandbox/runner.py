@@ -91,7 +91,7 @@ LAUNCHER_STOP_SECONDS = 10
 
 # the launcher kills the command itself this long after its timeout, for when the ACE process
 # that started it is gone (a recycled or killed API worker) and cannot tell it to stop
-_LAUNCHER_DEADLINE_GRACE = datetime.timedelta(seconds=30)
+LAUNCHER_DEADLINE_GRACE = datetime.timedelta(seconds=30)
 
 
 def _python_dirs() -> list[str]:
@@ -149,7 +149,7 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
 
     launcher_options = [
         f"--max-processes={config.max_processes}",
-        f"--deadline={(timeout + _LAUNCHER_DEADLINE_GRACE).total_seconds()}",
+        f"--deadline={(timeout + LAUNCHER_DEADLINE_GRACE).total_seconds()}",
     ]
     if config.allowed_tcp_ports is not None:
         launcher_options.append(f"--tcp-ports={','.join(str(port) for port in config.allowed_tcp_ports)}")

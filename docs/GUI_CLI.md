@@ -64,8 +64,10 @@ Output beyond 1 MiB is read and dropped (`output_truncated`).
 The command runs under the sandbox launcher (`saq/sandbox/launcher.py`, with `--unconfined`, so
 without its Landlock domain), a child subreaper: whatever the command starts is reparented to it,
 whatever session or group it moves to. When the command exits, the launcher kills everything it left
-running; when it is stopped, the launcher gives the command its SIGTERM grace and then kills the rest.
-The API signals only the launcher. The launcher is started through `setpriv --pdeathsig TERM`: if the
+running; when it is stopped, the launcher gives the command and the rest of its process group their
+SIGTERM grace and then kills what is left. A stop that had to kill anything ends the run's output with a
+`sandbox:` line saying what, and the node logs a WARNING with the `cli_execution_id`: an engine killed
+this way kept its locks. The API signals only the launcher. The launcher is started through `setpriv --pdeathsig TERM`: if the
 API worker dies without stopping it (SIGKILL, OOM), the command gets the same graceful stop, and
 nothing keeps running with no one watching its deadline. The launcher also stops the command by itself
 30 seconds after its timeout.

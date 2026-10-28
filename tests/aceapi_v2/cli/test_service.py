@@ -84,7 +84,7 @@ def test_the_command_runs_under_the_launcher():
     argv = service.supervised_command_line(["ace", "node", "list"], 60)
     assert argv[:4] == ["setpriv", "--pdeathsig", "TERM", "--"]
     assert argv[argv.index("-S") + 1] == LAUNCHER
-    assert f"--deadline={60 + service.LAUNCHER_DEADLINE_GRACE_SECONDS}" in argv
+    assert "--deadline=90" in argv  # its timeout plus the launcher's deadline grace
     assert f"--term-grace={service.TERM_GRACE_SECONDS}" in argv
     assert "--unconfined" in argv
     assert argv[argv.index("--", 4) + 1:] == ["ace", "node", "list"]
@@ -656,7 +656,7 @@ async def test_a_timed_out_run_gets_sigterm_first(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch):
+async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch, caplog):
     monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 1)
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
@@ -665,11 +665,16 @@ async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch):
             "print('started', flush=True)\n"
             "time.sleep(60)\n")
 
-    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
 
     row = _row(execution_id)
     assert row.status == service.STATUS_TIMED_OUT
     assert "did not stop within 1 seconds of SIGTERM" in row.output
+    # an engine killed this way kept its locks: the node's log says so, not only the run's output
+    [record] = [r for r in caplog.records if "killed" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.cli_execution_id == execution_id
 
 
 @pytest.mark.integration
@@ -696,7 +701,7 @@ async def test_a_killed_run_takes_the_process_groups_its_children_moved_to(monke
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch):
+async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch, caplog):
     # an engine its shutdown watchdog ends has not stopped its workers, which lead groups of their own,
     # and a process may have left the session altogether
     execution_id = _claimed(timeout_seconds=1)
@@ -707,7 +712,8 @@ async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch):
             "print('worker', worker.pid, flush=True)\n"
             "time.sleep(60)\n")
 
-    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
 
     row = _row(execution_id)
     worker = int(row.output.split("worker ")[1].split()[0])
@@ -715,6 +721,9 @@ async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch):
     try:
         assert row.status == service.STATUS_TIMED_OUT
         assert "did not stop within" not in row.output
+        assert "killed 2 processes the command left running" in row.output
+        [record] = [r for r in caplog.records if "killed" in r.getMessage()]
+        assert record.cli_execution_id == execution_id
         wait_for_condition(lambda: process_is_gone(worker) and process_is_gone(escaped), timeout=10)
     finally:
         _kill(worker)
@@ -744,6 +753,33 @@ async def test_a_run_whose_command_exited_is_not_held_open_by_what_it_started(mo
         _kill(worker)
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_run_that_writes_while_it_stops_is_not_blocked_on_its_output(monkeypatch, caplog):
+    # an engine logging its shutdown to the console writes more than the pipe holds; unread, it blocks
+    # and is killed at the grace, and so does the launcher's own message after it
+    monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 3)
+    monkeypatch.setattr(service, "LAUNCHER_STOP_SECONDS", 2)
+    execution_id = _claimed(timeout_seconds=1)
+    _python(monkeypatch,
+            "import signal, sys, time\n"
+            "def _term(*args):\n"
+            "    sys.stdout.write('x' * 1000000 + '\\nstopped cleanly\\n')\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, _term)\n"
+            "print('started', flush=True)\n"
+            "time.sleep(60)\n")
+
+    with caplog.at_level(logging.WARNING):
+        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+
+    row = _row(execution_id)
+    assert row.status == service.STATUS_TIMED_OUT
+    assert "did not stop within" not in row.output
+    assert row.output.endswith("stopped cleanly\nsandbox: stopped\n")
+    assert not [r for r in caplog.records if r.name == service.logger.name and r.levelno >= logging.WARNING]
+
+
 @pytest.mark.unit
 def test_a_service_stopped_here_gets_its_whole_shutdown():
     # SIGTERM reaches only the command's group, so a service stops the rest itself, and its watchdog ends it
@@ -754,7 +790,7 @@ def test_a_service_stopped_here_gets_its_whole_shutdown():
     assert service.TERM_GRACE_SECONDS > max(deadlines) + WATCHDOG_GRACE
     # and a run still being stopped is not taken for one nothing watches
     assert service.STALE_GRACE_SECONDS > (service.TERM_GRACE_SECONDS + service.LAUNCHER_STOP_SECONDS
-                                          + service.KILL_WAIT_SECONDS)
+                                          + service.KILL_WAIT_SECONDS + service.OUTPUT_FLUSH_SECONDS)
 
 
 @pytest.mark.integration
@@ -763,7 +799,7 @@ async def test_stopping_a_child_that_already_exited_does_nothing():
     process = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", start_new_session=True)
     await process.wait()
 
-    await service._stop(1, process)
+    await service._stop(1, process, lambda chunk: None)
 
 
 @pytest.mark.integration
@@ -873,6 +909,7 @@ async def test_a_launcher_that_does_not_stop_is_killed(monkeypatch, caplog):
         assert _row(execution_id).status == service.STATUS_TIMED_OUT
         [record] = [r for r in caplog.records if "did not exit" in r.getMessage()]
         assert record.levelno == logging.ERROR
+        assert record.exc_info is not None  # what makes ErrorReportHandler write the error report
         assert record.cli_execution_id == execution_id
     finally:
         _kill(int(_row(execution_id).output.split()[1]))
@@ -888,8 +925,8 @@ async def test_a_failure_while_stopping_is_logged(monkeypatch, caplog):
     def _broken_record(*args):
         raise RuntimeError("database went away")
 
-    async def _broken_stop(i, process):
-        await stop(i, process)  # still stop the child, then fail
+    async def _broken_stop(i, process, append):
+        await stop(i, process, append)  # still stop the child, then fail
         raise RuntimeError("stop failed")
 
     monkeypatch.setattr(service, "_record_output", _broken_record)

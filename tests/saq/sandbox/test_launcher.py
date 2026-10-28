@@ -18,6 +18,7 @@ import pytest
 from saq.configuration.schema import SandboxConfig
 from saq.sandbox.launcher import (
     EXIT_DEADLINE,
+    EXIT_KILLED,
     EXIT_PROCESS_LIMIT,
     EXIT_SANDBOX_FAILURE,
     EXIT_STOPPED,
@@ -161,11 +162,14 @@ class TestCleanup:
 _STOPS_ON_SIGTERM = """
 import os, signal, sys, time
 def _term(*args):
-    print("stopping", flush=True)
+    # not print: the SIGTERM can land while the print of the pid is still flushing, and stdout is not reentrant
+    os.write(1, b"stopping\\n")
     sys.exit(7)
 signal.signal(signal.SIGTERM, _term)
 print(os.getpid(), flush=True)
-time.sleep(300)
+# short sleeps: a SIGTERM that lands before a long one starts would wait for it to end
+while True:
+    time.sleep(0.1)
 """
 
 _IGNORES_SIGTERM = """
@@ -204,7 +208,7 @@ class TestGracefulStop:
         process, command = _started(PYTHON, "-c", _IGNORES_SIGTERM, term_grace=0.5)
         process.send_signal(signal.SIGTERM)
         _, stderr = process.communicate(timeout=15)
-        assert process.returncode == EXIT_STOPPED
+        assert process.returncode == EXIT_KILLED
         assert "did not stop within 0.5 seconds of SIGTERM" in stderr
         assert not _alive(command)
 
@@ -230,8 +234,22 @@ class TestGracefulStop:
         process, escaped = _started(PYTHON, "-c", _ESCAPE + "import time; time.sleep(300)", _marker(), term_grace=30)
         assert _alive(escaped)
         process.send_signal(signal.SIGTERM)
-        process.communicate(timeout=15)
-        assert process.returncode == EXIT_STOPPED
+        _, stderr = process.communicate(timeout=15)
+        # the command stopped, but what it left had to be killed, which the caller is told
+        assert process.returncode == EXIT_KILLED
+        assert "killed 1 processes the command left running" in stderr
+        assert "did not stop" not in stderr
+        assert not _alive(escaped)
+
+    def test_cleanup_survives_a_closed_output(self):
+        # the API worker that read the launcher's output died, and its parent-death SIGTERM arrives
+        # with nobody reading: the launcher's own messages must not stop it killing what is left
+        code = _ESCAPE + "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"
+        process, escaped = _started(PYTHON, "-c", code, _marker(), term_grace=0.5)
+        process.stdout.close()
+        process.stderr.close()
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=15) == EXIT_KILLED
         assert not _alive(escaped)
 
 

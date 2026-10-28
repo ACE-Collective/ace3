@@ -37,7 +37,8 @@ It exits with the command's exit status (128 + N for a command killed by signal 
 the command itself, or could not start it, it says why on stderr and exits with a code that says
 which, so a caller can tell a node that cannot run sandboxed commands from a command that misbehaved
 without reading the message: EXIT_SANDBOX_FAILURE when the command never ran, EXIT_DEADLINE or
-EXIT_PROCESS_LIMIT when it was killed for that, and EXIT_STOPPED when it was told to stop. A command
+EXIT_PROCESS_LIMIT when it was killed for that, and EXIT_STOPPED when it was told to stop (EXIT_KILLED
+when, with --term-grace, the stop ended in killing the command or what it left running). A command
 can exit with any of those codes itself; the message on stderr is what tells the two apart.
 """
 
@@ -74,6 +75,9 @@ EXIT_DEADLINE = 124
 EXIT_PROCESS_LIMIT = 123
 # the launcher was told to stop: what a command killed by SIGTERM exits with, which is what happened
 EXIT_STOPPED = 128 + signal.SIGTERM
+# told to stop with --term-grace, it had to kill the command or what the command left running: what
+# docker reports for a container that outlived its stop_grace_period
+EXIT_KILLED = 128 + signal.SIGKILL
 
 # how often descendants are counted while the command runs; SIGCHLD also wakes the loop
 _POLL_SECONDS = 0.05
@@ -212,6 +216,16 @@ def _live_descendants() -> list[int]:
     return [pid for pid, state in descendants(os.getpid()).items() if state not in (b"Z", b"X")]
 
 
+def _say(message: str):
+    """Write a sandbox: line to stderr. Unbuffered, and a closed pipe is ignored: a reader that is gone
+    (an API worker that died, which is what sent the SIGTERM) must not stop the cleanup, and a buffered
+    line would fail again when the interpreter exits."""
+    try:
+        os.write(2, f"sandbox: {message}\n".encode(errors="replace"))
+    except OSError:
+        pass  # nobody is reading any more
+
+
 def _signal(pid: int, signum: int):
     try:
         os.kill(pid, signum)
@@ -235,10 +249,12 @@ def _reap(command_pid: int) -> int | None:
             status = wait_status
 
 
-def kill_descendants(command_pid: int):
-    """Stop and kill every descendant, then reap them."""
+def kill_descendants(command_pid: int) -> int:
+    """Stop and kill every descendant, then reap them. Returns how many there were."""
+    killed = set()
     give_up = time.monotonic() + _KILL_SECONDS
     while live := _live_descendants():
+        killed.update(live)
         # stop them all first, so none can fork while the rest are being killed
         for pid in live:
             _signal(pid, signal.SIGSTOP)
@@ -247,12 +263,13 @@ def kill_descendants(command_pid: int):
 
         _reap(command_pid)
         if time.monotonic() > give_up:
-            print(f"sandbox: {len(live)} processes survived being killed", file=sys.stderr)
+            _say(f"{len(live)} processes survived being killed")
             break
 
         time.sleep(0.01)
 
     _reap(command_pid)
+    return len(killed)
 
 
 def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | None, signal_mask: set,
@@ -279,30 +296,52 @@ def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | No
             os._exit(EXIT_SANDBOX_FAILURE)
 
 
-def _terminate(command_pid: int, term_grace: float):
-    """SIGTERM the command's process group and wait up to term_grace seconds for the command to exit."""
+def _group_running(pgid: int) -> bool:
+    for pid in _live_descendants():
+        try:
+            if os.getpgid(pid) == pgid:
+                return True
+        except ProcessLookupError:
+            pass  # it exited while we looked
+
+    return False
+
+
+def _terminate(command_pid: int, term_grace: float) -> bool:
+    """SIGTERM the command's process group and wait up to term_grace seconds for the command, and the
+    rest of the group the SIGTERM reached, to exit. False when the command did not."""
     try:
         os.killpg(command_pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        return  # the group is gone: nothing left to stop gracefully
+        return True  # the group is gone: nothing left to stop gracefully
 
+    command_exited = False
     give_up = time.monotonic() + term_grace
     while (remaining := give_up - time.monotonic()) > 0:
         if _reap(command_pid) is not None:
-            return
+            command_exited = True
+
+        # what is still stopping is not killed for being slower than the command
+        if command_exited and not _group_running(command_pid):
+            return True
 
         # only SIGCHLD wakes this; a second stop signal waits in the queue (the abort is already under way)
         signal.sigtimedwait({signal.SIGCHLD}, min(_POLL_SECONDS, remaining))
 
-    print(f"sandbox: the command did not stop within {term_grace:g} seconds of SIGTERM", file=sys.stderr)
+    return command_exited
 
 
 def _abort(command_pid: int, reason: str, exit_code: int, term_grace: float = 0) -> int:
-    if term_grace > 0:
-        _terminate(command_pid, term_grace)
-
-    kill_descendants(command_pid)
-    print(f"sandbox: {reason}", file=sys.stderr)
+    stopped = term_grace <= 0 or _terminate(command_pid, term_grace)
+    # kill first, report after: the cleanup must not wait on a message
+    killed = kill_descendants(command_pid)
+    if not stopped:
+        _say(f"the command did not stop within {term_grace:g} seconds of SIGTERM")
+    elif term_grace > 0 and killed:
+        _say(f"killed {killed} processes the command left running")
+    _say(reason)
+    if term_grace > 0 and killed and exit_code == EXIT_STOPPED:
+        return EXIT_KILLED
     return exit_code
 
 
@@ -339,8 +378,8 @@ def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | No
     """See _USAGE. Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP
     connection.
 
-    Parsed by hand: runner.py is the only caller, and argparse costs more to start than
-    everything else the launcher does.
+    Parsed by hand: its callers (runner.py and aceapi_v2/cli/service.py) build the arguments, and
+    argparse costs more to start than everything else the launcher does.
     """
     if "--" not in argv:
         raise ValueError("expected -- before the command")
@@ -371,18 +410,18 @@ def main(argv: list[str]) -> int:
     try:
         max_processes, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
     except (ValueError, KeyError) as e:
-        print(f"sandbox: usage: {_USAGE} ({e})", file=sys.stderr)
+        _say(f"usage: {_USAGE} ({e})")
         return EXIT_SANDBOX_FAILURE
 
     try:
         _prctl(_PR_SET_CHILD_SUBREAPER, 1)
     except OSError as e:
-        print(f"sandbox: cannot become a child subreaper: {e}", file=sys.stderr)
+        _say(f"cannot become a child subreaper: {e}")
         return EXIT_SANDBOX_FAILURE
 
     abi = None if unconfined else landlock_abi()
     if tcp_ports is not None and abi < NET_ABI:
-        print(f"sandbox: landlock ABI {abi} cannot restrict TCP ports (ABI {NET_ABI}, Linux 6.7, is needed)", file=sys.stderr)
+        _say(f"landlock ABI {abi} cannot restrict TCP ports (ABI {NET_ABI}, Linux 6.7, is needed)")
         return EXIT_SANDBOX_FAILURE
 
     deadline = time.monotonic() + deadline_seconds
