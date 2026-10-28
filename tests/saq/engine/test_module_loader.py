@@ -5,6 +5,7 @@ Tests for the ModuleLoader class that was extracted from the ConfigurationManage
 import logging
 
 import pytest
+from pydantic import ValidationError
 
 from saq.configuration.config import get_config
 from saq.configuration.schema import AnalysisModeConfig, AnalysisModuleGroupConfig
@@ -181,3 +182,31 @@ def test_a_module_disabled_after_it_was_resolved_is_not_loaded():
 def test_is_analysis_module_enabled_rejects_an_unknown_module():
     with pytest.raises(ValueError):
         get_config().is_analysis_module_enabled("removed_module")
+
+
+@pytest.mark.unit
+def test_module_with_an_undeclared_config_key_is_reported_and_skipped(caplog):
+    # the key the shipped zip_encryption_analyzer block set for years, which nothing read
+    get_config().raw._data["analysis_module_zip_encryption_analyzer"]["timeout"] = 30
+    get_config().load_analysis_module_configs()
+    module_loader = _module_loader(ANALYSIS_MODE_ANALYSIS)
+
+    with caplog.at_level(logging.ERROR):
+        assert module_loader._load_single_module("zip_encryption_analyzer") is None
+
+    # with a traceback, the record gets an error report
+    (record,) = _removed_module_errors(caplog, "zip_encryption_analyzer")
+    assert isinstance(record.exc_info[1], ValidationError)
+    assert record.exc_info[1].errors()[0]["loc"] == ("timeout",)
+
+    # the other modules still load
+    assert module_loader._load_single_module("file_hash_analyzer") is not None
+
+
+@pytest.mark.unit
+def test_module_without_a_config_is_reported_and_skipped(caplog):
+    with caplog.at_level(logging.ERROR):
+        assert _module_loader(ANALYSIS_MODE_ANALYSIS)._load_single_module("removed_module") is None
+
+    (record,) = _removed_module_errors(caplog, "removed_module")
+    assert "not found" in record.getMessage()

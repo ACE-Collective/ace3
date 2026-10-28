@@ -9,6 +9,7 @@ from saq.configuration.loader import load_configuration
 from saq.configuration.schema import ACEConfig
 from saq.modules.base_module import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from tests.saq.configuration.test_yaml_configuration import _load_with_overlay
 
 #
 # several analysis modules hosted by this one python module, the way saq.modules.test,
@@ -151,19 +152,10 @@ def test_module_whose_analysis_type_cannot_be_read_is_logged_and_skipped(config,
     assert records[0].module_path == MODULE_PATH(SecondAnalysis)
 
 
-def config_with_overlay(tmp_path, overlay: str) -> ACEConfig:
-    overlay_path = tmp_path / "overlay.yaml"
-    overlay_path.write_text(overlay)
-    raw_config = load_configuration(config_paths=[str(overlay_path)])
-    result = ACEConfig.model_validate(raw_config._data)
-    result.raw = raw_config
-    return result
-
-
 @pytest.mark.unit
 def test_undeclared_module_config_key_fails_validation(tmp_path):
     # the key the shipped zip_encryption_analyzer block set for years, which nothing read
-    config = config_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  timeout: 30\n")
+    config = _load_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  timeout: 30\n")
 
     # parsing only checks the base config, which knows nothing of the module's own keys
     assert config.is_analysis_module_enabled("zip_encryption_analyzer")
@@ -177,13 +169,13 @@ def test_undeclared_module_config_key_fails_validation(tmp_path):
 
 @pytest.mark.unit
 def test_declared_module_config_key_is_kept(tmp_path):
-    config = config_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  extract_timeout: 30\n")
+    config = _load_with_overlay(tmp_path, "analysis_module_zip_encryption_analyzer:\n  extract_timeout: 30\n")
     assert config.get_analysis_module_config("zip_encryption_analyzer").extract_timeout == 30
 
 
 @pytest.mark.unit
 def test_config_class_that_allows_extra_keys_keeps_them(tmp_path):
-    config = config_with_overlay(tmp_path, "analysis_module_file_hash_analyzer:\n  ignore_pattern_test: '*.test'\n")
+    config = _load_with_overlay(tmp_path, "analysis_module_file_hash_analyzer:\n  ignore_pattern_test: '*.test'\n")
     assert config.get_analysis_module_config("file_hash_analyzer").ignore_pattern_test == "*.test"
 
 
