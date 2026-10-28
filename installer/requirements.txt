@@ -46,7 +46,9 @@ pyasn1
 pydantic
 pyenchant
 pylint
-PyMySQL
+# aiomysql 0.3.2 calls pymysql.converters.escape_bytes_prefixed, which PyMySQL 1.2.1+ no longer
+# provides (1.2.3 leaves a placeholder string), so every bytes parameter on the async engine fails
+PyMySQL==1.2.0
 pysimdjson
 pysip
 PySocks
@@ -56,7 +58,6 @@ pytest-asyncio
 pytest-cov
 pytest-datadir
 pytest-print
-pytest-pythonpath
 pytest-randomly
 pytest-xdist
 python-dateutil
