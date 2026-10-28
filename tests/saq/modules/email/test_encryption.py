@@ -1,8 +1,13 @@
 import io
+import json
 import logging
+import os
+import re
 import subprocess
 import zipfile
+from email import message_from_bytes, policy
 from email.message import EmailMessage
+from glob import glob
 from pathlib import Path
 
 import msoffcrypto
@@ -10,7 +15,6 @@ import pikepdf
 import pytest
 from msoffcrypto.format.ooxml import OOXMLFile
 
-from saq import cracking
 from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
@@ -21,6 +25,7 @@ from saq.constants import (
     ANALYSIS_TYPE_MAILBOX,
     F_FILE,
 )
+from saq.crash_report import get_crash_report_root_dir
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.email import EmailAnalysis
@@ -427,8 +432,8 @@ def test_rar_ignores_files_that_are_not_rar_archives(root_analysis, tmp_path, fa
 #
 
 
-def _encrypted_pdf(tmp_path: Path, password: str = PASSWORD, revision: int = 6) -> Path:
-    path = tmp_path / "invoice.pdf"
+def _encrypted_pdf(tmp_path: Path, password: str = PASSWORD, revision: int = 6, name: str = "invoice.pdf") -> Path:
+    path = tmp_path / name
     pdf = pikepdf.new()
     pdf.add_blank_page()
     pdf.save(
@@ -473,6 +478,62 @@ def test_pdf_decrypts_with_password_from_email_body(root_analysis, tmp_path, rev
 
 
 @pytest.mark.integration
+def test_pdf_with_a_colon_in_its_name_is_decrypted(root_analysis, tmp_path):
+    # john splits a hash line at ':', and pdf2john puts the file's path in front of the hash
+    email_path = _email(tmp_path, _encrypted_pdf(tmp_path, name="Re: invoice.pdf"), subtype="pdf")
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    analysis = _attachment(email_observable, "Re: invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.password == PASSWORD
+    assert analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag("decrypted_pdf"))
+
+
+@pytest.mark.integration
+def test_pdf_password_with_a_colon_is_decrypted(root_analysis, tmp_path, caplog):
+    password = "ab:cd12"
+    email_path = _email(tmp_path, _encrypted_pdf(tmp_path, password=password),
+                        body=f"The password is {password} thanks", subtype="pdf")
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.password == password
+    assert analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag("decrypted_pdf"))
+    assert _decryption_errors(caplog) == []
+
+
+@pytest.mark.integration
+def test_pdf_decrypted_copy_does_not_overwrite_another_attachment(root_analysis, tmp_path):
+    # the sender names the attachments, so one can carry the name the decrypted copy would get
+    email_path = _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf")
+    message = message_from_bytes(email_path.read_bytes(), policy=policy.default)
+    message.add_attachment(b"the other attachment", maintype="application", subtype="octet-stream",
+                           filename="invoice.pdf.decrypted")
+    email_path.write_bytes(bytes(message))
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    other = _attachment(email_observable, "invoice.pdf.decrypted")
+    assert Path(other.full_path).read_bytes() == b"the other attachment"
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    decrypted = analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag("decrypted_pdf"))
+    with pikepdf.open(decrypted.full_path) as pdf:
+        assert not pdf.is_encrypted
+
+
+@pytest.mark.integration
+def test_pdf_with_a_long_name_is_decrypted(root_analysis, tmp_path, caplog):
+    # 247 bytes is the longest name an attachment keeps; '.decrypted' after it passes NAME_MAX
+    email_path = _email(tmp_path, _encrypted_pdf(tmp_path, name="a" * 243 + ".pdf"), subtype="pdf")
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    email_analysis = email_observable.get_and_load_analysis(EmailAnalysis)
+    attachment = email_analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag("encrypted_pdf"))
+    analysis = attachment.get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.password == PASSWORD
+    assert analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag("decrypted_pdf"))
+    assert _decryption_errors(caplog) == []
+
+
+@pytest.mark.integration
 def test_pdf_password_not_in_email(root_analysis, tmp_path):
     email_path = _email(tmp_path, _encrypted_pdf(tmp_path), body="see attached", subtype="pdf")
     _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
@@ -499,10 +560,23 @@ def test_pdf2john_failure_is_recorded(root_analysis, tmp_path, monkeypatch, capl
 
     analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
     assert analysis.error == "pdf2john.pl failed: not a pdf\n"
-    # a misconfigured pdf2john_path fails this way on every encrypted PDF, so an operator has to hear about it
+    # a misconfigured john_bin_path fails this way on every encrypted PDF, so an operator has to hear about it
     errors = [r for r in caplog.records if r.levelno == logging.ERROR and "pdf2john.pl failed" in r.getMessage()]
     assert len(errors) == 1
     assert "invoice.pdf" in errors[0].getMessage()
+
+
+@pytest.mark.integration
+def test_pdf2john_without_a_hash_is_recorded(root_analysis, tmp_path, caplog):
+    # qpdf recovers a PDF whose startxref points past its end, but pdf2john prints only "<path>:" for it
+    pdf_path = _encrypted_pdf(tmp_path)
+    pdf_path.write_bytes(re.sub(rb"startxref\s+\d+", b"startxref\n99999999", pdf_path.read_bytes()))
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, pdf_path, subtype="pdf"), PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.error and analysis.error.startswith("pdf2john.pl failed")
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and "pdf2john.pl failed" in r.getMessage()]
+    assert len(errors) == 1
 
 
 @pytest.mark.integration
@@ -517,7 +591,9 @@ def test_pdf2john_timeout_is_recorded(root_analysis, tmp_path, monkeypatch):
 
 
 def _decryption_errors(caplog):
-    return [r for r in caplog.records if r.levelno >= logging.ERROR and "decryption for" in r.getMessage()]
+    # the engine logs a module that raised as "analysis module AnalysisModuleAdapter(<class>) failed on ..."
+    return [r for r in caplog.records if r.levelno >= logging.WARNING
+            and f"({PDFEncryptionAnalyzer.__name__}) failed on" in r.getMessage()]
 
 
 @pytest.mark.integration
@@ -528,8 +604,10 @@ def test_pdf_analyzer_output_is_not_an_error(root_analysis, tmp_path, caplog):
     pdf.add_blank_page()
     pdf.save(plain)
 
-    _, email_observable = _analyze(root_analysis, _email(tmp_path, plain, subtype="pdf"), PDF_MODULES + ("pdf_analyzer",))
+    root, email_observable = _analyze(root_analysis, _email(tmp_path, plain, subtype="pdf"), PDF_MODULES + ("pdf_analyzer",))
 
+    # the dump this test is about was produced, so this module was given it
+    assert root.find_observable(lambda o: o.type == F_FILE and o.file_name.endswith(".pdfparser"))
     attachment = _attachment(email_observable, "plain.pdf")
     assert not attachment.get_and_load_analysis(PDFEncryptionAnalysis)
     assert _decryption_errors(caplog) == []
@@ -547,7 +625,16 @@ def test_pdf_damaged_file_is_ignored(root_analysis, tmp_path, caplog):
 
 
 @pytest.mark.integration
-def test_pdf_without_a_carrying_email(root_analysis, tmp_path):
+def test_pdf_without_a_carrying_email(root_analysis, tmp_path, monkeypatch):
+    # with no candidate passwords there is nothing to crack, so the hash is never extracted
+    commands = []
+    real_popen = subprocess.Popen
+
+    def _popen(args, *a, **kw):
+        commands.append(args)
+        return real_popen(args, *a, **kw)
+
+    monkeypatch.setattr("subprocess.Popen", _popen)
     root_analysis.analysis_mode = "test_groups"
     pdf_observable = root_analysis.add_file_observable(str(_encrypted_pdf(tmp_path)))
     root_analysis.save()
@@ -565,23 +652,53 @@ def test_pdf_without_a_carrying_email(root_analysis, tmp_path):
     assert not analysis.email
     assert analysis.word_list == []
     assert analysis.password is None
-    assert analysis.error == "could not crack password"
+    assert analysis.generate_summary() == "PDF Encryption Analysis: no associated email detected"
+    assert not [c for c in commands if any(str(arg).endswith("pdf2john.pl") for arg in c)]
+
+
+def _crash_reports(module_name: str) -> list[dict]:
+    reports = []
+    for path in glob(os.path.join(get_crash_report_root_dir(), "*", "*", "*", "*", "metadata.json")):
+        with open(path) as fp:
+            metadata = json.load(fp)
+        if metadata["module_name"] == module_name:
+            reports.append(metadata)
+    return reports
 
 
 @pytest.mark.integration
-def test_pdf_unexpected_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
-    def _crack(*args):
+def test_pdf_in_an_email_with_no_body(root_analysis, tmp_path):
+    message = EmailMessage()
+    message["From"] = "sender@example.com"
+    message["To"] = "recipient@example.com"
+    message["Subject"] = "invoice"
+    message.add_attachment(_encrypted_pdf(tmp_path).read_bytes(), maintype="application", subtype="pdf", filename="invoice.pdf")
+    email_path = tmp_path / "message.email.rfc822"
+    email_path.write_bytes(bytes(message))
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.email
+    assert analysis.email_body is None
+    assert analysis.generate_summary() == "PDF Encryption Analysis: email body cannot be determined"
+
+
+@pytest.mark.integration
+def test_pdf_unexpected_failure_gets_a_crash_report(root_analysis, tmp_path, monkeypatch):
+    def _crack(*args, **kwargs):
         raise RuntimeError("john exploded")
 
     monkeypatch.setattr("saq.modules.email.encryption.pdf.crack_password", _crack)
+    existing = _crash_reports(ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf"), PDF_MODULES)
 
-    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    attachment = _attachment(email_observable, "invoice.pdf")
+    # the crash report keeps the PDF the module failed on, so the failure can be reproduced
+    reports = [r for r in _crash_reports(ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER) if r not in existing]
+    assert [r["file_sha256"] for r in reports] == [attachment.value]
+    analysis = attachment.get_and_load_analysis(PDFEncryptionAnalysis)
     assert analysis.password is None
-    errors = _decryption_errors(caplog)
-    assert len(errors) == 1
-    assert errors[0].exc_info is not None
-    assert "john exploded" in errors[0].getMessage()
+    assert analysis.error == "decryption failed: john exploded"
 
 
 @pytest.mark.integration
@@ -599,44 +716,3 @@ def test_pdf_ignores_files_that_are_not_pdfs(root_analysis, tmp_path):
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)), PDF_MODULES)
 
     assert not _attachment(email_observable, "invoice.zip").get_and_load_analysis(PDFEncryptionAnalysis)
-
-
-#
-# shared email wordlist helper
-#
-
-
-@pytest.mark.unit
-def test_wordlist_from_email_harvests_the_carried_password(monkeypatch, tmp_path):
-    body = tmp_path / "body.html"
-    body.write_text(f"<p>The password is {PASSWORD} thanks</p>")
-
-    class _Body:
-        full_path = str(body)
-        value = "body.html"
-
-    class _Email:
-        body = _Body()
-
-    monkeypatch.setattr(cracking, "search_down", lambda obj, predicate: _Email())
-
-    email_present, email_body, words = cracking.wordlist_from_email(
-        object(), range_low=4, range_high=11, byte_limit=1024, list_limit=5000)
-    assert email_present
-    assert PASSWORD in email_body
-    assert PASSWORD in words
-
-
-@pytest.mark.unit
-def test_wordlist_from_email_without_a_carrying_email(monkeypatch):
-    monkeypatch.setattr(cracking, "search_down", lambda obj, predicate: None)
-    assert cracking.wordlist_from_email(object(), range_low=4, range_high=11, byte_limit=1024, list_limit=5000) == (False, None, [])
-
-
-@pytest.mark.unit
-def test_wordlist_from_email_with_no_body(monkeypatch):
-    class _Email:
-        body = None
-
-    monkeypatch.setattr(cracking, "search_down", lambda obj, predicate: _Email())
-    assert cracking.wordlist_from_email(object(), range_low=4, range_high=11, byte_limit=1024, list_limit=5000) == (True, None, [])

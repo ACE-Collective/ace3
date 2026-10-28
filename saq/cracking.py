@@ -20,8 +20,7 @@ def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_l
 
     Returns (email_present, email_body, words): whether a carrying EmailAnalysis was found,
     the html-to-text email body (truncated to byte_limit) or None, and the wordlist generated
-    from it. Used by every encryption analyzer that cracks an attachment with a password that
-    the sender wrote in the email body.
+    from it.
     """
     # local import: saq.modules.email imports saq.cracking, so importing it at module level
     # here would be a circular import
@@ -78,7 +77,13 @@ def generate_wordlist(
 
     return list(password_list)
 
-def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str) -> str | None:
+def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str, login: str | None = None) -> str | None:
+    """Cracks the hash in hash_file with john and returns the password, or None.
+
+    A hash file written as the single line '<login>:<hash>' names its login, which has no ':' in
+    it, so everything after it on the --show line is the password, ':' included. Otherwise the
+    line is found by the file's name and the password is its second ':' field, because
+    zip2john and rar2john write more fields after the hash."""
     if not os.path.exists(hash_file):
         raise FileNotFoundError(f"hash file {hash_file} not found")
 
@@ -103,7 +108,10 @@ def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str)
 
     password = None
     for line in stdout.decode(errors='ignore').split('\n'):
-        if os.path.basename(filename) in line:
+        if login is not None:
+            if line.startswith(f'{login}:'):
+                password = line[len(login) + 1:]
+        elif os.path.basename(filename) in line:
             password = line.split(':')[1]
 
     return password

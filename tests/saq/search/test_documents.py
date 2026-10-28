@@ -7,6 +7,7 @@ import pytest
 from saq.constants import F_COMMAND_LINE, F_IPV4
 from saq.modules.command_line import CommandLineAnalysis
 from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis
+from saq.modules.email.encryption.pdf import PDFEncryptionAnalysis
 from saq.modules.email.encryption.rar import RarEncryptionAnalysis
 from saq.modules.email.encryption.zip import ZipEncryptionAnalysis
 from saq.modules.email.rfc822 import EmailAnalysis
@@ -332,7 +333,8 @@ def test_rdap_extractor(root_analysis):
     assert "Creation Date: 2026-10-01" in documents[0].text
 
 
-@pytest.mark.parametrize("analysis_class", [ZipEncryptionAnalysis, RarEncryptionAnalysis, MSOfficeEncryptionAnalysis])
+@pytest.mark.parametrize("analysis_class", [ZipEncryptionAnalysis, RarEncryptionAnalysis, MSOfficeEncryptionAnalysis,
+                                            PDFEncryptionAnalysis])
 def test_encrypted_attachment_email_body_extractor(root_analysis, analysis_class):
     observable = root_analysis.add_observable_by_spec(F_IPV4, "192.0.2.16")
     analysis = analysis_class()
