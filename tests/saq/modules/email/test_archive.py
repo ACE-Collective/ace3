@@ -6,7 +6,8 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.file_manager.file_manager_factory import create_file_manager
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DIRECTIVE_ARCHIVE, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
+from saq.database.pool import get_db_connection
+from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
 from saq.email_archive import archive_email, get_email_archive_dir, query_by_message_id
 from saq.environment import get_global_runtime_settings
 from saq.environment import get_data_dir
@@ -104,70 +105,95 @@ def test_email_archive_results(tmpdir):
 
     assert analysis.generate_summary()
 
-@pytest.mark.skip()
+def _email_file(root_analysis, name: str, message_id: str | None = TEST_MESSAGE_ID) -> FileObservable:
+    """An email file with the EmailAnalysis the engine would have given it first (a declared
+    dependency), or none when message_id is None."""
+    file_path = root_analysis.create_file_path(name)
+    with open(file_path, "w") as fp:
+        fp.write(f"email {name}")
+
+    file_observable = root_analysis.add_file_observable(file_path)
+    assert isinstance(file_observable, FileObservable)
+    file_observable.add_directive(DIRECTIVE_ARCHIVE)
+    if message_id is not None:
+        email_analysis = EmailAnalysis()
+        email_analysis.email = {KEY_MESSAGE_ID: message_id, KEY_ENV_RCPT_TO: [TEST_RECIPIENT]}
+        file_observable.add_analysis(email_analysis)
+    return file_observable
+
+def _archive_entries() -> list[str]:
+    archive_dir = get_email_archive_dir()
+    return os.listdir(archive_dir) if os.path.isdir(archive_dir) else []
+
+def _url_index_count(archive_id: int, url: str) -> int:
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM archive_index WHERE field = 'url' AND hash = UNHEX(SHA2(%s, 256)) AND archive_id = %s",
+            (url, archive_id))
+        return cursor.fetchone()[0]
+
 @pytest.mark.integration
-def test_email_archive_action(root_analysis, tmpdir, monkeypatch):
+@pytest.mark.parametrize("case,expected_log", [
+    ("whitelisted", None),
+    ("decrypted", "detected decrypted email"),
+    ("no_email_analysis", "unable to obtain EmailAnalysis"),
+])
+def test_email_archive_action_skips_files_it_should_not_archive(root_analysis, caplog, case, expected_log):
     analyzer = EmailArchiveAction(
         context=create_test_context(root=root_analysis),
         config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
     assert analyzer.valid_observable_types == [ F_FILE ]
     assert analyzer.required_directives == [ DIRECTIVE_ARCHIVE ]
-    assert analyzer.generated_analysis_type is EmailArchiveResults
 
-    whitelisted_path = tmpdir / "whitelisted"
-    whitelisted_path.write_binary(b"")
-
-    # whitelisted files are skipped
-    whitelisted_observable = root_analysis.add_file_observable(whitelisted_path)
-    assert isinstance(whitelisted_observable, Observable)
-    whitelisted_observable.whitelist()
-    assert analyzer.execute_analysis(whitelisted_observable) == AnalysisExecutionResult.COMPLETED
-
-    # files tagged as decrypted_archive do not need to be archived
-    tagged_path = tmpdir / "tagged"
-    tagged_path.write_binary(b"")
-    tagged_observable = root_analysis.add_file_observable(tagged_path)
-    assert isinstance(tagged_observable, Observable)
-    tagged_observable.add_tag(TAG_DECRYPTED_EMAIL)
-    assert analyzer.execute_analysis(tagged_observable) == AnalysisExecutionResult.COMPLETED
-
-    file_path = root_analysis.create_file_path("email.rfc822")
-    with open(file_path, "w") as fp:
-        fp.write("test")
-
-    file_observable = root_analysis.add_file_observable(file_path)
-    assert isinstance(file_observable, Observable)
-    file_observable.add_directive(DIRECTIVE_ARCHIVE)
-
-    # EmailAnalysis is a declared dependency; provide it directly since we invoke
-    # execute_analysis outside the engine (which would normally seed it). Only the
-    # EmailAnalysis lookup is mocked; other analysis lookups fall through to the real one.
-    original_get_and_load_analysis = file_observable.get_and_load_analysis
-    def mock_get_and_load_analysis(analysis_type, *args, **kwargs):
-        if analysis_type is EmailAnalysis:
-            return MockEmailAnalysis(message_id=TEST_MESSAGE_ID, env_rcpt_to=[TEST_RECIPIENT])
-        return original_get_and_load_analysis(analysis_type, *args, **kwargs)
-    monkeypatch.setattr(file_observable, "get_and_load_analysis", mock_get_and_load_analysis)
-
-    # archive directory should be empty
-    assert not len(os.listdir(get_email_archive_dir()))
+    # the first two have everything archiving needs, so only the check under test stops them
+    file_observable = _email_file(root_analysis, "email.rfc822", message_id=None if case == "no_email_analysis" else TEST_MESSAGE_ID)
+    if case == "whitelisted":
+        file_observable.whitelist()
+    elif case == "decrypted":
+        file_observable.add_tag(TAG_DECRYPTED_EMAIL)
 
     assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
-    # archive directory should have one entry 
-    assert len(os.listdir(get_email_archive_dir())) == 1
+    assert file_observable.get_analysis(EmailArchiveResults) is None
+    assert _archive_entries() == []
+    assert not query_by_message_id(TEST_MESSAGE_ID)
+    if expected_log:
+        assert any(expected_log in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
 
-    from saq.modules.email.rfc822 import EmailAnalysis
-    file_observable.add_analysis(EmailAnalysis())
+@pytest.mark.integration
+def test_post_analysis_indexes_the_urls_found_under_each_archived_email(root_analysis):
+    analyzer = EmailArchiveAction(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
 
-    some_analysis = Analysis()
-    file_observable.add_analysis(some_analysis)
-    some_analysis.add_observable_by_spec(F_URL, "http://www.test.com/")
+    archived = _email_file(root_analysis, "archived.rfc822")
+    assert analyzer.execute_analysis(archived) == AnalysisExecutionResult.COMPLETED
+    assert len(_archive_entries()) == 1
+    archive_results = archived.get_analysis(EmailArchiveResults)
+    assert isinstance(archive_results, EmailArchiveResults)
+
+    # a URL that an analysis of the email found
+    content_analysis = Analysis()
+    archived.add_analysis(content_analysis)
+    content_analysis.add_observable_by_spec(F_URL, "http://archived.example.com/")
+
+    # an email that was analyzed but never archived has nothing to index under
+    not_archived = _email_file(root_analysis, "not_archived.rfc822", message_id="<other-message-id>")
+    other_analysis = Analysis()
+    not_archived.add_analysis(other_analysis)
+    other_analysis.add_observable_by_spec(F_URL, "http://not-archived.example.com/")
+
+    # a URL that is not under any email
+    root_analysis.add_observable_by_spec(F_URL, "http://elsewhere.example.com/")
 
     analyzer.execute_post_analysis()
 
-    # make sure it got indexed
-    assert query_by_message_id(TEST_MESSAGE_ID)
+    assert _url_index_count(archive_results.archive_id, "http://archived.example.com/") == 1
+    with get_db_connection(DB_EMAIL_ARCHIVE) as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM archive_index WHERE field = 'url'")
+        assert cursor.fetchone()[0] == 1
 
 @pytest.mark.unit
 @pytest.mark.parametrize("message_id,env_rcpt_to,expected_log_fragment", [
