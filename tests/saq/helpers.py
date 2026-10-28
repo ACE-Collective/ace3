@@ -5,12 +5,11 @@ import logging
 from multiprocessing import Manager, Pipe, Process, RLock
 import multiprocessing.util
 import os
-import secrets
 import subprocess
 import sys
 
 import time
-from typing import List, Union
+from typing import Union
 import uuid
 
 
@@ -22,7 +21,6 @@ from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
     DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_SIMULATED,
-    F_FILE,
     F_FILE_NAME,
     F_FQDN,
     F_HOSTNAME,
@@ -38,7 +36,6 @@ from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
 from tests import unittest_session
-from saq.modules.email import EmailAnalysis
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 import pytest
@@ -84,255 +81,6 @@ def restore_integration_configurations(snapshot: IntegrationConfigurationSnapsho
     config_module.REGISTERED_INTEGRATION_CONFIGURATIONS.update(registered)
     config_module.INTEGRATION_CONFIGURATIONS.clear()
     config_module.INTEGRATION_CONFIGURATIONS.update(resolved)
-
-class MockObservable:
-    def __init__(self, type: str, observable_value: str, faqueue_hits: Union[int, None]):
-        self.type = type
-        self.value = observable_value
-        self.all_analysis: List['MockAnalysis'] = []
-        self.tags = []
-        self.faqueue_hits = faqueue_hits
-
-    def get_analysis(self, analysis_class) -> Union['MockAnalysis', None]:
-        return next((a for a in self.all_analysis if isinstance(a, analysis_class)), None)
-
-    def has_tag(self, tag_value):
-        return True
-
-
-class MockFileObservable(MockObservable):
-    def __init__(self, type: str, observable_value: str, faqueue_hits: Union[int, None]):
-        super().__init__(type, observable_value, faqueue_hits)
-        self.path = observable_value
-        self.md5_hash = secrets.token_hex(nbytes=16)
-        self.sha1_hash = secrets.token_hex(nbytes=160)
-        self.sha256_hash = secrets.token_hex(nbytes=256)
-        self.size = 100
-        self.mime_type = 'text/plain'
-
-
-class MockAnalysis:
-    pass
-
-class MockEmailAnalysis(MockAnalysis, EmailAnalysis):
-    @property
-    def observables(self):
-        return []
-
-    @property
-    def mail_from_address(self):
-        return 'from@bad.com'
-
-    @property
-    def x_auth_id(self):
-        return 'xauthid@bad.com'
-
-    @property
-    def x_original_sender(self):
-        return 'xoriginalsender@bad.com'
-
-    @property
-    def x_sender(self):
-        return 'xsender@bad.com'
-
-    @property
-    def x_sender_id(self):
-        return 'xsenderid@bad.com'
-
-    @property
-    def mail_to_addresses(self):
-        return ['to@company.com']
-
-    @property
-    def cc(self):
-        return ['cc@company.com']
-
-    @property
-    def reply_to_address(self):
-        return 'replyto@bad.com'
-
-    @property
-    def return_path(self):
-        return 'returnpath@bad.com'
-
-    @property
-    def subject(self):
-        return 'Subject'
-
-    @property
-    def originating_ip(self):
-        return '192.168.1.1'
-
-    @property
-    def x_sender_ip(self):
-        return '192.168.1.2'
-
-    @property
-    def user_agent(self):
-        return 'User Agent'
-
-    @property
-    def x_mailer(self):
-        return 'X Mailer'
-
-    @property
-    def message_id(self):
-        return '<email@bad.com>'
-
-    @property
-    def attachments(self):
-        return [MockFileObservable(F_FILE, 'attachment.jpg', None)]
-
-
-class MockEvent:
-    def __init__(self):
-        self.uuid = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
-
-        email_file_observable = MockFileObservable(F_FILE, 'email.rfc822', None)
-
-        email_analysis = MockEmailAnalysis()
-        email_file_observable.all_analysis.append(email_analysis)
-
-        self.all_email_file_observables = [email_file_observable]
-        self.all_file_observables = [MockFileObservable(F_FILE, 'test.exe', None)]
-        self.all_sandbox_reports = [
-            {
-                'contacted_hosts': [
-                    {
-                        'ip': '192.168.1.99',
-                        'port': '1332',
-                        'protocol': 'TCP',
-                        'location': 'US',
-                        'associated_domains': []
-                    },
-                    {
-                        'ip': '8.8.8.8',
-                        'port': '53',
-                        'protocol': 'UDP',
-                        'location': 'US',
-                        'associated_domains': []
-                    },
-                ],
-                'created_services': [],
-                'dns_requests': [
-                    {
-                        'request': 'test3.com',
-                        'type': 'A',
-                        'answer': '23.215.102.10',
-                        'answer_type': ''
-                    },
-                    {
-                        'request': 'ctldl.windowsupdate.com',
-                        'type': 'A',
-                        'answer': '23.37.124.8',
-                        'answer_type': ''
-                    },
-                    {
-                        'request': 'google.com',
-                        'type': 'A',
-                        'answer': '172.217.6.78',
-                        'answer_type': ''
-                    }
-                ],
-                'dropped_files': [
-                    {
-                        'filename': 'MSForms.exd',
-                        'path': 'C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\VBE\\MSForms.exd',
-                        'size': '147284',
-                        'type': 'unknown',
-                        'md5': '50db97ae80d573d9145a735e39717f84',
-                        'sha1': '75438b1010eb5fd38949e530eea2585c87bd1cf9',
-                        'sha256': 'bf08f9d40ace59aa596733f2371e0eaf74fa424de5ddbf9011aeb6d84b612ab5',
-                        'sha512': '',
-                        'ssdeep': ''
-                    },
-                    {
-                        'filename': 'MSForms.exd',
-                        'path': '%TEMP%\\VBE\\MSForms.exd',
-                        'size': '147284',
-                        'type': 'data',
-                        'md5': 'e9240cda4d5e1fc3bafbf9a02904cb98',
-                        'sha1': '617f88173d3d2e848c38b55906cf03c3989d76d0',
-                        'sha256': 'f99a9f6e38a76415f0d95f894ebff36ab249c145e36427ee874a5d73d47e3d64',
-                        'sha512': 'f72b84997cffa6a4113e3b2e11f84e925bb005a99cf77674409e0e7715f5f1b29b10b12b5f7875fa0a567103d6e14f5e0e0e3c5611311388e77d8416e9a0adb7',
-                        'ssdeep': ''
-                    }
-                ],
-                'filename': 'sample.xls',
-                'http_requests': [
-                    {
-                        'host': 'domain2.com',
-                        'port': '80',
-                        'uri': '/index.php',
-                        'url': 'http://domain2.com/index.php',
-                        'method': 'GET',
-                        'user_agent': 'User Agent'
-                    },
-                    {
-                        'host': 'google.com',
-                        'port': '80',
-                        'uri': '/about',
-                        'url': 'http://google.com/about',
-                        'method': 'GET',
-                        'user_agent': 'User Agent'
-                    }
-                ],
-                'malware_family': '',
-                'md5': 'c6f4b263a35cd192a77ecfaf25f44f0a',
-                'memory_strings': [],
-                'memory_urls': [],
-                'mutexes': [
-                    'asdf',
-                    'abcd',
-                    '1234',
-                ],
-                'process_tree_urls': [],
-                'process_trees': [],
-                'process_trees_decoded': [],
-                'processes': [
-                    {
-                        'command': 'test.exe',
-                        'decoded_command': 'test.exe',
-                        'pid': '1',
-                        'parent_pid': '0',
-                        'urls': [
-                            'http://domain3.com',
-                            'http://test2.com/index',
-                        ]
-                    }
-                ],
-                'registry_keys': [
-                    'HKEY_CURRENT_USER\\Software\\Microsoft\\Office\\12.0\\Excel'
-                ],
-                'resolved_apis': [],
-                'sandbox_urls': [],
-                'sha1': 'b0ca80e9b0538d72660234556e1c7fa0469b803a',
-                'sha256': '7b8cd5e6a4123d39378cf7fe2a1e262ecabcb815285243603025f76b0fc3d38f',
-                'sha512': 'a3704171980cc64333c65c1bf03be0dc6e261e6957baafa012340cff7204c97a6ce88fb43814c07ae74d7b447edb18a1bc16d08f8d5f9c4ddab9175ac5acdcab',
-                'ssdeep': '',
-                'started_services': [],
-                'strings_urls': [],
-                'suricata_alerts': []
-            }
-        ]
-        self.all_sandbox_samples = []
-        self.all_urls = ['http://www.domain.com']
-        self.all_observables_sorted = [
-            MockObservable('fqdn', 'domain.com', 1000),
-            MockObservable('fqdn', 'fastapi.tiangolo.com', 0),
-            MockObservable('ipv4', '8.8.8.8', 1000),
-            MockObservable('md5', 'c6f4b263a35cd192a77ecfaf25f44f0a', None),
-            MockObservable('fqdn', 'ctldl.windowsupdate.com', 1000),
-            MockObservable('fqdn', 'crl.microsoft.com', 1000),
-            MockObservable('mutex', '1234', 1000),
-            MockObservable('url', 'http://test2.com/index', 1000),
-        ]
-        self.all_fqdns = [
-            'domain.com',
-            'domain3.com',
-            'fastapi.tiangolo.com',
-            'google.com',
-        ]
 
 def create_root_analysis(tool=None, tool_instance=None, alert_type=None, desc=None, event_time=None,
                          action_counts=None, details=None, name=None, remediation=None, state=None,

@@ -56,16 +56,12 @@ from sqlalchemy.orm import (
 from sqlalchemy.orm.session import Session
 
 from saq.analysis.analysis import Analysis
-from saq.analysis.observable import Observable as _Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import (
     DISPOSITION_DELIVERY,
     DISPOSITION_OPEN,
     DISPOSITION_REVIEW_UNREVIEWED,
-    F_FILE,
-    F_FQDN,
-    F_URL,
     MAX_DETECTION_VALUE_LENGTH,
     QUEUE_DEFAULT,
 )
@@ -75,7 +71,7 @@ from saq.database.retry import execute_with_retry, retry
 from saq.database.util.index import IndexSyncResult, sync_alert_index
 from saq.disposition import get_disposition_rank
 from saq.environment import get_global_runtime_settings
-from saq.util import find_all_url_domains, validate_uuid
+from saq.util import validate_uuid
 from saq.util.ui import get_tag_score
 
 if TYPE_CHECKING:
@@ -393,24 +389,6 @@ class Alert(Base):
     def has_email_analysis(self) -> bool:
         from saq.modules.email import EmailAnalysis
         return bool(self.root_analysis.find_observable(lambda o: o.get_analysis(EmailAnalysis)))
-
-    @property
-    def has_renderer_screenshot(self) -> bool:
-        # XXX needs to be updated
-        return False
-
-    @property
-    def screenshots(self) -> list[dict]:
-        return [
-            {'alert_id': self.uuid, 'observable_id': o.id, 'scaled_width': o.scaled_width, 'scaled_height': o.scaled_height}
-            for o in self.all_observables
-            if (
-                    o.type == F_FILE
-                    and o.is_image
-                    and o.file_name.startswith('renderer_')
-                    and o.file_name.endswith('.png')
-            )
-        ]
 
     @validates('description')
     def validate_description(self, key, value):
@@ -932,40 +910,6 @@ class Event(Base):
     def alert_objects(self) -> list["Alert"]:
         return [m.alert for m in self.alert_mappings]
 
-    # XXX get rid of this
-    @property
-    def all_observables_sorted(self) -> list[_Observable]: # XXX
-        """Returns a sorted list (by type, then value) of all of the unique observables in all of the alerts in the
-        event. It prefers to add observables that have FA Queue results. So if the same observable is in multiple
-        alerts, but only one has FA Queue results, it will add that one to the list."""
-
-        observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.all_observables:
-
-                # Check if this observable is already in the list
-                existing_observable = next((o for o in observables if o == observable), None)
-
-                # If it is, then make sure the one that is in the list has FA Queue analysis
-                if existing_observable:
-
-                    # Continue if the version of the observable already in the list has FA Queue analysis
-                    if existing_observable.faqueue_hits is not None:
-                        continue
-
-                    # If this current observable has FA Queue analysis, remove the existing observable and add the
-                    # current one to the list instead
-                    if observable.faqueue_hits is not None:
-                        observables.remove(existing_observable)
-                        observables.append(observable)
-
-                # We haven't seen this observable yet, so just add it to the list
-                else:
-                    observables.append(observable)
-
-        return sorted(observables, key=lambda o: (o.type, o.value))
-
     @property
     def alerts_still_analyzing(self) -> bool:
         """Returns True if any of the alerts in the event have not completed their analysis."""
@@ -1036,96 +980,6 @@ class Event(Base):
     @property
     def wiki(self) -> str:
         return ''
-
-    @property
-    def alert_with_email_and_screenshot(self) -> "Alert":
-        return next((a for a in self.alert_objects if a.has_email_analysis and a.has_renderer_screenshot), None)
-
-    @property
-    def all_file_observables(self) -> list[_Observable]:
-        file_observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.find_observables(lambda o: o.type == F_FILE):
-                file_observables.append(observable)
-
-        return file_observables
-
-    @property
-    def all_email_file_observables(self) -> list[_Observable]:
-        from saq.modules.email import EmailAnalysis
-
-        file_observables = []
-
-        for alert in self.alert_objects:
-            for observable in alert.root_analysis.find_observables(lambda o: o.type == F_FILE):
-                if observable.get_analysis(EmailAnalysis):
-                    file_observables.append(observable)
-
-        return file_observables
-
-    @property
-    def all_emails(self) -> set[Analysis]:
-        from saq.modules.email import EmailAnalysis
-
-        emails = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.get_analysis(EmailAnalysis))
-            email_analyses = {o.get_analysis(EmailAnalysis) for o in observables}
-
-            # Inject the alert's UUID into the EmailAnalysis so that we maintain a link of alert->email
-            for email_analysis in email_analyses:
-                email_analysis.alert_uuid = alert.uuid
-
-            emails |= email_analyses
-
-        return emails
-
-    @property
-    def all_url_domain_counts(self) -> dict[str, int]:
-        url_domain_counts = {}
-
-        for alert in self.alert_objects:
-            domain_counts = find_all_url_domains(alert.root_analysis)
-            for d in domain_counts:
-                if d not in url_domain_counts:
-                    url_domain_counts[d] = domain_counts[d]
-                else:
-                    url_domain_counts[d] += domain_counts[d]
-
-        return url_domain_counts
-
-    @property
-    def all_urls(self) -> set[str]:
-        urls = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.type == F_URL)
-            urls |= {o.value for o in observables}
-
-        return urls
-
-    @property
-    def all_fqdns(self) -> set[str]:
-        fqdns = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.type == F_FQDN)
-            fqdns |= {o.value for o in observables}
-
-        return fqdns
-
-    @property
-    def all_user_analysis(self) -> set[Analysis]:
-        from saq.modules.user import UserAnalysis
-        user_analysis = set()
-
-        for alert in self.alert_objects:
-            observables = alert.root_analysis.find_observables(lambda o: o.get_analysis(UserAnalysis))
-            user_analysis |= {o.get_analysis(UserAnalysis) for o in observables}
-
-        return user_analysis
 
     @property
     def showable_tags(self) -> dict[str, list]:

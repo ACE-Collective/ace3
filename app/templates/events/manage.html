@@ -65,9 +65,6 @@
                         <th></th>
                         <th><span id='sort_by_date' style="cursor:pointer">Date{% if sort_by == "date" %}{% if sort_dir %}&darr;{% else %}&uarr;{% endif %}{% endif %}</span></th>
                         <th><span id='sort_by_event' style="cursor:pointer">Event{% if sort_by == "event" %}{% if sort_dir %}&darr;{% else %}&uarr;{% endif %}{% endif %}</span></th>
-                        {% if tip.name %}
-                            <th><span id="tip_name" style="cursor:pointer">TIP</span></th>
-                        {% endif %}
                         <th><span id='sort_by_campaign' style="cursor:pointer">Threat Actor{% if sort_by == "campaign" %}{% if sort_dir %}&darr;{% else %}&uarr;{% endif %}{% endif %}</span></th>
                         <th><span>Threat Type</span></th>
                         <th><span>Threat Name</span></th>
@@ -95,9 +92,6 @@
                                                 {% endfor %}
                                                 {% endif %}
                         </td>
-                        {% if tip.name and tip.event_url(event.uuid) %}
-                            <td><a href="{{ tip.event_url(event.uuid) }}" target="_blank">{{ tip.name }}</a></td>
-                        {% endif %}
                         <td class="event-cell">{{event.campaign.name}}</td>
                         <td>
                             {% for t in event.threats %}
