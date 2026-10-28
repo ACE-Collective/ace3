@@ -276,6 +276,44 @@ def test_a_symlink_member_is_skipped(root_analysis, tmp_path, caplog):
     assert hashlib.sha256(b"secret").hexdigest() not in os.listdir(root_analysis.hardcopy_dir)
 
 
+@pytest.mark.integration
+def test_the_permissions_pass_leaves_link_targets_alone(root_analysis, tmp_path, caplog):
+    """unzip recreates symlink members, and chmod follows a link: the targets came out 0o664 and
+    0o775, so an archive could make any file ACE owns readable by anyone."""
+    secret = tmp_path / "secret.key"
+    secret.write_text("secret")
+    secret.chmod(0o600)
+    secret_dir = tmp_path / "secrets"
+    secret_dir.mkdir(mode=0o700)
+    xlsx_path = tmp_path / "report.xlsx"
+    with zipfile.ZipFile(xlsx_path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", "<workbook/>")
+        _add_member_with_mode(archive, "key.txt", stat.S_IFLNK | 0o777, str(secret))
+        _add_member_with_mode(archive, "dir", stat.S_IFLNK | 0o777, str(secret_dir))
+        _add_member_with_mode(archive, "dangling.txt", stat.S_IFLNK | 0o777, str(tmp_path / "missing"))
+
+    root_analysis.analysis_mode = "test_groups"
+    file_observable = root_analysis.add_file_observable(str(xlsx_path))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_FILE_TYPE, "test_groups")
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_ARCHIVE, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+    assert stat.S_IMODE(secret_dir.stat().st_mode) == 0o700
+    # the dangling link has nothing to chmod, which is no error either
+    assert not [r for r in caplog.records if r.getMessage().startswith("unable to adjust permissions")]
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(file_observable.uuid).get_and_load_analysis(ArchiveAnalysis)
+    assert analysis
+    assert sorted(analysis.extracted_files) == ["[Content_Types].xml", "xl/workbook.xml"]
+
+
 
 @pytest.fixture
 def hanging_tools(monkeypatch):

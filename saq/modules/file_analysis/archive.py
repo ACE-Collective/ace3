@@ -56,11 +56,15 @@ def order_archive_file_list(file_list: list[str]) -> list[str]:
 
 def normalize_extracted_permissions(extracted_path: str):
     """Makes everything under extracted_path readable by anyone (dirs 0o775, files 0o664).
-    The walk is top-down so a directory is fixed before os.walk tries to list it."""
+    The walk is top-down so a directory is fixed before os.walk tries to list it.
+    Symbolic links are skipped: chmod follows them, and the archive picked where they point."""
     try:
         for root, dirs, files in os.walk(extracted_path):
             for dir_name in dirs:
                 full_path = os.path.join(root, dir_name)
+                if os.path.islink(full_path):
+                    continue
+
                 try:
                     os.chmod(full_path, 0o775)
                 except Exception as e:
@@ -68,6 +72,9 @@ def normalize_extracted_permissions(extracted_path: str):
 
             for file_name in files:
                 full_path = os.path.join(root, file_name)
+                if os.path.islink(full_path):
+                    continue
+
                 try:
                     os.chmod(full_path, 0o664)
                 except Exception as e:
