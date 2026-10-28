@@ -114,7 +114,7 @@ def execute_with_retry(db, cursor, sql_or_func, params=(), attempts=15, commit=F
                 try:
                     db.rollback()
                 except Exception as rollback_error:
-                    logging.error("rollback failed for transaction in deadlock: {}".format(rollback_error))
+                    logging.exception("rollback failed for transaction in deadlock: {}".format(rollback_error))
                     raise e
 
                 count += 1
@@ -224,13 +224,6 @@ def retry_sql_on_deadlock(executable, *args, **kwargs):
 
     assert isinstance(executable, Executable)
     return retry_on_deadlock(executable, *args, **kwargs)
-
-def retry_multi_sql_on_deadlock(executables, *args, **kwargs):
-    from sqlalchemy import Executable
-
-    assert isinstance(executables, list)
-    assert all([isinstance(_, Executable) for _ in executables])
-    return retry_on_deadlock(executables, *args, **kwargs)
 
 def retry(func, *args, **kwargs):
     """Executes the wrapped function with retry_on_deadlock."""
