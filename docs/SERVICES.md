@@ -122,6 +122,8 @@ class MyService(ACEServiceInterface):
         self.manager.wait()
 ```
 
+A service that works through the rows of a database table is built on `saq/queue_service.py` instead, as remediation, external remediation checks and file collection are. A `QueueCollector` thread locks the rows that are due and hands each one to the `QueueWorker` registered under its name, and the worker runs its own threads over an in-memory queue. The subclasses supply the table, which rows are due (`filter_candidates()`, `ready()`), the work item (`build_work_item()`) and what is done with it (`process_one()`). A `QueueManager` lists the workers the configuration asks for, and a `QueueService` needs only `create_manager()`.
+
 Add a `SERVICE_MYSERVICE = "myservice"` constant in `saq/constants.py` alongside the other `SERVICE_*` entries and use it instead of a string literal.
 
 ### 2. Register the configuration

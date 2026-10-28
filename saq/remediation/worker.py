@@ -1,98 +1,31 @@
 from datetime import UTC, datetime
 import logging
-from queue import Empty, Queue
-from threading import Event, Thread
 
 from saq.database.model import Remediation, RemediationHistory
-from saq.database.pool import get_db, remove_all_sessions
-from saq.remediation.interface import RemediationListener
+from saq.database.pool import get_db
+from saq.queue_service import QueueWorker
 from saq.remediation.remediator import Remediator
 from saq.remediation.types import RemediationWorkItem, RemediatorResult, RemediatorStatus
-from saq.shutdown import is_shutting_down
 
 
-class RemediationWorker(RemediationListener):
+class RemediationWorker(QueueWorker[RemediationWorkItem]):
     def __init__(self, remediator: Remediator):
+        super().__init__()
         self.remediator = remediator
-        self.work_queue = Queue[RemediationWorkItem]()
-        self.worker_threads: list[Thread] = []
-        self.startup_events: list[Event] = []
-        self.shutdown_event = Event()
-        # the timeout for the work queue get operation
-        self.queue_wait_timeout = 1
 
-    #
-    # RemediationListener interface
-    # ------------------------------------------------------------------------
+    @property
+    def name(self) -> str:
+        return self.remediator.name
 
-    def handle_remediation_request(self, remediation: RemediationWorkItem):
-        if remediation.name != self.remediator.name:
-            raise ValueError(f"remediation name {remediation.name} does not match remediator name {self.remediator.name}")
+    @property
+    def thread_count(self) -> int:
+        return self.remediator.config.thread_count
 
-        logging.info(f"received remediation request for {remediation.type} {remediation.key}")
-        self.work_queue.put(remediation)
+    def describe(self, work_item: RemediationWorkItem) -> str:
+        return f"remediation {work_item.id} ({work_item.name} {work_item.type} {work_item.key})"
 
-    #
-    # Worker implementation
-    # ------------------------------------------------------------------------
-
-    def start(self):
-        logging.info(f"starting {self.remediator.config.thread_count} threads for remediator {self.remediator.name}")
-        for index in range(self.remediator.config.thread_count):
-            startup_event = Event()
-            self.startup_events.append(startup_event)
-            thread = Thread(target=self.worker_loop, name=f"RemediationWorker-{index}", args=(startup_event,))
-            self.worker_threads.append(thread)
-            thread.start()
-
-    def start_single_threaded(self):
-        # with the shutdown event set each pass of the loop takes at most one item; the
-        # process-wide flag is what a signal sets while this runs on the main thread
-        self.stop()
-        while not self.work_queue.empty() and not is_shutting_down():
-            self.worker_loop(Event())
-
-    def wait_for_start(self, timeout: float) -> bool:
-        for index, startup_event in enumerate(self.startup_events):
-            if not startup_event.wait(timeout):
-                logging.error(f"worker {index} did not start")
-                return False
-
-        return True
-    
-    def stop(self):
-        self.shutdown_event.set()
-    
-    def wait(self):
-        for thread in self.worker_threads:
-            thread.join()
-
-    def worker_loop(self, startup_event: Event):
-        startup_event.set()
-        while True:
-            work = None
-
-            try:
-                work = self.work_queue.get(timeout=self.queue_wait_timeout)
-            except Empty:
-                pass
-
-            try:
-                if work:
-                    self.remediate(work)
-            except Exception as e:
-                logging.exception(f"error remediating {work.name} {work.type} {work.key} (remediation {work.id}): {e}")
-            finally:
-                if work:
-                    # a failed commit leaves this thread's session needing a rollback, and every
-                    # later remediation on the thread would fail on it until the service restarts
-                    try:
-                        remove_all_sessions()
-                    except Exception as e:
-                        logging.exception(f"error removing database connection: {e}")
-
-            if self.shutdown_event.is_set():
-                break
+    def process_one(self, work_item: RemediationWorkItem):
+        self.remediate(work_item)
 
     def remediate(self, target: RemediationWorkItem) -> RemediatorResult:
         logging.info(f"STARTED {target.action.value[:-1]}ing {target.name} {target.key}")

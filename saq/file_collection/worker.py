@@ -1,130 +1,64 @@
 from datetime import UTC, datetime
 import logging
-from queue import Empty, Queue
-from threading import Event, Lock, Thread
+from threading import Lock
 from typing import Optional
 
 from sqlalchemy.sql import func
 
 from saq.database.model import FileCollection, FileCollectionHistory
-from saq.database.pool import get_db, remove_all_sessions
+from saq.database.pool import get_db
 from saq.file_collection.database import get_file_collection
 from saq.file_collection.file_collector import FileCollector
-from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.types import (
     FileCollectionStatus,
     FileCollectionWorkItem,
     FileCollectorResult,
     FileCollectorStatus,
 )
-from saq.shutdown import is_shutting_down
+from saq.queue_service import QueueWorker
 
 
-class FileCollectionWorker(FileCollectionListener):
+class FileCollectionWorker(QueueWorker[FileCollectionWorkItem]):
     """Worker that executes file collection requests using a FileCollector implementation."""
 
     def __init__(self, file_collector: FileCollector):
+        super().__init__()
         self.file_collector = file_collector
-        self.work_queue: Queue[FileCollectionWorkItem] = Queue()
-        self.worker_threads: list[Thread] = []
-        self.startup_events: list[Event] = []
-        self.shutdown_event = Event()
-        # the timeout for the work queue get operation
-        self.queue_wait_timeout = 1
         # ids of the collections we have accepted but not yet finished (queued or in progress)
         self._pending_ids: set[int] = set()
         self._pending_ids_lock = Lock()
 
-    #
-    # FileCollectionListener interface
-    # ------------------------------------------------------------------------
+    @property
+    def name(self) -> str:
+        return self.file_collector.name
 
-    def handle_file_collection_request(self, work_item: FileCollectionWorkItem):
-        if work_item.name != self.file_collector.name:
-            raise ValueError(
-                f"file collection name {work_item.name} does not match "
-                f"file collector name {self.file_collector.name}"
-            )
+    @property
+    def thread_count(self) -> int:
+        return self.file_collector.config.thread_count
 
-        logging.info(f"received file collection request for {work_item.type} {work_item.key}")
+    def describe(self, work_item: FileCollectionWorkItem) -> str:
+        return f"file collection {work_item.id} ({work_item.name} {work_item.type} {work_item.key})"
+
+    def log_extra(self, work_item: FileCollectionWorkItem) -> dict:
+        return {"alert_uuid": work_item.alert_uuid}
+
+    def handle_request(self, work_item: FileCollectionWorkItem):
+        # holding the lock while the item is queued keeps a worker thread from finishing it and
+        # discarding its id before the id is added
         with self._pending_ids_lock:
+            super().handle_request(work_item)
             self._pending_ids.add(work_item.id)
-        self.work_queue.put(work_item)
 
     def pending_collection_ids(self) -> set[int]:
         with self._pending_ids_lock:
             return set(self._pending_ids)
 
-    #
-    # Worker implementation
-    # ------------------------------------------------------------------------
-
-    def start(self):
-        logging.info(
-            f"starting {self.file_collector.config.thread_count} threads "
-            f"for file collector {self.file_collector.name}"
-        )
-        for index in range(self.file_collector.config.thread_count):
-            startup_event = Event()
-            self.startup_events.append(startup_event)
-            thread = Thread(
-                target=self.worker_loop,
-                name=f"FileCollectionWorker-{self.file_collector.name}-{index}",
-                args=(startup_event,),
-            )
-            self.worker_threads.append(thread)
-            thread.start()
-
-    def start_single_threaded(self):
-        # with the shutdown event set each pass of the loop takes at most one item; the
-        # process-wide flag is what a signal sets while this runs on the main thread
-        self.stop()
-        while not self.work_queue.empty() and not is_shutting_down():
-            self.worker_loop(Event())
-
-    def wait_for_start(self, timeout: float) -> bool:
-        for index, startup_event in enumerate(self.startup_events):
-            if not startup_event.wait(timeout):
-                logging.error(f"worker {index} did not start")
-                return False
-
-        return True
-
-    def stop(self):
-        self.shutdown_event.set()
-
-    def wait(self):
-        for thread in self.worker_threads:
-            thread.join()
-
-    def worker_loop(self, startup_event: Event):
-        startup_event.set()
-        while True:
-            work = None
-
-            try:
-                work = self.work_queue.get(timeout=self.queue_wait_timeout)
-            except Empty:
-                pass
-
-            try:
-                if work:
-                    self.collect(work)
-            except Exception as e:
-                logging.exception(f"error executing work: {e}")
-            finally:
-                if work:
-                    with self._pending_ids_lock:
-                        self._pending_ids.discard(work.id)
-                    # discard the thread-local session so the next item starts from a fresh
-                    # transaction (and a fresh snapshot of the file_collection table)
-                    try:
-                        remove_all_sessions()
-                    except Exception as e:
-                        logging.exception(f"error removing database connection: {e}")
-
-            if self.shutdown_event.is_set():
-                break
+    def process_one(self, work_item: FileCollectionWorkItem):
+        try:
+            self.collect(work_item)
+        finally:
+            with self._pending_ids_lock:
+                self._pending_ids.discard(work_item.id)
 
     def claim(self, target: FileCollectionWorkItem) -> bool:
         """Re-reads the database record for the work item and decides whether to collect it.

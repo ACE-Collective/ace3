@@ -15,7 +15,7 @@ class CollectingListener:
     def __init__(self):
         self.received = []
 
-    def handle_external_check_request(self, work_item):
+    def handle_request(self, work_item):
         self.received.append(work_item)
 
 

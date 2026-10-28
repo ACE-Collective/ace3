@@ -22,7 +22,7 @@ class TestFileCollectionListener(FileCollectionListener):
         # ids reported as still held; tests call finish() to release them
         self.pending = set()
 
-    def handle_file_collection_request(self, work_item: FileCollectionWorkItem):
+    def handle_request(self, work_item: FileCollectionWorkItem):
         self.collections.append(work_item)
         self.pending.add(work_item.id)
 
@@ -55,11 +55,11 @@ def test_collect_single_work_item(db_alert):
     assert not collector.collect_work_items()
 
     # now we register a listener for a different name, so we should (still) not collect
-    collector.register_file_collection_listener("other", TestFileCollectionListener())
+    collector.register_listener("other", TestFileCollectionListener())
     assert not collector.collect_work_items()
 
     # now we register a listener for the same name, so we should collect
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id
@@ -88,7 +88,7 @@ def test_collect_work_item_without_alert():
     )
 
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].alert_uuid is None
@@ -106,7 +106,7 @@ def test_collect_work_item_with_missing_alert():
     )
 
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
     assert not collector.collect_work_items()
 
 
@@ -115,7 +115,7 @@ def test_collect_skips_items_held_by_listener(db_alert):
     """A record whose lock has timed out is not handed out again while a listener still holds it."""
     collector = FileCollectionCollector()
     listener = TestFileCollectionListener()
-    collector.register_file_collection_listener("custom", listener)
+    collector.register_listener("custom", listener)
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -150,7 +150,7 @@ def test_collect_skips_items_held_by_listener(db_alert):
 @pytest.mark.integration
 def test_collect_work_item_status(status, expected_value, db_alert):
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -170,7 +170,7 @@ def test_collect_work_item_status(status, expected_value, db_alert):
 @pytest.mark.integration
 def test_collect_locked_work_item(db_alert):
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -201,7 +201,7 @@ def test_collect_locked_work_item(db_alert):
 @pytest.mark.integration
 def test_collect_delayed_work_item(db_alert):
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -234,7 +234,7 @@ def test_collect_delayed_work_item(db_alert):
 def test_collect_high_retry_count_still_collected(db_alert):
     """Test that high retry counts don't prevent collection - time-based cutoff is used instead."""
     collector = FileCollectionCollector()
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -254,145 +254,6 @@ def test_collect_high_retry_count_still_collected(db_alert):
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id
-
-
-@pytest.mark.unit
-def test_register_file_collection_listener():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener)
-    assert "test_name" in collector.listeners
-    assert collector.listeners["test_name"] is listener
-
-
-@pytest.mark.unit
-def test_register_file_collection_listener_duplicate():
-    collector = FileCollectionCollector()
-    listener1 = TestFileCollectionListener()
-    listener2 = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener1)
-
-    with pytest.raises(ValueError, match="file collection listener test_name already registered"):
-        collector.register_file_collection_listener("test_name", listener2)
-
-
-@pytest.mark.unit
-def test_notify_file_collection_listeners():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-
-    collector.register_file_collection_listener("test_name", listener)
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="test_name",
-        type=F_FILE_LOCATION,
-        key="host@/path/to/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    collector.notify_file_collection_listeners(work_item)
-
-    assert len(listener.collections) == 1
-    assert listener.collections[0] is work_item
-
-
-@pytest.mark.unit
-def test_notify_file_collection_listeners_unregistered():
-    collector = FileCollectionCollector()
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="unregistered_name",
-        type=F_FILE_LOCATION,
-        key="host@/path/to/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    with pytest.raises(ValueError, match="file collector name unregistered_name not registered"):
-        collector.notify_file_collection_listeners(work_item)
-
-
-@pytest.mark.unit
-def test_collection_loop_signals_startup():
-    collector = FileCollectionCollector()
-
-    assert not collector.collector_startup_event.is_set()
-
-    collector.collect_work_items = lambda: []
-    collector.shutdown_event.set()
-
-    collector.collection_loop()
-
-    assert collector.collector_startup_event.is_set()
-
-
-@pytest.mark.unit
-def test_collection_loop_processes_work_items():
-    collector = FileCollectionCollector()
-    listener = TestFileCollectionListener()
-    collector.register_file_collection_listener("test_name", listener)
-
-    work_items = [
-        FileCollectionWorkItem(
-            id=1,
-            name="test_name",
-            type=F_FILE_LOCATION,
-            key="host@/file1",
-            alert_uuid="test-alert-uuid-1",
-            storage_dir="/opt/ace/data/test-alert-1",
-        ),
-        FileCollectionWorkItem(
-            id=2,
-            name="test_name",
-            type=F_FILE_LOCATION,
-            key="host@/file2",
-            alert_uuid="test-alert-uuid-2",
-            storage_dir="/opt/ace/data/test-alert-2",
-        ),
-    ]
-
-    call_count = [0]
-
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return work_items
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
-    collector.shutdown_event.set()
-
-    collector.collection_loop()
-
-    assert len(listener.collections) == 2
-    assert listener.collections[0] is work_items[0]
-    assert listener.collections[1] is work_items[1]
-
-
-@pytest.mark.unit
-def test_collection_loop_handles_exceptions():
-    collector = FileCollectionCollector()
-
-    call_count = [0]
-
-    def mock_collect_work_items():
-        call_count[0] += 1
-        if call_count[0] == 1:
-            raise RuntimeError("test error")
-        return []
-
-    collector.collect_work_items = mock_collect_work_items
-    collector.shutdown_event.set()
-
-    # should not raise exception
-    collector.collection_loop()
-
-    assert call_count[0] >= 1
 
 
 #
@@ -434,7 +295,7 @@ def test_collect_exponential_backoff_respects_retry_count(db_alert):
         initial_retry_delay_seconds=60,
         max_retry_delay_seconds=3600,
     )
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",
@@ -473,7 +334,7 @@ def test_collect_time_based_cutoff(db_alert):
     collector = FileCollectionCollector(
         max_collection_time_seconds=3600,  # 1 hour for testing
     )
-    collector.register_file_collection_listener("custom", TestFileCollectionListener())
+    collector.register_listener("custom", TestFileCollectionListener())
 
     collection_id = queue_file_collection(
         collector_name="custom",

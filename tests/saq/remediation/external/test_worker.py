@@ -362,8 +362,8 @@ def test_worker_loop_recovers_after_failed_commit(make_check, caplog):
 
     worker = ExternalRemediationCheckWorker(FakeProbe(outcome_factory=outcome))
     worker.queue_wait_timeout = 0.1
-    worker.handle_external_check_request(first)
-    worker.handle_external_check_request(second)
+    worker.handle_request(first)
+    worker.handle_request(second)
 
     # with the shutdown event set, each pass of the loop takes one item and returns
     worker.stop()
@@ -378,18 +378,3 @@ def test_worker_loop_recovers_after_failed_commit(make_check, caplog):
     assert any(f"external remediation check {first.id} " in r.getMessage() and r.alert_uuid == first.alert_uuid for r in errors)
 
 
-@pytest.mark.integration
-def test_worker_loop_logs_failed_session_reset(make_check, caplog, monkeypatch):
-    def _fail():
-        raise RuntimeError("pool gone")
-
-    monkeypatch.setattr("saq.remediation.external.worker.remove_all_sessions", _fail)
-    worker = ExternalRemediationCheckWorker(FakeProbe(outcome_factory=lambda t: ProbeOutcome(not_found=True)))
-    worker.queue_wait_timeout = 0.1
-    worker.handle_external_check_request(_work_item_from(make_check()))
-
-    worker.stop()
-    worker.worker_loop(Event())
-
-    assert worker.work_queue.empty()
-    assert any(r.levelno == logging.ERROR and r.exc_info and "error removing database connection" in r.getMessage() for r in caplog.records)

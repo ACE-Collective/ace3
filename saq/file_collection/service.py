@@ -6,7 +6,7 @@ from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
 from saq.constants import SERVICE_FILE_COLLECTION
 from saq.file_collection.manager import FileCollectionManager
-from saq.service import ACEServiceInterface
+from saq.queue_service import QueueService
 
 
 class FileCollectionServiceConfig(ServiceConfig):
@@ -36,14 +36,14 @@ class FileCollectionServiceConfig(ServiceConfig):
     )
 
 
-class FileCollectionService(ACEServiceInterface):
+class FileCollectionService(QueueService):
     """ACE service that manages file collection workers."""
 
     @classmethod
     def get_config_class(cls) -> Type[ServiceConfig]:
         return FileCollectionServiceConfig
 
-    def _create_manager(self) -> FileCollectionManager:
+    def create_manager(self) -> FileCollectionManager:
         config = get_service_config(SERVICE_FILE_COLLECTION)
         return FileCollectionManager(
             lock_timeout_seconds=config.lock_timeout_seconds,
@@ -51,20 +51,3 @@ class FileCollectionService(ACEServiceInterface):
             max_retry_delay_seconds=config.max_retry_delay_seconds,
             max_collection_time_seconds=config.max_collection_time_seconds,
         )
-
-    def start(self):
-        self.manager = self._create_manager()
-        self.manager.start()
-
-    def wait_for_start(self, timeout: float = 5) -> bool:
-        return self.manager.wait_for_start(timeout)
-
-    def start_single_threaded(self):
-        self.manager = self._create_manager()
-        self.manager.start_single_threaded()
-
-    def stop(self):
-        self.manager.stop()
-
-    def wait(self):
-        self.manager.wait()

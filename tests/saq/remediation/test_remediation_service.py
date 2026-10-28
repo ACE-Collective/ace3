@@ -39,7 +39,7 @@ def test_start_single_threaded_stops_on_shutdown(monkeypatch):
     ids = [_queue("one"), _queue("two"), _queue("three")]
     # shutdown is requested (as a signal would) while the first item is being worked
     checks = iter([False])
-    monkeypatch.setattr("saq.remediation.worker.is_shutting_down", lambda: next(checks, True))
+    monkeypatch.setattr("saq.queue_service.is_shutting_down", lambda: next(checks, True))
 
     service = RemediationService()
     service.start_single_threaded()
@@ -72,6 +72,6 @@ def test_service_passes_config_to_manager():
     config.lock_timeout_seconds = 11
     config.delay_time_seconds = 12
 
-    collector = RemediationService()._create_manager().collector
+    collector = RemediationService().create_manager().collector
 
     assert (collector.lock_timeout_seconds, collector.delay_time_seconds) == (11, 12)

@@ -1,6 +1,3 @@
-import logging
-from threading import Event
-
 import pytest
 
 from saq.configuration.config import get_config
@@ -93,7 +90,7 @@ def test_start_single_threaded_stops_on_shutdown(db_alert, file_collector_sectio
     ids = [queue_file_collection("collector_a", F_FILE_LOCATION, f"host@/a{n}", db_alert.uuid) for n in range(3)]
     # shutdown is requested (as a signal would) while the first item is being worked
     checks = iter([False])
-    monkeypatch.setattr("saq.file_collection.worker.is_shutting_down", lambda: next(checks, True))
+    monkeypatch.setattr("saq.queue_service.is_shutting_down", lambda: next(checks, True))
 
     service = FileCollectionService()
     service.start_single_threaded()
@@ -129,7 +126,7 @@ def test_service_passes_config_to_manager(service_config, file_collector_section
     service_config.max_retry_delay_seconds = 13
     service_config.max_collection_time_seconds = 14
 
-    collector = FileCollectionService()._create_manager().collector
+    collector = FileCollectionService().create_manager().collector
 
     assert (collector.lock_timeout_seconds, collector.initial_retry_delay_seconds, collector.max_retry_delay_seconds, collector.max_collection_time_seconds) == (11, 12, 13, 14)
 
@@ -156,24 +153,4 @@ def test_load_workers_rejects_duplicate_names(file_collector_sections):
     with pytest.raises(ValueError, match="worker collector_a already exists"):
         manager.load_workers()
 
-
-@pytest.mark.unit
-def test_wait_for_start_reports_worker_that_did_not_start(file_collector_sections, caplog):
-    file_collector_sections("collector_a")
-    manager = FileCollectionManager()
-    manager.load_workers()
-    # a worker whose thread never signalled that it started
-    manager.workers["collector_a"].startup_events.append(Event())
-
-    assert not manager.wait_for_start(0)
-    assert any(r.levelno == logging.ERROR and "worker collector_a did not start" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.unit
-def test_wait_for_start_reports_collector_that_did_not_start(file_collector_sections, caplog):
-    file_collector_sections()
-    manager = FileCollectionManager()
-
-    assert not manager.wait_for_start(0)
-    assert any(r.levelno == logging.ERROR and "file collection collector did not start" in r.getMessage() for r in caplog.records)
 

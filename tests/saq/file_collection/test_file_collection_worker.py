@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
@@ -45,24 +46,6 @@ class MockFileCollector(FileCollector):
 
 
 @pytest.mark.unit
-def test_worker_handle_request_validates_name():
-    collector = MockFileCollector()
-    worker = FileCollectionWorker(collector)
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="wrong_name",
-        type=F_FILE_LOCATION,
-        key="host@/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    with pytest.raises(ValueError, match="does not match"):
-        worker.handle_file_collection_request(work_item)
-
-
-@pytest.mark.unit
 def test_worker_handle_request_queues_work():
     collector = MockFileCollector()
     worker = FileCollectionWorker(collector)
@@ -76,7 +59,7 @@ def test_worker_handle_request_queues_work():
         storage_dir="/opt/ace/data/test-alert",
     )
 
-    worker.handle_file_collection_request(work_item)
+    worker.handle_request(work_item)
 
     assert worker.work_queue.qsize() == 1
     assert worker.pending_collection_ids() == {1}
@@ -105,7 +88,7 @@ def test_worker_loop_releases_pending_id():
         storage_dir="/opt/ace/data/test-alert",
     )
 
-    worker.handle_file_collection_request(work_item)
+    worker.handle_request(work_item)
     assert worker.pending_collection_ids() == {collection_id}
 
     worker.shutdown_event.set()
@@ -432,42 +415,28 @@ def test_worker_collect_handles_exception():
     assert file_collection.result == FileCollectorStatus.ERROR.value
 
 
-@pytest.mark.unit
-def test_worker_loop_startup_event():
-    collector = MockFileCollector()
-    worker = FileCollectionWorker(collector)
-
-    assert not any(e.is_set() for e in worker.startup_events)
-
-    # run single iteration and exit
-    worker.shutdown_event.set()
-    startup_event = Mock()
-    worker.worker_loop(startup_event)
-
-    startup_event.set.assert_called_once()
 
 
 @pytest.mark.unit
-def test_worker_loop_processes_queue():
-    collector = MockFileCollector()
-    worker = FileCollectionWorker(collector)
-
-    work_item = FileCollectionWorkItem(
-        id=999,
+def test_worker_loop_logs_failed_collection_and_releases_pending_id(caplog):
+    worker = FileCollectionWorker(MockFileCollector())
+    worker.collect = Mock(side_effect=RuntimeError("database gone"))
+    worker.handle_request(FileCollectionWorkItem(
+        id=7,
         name="mock_collector",
         type=F_FILE_LOCATION,
         key="host@/file",
         alert_uuid="test-alert-uuid",
         storage_dir="/opt/ace/data/test-alert",
-    )
+    ))
 
-    worker.work_queue.put(work_item)
-    worker.shutdown_event.set()
+    worker.stop()
+    with patch("saq.queue_service.remove_all_sessions"):
+        worker.worker_loop(Mock())
 
-    # mock collect to avoid database operations
-    worker.collect = Mock(return_value=FileCollectorResult(status=FileCollectorStatus.SUCCESS))
-
-    startup_event = Mock()
-    worker.worker_loop(startup_event)
-
-    worker.collect.assert_called_once_with(work_item)
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert "file collection 7 (mock_collector file_location host@/file)" in errors[0].getMessage()
+    assert errors[0].alert_uuid == "test-alert-uuid"
+    # a collection that failed is handed out again once it is due
+    assert worker.pending_collection_ids() == set()
