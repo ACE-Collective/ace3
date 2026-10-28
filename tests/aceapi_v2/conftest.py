@@ -17,7 +17,8 @@ from aceapi_v2.database import build_database_url, get_async_session
 from aceapi_v2.users.schemas import ApiKeyScope
 from aceapi_v2.users.service import create_user_api_key
 from saq.configuration import get_config
-from saq.database.model import AuthGroup, AuthGroupPermission, AuthGroupUser, User
+from saq.database.model import AuthApiKey, AuthGroup, AuthGroupPermission, AuthGroupUser, User
+from saq.util import sha256_str
 
 # A typical analyst group: everything except the CLI, secrets and user administration, so its
 # members hold user:self but not user:write.
@@ -177,6 +178,14 @@ async def test_user(session: AsyncSession) -> User:
 async def valid_api_key(session: AsyncSession, test_user: User) -> str:
     """An inherit-scoped API key for the test user (full user permissions)."""
     return await make_api_key(session, test_user.id, inherit=True)
+
+
+@pytest_asyncio.fixture
+async def client_actor(session: AsyncSession, test_user: User, valid_api_key: str) -> tuple:
+    """audit_actor_of() a record of something `client` did: the test user, through valid_api_key."""
+    key_id = (await session.execute(
+        select(AuthApiKey.id).where(AuthApiKey.key_hash == sha256_str(valid_api_key)))).scalar_one()
+    return test_user.username, test_user.id, key_id, "user"
 
 
 @pytest_asyncio.fixture

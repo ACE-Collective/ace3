@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 import uuid
 import zipfile
 
@@ -20,6 +21,7 @@ from saq.svs.yara.corpus import Skipped
 from saq.svs.yara.diff import Category, Outcome, ResultRow
 from saq.svs.yara.replay import FileError, ReplayResult, SideReport
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record
 from tests.saq.svs.conftest import OTHER_RULE_UUID, RULE_UUID
 # the repository fixtures SVS validates against
 from tests.saq.svs.yara.conftest import REPOSITORY, rule_repo, stored_sample, svs_repository  # noqa: F401
@@ -69,7 +71,9 @@ def _completed(rows: list[ResultRow], *, head: str = HEAD) -> str:
 
 class TestRequest:
     @pytest.mark.asyncio
-    async def test_a_request_is_queued_then_shared(self, client: AsyncClient):
+    async def test_a_request_is_queued_then_shared(self, client: AsyncClient, client_actor,
+                                                   caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         response = await client.post("/svs/yara/validations/", json=_body(base_sha=BASE.upper()))
         assert response.status_code == 202, response.text
         status = response.json()
@@ -79,6 +83,12 @@ class TestRequest:
         again = await client.post("/svs/yara/validations/", json=_body())
         assert again.status_code == 200
         assert again.json()["uuid"] == status["uuid"]
+        records = [r for r in caplog.records
+                   if r.getMessage().startswith(f"AUDIT: unittest requested svs validation {status['uuid']}")]
+        assert [r.getMessage().rsplit(": ", 1)[1] for r in records] == [
+            "queued", "answered by an existing queued validation"]
+        assert [(*audit_actor_of(r), r.validation_uuid, r.repository) for r in records] == [
+            (*client_actor, status["uuid"], REPOSITORY)] * 2
 
     @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):
@@ -232,7 +242,9 @@ class TestResults:
         assert [json.loads(line)["sha256"] for line in ndjson] == ["33" * 32]
 
     @pytest.mark.asyncio
-    async def test_the_selection_downloads_as_an_encrypted_zip(self, client: AsyncClient):
+    async def test_the_selection_downloads_as_an_encrypted_zip(self, client: AsyncClient, client_actor,
+                                                               caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         stored = stored_sample("DELIVERY", b"svs validation download", [RULE_UUID])
         validation_uuid = _completed([
             _row(Category.REGRESSION, stored),
@@ -250,6 +262,9 @@ class TestResults:
             assert any(name.endswith(f"/{stored}/sample.bin") for name in names)
             manifest = json.loads(archive.read(f"svs-validation-{validation_uuid}/manifest.json", pwd=b"infected"))
         assert [entry["sha256"] for entry in manifest["files"]] == [stored]
+        audit = audit_record(caplog, f"user unittest downloading 1 svs sample files of validation {validation_uuid}")
+        assert (*audit_actor_of(audit), audit.validation_uuid, audit.sha256s) == (
+            *client_actor, validation_uuid, [stored])
 
         # nothing of the selection is stored
         nothing = await client.get(f"/svs/yara/validations/{validation_uuid}/download", params={"category": "new_fp"})

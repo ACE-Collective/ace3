@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import uuid as uuidlib
 from datetime import datetime
@@ -29,6 +30,7 @@ from saq.environment import get_data_dir, get_global_runtime_settings, get_local
 from saq.json_encoding import _JSONEncoder
 from saq.util.filesystem import is_path_under
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 
@@ -87,11 +89,15 @@ def _stored_roots() -> int:
 
 class TestSubmit:
     @pytest.mark.asyncio
-    async def test_the_root_with_its_observables_and_files(self, client: AsyncClient):
+    async def test_the_root_with_its_observables_and_files(self, client: AsyncClient, client_actor,
+                                                          caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         response = await _submit(client, _submission(), [("sample.dat", b"Hello, world!")])
 
         assert response.status_code == 201
         uuid = response.json()["uuid"]
+        audit = audit_record(caplog, f"unittest submitted {uuid} (analysis, 1 files)")
+        assert (*audit_actor_of(audit), audit.root_uuid) == (*client_actor, uuid)
         root = _load(uuid)
         stored = _as_json(root.json)
         assert {key: stored[key] for key in ("analysis_mode", "tool", "tool_instance", "type", "description", "queue",

@@ -17,6 +17,7 @@ from saq.database.pool import get_db
 from saq.file_collection.database import queue_file_collection
 from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 
@@ -183,17 +184,17 @@ class TestHistory:
 class TestCancel:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", [FileCollectionStatus.NEW, FileCollectionStatus.IN_PROGRESS])
-    async def test_stops_a_request_that_has_not_completed(self, client: AsyncClient, status,
+    async def test_stops_a_request_that_has_not_completed(self, client: AsyncClient, client_actor, status,
                                                           caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.file_collection.router")
+        caplog.set_level(logging.INFO)
         collection_id = _queue("host@/evil.exe", status)
 
         response = await client.post(f"/file-collections/{collection_id}/cancel")
 
         assert response.status_code == 200
         assert response.json() == {"id": collection_id, "status": "COMPLETED", "result": "CANCELLED", "retry_count": 0}
-        assert any(record.getMessage() == f"AUDIT: user unittest cancelled file collection {collection_id}"
-                   for record in caplog.records)
+        audit = audit_record(caplog, f"user unittest cancelled file collection {collection_id}")
+        assert (*audit_actor_of(audit), audit.file_collection_id) == (*client_actor, collection_id)
 
     @pytest.mark.asyncio
     async def test_a_completed_request_keeps_its_result(self, client: AsyncClient):
@@ -209,7 +210,8 @@ class TestCancel:
 
 class TestRetry:
     @pytest.mark.asyncio
-    async def test_starts_a_request_over(self, client: AsyncClient):
+    async def test_starts_a_request_over(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         collection_id = _queue("host@/evil.exe", FileCollectionStatus.COMPLETED, FileCollectorStatus.HOST_OFFLINE,
                                retry_count=10, result_message="gave up")
 
@@ -218,6 +220,8 @@ class TestRetry:
         assert response.status_code == 200
         assert response.json() == {"id": collection_id, "status": "NEW", "result": None, "retry_count": 0}
         assert _collection(collection_id).result_message is None
+        audit = audit_record(caplog, f"user unittest retried file collection {collection_id}")
+        assert (*audit_actor_of(audit), audit.file_collection_id) == (*client_actor, collection_id)
 
     @pytest.mark.asyncio
     async def test_unknown_request(self, client: AsyncClient):
@@ -226,13 +230,17 @@ class TestRetry:
 
 class TestDelete:
     @pytest.mark.asyncio
-    async def test_deletes_the_request_and_its_history(self, client: AsyncClient):
+    async def test_deletes_the_request_and_its_history(self, client: AsyncClient, client_actor,
+                                                       caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         collection_id = _queue("host@/evil.exe")
         _history(collection_id, "host offline", _utcnow())
 
         assert (await client.delete(f"/file-collections/{collection_id}")).status_code == 204
         assert _collection(collection_id) is None
         assert get_db().query(FileCollectionHistory).count() == 0
+        audit = audit_record(caplog, f"user unittest deleted file collection {collection_id}")
+        assert (*audit_actor_of(audit), audit.file_collection_id) == (*client_actor, collection_id)
 
     @pytest.mark.asyncio
     async def test_unknown_request(self, client: AsyncClient):

@@ -14,7 +14,7 @@ from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
 from saq.util import sha256_str
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
 
 pytestmark = pytest.mark.integration
 
@@ -85,8 +85,8 @@ async def test_rejects_an_incomplete_request(client: AsyncClient, body):
 
 
 @pytest.mark.asyncio
-async def test_take(client: AsyncClient, caplog: pytest.LogCaptureFixture):
-    caplog.set_level(logging.INFO, logger="aceapi_v2.alerts.router")
+async def test_take(client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO)
     alerts = [insert_alert(), insert_alert()]
 
     response = await client.put(PATH, json=_body(alerts, _caller_id()))
@@ -95,8 +95,9 @@ async def test_take(client: AsyncClient, caplog: pytest.LogCaptureFixture):
     assert response.json() == {"applied": [alert.uuid for alert in alerts], "skipped": {}, "message": None}
     for alert in alerts:
         assert _owner_of(alert) == _caller_id()
-    assert any(record.getMessage().startswith("AUDIT: user unittest set the owner of alerts")
-               for record in caplog.records)
+    audit = audit_record(caplog, "user unittest set the owner of alerts")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.owner_id) == (
+        *client_actor, [alert.uuid for alert in alerts], _caller_id())
 
 
 @pytest.mark.asyncio

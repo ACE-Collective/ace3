@@ -12,6 +12,7 @@ from datetime import datetime
 import pytest
 from sqlalchemy import select, text
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.cli import service
 from saq.sandbox.runner import LAUNCHER
 from saq.configuration.config import get_config
@@ -179,8 +180,12 @@ def _unittest_user_id() -> int:
     return get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
 
 
+def _auth(user_id: int, username: str, key_id: int | None = None) -> ApiAuthResult:
+    return ApiAuthResult(auth_type="user", auth_name=username, auth_user_id=user_id, key_id=key_id)
+
+
 def _create(argv: list[str], node_ids, timeout_seconds: int = 60) -> list[int]:
-    return service.create_executions(_unittest_user_id(), "unittest", argv, node_ids, timeout_seconds)
+    return service.create_executions(_auth(_unittest_user_id(), "unittest"), argv, node_ids, timeout_seconds)
 
 
 def _row(execution_id: int) -> CliExecution:
@@ -200,13 +205,16 @@ def test_create_defaults_to_the_primary_node(caplog):
     primary_id = _add_node("node-b", is_primary=True)
 
     with caplog.at_level(logging.INFO):
-        (execution_id,) = _create(["node", "list"], None)
+        (execution_id,) = service.create_executions(_auth(_unittest_user_id(), "unittest", key_id=7),
+                                                    ["node", "list"], None, 60)
 
     row = _row(execution_id)
     assert row.node_id == primary_id
     assert row.status == service.STATUS_PENDING
     assert row.command == "node list"
-    assert "AUDIT: user unittest requested cli execution" in caplog.text
+    (audit,) = [r for r in caplog.records if r.getMessage().startswith("AUDIT: user unittest requested cli execution")]
+    assert (audit.actor, audit.actor_user_id, audit.actor_key_id, audit.cli_execution_id, audit.node) == (
+        "unittest", _unittest_user_id(), 7, execution_id, "node-b")
 
 
 @pytest.mark.integration
@@ -831,7 +839,7 @@ def test_deleting_the_user_keeps_their_runs():
     user = User(username="leaver", email="leaver@localhost", display_name="leaver", password="pw")
     session.add(user)
     session.commit()
-    (execution_id,) = service.create_executions(user.id, "leaver", ["node", "list"], [_add_node("node-a")], 60)
+    (execution_id,) = service.create_executions(_auth(user.id, "leaver"), ["node", "list"], [_add_node("node-a")], 60)
 
     session.execute(text("DELETE FROM users WHERE id = :id"), {"id": user.id})
     session.commit()

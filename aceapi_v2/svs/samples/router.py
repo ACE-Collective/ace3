@@ -47,6 +47,7 @@ from aceapi_v2.svs.samples.schemas import (
     SampleListPage,
 )
 from aceapi_v2.sync import run_db_in_thread
+from saq.logging import log_audit
 from saq.svs.samples import SampleSort
 
 logger = logging.getLogger(__name__)
@@ -232,8 +233,8 @@ async def download_samples(
     """
     download = await run_listing(service.resolve_bulk_download, f, tz=parse_timezone(tz))
 
-    logger.info("AUDIT: user %s downloading %s svs sample files (filters %s): %s",
-                auth.auth_name, len(download.local), f, download.sha256s)
+    log_audit("user %s downloading %s svs sample files (filters %s): %s",
+              auth.auth_name, len(download.local), f, download.sha256s, auth=auth, sha256s=download.sha256s)
     label = "svs-samples"
     zip_path, staging = await run_db_in_thread(service.create_sample_zip, label, download, auth.auth_name)
     return _zip_response(label, zip_path, staging)
@@ -259,7 +260,8 @@ async def download_sample(
     """Download one sample's file and the match records of its captures as a zip encrypted with
     password 'infected'."""
     download = await run_db_in_thread(service.resolve_sample_download, sha256, rule_uuid)
-    logger.info("AUDIT: user %s downloading svs sample %s (rule %s)", auth.auth_name, download.sha256s[0], rule_uuid)
+    log_audit("user %s downloading svs sample %s (rule %s)", auth.auth_name, download.sha256s[0], rule_uuid,
+              auth=auth, sha256=download.sha256s[0], rule_uuid=rule_uuid)
     label = f"svs-sample-{download.sha256s[0]}"
     zip_path, staging = await run_db_in_thread(service.create_sample_zip, label, download, auth.auth_name)
     return _zip_response(label, zip_path, staging)
@@ -343,5 +345,5 @@ async def delete_sample(
 
     Deleting a deleted sample retries an unfinished purge. 409 wrong_node when the bytes are on
     another node's local pool, 409 legal_hold when the file is under legal hold."""
-    logger.info("AUDIT: user %s deleting svs sample %s: %s", auth.auth_name, sha256, body.reason)
+    log_audit("user %s deleting svs sample %s: %s", auth.auth_name, sha256, body.reason, auth=auth, sha256=sha256)
     return await run_db_in_thread(service.delete_sample_file, sha256, body.reason, auth.auth_user_id, auth.auth_name)

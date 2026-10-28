@@ -60,6 +60,7 @@ from saq.gui.filter_query import resolve_filter_list, uses_filter_sentinels
 from saq.gui.filter_screens import ALERTS_SCREEN
 from saq.gui.filter_url import FilterQueryError, decode_filter_query
 from saq.json_encoding import _JSONEncoder
+from saq.logging import log_audit
 from saq.observables.file import FileObservable
 from saq.search.query import build_listing_query
 from saq.search.tasks import submit_index_task
@@ -69,6 +70,7 @@ from saq.util import local_time
 from saq.util.ui import hexdump_lines
 from saq.util.uuid import is_uuid
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.alerts.schemas import (
     ALERT_ROW_CSV_FIELDS,
     AlertCommentRead,
@@ -300,12 +302,11 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
     }
 
 
-def update_alert_comment(
-    alert_uuid: str, comment_id: int, comment_text: str, user_id: int | None, user_name: str | None
-) -> AlertCommentRead:
+def update_alert_comment(alert_uuid: str, comment_id: int, comment_text: str, auth: ApiAuthResult) -> AlertCommentRead:
     """Replace the text of an analyst comment on an alert. Only the comment's author may edit it.
 
     The alert's version is rotated and the alert re-indexed, as when a comment is added."""
+    user_id = auth.auth_user_id
     if user_id is None:
         raise HTTPException(status_code=401, detail="User authentication required")
 
@@ -327,8 +328,9 @@ def update_alert_comment(
     # a comment added through the GUI's form was stored with a form submission's CRLF line breaks,
     # while the edit modal sends a textarea's LF ones, so saving it untouched is not a change
     if comment.comment.replace("\r\n", "\n") != comment_text.replace("\r\n", "\n"):
-        logger.info("AUDIT: user %s edited comment %s on alert %s from %r to %r",
-                    user_name, comment_id, alert_uuid, comment.comment, comment_text)
+        log_audit("user %s edited comment %s on alert %s from %r to %r",
+                  auth.auth_name, comment_id, alert_uuid, comment.comment, comment_text,
+                  auth=auth, alert_uuid=alert_uuid, comment_id=comment_id)
         comment.comment = comment_text
         touch_alerts([alert_uuid])
         get_db().commit()
@@ -669,17 +671,16 @@ async def bulk_add_observable(
     o_value: str,
     o_time: datetime | None,
     directives: list[str],
-    username: str,
+    auth: ApiAuthResult,
 ) -> BulkAddObservableResult:
     """Add an observable to multiple alerts.
 
     Runs sync filesystem operations in a thread pool via run_db_in_thread(),
     which resets the worker thread's sync session after each call.
     """
-    logger.info(
-        f"AUDIT: user {username} bulk-added observable "
-        f"({o_type},{o_value},{o_time}) to alerts {alert_uuids}"
-    )
+    username = auth.auth_name or "unknown"
+    log_audit("user %s bulk-added observable (%s,%s,%s) to alerts %s", username, o_type, o_value, o_time,
+              alert_uuids, auth=auth, alert_uuids=alert_uuids, observable_type=o_type, observable_value=o_value)
 
     # Validate directives
     valid_directives = [d for d in directives if d in VALID_DIRECTIVES]

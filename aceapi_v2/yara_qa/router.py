@@ -27,6 +27,7 @@ from aceapi_v2.responses import ZIP_DOWNLOAD_RESPONSES, ZipFileResponse
 from aceapi_v2.sync import run_db_in_thread
 from aceapi_v2.yara_qa import service
 from aceapi_v2.yara_qa.schemas import QAMatch, QAMatchDetail, QAPage, QASignatureDetail, QASignaturePage
+from saq.logging import log_audit
 from saq.yara_qa.listing import QASort, QAStatus
 
 logger = logging.getLogger(__name__)
@@ -117,8 +118,9 @@ async def download_match(
 ) -> ZipFileResponse:
     """Download one matched file and its match record as a zip encrypted with password 'infected'."""
     row = await service.resolve_single_download(session, match_id)
-    logger.info("AUDIT: user %s downloading yara qa match %s (signature %s, sha256 %s)",
-                auth.auth_name, row.id, row.signature_uuid, row.sha256)
+    log_audit("user %s downloading yara qa match %s (signature %s, sha256 %s)",
+              auth.auth_name, row.id, row.signature_uuid, row.sha256,
+              auth=auth, match_id=row.id, signature_uuid=row.signature_uuid, sha256=row.sha256)
     label = f"yara-qa-match-{row.id}"
     zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, [row], [], auth.auth_name)
     return ZipFileResponse(
@@ -177,8 +179,9 @@ async def download_signature_matches(
     either). Files stored on another node's local pool are listed in the manifest under skipped.
     """
     rows, remote = await service.resolve_bulk_download(session, signature_uuid, version=version, match_ids=match_id)
-    logger.info("AUDIT: user %s downloading %s yara qa matches of signature %s (version %s): %s",
-                auth.auth_name, len(rows), signature_uuid, version or "all", [row.id for row in rows])
+    log_audit("user %s downloading %s yara qa matches of signature %s (version %s): %s",
+              auth.auth_name, len(rows), signature_uuid, version or "all", [row.id for row in rows],
+              auth=auth, signature_uuid=signature_uuid, match_ids=[row.id for row in rows])
     label = f"yara-qa-{signature_uuid}"
     zip_path, staging = await run_db_in_thread(service.create_encrypted_zip, label, rows, remote, auth.auth_name)
     return ZipFileResponse(
