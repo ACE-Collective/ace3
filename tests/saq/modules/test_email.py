@@ -316,7 +316,6 @@ def test_update_brocess(root_analysis, datadir):
         count = cursor.fetchone()
         assert count[0] == 2
 
-@pytest.mark.skip()
 @pytest.mark.integration
 def test_archive_1(root_analysis, datadir):
 
@@ -373,7 +372,6 @@ def test_archive_1(root_analysis, datadir):
         row = cursor.fetchone()
         assert row
 
-@pytest.mark.skip()
 @pytest.mark.integration
 def test_archive_extraction(mock_api_call, root_analysis, datadir):
 
@@ -426,7 +424,6 @@ def test_archive_extraction(mock_api_call, root_analysis, datadir):
     # should have the encrypted email attached as a file
     assert len(message_id_analysis.get_observables_by_type(F_FILE)) == 1
 
-@pytest.mark.skip()
 @pytest.mark.integration
 def test_archive_2(root_analysis, datadir):
 
