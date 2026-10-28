@@ -246,7 +246,6 @@ def manage():
                            risk_levels=risk_levels,
                            sort_by=session['event_sort_by'],
                            sort_dir=session['event_sort_dir'],
-                           tip=None,
                            statuses=statuses,
                            tags=valid_tags,
                            types=types,

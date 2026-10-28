@@ -27,18 +27,9 @@
                                         <button class="btn btn-outline-dark btn-sm" type="button" onclick="edit_event('{{event.id}}')" title="Edit Event">
                                             <span class="bi bi-pencil"></span> Edit Event
                                         </button>
-                                        <!--<button class="btn btn-outline-dark btn-sm" type="button" onclick="create_event_in_tip('{{ event.id }}')" id="create_event_in_tip" title="Create Empty Event in TIP">
-                                            <span class="bi bi-box-arrow-right"></span> Create Empty TIP Event
-                                        </button>
-                                        <button class="btn btn-outline-dark btn-sm" type="button" onclick="add_indicators_to_event_in_tip('{{ event.id }}')" id="add_indicators_to_event_in_tip" title="Add Indicators to Event in TIP">
-                                            <span class="bi bit-info-square"></span> Add Data to TIP Event
-                                        </button>-->
                                         <button class="btn btn-outline-dark btn-sm" type="button" id="copy_link_action_{{ unique_reference }}" title="Copy Link to Clipboard">
                                             <span class="bi bi-link"></span> Copy Link to Clipboard
                                         </button>
-                                        <!--<button type="button" id="btn-show-detect-op" class="btn btn-outline-dark btn-sm" data-bs-toggle="modal" data-bs-target="#detect_op_modal" data-page="analysis">
-                                            <span class="bi bi-lightning"></span> Create Detection Op
-                                        </button>-->
                                         <script type="text/javascript">
                                             $('#copy_link_action_{{unique_reference}}').on('click', function () {
                                                 // see app/static/js/ace.js
@@ -58,35 +49,6 @@
                                 {% if event.alerts_still_analyzing %}
                                     {% include "events/alerts_still_analyzing.html" %}
                                 {% endif %}
-
-                                <!--
-                                <div class="card mb-3">
-                                    <div class="card-header">
-                                        <h3 class="card-title">Detect Op Summary <a role="button" data-bs-toggle="collapse" data-bs-target="#collapseDetectOpSummary" aria-expanded="true" aria-controls="collapseDetectOpSummary">(hide/show)</a></h3>
-                                    </div>
-                                    <div class="card-body collapse show" id="collapseDetectOpSummary">
-                                        <div class="card-body">
-                                            {% if detect_ops_error %}Unable to load detect ops: {{ detect_ops_error }} {% endif %}
-                                            {% if detect_ops %}
-                                            <table class="table">
-                                                <tr>
-                                                    <th>Name</th>
-                                                    <th>Priority</th>
-                                                    <th>Status</th>
-                                                </tr>
-                                                {% for detect_op in detect_ops %}
-                                                <tr>
-                                                    <td><a target="_blank" href="{{ detect_ops_base_gui_uri }}/detection_opportunity/{{ detect_op['uuid'] }}">{{ detect_op['opportunity_name'] }}</a></td>
-                                                    <td>{{ detect_op['priority'] }}</td>
-                                                    <td>{{ detect_op['status'] }}</td>
-                                                </tr>
-                                                {% endfor %}
-                                            </table>
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                </div>
-                                -->
 
                                 <div class="card mb-3">
                                     {% include "events/event_details.html" %}

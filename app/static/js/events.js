@@ -97,36 +97,6 @@ function update_event_status_message(message) {
     $("#event_closure_status").text(message);
 }
 
-function add_indicators_to_event_in_tip(event_id) {
-    (function() {
-        const params = new URLSearchParams({ event_id: event_id });
-        fetch('add_indicators_to_event_in_tip', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-            body: params,
-            credentials: 'same-origin'
-        })
-        .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
-        .then(function(){ alert('Uploading data to TIP in the background.'); })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
-function create_event_in_tip(event_id) {
-    (function() {
-        const params = new URLSearchParams({ event_id: event_id });
-        fetch('create_event_in_tip', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-            body: params,
-            credentials: 'same-origin'
-        })
-        .then(function(resp){ if (!resp.ok) { throw new Error(resp.statusText); } })
-        .then(function(){ alert('Created event in TIP'); })
-        .catch(function(err){ alert('DOH: ' + err.message); });
-    })();
-}
-
 function load_event_alerts(event_id) {
     // have we already loaded this?
     var existing_dom_element = $("#event_alerts_" + event_id);
