@@ -8,7 +8,7 @@ from flask_login import current_user
 from aceapi_v2.observable_comments.service import create_comment
 from aceapi_v2.sync import run_async_with_session
 from app.analysis.views.session.alert import get_current_alert
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
@@ -17,6 +17,7 @@ from saq.database.util.alert import ALERT, AlertFrozen, ensure_not_frozen, get_a
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import request_analyst_analysis
 from saq.environment import get_temp_dir
+from saq.logging import log_audit
 from saq.util import local_time
 
 
@@ -39,7 +40,9 @@ def _add_upload_comment(file_observable, comment: str, alert_uuid: str):
         flash("uploaded the file, but unable to save the comment")
         return
 
-    logging.info(f"AUDIT: user {current_user} added comment {comment} to observable {F_FILE} {file_observable.value} in alert {alert_uuid}")
+    log_audit("user %s added comment %s to observable %s %s in alert %s", current_user.username, comment, F_FILE,
+              file_observable.value, alert_uuid, auth=current_user_auth(), alert_uuid=alert_uuid,
+              observable_type=F_FILE, observable_value=file_observable.value)
 
 @analysis.route('/upload_file', methods=['POST'])
 @require_permission('alert', 'create')
@@ -88,7 +91,8 @@ def _store_upload(file_path, temp_path: str, file_name: str, comment: str, alert
 
         alert = ALERT(root)
         alert.root_analysis.schedule()
-        logging.info(f"AUDIT: user {current_user} uploaded file {file_name} as new alert {alert.uuid}")
+        log_audit("user %s uploaded file %s as new alert %s", current_user.username, file_name, alert.uuid,
+                  auth=current_user_auth(), alert_uuid=alert.uuid, file_name=file_name)
 
     else:
         alert = get_current_alert()
@@ -131,7 +135,8 @@ def _store_upload(file_path, temp_path: str, file_name: str, comment: str, alert
             return redirect(url_for('analysis.index'))
 
         alert.root_analysis.schedule()
-        logging.info(f"AUDIT: user {current_user} uploaded file {file_name} to alert {alert.uuid}")
+        log_audit("user %s uploaded file %s to alert %s", current_user.username, file_name, alert.uuid,
+                  auth=current_user_auth(), alert_uuid=alert.uuid, file_name=file_name)
 
     if file_observable:
         _add_upload_comment(file_observable, comment, alert.uuid)

@@ -3,7 +3,7 @@ import uuid as uuidlib
 import logging
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.constants import VALID_DIRECTIVES
 from saq.database.pool import get_db
@@ -11,6 +11,7 @@ from saq.database.util.alert import AlertFrozen, ensure_not_frozen
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.workload import add_workload, request_analyst_analysis
 from saq.gui.alert import GUIAlert
+from saq.logging import log_audit
 from saq.util import local_time
 
 @analysis.route('/add_observable', methods=['POST'])
@@ -84,7 +85,8 @@ def add_observable():
         flash("unable to modify alert: alert is currently locked")
         return redirection
 
-    logging.info(f"AUDIT: user {current_user} added observable ({o_type},{o_value},{o_time}) to alert {alert}")
+    log_audit("user %s added observable (%s,%s,%s) to alert %s", current_user.username, o_type, o_value, o_time, alert,
+              auth=current_user_auth(), alert_uuid=alert.uuid, observable_type=o_type, observable_value=o_value)
 
     try:
         try:
@@ -110,7 +112,9 @@ def add_observable():
             for directive in directives:
                 if directive in VALID_DIRECTIVES:
                     observable.add_directive(directive)
-            logging.info(f"AUDIT: user {current_user} added directives {directives} to observable {observable}")
+            log_audit("user %s added directives %s to observable %s", current_user.username, directives, observable,
+                      auth=current_user_auth(), alert_uuid=alert.uuid, observable_uuid=observable.uuid,
+                      directives=directives)
 
         # switch back into correlation mode (we may be in a different post-correlation mode at this point)
         request_analyst_analysis(alert.root_analysis)

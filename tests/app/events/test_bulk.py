@@ -31,7 +31,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated
 
 pytestmark = pytest.mark.integration
 
@@ -75,7 +75,8 @@ def _make_event_with_alert(alert) -> Event:
 
 
 
-def test_bulk_add_tag_success(web_client):
+def test_bulk_add_tag_success(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert1 = insert_alert()
     alert2 = insert_alert()
 
@@ -88,6 +89,9 @@ def test_bulk_add_tag_success(web_client):
     assert response.status_code == 302
     assert "events/analysis" in response.location
     assert f"direct={EVENT_ID}" in response.location
+    audit = audit_record(caplog, "user john added tags")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.tags) == (
+        *session_actor, [alert1.uuid, alert2.uuid], ["bulk_tag", "another_tag"])
 
     for alert in (alert1, alert2):
         root = _reloaded_root(alert)
@@ -95,7 +99,8 @@ def test_bulk_add_tag_success(web_client):
         assert root.has_tag("another_tag")
 
 
-def test_bulk_remove_tag_success(web_client):
+def test_bulk_remove_tag_success(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert = insert_alert()
     web_client.post(url_for("events.bulk_add_tag"), data={
         "event_id": EVENT_ID,
@@ -112,6 +117,8 @@ def test_bulk_remove_tag_success(web_client):
 
     assert response.status_code == 302
     assert not _reloaded_root(alert).has_tag("bulk_tag")
+    audit = audit_record(caplog, "user john removed tags")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.tags) == (*session_actor, [alert.uuid], ["bulk_tag"])
 
 
 def test_bulk_add_tag_no_alerts_selected(web_client):
@@ -125,7 +132,8 @@ def test_bulk_add_tag_no_alerts_selected(web_client):
     assert f"direct={EVENT_ID}" in response.location
 
 
-def test_bulk_add_comment_success(web_client):
+def test_bulk_add_comment_success(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert1 = insert_alert()
     alert2 = insert_alert()
 
@@ -144,6 +152,8 @@ def test_bulk_add_comment_success(web_client):
         Comment.comment == "bulk comment",
     ).all()
     assert len(comments) == 2
+    audit = audit_record(caplog, "user john added comment bulk comment")
+    assert (*audit_actor_of(audit), audit.alert_uuids) == (*session_actor, [alert1.uuid, alert2.uuid])
 
 
 def test_bulk_add_comment_empty_rejected(web_client):
@@ -160,7 +170,8 @@ def test_bulk_add_comment_empty_rejected(web_client):
     assert db.query(Comment).filter(Comment.uuid == alert.uuid).count() == 0
 
 
-def test_bulk_set_disposition_success(web_client):
+def test_bulk_set_disposition_success(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert1 = insert_alert()
     alert2 = insert_alert()
 
@@ -185,6 +196,9 @@ def test_bulk_set_disposition_success(web_client):
         Comment.comment == "bulk disposition",
     ).all()
     assert len(comments) == 2
+    audit = audit_record(caplog, "user john set disposition of alerts")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.disposition) == (
+        *session_actor, [alert1.uuid, alert2.uuid], DISPOSITION_FALSE_POSITIVE)
 
 
 def test_bulk_set_disposition_respects_ownership(web_client, analyst):
@@ -257,7 +271,8 @@ def test_bulk_review_disposition_correct(web_client):
     assert comment.comment == f"{REVIEW_COMMENT_PREFIX}looks right"
 
 
-def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client):
+def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client, session_actor, caplog):
+    caplog.set_level(logging.INFO)
     alert = insert_alert()
     set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
 
@@ -276,6 +291,9 @@ def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client):
     assert alert.disposition_review == DISPOSITION_REVIEW_INCORRECT
     assert alert.disposition == DISPOSITION_WEAPONIZATION
     assert alert.incorrect_disposition == DISPOSITION_FALSE_POSITIVE
+    audit = audit_record(caplog, "user john reviewed disposition of alerts")
+    assert (*audit_actor_of(audit), audit.alert_uuids, audit.review_result, audit.corrected_disposition) == (
+        *session_actor, [alert.uuid], DISPOSITION_REVIEW_INCORRECT, DISPOSITION_WEAPONIZATION)
 
 
 def test_bulk_review_disposition_incorrect_requires_comment(web_client):

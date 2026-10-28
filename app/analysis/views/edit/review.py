@@ -1,7 +1,7 @@
 import logging
 from flask import flash, redirect, request, session, url_for
 from flask_login import current_user
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
@@ -9,6 +9,7 @@ from saq.constants import (
 )
 from saq.database.util.alert import describe_frozen, set_disposition_reviews
 from saq.disposition import is_selectable_disposition
+from saq.logging import log_audit
 
 @analysis.route('/review_disposition', methods=['POST'])
 @require_permission('alert', 'review')
@@ -59,9 +60,10 @@ def review_disposition():
             corrected_disposition=corrected_disposition, review_comment=review_comment)
         reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
-        logging.info(
-            "AUDIT: user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",
-            current_user, ','.join(reviewed), review_result, corrected_disposition, comment_clause)
+        log_audit("user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",
+                  current_user.username, ",".join(reviewed), review_result, corrected_disposition, comment_clause,
+                  auth=current_user_auth(), alert_uuids=reviewed, review_result=review_result,
+                  corrected_disposition=corrected_disposition)
         message = "disposition review recorded for {} alerts".format(len(reviewed))
         skipped = describe_frozen(frozen)
         flash(f"{message}; {skipped}" if skipped else message)

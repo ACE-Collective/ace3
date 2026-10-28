@@ -5,12 +5,13 @@ import pytest
 from saq.database.model import Alert, Comment
 from saq.database.pool import get_db
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import audit_actor_of, audit_record, insert_alert
 
 
 @pytest.mark.integration
-def test_add_comment_success(web_client):
+def test_add_comment_success(web_client, session_actor, caplog):
     """Test successfully adding a comment to an alert."""
+    caplog.set_level(logging.INFO)
     # Create mock alert UUID
     alert_uuid = "test-uuid-123"
     
@@ -29,6 +30,8 @@ def test_add_comment_success(web_client):
     comment = db.query(Comment).filter(Comment.uuid == alert_uuid).first()
     assert comment is not None
     assert comment.comment == "This is a test comment"
+    audit = audit_record(caplog, "user john added comment This is a test comment")
+    assert (*audit_actor_of(audit), audit.alert_uuids) == (*session_actor, [alert_uuid])
     
     # Cleanup
     db.delete(comment)
@@ -142,8 +145,9 @@ def test_add_comment_manage_redirect(web_client):
 
 
 @pytest.mark.integration
-def test_delete_comment_success(web_client):
+def test_delete_comment_success(web_client, session_actor, caplog):
     """Test successfully deleting a comment."""
+    caplog.set_level(logging.INFO)
     # First add a comment
     alert_uuid = "test-delete-uuid"
     
@@ -171,6 +175,8 @@ def test_delete_comment_success(web_client):
     # Verify comment was deleted
     deleted_comment = db.query(Comment).filter(Comment.comment_id == comment_id).first()
     assert deleted_comment is None
+    audit = audit_record(caplog, "user john deleted comment Comment to delete")
+    assert (*audit_actor_of(audit), audit.alert_uuid, audit.comment_id) == (*session_actor, alert_uuid, comment_id)
 
 
 @pytest.mark.integration

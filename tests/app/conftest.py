@@ -53,3 +53,8 @@ def web_client(app, analyst):
             "password": "password",
         })
         yield client
+
+@pytest.fixture
+def session_actor(analyst) -> tuple:
+    """audit_actor_of() a record of something web_client did: john, on a GUI session (no key)."""
+    return "john", analyst, None, "user"

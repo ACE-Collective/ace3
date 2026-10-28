@@ -96,6 +96,17 @@ async def verify_api_key(auth: str, session: AsyncSession) -> ApiAuthResult:
 # =============================================================================
 
 
+def session_auth(user_id: int, username: str) -> ApiAuthResult:
+    """The caller a GUI session is: its user, with no key. The Flask views use it too, so their
+    AUDIT records name a session user the way the API's do."""
+    return ApiAuthResult(
+        auth_type=API_AUTH_TYPE_USER,
+        auth_name=username,
+        auth_user_id=user_id,
+        credential=API_CREDENTIAL_SESSION,
+    )
+
+
 async def verify_flask_session(
     cookie: str, session: AsyncSession
 ) -> Optional[ApiAuthResult]:
@@ -128,9 +139,4 @@ async def verify_flask_session(
     if not row:
         return None
 
-    return ApiAuthResult(
-        auth_type=API_AUTH_TYPE_USER,
-        auth_name=row.username,
-        auth_user_id=row.id,
-        credential=API_CREDENTIAL_SESSION,
-    )
+    return session_auth(row.id, row.username)

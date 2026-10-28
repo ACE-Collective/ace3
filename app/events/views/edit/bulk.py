@@ -5,7 +5,7 @@ from flask import flash, redirect, request, url_for
 from flask_login import current_user
 
 from app.alert_ownership import confirmed_takes_from_form
-from app.auth.permissions import require_permission
+from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import events
 from saq.constants import (
     DISPOSITION_REVIEW_CORRECT,
@@ -22,6 +22,7 @@ from saq.database.util.alert import (
 )
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.disposition import is_selectable_disposition
+from saq.logging import log_audit
 from saq.gui.alert import GUIAlert
 from saq.search.tasks import submit_index_task
 
@@ -89,7 +90,8 @@ def bulk_add_tag():
         flash("you must specify one or more tags to add")
         return redirection
 
-    logging.info(f"AUDIT: user {current_user} added tags {tags} to alerts {alert_uuids}")
+    log_audit("user %s added tags %s to alerts %s", current_user.username, tags, alert_uuids,
+              auth=current_user_auth(), alert_uuids=alert_uuids, tags=tags)
     if _apply_tags(alert_uuids, tags, add=True):
         flash("unable to modify some alerts: alert is currently being analyzed")
 
@@ -111,7 +113,8 @@ def bulk_remove_tag():
         flash("you must specify one or more tags to remove")
         return redirection
 
-    logging.info(f"AUDIT: user {current_user} removed tags {tags} from alerts {alert_uuids}")
+    log_audit("user %s removed tags %s from alerts %s", current_user.username, tags, alert_uuids,
+              auth=current_user_auth(), alert_uuids=alert_uuids, tags=tags)
     if _apply_tags(alert_uuids, tags, add=False):
         flash("unable to modify some alerts: alert is currently being analyzed")
 
@@ -133,7 +136,8 @@ def bulk_add_comment():
         flash("comment cannot be empty")
         return redirection
 
-    logging.info(f"AUDIT: user {current_user} added comment {user_comment} to alerts {','.join(alert_uuids)}")
+    log_audit("user %s added comment %s to alerts %s", current_user.username, user_comment, ",".join(alert_uuids),
+              auth=current_user_auth(), alert_uuids=alert_uuids)
 
     for uuid in alert_uuids:
         get_db().add(Comment(user=current_user, uuid=uuid, comment=user_comment))
@@ -171,7 +175,9 @@ def bulk_set_disposition():
         ownership = set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment,
                                      confirmed_takes=confirmed_takes_from_form(request.form))
         comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
-        logging.info(f"AUDIT: user {current_user} set disposition of alerts {','.join(ownership.permitted)} to {disposition} {comment_clause}")
+        log_audit("user %s set disposition of alerts %s to %s %s", current_user.username,
+                  ",".join(ownership.permitted), disposition, comment_clause,
+                  auth=current_user_auth(), alert_uuids=ownership.permitted, disposition=disposition)
         message = "disposition set for {} alerts".format(len(ownership.permitted))
         skipped = describe_skipped(ownership)
         flash(f"{message}; {skipped}" if skipped else message)
@@ -216,9 +222,10 @@ def bulk_review_disposition():
             corrected_disposition=corrected_disposition, review_comment=review_comment)
         reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
-        logging.info(
-            f"AUDIT: user {current_user} reviewed disposition of alerts {','.join(reviewed)} "
-            f"as {review_result} (corrected disposition {corrected_disposition}) {comment_clause}")
+        log_audit("user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",
+                  current_user.username, ",".join(reviewed), review_result, corrected_disposition, comment_clause,
+                  auth=current_user_auth(), alert_uuids=reviewed, review_result=review_result,
+                  corrected_disposition=corrected_disposition)
         message = "disposition review recorded for {} alerts".format(len(reviewed))
         skipped = describe_frozen(frozen)
         flash(f"{message}; {skipped}" if skipped else message)
