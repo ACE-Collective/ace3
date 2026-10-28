@@ -39,12 +39,11 @@ async def lifespan(app: FastAPI):
 
 
 def new_app(title: str, description: str) -> FastAPI:
-    """A FastAPI application under /api/v2 with the shared lifespan and exception handler."""
+    """A FastAPI application with the shared lifespan and exception handler, served under /api/v2 by serving.py."""
     app = FastAPI(
         title=title,
         description=description,
         version="2.0.0",
-        root_path="/api/v2",
         lifespan=lifespan,
     )
 

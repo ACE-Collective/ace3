@@ -17,6 +17,7 @@ the engine; see the fork-safety note in aceapi_v2/database.py:create_engine_for.
 import os
 
 from aceapi_v2.application import create_app
+from aceapi_v2.serving import serve_under
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
 from saq.environment import initialize_environment
 
@@ -33,4 +34,4 @@ elif not os.path.isabs(logging_config_path):
 initialize_environment(saq_home=saq_home, config_paths=None, logging_config_path=logging_config_path)
 
 # create fastapi application
-application = create_app()
+application = serve_under("/api/v2", create_app())

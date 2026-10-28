@@ -41,8 +41,8 @@ AI_BINARY_ROUTES = {
 def _content_types(schema: dict, path: str) -> set[str]:
     """The media types the schema advertises for GET <path>'s 200 response.
 
-    Paths are the bare route paths; the schema does not carry the app's root_path
-    (/api/v2, /ai/v1).
+    Paths are the bare route paths; the schema does not carry the prefix the app is served
+    under (/api/v2, /ai/v1).
     """
     return set(schema["paths"][path]["get"]["responses"]["200"]["content"])
 

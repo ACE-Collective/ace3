@@ -244,6 +244,12 @@ def test_the_engine_api_does_not_import_the_user_api():
                         "aceapi_ai"])
 
 
+def test_serving_an_api_imports_no_routes():
+    # the AI API's entry point imports it too, and serves none of API v2's routers
+    _assert_loads_none("import aceapi_v2.serving\n", ["aceapi_v2.app_factory", "aceapi_v2.application",
+                                                       "aceapi_v2.engine", "saq.engine"])
+
+
 def test_importing_the_api_application_builds_no_app():
     # the API entry points import it to call create_app() themselves
     run_python("import aceapi_v2.application as application\n"
