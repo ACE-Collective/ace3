@@ -4,39 +4,26 @@ from subprocess import PIPE, Popen
 from typing import Type, override
 
 import msoffcrypto
-from pydantic import Field
-from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
-from saq.analysis.search import search_down
 from saq.constants import F_FILE, AnalysisExecutionResult
-from saq.cracking import crack_password, generate_wordlist
+from saq.cracking import crack_password, wordlist_from_email
 from saq.environment import get_base_dir
-from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-
-from html2text import html2text
+from saq.modules.email.encryption.email_password import (
+    EmailPasswordAnalysis,
+    EmailPasswordAnalyzer,
+    EmailPasswordAnalyzerConfig,
+)
 
 from saq.observables.file import FileObservable
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
-KEY_EMAIL = 'email'
-KEY_EMAIL_BODY = 'email_body'
-KEY_WORD_LIST = 'word_list'
-KEY_PASSWORD = 'password'
-KEY_ERROR = 'error'
 
 
-class MSOfficeEncryptionAnalysis(Analysis):
+class MSOfficeEncryptionAnalysis(EmailPasswordAnalysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = {
-            KEY_ENCRYPTION_INFO: None,
-            KEY_EMAIL: False,
-            KEY_EMAIL_BODY: None,
-            KEY_WORD_LIST: [],
-            KEY_PASSWORD: None,
-            KEY_ERROR: None
-        }
+        self.details[KEY_ENCRYPTION_INFO] = None
 
     @override
     @property
@@ -51,78 +38,11 @@ class MSOfficeEncryptionAnalysis(Analysis):
     def encryption_info(self, value):
         self.details[KEY_ENCRYPTION_INFO] = value
 
-    @property
-    def email(self):
-        return self.details[KEY_EMAIL]
 
-    @email.setter
-    def email(self, value):
-        self.details[KEY_EMAIL] = value
-
-    @property
-    def email_body(self):
-        return self.details[KEY_EMAIL_BODY]
-
-    @email_body.setter
-    def email_body(self, value):
-        self.details[KEY_EMAIL_BODY] = value
-
-    @property
-    def word_list(self):
-        return self.details[KEY_WORD_LIST]
-
-    @word_list.setter
-    def word_list(self, value):
-        self.details[KEY_WORD_LIST] = value
-
-    @property
-    def password(self):
-        return self.details[KEY_PASSWORD]
-
-    @password.setter
-    def password(self, value):
-        self.details[KEY_PASSWORD] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
-    def generate_summary(self):
-        if self.details is None:
-            return None
-
-        result = self.display_name
-        if self.error:
-            return f"{result}: {self.error}"
-        elif self.password:
-            return f"{result}: password {self.password}"
-        elif not self.email:
-            return f"{result}: no associated email detected"
-        elif not self.email_body:
-            return f"{result}: email body cannot be determined"
-        elif not self.word_list:
-            return f"{result}: word list could not be created from email"
-        elif not self.password:
-            return f"{result}: password not available"
-        else:
-            return f"{result}: could not decrypt"
-
-
-class MSOfficeEncryptionAnalyzerConfig(AnalysisModuleConfig):
-    range_low: int = Field(..., description="The minimum size of the passwords to try.")
-    range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
-    list_limit: int = Field(..., description="The maximum size of the word list created.")
-    john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
-
-class MSOfficeEncryptionAnalyzer(AnalysisModule):
+class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
-        return MSOfficeEncryptionAnalyzerConfig
+        return EmailPasswordAnalyzerConfig
 
     @property
     def generated_analysis_type(self):
@@ -132,29 +52,8 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
     def valid_observable_types(self):
         return F_FILE
 
-    @property
-    def range_low(self):
-        return self.config.range_low
-
-    @property
-    def range_high(self):
-        return self.config.range_high
-
-    @property
-    def byte_limit(self):
-        return self.config.byte_limit
-
-    @property
-    def list_limit(self):
-        return self.config.list_limit
-
-    @property
-    def john_bin_path(self):
-        return self.config.john_bin_path
-
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:
@@ -211,23 +110,10 @@ class MSOfficeEncryptionAnalyzer(AnalysisModule):
             analysis.word_list = ['VelvetSweatshop', '/01Hannes Ruescher/01']
 
             # we'll try to find additional passwords by looking at the plain text and html of the email, if they exist
-            email = search_down(_file, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
-            if email:
-                analysis.email = True
-
-                # email needs to have a body
-                if email.body:
-
-                    # convert html to text
-                    with open(email.body.full_path, 'r', errors='ignore') as fp:
-                        logging.debug("parsing {} for html".format(email.body.value))
-                        analysis.email_body = html2text(fp.read())[:self.byte_limit]
-
-                    analysis.word_list.extend(generate_wordlist(text_content=analysis.email_body,
-                                                                range_low=self.range_low,
-                                                                range_high=self.range_high,
-                                                                byte_limit=self.byte_limit,
-                                                                list_limit=self.list_limit))
+            analysis.email, analysis.email_body, email_words = wordlist_from_email(
+                _file, range_low=self.range_low, range_high=self.range_high,
+                byte_limit=self.byte_limit, list_limit=self.list_limit)
+            analysis.word_list.extend(email_words)
 
             wordlist_path = f'{_file.full_path}.wordlist'
             with open(wordlist_path, 'w') as fp:

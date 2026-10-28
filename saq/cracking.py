@@ -7,7 +7,39 @@ import re
 from subprocess import PIPE, Popen
 from typing import Optional
 
+from html2text import html2text
+
+from saq.analysis.search import search_down
+
 whitespace_re = re.compile(r'\s')
+
+
+def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_limit: int,
+                        list_limit: int) -> tuple[bool, Optional[str], list[str]]:
+    """Harvest candidate passwords from the body of the email that carried the given file.
+
+    Returns (email_present, email_body, words): whether a carrying EmailAnalysis was found,
+    the html-to-text email body (truncated to byte_limit) or None, and the wordlist generated
+    from it.
+    """
+    # local import: saq.modules.email imports saq.cracking, so importing it at module level
+    # here would be a circular import
+    from saq.modules.email.rfc822 import EmailAnalysis
+
+    email = search_down(file_observable, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
+    if not email:
+        return False, None, []
+
+    if not email.body:
+        return True, None, []
+
+    with open(email.body.full_path, 'r', errors='ignore') as fp:
+        logging.debug("parsing {} for html".format(email.body.value))
+        email_body = html2text(fp.read())[:byte_limit]
+
+    words = generate_wordlist(text_content=email_body, range_low=range_low,
+                              range_high=range_high, byte_limit=byte_limit, list_limit=list_limit)
+    return True, email_body, words
 
 def generate_wordlist(
         text_file: Optional[str]=None, 
@@ -45,7 +77,13 @@ def generate_wordlist(
 
     return list(password_list)
 
-def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str) -> str | None:
+def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str, login: str | None = None) -> str | None:
+    """Cracks the hash in hash_file with john and returns the password, or None.
+
+    A hash file written as the single line '<login>:<hash>' names its login, which has no ':' in
+    it, so everything after it on the --show line is the password, ':' included. Otherwise the
+    line is found by the file's name and the password is its second ':' field, because
+    zip2john and rar2john write more fields after the hash."""
     if not os.path.exists(hash_file):
         raise FileNotFoundError(f"hash file {hash_file} not found")
 
@@ -70,7 +108,10 @@ def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str)
 
     password = None
     for line in stdout.decode(errors='ignore').split('\n'):
-        if os.path.basename(filename) in line:
+        if login is not None:
+            if line.startswith(f'{login}:'):
+                password = line[len(login) + 1:]
+        elif os.path.basename(filename) in line:
             password = line.split(':')[1]
 
     return password
