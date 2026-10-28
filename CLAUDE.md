@@ -342,6 +342,7 @@ ACE is never down for more than a few minutes, and when something is wrong someo
 - A migration or DDL statement must be safe on a live, populated table. That means no full-table copy or long lock on a large table, and the partition rules in `docs/DATABASE_PARTITIONS.md` apply.
 - Code on the crash, shutdown or monitoring path never raises (`saq/crash_report.py`).
 - A new failure mode that an operator needs to hear about reaches them through a log record at ERROR plus an error report, or through a monitor (`saq/monitor.py`). It must not be logged at DEBUG and forgotten.
+- A change that can drop an event that should alert is a failure nobody hears about. That includes a filter, an exclusion or a suppression, and a cached answer one of them reads after the data behind it changed.
 
 ### Logging
 

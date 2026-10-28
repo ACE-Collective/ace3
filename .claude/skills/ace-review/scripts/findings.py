@@ -19,11 +19,15 @@ severity; a new fix-first gets one verifier; nits and pre-existing findings shar
 batch verifier, which also rechecks each open finding of earlier rounds (previous.json).
 Verifiers write verify/<cid>-<k>.json, and the batch verifier verify/batch.json.
 collect also numbers the design flaws the reviewers found (flaws-*.json) F<n> into
-flaw-candidates.json; the batch verifier judges those too.
+flaw-candidates.json, and what they saw and chose not to report (dismissed-*.json) D<n>
+into dismissal-candidates.json; the batch verifier judges those too.
 
 tally writes survivors.json, rejected.json and carried.json (the earlier findings
-rechecked: fixed or open), and the flaws the batch verifier kept into flaws.json. It stops at missing votes unless --allow-missing, which
-counts only the votes cast.
+rechecked: fixed or open), and the flaws the batch verifier kept into flaws.json. A
+dismissal the batch verifier overturned joins the survivors as the finding it wrote, with
+the votes of a single verifier, so it tops out at fix-first; dismissals.json records each
+dismissal's outcome. It stops at missing votes unless --allow-missing, which counts only
+the votes cast.
 
 finish reads ranked.json: the survivors after duplicates are merged, each one that is
 an earlier finding again marked "repeats": "<id>", and each new one with the lead's
@@ -143,13 +147,23 @@ def flaw_problems(flaw: dict) -> list[str]:
     return found + [f"no {field}" for field in ("title", "flaw", "workaround", "file") if not flaw.get(field)]
 
 
+def dismissal_problems(dismissal: dict) -> list[str]:
+    found = [] if dismissal.get("dimension") in DIMENSIONS else [f"dimension={dismissal.get('dimension')!r}"]
+    return found + [f"no {field}" for field in ("file", "title", "harm", "why_not") if not dismissal.get(field)]
+
+
 def collect(bundle: str) -> dict:
-    candidates, flaws, bad = [], [], []
+    candidates, flaws, dismissals, bad = [], [], [], []
     for path in sorted(glob.glob(os.path.join(bundle, "flaws-*.json"))):
         for index, flaw in enumerate(load(path, [])):
             if issues := flaw_problems(flaw):
                 bad.append(f"{os.path.basename(path)}[{index}]: {', '.join(issues)}")
             flaws.append({**flaw, "fid": f"F{len(flaws) + 1}", "source": os.path.basename(path)})
+    for path in sorted(glob.glob(os.path.join(bundle, "dismissed-*.json"))):
+        for index, dismissal in enumerate(load(path, [])):
+            if issues := dismissal_problems(dismissal):
+                bad.append(f"{os.path.basename(path)}[{index}]: {', '.join(issues)}")
+            dismissals.append({**dismissal, "did": f"D{len(dismissals) + 1}", "source": os.path.basename(path)})
     for path in sorted(glob.glob(os.path.join(bundle, "findings-*.json"))):
         for index, finding in enumerate(load(path, [])):
             if issues := problems(finding):
@@ -159,7 +173,7 @@ def collect(bundle: str) -> dict:
         sys.exit("malformed findings, fix them and collect again:\n" + "\n".join(bad))
 
     plan = {"single": [], "batch": [], "carry": [f["id"] for f in load(os.path.join(bundle, "previous.json"), []) if f["status"] == "open"],
-            "flaws": [f["fid"] for f in flaws]}
+            "flaws": [f["fid"] for f in flaws], "dismissed": [d["did"] for d in dismissals]}
     for candidate in candidates:
         if candidate["origin"] == "new" and candidate["severity"] in ("blocker", "fix-first"):
             votes = BLOCKER_VOTES if candidate["severity"] == "blocker" else 1
@@ -171,6 +185,7 @@ def collect(bundle: str) -> dict:
     os.makedirs(os.path.join(bundle, "verify"))
     dump(os.path.join(bundle, "candidates.json"), candidates)
     dump(os.path.join(bundle, "flaw-candidates.json"), flaws)
+    dump(os.path.join(bundle, "dismissal-candidates.json"), dismissals)
     dump(os.path.join(bundle, "plan.json"), plan)
     return plan
 
@@ -225,7 +240,8 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
             else:
                 votes.setdefault(item["cid"], []).append(vote)
     flaw_plan = plan.get("flaws", [])
-    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] or flaw_plan else {}
+    dismissed_plan = plan.get("dismissed", [])
+    batch = load(os.path.join(bundle, "verify", "batch.json"), {}) if plan["batch"] or plan["carry"] or flaw_plan or dismissed_plan else {}
     for vote in batch.get("candidates", []):
         votes.setdefault(vote.get("cid"), []).append(vote)
     carried = [c for c in batch.get("carried", []) if c.get("status") in ("fixed", "open")]
@@ -233,6 +249,16 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
     missing += [f"verify/batch.json: carried {fid}" for fid in plan["carry"] if fid not in {c["id"] for c in carried}]
     flaw_votes = {v.get("fid"): v for v in batch.get("flaws", [])}
     missing += [f"verify/batch.json: flaw {fid}" for fid in flaw_plan if fid not in flaw_votes]
+    dismissal_votes = {v.get("did"): v for v in batch.get("dismissed", [])}
+    for did in dismissed_plan:
+        result = dismissal_votes.get(did)
+        if result is None:
+            missing.append(f"verify/batch.json: dismissal {did}")
+        elif result.get("verdict") in ("CONFIRMED", "PLAUSIBLE"):
+            if issues := problems(result.get("finding") or {}):
+                missing.append(f"verify/batch.json: dismissal {did} finding: {', '.join(issues)}")
+        elif result.get("verdict") != "UPHELD":
+            missing.append(f"verify/batch.json: dismissal {did} verdict={result.get('verdict')!r}")
     if missing and not allow_missing:
         sys.exit("missing votes, relaunch these verifiers (or pass --allow-missing):\n" + "\n".join(missing))
 
@@ -243,6 +269,22 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
             rejected.append({k: result.get(k) for k in ("cid", "dimension", "severity", "file", "line", "title", "reason")})
         else:
             survivors.append(result)
+
+    outcomes = []
+    for dismissal in load(os.path.join(bundle, "dismissal-candidates.json"), []):
+        result = dismissal_votes.get(dismissal["did"], {})
+        finding = result.get("finding") or {}
+        overturned = result.get("verdict") in ("CONFIRMED", "PLAUSIBLE") and not problems(finding)
+        outcomes.append({"did": dismissal["did"], "dimension": dismissal["dimension"], "title": dismissal["title"],
+                         "outcome": "overturned" if overturned else "upheld" if result.get("verdict") == "UPHELD" else "not judged",
+                         "reason": result.get("reason", "")})
+        if overturned:
+            # one verifier both found and judged it, so it gets the weight of one vote
+            candidate = {**finding, "cid": dismissal["did"], "source": dismissal["source"],
+                         "dismissal": {k: dismissal[k] for k in ("dimension", "title", "why_not")}}
+            vote = {"verdict": result["verdict"], "severity": finding["severity"], "origin": finding["origin"],
+                    "reason": result.get("reason", "")}
+            survivors.append(decide(candidate, [vote], 1))
     survivors.sort(key=rank)
 
     kept_flaws, rejected_flaws = [], []
@@ -261,8 +303,11 @@ def tally(bundle: str, allow_missing: bool = False) -> dict:
     dump(os.path.join(bundle, "carried.json"), carried)
     dump(os.path.join(bundle, "flaws.json"), kept_flaws)
     dump(os.path.join(bundle, "rejected-flaws.json"), rejected_flaws)
+    dump(os.path.join(bundle, "dismissals.json"), outcomes)
     return {"survivors": len(survivors), "rejected": len(rejected), "carried": len(carried),
-            "flaws": len(kept_flaws), "rejected_flaws": len(rejected_flaws), "missing": missing}
+            "flaws": len(kept_flaws), "rejected_flaws": len(rejected_flaws),
+            "dismissals": {o: sum(1 for d in outcomes if d["outcome"] == o) for o in ("upheld", "overturned")},
+            "missing": missing}
 
 
 def gh(*args: str, stdin: str | None = None) -> str:

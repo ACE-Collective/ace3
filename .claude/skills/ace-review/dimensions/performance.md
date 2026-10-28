@@ -26,7 +26,7 @@ Read first: `CLAUDE.md` § Engineering values → Performance, and `docs/GUI_ALE
 
 **Engine and analysis modules.**
 - A module doing expensive work (network, subprocess, large file reads) that could be cached and isn't. Check the module's caching declarations in `saq/modules/base_module.py`.
-- A cache key that misses an input, so results come back stale or wrong. That is a correctness finding; hand it to the correctness dimension by marking it `dimension: correctness`.
+- A cache that can return a stale or wrong answer: a key that misses an input, or a lifetime longer than the data behind the answer stays the same. That is a correctness finding; hand it to the correctness dimension by marking it `dimension: correctness`. Judge a cache here by what it costs and saves.
 - Synchronous network calls on the analysis hot path with long timeouts.
 - Work repeated across the observables in one root.
 

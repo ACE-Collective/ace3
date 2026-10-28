@@ -36,6 +36,10 @@ A change that doesn't do what it says, or that works around a symptom whose caus
 - Encoding: bytes vs str, a file read without an explicit encoding, email and MIME edge cases.
 - An idempotency claim the code doesn't actually honor (a retry that duplicates rows).
 
+**Caches.** A persistent cache (a correlation step's `cache:`, the analysis result cache, a TTL in Redis) returns its answer until it expires, whatever has changed since.
+- A key that misses an input, so two different questions share one answer.
+- A lifetime longer than the data behind the answer stays the same, when that data changes outside the call: a remote list, another system's configuration, a file the key doesn't name. Name the lifetime, how soon the source can change, and what a stale answer does. A stale answer that filters an event out is worse than one that makes it alert.
+
 **Security.** ACE handles hostile input: malware, phishing email, attacker-controlled URLs.
 - Missing permission checks on new aceapi_v2 routes and GUI views. Compare with sibling routes for the permission they require.
 - SQL built by string formatting.
@@ -55,4 +59,5 @@ A change that doesn't do what it says, or that works around a symptom whose caus
 
 - Every finding names the concrete input or sequence that triggers it, and what the user or operator sees.
 - Uncertain but plausible bugs are fine to report. The verifier will mark them. Pure hypotheticals with no caller are not.
+- A setting the change copies or recommends from elsewhere (a cache lifetime, a timeout, a limit, a threshold) is right only if the reason it was chosen there holds here. Find that reason and check it.
 - If a finding is really about uptime (it hangs or crashes a service), set `dimension: uptime` so it ranks there.

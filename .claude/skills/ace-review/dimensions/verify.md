@@ -39,10 +39,16 @@ For each listed design flaw, find it by its `fid` in `$B/flaw-candidates.json` a
 - Read the known flaws in `$B/known-flaws.json`, one GitHub issue each. Set `known` to the issue number when one is the same flaw, even under another title.
 - Size the fix again and give your own recommendation; yours is the one reported.
 
+For each listed dismissal, find it by its `did` in `$B/dismissal-candidates.json` and try to show its `why_not` wrong, starting from the code: a trade-off whose reason doesn't hold here, a caller the rubric counts (the consumer the PR names, the usage its docs recommend), a cost larger than the reviewer thought.
+
+- **UPHELD** when the reason holds.
+- Otherwise the problem is a finding. Write it under `finding` in rubric.md's schema, and judge it as you would a candidate: **CONFIRMED** or **PLAUSIBLE** by the same bar.
+
 Write `$B/verify/batch.json`:
 
 ```json
 {"candidates": [{"cid": "C7", "verdict": "...", "severity": "...", "origin": "...", "reason": "..."}],
  "carried": [{"id": "R1-2", "status": "fixed | open", "reason": "one line"}],
- "flaws": [{"fid": "F1", "verdict": "CONFIRMED | PLAUSIBLE | REJECTED", "known": "<id> or null", "fix_size": "small | medium | large", "recommendation": "stop | keep going", "why": "one line", "reason": "one line: why it is or isn't a flaw"}]}
+ "flaws": [{"fid": "F1", "verdict": "CONFIRMED | PLAUSIBLE | REJECTED", "known": "<id> or null", "fix_size": "small | medium | large", "recommendation": "stop | keep going", "why": "one line", "reason": "one line: why it is or isn't a flaw"}],
+ "dismissed": [{"did": "D1", "verdict": "UPHELD | CONFIRMED | PLAUSIBLE", "reason": "one line: why the dismissal holds or doesn't", "finding": "the finding, in rubric.md's schema, unless UPHELD"}]}
 ```
