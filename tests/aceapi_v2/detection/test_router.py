@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import AuthUserPermission, ObservableDetection, User
+from tests.aceapi_v2.conftest import audit_actor_of
 
 pytestmark = pytest.mark.integration
 
@@ -212,10 +213,10 @@ class TestExpiration:
 
 class TestAudit:
     @pytest.mark.asyncio
-    async def test_writes_are_audited(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+    async def test_writes_are_audited(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
         """Every write logs who did it and to which value; for the alert page's detection actions
         this is the only audit trail."""
-        caplog.set_level(logging.INFO, logger="aceapi_v2.detection.router")
+        caplog.set_level(logging.INFO)
 
         created = await client.post("/detection/", json={
             "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert"})
@@ -223,7 +224,10 @@ class TestAudit:
         await client.patch(f"/detection/{detection_id}/expiration", json={"expires_on": None})
         await client.delete(f"/detection/{detection_id}")
 
-        audit = [r.getMessage() for r in caplog.records if r.getMessage().startswith("AUDIT:")]
+        records = [r for r in caplog.records if r.getMessage().startswith("AUDIT:")]
+        assert [(*audit_actor_of(r), r.detection_id, r.observable_type, r.observable_value) for r in records] == [
+            (*client_actor, detection_id, "fqdn", "audited.example.com")] * 3
+        audit = [r.getMessage() for r in records]
         assert audit == [
             f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com': from an alert",
             f"AUDIT: user unittest set the expiration of detection {detection_id} for fqdn 'audited.example.com' to never",

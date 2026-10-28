@@ -16,6 +16,7 @@ from aceapi_v2.alerts.service import hexdump
 from saq.constants import F_TEST
 from saq.database.util.alert import ALERT
 from saq.environment import get_temp_dir
+from tests.aceapi_v2.conftest import audit_actor_of, audit_record
 from tests.saq.helpers import create_root_analysis
 
 pytestmark = pytest.mark.integration
@@ -73,7 +74,7 @@ class TestAccess:
 class TestText:
     @pytest.mark.asyncio
     async def test_the_bytes_as_text(self, client: AsyncClient, tmpdir, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.alerts.router")
+        caplog.set_level(logging.INFO)
         alert_uuid, file_observable, _ = _alert_with_file(tmpdir, "notes.txt", "café\n".encode())
 
         response = await client.get(_path(alert_uuid, file_observable.uuid, "text"))
@@ -97,6 +98,20 @@ class TestText:
         assert response.headers["Content-Security-Policy"] == "sandbox"
         assert response.headers["Cache-Control"] == "private"
         assert "attachment" not in response.headers.get("Content-Disposition", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view, done", [("text", "viewed"), ("hex", "viewed"), ("zip", "downloaded")])
+async def test_the_audit_record_names_the_key_that_acted(client: AsyncClient, client_actor, tmpdir,
+                                                         caplog: pytest.LogCaptureFixture, view, done):
+    caplog.set_level(logging.INFO)
+    alert_uuid, file_observable, _ = _alert_with_file(tmpdir, "notes.txt", b"hello")
+
+    assert (await client.get(_path(alert_uuid, file_observable.uuid, view))).status_code == 200
+
+    audit = audit_record(caplog, f"user unittest {done} file {file_observable.uuid} of alert {alert_uuid}")
+    assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_uuid) == (
+        *client_actor, alert_uuid, file_observable.uuid)
 
 
 class TestHex:
@@ -142,7 +157,7 @@ class TestHex:
 class TestZip:
     @pytest.mark.asyncio
     async def test_an_encrypted_zip_of_the_file(self, client: AsyncClient, tmpdir, caplog: pytest.LogCaptureFixture):
-        caplog.set_level(logging.INFO, logger="aceapi_v2.alerts.router")
+        caplog.set_level(logging.INFO)
         alert_uuid, file_observable, _ = _alert_with_file(tmpdir, "invoice.exe", b"MZ not really a program")
         before = set(os.listdir(get_temp_dir()))
 

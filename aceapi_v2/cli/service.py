@@ -23,6 +23,7 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import defer
 
 import ace_api
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.cli.schemas import CliExecutionRead, CliExecutionSummary, CliNodeRead
 from aceapi_v2.common.listing import InvalidCursor, decode_cursor, encode_cursor
 from aceapi_v2.sync import run_db_in_thread
@@ -32,6 +33,7 @@ from saq.database.pool import get_db
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception, log_peer_unavailable
+from saq.logging import log_audit
 
 logger = logging.getLogger(__name__)
 
@@ -145,10 +147,12 @@ def _resolve_nodes(node_ids: list[int] | None) -> list[Nodes]:
 # rows
 #
 
-def create_executions(user_id: int, username: str, argv: list[str], node_ids: list[int] | None,
+def create_executions(auth: ApiAuthResult, argv: list[str], node_ids: list[int] | None,
                       timeout_seconds: int) -> list[int]:
-    """One pending row per node, committed, so each node can read its row."""
+    """One pending row per node, committed, so each node can read its row. The run is recorded
+    against auth's user, so auth must have one."""
     session = get_db()
+    user_id, username = auth.auth_user_id, auth.auth_name
     nodes = _resolve_nodes(node_ids)
     command = shlex.join(argv)
 
@@ -159,9 +163,8 @@ def create_executions(user_id: int, username: str, argv: list[str], node_ids: li
     session.commit()
 
     for execution, node in zip(executions, nodes):
-        logger.info("AUDIT: user %s requested cli execution %s on node %s: ace %s",
-                    username, execution.id, node.name, command,
-                    extra={"cli_execution_id": execution.id, "node": node.name, "user": username})
+        log_audit("user %s requested cli execution %s on node %s: ace %s", username, execution.id, node.name, command,
+                  auth=auth, cli_execution_id=execution.id, node=node.name)
 
     return [e.id for e in executions]
 

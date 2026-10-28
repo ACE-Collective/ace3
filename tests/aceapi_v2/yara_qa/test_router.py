@@ -7,6 +7,7 @@ yara_qa pool.
 
 import io
 import json
+import logging
 import zipfile
 from datetime import datetime, timedelta
 from typing import Optional
@@ -21,7 +22,7 @@ from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.environment import get_global_runtime_settings
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
 
 pytestmark = pytest.mark.integration
 
@@ -273,13 +274,18 @@ async def test_get_match_and_full_record(client: AsyncClient, session: AsyncSess
 #
 
 @pytest.mark.asyncio
-async def test_download_one_match(client: AsyncClient, session: AsyncSession):
+async def test_download_one_match(client: AsyncClient, client_actor, session: AsyncSession,
+                                  caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO)
     row = await _stored_match(session, b"MZ live malware stand-in", file_name="../../evil.doc")
 
     response = await client.get(f"/signatures/yara-qa/matches/{row.id}/download")
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/zip"
     assert f"yara-qa-match-{row.id}.zip" in response.headers["content-disposition"]
+    audit = audit_record(caplog, f"user unittest downloading yara qa match {row.id}")
+    assert (*audit_actor_of(audit), audit.match_id, audit.signature_uuid, audit.sha256) == (
+        *client_actor, row.id, row.signature_uuid, row.sha256)
 
     archive, manifest = _open_zip(response.content)
     top = f"yara-qa-match-{row.id}"
@@ -295,7 +301,9 @@ async def test_download_one_match(client: AsyncClient, session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_bulk_download(client: AsyncClient, session: AsyncSession):
+async def test_bulk_download(client: AsyncClient, client_actor, session: AsyncSession,
+                             caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO)
     first = await _stored_match(session, b"first sample", version=VERSION_A)
     second = await _stored_match(session, b"second sample", version=VERSION_B)
     remote = await _stored_match(session, b"remote sample", version=VERSION_B, node="some-other-node")
@@ -316,6 +324,8 @@ async def test_bulk_download(client: AsyncClient, session: AsyncSession):
     response = await client.get(f"/signatures/yara-qa/{MATCHED_UUID}/download", params={"match_id": [second.id]})
     _, manifest = _open_zip(response.content)
     assert [m["match_id"] for m in manifest["matches"]] == [second.id]
+    audit = audit_record(caplog, f"user unittest downloading 1 yara qa matches of signature {MATCHED_UUID} (version all)")
+    assert (*audit_actor_of(audit), audit.signature_uuid, audit.match_ids) == (*client_actor, MATCHED_UUID, [second.id])
 
 
 @pytest.mark.asyncio

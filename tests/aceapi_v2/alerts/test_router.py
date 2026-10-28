@@ -28,6 +28,7 @@ from saq.database.model import (
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_base_dir
 from saq.search.tasks import submit_index_task
+from tests.aceapi_v2.conftest import audit_actor_of, audit_record
 from tests.saq.helpers import insert_alert, make_simulated, workload_count
 
 pytestmark = pytest.mark.integration
@@ -189,8 +190,10 @@ class TestBulkAddObservable:
         _assert_unlocked(alert.uuid)
 
     @pytest.mark.asyncio
-    async def test_bulk_add_observable_success(self, client: AsyncClient):
+    async def test_bulk_add_observable_success(self, client: AsyncClient, client_actor,
+                                               caplog: pytest.LogCaptureFixture):
         """Successfully adding an observable to multiple alerts."""
+        caplog.set_level(logging.INFO)
         alert1, alert2 = insert_alert(), insert_alert()
         versions = {alert1.id: alert1.version, alert2.id: alert2.version}
 
@@ -205,6 +208,9 @@ class TestBulkAddObservable:
         assert data["success_count"] == 2
         assert data["failed_count"] == 0
         assert data["failed_uuids"] == []
+        audit = audit_record(caplog, "user unittest bulk-added observable (fqdn,evil.example.com,None)")
+        assert (*audit_actor_of(audit), audit.alert_uuids, audit.observable_type, audit.observable_value) == (
+            *client_actor, [alert1.uuid, alert2.uuid], "fqdn", "evil.example.com")
 
         # each alert got the observable, was put back into correlation and queued for analysis
         for alert in (alert1, alert2):
@@ -441,7 +447,9 @@ class TestDownloadAlert:
         assert response.status_code == 410
 
     @pytest.mark.asyncio
-    async def test_download_happy_path(self, client: AsyncClient, tmp_path):
+    async def test_download_happy_path(self, client: AsyncClient, client_actor, tmp_path,
+                                       caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         alert = insert_alert()
         alert_uuid = alert.uuid
         storage_dir = _storage_path(alert)
@@ -456,6 +464,8 @@ class TestDownloadAlert:
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
         assert f"{alert_uuid}.zip" in response.headers["content-disposition"]
+        audit = audit_record(caplog, f"user unittest downloading alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid) == (*client_actor, alert_uuid)
 
         # Verify the zip is real and encrypted with 'infected'.
         zip_bytes = response.content
@@ -798,7 +808,9 @@ class TestUpdateAlertComment:
 
     @pytest.mark.asyncio
     @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
-    async def test_update_comment(self, mock_submit_index_task, client: AsyncClient):
+    async def test_update_comment(self, mock_submit_index_task, client: AsyncClient, client_actor,
+                                  caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         user_id = _unittest_user_id()
         alert_uuid, comment_id = _insert_commented_alert(user_id)
         version = _alert_version(alert_uuid)
@@ -813,6 +825,8 @@ class TestUpdateAlertComment:
         assert data["comment"] == "edited comment"
 
         assert _comment_text(comment_id) == "edited comment"
+        audit = audit_record(caplog, f"user unittest edited comment {comment_id} on alert {alert_uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.comment_id) == (*client_actor, alert_uuid, comment_id)
         # the change is visible to clients polling the alert, and the search index picks it up
         assert _alert_version(alert_uuid) != version
         mock_submit_index_task.assert_called_once_with(alert_uuid)

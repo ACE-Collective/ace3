@@ -5,6 +5,7 @@ These are integration tests because authentication is database backed.
 
 import io
 import json
+import logging
 import os
 import uuid
 import zipfile
@@ -22,6 +23,7 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.environment import get_data_dir, get_global_runtime_settings
+from tests.aceapi_v2.conftest import audit_actor_of, audit_record
 
 pytestmark = pytest.mark.integration
 
@@ -193,8 +195,10 @@ class TestGetCrashReport:
 class TestDownloadCrashReport:
     @pytest.mark.asyncio
     async def test_download_happy_path(
-        self, client: AsyncClient, session: AsyncSession, local_node: str, tmp_path
+        self, client: AsyncClient, client_actor, session: AsyncSession, local_node: str, tmp_path,
+        caplog: pytest.LogCaptureFixture,
     ):
+        caplog.set_level(logging.INFO)
         crash_id = str(uuid.uuid4())
         crash_dir = _write_report(crash_id, node=local_node)
         await _index(session, crash_id, crash_dir, local_node)
@@ -203,6 +207,8 @@ class TestDownloadCrashReport:
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/zip"
         assert f"crash-{crash_id}.zip" in response.headers["content-disposition"]
+        audit = audit_record(caplog, f"user unittest downloading crash report {crash_id}")
+        assert (*audit_actor_of(audit), audit.crash_id) == (*client_actor, crash_id)
 
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             names = archive.namelist()

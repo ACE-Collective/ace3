@@ -32,6 +32,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.modules.test import CustomReqFalseAnalysis, DeclaredNoProduceAnalysis
+from tests.aceapi_v2.conftest import audit_actor_of, audit_record
 from tests.saq.helpers import create_root_analysis
 
 pytestmark = pytest.mark.integration
@@ -96,12 +97,13 @@ class TestRequests:
         ("check-for-clickers", "url", DIRECTIVE_CLICKER_DETECTION, "a clicker check"),
         ("check-for-clickers", "fqdn", DIRECTIVE_CLICKER_DETECTION, "a clicker check"),
     ])
-    async def test_adds_the_directive_and_queues_the_alert(self, client: AsyncClient, alert, action, observable,
-                                                           directive, audited, caplog: pytest.LogCaptureFixture):
+    async def test_adds_the_directive_and_queues_the_alert(self, client: AsyncClient, client_actor, alert, action,
+                                                           observable, directive, audited,
+                                                           caplog: pytest.LogCaptureFixture):
         """Even on a dispositioned alert: the requested analysis runs in correlation mode and gets
         past the stop on dispositioned alerts (Collect File used to queue it in dispositioned
         mode, where no module runs)."""
-        caplog.set_level(logging.INFO, logger="aceapi_v2.alerts.router")
+        caplog.set_level(logging.INFO)
         target = getattr(alert.observables, observable)
 
         response = await client.post(_path(alert.uuid, target.uuid, action))
@@ -112,8 +114,10 @@ class TestRequests:
         assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert root.state.get(STATE_ANALYST_REQUESTED_ANALYSIS) is True
         assert _queued(alert)
-        assert any(message.startswith(f"AUDIT: user unittest requested {audited} for observable")
-                   and message.endswith(f"in alert {alert.uuid}") for message in caplog.messages)
+        audit = audit_record(caplog, f"user unittest requested {audited} for observable")
+        assert audit.getMessage().endswith(f"in alert {alert.uuid}")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_uuid) == (
+            *client_actor, alert.uuid, target.uuid)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("action, observable", [
@@ -199,7 +203,9 @@ class TestRequests:
 
 class TestClickerSearches:
     @pytest.mark.asyncio
-    async def test_the_searches_for_the_observable(self, client: AsyncClient, alert, tmp_path, monkeypatch):
+    async def test_the_searches_for_the_observable(self, client: AsyncClient, client_actor, alert, tmp_path,
+                                                   monkeypatch, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         clicker_config = tmp_path / "clicker_detection.yaml"
         clicker_config.write_text(
             "splunk:\n"
@@ -223,6 +229,9 @@ class TestClickerSearches:
         assert url.scheme == "https"
         assert url.hostname == get_splunk_config("default").host
         assert '"https://evil.example/login"' in parse_qs(url.query)["q"][0]
+        audit = audit_record(caplog, "user unittest opened 1 Splunk clicker searches")
+        assert (*audit_actor_of(audit), audit.alert_uuid, audit.observable_uuid) == (
+            *client_actor, alert.uuid, alert.observables.url.uuid)
 
     @pytest.mark.asyncio
     async def test_none_when_the_splunk_module_is_not_configured(self, client: AsyncClient, alert):

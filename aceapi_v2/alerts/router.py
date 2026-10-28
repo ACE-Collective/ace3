@@ -48,6 +48,7 @@ from aceapi_v2.schemas.base import ListResponse
 from aceapi_v2.detection_points import service as detection_points_service
 from aceapi_v2.detection_points.schemas import ConfirmResult, DetectionPointRow, VerdictRequest
 from saq.database.util.observable_detection import InvalidDetectionValue, validate_observable_type
+from saq.logging import log_audit
 from saq.util.relative_time import RelativeTimeError, format_date_range, parse_date_range
 
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ async def bulk_add_observable(
         o_value=body.observable_value,
         o_time=o_time,
         directives=body.directives,
-        username=auth.auth_name or "unknown",
+        auth=auth,
     )
 
 
@@ -138,8 +139,9 @@ async def set_alert_owner(
 
     result = await run_db_in_thread(
         service.set_alert_owner, body.alert_uuids, body.owner_id, auth.auth_user_id, body.take_owned)
-    logger.info("AUDIT: user %s set the owner of alerts %s to %s",
-                auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody")
+    log_audit("user %s set the owner of alerts %s to %s",
+              auth.auth_name, ",".join(result.applied), body.owner_id if body.owner_id is not None else "nobody",
+              auth=auth, alert_uuids=result.applied, owner_id=body.owner_id)
     return result
 
 
@@ -280,7 +282,7 @@ async def download_alert(
     auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))],
 ) -> ZipFileResponse:
     """Download the full alert storage directory as a zip encrypted with password 'infected'."""
-    logger.info("AUDIT: user %s downloading alert %s", auth.auth_name, alert_uuid)
+    log_audit("user %s downloading alert %s", auth.auth_name, alert_uuid, auth=auth, alert_uuid=alert_uuid)
     zip_path = await run_db_in_thread(service.create_encrypted_alert_zip, alert_uuid)
     return ZipFileResponse(
         zip_path,
@@ -342,7 +344,8 @@ async def view_observable_file_as_text(
     """A file observable of the alert, as text: its bytes as they are, served as text/plain
     (the alert page's View As Text)."""
     file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s viewed file %s of alert %s as text", auth.auth_name, observable_uuid, alert_uuid)
+    log_audit("user %s viewed file %s of alert %s as text", auth.auth_name, observable_uuid, alert_uuid,
+              auth=auth, alert_uuid=alert_uuid, observable_uuid=observable_uuid)
     # FileResponse ignores the class attribute; without this it guesses from the filename
     return TextFileResponse(file_observable.path, media_type="text/plain; charset=utf-8", headers=_FILE_VIEW_HEADERS)
 
@@ -356,7 +359,8 @@ async def view_observable_file_as_hex(
     """A file observable of the alert as a hex dump, in the format of `hexdump -C` (the alert
     page's View As Hex)."""
     file_observable = await run_db_in_thread(service.resolve_alert_file, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s viewed file %s of alert %s as hex", auth.auth_name, observable_uuid, alert_uuid)
+    log_audit("user %s viewed file %s of alert %s as hex", auth.auth_name, observable_uuid, alert_uuid,
+              auth=auth, alert_uuid=alert_uuid, observable_uuid=observable_uuid)
     return TextStreamResponse(service.hexdump(file_observable.path), media_type="text/plain; charset=utf-8",
                               headers=_FILE_VIEW_HEADERS)
 
@@ -374,7 +378,8 @@ async def download_observable_file(
     """A file observable of the alert, as a zip encrypted with password 'infected' (the alert
     page's Download File As ZIP)."""
     zip_path, file_name = await run_db_in_thread(service.create_encrypted_file_zip, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s downloaded file %s of alert %s", auth.auth_name, observable_uuid, alert_uuid)
+    log_audit("user %s downloaded file %s of alert %s", auth.auth_name, observable_uuid, alert_uuid,
+              auth=auth, alert_uuid=alert_uuid, observable_uuid=observable_uuid)
     return ZipFileResponse(
         zip_path,
         # FileResponse ignores the class attribute; without this it guesses from the filename
@@ -393,7 +398,8 @@ async def download_observable_file(
 async def _request_analysis(request, alert_uuid: str, observable_uuid: str, auth: ApiAuthResult, what: str,
                             message: str) -> ObservableAnalysisRequested:
     observable = await run_db_in_thread(request, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s requested %s for observable %s in alert %s", auth.auth_name, what, observable, alert_uuid)
+    log_audit("user %s requested %s for observable %s in alert %s", auth.auth_name, what, observable, alert_uuid,
+              auth=auth, alert_uuid=alert_uuid, observable_uuid=observable_uuid)
     return ObservableAnalysisRequested(message=message)
 
 
@@ -455,8 +461,9 @@ async def get_clicker_searches(
     """The Splunk searches the clicker check runs for this observable, as Splunk web URLs, to run
     by hand. Empty when none is configured for its type."""
     searches = await run_db_in_thread(service.clicker_searches, alert_uuid, observable_uuid)
-    logger.info("AUDIT: user %s opened %d Splunk clicker searches for observable %s in alert %s",
-                auth.auth_name, len(searches), observable_uuid, alert_uuid)
+    log_audit("user %s opened %d Splunk clicker searches for observable %s in alert %s",
+              auth.auth_name, len(searches), observable_uuid, alert_uuid,
+              auth=auth, alert_uuid=alert_uuid, observable_uuid=observable_uuid)
     return ListResponse(data=searches)
 
 
@@ -496,8 +503,7 @@ async def update_alert_comment(
 ) -> AlertCommentRead:
     """Edit the text of a comment on the alert. Only the comment's author may edit it (403)."""
     return await run_db_in_thread(
-        service.update_alert_comment, alert_uuid, comment_id, body.comment, auth.auth_user_id,
-        auth.auth_name)
+        service.update_alert_comment, alert_uuid, comment_id, body.comment, auth)
 
 
 ContentHashParam = Annotated[str, Path(

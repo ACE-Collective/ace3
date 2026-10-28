@@ -4,6 +4,7 @@ import collections
 import csv
 import io
 import json
+import logging
 import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, audit_actor_of, audit_record, make_api_key
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -453,7 +454,8 @@ async def test_missing_summary(client: AsyncClient):
 
 class TestDownload:
     @pytest.mark.asyncio
-    async def test_one_sample(self, client: AsyncClient):
+    async def test_one_sample(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         content = f"download {uuid.uuid4()}".encode()
         first, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID], name="dir/manifest.json", content=content)
         _sample("DELIVERY", [RULE_UUID], content=content)
@@ -461,6 +463,8 @@ class TestDownload:
         response = await client.get(f"/svs/samples/{sha256}/{RULE_UUID}/download")
         assert response.status_code == 200, response.text
         assert response.headers["content-type"] == "application/zip"
+        audit = audit_record(caplog, f"user unittest downloading svs sample {sha256}")
+        assert (*audit_actor_of(audit), audit.sha256, audit.rule_uuid) == (*client_actor, sha256, RULE_UUID)
         archive, manifest = _open_zip(response.content)
         (entry,) = manifest["files"]
         assert entry["sha256"] == sha256 and manifest["skipped"] == []
@@ -489,7 +493,8 @@ class TestDownload:
         assert response.json()["detail"]["error"] == "wrong_node"
 
     @pytest.mark.asyncio
-    async def test_bulk(self, client: AsyncClient):
+    async def test_bulk(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         _, fp, fp_content = _sample("FALSE_POSITIVE", [RULE_UUID])
         _, tp, tp_content = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
         alert, _, _ = _sample("REVIEWED", [RULE_UUID])
@@ -500,6 +505,8 @@ class TestDownload:
         archive, manifest = _open_zip(response.content)
         files = {entry["sha256"]: entry for entry in manifest["files"]}
         assert set(files) == {fp, tp}
+        audit = audit_record(caplog, "user unittest downloading 2 svs sample files (filters ['label:tp,fp'])")
+        assert (*audit_actor_of(audit), sorted(audit.sha256s)) == (*client_actor, sorted([fp, tp]))
         assert archive.read(f"svs-samples/{files[fp]['path']}") == fp_content
         # a file two rules matched is in the zip once, with both samples
         assert archive.read(f"svs-samples/{files[tp]['path']}") == tp_content
@@ -749,7 +756,8 @@ class TestRetirement:
 
 class TestDeletion:
     @pytest.mark.asyncio
-    async def test_delete(self, client: AsyncClient):
+    async def test_delete(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
+        caplog.set_level(logging.INFO)
         _, sha256, _ = _sample("DELIVERY", [RULE_UUID, OTHER_RULE_UUID])
 
         response = await client.request("DELETE", f"/svs/samples/{sha256.upper()}", json={"reason": "legal request"})
@@ -760,6 +768,8 @@ class TestDeletion:
         assert body["rule_uuids"] == sorted([RULE_UUID, OTHER_RULE_UUID])
         assert (body["capture_count"], body["deleted_by"], body["reason"]) == (2, "unittest", "legal request")
         assert body["purged_at"] is not None
+        audit = audit_record(caplog, f"user unittest deleting svs sample {sha256.upper()}: legal request")
+        assert (*audit_actor_of(audit), audit.sha256) == (*client_actor, sha256.upper())
         assert (await client.get(f"/svs/samples/{sha256}/{RULE_UUID}")).status_code == 404
         assert not get_cas().pool("svs_samples").exists(sha256)
 

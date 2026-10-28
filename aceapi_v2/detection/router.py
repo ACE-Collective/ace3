@@ -1,12 +1,12 @@
 """Observable-detection settings router (ACE API v2)."""
 
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.database.util.observable_detection import InvalidDetectionValue
+from saq.logging import log_audit
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.database import get_async_session
 from aceapi_v2.dependencies import get_current_auth, require_permission
@@ -19,8 +19,6 @@ from aceapi_v2.detection.schemas import (
     ObservableDetectionRead,
     ObservableTypeOptions,
 )
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -77,8 +75,9 @@ async def create_detection(
     except service.DetectionAlreadyExists as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
-    logger.info("AUDIT: user %s added detection %s for %s %r: %s",
-                auth.auth_name, detection.id, detection.type, detection.value, detection_context)
+    log_audit("user %s added detection %s for %s %r: %s",
+              auth.auth_name, detection.id, detection.type, detection.value, detection_context,
+              auth=auth, detection_id=detection.id, observable_type=detection.type, observable_value=detection.value)
     return detection
 
 
@@ -92,8 +91,8 @@ async def delete_detection(
     if removed is None:
         raise HTTPException(status_code=404, detail="Detection not found")
 
-    logger.info("AUDIT: user %s removed detection %s for %s %r",
-                auth.auth_name, removed.id, removed.type, removed.value)
+    log_audit("user %s removed detection %s for %s %r", auth.auth_name, removed.id, removed.type, removed.value,
+              auth=auth, detection_id=removed.id, observable_type=removed.type, observable_value=removed.value)
 
 
 @router.patch("/{detection_id}/expiration", response_model=ObservableDetectionRead)
@@ -108,6 +107,7 @@ async def set_expiration(
     if result is None:
         raise HTTPException(status_code=404, detail="Detection not found")
 
-    logger.info("AUDIT: user %s set the expiration of detection %s for %s %r to %s",
-                auth.auth_name, result.id, result.type, result.value, result.expires_on or "never")
+    log_audit("user %s set the expiration of detection %s for %s %r to %s",
+              auth.auth_name, result.id, result.type, result.value, result.expires_on or "never",
+              auth=auth, detection_id=result.id, observable_type=result.type, observable_value=result.value)
     return result

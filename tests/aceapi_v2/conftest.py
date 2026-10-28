@@ -1,6 +1,8 @@
 import hashlib
+import logging
 from collections.abc import AsyncGenerator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from itsdangerous import URLSafeTimedSerializer
@@ -17,7 +19,8 @@ from aceapi_v2.database import build_database_url, get_async_session
 from aceapi_v2.users.schemas import ApiKeyScope
 from aceapi_v2.users.service import create_user_api_key
 from saq.configuration import get_config
-from saq.database.model import AuthGroup, AuthGroupPermission, AuthGroupUser, User
+from saq.database.model import AuthApiKey, AuthGroup, AuthGroupPermission, AuthGroupUser, User
+from saq.util import sha256_str
 
 # A typical analyst group: everything except the CLI, secrets and user administration, so its
 # members hold user:self but not user:write.
@@ -55,6 +58,17 @@ async def add_analyst_group(session: AsyncSession, user: User) -> AuthGroup:
         session.add(AuthGroupPermission(group_id=group.id, major=major, minor=minor, effect=effect))
     await session.flush()
     return group
+
+
+def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRecord:
+    """The one AUDIT record whose message starts with "AUDIT: <prefix>"."""
+    (record,) = [r for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+    return record
+
+
+def audit_actor_of(record: logging.LogRecord) -> tuple:
+    """(actor, actor_user_id, actor_key_id, auth_type) of a log_audit() record."""
+    return record.actor, record.actor_user_id, record.actor_key_id, record.auth_type
 
 
 def make_flask_session_cookie(user_id) -> str:
@@ -177,6 +191,14 @@ async def test_user(session: AsyncSession) -> User:
 async def valid_api_key(session: AsyncSession, test_user: User) -> str:
     """An inherit-scoped API key for the test user (full user permissions)."""
     return await make_api_key(session, test_user.id, inherit=True)
+
+
+@pytest_asyncio.fixture
+async def client_actor(session: AsyncSession, test_user: User, valid_api_key: str) -> tuple:
+    """audit_actor_of() a record of something `client` did: the test user, through valid_api_key."""
+    key_id = (await session.execute(
+        select(AuthApiKey.id).where(AuthApiKey.key_hash == sha256_str(valid_api_key)))).scalar_one()
+    return test_user.username, test_user.id, key_id, "user"
 
 
 @pytest_asyncio.fixture

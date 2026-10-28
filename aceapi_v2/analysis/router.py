@@ -6,7 +6,6 @@ other tools). Needs alert:create, which the automation key's scope includes.
 """
 
 import json
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Security, UploadFile, status
@@ -16,8 +15,7 @@ from aceapi_v2.analysis.schemas import SubmitResult
 from aceapi_v2.auth import ApiAuthResult
 from aceapi_v2.dependencies import get_current_auth, require_permission
 from aceapi_v2.sync import run_db_in_thread
-
-logger = logging.getLogger(__name__)
+from saq.logging import log_audit
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -45,6 +43,6 @@ async def submit(
     remote_addr = request.client.host if request.client else "unknown"
     uuid = await run_db_in_thread(
         service.submit, submission, [(upload.filename, upload.file) for upload in uploads], remote_addr)
-    logger.info("AUDIT: %s submitted %s (%s, %d files)", auth.auth_name, uuid,
-                submission.get("analysis_mode") or "default mode", len(uploads))
+    log_audit("%s submitted %s (%s, %d files)", auth.auth_name, uuid,
+              submission.get("analysis_mode") or "default mode", len(uploads), auth=auth, root_uuid=uuid)
     return SubmitResult(uuid=uuid)

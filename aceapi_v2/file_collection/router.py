@@ -5,7 +5,6 @@ file_collections filter screen) and exports, a request's history, and stopping, 
 deleting one. Reading needs file_collection:read, changing a request file_collection:write.
 """
 
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Security, status
@@ -24,8 +23,7 @@ from aceapi_v2.responses import CsvStreamResponse, NdjsonStreamResponse
 from aceapi_v2.schemas.base import ListResponse
 from aceapi_v2.sync import run_db_in_thread
 from saq.gui.filter_screens import FILE_COLLECTIONS_SCREEN
-
-logger = logging.getLogger(__name__)
+from saq.logging import log_audit
 
 router = APIRouter(dependencies=[Security(get_current_auth)])
 
@@ -87,7 +85,8 @@ async def cancel_file_collection(
     """Stops a request that has not completed; it completes as CANCELLED. One that has completed
     is a 409: its result stands."""
     cancelled = await run_db_in_thread(service.cancel, collection_id)
-    logger.info("AUDIT: user %s cancelled file collection %s", auth.auth_name, collection_id)
+    log_audit("user %s cancelled file collection %s", auth.auth_name, collection_id, auth=auth,
+              file_collection_id=collection_id)
     return cancelled
 
 
@@ -98,7 +97,8 @@ async def retry_file_collection(
 ) -> FileCollectionSummary:
     """Starts a request over: queued again with no attempts counted, whatever its state."""
     retried = await run_db_in_thread(service.retry, collection_id)
-    logger.info("AUDIT: user %s retried file collection %s", auth.auth_name, collection_id)
+    log_audit("user %s retried file collection %s", auth.auth_name, collection_id, auth=auth,
+              file_collection_id=collection_id)
     return retried
 
 
@@ -109,5 +109,5 @@ async def delete_file_collection(
 ) -> None:
     """Deletes a request and its history."""
     removed = await run_db_in_thread(service.delete, collection_id)
-    logger.info("AUDIT: user %s deleted file collection %s (%s, %s)", auth.auth_name, collection_id,
-                removed.status, removed.result)
+    log_audit("user %s deleted file collection %s (%s, %s)", auth.auth_name, collection_id,
+              removed.status, removed.result, auth=auth, file_collection_id=collection_id)
