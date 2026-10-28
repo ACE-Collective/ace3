@@ -4,6 +4,11 @@ It runs as a script, with the venv's python in isolated mode, so it uses the sta
 
     python3 -I -S launcher.py --max-processes=64 --deadline=330 --tcp-ports=443,53 -- prlimit ... -- setpriv ... -- command
 
+The GUI CLI (aceapi_v2/cli/service.py) runs `ace` under it too, with --unconfined, which skips the
+Landlock domain (an `ace` command may signal and connect to anything a shell could), and with
+--term-grace, which stops the command the way docker stops a service: SIGTERM to its process
+group, then everything is killed once it has exited or the grace has run out.
+
 Before the exec, the child enters a Landlock domain for what setpriv cannot express (setpriv then
 nests its filesystem rules inside it):
 
@@ -25,7 +30,8 @@ things the command cannot undo:
   to the container's init, even a process that left the session. When the command exits, when
   ACE sends SIGTERM (timeout, too much output), or at --deadline, every descendant is stopped and
   killed.
-- A process cap. A command with more than --max-processes live descendants is killed.
+- A process cap. A command with more than --max-processes live descendants is killed (no cap
+  without it).
 
 It exits with the command's exit status (128 + N for a command killed by signal N). When it killed
 the command itself, or could not start it, it says why on stderr and exits with a code that says
@@ -249,15 +255,21 @@ def kill_descendants(command_pid: int):
     _reap(command_pid)
 
 
-def _exec_command(command: list[str], abi: int, tcp_ports: list[int] | None, signal_mask: set):
-    """In the forked child: undo what the launcher changed, enter the Landlock domain and exec."""
+def _exec_command(command: list[str], abi: int | None, tcp_ports: list[int] | None, signal_mask: set,
+                  own_group: bool):
+    """In the forked child: undo what the launcher changed, enter the Landlock domain (none when abi
+    is None) and exec."""
     try:
+        if own_group:
+            # so a graceful stop can SIGTERM the command and what stays in its group, but not the launcher
+            os.setpgid(0, 0)
         signal.pthread_sigmask(signal.SIG_SETMASK, signal_mask)
         # python ignores these at startup and an exec keeps them ignored; the command gets the
         # defaults, so RLIMIT_FSIZE kills it and a closed pipe ends it
         signal.signal(signal.SIGPIPE, signal.SIG_DFL)
         signal.signal(signal.SIGXFSZ, signal.SIG_DFL)
-        restrict_self(abi, tcp_ports)
+        if abi is not None:
+            restrict_self(abi, tcp_ports)
 
         os.execv(command[0], command)
     except BaseException as e:
@@ -267,14 +279,38 @@ def _exec_command(command: list[str], abi: int, tcp_ports: list[int] | None, sig
             os._exit(EXIT_SANDBOX_FAILURE)
 
 
-def _abort(command_pid: int, reason: str, exit_code: int) -> int:
+def _terminate(command_pid: int, term_grace: float):
+    """SIGTERM the command's process group and wait up to term_grace seconds for the command to exit."""
+    try:
+        os.killpg(command_pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return  # the group is gone: nothing left to stop gracefully
+
+    give_up = time.monotonic() + term_grace
+    while (remaining := give_up - time.monotonic()) > 0:
+        if _reap(command_pid) is not None:
+            return
+
+        # only SIGCHLD wakes this; a second stop signal waits in the queue (the abort is already under way)
+        signal.sigtimedwait({signal.SIGCHLD}, min(_POLL_SECONDS, remaining))
+
+    print(f"sandbox: the command did not stop within {term_grace:g} seconds of SIGTERM", file=sys.stderr)
+
+
+def _abort(command_pid: int, reason: str, exit_code: int, term_grace: float = 0) -> int:
+    if term_grace > 0:
+        _terminate(command_pid, term_grace)
+
     kill_descendants(command_pid)
     print(f"sandbox: {reason}", file=sys.stderr)
     return exit_code
 
 
-def supervise(command_pid: int, max_processes: int, deadline: float) -> int:
-    """Wait for the command, enforcing the process cap and the deadline; return the exit code."""
+def supervise(command_pid: int, max_processes: int | None, deadline: float, term_grace: float = 0) -> int:
+    """Wait for the command, enforcing the process cap and the deadline; return the exit code.
+
+    With term_grace, a stop or the deadline gives the command that long to exit after SIGTERM before
+    everything is killed. Going over the process cap kills at once."""
     while True:
         status = _reap(command_pid)
         if status is not None:
@@ -285,20 +321,23 @@ def supervise(command_pid: int, max_processes: int, deadline: float) -> int:
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _abort(command_pid, "the command ran past its deadline", EXIT_DEADLINE)
+            return _abort(command_pid, "the command ran past its deadline", EXIT_DEADLINE, term_grace)
 
         info = signal.sigtimedwait(_WAKE_SIGNALS, min(_POLL_SECONDS, remaining))
         if info is not None and info.si_signo in _STOP_SIGNALS:
-            return _abort(command_pid, "stopped", EXIT_STOPPED)
+            return _abort(command_pid, "stopped", EXIT_STOPPED, term_grace)
 
-        if len(_live_descendants()) > max_processes:
+        if max_processes is not None and len(_live_descendants()) > max_processes:
             return _abort(command_pid, f"the command started more than {max_processes} processes", EXIT_PROCESS_LIMIT)
 
 
-def _parse_arguments(argv: list[str]) -> tuple[int, float, list[int] | None, list[str]]:
-    """--max-processes=N --deadline=SECONDS [--tcp-ports=PORT,...] -- command [args...]
+_USAGE = ("[--max-processes=N] --deadline=SECONDS [--tcp-ports=PORT,...] [--term-grace=SECONDS] [--unconfined] "
+          "-- command [args...]")
 
-    Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP connection.
+
+def _parse_arguments(argv: list[str]) -> tuple[int | None, float, list[int] | None, float, bool, list[str]]:
+    """See _USAGE. Without --tcp-ports, TCP is unrestricted; `--tcp-ports=` (empty) allows no TCP
+    connection.
 
     Parsed by hand: runner.py is the only caller, and argparse costs more to start than
     everything else the launcher does.
@@ -307,23 +346,32 @@ def _parse_arguments(argv: list[str]) -> tuple[int, float, list[int] | None, lis
         raise ValueError("expected -- before the command")
 
     split = argv.index("--")
-    options = dict(option.split("=", 1) for option in argv[:split])
+    options = dict(option.partition("=")[::2] for option in argv[:split])
     command = argv[split + 1:]
     if not command:
         raise ValueError("no command given")
+
+    unknown = set(options) - {"--max-processes", "--deadline", "--tcp-ports", "--term-grace", "--unconfined"}
+    if unknown:
+        raise ValueError(f"unknown option(s) {sorted(unknown)}")
 
     tcp_ports = None
     if "--tcp-ports" in options:
         tcp_ports = [int(port) for port in options["--tcp-ports"].split(",") if port]
 
-    return int(options["--max-processes"]), float(options["--deadline"]), tcp_ports, command
+    unconfined = "--unconfined" in options
+    if unconfined and tcp_ports is not None:
+        raise ValueError("--tcp-ports needs the Landlock domain --unconfined skips")
+
+    max_processes = int(options["--max-processes"]) if "--max-processes" in options else None
+    return max_processes, float(options["--deadline"]), tcp_ports, float(options.get("--term-grace", 0)), unconfined, command
 
 
 def main(argv: list[str]) -> int:
     try:
-        max_processes, deadline_seconds, tcp_ports, command = _parse_arguments(argv)
+        max_processes, deadline_seconds, tcp_ports, term_grace, unconfined, command = _parse_arguments(argv)
     except (ValueError, KeyError) as e:
-        print(f"sandbox: usage: --max-processes=N --deadline=SECONDS [--tcp-ports=PORT,...] -- command [args...] ({e})", file=sys.stderr)
+        print(f"sandbox: usage: {_USAGE} ({e})", file=sys.stderr)
         return EXIT_SANDBOX_FAILURE
 
     try:
@@ -332,20 +380,28 @@ def main(argv: list[str]) -> int:
         print(f"sandbox: cannot become a child subreaper: {e}", file=sys.stderr)
         return EXIT_SANDBOX_FAILURE
 
-    abi = landlock_abi()
+    abi = None if unconfined else landlock_abi()
     if tcp_ports is not None and abi < NET_ABI:
         print(f"sandbox: landlock ABI {abi} cannot restrict TCP ports (ABI {NET_ABI}, Linux 6.7, is needed)", file=sys.stderr)
         return EXIT_SANDBOX_FAILURE
 
     deadline = time.monotonic() + deadline_seconds
+    own_group = term_grace > 0
 
     # block the signals the supervisor waits for before forking, so none is missed
     signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WAKE_SIGNALS)
     command_pid = os.fork()
     if command_pid == 0:
-        _exec_command(command, abi, tcp_ports, signal_mask)
+        _exec_command(command, abi, tcp_ports, signal_mask, own_group)
 
-    return supervise(command_pid, max_processes, deadline)
+    if own_group:
+        try:
+            # also here, so the group exists before any SIGTERM to it, whichever of the two runs first
+            os.setpgid(command_pid, command_pid)
+        except OSError:
+            pass  # the child has already exec'd, so its own setpgid already ran
+
+    return supervise(command_pid, max_processes, deadline, term_grace)
 
 
 if __name__ == "__main__":

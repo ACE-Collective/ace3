@@ -9,17 +9,35 @@ import subprocess
 import sys
 from datetime import datetime
 
-import psutil
 import pytest
 from sqlalchemy import select, text
 
 from aceapi_v2.cli import service
+from saq.sandbox.runner import LAUNCHER
 from saq.configuration.config import get_config
 from saq.database.model import CliExecution, Nodes, User
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
 from saq.shutdown import DEFAULT_SHUTDOWN_DEADLINE, WATCHDOG_GRACE
-from tests.saq.helpers import wait_for_condition
+from tests.saq.helpers import process_is_gone, wait_for_condition
+
+
+# starts a process in a session of its own, the way a script daemonizes something, and prints its pid
+_ESCAPE = ("import subprocess, sys\n"
+           "p = subprocess.Popen(['sleep', '60'], start_new_session=True,\n"
+           "                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+           "print('escaped', p.pid, flush=True)\n")
+
+
+def _escaped_pid(output: str) -> int:
+    return int(output.split("escaped ")[1].split()[0])
+
+
+def _kill(pid: int):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # already gone, which is what the caller wants
 
 
 #
@@ -56,10 +74,20 @@ def test_parse_command_rejects(command, message):
 @pytest.mark.unit
 def test_cli_command_line_runs_the_ace_entry_point():
     argv = service.cli_command_line(["node", "list"])
+    assert argv[0] == sys.executable
+    assert argv[1].endswith("/ace")
+    assert argv[2:] == ["node", "list"]
+
+
+@pytest.mark.unit
+def test_the_command_runs_under_the_launcher():
+    argv = service.supervised_command_line(["ace", "node", "list"], 60)
     assert argv[:4] == ["setpriv", "--pdeathsig", "TERM", "--"]
-    assert argv[4] == sys.executable
-    assert argv[5].endswith("/ace")
-    assert argv[6:] == ["node", "list"]
+    assert argv[argv.index("-S") + 1] == LAUNCHER
+    assert f"--deadline={60 + service.LAUNCHER_DEADLINE_GRACE_SECONDS}" in argv
+    assert f"--term-grace={service.TERM_GRACE_SECONDS}" in argv
+    assert "--unconfined" in argv
+    assert argv[argv.index("--", 4) + 1:] == ["ace", "node", "list"]
 
 
 @pytest.mark.unit
@@ -94,30 +122,25 @@ def test_parse_command_allows_options_that_carry_no_secret(command):
 
 
 @pytest.mark.integration
-def test_the_child_is_stopped_when_its_parent_dies():
-    """The parent-death signal setpriv sets: a command whose API worker dies is stopped, not left to
-    run unwatched."""
-    argv = service.cli_command_line([])[:4] + [sys.executable, "-c", "import time; time.sleep(60)"]
+def test_the_run_is_stopped_when_its_parent_dies():
+    """The parent-death signal setpriv gives the launcher: a command whose API worker dies is stopped,
+    and so is what it started in a session of its own, not left to run unwatched (issue 973)."""
+    code = _ESCAPE + "import time; time.sleep(60)\n"
+    argv = service.supervised_command_line([sys.executable, "-c", code], 60)
+    # the parent prints the launcher's pid and the escaped process's, then exits without stopping it
     parent = subprocess.run(
         [sys.executable, "-c",
-         f"import subprocess; print(subprocess.Popen({argv!r}).pid, flush=True)"],
+         "import subprocess, sys\n"
+         f"p = subprocess.Popen({argv!r}, stdout=subprocess.PIPE, text=True)\n"
+         "print(p.pid, p.stdout.readline().split()[1], flush=True)\n"],
         capture_output=True, text=True, timeout=30, check=True)
-    pid = int(parent.stdout.strip())
-
-    def _gone() -> bool:
-        try:
-            with open(f"/proc/{pid}/status") as fp:
-                # a zombie has exited and only waits for whoever reaps orphans here
-                return any(line.startswith("State:") and "Z" in line for line in fp)
-        except (FileNotFoundError, ProcessLookupError):
-            # ProcessLookupError: the process was reaped between the open and the read
-            return True
+    launcher, escaped = (int(pid) for pid in parent.stdout.split())
 
     try:
-        wait_for_condition(_gone, timeout=10)
+        wait_for_condition(lambda: process_is_gone(launcher) and process_is_gone(escaped), timeout=10)
     finally:
-        if not _gone():
-            os.kill(pid, signal.SIGKILL)
+        _kill(launcher)
+        _kill(escaped)
 
 
 @pytest.mark.unit
@@ -404,6 +427,25 @@ async def test_run_records_output_and_exit_code(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_a_run_that_exits_takes_what_it_started(monkeypatch):
+    # issue 973: only a run the API stopped was ever cleaned up, and only within its session
+    execution_id = _claimed()
+    _python(monkeypatch, _ESCAPE)
+
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 60), timeout=30)
+
+    row = _row(execution_id)
+    escaped = _escaped_pid(row.output)
+    try:
+        assert row.status == service.STATUS_COMPLETED
+        assert row.exit_code == 0
+        wait_for_condition(lambda: process_is_gone(escaped), timeout=10)
+    finally:
+        _kill(escaped)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_run_the_real_cli(monkeypatch):
     """The command really goes through the `ace` entry point."""
     execution_id = _claimed()
@@ -472,7 +514,7 @@ async def test_run_shows_output_while_running(monkeypatch):
 @pytest.mark.asyncio
 async def test_run_that_cannot_start_fails(monkeypatch, caplog):
     execution_id = _claimed()
-    monkeypatch.setattr(service, "cli_command_line", lambda argv: ["/nonexistent/ace-binary"])
+    monkeypatch.setattr(service, "supervised_command_line", lambda command, timeout: ["/nonexistent/launcher"])
 
     await service.run_execution(execution_id, ["placeholder"], 60)
 
@@ -614,7 +656,7 @@ async def test_a_timed_out_run_gets_sigterm_first(monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch, caplog):
+async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch):
     monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 1)
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
@@ -623,18 +665,17 @@ async def test_a_run_that_ignores_sigterm_is_killed(monkeypatch, caplog):
             "print('started', flush=True)\n"
             "time.sleep(60)\n")
 
-    with caplog.at_level(logging.WARNING):
-        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
 
-    assert _row(execution_id).status == service.STATUS_TIMED_OUT
-    assert f"cli execution {execution_id}: child" in caplog.text
-    assert "ignored SIGTERM" in caplog.text
+    row = _row(execution_id)
+    assert row.status == service.STATUS_TIMED_OUT
+    assert "did not stop within 1 seconds of SIGTERM" in row.output
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_a_killed_run_takes_the_process_groups_its_children_moved_to(monkeypatch):
-    # an engine's workers lead process groups of their own, which a SIGKILL of the command's group misses
+    # an engine's workers lead process groups of their own, which a SIGTERM of the command's group misses
     monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 1)
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
@@ -648,72 +689,59 @@ async def test_a_killed_run_takes_the_process_groups_its_children_moved_to(monke
 
     worker = int(_row(execution_id).output.split("worker ")[1].split()[0])
     try:
-        wait_for_condition(lambda: not psutil.pid_exists(worker)
-                           or psutil.Process(worker).status() == psutil.STATUS_ZOMBIE, timeout=10)
+        wait_for_condition(lambda: process_is_gone(worker), timeout=10)
     finally:
-        try:
-            os.kill(worker, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill(worker)
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_run_that_stops_still_takes_what_it_left_in_its_session(monkeypatch, caplog):
-    # an engine its shutdown watchdog ends has not stopped its workers, which lead groups of their own
+async def test_a_run_that_stops_still_takes_what_it_started(monkeypatch):
+    # an engine its shutdown watchdog ends has not stopped its workers, which lead groups of their own,
+    # and a process may have left the session altogether
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
+            _ESCAPE +
             "import subprocess, time\n"
             "worker = subprocess.Popen(['sleep', '60'], process_group=0, stdout=subprocess.DEVNULL)\n"
             "print('worker', worker.pid, flush=True)\n"
             "time.sleep(60)\n")
 
-    with caplog.at_level(logging.WARNING):
-        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
 
-    worker = int(_row(execution_id).output.split("worker ")[1].split()[0])
+    row = _row(execution_id)
+    worker = int(row.output.split("worker ")[1].split()[0])
+    escaped = _escaped_pid(row.output)
     try:
-        wait_for_condition(lambda: not psutil.pid_exists(worker)
-                           or psutil.Process(worker).status() == psutil.STATUS_ZOMBIE, timeout=10)
+        assert row.status == service.STATUS_TIMED_OUT
+        assert "did not stop within" not in row.output
+        wait_for_condition(lambda: process_is_gone(worker) and process_is_gone(escaped), timeout=10)
     finally:
-        try:
-            os.kill(worker, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    [record] = [r for r in caplog.records if "left in the session" in r.getMessage()]
-    assert record.killed_pids == [worker]
-    assert "ignored SIGTERM" not in caplog.text
+        _kill(worker)
+        _kill(escaped)
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_a_run_whose_command_exited_still_takes_what_holds_its_output(monkeypatch, caplog):
-    # an engine whose controller died leaves workers that hold its stdout: no EOF, so the run reaches its
-    # timeout with the command itself already gone
-    execution_id = _claimed(timeout_seconds=1)
+async def test_a_run_whose_command_exited_is_not_held_open_by_what_it_started(monkeypatch):
+    # an engine whose controller died leaves workers that hold its stdout; the launcher kills them, so
+    # the run ends when the command does instead of at its timeout
+    execution_id = _claimed(timeout_seconds=60)
     _python(monkeypatch,
             "import subprocess\n"
             "worker = subprocess.Popen(['sleep', '60'], process_group=0)\n"
             "print('worker', worker.pid, flush=True)\n")
 
-    with caplog.at_level(logging.WARNING):
-        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=30)
+    await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 60), timeout=30)
 
     row = _row(execution_id)
     worker = int(row.output.split("worker ")[1].split()[0])
     try:
-        wait_for_condition(lambda: not psutil.pid_exists(worker)
-                           or psutil.Process(worker).status() == psutil.STATUS_ZOMBIE, timeout=10)
+        assert row.status == service.STATUS_COMPLETED
+        assert row.exit_code == 0
+        assert process_is_gone(worker)
     finally:
-        try:
-            os.kill(worker, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    assert row.status == service.STATUS_TIMED_OUT
-    [record] = [r for r in caplog.records if "left in the session" in r.getMessage()]
-    assert record.killed_pids == [worker]
+        _kill(worker)
 
 
 @pytest.mark.unit
@@ -725,34 +753,8 @@ def test_a_service_stopped_here_gets_its_whole_shutdown():
                  if key.startswith("service_") and isinstance(value, dict)]
     assert service.TERM_GRACE_SECONDS > max(deadlines) + WATCHDOG_GRACE
     # and a run still being stopped is not taken for one nothing watches
-    assert service.STALE_GRACE_SECONDS > service.TERM_GRACE_SECONDS + service.KILL_WAIT_SECONDS
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_killing_a_session_skips_a_process_that_exits_while_it_is_listed(monkeypatch):
-    process = await asyncio.create_subprocess_exec(
-        sys.executable, "-c",
-        "import subprocess, time\n"
-        "worker = subprocess.Popen(['sleep', '60'], process_group=0)\n"
-        "print(worker.pid, flush=True)\n"
-        "time.sleep(60)\n",
-        stdout=asyncio.subprocess.PIPE, start_new_session=True)
-    worker = int(await asyncio.wait_for(process.stdout.readline(), timeout=10))
-    try:
-        # a pid listed and gone before it is looked at, ahead of the one only the scan reaches
-        monkeypatch.setattr(service.psutil, "pids", lambda: [2 ** 22 + 1, worker])
-
-        service._kill_session(process)
-
-        assert await asyncio.wait_for(process.wait(), timeout=10) == -signal.SIGKILL
-        wait_for_condition(lambda: not psutil.pid_exists(worker)
-                           or psutil.Process(worker).status() == psutil.STATUS_ZOMBIE, timeout=10)
-    finally:
-        try:
-            os.kill(worker, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    assert service.STALE_GRACE_SECONDS > (service.TERM_GRACE_SECONDS + service.LAUNCHER_STOP_SECONDS
+                                          + service.KILL_WAIT_SECONDS)
 
 
 @pytest.mark.integration
@@ -762,9 +764,6 @@ async def test_stopping_a_child_that_already_exited_does_nothing():
     await process.wait()
 
     await service._stop(1, process)
-
-    # the group is gone too, which _signal_group tolerates
-    service._signal_group(process.pid, signal.SIGTERM)
 
 
 @pytest.mark.integration
@@ -852,27 +851,31 @@ def test_dispatch_to_a_busy_node_fails_the_run_without_an_error_report(monkeypat
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_draining_a_stopped_run_is_bounded(monkeypatch):
-    """A process the command started in another session keeps the pipe open after the command is
-    stopped; the drain gives up instead of waiting for it."""
+async def test_a_launcher_that_does_not_stop_is_killed(monkeypatch, caplog):
+    """The launcher bounds itself; if it hangs anyway, the API kills it, says so at ERROR, and the drain
+    gives up on what the command left holding the pipe instead of waiting for it."""
     monkeypatch.setattr(service, "OUTPUT_FLUSH_SECONDS", 0.2)
+    monkeypatch.setattr(service, "TERM_GRACE_SECONDS", 0.5)
+    monkeypatch.setattr(service, "LAUNCHER_STOP_SECONDS", 0.5)
+    # a stand-in launcher that ignores SIGTERM and contains nothing
+    monkeypatch.setattr(service, "supervised_command_line", lambda command, timeout: command)
     execution_id = _claimed(timeout_seconds=1)
     _python(monkeypatch,
-            "import subprocess, time\n"
+            "import signal, subprocess, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
             "p = subprocess.Popen(['sleep', '30'], start_new_session=True)\n"
             "print('holder', p.pid, flush=True)\n"
             "time.sleep(60)\n")
 
     try:
-        await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=20)
-        row = _row(execution_id)
-        assert row.status == service.STATUS_TIMED_OUT
+        with caplog.at_level(logging.ERROR):
+            await asyncio.wait_for(service.run_execution(execution_id, ["placeholder"], 1), timeout=20)
+        assert _row(execution_id).status == service.STATUS_TIMED_OUT
+        [record] = [r for r in caplog.records if "did not exit" in r.getMessage()]
+        assert record.levelno == logging.ERROR
+        assert record.cli_execution_id == execution_id
     finally:
-        holder = int(_row(execution_id).output.split()[1])
-        try:
-            os.kill(holder, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # already gone
+        _kill(int(_row(execution_id).output.split()[1]))
 
 
 @pytest.mark.integration

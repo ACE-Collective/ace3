@@ -16,7 +16,6 @@ import shlex
 import signal
 import sys
 
-import psutil
 import requests
 from fastapi import HTTPException
 from sqlalchemy import func, select, text, update
@@ -32,6 +31,7 @@ from saq.database.pool import get_db
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_base_dir, get_global_runtime_settings
 from saq.error.reporting import log_loop_exception, log_peer_unavailable
+from saq.sandbox.runner import LAUNCHER, sandbox_python
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +48,22 @@ MAX_OUTPUT_BYTES = 1024 * 1024
 OUTPUT_FLUSH_SECONDS = 2.0
 # a pending or running row this long past its timeout belongs to a run nothing is watching any more
 # (the node's API was killed mid-run, or the dispatch never happened). Longer than stopping a run takes
-# (TERM_GRACE_SECONDS + KILL_WAIT_SECONDS), so a run that is still being stopped is not taken for one
+# (TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS + KILL_WAIT_SECONDS), so a run that is still being stopped
+# is not taken for one
 STALE_GRACE_SECONDS = 180
 # the dispatch only asks the node to start the run, so it returns at once
 DISPATCH_TIMEOUT = (10, 30)
-# a stopped child gets SIGTERM, so ACE's own shutdown runs (an engine started this way stops its workers,
-# releases its locks and marks its node stopped), and this long to finish it before everything in its
-# session gets SIGKILL. Longer than any service takes, as docker's stop_grace_period is: SIGTERM reaches
-# only the command's own group, so an engine stops a worker waiting on a module's subprocess itself, and
-# its shutdown watchdog ends it at shutdown_deadline_seconds plus WATCHDOG_GRACE (95 seconds)
+# a stopped command gets SIGTERM, so ACE's own shutdown runs (an engine started this way stops its
+# workers, releases its locks and marks its node stopped), and this long to finish it before the launcher
+# kills everything it started. Longer than any service takes, as docker's stop_grace_period is: SIGTERM
+# reaches only the command's own group, so an engine stops a worker waiting on a module's subprocess
+# itself, and its shutdown watchdog ends it at shutdown_deadline_seconds plus WATCHDOG_GRACE (95 seconds)
 TERM_GRACE_SECONDS = 100
-# how long a killed child gets to be reaped
+# how long the launcher gets, past TERM_GRACE_SECONDS, to kill what is left and exit
+LAUNCHER_STOP_SECONDS = 10
+# the launcher stops the command itself this long after its timeout, should the API not have
+LAUNCHER_DEADLINE_GRACE_SECONDS = 30
+# how long a killed launcher gets to be reaped
 KILL_WAIT_SECONDS = 10
 # each run is a whole `ace` process in http-api-engine, the container the engines transfer work
 # through, so a node runs only this many at once and refuses the rest
@@ -352,10 +357,22 @@ def _record_output(execution_id: int, output: str, output_truncated: bool) -> No
 
 
 def cli_command_line(argv: list[str]) -> list[str]:
-    # setpriv execs the CLI with SIGTERM as its parent-death signal: if the API worker dies without
-    # stopping it (SIGKILL, OOM), the command still gets a graceful stop instead of running unwatched
+    return [sys.executable, os.path.join(get_base_dir(), "ace"), *argv]
+
+
+def supervised_command_line(command: list[str], timeout_seconds: int) -> list[str]:
+    """command under the sandbox launcher, a child subreaper: whatever the command starts, in whatever
+    session or group, is killed when it exits or is stopped, so the API signals only the launcher.
+
+    --unconfined: the command runs as a shell's would, with no Landlock domain. setpriv gives the
+    launcher SIGTERM as its parent-death signal: if the API worker dies without stopping it (SIGKILL,
+    OOM), the command still gets its graceful stop instead of running unwatched."""
     return ["setpriv", "--pdeathsig", "TERM", "--",
-            sys.executable, os.path.join(get_base_dir(), "ace"), *argv]
+            sandbox_python(), "-I", "-S", LAUNCHER,
+            f"--deadline={timeout_seconds + LAUNCHER_DEADLINE_GRACE_SECONDS}",
+            f"--term-grace={TERM_GRACE_SECONDS}",
+            "--unconfined",
+            "--", *command]
 
 
 def _child_environment() -> dict[str, str]:
@@ -366,70 +383,36 @@ def _child_environment() -> dict[str, str]:
     return env
 
 
-def _signal_group(pgid: int, signum: int) -> None:
-    try:
-        os.killpg(pgid, signum)
-    except ProcessLookupError:
-        pass  # the whole group is already gone
-
-
-def _kill_session(process: asyncio.subprocess.Process) -> list[int]:
-    """SIGKILL every process group in the command's session, and return the pids it found there.
-
-    start_new_session made the command a session leader. A process that moves to a group of its own (an
-    engine's workers, the yara scanner's manager) stays in the session, and so does one reparented after
-    its parent died, so this reaches what a SIGKILL of the command's own group does not, also once the
-    command itself has exited. A process that starts a session of its own (the sandbox launcher) leaves
-    it, and bounds what it runs itself."""
-    if process.returncode is None:
-        # its own group first: once the command is dead it cannot start another group
-        _signal_group(process.pid, signal.SIGKILL)
-
-    members, groups = [], set()
-    for pid in psutil.pids():
-        try:
-            if pid != process.pid and os.getsid(pid) == process.pid:
-                groups.add(os.getpgid(pid))
-                members.append(pid)
-        except ProcessLookupError:
-            continue  # it exited after the listing
-
-    for pgid in groups:
-        _signal_group(pgid, signal.SIGKILL)
-
-    return members
-
-
 async def _stop(execution_id: int, process: asyncio.subprocess.Process) -> None:
-    """SIGTERM the command's process group, give it TERM_GRACE_SECONDS to stop, then SIGKILL what is left
-    in its session. Bounded: at most TERM_GRACE_SECONDS + KILL_WAIT_SECONDS."""
-    if process.returncode is None:
-        # start_new_session made the child a process group leader, so this reaches the children that stayed
-        # in its group. The rest stop when it does: an engine stops its own workers
-        _signal_group(process.pid, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS)
-        except TimeoutError:
-            logger.warning("cli execution %s: child %s ignored SIGTERM for %s seconds, killing it",
-                           execution_id, process.pid, TERM_GRACE_SECONDS, extra={"cli_execution_id": execution_id})
-
-    # also when it stopped, or had already exited (what it left can hold its output open until the
-    # timeout): a service its shutdown watchdog ended, or one that died, never stopped what leads a group
-    # of its own, an engine's workers among them
-    left = _kill_session(process)
-    if left:
-        logger.warning("cli execution %s: killed %d processes left in the session of child %s: %s",
-                       execution_id, len(left), process.pid, left,
-                       extra={"cli_execution_id": execution_id, "killed_pids": left})
-
+    """Tell the launcher to stop the command: it SIGTERMs the command's group, gives it
+    TERM_GRACE_SECONDS, then kills everything the command started and exits. Bounded: at most
+    TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS + KILL_WAIT_SECONDS."""
     if process.returncode is not None:
         return
 
-    # SIGKILL cannot be ignored, so only an unkillable (D state) child takes this long
     try:
-        await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_SECONDS)
+        process.send_signal(signal.SIGTERM)
+        await asyncio.wait_for(process.wait(), timeout=TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS)
+        return
+    except ProcessLookupError:
+        return  # it exited since the check
     except TimeoutError:
-        logger.warning("cli execution %s: child %s did not exit after SIGKILL", execution_id, process.pid,
+        pass  # logged below, with the kill
+
+    # the launcher is stuck; what the command started is reparented to init once it dies, and nothing
+    # kills it
+    logger.error("cli execution %s: launcher %s did not exit %s seconds after SIGTERM, killing it; "
+                 "what the command started may be left running",
+                 execution_id, process.pid, TERM_GRACE_SECONDS + LAUNCHER_STOP_SECONDS,
+                 extra={"cli_execution_id": execution_id, "pid": process.pid})
+    try:
+        process.kill()
+        # SIGKILL cannot be ignored, so only an unkillable (D state) launcher takes this long
+        await asyncio.wait_for(process.wait(), timeout=KILL_WAIT_SECONDS)
+    except ProcessLookupError:
+        pass  # it exited after all
+    except TimeoutError:
+        logger.warning("cli execution %s: launcher %s did not exit after SIGKILL", execution_id, process.pid,
                        extra={"cli_execution_id": execution_id})
 
 
@@ -457,7 +440,7 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
     try:
         try:
             process = await asyncio.create_subprocess_exec(
-                *cli_command_line(argv),
+                *supervised_command_line(cli_command_line(argv), timeout_seconds),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -505,7 +488,8 @@ async def run_execution(execution_id: int, argv: list[str], timeout_seconds: int
 
         if timed_out:
             await _stop(execution_id, process)
-            # what it printed while stopping; bounded, as a child it started may still hold the pipe
+            # what it printed while stopping; bounded, as a launcher that had to be killed leaves
+            # whatever the command started holding the pipe
             drain_deadline = loop.time() + OUTPUT_FLUSH_SECONDS
             while (remaining := drain_deadline - loop.time()) > 0:
                 try:
