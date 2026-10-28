@@ -407,6 +407,11 @@ def global_function_setup(request):
     # reach them through the real executor and real hunt files
     svs_attribution.clear_caches()
     svs_windows.clear_cache()
+    # the threat type list is cached in the router module for five minutes; only a test that
+    # loaded the API has one, and importing it here would load the API into every test
+    threat_types_router = sys.modules.get("aceapi_v2.threat_types.router")
+    if threat_types_router is not None:
+        threat_types_router._cache.clear()
 
     # XXX we're initializing AND THEN we're resetting the database
 
