@@ -1560,6 +1560,109 @@ def test_cancel_hunts_abandons_hunt_that_ignores_cancel(manager_kwargs, monkeypa
         hunt.execution_thread.join(10)
 
 
+class _CancelFailsHunt(TestHunt):
+    __test__ = False
+
+    def cancel(self):
+        raise RuntimeError("cannot cancel")
+
+
+def _cancel_failure(caplog) -> logging.LogRecord:
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("unable to cancel hunt")]
+    assert record.levelno == logging.ERROR
+    assert str(record.exc_info[1]) == "cannot cancel"
+    return record
+
+
+@pytest.mark.unit
+def test_stop_names_a_hunt_it_cannot_cancel(manager_kwargs, caplog):
+    manager = HuntManager(**manager_kwargs)
+    manager.add_hunt(_CancelFailsHunt(manager=manager, config=default_hunt_config(name="bad_cancel")))
+
+    manager.stop()
+
+    # the message was not an f-string and came out as "unable to cancel hunt {hunt}: {e}"
+    assert _cancel_failure(caplog).getMessage() == "unable to cancel hunt Hunt(bad_cancel[test])"
+
+
+@pytest.mark.unit
+def test_cancel_hunts_logs_a_hunt_it_cannot_cancel(manager_kwargs, caplog):
+    """This was logged at INFO without a traceback."""
+    manager = HuntManager(**manager_kwargs)
+    hunt = _CancelFailsHunt(manager=manager, config=default_hunt_config(name="bad_cancel"))
+    manager.add_hunt(hunt)
+
+    # held by the execution thread while the hunt executes, which is what makes it running
+    held = threading.Event()
+    release = threading.Event()
+
+    def _execute():
+        with hunt.execution_lock:
+            held.set()
+            release.wait(30)
+
+    thread = threading.Thread(target=_execute)
+    thread.start()
+    try:
+        assert held.wait(5)
+        manager.cancel_hunts()
+    finally:
+        release.set()
+        thread.join(10)
+
+    assert _cancel_failure(caplog).getMessage() == "unable to cancel hunt Hunt(bad_cancel[test])"
+
+
+@pytest.mark.integration
+def test_a_post_processing_failure_names_the_hunt_and_still_queues(manager_kwargs, monkeypatch, caplog):
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(
+        manager=manager,
+        config=default_hunt_config(name="test_with_suppression", suppression="00:01:00"),
+        group_values=["alice", "bob"])
+    hunt.semaphore = None
+
+    def _fail():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(hunt, "save_last_alert_times", _fail)
+    manager.execute_threaded_hunt(hunt)
+
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("uncaught exception in hunt")]
+    assert record.getMessage() == f"uncaught exception in hunt test_with_suppression (uuid={hunt.uuid}, type=test): disk full"
+    assert record.exc_info[0] is OSError
+    assert len(manager.file_manager.list_staged_submissions()) == 2
+    # the hunt can run again
+    assert not hunt.running
+
+
+@pytest.mark.integration
+def test_a_submission_that_cannot_be_staged_does_not_stop_the_others(manager_kwargs, monkeypatch, caplog):
+    manager = HuntManager(**manager_kwargs)
+    hunt = _GroupedTestHunt(manager=manager, config=default_hunt_config(name="grouped"), group_values=["alice", "bob"])
+    hunt.semaphore = None
+    stage_submission = manager.file_manager.stage_submission
+    failed = []
+
+    def _stage_submission(submission):
+        if submission.group_value == "alice":
+            failed.append(submission.root.uuid)
+            raise OSError("disk full")
+
+        return stage_submission(submission)
+
+    monkeypatch.setattr(manager.file_manager, "stage_submission", _stage_submission)
+    with caplog.at_level(logging.INFO):
+        manager.execute_threaded_hunt(hunt)
+
+    assert len(manager.file_manager.list_staged_submissions()) == 1
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("unable to stage submission")]
+    assert record.getMessage() == f"unable to stage submission {failed[0]} for hunt grouped (uuid={hunt.uuid}, type=test): disk full"
+    assert record.exc_info[0] is OSError
+    assert any(r.getMessage().startswith(f"queued 1 submissions for hunt grouped (uuid={hunt.uuid}, type=test)")
+               for r in caplog.records)
+
+
 # a hunt name can be a jinja template that query hunts render per event to title their alerts,
 # so it is analyst-facing text of arbitrary length rather than an identifier
 LONG_HUNT_NAME = (

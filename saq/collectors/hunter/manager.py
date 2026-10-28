@@ -238,7 +238,7 @@ class HuntManager:
             try:
                 hunt.cancel()
             except Exception:
-                logging.exception("unable to cancel hunt {hunt}: {e}")
+                logging.exception("unable to cancel hunt %s", hunt)
 
     def wait(self, *args, **kwargs):
         self.manager_control_event.wait(*args, **kwargs)
@@ -456,7 +456,7 @@ class HuntManager:
                         "enabled" if track_suppression else "disabled",
                     )
         except Exception as e:
-            logging.exception(f"uncaught exception: {e}")
+            logging.exception("uncaught exception in hunt %s (uuid=%s, type=%s): %s", hunt.name, hunt.uuid, hunt.type, e)
         finally:
             self.release_concurrency_lock(hunt.semaphore)
             # at this point this hunt has finished and is eligible to execute again
@@ -515,8 +515,8 @@ class HuntManager:
                         logging.warning(
                             "%s did not stop within %ss of being cancelled; "
                             "continuing the reload without it", hunt, CANCEL_WAIT_TIMEOUT)
-            except Exception as e:
-                logging.info(f"unable to cancel {hunt}: {e}")
+            except Exception:
+                logging.exception("unable to cancel hunt %s", hunt)
 
     def set_concurrency_limit(self, limit):
         """Sets the concurrency limit for this type of hunt.
