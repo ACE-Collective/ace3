@@ -21,7 +21,11 @@ def lock_local(name: str):
     lock_dir = f"{get_lock_path(name)}.lock"
     try:
         os.mkdir(lock_dir)
+    except FileExistsError as e:
+        raise LocalLockError(e) from e
+
+    # released whatever the block does: a lock left behind is held forever
+    try:
         yield lock_dir
+    finally:
         os.rmdir(lock_dir)
-    except IOError as e:
-        raise LocalLockError(e)
