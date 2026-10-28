@@ -496,10 +496,10 @@ def excluded_mappings(session) -> frozenset[tuple[str, str]]:
         select(SVSTechniqueWorklist.signature_uuid, SVSTechniqueWorklist.technique).where(
             SVSTechniqueWorklist.kind == WorklistKind.DECLARED.value,
             SVSTechniqueWorklist.resolution == WorklistResolution.REMOVE.value,
-            SVSTechniqueWorklist.status != WorklistStatus.CONFIRMED.value)).tuples())
+            SVSTechniqueWorklist.status != WorklistStatus.CONFIRMED.value)))
 
 
 def worklist_counts(session) -> dict[str, int]:
     """{status: rows}."""
     return dict(session.execute(
-        select(SVSTechniqueWorklist.status, func.count()).group_by(SVSTechniqueWorklist.status)).tuples().all())
+        select(SVSTechniqueWorklist.status, func.count()).group_by(SVSTechniqueWorklist.status)).all())

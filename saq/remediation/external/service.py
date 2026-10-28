@@ -9,7 +9,6 @@ import threading
 from typing import Type
 
 from pydantic import Field
-from sqlalchemy import distinct
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
@@ -116,8 +115,9 @@ class ExternalRemediationCheckService(QueueService):
         # exists and is dispositioned — orphaned checks are left alone.
         active_alert_uuids = (
             get_db()
-            .query(distinct(ExternalRemediationCheck.alert_uuid))
+            .query(ExternalRemediationCheck.alert_uuid)
             .filter(ExternalRemediationCheck.status != CheckStatus.COMPLETED.value)
+            .distinct()
             .all()
         )
         if not active_alert_uuids:
