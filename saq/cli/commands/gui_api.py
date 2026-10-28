@@ -20,9 +20,9 @@ from saq.environment import get_base_dir
 def create_api_v2_proxy():
     """Create a WSGI app that proxies requests to the FastAPI v2 API server.
 
-    DispatcherMiddleware strips the /api/v2 prefix before calling this app,
-    so PATH_INFO will be e.g. /observable-types/ which matches FastAPI routes
-    directly.
+    DispatcherMiddleware moves the /api/v2 prefix from PATH_INFO to SCRIPT_NAME
+    before calling this app. The API server serves the app under that prefix
+    (aceapi_v2/serving.py), as nginx forwards it, so the proxy puts it back.
     """
     import urllib.request
     import urllib.error
@@ -32,7 +32,7 @@ def create_api_v2_proxy():
 
     def proxy_app(environ, start_response):
         method = environ.get('REQUEST_METHOD', 'GET')
-        path = environ.get('PATH_INFO', '/')
+        path = environ.get('SCRIPT_NAME', '') + environ.get('PATH_INFO', '/')
         query_string = environ.get('QUERY_STRING', '')
         url = f'http://{api_host}:{api_port}{path}'
         if query_string:

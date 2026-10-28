@@ -102,7 +102,7 @@ def add_to_event():
 
         missing_alerts = []
         for uuid in alert_uuids:
-            cursor.execute("""SELECT id, company_id FROM alerts WHERE uuid = %s""", uuid)
+            cursor.execute("""SELECT id, company_id FROM alerts WHERE uuid = %s""", (uuid,))
             result = cursor.fetchone()
             if result is None:
                 # deleted since it was selected

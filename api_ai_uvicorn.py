@@ -31,5 +31,6 @@ from aceapi_ai.startup_checks import run_startup_checks
 run_startup_checks()
 
 from aceapi_ai.application import create_app
+from aceapi_v2.serving import serve_under
 
-application = create_app()
+application = serve_under("/ai/v1", create_app())

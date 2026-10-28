@@ -246,12 +246,12 @@ def execute_api_server(listen_address=None, listen_port=None, ssl_cert=None, ssl
     # Serve the v2 app at /api/v2, where nginx puts it on a node: `ace_api` builds every URL
     # as https://host/api/v2/...
 
+    # local: this runs in the API server's own process, and most tests import this module without needing the API
+    from aceapi_v2.serving import serve_under
     import aceapi_v2.application
     import uvicorn
-    from fastapi import FastAPI
 
-    root = FastAPI()
-    root.mount('/api/v2', aceapi_v2.application.create_app())
+    root = serve_under('/api/v2', aceapi_v2.application.create_app())
 
     if listen_address is None:
         listen_address = get_config().api.listen_address

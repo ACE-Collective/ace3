@@ -93,7 +93,7 @@ def _usernames(rows: list[SVSTechniqueWorklist]) -> dict[int, str]:
     ids = sorted({row.resolved_by_user_id for row in rows if row.resolved_by_user_id is not None})
     if not ids:
         return {}
-    return dict(get_db().execute(select(User.id, User.username).where(User.id.in_(ids))).tuples().all())
+    return dict(get_db().execute(select(User.id, User.username).where(User.id.in_(ids))).all())
 
 
 def _technique_name(technique: str) -> Optional[str]:

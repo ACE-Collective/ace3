@@ -136,10 +136,10 @@ def modify_user(args):
             c.execute("""UPDATE users SET display_name = %s WHERE id = %s""", ( args.display_name, user_id ))
 
         if args.enable:
-            c.execute("""UPDATE users SET enabled = True WHERE id = %s""", ( user_id ))
+            c.execute("""UPDATE users SET enabled = True WHERE id = %s""", (user_id,))
 
         if args.disable:
-            c.execute("""UPDATE users SET enabled = False WHERE id = %s""", ( user_id ))
+            c.execute("""UPDATE users SET enabled = False WHERE id = %s""", (user_id,))
 
         db.commit()
 

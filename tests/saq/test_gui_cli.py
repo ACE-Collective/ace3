@@ -224,7 +224,7 @@ def test_proxy_forwards_the_request(upstream):
     payload = b'{"disposition": "FALSE_POSITIVE"}'
 
     status, headers, body = _call(
-        proxy, REQUEST_METHOD="POST", PATH_INFO="/alerts/disposition", QUERY_STRING="a=1&b=2",
+        proxy, REQUEST_METHOD="POST", SCRIPT_NAME="/api/v2", PATH_INFO="/alerts/disposition", QUERY_STRING="a=1&b=2",
         CONTENT_TYPE="application/json", CONTENT_LENGTH=str(len(payload)), **{"wsgi.input": io.BytesIO(payload)},
         HTTP_HOST="localhost:5000", HTTP_ORIGIN="https://localhost:5000", HTTP_SEC_FETCH_SITE="same-origin",
         HTTP_AUTHORIZATION="Bearer token", HTTP_X_ACE_AUTH="api-key", HTTP_COOKIE="session=abc",
@@ -234,7 +234,8 @@ def test_proxy_forwards_the_request(upstream):
     assert headers["X-Upstream"] == "yes"
     received = json.loads(body)
     assert received["method"] == "POST"
-    assert received["path"] == "/alerts/disposition?a=1&b=2"
+    # DispatcherMiddleware moved the prefix the API is served under into SCRIPT_NAME
+    assert received["path"] == "/api/v2/alerts/disposition?a=1&b=2"
     assert received["body"] == payload.decode()
     sent = received["headers"]
     # what the API decides authentication and same-origin writes on
