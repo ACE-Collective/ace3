@@ -67,8 +67,8 @@ def normalize_extracted_permissions(extracted_path: str):
 
                 try:
                     os.chmod(full_path, 0o775)
-                except Exception as e:
-                    logging.error("unable to adjust permissions on dir {}: {}".format(full_path, e))
+                except Exception:
+                    logging.exception("unable to adjust permissions on dir %s", full_path)
 
             for file_name in files:
                 full_path = os.path.join(root, file_name)
@@ -77,8 +77,8 @@ def normalize_extracted_permissions(extracted_path: str):
 
                 try:
                     os.chmod(full_path, 0o664)
-                except Exception as e:
-                    logging.error("unable to adjust permissions on file {}: {}".format(full_path, e))
+                except Exception:
+                    logging.exception("unable to adjust permissions on file %s", full_path)
 
     except Exception as e:
         logging.exception("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
@@ -300,16 +300,14 @@ class ArchiveAnalyzer(AnalysisModule):
             try:
                 with zipfile.ZipFile(local_file_path, "r") as zfile:
                     count = len(zfile.namelist())
-            except Exception:
-                logging.error("unable to read jar file")
+            except Exception as e:
+                # a broken jar is a problem with the sample, not with ACE: no traceback or error report
+                logging.warning("unable to read jar file %s: %s", local_file_path, e)
 
         elif is_zip_file:
             logging.debug("using unzip to extract files from {}".format(local_file_path))
             stdout = self._list_files(['unzip', '-l', '-P', 'infected', local_file_path], local_file_path)
             if stdout is None:
-                return AnalysisExecutionResult.COMPLETED
-
-            if b'End-of-central-directory signature not found.' in stdout:
                 return AnalysisExecutionResult.COMPLETED
 
             start_flag = False
@@ -362,9 +360,6 @@ class ArchiveAnalyzer(AnalysisModule):
             logging.debug("using 7z to extract files from {}".format(local_file_path))
             stdout = self._list_files(['7z', '-y', '-pinfected', 'l', local_file_path], local_file_path)
             if stdout is None:
-                return AnalysisExecutionResult.COMPLETED
-
-            if b'Error: Can not open file as archive' in stdout:
                 return AnalysisExecutionResult.COMPLETED
 
             alt_count = 0
@@ -434,8 +429,8 @@ class ArchiveAnalyzer(AnalysisModule):
         if not os.path.isdir(extracted_path):
             try:
                 os.makedirs(extracted_path)
-            except Exception as e:
-                logging.error("unable to create directory {}: {}".format(extracted_path, e))
+            except Exception:
+                logging.exception("unable to create directory %s", extracted_path)
                 return AnalysisExecutionResult.COMPLETED
 
         logging.debug("extracting {} files from archive {} into {}".format(count, local_file_path, extracted_path))
