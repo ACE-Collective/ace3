@@ -1,5 +1,5 @@
 """A person's actions on runs through the API (docs/SVS_API.md, *Run actions*): bulk take-ownership,
-cancel and close, review, and comments."""
+end, cancel and close, review, and comments."""
 
 import uuid
 from datetime import datetime, timedelta
@@ -34,6 +34,7 @@ def setup(no_hunts, yara_dir):
     reset_alert_routers()
     add_catalog_test(GUID)
     add_test_host("win10-01")
+    add_test_host("win10-02")
     yield
     reset_alert_routers()
 
@@ -116,6 +117,15 @@ async def test_bulk_actions(client: AsyncClient, test_user):
     detail = (await client.get(f"/svs/runs/{ended.uuid}")).json()
     assert (detail["state"], detail["close_reason"], detail["owner"]) == ("closed", "a bad run", test_user.username)
 
+    still_running = started_run(GUID, hostname="win10-02")
+    response = await client.post("/svs/runs/bulk/end", json={"run_ids": [still_running.uuid]})
+    assert "needs a reason" in response.json()["conflicts"][still_running.uuid]
+    response = await client.post("/svs/runs/bulk/end", json={"run_ids": [still_running.uuid], "reason": "nothing fired"})
+    assert response.status_code == 200 and response.json()["done"] == [still_running.uuid]
+    detail = (await client.get(f"/svs/runs/{still_running.uuid}")).json()
+    assert (detail["state"], detail["end_reason"]) == ("ended", "nothing fired")
+    assert detail["observation_ends_at"] == detail["ended_at"]
+
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": ["not-a-uuid"]})).status_code == 400
     assert (await client.post("/svs/runs/bulk/close", json={"run_ids": []})).status_code == 422
 
@@ -163,7 +173,7 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
         assert (await client.get(f"/svs/runs/{run.uuid}/comments")).status_code == 200
         assert (await client.post(f"/svs/runs/{run.uuid}/comments", json={"comment": "x"})).status_code == 403
         assert (await client.post(f"/svs/runs/{run.uuid}/review")).status_code == 403
-        for action in ("take-ownership", "cancel", "close"):
+        for action in ("take-ownership", "end", "cancel", "close"):
             assert (await client.post(f"/svs/runs/bulk/{action}", json={"run_ids": [run.uuid]})).status_code == 403
 
     manager = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_manage")])

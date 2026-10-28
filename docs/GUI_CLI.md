@@ -55,14 +55,22 @@ including argparse's errors. The differences from a shell:
 | `pending` | recorded, not yet claimed by its node |
 | `running` | the node is running it |
 | `completed` | it exited; `exit_code` says how |
-| `timed_out` | stopped at its timeout: SIGTERM to its process group, so ACE's own shutdown runs (an engine stops its own workers, which lead process groups of their own), then SIGKILL to every process group left in its session, once it has stopped or 100 seconds later (longer than any service's shutdown deadline), whichever comes first. A process that starts a session of its own (the sandbox launcher) bounds itself |
+| `timed_out` | stopped at its timeout: SIGTERM to its process group, so ACE's own shutdown runs (an engine stops its own workers, which lead process groups of their own), then everything it started is killed, once it has stopped or 100 seconds later (longer than any service's shutdown deadline), whichever comes first |
 | `failed` | it never ran: the node could not be reached or refused, or the command could not start |
 | `abandoned` | nothing will finish it: the node's API stopped during the run, or a `pending`/`running` row is more than 180 seconds past its timeout |
 
 Output beyond 1 MiB is read and dropped (`output_truncated`).
 
-The child is started through `setpriv --pdeathsig TERM`. If the API worker dies without stopping it
-(SIGKILL, OOM), the command gets SIGTERM, and doesn't keep running with nothing watching its deadline.
+The command runs under the sandbox launcher (`saq/sandbox/launcher.py`, with `--unconfined`, so
+without its Landlock domain), a child subreaper: whatever the command starts is reparented to it,
+whatever session or group it moves to. When the command exits, the launcher kills everything it left
+running; when it is stopped, the launcher gives the command and the rest of its process group their
+SIGTERM grace and then kills what is left. A stop that had to kill anything ends the run's output with a
+`sandbox:` line saying what, and the node logs a WARNING with the `cli_execution_id`: an engine killed
+this way kept its locks. The API signals only the launcher. The launcher is started through `setpriv --pdeathsig TERM`: if the
+API worker dies without stopping it (SIGKILL, OOM), the command gets the same graceful stop, and
+nothing keeps running with no one watching its deadline. The launcher also stops the command by itself
+30 seconds after its timeout.
 
 A command that runs until it is stopped (`service start`, `gui start`) runs until its timeout.
 Long-running work belongs in a service or `etc/cron/`, not here.

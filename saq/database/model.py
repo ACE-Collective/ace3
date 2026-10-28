@@ -2029,6 +2029,8 @@ class SVSRun(Base):
     # listing and attribution load whole runs
     launcher_output: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True, deferred=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # why a person ended it before its observation window passed; NULL when the window passed
+    end_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     close_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

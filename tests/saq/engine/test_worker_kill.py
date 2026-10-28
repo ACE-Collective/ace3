@@ -20,7 +20,7 @@ from saq.engine.enums import EngineExecutionMode, EngineType, WorkerStatus
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.engine.worker_manager import WorkerManager
-from tests.saq.helpers import wait_for_condition
+from tests.saq.helpers import process_is_gone, wait_for_condition
 
 
 def _hanging_load_modules():
@@ -54,13 +54,6 @@ def _started_worker(manager: WorkerManager) -> Worker:
     return worker
 
 
-def _is_gone(pid: int) -> bool:
-    try:
-        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return True
-
-
 @pytest.mark.unit
 def test_a_killed_worker_is_seen_dead(manager):
     worker = _started_worker(manager)
@@ -80,7 +73,7 @@ def test_killing_a_worker_kills_what_it_started(manager):
 
     worker.kill()
 
-    wait_for_condition(lambda: _is_gone(child.pid))
+    wait_for_condition(lambda: process_is_gone(child.pid))
     assert not worker.is_alive()
 
 

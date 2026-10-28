@@ -15,7 +15,7 @@
     const STATES = {
         created: {css: "text-muted", title: "registered; the launcher hasn't started it"},
         started: {css: "text-primary", title: "running: its observation window is open"},
-        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed; it waits for a review"},
+        ended: {css: "text-warning-emphasis fw-semibold", title: "the observation window passed, or a person ended it early; it waits for a review"},
         reviewed: {css: "text-success", title: "signed off"},
         canceled: {css: "text-muted", title: "canceled; it still attributes alerts until its attribution window ends"},
         error: {css: "text-danger fw-semibold", title: "the launcher reported a failure, or never started it"},
@@ -380,6 +380,19 @@
                     act(bulk("take-ownership", null), "The run is yours.");
                 }));
             }
+            if (run.state === "started") {
+                actions.appendChild(button("End now…", "btn-outline-primary",
+                                           "Stop waiting for alerts and review the run now", function() {
+                    act(ask({title: "End this run now?", submit: "End the run",
+                             text: "The run ends now instead of when its observation window passes, and waits for " +
+                                   "review. An expected signature that hasn't had time to fire is missing from its " +
+                                   "result. An alert that fires anyway is still attributed to the run, as late, " +
+                                   "until its attribution window ends.",
+                             reason: {required: true, hint: "Why nothing more will fire."}})
+                        .then(function(answer) { return answer ? bulk("end", answer.reason) : false; }),
+                        "The run has ended.");
+                }));
+            }
             if (ACTIVE_STATES.indexOf(run.state) >= 0) {
                 actions.appendChild(button("Cancel…", null, "Cancel the run, as the launcher would", function() {
                     act(ask({title: "Cancel this run?", submit: "Cancel the run",
@@ -611,6 +624,7 @@
                 fact("Output", output);
             }
             fact("Error", run.error_reason ? el("span", "text-danger", run.error_reason) : null);
+            fact("Ended early", run.end_reason);
             fact("Close reason", run.close_reason);
             if (run.extra && Object.keys(run.extra).length) {
                 fact("Extra", el("pre", "small mb-0 text-break-all", JSON.stringify(run.extra, null, 2)));
