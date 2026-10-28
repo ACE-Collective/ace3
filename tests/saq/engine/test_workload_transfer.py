@@ -390,13 +390,36 @@ def test_failed_location_update_leaves_the_item_on_the_remote_node(item, monkeyp
 
 
 def test_transfer_runs_its_database_updates_again_from_the_start_after_a_deadlock(item, monkeypatch):
-    uuid, _ = item
+    uuid, remote_id = item
+    remote_dir = f"remote/{uuid}"
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute(
+            """INSERT INTO alerts ( uuid, version, location, storage_dir, tool, tool_instance, alert_type )
+               VALUES ( %s, %s, 'remote_scanner', %s, 'test', 'test', 'test' )""",
+            (uuid, str(uuidlib.uuid4()), remote_dir),
+        )
+        cursor.execute(
+            """INSERT INTO delayed_analysis ( uuid, observable_uuid, analysis_module, insert_date, delayed_until, node_id, storage_dir )
+               VALUES ( %s, %s, 'test_module', NOW(), NOW() + INTERVAL 1 HOUR, %s, %s )""",
+            (uuid, str(uuidlib.uuid4()), remote_id, remote_dir),
+        )
+        db.commit()
+
     monkeypatch.setattr("ace_api.clear", lambda *a, **k: True)
     # the last of the three UPDATEs is the deadlock victim, after the workload row was repointed
     failed = inject_deadlock(monkeypatch, "UPDATE alerts SET location")
 
     manager = make_manager(DistributedLockManager())
-    assert manager.transfer_work_target(uuid, workload_node_id(uuid)) is not None
+    assert manager.transfer_work_target(uuid, remote_id) is not None
 
     assert len(failed) == 1
-    assert workload_node_id(uuid) == local_node_id()
+    target_dir = storage_dir_from_uuid(uuid)
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT node_id, storage_dir FROM workload WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (local_node_id(), target_dir)
+        cursor.execute("SELECT node_id, storage_dir FROM delayed_analysis WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (local_node_id(), target_dir)
+        cursor.execute("SELECT location, storage_dir FROM alerts WHERE uuid = %s", (uuid,))
+        assert cursor.fetchone() == (get_global_runtime_settings().saq_node, target_dir)
