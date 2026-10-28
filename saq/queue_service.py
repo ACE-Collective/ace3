@@ -13,6 +13,7 @@ from sqlalchemy.orm import Query
 from sqlalchemy.sql import func
 
 from saq.database.pool import get_db, remove_all_sessions
+from saq.error.reporting import log_loop_exception
 from saq.service import ACEServiceInterface
 from saq.shutdown import is_shutting_down
 
@@ -154,12 +155,12 @@ class QueueCollector(ABC, Generic[ItemT]):
                 for work_item in self.collect_work_items():
                     self.notify_listeners(work_item)
             except Exception as e:
-                logging.exception(f"error collecting {self.label} work items from database: {e}")
+                log_loop_exception(e, f"error collecting {self.label} work items from database")
             finally:
                 try:
                     remove_all_sessions()
                 except Exception as e:
-                    logging.exception(f"error removing database connection: {e}")
+                    log_loop_exception(e, "error removing database connection")
 
             if self.shutdown_event.is_set():
                 break
@@ -254,7 +255,7 @@ class QueueWorker(ABC, Generic[ItemT]):
                 if work_item is not None:
                     self.process_one(work_item)
             except Exception as e:
-                logging.exception(f"error processing {self.describe(work_item)}: {e}", extra=self.log_extra(work_item))
+                log_loop_exception(e, f"error processing {self.describe(work_item)}", extra=self.log_extra(work_item))
             finally:
                 if work_item is not None:
                     # a failed commit leaves this thread's session needing a rollback, and every
@@ -263,7 +264,7 @@ class QueueWorker(ABC, Generic[ItemT]):
                     try:
                         remove_all_sessions()
                     except Exception as e:
-                        logging.exception(f"error removing database connection: {e}")
+                        log_loop_exception(e, "error removing database connection")
 
             if self.shutdown_event.is_set():
                 break

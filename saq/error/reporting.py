@@ -121,7 +121,7 @@ _EXPECTED_SHUTDOWN_ERRORS = (
 )
 
 
-def log_loop_exception(e: Exception, context: str):
+def log_loop_exception(e: Exception, context: str, extra: Optional[dict] = None):
     """Log an exception caught by a long-running loop's catch-all handler.
 
     Long-running ACE loops are all shaped like::
@@ -142,7 +142,7 @@ def log_loop_exception(e: Exception, context: str):
 
     While shutting down this logs at INFO without the traceback, so no error report is
     written. Otherwise it logs at ERROR with the traceback, and ErrorReportHandler writes
-    the report.
+    the report. `extra` goes on the record either way.
     """
     # imported here rather than at module level: saq.shutdown is deliberately dependency
     # free, but saq.error.reporting is imported by nearly everything, and a module-level
@@ -150,10 +150,10 @@ def log_loop_exception(e: Exception, context: str):
     from saq.shutdown import is_shutting_down
 
     if is_shutting_down():
-        logging.info("%s during shutdown: %s", context, e)
+        logging.info("%s during shutdown: %s", context, e, extra=extra)
         return
 
-    logging.error("%s: %s", context, e, exc_info=e)
+    logging.error("%s: %s", context, e, exc_info=e, extra=extra)
 
 
 def log_peer_unavailable(e: Exception, context: str) -> bool:
