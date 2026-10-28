@@ -38,6 +38,7 @@ from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_set
 from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
+import psutil
 import pytest
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -168,6 +169,14 @@ def run_python(code: str, timeout: int = 120) -> subprocess.CompletedProcess:
                             timeout=timeout)
     assert result.returncode == 0, result.stderr[-4000:]
     return result
+
+def process_is_gone(pid: int) -> bool:
+    """True once pid has exited: a zombie has, and only waits for whoever reaps it."""
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
 
 def wait_for_condition(condition, timeout=5, delay=0.1):
     """Waits for condition to return True. 
