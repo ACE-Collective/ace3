@@ -650,7 +650,8 @@ The reads answer 400 for a `run_id` that is not a UUID and 404 for an unknown on
 | `created_at`, `started_at` | When it was registered and started. |
 | `executed_at`, `exit_code` | What the launcher reported through `executed`. |
 | `ended_at`, `canceled_at`, `closed_at` | When it moved to those states. |
-| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`. *Time left* on a started run is `observation_ends_at` minus now. |
+| `observation_ends_at`, `attribution_ends_at` | When its windows end, set at `start`; a person ending the run early moves `observation_ends_at` to then. *Time left* on a started run is `observation_ends_at` minus now. |
+| `end_reason` | Why a person ended it before its observation window passed; null when the window passed. |
 | `error_reason` | Why it is in `error`: the launcher's failure, or the start timeout. |
 | `close_reason` | Why it was closed: `start timeout`, `canceled before start`, `attribution window ended`. |
 | `owner`, `reviewer`, `reviewed_at` | Usernames, and when it was last reviewed (*Run actions*, below). |
@@ -698,7 +699,7 @@ The runs, the event feed and the GUI's Runs screen share these filters (screen `
 | `batch` | Batch | a `batch_id` |
 | `created`, `started`, `ended`, `reviewed` | Created, Started, Ended, Reviewed | date ranges; `reviewed` is the latest review |
 | `owner`, `reviewer` | Owner, Reviewer | usernames |
-| `reason` | Reason | text the close or error reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
+| `reason` | Reason | text the close, error or end reason contains; `reason:start timeout` finds the runs closed because `start` was never called |
 | `changed_since_review` | Changed Since Review | `true`, `false` |
 | `has_open_alerts` | Has Open Alerts | `true`, `false`: an alert attributed to the run is still `OPEN` |
 | `has_missing` | Has Missing | `true`, `false`: its result misses an expected signature (possibly suppressed included) |
@@ -780,7 +781,7 @@ Each run has an append-only event log (`docs/SVS_RUNS.md`, *Following runs*). Ea
 | `kind` | States | `details` |
 |---|---|---|
 | `registered` | `to_state: created` | The registration: `test_guid`, `targets`, `launcher`, `batch_id`, `extra`, the `platform` it decided, and `observation_source` (`override`, `expected` or `all_hunts`: where its observation window came from, `docs/SVS_RUNS.md`, *Windows*) |
-| `transition` | both | `{"reason"}` when the move has one (an error, a close), else null |
+| `transition` | both | `{"reason"}` when the move has one (an error, a close, an early end), else null |
 | `launcher_call` | none | `{"call", "outcome", "payload"}`. `call` is `start`, `executed` or `cancel`. `outcome` is `started`, `recorded`, `error`, `canceled` or `conflict` (a call the state didn't allow). `payload` is `{exit_code, error}` for `executed` |
 | `attributed` | none | `{"alert_uuid", "detections"}`: detections of one alert attributed to the run, each `{"detection", "confidence", "late", "scan_point"}` (`detection` is its `content_hash`; `scan_point` is null for context). Written when an attribution is added or comes back, not on every analysis pass. `actor` is `svs` |
 | `attribution_removed` | none | `{"alert_uuid", "detections", "reason"}`: the `content_hash`es of the alert's detections whose attribution no longer holds (a later analysis pass found the marker disagrees, say) |
@@ -812,6 +813,7 @@ A person's actions on runs, all `svs:run_manage` and from a user's key (a config
 | Endpoint | Does |
 |---|---|
 | `POST /api/v2/svs/runs/bulk/take-ownership` | Take the runs |
+| `POST /api/v2/svs/runs/bulk/end` | End them now (started), to be reviewed; needs `reason` (`docs/SVS_RUNS.md`, *Reviewing runs*) |
 | `POST /api/v2/svs/runs/bulk/cancel` | Cancel them (created or started) |
 | `POST /api/v2/svs/runs/bulk/close` | Close them (ended, canceled or error); an ended run needs `reason` |
 | `POST /api/v2/svs/runs/{run_id}/review` `{"confirmed_take_from"?}` | Review the run (ended, or reviewed again) |

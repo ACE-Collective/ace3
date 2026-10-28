@@ -75,3 +75,21 @@ def test_terminal_runs_holding_open_alerts_need_attention():
     without = set(db.execute(select(SVSRun.uuid).where(*run_filter_conditions(
         [{"name": "Has Open Alerts", "values": ["false"]}]))).scalars())
     assert without == {done, removed.uuid}
+
+
+def test_the_reason_filter_finds_the_reason_a_run_ended_early():
+    ended_early, closed, failed = _run("ended"), _run("closed"), _run("error")
+    db = get_db()
+    for run_uuid, values in ((ended_early, {"end_reason": "the test failed to run"}),
+                             (closed, {"close_reason": "start timeout"}),
+                             (failed, {"error_reason": "the launcher reported a failure"})):
+        db.execute(update(SVSRun).where(SVSRun.uuid == run_uuid).values(**values))
+    db.commit()
+
+    def matching(value: str) -> set[str]:
+        return set(db.execute(select(SVSRun.uuid).where(*run_filter_conditions(
+            [{"name": "Reason", "values": [value]}]))).scalars())
+
+    assert matching("failed to run") == {ended_early}
+    assert matching("fail") == {ended_early, failed}
+    assert matching("timeout") == {closed}
