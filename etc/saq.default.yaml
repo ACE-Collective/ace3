@@ -1599,43 +1599,11 @@ analysis_module_lure_url_analyzer:
   python_module: saq.modules.email.lure
   python_class: LureURLAnalyzer
   enabled: true
-  # anchor text words that ask the recipient to click (case-insensitive substring match)
-  call_to_action_keywords:
-    - view
-    - review
-    - open
-    - sign
-    - verify
-    - download
-    - access
-    - confirm
-    - click
-    - login
-    - log in
-    - update
-    - secure
-    - document
-    - pay
-    - invoice
-    - shared
-  # words in a URL or its anchor text that mark a footer link (case-insensitive substring match)
-  noise_keywords:
-    - unsubscribe
-    - privacy
-    - terms
-    - preferences
-    - opt-out
-    - optout
-    - cookie
-    - legal
-  # domains (and their subdomains) that are never the lure
-  benign_domains:
-    - fonts.googleapis.com
-    - fonts.gstatic.com
-  # how many ranked candidates to keep, the primary included
-  max_candidates: 5
-  # add the crawl directive to the primary lure URL so phishkit records its landing page
-  crawl_primary: true
+  # analyst-editable settings file (keywords, benign domains, scoring weights, max_candidates,
+  # crawl_primary); path is relative to SAQ_HOME and watched for live reload. deployments point
+  # this at their analyst_data copy (e.g. signatures/analyst_data/lure_url.yaml); blank uses the
+  # built-in defaults, which etc/lure_url.yaml repeats
+  config_path: etc/lure_url.yaml
 
 analysis_module_email_archiver:
   name: email_archiver

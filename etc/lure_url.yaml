@@ -1,0 +1,93 @@
+# Lure URL settings
+# =================
+# Analyst-editable settings for the lure_url_analyzer module, which picks the URL a phishing
+# email asks its recipient to click (docs/LURE_URL.md).
+#
+# This is the committed DEFAULT and holds ACE's built-in values. Deployments point the module's
+# `config_path` (see analysis_module_lure_url_analyzer in saq config) at their own copy of this
+# file, for example signatures/analyst_data/lure_url.yaml, which ACE live-reloads (watch_file)
+# without a production release.
+#
+# A key left out of the file keeps its built-in default; a list given here replaces the default
+# list rather than adding to it. A file that fails to parse or validate (including an unknown or
+# misspelled key) is rejected as a whole, the settings already in effect stay in place, and the
+# error is logged. Only a running worker keeps its settings this way: a worker that starts while
+# the file is invalid uses the built-in values until the file is fixed.
+#
+# Every candidate URL starts at 0 and gets the weight of each signal that applies to it. The
+# highest score wins. A winner below min_primary_score is not called the lure.
+
+# anchor text words that ask the recipient to click (case-insensitive substring match)
+call_to_action_keywords:
+  - view
+  - review
+  - open
+  - sign
+  - verify
+  - download
+  - access
+  - confirm
+  - click
+  - login
+  - log in
+  - update
+  - secure
+  - document
+  - pay
+  - invoice
+  - shared
+
+# words in a URL or its anchor text that mark a footer link (case-insensitive substring match)
+noise_keywords:
+  - unsubscribe
+  - privacy
+  - terms
+  - preferences
+  - opt-out
+  - optout
+  - cookie
+  - legal
+
+# domains (and their subdomains) that are never the lure
+benign_domains:
+  - fonts.googleapis.com
+  - fonts.gstatic.com
+
+# how many ranked candidates to keep, the primary included
+max_candidates: 5
+
+# add the crawl directive to the primary lure URL so phishkit records its landing page
+crawl_primary: true
+
+# a candidate needs at least this score to be called the primary lure URL
+min_primary_score: 1
+
+weights:
+  # decoded from a QR code
+  qr: 35
+  # found in the email body
+  body: 20
+  # found in an attachment (when not also in the body)
+  attachment: 15
+  # a clickable link in the body, or a PDF link annotation
+  clickable: 25
+  # the link is styled as a button
+  button: 15
+  # the link text contains a call_to_action_keywords entry
+  call_to_action: 20
+  # the only linked domain that is not the sender's
+  only_domain: 10
+  # unwrapped from a protected URL (safelinks, urldefense, ...)
+  unwrapped: 5
+  # the URL has detection points
+  detection: 30
+  # in a parsed HTML body, but not as a link
+  not_a_link: -15
+  # same registered domain as the From or Return-Path address
+  sender_domain: -20
+  # the URL or link text contains a noise_keywords entry
+  noise: -30
+  # the path ends in an image, font or stylesheet extension
+  static: -40
+  # the host is in benign_domains
+  benign: -50

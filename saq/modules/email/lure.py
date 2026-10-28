@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Type, override
 from urllib.parse import parse_qsl, urlparse
 
-from pydantic import Field
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from urlfinderlib.url import URL
 
 from saq.analysis.analysis import Analysis
@@ -24,6 +25,7 @@ from saq.modules.phishkit import PhishkitAnalysis
 from saq.modules.phishkit_chain import display_url
 from saq.modules.url.protected import ProtectedURLAnalysis
 from saq.nrd.util import registrable_domain
+from saq.util import abs_path
 from saq.util.networking import is_subdomain
 
 KEY_PRIMARY = "primary"
@@ -49,29 +51,84 @@ STATIC_EXTENSIONS = (".png", ".gif", ".jpg", ".jpeg", ".bmp", ".svg", ".ico", ".
                      ".css", ".woff", ".woff2", ".ttf", ".eot")
 BUTTON_STYLE_PATTERN = re.compile(r"(background(-color)?\s*:|padding\s*:|border-radius\s*:)", re.I)
 
-# a candidate needs at least this score to be called the primary lure URL
-MIN_PRIMARY_SCORE = 1
+DEFAULT_CALL_TO_ACTION_KEYWORDS = [
+    "view", "review", "open", "sign", "verify", "download", "access", "confirm", "click", "login",
+    "log in", "update", "secure", "document", "pay", "invoice", "shared"]
+DEFAULT_NOISE_KEYWORDS = ["unsubscribe", "privacy", "terms", "preferences", "opt-out", "optout", "cookie", "legal"]
+DEFAULT_BENIGN_DOMAINS = ["fonts.googleapis.com", "fonts.gstatic.com"]
 
-WEIGHT_SOURCE = {SOURCE_QR: 35, SOURCE_BODY: 20, SOURCE_ATTACHMENT: 15}
-WEIGHT_CLICKABLE = 25
-WEIGHT_BUTTON = 15
-WEIGHT_CALL_TO_ACTION = 20
-WEIGHT_ONLY_DOMAIN = 10
-WEIGHT_UNWRAPPED = 5
-WEIGHT_DETECTION = 30
-WEIGHT_NOT_A_LINK = -15
-WEIGHT_SENDER_DOMAIN = -20
-WEIGHT_NOISE = -30
-WEIGHT_STATIC = -40
-WEIGHT_BENIGN = -50
+
+class LureURLWeights(BaseModel):
+    """How much each signal adds to (or takes from) a candidate's score."""
+
+    # a misspelled weight would otherwise be dropped silently and keep its default
+    model_config = ConfigDict(extra="forbid")
+
+    qr: int = 35
+    body: int = 20
+    attachment: int = 15
+    clickable: int = 25
+    button: int = 15
+    call_to_action: int = 20
+    only_domain: int = 10
+    unwrapped: int = 5
+    detection: int = 30
+    not_a_link: int = -15
+    sender_domain: int = -20
+    noise: int = -30
+    static: int = -40
+    benign: int = -50
+
+
+class LureURLSettings(BaseModel):
+    """The analyst-editable settings file referenced by the module's ``config_path``
+    (``etc/lure_url.yaml`` documents every key). A key left out of the file keeps its default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_to_action_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_CALL_TO_ACTION_KEYWORDS),
+        description="Anchor text words that ask the recipient to click.")
+    noise_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_NOISE_KEYWORDS),
+        description="Words in a link or its text that mark it as an unsubscribe, privacy or footer link.")
+    benign_domains: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_BENIGN_DOMAINS),
+        description="Domains (and their subdomains) that are never the lure.")
+    max_candidates: int = Field(default=5, ge=1, description="How many ranked candidates to keep, the primary included.")
+    crawl_primary: bool = Field(default=True, description="Add the crawl directive to the primary lure URL.")
+    min_primary_score: int = Field(default=1, description="A candidate needs at least this score to be called the primary lure URL.")
+    weights: LureURLWeights = Field(default_factory=LureURLWeights)
+
+    @field_validator("call_to_action_keywords", "noise_keywords", "benign_domains", mode="before")
+    @classmethod
+    def _none_is_empty(cls, value):
+        # a key left with nothing under it parses as None
+        return [] if value is None else value
+
+    @field_validator("weights", mode="before")
+    @classmethod
+    def _none_is_default(cls, value):
+        return {} if value is None else value
+
+
+def load_lure_settings(config_path: str) -> Optional[LureURLSettings]:
+    """Load the settings file. Returns None when it cannot be read or does not validate."""
+    path = abs_path(config_path)
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            return LureURLSettings.model_validate(yaml.safe_load(fp) or {})
+    except Exception:
+        logging.exception(f"unable to load lure url settings {path}; the settings already in effect are kept",
+                          extra={"path": path})
+
+    return None
 
 
 class LureURLConfig(AnalysisModuleConfig):
-    call_to_action_keywords: list[str] = Field(..., description="Anchor text words that ask the recipient to click.")
-    noise_keywords: list[str] = Field(..., description="Words in a link or its text that mark it as an unsubscribe, privacy or footer link.")
-    benign_domains: list[str] = Field(default=[], description="Domains (and their subdomains) that are never the lure.")
-    max_candidates: int = Field(default=5, description="How many ranked candidates to keep, the primary included.")
-    crawl_primary: bool = Field(default=True, description="Add the crawl directive to the primary lure URL.")
+    config_path: str = Field(
+        default="etc/lure_url.yaml",
+        description="Path to the analyst-editable settings file, relative to SAQ_HOME; blank uses the built-in defaults.")
 
 
 @dataclass
@@ -404,7 +461,7 @@ def _matching_keyword(keywords: list[str], *values: Optional[str]) -> Optional[s
     return None
 
 
-def score_candidates(candidates: list[Candidate], sender_domains: set[str], config: LureURLConfig):
+def score_candidates(candidates: list[Candidate], sender_domains: set[str], settings: LureURLSettings):
     """Scores each candidate in place, recording a reason for every signal that applied."""
     linked_domains = {registrable_domain(c.observable.value) for c in candidates if is_link(c)}
     linked_domains.discard("")
@@ -425,47 +482,48 @@ def score_candidates(candidates: list[Candidate], sender_domains: set[str], conf
         parsed = urlparse(url)
         domain = registrable_domain(url)
         anchor_text = candidate.anchor.text if candidate.anchor else None
+        weights = settings.weights
 
         if SOURCE_QR in candidate.sources:
-            signal(WEIGHT_SOURCE[SOURCE_QR], "decoded from a QR code")
+            signal(weights.qr, "decoded from a QR code")
         if SOURCE_BODY in candidate.sources:
-            signal(WEIGHT_SOURCE[SOURCE_BODY], "found in the email body")
+            signal(weights.body, "found in the email body")
         elif SOURCE_ATTACHMENT in candidate.sources:
-            signal(WEIGHT_SOURCE[SOURCE_ATTACHMENT], f"found in attachment {', '.join(candidate.attachments)}",
+            signal(weights.attachment, f"found in attachment {', '.join(candidate.attachments)}",
                    *candidate.attachments)
 
         if candidate.anchor:
-            signal(WEIGHT_CLICKABLE, "clickable link" + (f" with text '{anchor_text}'" if anchor_text else ""),
+            signal(weights.clickable, "clickable link" + (f" with text '{anchor_text}'" if anchor_text else ""),
                    *([anchor_text] if anchor_text else []))
             if candidate.anchor.button:
-                signal(WEIGHT_BUTTON, "styled as a button")
-            keyword = _matching_keyword(config.call_to_action_keywords, anchor_text)
+                signal(weights.button, "styled as a button")
+            keyword = _matching_keyword(settings.call_to_action_keywords, anchor_text)
             if keyword:
-                signal(WEIGHT_CALL_TO_ACTION, f"call-to-action text ({keyword})")
+                signal(weights.call_to_action, f"call-to-action text ({keyword})")
         elif candidate.pdf_link:
-            signal(WEIGHT_CLICKABLE, "clickable link in a PDF")
+            signal(weights.clickable, "clickable link in a PDF")
         elif candidate.in_parsed_body and SOURCE_QR not in candidate.sources:
-            signal(WEIGHT_NOT_A_LINK, "not a clickable link in the body")
+            signal(weights.not_a_link, "not a clickable link in the body")
 
         if candidate.wrapped_by:
-            signal(WEIGHT_UNWRAPPED, f"unwrapped from {display_url(candidate.wrapped_by)}")
+            signal(weights.unwrapped, f"unwrapped from {display_url(candidate.wrapped_by)}")
         if candidate.carries:
             carried = [display_url(url, 60) for url in candidate.carries]
             signal(0, f"carries {len(carried)} URL{'' if len(carried) == 1 else 's'}: {', '.join(carried)}", *carried)
         if candidate.observable.has_detection_points():
-            signal(WEIGHT_DETECTION, "has detection points")
+            signal(weights.detection, "has detection points")
         if domain and external_domains == {domain}:
-            signal(WEIGHT_ONLY_DOMAIN, "the only linked external domain")
+            signal(weights.only_domain, "the only linked external domain")
 
         if parsed.path.lower().endswith(STATIC_EXTENSIONS):
-            signal(WEIGHT_STATIC, "points at an image or static resource")
-        keyword = _matching_keyword(config.noise_keywords, url, anchor_text)
+            signal(weights.static, "points at an image or static resource")
+        keyword = _matching_keyword(settings.noise_keywords, url, anchor_text)
         if keyword:
-            signal(WEIGHT_NOISE, f"looks like a footer link ({keyword})")
+            signal(weights.noise, f"looks like a footer link ({keyword})")
         if domain and domain in sender_domains:
-            signal(WEIGHT_SENDER_DOMAIN, f"same domain as the sender ({domain})")
-        if parsed.hostname and any(is_subdomain(parsed.hostname, d) for d in config.benign_domains):
-            signal(WEIGHT_BENIGN, "benign infrastructure domain")
+            signal(weights.sender_domain, f"same domain as the sender ({domain})")
+        if parsed.hostname and any(is_subdomain(parsed.hostname, d) for d in settings.benign_domains):
+            signal(weights.benign, "benign infrastructure domain")
 
         candidate.score = score
         candidate.reasons = reasons
@@ -509,9 +567,40 @@ def sender_domains(email_analysis: EmailAnalysis) -> set[str]:
 
 
 class LureURLAnalyzer(AnalysisModule):
+    config: LureURLConfig
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._settings = LureURLSettings()
+        self._settings_watched = False
+
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
         return LureURLConfig
+
+    def _load_settings(self):
+        # a file that fails to load keeps the settings already in effect, so a bad edit does not
+        # undo the analysts' tuning
+        settings = load_lure_settings(self.config.config_path)
+        if settings is not None:
+            self._settings = settings
+            logging.info(f"loaded lure url settings from {abs_path(self.config.config_path)}")
+
+    @property
+    def settings(self) -> LureURLSettings:
+        if not self._settings_watched and self.config.config_path:
+            self._settings_watched = True
+            path = abs_path(self.config.config_path)
+            # the file watcher skips a missing file without a word
+            try:
+                os.stat(path)
+            except OSError:
+                logging.exception(f"lure url settings file {path} does not exist or cannot be read; using the built-in defaults until it does",
+                                  extra={"path": path})
+            # loads the settings now if the file exists, and again whenever it changes
+            self.watch_file(path, self._load_settings)
+
+        return self._settings
 
     @property
     def generated_analysis_type(self):
@@ -547,9 +636,10 @@ class LureURLAnalyzer(AnalysisModule):
             logging.debug(f"no lure url candidates in {_file}")
             return AnalysisExecutionResult.INCOMPLETE
 
-        score_candidates(candidates, sender_domains(email_analysis), self.config)
+        settings = self.settings
+        score_candidates(candidates, sender_domains(email_analysis), settings)
         ranked = sorted(candidates, key=lambda c: c.rank_key)
-        primary = ranked[0] if ranked[0].score >= MIN_PRIMARY_SCORE else None
+        primary = ranked[0] if ranked[0].score >= settings.min_primary_score else None
 
         analysis = _file.get_and_load_analysis(LureURLAnalysis) or self.create_analysis(_file)
         # kept re-runnable: AnalysisModule.accepts() skips an observable whose analysis is completed
@@ -557,7 +647,7 @@ class LureURLAnalyzer(AnalysisModule):
         previous = analysis.primary["observable_uuid"] if analysis.primary else None
         analysis.details = {
             KEY_PRIMARY: primary.to_dict() if primary else None,
-            KEY_CANDIDATES: [c.to_dict() for c in ranked[:self.config.max_candidates]],
+            KEY_CANDIDATES: [c.to_dict() for c in ranked[:settings.max_candidates]],
             KEY_HAS_INNER_EMAIL: collector.has_inner_email,
             # stored so the alert page need not load the email's analysis for it
             KEY_SUBJECT: email_analysis.decoded_subject or email_analysis.subject,
@@ -565,7 +655,7 @@ class LureURLAnalyzer(AnalysisModule):
         analysis.summary = analysis.generate_summary()
 
         if primary:
-            if self.config.crawl_primary:
+            if settings.crawl_primary:
                 primary.observable.add_directive(DIRECTIVE_CRAWL)
             if primary.observable.uuid != previous:
                 logging.info(
