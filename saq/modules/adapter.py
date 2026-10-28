@@ -220,10 +220,17 @@ def load_module_from_config(analysis_module_name: str) -> Optional[AnalysisModul
     """Loads an AnalysisModule by config section name with the provided context.
     Returns None on failure."""
 
+    if not get_config().has_analysis_module_config(analysis_module_name):
+        logging.error(f"analysis module config for {analysis_module_name} not found",
+                      extra={"analysis_module": analysis_module_name})
+        return None
+
     try:
         module_config = get_config().get_analysis_module_config(analysis_module_name)
-    except ValueError as e:
-        logging.error(f"analysis module config for {analysis_module_name} not found: {e}")
+    except Exception as e:
+        # a block that fails its config class's validation (an undeclared key, a bad value)
+        logging.exception(f"analysis module config for {analysis_module_name} is invalid: {e}",
+                          extra={"analysis_module": analysis_module_name})
         return None
 
     python_module_name = module_config.python_module

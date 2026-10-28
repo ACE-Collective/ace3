@@ -1,10 +1,14 @@
 from datetime import timedelta
 from typing import Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AnalysisModuleConfig(BaseModel):
+    # a key the config class does not declare is a typo or a renamed setting, and ignoring it
+    # leaves the module running without it; a subclass that takes open-ended keys allows them
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(..., description="Unique identifier for the analysis module.")
     python_module: str = Field(..., description="The Python module that contains the analysis module class.")
     python_class: str = Field(..., description="The name of the analysis module class inside the module.")

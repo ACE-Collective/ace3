@@ -58,7 +58,9 @@ class LazyConfigRegistry(Generic[ConfigT]):
         plugin module is not imported) until :meth:`get` or :meth:`values` asks for it.
         """
         try:
-            config = self._base_class.model_validate(raw)
+            # the block also carries the keys of the plugin subclass, which the base class does
+            # not declare; get() validates those against the subclass
+            config = self._base_class.model_validate(raw, extra="ignore")
         except Exception as e:
             sys.stderr.write(f"CONFIG ERROR: failed to validate {self._label} for {config_key}\n")
             raise e

@@ -1,7 +1,7 @@
 import importlib
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 
@@ -233,6 +233,40 @@ def test_get_reports_missing_class(registry, capsys):
     capsys.readouterr()
 
     with pytest.raises(AttributeError):
+        registry.get("one")
+
+    assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err
+
+
+class StrictBaseConfig(FakeBaseConfig):
+    model_config = ConfigDict(extra="forbid")
+
+
+class StrictExtendedConfig(StrictBaseConfig):
+    extra_setting: str
+
+
+class StrictPlugin:
+    @staticmethod
+    def get_config_class():
+        return StrictExtendedConfig
+
+
+@pytest.mark.unit
+def test_base_that_forbids_extra_keys_accepts_the_subclass_keys():
+    """the base check sees the subclass's keys too, and leaves them for get() to validate"""
+    registry = LazyConfigRegistry(StrictBaseConfig, "fake config")
+    registry.add_raw("fake_one", raw_config("one", python_class="StrictPlugin"))
+    assert registry.get("one").extra_setting == "value"
+
+
+@pytest.mark.unit
+def test_undeclared_key_fails_at_resolution(capsys):
+    registry = LazyConfigRegistry(StrictBaseConfig, "fake config")
+    registry.add_raw("fake_one", raw_config("one", python_class="StrictPlugin", typo_setting="value"))
+    capsys.readouterr()
+
+    with pytest.raises(ValidationError, match="typo_setting"):
         registry.get("one")
 
     assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err

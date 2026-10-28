@@ -13,7 +13,11 @@ from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
 from saq.environment import get_base_dir
-from saq.signatures.locations import get_all_signature_locations, get_signature_locations
+from saq.signatures.locations import (
+    CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
+    get_all_signature_locations,
+    get_signature_locations,
+)
 from saq.signatures.model import SignatureType
 
 
@@ -235,6 +239,33 @@ def test_disabled_observable_modifier_has_no_locations(monkeypatch, caplog):
         assert get_signature_locations(SignatureType.OBSERVABLE_MODIFIER) == []
 
     assert any("disabled" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_missing_observable_modifier_config_has_no_locations(caplog):
+    del get_config().raw._data[CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER]
+    get_config().load_analysis_module_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.OBSERVABLE_MODIFIER) == []
+
+    assert any("no analysis_module_observable_modifier configuration" in record.getMessage()
+               for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_invalid_observable_modifier_config_is_reported(caplog):
+    get_config().raw._data[CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER]["undeclared_setting"] = True
+    get_config().load_analysis_module_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.OBSERVABLE_MODIFIER) == []
+
+    # with a traceback, the record gets an error report; the block is there, so it is not "no configuration"
+    (record,) = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert record.levelno == logging.ERROR
+    assert "undeclared_setting" in str(record.exc_info[1])
+    assert record.analysis_module == ANALYSIS_MODULE_OBSERVABLE_MODIFIER
 
 
 #
