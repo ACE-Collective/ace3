@@ -10,6 +10,7 @@ from sqlalchemy import update
 from saq.alert_routing import AlertRouter, RouteDecision, RouteStage, register_alert_router
 from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis, load_root
+from saq.auth import ApiAuthResult
 from saq.configuration.config import get_config
 from saq.constants import ANALYSIS_MODE_CORRELATION, DISPOSITION_FALSE_POSITIVE, F_TEST, QUEUE_DEFAULT
 from saq.database.model import Alert, AlertQueueChange, User, load_alert
@@ -121,7 +122,8 @@ class TestMoveAlertToQueue:
         user = get_db().query(User).filter(User.username == "unittest").one()
 
         with caplog.at_level(logging.INFO):
-            assert move_alert_to_queue(alert, "triage", "analyst moved it", actor_user_id=user.id) is True
+            auth = ApiAuthResult(auth_type="user", auth_name="unittest", auth_user_id=user.id, key_id=7)
+            assert move_alert_to_queue(alert, "triage", "analyst moved it", auth) is True
 
         assert alert.queue == "triage"
         assert alert.version != version
@@ -134,6 +136,7 @@ class TestMoveAlertToQueue:
 
         (record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert moved to queue"]
         assert (record.alert_uuid, record.from_queue, record.to_queue) == (root.uuid, QUEUE_DEFAULT, "triage")
+        assert (record.actor, record.actor_user_id, record.actor_key_id) == ("unittest", user.id, 7)
 
     def test_moving_back_restores_through_the_record(self, submitted_payloads):
         """The newest change row says what queue the alert came from, which is how a move is
@@ -143,7 +146,7 @@ class TestMoveAlertToQueue:
 
         previous = get_last_queue_change(alert.id)
         assert previous.router == "svs_marker"
-        move_alert_to_queue(alert, previous.from_queue, "disassociated", actor_user_id=None)
+        move_alert_to_queue(alert, previous.from_queue, "disassociated")
 
         assert _stored_queue(alert.uuid) == QUEUE_DEFAULT
         assert [c.to_queue for c in _changes(alert.id)] == ["svs", QUEUE_DEFAULT]

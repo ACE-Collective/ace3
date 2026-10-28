@@ -32,6 +32,7 @@ from typing import Callable, Optional
 
 from sqlalchemy import and_, delete, select, update
 
+from saq.auth import ApiAuthResult
 from saq.database.model import (
     Alert,
     DetectionPointVerdict,
@@ -45,6 +46,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import AlertOwner, check_alert_ownership
 from saq.detection_verdicts.constants import VERDICT_FP
 from saq.detection_verdicts.store import set_verdicts
+from saq.logging import log_audit
 from saq.svs import runs
 from saq.svs.constants import AttributionConfidence, ResultStatus, RunEventKind, RunState
 from saq.svs.result_state import mark_runs_stale
@@ -99,15 +101,16 @@ def _owners(run_uuids: list[str]) -> dict[str, AlertOwner]:
             for run_uuid, owner_id, username, enabled in rows}
 
 
-def _take(run_uuid: str, owner: AlertOwner, user_id: int, actor: str, now: datetime) -> None:
+def _take(run_uuid: str, owner: AlertOwner, user_id: int, actor: str, now: datetime,
+          auth: Optional[ApiAuthResult]) -> None:
     """Makes the person the run's owner, in the caller's transaction, and records it."""
     run = get_db().execute(select(SVSRun).where(SVSRun.uuid == run_uuid)).scalar_one()
     run.owner_id = user_id
     get_db().add(new_run_event(run.id, RunEventKind.OWNERSHIP_TAKEN, actor, actor_user_id=user_id, now=now,
                                details={"from": owner.name if owner.user_id is not None else None}))
-    logging.info("AUDIT: svs run ownership taken", extra={
-        **run_log_fields(run), "actor": actor, "actor_user_id": user_id,
-        "previous_owner": owner.name if owner.user_id is not None else None})
+    # actor and actor_user_id name the person even for a caller that passes no auth
+    log_audit("svs run ownership taken", auth=auth, **run_log_fields(run), actor=actor, actor_user_id=user_id,
+              previous_owner=owner.name if owner.user_id is not None else None)
 
 
 @dataclass
@@ -122,9 +125,11 @@ class BulkResult:
 
 
 def take_ownership(run_uuids: list[str], user_id: int, actor: str,
-                   confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None) -> BulkResult:
+                   confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None, *,
+                   auth: Optional[ApiAuthResult] = None) -> BulkResult:
     """Makes the person the owner of the runs, those owned by someone else only when the person
-    confirmed taking them (run uuid -> the owner's user id they agreed to take it from)."""
+    confirmed taking them (run uuid -> the owner's user id they agreed to take it from). auth is
+    who acted, for the AUDIT records."""
     now = now or datetime.now()
     result = BulkResult()
     owners = _owners(run_uuids)
@@ -133,13 +138,14 @@ def take_ownership(run_uuids: list[str], user_id: int, actor: str,
     result.left_alone = dict(check.skipped)
     for run_uuid in check.permitted:
         if owners[run_uuid].user_id != user_id:
-            _take(run_uuid, owners[run_uuid], user_id, actor, now)
+            _take(run_uuid, owners[run_uuid], user_id, actor, now, auth)
         result.done.append(run_uuid)
     get_db().commit()
     return result
 
 
-def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int], now: datetime) -> None:
+def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int], now: datetime,
+           auth: Optional[ApiAuthResult]) -> None:
     """Checks that the person may act on the run, taking it from its owner when they confirmed it.
     Commits only a take; otherwise the run's row stays locked until the action that follows commits
     or rolls back, so nobody can take the run between this check and the action. Raises UnknownRun,
@@ -155,17 +161,17 @@ def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
         get_db().rollback()
         raise RunOwned(run_uuid, check.skipped[run_uuid], owner.user_id)
     if run_uuid in check.reassigned:
-        _take(run_uuid, owner, user_id, actor, now)
+        _take(run_uuid, owner, user_id, actor, now, auth)
         # taken from its owner, it is the person's now: anyone else must confirm taking it from them
         get_db().commit()
 
 
 def _bulk(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optional[dict[str, int]],
-          act: Callable[[str], object], now: datetime) -> BulkResult:
+          act: Callable[[str], object], now: datetime, auth: Optional[ApiAuthResult]) -> BulkResult:
     result = BulkResult()
     for run_uuid in dict.fromkeys(run_uuids):
         try:
-            _claim(run_uuid, user_id, actor, (confirmed_takes or {}).get(run_uuid), now)
+            _claim(run_uuid, user_id, actor, (confirmed_takes or {}).get(run_uuid), now, auth)
             act(run_uuid)
             result.done.append(run_uuid)
         except runs.UnknownRun:
@@ -179,20 +185,21 @@ def _bulk(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optio
 
 
 def cancel_runs(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optional[dict[str, int]] = None,
-                now: Optional[datetime] = None) -> BulkResult:
+                now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> BulkResult:
     """Cancels the runs (Created or Started), as the launcher would."""
     now = now or datetime.now()
     return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.cancel_by_person(run_uuid, actor, user_id, now), now)
+                 lambda run_uuid: runs.cancel_by_person(run_uuid, actor, user_id, now), now, auth)
 
 
 def close_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[str] = None,
-               confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None) -> BulkResult:
+               confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None, *,
+               auth: Optional[ApiAuthResult] = None) -> BulkResult:
     """Closes the runs (Ended, Canceled or Error): nothing is learned from them, and their alerts
     become SIMULATED. An Ended run needs the reason."""
     now = now or datetime.now()
     return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.close_by_person(run_uuid, actor, user_id, reason, now), now)
+                 lambda run_uuid: runs.close_by_person(run_uuid, actor, user_id, reason, now), now, auth)
 
 
 #
@@ -307,14 +314,14 @@ def ignored_detections(session, run: SVSRun) -> list[tuple[int, str]]:
 
 
 def review(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int] = None,
-           now: Optional[datetime] = None) -> ReviewResult:
+           now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> ReviewResult:
     """Signs the run's result off (Ended -> Reviewed, or Reviewed again), then closes its alerts
     as SIMULATED and gives its ignored detections an FP verdict. A failure after the sign-off never
     undoes it: the alerts stay open and keep the run in Needs attention, and reviewing it again
     finishes the job. Raises UnknownRun, RunOwned, RunStateConflict, ReviewBlocked."""
     now = now or datetime.now()
     # taking an unowned run happens with the sign-off, so a review that can't go through takes nothing
-    _claim(run_uuid, user_id, actor, confirmed_from, now)
+    _claim(run_uuid, user_id, actor, confirmed_from, now, auth)
     db = get_db()
     run = db.execute(select(SVSRun).where(SVSRun.uuid == run_uuid).with_for_update()).scalar_one()
     re_review, counts = _sign_off(run, user_id, actor, now)
@@ -324,7 +331,7 @@ def review(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
         alerts_closed = runs.close_reviewed_run_alerts(run, actor)
         targets = ignored_detections(db, run)
         if targets:
-            fp_verdicts = set_verdicts(targets, VERDICT_FP, user_id, analyst=False).changed
+            fp_verdicts = set_verdicts(targets, VERDICT_FP, user_id, analyst=False, auth=auth).changed
     except Exception as e:
         db.rollback()
         logging.exception("unable to close the alerts of reviewed svs run %s: %s", run.uuid, e, extra=run_log_fields(run))

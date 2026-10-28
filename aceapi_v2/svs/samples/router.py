@@ -283,7 +283,7 @@ async def relabel_sample(
     an analyst's verdict, in one transaction. Detections on false positive, unclassified or test
     alerts are skipped and listed with why; 409 when none can take it (correct the alert's
     disposition instead)."""
-    return await run_db_in_thread(service.relabel_sample, sha256, rule_uuid, body.verdict, auth.auth_user_id)
+    return await run_db_in_thread(service.relabel_sample, sha256, rule_uuid, body.verdict, auth)
 
 
 @router.delete("/{sha256}/{rule_uuid}/label", response_model=LabelActionResult,
@@ -295,7 +295,7 @@ async def reset_sample_label(
 ) -> LabelActionResult:
     """Reset the sample's label to inherited: clear the explicit verdicts on its contributing
     detections, so they inherit from their alerts' dispositions again."""
-    return await run_db_in_thread(service.reset_sample_label, sha256, rule_uuid, auth.auth_user_id)
+    return await run_db_in_thread(service.reset_sample_label, sha256, rule_uuid, auth)
 
 
 @router.post("/{sha256}/{rule_uuid}/confirm", response_model=LabelActionResult,
@@ -307,7 +307,7 @@ async def confirm_sample(
 ) -> LabelActionResult:
     """Confirm the sample's unconfirmed TP detections (verdict source inherited_multi): an explicit
     TP on each, which makes them weigh as a person's verdict. Nothing to confirm is not an error."""
-    return await run_db_in_thread(service.confirm_sample, sha256, rule_uuid, auth.auth_user_id)
+    return await run_db_in_thread(service.confirm_sample, sha256, rule_uuid, auth)
 
 
 @router.put("/{sha256}/{rule_uuid}/retirement", response_model=Retirement)
@@ -319,7 +319,7 @@ async def retire_sample(
 ) -> Retirement:
     """Retire the sample for its rule: it is no longer expected to match, and YARA validation only
     counts it. Retiring a retired sample changes nothing."""
-    return await run_db_in_thread(service.retire_sample, sha256, rule_uuid, body.reason, auth.auth_user_id)
+    return await run_db_in_thread(service.retire_sample, sha256, rule_uuid, body.reason, auth)
 
 
 @router.delete("/{sha256}/{rule_uuid}/retirement", response_model=Retirement)
@@ -329,7 +329,7 @@ async def unretire_sample(
     auth: Annotated[ApiAuthResult, Depends(require_permission("svs", "admin"))],
 ) -> Retirement:
     """Unretire the sample: it is expected to match its rule again. 404 when it is not retired."""
-    return await run_db_in_thread(service.unretire_sample, sha256, rule_uuid, auth.auth_user_id)
+    return await run_db_in_thread(service.unretire_sample, sha256, rule_uuid, auth)
 
 
 @router.delete("/{sha256}", response_model=SampleDeletion)
@@ -346,4 +346,4 @@ async def delete_sample(
     Deleting a deleted sample retries an unfinished purge. 409 wrong_node when the bytes are on
     another node's local pool, 409 legal_hold when the file is under legal hold."""
     log_audit("user %s deleting svs sample %s: %s", auth.auth_name, sha256, body.reason, auth=auth, sha256=sha256)
-    return await run_db_in_thread(service.delete_sample_file, sha256, body.reason, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.delete_sample_file, sha256, body.reason, auth)

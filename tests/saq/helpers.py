@@ -661,3 +661,8 @@ def audit_record(caplog: pytest.LogCaptureFixture, prefix: str) -> logging.LogRe
 def audit_actor_of(record: logging.LogRecord) -> tuple:
     """(actor, actor_user_id, actor_key_id, auth_type) of a saq.logging.log_audit() record."""
     return record.actor, record.actor_user_id, record.actor_key_id, record.auth_type
+
+
+def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
+    """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
+    return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]

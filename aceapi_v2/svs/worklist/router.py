@@ -91,7 +91,7 @@ async def export_worklist_csv(auth: ReadAuth, f: FilterParam, changed_since: Cha
 async def bulk_resolve(body: BulkResolutionRequest, auth: ManageAuth) -> BulkResolutionResult:
     """Resolve many rows alike, in one transaction; rows that don't exist or can't be resolved are
     reported and left alone. 422 for a resolution, reason or reference that isn't valid."""
-    return await run_db_in_thread(service.bulk_resolve, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.bulk_resolve, body, auth)
 
 
 @router.get("/{signature_uuid}", response_model=SignatureWorklist)
@@ -108,14 +108,12 @@ async def set_resolution(signature_uuid: str, technique: str, body: ResolutionRe
     coverage from the next refresh). 404 for an unknown row; 409 for a row that is confirmed,
     informational, retired or removed; 422 for an invalid body or a config key (a resolution records
     who made it); 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
-    return await run_db_in_thread(service.set_resolution, signature_uuid, technique, body, auth.auth_user_id,
-                                  auth.auth_name, precondition)
+    return await run_db_in_thread(service.set_resolution, signature_uuid, technique, body, auth, precondition)
 
 
 @router.delete("/{signature_uuid}/{technique}/resolution", status_code=204)
 async def clear_resolution(signature_uuid: str, technique: str, auth: ManageAuth,
                            precondition: WritePrecondition) -> Response:
     """Clear a row's resolution; 404 when the row doesn't exist or has none; 412 when an If-Match or If-None-Match precondition no longer holds (docs/SVS_API.md, *Conflicting writes*)."""
-    await run_db_in_thread(service.clear_resolution, signature_uuid, technique, auth.auth_user_id, auth.auth_name,
-                           precondition)
+    await run_db_in_thread(service.clear_resolution, signature_uuid, technique, auth, precondition)
     return Response(status_code=204)

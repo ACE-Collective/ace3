@@ -140,13 +140,14 @@ def _movable(alert: _Alert, user_id: int) -> bool:
         None, get_config().global_settings.automation_user_id, user_id)
 
 
-def _move(alert: _Alert, queue: str, reason: str, user_id: int) -> bool:
+def _move(alert: _Alert, queue: str, reason: str, auth: ApiAuthResult) -> bool:
     """Moves the alert while _movable still holds for it when the row is written: an analyst may
     have taken it since it was read."""
     db = get_db()
     row = db.get(Alert, alert.id)
-    return move_alert_to_queue(row, queue, reason, actor_user_id=user_id, router=SVS_MANUAL_ROUTER,
-                               open_unless_owned_by_others={get_config().global_settings.automation_user_id, user_id})
+    return move_alert_to_queue(row, queue, reason, auth, router=SVS_MANUAL_ROUTER,
+                               open_unless_owned_by_others={get_config().global_settings.automation_user_id,
+                                                            auth.auth_user_id})
 
 
 def _changed(run: SVSRun, session) -> None:
@@ -220,7 +221,7 @@ def associate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optio
     moved = False
     queue = get_config().svs.queue
     if status in (SVSStatus.TEST, SVSStatus.TEST_CONTEXT) and alert.queue != queue and _movable(alert, user_id):
-        moved = _move(alert, queue, REASON_ASSOCIATED.format(run=run.uuid), user_id)
+        moved = _move(alert, queue, REASON_ASSOCIATED.format(run=run.uuid), auth)
         alert = _read_alert(alert.id)
     return AssociationResult(alert.uuid, status.value if status else None, alert.queue, moved=moved)
 
@@ -294,18 +295,18 @@ def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Op
         result = set_dispositions(
             [alert.uuid], DISPOSITION_OPEN, automation_user_id,
             user_comment=f"disassociated from SVS test run {run.uuid} by {actor}", system=True,
-            expected_dispositions={DISPOSITION_SIMULATED})
+            expected_dispositions={DISPOSITION_SIMULATED}, auth=auth)
         reopened = alert.uuid in result.permitted
         if reopened:
             # nobody is working the alert it gives back: unowned, it is picked up like a new one. An
             # analyst who took it meanwhile keeps it
-            change_alert_owner([alert.uuid], None, automation_user_id)
+            change_alert_owner([alert.uuid], None, automation_user_id, auth=auth)
         alert = _read_alert(alert.id)
 
     moved = False
     previous = _previous_queue(alert)
     if previous is not None and previous != alert.queue and _movable(alert, user_id):
-        moved = _move(alert, previous, REASON_DISASSOCIATED.format(run=run.uuid), user_id)
+        moved = _move(alert, previous, REASON_DISASSOCIATED.format(run=run.uuid), auth)
         alert = _read_alert(alert.id)
     return AssociationResult(alert.uuid, status.value if status else None, alert.queue, moved=moved,
                              reopened=reopened)

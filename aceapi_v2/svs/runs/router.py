@@ -87,7 +87,7 @@ AttributionsChangedSinceParam = Annotated[datetime | None, Query(
 
 def caller_of(auth: ApiAuthResult, request: Request) -> Caller:
     return Caller(name=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
-                  address=request.client.host if request.client is not None else None)
+                  address=request.client.host if request.client is not None else None, auth=auth)
 
 
 #
@@ -99,21 +99,21 @@ def caller_of(auth: ApiAuthResult, request: Request) -> Caller:
 async def take_ownership(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Take the runs. One someone else owns is left alone unless confirmed_takes names that owner;
     one whose owner's account is disabled is taken without asking."""
-    return await run_db_in_thread(service.take_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.take_runs, body, auth)
 
 
 @router.post("/bulk/cancel", response_model=BulkRunResult)
 async def cancel_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Cancel the runs (created or started), as the launcher would. A run someone else owns is left
     alone unless confirmed_takes names that owner, and then becomes the caller's."""
-    return await run_db_in_thread(service.cancel_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.cancel_runs, body, auth)
 
 
 @router.post("/bulk/close", response_model=BulkRunResult)
 async def close_runs(body: BulkRunRequest, auth: ManageAuth) -> BulkRunResult:
     """Close the runs (ended, canceled or error): nothing is learned from them and their alerts
     become SIMULATED. An ended run needs a reason. Ownership as for cancel."""
-    return await run_db_in_thread(service.close_runs, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.close_runs, body, auth)
 
 
 #
@@ -591,7 +591,7 @@ async def review_run(run_id: str, auth: ManageAuth, body: ReviewRequest | None =
     Reviewing takes the run when nobody owns it. 409 with what stands in the way: another person's
     ownership (owner), the state, a stale result (stale), undecided candidates (candidates), or
     context-only alerts neither kept nor marked not a test (context_alerts)."""
-    return await run_db_in_thread(service.review_run, run_id, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.review_run, run_id, body, auth)
 
 
 @router.get("/{run_id}/comments", response_model=list[RunComment])
@@ -602,18 +602,17 @@ async def list_run_comments(run_id: str, auth: ReadAuth) -> list[RunComment]:
 
 @router.post("/{run_id}/comments", response_model=RunComment, status_code=201)
 async def add_run_comment(run_id: str, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
-    return await run_db_in_thread(service.add_run_comment, run_id, body, auth.auth_user_id, auth.auth_name)
+    return await run_db_in_thread(service.add_run_comment, run_id, body, auth)
 
 
 @router.patch("/{run_id}/comments/{comment_id}", response_model=RunComment)
 async def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, auth: ManageAuth) -> RunComment:
     """Change a comment; only its author can (403)."""
-    return await run_db_in_thread(service.update_run_comment, run_id, comment_id, body, auth.auth_user_id,
-                                  auth.auth_name)
+    return await run_db_in_thread(service.update_run_comment, run_id, comment_id, body, auth)
 
 
 @router.delete("/{run_id}/comments/{comment_id}", status_code=204)
 async def delete_run_comment(run_id: str, comment_id: int, auth: ManageAuth) -> Response:
     """Delete a comment; only its author can (403)."""
-    await run_db_in_thread(service.delete_run_comment, run_id, comment_id, auth.auth_user_id, auth.auth_name)
+    await run_db_in_thread(service.delete_run_comment, run_id, comment_id, auth)
     return Response(status_code=204)

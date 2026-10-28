@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -11,6 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.svs.worklist import service
 from aceapi_v2.svs.worklist.schemas import ResolutionRequest
 from saq.database.model import SVSTechniqueWorklist, User
@@ -20,6 +22,7 @@ from saq.svs import expectations
 from saq.svs.attack import load_attack_catalog
 from saq.svs.coverage import refresh_coverage
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actors
 from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, write_hunt
 
 pytestmark = pytest.mark.integration
@@ -205,7 +208,8 @@ class TestResolutions:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_set_and_clear(self, client: AsyncClient, rows):
+    async def test_set_and_clear(self, client: AsyncClient, rows, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         response = await client.put(f"/svs/worklist/{SIGNATURE}/t1547/resolution",
                                     json={"resolution": "keep", "reason": "no test reaches it"})
         assert response.status_code == 200, response.text
@@ -224,6 +228,8 @@ class TestResolutions:
 
         # a retired row's stale resolution can be cleared
         assert (await client.delete(f"/svs/worklist/{OTHER}/T1059.001/resolution")).status_code == 204
+        assert audit_actors(caplog, "svs worklist resolution set") == [client_actor] * 2
+        assert audit_actors(caplog, "svs worklist resolution cleared") == [client_actor] * 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("signature, technique, body, status", [
@@ -248,7 +254,8 @@ class TestResolutions:
         assert "is confirmed" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_bulk(self, client: AsyncClient, rows):
+    async def test_bulk(self, client: AsyncClient, rows, client_actor, caplog):
+        caplog.set_level(logging.INFO)
         response = await client.post("/svs/worklist/bulk/resolve", json={
             "rows": [{"signature_uuid": SIGNATURE, "technique": "T1547"},
                      {"signature_uuid": YARA, "technique": "T1547"},
@@ -262,6 +269,7 @@ class TestResolutions:
             "conflicts": [{"signature_uuid": SIGNATURE, "technique": "T1059", "status": "confirmed"}],
             "unknown": [{"signature_uuid": SIGNATURE, "technique": "T1105"}]}
         assert await _keys(client, "status:kept") == [ORDER[2], ORDER[3]]
+        assert audit_actors(caplog, "svs worklist resolution set") == [client_actor] * 2
 
         assert (await client.post("/svs/worklist/bulk/resolve", json={
             "rows": [], "resolution": "keep", "reason": "r"})).status_code == 422
@@ -271,7 +279,8 @@ class TestResolutions:
 
     def test_a_config_key_is_refused(self, rows):
         with pytest.raises(HTTPException) as e:
-            service.set_resolution(SIGNATURE, "T1547", ResolutionRequest(resolution="keep", reason="r"), None, "ci")
+            service.set_resolution(SIGNATURE, "T1547", ResolutionRequest(resolution="keep", reason="r"),
+                                   ApiAuthResult(auth_type="config", auth_name="ci"))
         assert e.value.status_code == 422
 
 

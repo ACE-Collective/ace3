@@ -31,7 +31,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated
 
 pytestmark = pytest.mark.integration
 
@@ -199,6 +199,7 @@ def test_bulk_set_disposition_success(web_client, session_actor, caplog):
     audit = audit_record(caplog, "user john set disposition of alerts")
     assert (*audit_actor_of(audit), audit.alert_uuids, audit.disposition) == (
         *session_actor, [alert1.uuid, alert2.uuid], DISPOSITION_FALSE_POSITIVE)
+    assert audit_actors(caplog, "alert dispositioned") == [session_actor] * 2
 
 
 def test_bulk_set_disposition_respects_ownership(web_client, analyst):
@@ -294,6 +295,7 @@ def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client, se
     audit = audit_record(caplog, "user john reviewed disposition of alerts")
     assert (*audit_actor_of(audit), audit.alert_uuids, audit.review_result, audit.corrected_disposition) == (
         *session_actor, [alert.uuid], DISPOSITION_REVIEW_INCORRECT, DISPOSITION_WEAPONIZATION)
+    assert audit_actors(caplog, "alert disposition reviewed") == [session_actor]
 
 
 def test_bulk_review_disposition_incorrect_requires_comment(web_client):

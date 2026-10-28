@@ -403,6 +403,7 @@ def test_set_disposition_audit_logging(web_client, session_actor, caplog):
     assert per_alert_logs[0].alert_uuid == alert.uuid
     assert per_alert_logs[0].new_disposition == DISPOSITION_FALSE_POSITIVE
     assert per_alert_logs[0].disposition_comment == "Audit test comment"
+    assert audit_actor_of(per_alert_logs[0]) == session_actor
 
 @pytest.fixture
 def other_analyst():

@@ -173,7 +173,7 @@ def bulk_set_disposition():
 
     try:
         ownership = set_dispositions(alert_uuids, disposition, current_user.id, user_comment=user_comment,
-                                     confirmed_takes=confirmed_takes_from_form(request.form))
+                                     confirmed_takes=confirmed_takes_from_form(request.form), auth=current_user_auth())
         comment_clause = f"with comment {user_comment}" if user_comment else "without a comment"
         log_audit("user %s set disposition of alerts %s to %s %s", current_user.username,
                   ",".join(ownership.permitted), disposition, comment_clause,
@@ -219,7 +219,8 @@ def bulk_review_disposition():
     try:
         frozen = set_disposition_reviews(
             alert_uuids, review_result, current_user.id,
-            corrected_disposition=corrected_disposition, review_comment=review_comment)
+            corrected_disposition=corrected_disposition, review_comment=review_comment,
+            auth=current_user_auth())
         reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
         log_audit("user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",

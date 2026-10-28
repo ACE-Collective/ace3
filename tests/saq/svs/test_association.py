@@ -40,7 +40,7 @@ from saq.svs import association, attribution, runs
 from saq.svs.association import AssociationConflict, InvalidAssociation, UnknownAlert
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import SVS_MANUAL_ROUTER, RunEventKind, RunState
-from tests.saq.helpers import create_root_analysis, insert_alert
+from tests.saq.helpers import audit_actors, create_root_analysis, insert_alert
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run, sync_alert
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -232,14 +232,20 @@ class TestDisassociate:
         (event,) = _events(run, RunEventKind.DISASSOCIATED)
         assert event["not_a_test"] is False
 
-    def test_a_simulated_alert_is_given_back_open(self, run, user_id):
+    def test_a_simulated_alert_is_given_back_open(self, run, user_id, caplog):
+        caplog.set_level(logging.INFO)
         root = _alert(marker=run.marker)
         runs.cancel(run.uuid, LAUNCHER)
         runs.run_timers(now=run.attribution_ends_at + timedelta(seconds=1))
         assert _row(root.uuid).disposition == DISPOSITION_SIMULATED
 
-        result = association.disassociate(run.uuid, root.uuid, person(user_id))
+        caplog.clear()
+        result = association.disassociate(run.uuid, root.uuid, person(user_id, key_id=7))
         assert (result.reopened, result.moved, result.queue) == (True, True, QUEUE_DEFAULT)
+        # the automation user writes the disposition; the records name the analyst whose key acted
+        analyst = (ACTOR, user_id, 7, "user")
+        assert audit_actors(caplog, "alert dispositioned") == [analyst]
+        assert audit_actors(caplog, "alert moved to queue") == [analyst]
         alert = _row(root.uuid)
         assert alert.disposition == DISPOSITION_OPEN
         assert alert.disposition_user_id == get_config().global_settings.automation_user_id
@@ -255,10 +261,10 @@ class TestDisassociate:
         bob = add_user("bob", "bob@localhost", "Bob", "bob").id
         give_up = association.change_alert_owner
 
-        def bob_takes_it_first(alert_uuids, owner_id, acting_user_id):
+        def bob_takes_it_first(alert_uuids, owner_id, acting_user_id, **kwargs):
             with private_transaction() as session:
                 session.execute(update(Alert).where(Alert.uuid == root.uuid).values(owner_id=bob))
-            return give_up(alert_uuids, owner_id, acting_user_id)
+            return give_up(alert_uuids, owner_id, acting_user_id, **kwargs)
 
         monkeypatch.setattr(association, "change_alert_owner", bob_takes_it_first)
         assert association.disassociate(run.uuid, root.uuid, person(user_id)).reopened

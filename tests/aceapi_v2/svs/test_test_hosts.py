@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import logging
 
 import pytest
 from httpx import AsyncClient
@@ -12,6 +13,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.svs import hosts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.saq.helpers import audit_actors
 from tests.saq.svs.conftest import add_catalog_test
 
 pytestmark = pytest.mark.integration
@@ -122,7 +124,8 @@ async def test_no_permission(noperm_client: AsyncClient):
 #
 
 @pytest.mark.asyncio
-async def test_maintenance_windows(client: AsyncClient, no_hunts):
+async def test_maintenance_windows(client: AsyncClient, no_hunts, client_actor, caplog):
+    caplog.set_level(logging.INFO)
     host = (await client.post("/svs/test-hosts/", json={"hostname": "win10-01.lab.example"})).json()
 
     response = await client.post("/svs/test-hosts/win10-01/maintenance", json={"minutes": 30, "reason": "staging"})
@@ -144,6 +147,8 @@ async def test_maintenance_windows(client: AsyncClient, no_hunts):
     assert response.status_code == 200, response.text
     assert (response.json()["open"], response.json()["end_reason"]) == (False, "ended")
     assert (await client.delete("/svs/test-hosts/win10-01/maintenance")).status_code == 404
+    assert audit_actors(caplog, "svs maintenance window opened") == [client_actor]
+    assert audit_actors(caplog, "svs maintenance window ended") == [client_actor]
 
     windows = (await client.get(f"/svs/test-hosts/{host['id']}/maintenance", params={"limit": 1})).json()
     assert [w["id"] for w in windows["data"]] == [window["id"]] and windows["next_cursor"] is None
@@ -161,7 +166,9 @@ async def test_maintenance_windows(client: AsyncClient, no_hunts):
 
 
 @pytest.mark.asyncio
-async def test_removing_a_test_host_ends_its_maintenance_window(client: AsyncClient, test_user, no_hunts):
+async def test_removing_a_test_host_ends_its_maintenance_window(client: AsyncClient, test_user, no_hunts,
+                                                                client_actor, caplog):
+    caplog.set_level(logging.INFO)
     host = (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).json()
     window = (await client.post("/svs/test-hosts/win10-01/maintenance", json={"minutes": 30, "reason": "staging"})).json()
 
@@ -170,6 +177,7 @@ async def test_removing_a_test_host_ends_its_maintenance_window(client: AsyncCli
     (listed,) = (await client.get("/svs/test-hosts/win10-01/maintenance")).json()["data"]
     assert (listed["id"], listed["open"], listed["end_reason"], listed["ended_by"]) == (
         window["id"], False, "ended", test_user.username)
+    assert audit_actors(caplog, "svs maintenance window ended") == [client_actor]
     # the host can be added back and given a window again
     assert (await client.post("/svs/test-hosts/", json={"hostname": "win10-01"})).status_code == 201
     assert (await client.post("/svs/test-hosts/win10-01/maintenance",
