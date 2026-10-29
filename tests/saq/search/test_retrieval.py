@@ -31,20 +31,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 SHA256_HEX = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
 
-def _qdrant_reachable() -> bool:
-    try:
-        get_qdrant_client(timeout=3).get_collections()
-        return True
-    except Exception:
-        return False
-
-
 @pytest.fixture(scope="module")
-def model(request):
+def model(request, qdrant_available):
     """The real embedding model, cached across runs in the pytest cache directory."""
-    if not _qdrant_reachable():
-        pytest.skip("qdrant is not reachable")
-
     from saq.search.model import clear_model_cache, download_model, load_model
 
     cache_dir = str(request.config.cache.mkdir("search-models"))

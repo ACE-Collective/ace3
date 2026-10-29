@@ -330,6 +330,8 @@ its own `transactionId`, so a single worker's lines can be followed end to end.
 |---|---|---|---|
 | `search_indexer_starting` | INFO | service start, before forking | `worker_count`, `model`, `collection` |
 | `search_indexer_loading_model` / `search_indexer_worker_ready` | INFO | once per worker | `model`, `collection`, `model_load_ms`, `elapsed_ms` |
+| `search_collection_created` / `search_collection_already_exists` | INFO | the collection was missing. `created` means this process created it, `already_exists` that another worker did first, which is usual because the workers start together | `collection` |
+| `search_collection_schema_unreadable` | INFO | the collection exists but qdrant answered the read of its payload schema with a 500, which it does while another worker's create of the collection is still running; every payload index is created instead | `collection`, `status` |
 | `search_index_task_complete` | INFO | once per task | `op`, `alert_uuid`, `documents`, `points`, `updated`, `skipped`, `elapsed_ms`, `queue_depth` |
 | `search_index_alert_storage_missing` | WARNING | the alert is in the database but its storage directory (or `data.json`) is gone; the task completes with `skipped` rather than retrying | `alert_uuid`, `storage_dir`, `path` |
 | `search_index_task_deferred` | INFO | the alert was locked | `deferrals`, `max_deferrals` |
@@ -337,7 +339,8 @@ its own `transactionId`, so a single worker's lines can be followed end to end.
 | `search_index_task_error` | ERROR | what actually went wrong | `error`, `attempt` |
 | `search_index_task_dead_lettered` | ERROR | giving up on the task | `reason` (`error` or `locked`), `queue` |
 | `search_index_task_invalid` | ERROR | an unparseable queue entry | `payload` |
-| `search_indexer_worker_error` | ERROR | the worker loop itself failed | `ready` — `false` means it never started (qdrant down, model download blocked) |
+| `search_indexer_worker_error` | ERROR | the worker loop itself failed | `ready`. `false` means it has not started yet, for example because the model download is blocked or qdrant answered with an error, and it retries startup every second |
+| `search indexer <worker> qdrant unavailable: <error>` | WARNING | qdrant did not accept the connection while the worker was starting; it retries startup every second, with no error report | the worker and the transport error, in the message |
 | `search_indexer_worker_exiting` | INFO | shutdown | `tasks_completed`, `tasks_failed`, `tasks_deferred` |
 | `search_model_downloading` / `search_model_downloaded` | INFO | the model is actually fetched | `model`, `path`, `elapsed_ms` |
 | `search_model_download_waiting` | INFO | another process holds the download lock | `model`, `lock_path`, `timeout` |

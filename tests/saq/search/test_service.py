@@ -3,8 +3,10 @@ import shutil
 import uuid
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from pydantic import ValidationError
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from saq.configuration.config import get_config
 from saq.database.pool import get_db_connection
@@ -451,6 +453,33 @@ class TestLogging:
         assert ready[0].model == "all-MiniLM-L6-v2"
         assert ready[0].collection == "ace3-alerts-unittest-v1"
         assert isinstance(ready[0].model_load_ms, int)
+
+    @pytest.mark.parametrize("failure,expected_errors,expected_warnings", [
+        # qdrant not accepting connections yet is the peer being down, not an ACE bug
+        (ResponseHandlingException(httpx.ConnectError("[Errno 111] Connection refused")), 0, 1),
+        # a reply the client could not read is still an error with a report
+        (ResponseHandlingException(ValueError("unreadable response")), 1, 0),
+    ])
+    def test_failed_prepare_is_retried_until_the_worker_is_ready(self, worker, caplog, failure, expected_errors, expected_warnings):
+        """If prepare() fails, for example because qdrant is still starting, the worker retries it until it is ready."""
+        client = Mock()
+        client.collection_exists.side_effect = [failure, True]
+        client.get_collection.return_value = Mock(payload_schema={name: {} for name in index.KEYWORD_INDEXES + index.DATETIME_INDEXES})
+        worker.worker_execute = worker.stop
+        with (
+            caplog.at_level(logging.INFO),
+            patch("saq.search.service.download_model"),
+            patch("saq.search.service.load_model", return_value=Mock()),
+            patch("saq.search.service.index.get_qdrant_client", return_value=client),
+        ):
+            worker.worker_loop()
+
+        errors = self.records(caplog, "search_indexer_worker_error")
+        assert [(error.levelno, error.ready) for error in errors] == [(logging.ERROR, False)] * expected_errors
+        unavailable = [record for record in caplog.records if record.message.startswith("search indexer worker-0 qdrant unavailable")]
+        assert [record.levelno for record in unavailable] == [logging.WARNING] * expected_warnings
+        assert len(self.records(caplog, "search_indexer_worker_ready")) == 1
+        assert worker.collection == index.collection_name()
 
     def test_manager_start_names_the_collection(self, caplog, monkeypatch):
         monkeypatch.setattr(get_config().search, "embedding_model", "all-MiniLM-L6-v2")
