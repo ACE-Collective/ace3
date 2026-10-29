@@ -15,9 +15,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http import HTTPStatus
 from typing import Optional
 
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from saq.configuration.config import get_config
 from saq.database.model import Alert, Comment
@@ -142,15 +144,42 @@ def existing_payload_indexes(client: QdrantClient, name: str) -> set[str]:
 def ensure_collection(client: QdrantClient, model, name: Optional[str] = None) -> str:
     """Creates the collection and its payload indexes if they do not exist. Returns the name."""
     name = name or collection_name()
-    if not client.collection_exists(collection_name=name):
-        logging.info("search_collection_created", extra={"collection": name})
-        client.create_collection(
-            collection_name=name,
-            vectors_config={DENSE: models.VectorParams(size=dense_dimension(model), distance=models.Distance.COSINE)},
-            sparse_vectors_config={SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)},
-        )
+    if client.collection_exists(collection_name=name):
+        try:
+            present = existing_payload_indexes(client, name)
+        except UnexpectedResponse as e:
+            # qdrant reports the collection as existing about a millisecond before another
+            # worker's create of it returns, and reads fail with a 500 until it does. Create
+            # every index, as the 409 path below does. If qdrant is failing for some other
+            # reason, those creates fail too and raise
+            if e.status_code != HTTPStatus.INTERNAL_SERVER_ERROR:
+                raise
 
-    present = existing_payload_indexes(client, name)
+            logging.info("search_collection_schema_unreadable", extra={"collection": name, "status": e.status_code})
+            present = set()
+    else:
+        # a collection this call creates, or one another worker is still creating, has no payload
+        # indexes yet, so every index is created below. Creating one that already exists succeeds
+        present = set()
+        try:
+            client.create_collection(
+                collection_name=name,
+                vectors_config={DENSE: models.VectorParams(size=dense_dimension(model), distance=models.Distance.COSINE)},
+                sparse_vectors_config={SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)},
+            )
+            logging.info("search_collection_created", extra={"collection": name})
+        except UnexpectedResponse as e:
+            # every indexer worker runs this when it starts, so another worker can create the
+            # collection between the check above and this create. Qdrant answers that with a 409.
+            # The collection name includes the model and the schema version, so the other worker
+            # created this same collection. Its create may still be running, and until it ends
+            # get_collection fails with a 500 while create_payload_index succeeds. That is why
+            # this path never reads the payload schema
+            if e.status_code != HTTPStatus.CONFLICT:
+                raise
+
+            logging.info("search_collection_already_exists", extra={"collection": name})
+
     for field_name in KEYWORD_INDEXES:
         if field_name not in present:
             client.create_payload_index(collection_name=name, field_name=field_name, field_schema=models.PayloadSchemaType.KEYWORD, wait=True)

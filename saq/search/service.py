@@ -17,7 +17,9 @@ import time
 import uuid
 from typing import Optional, Type
 
+import httpx
 from pydantic import Field
+from qdrant_client.http.exceptions import ResponseHandlingException
 
 from saq.configuration.config import get_service_config
 from saq.configuration.schema import ServiceConfig
@@ -25,6 +27,7 @@ from saq.constants import REDIS_DB_BG_TASKS, SERVICE_SEARCH_INDEXER
 from saq.database.pool import remove_all_sessions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import ACE_MP_CONTEXT
+from saq.error.reporting import log_peer_unavailable
 from saq.logging import initialize_transaction_id
 from saq.redis_client import get_redis_connection
 from saq.search import index
@@ -119,10 +122,14 @@ class SearchIndexWorker:
         logging.info("search_indexer_loading_model", extra={"worker": self.name, "model": get_model_name()})
         # the first worker to get here downloads the model; its siblings wait for it
         download_model(stopping=lambda: self.is_shutdown or is_shutting_down())
-        self.model = load_model()
+        model = load_model()
         model_load_ms = int((time.monotonic() - started) * 1000)
 
-        self.collection = index.ensure_collection(index.get_qdrant_client(), self.model)
+        self.collection = index.ensure_collection(index.get_qdrant_client(), model)
+        # set last, because worker_loop() calls prepare() until the model is set. If qdrant is not
+        # reachable yet, the next pass runs all of prepare() again instead of leaving a worker that
+        # never reports ready
+        self.model = model
         logging.info(
             "search_indexer_worker_ready",
             extra={
@@ -151,9 +158,14 @@ class SearchIndexWorker:
                 if self.is_shutdown:
                     break
 
-                # ready=False means startup itself is failing (qdrant unreachable, model
-                # download blocked) rather than a single task going wrong
-                logging.exception("search_indexer_worker_error", extra={"worker": self.name, "ready": self.model is not None, "error": str(e)})
+                # qdrant not accepting connections while the worker starts is the peer being down,
+                # not an ACE bug, and prepare() retries every second. qdrant-client raises without
+                # chaining the transport error, so log_peer_unavailable() is given its source
+                if not (isinstance(e, ResponseHandlingException)
+                        and log_peer_unavailable(e.source, f"search indexer {self.name} qdrant", unreachable=(httpx.TransportError,))):
+                    # ready=False means startup itself is failing (model download blocked, an
+                    # error from qdrant) rather than a single task going wrong
+                    logging.exception("search_indexer_worker_error", extra={"worker": self.name, "ready": self.model is not None, "error": str(e)})
                 # don't spin if there's a major issue
                 self.shutdown_event.wait(1)
 

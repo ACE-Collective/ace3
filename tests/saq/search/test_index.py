@@ -2,15 +2,19 @@ import json
 import logging
 import os
 import shutil
+import threading
 import uuid
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from qdrant_client import models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from saq.configuration.config import get_config
 from saq.database.model import Alert
 from saq.database.pool import get_db
+from saq.qdrant_client import get_qdrant_client
 from saq.search import index
 from saq.search.documents import SearchDocument
 from saq.search.model import SCHEMA_VERSION
@@ -70,6 +74,135 @@ class TestCollection:
         index.ensure_collection(mock_qdrant, mock_model, name="c")
         mock_qdrant.create_collection.assert_not_called()
         mock_qdrant.create_payload_index.assert_not_called()
+
+
+@pytest.fixture
+def real_collection(qdrant_available):
+    """A client for the real qdrant and a collection name no other test uses; the collection is dropped afterwards."""
+    name = f"ace3-test-{uuid.uuid4().hex[:8]}"
+    yield get_qdrant_client(), name
+    # a new client, because the test may have replaced methods on the one it was given
+    cleanup = get_qdrant_client()
+    if cleanup.collection_exists(collection_name=name):
+        cleanup.delete_collection(collection_name=name)
+
+
+ALL_PAYLOAD_INDEXES = set(index.KEYWORD_INDEXES + index.DATETIME_INDEXES)
+
+# what qdrant answers a read of a collection while another worker's create of it is still running
+CREATE_RUNNING = (500, b'{"status":{"error":"Service internal error: 0 of 0 read operations failed"}}')
+
+
+def fail_first_read(monkeypatch, client, status: int = CREATE_RUNNING[0], content: bytes = CREATE_RUNNING[1]):
+    """Makes the client's first get_collection() fail with this reply. Returns the real get_collection."""
+    real_get_collection = client.get_collection
+    reads = []
+
+    def get_collection(**kwargs):
+        reads.append(kwargs)
+        if len(reads) == 1:
+            raise UnexpectedResponse(status_code=status, reason_phrase="", headers=httpx.Headers(), content=content)
+        return real_get_collection(**kwargs)
+
+    monkeypatch.setattr(client, "get_collection", get_collection)
+    return real_get_collection
+
+
+@pytest.mark.integration
+class TestEnsureCollectionRace:
+    """Every indexer worker runs ensure_collection() when it starts, so with no collection yet
+    two of them can both find it missing and both create it. These tests use the real qdrant, so
+    the 409 is the one the client raises."""
+
+    def test_losing_the_create_race_still_creates_the_payload_indexes(self, real_collection, mock_model, monkeypatch, caplog):
+        client, name = real_collection
+        # the winner has created the collection but not yet its payload indexes
+        client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        # what the loser saw just before the winner's create
+        monkeypatch.setattr(client, "collection_exists", lambda **kwargs: False)
+        real_get_collection = fail_first_read(monkeypatch, client)
+
+        with caplog.at_level(logging.INFO):
+            assert index.ensure_collection(client, mock_model, name=name) == name
+
+        assert set(real_get_collection(collection_name=name).payload_schema) == ALL_PAYLOAD_INDEXES
+        events = [record.message for record in caplog.records]
+        assert "search_collection_created" not in events
+        assert "search_collection_already_exists" in events
+
+    def test_reading_the_schema_during_the_winners_create_still_creates_the_payload_indexes(self, real_collection, mock_model, monkeypatch, caplog):
+        client, name = real_collection
+        client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        # qdrant reports the collection as existing about a millisecond before the winner's
+        # create returns, so a worker can find it and then fail to read it
+        real_get_collection = fail_first_read(monkeypatch, client)
+
+        with caplog.at_level(logging.INFO):
+            assert index.ensure_collection(client, mock_model, name=name) == name
+
+        assert set(real_get_collection(collection_name=name).payload_schema) == ALL_PAYLOAD_INDEXES
+        unreadable = [record for record in caplog.records if record.message == "search_collection_schema_unreadable"]
+        assert [(record.levelno, record.collection, record.status) for record in unreadable] == [(logging.INFO, name, 500)]
+
+    def test_other_schema_read_failures_still_raise(self, real_collection, mock_model, monkeypatch):
+        client, name = real_collection
+        client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        fail_first_read(monkeypatch, client, status=403, content=b'{"status":{"error":"forbidden"}}')
+
+        with pytest.raises(UnexpectedResponse) as error:
+            index.ensure_collection(client, mock_model, name=name)
+
+        assert error.value.status_code == 403
+
+    def test_racing_workers_both_succeed_and_the_indexes_cover_new_points(self, qdrant_available, mock_model):
+        """Two workers create the collection at the same moment, with nothing scripted. The loser
+        creates its indexes while the winner's create is still running, so the test checks that
+        the indexes cover a point written afterwards as well as appearing in the schema."""
+        admin = get_qdrant_client()
+        point = models.PointStruct(
+            id=str(uuid.uuid4()),
+            vector={index.DENSE: [0.1] * 8},
+            payload={field_name: "x" for field_name in index.KEYWORD_INDEXES} | {field_name: "2026-10-29T00:00:00Z" for field_name in index.DATETIME_INDEXES},
+        )
+        for _ in range(5):
+            name = f"ace3-test-{uuid.uuid4().hex[:8]}"
+            start = threading.Barrier(2, timeout=30)
+            errors = []
+
+            def worker():
+                client = get_qdrant_client()
+                start.wait()
+                try:
+                    index.ensure_collection(client, mock_model, name=name)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker) for _ in range(2)]
+            try:
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=60)
+
+                assert not any(thread.is_alive() for thread in threads)
+                assert errors == []
+                admin.upsert(collection_name=name, points=[point], wait=True)
+                schema = admin.get_collection(collection_name=name).payload_schema
+                assert {field_name: info.points for field_name, info in schema.items()} == {field_name: 1 for field_name in ALL_PAYLOAD_INDEXES}
+            finally:
+                if admin.collection_exists(collection_name=name):
+                    admin.delete_collection(collection_name=name)
+
+    def test_other_create_failures_still_raise(self, real_collection, mock_model):
+        client, name = real_collection
+        # qdrant rejects a zero-length vector with a 400, not the 409 of an existing collection
+        mock_model.get_embedding_dimension.return_value = 0
+
+        with pytest.raises(UnexpectedResponse) as error:
+            index.ensure_collection(client, mock_model, name=name)
+
+        assert error.value.status_code == 400
+        assert not client.collection_exists(collection_name=name)
 
 
 class TestBuildPoints:
