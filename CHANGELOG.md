@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.135] - 2026-10-29
+
+- [Make file_collection.alert_uuid nullable on databases created before Alembic](https://github.com/ACE-Collective/ace3/pull/1098)
+- [Let log_peer_unavailable recognize a client library's transport errors](https://github.com/ACE-Collective/ace3/pull/1097)
+- [Retry the whole transaction in execute_with_retry](https://github.com/ACE-Collective/ace3/pull/1095)
+- [Upgrade the Python dependencies](https://github.com/ACE-Collective/ace3/pull/1093)
+- [Test the network identifier module](https://github.com/ACE-Collective/ace3/pull/1092)
+- [Return 409 for threat type names that exist and types malware uses](https://github.com/ACE-Collective/ace3/pull/1090)
+- [Seed only what is missing: never reset rows or restore a deleted analyst](https://github.com/ACE-Collective/ace3/pull/1087)
+- [Test the retry helpers against real deadlocks](https://github.com/ACE-Collective/ace3/pull/1086)
+- [Move the saq AUDIT records to log_audit()](https://github.com/ACE-Collective/ace3/pull/1085)
+- [Create the email archive results only once the email is archived](https://github.com/ACE-Collective/ace3/pull/1082)
+- [Move the Flask views' AUDIT records to log_audit()](https://github.com/ACE-Collective/ace3/pull/1081)
+- [Run each GUI CLI command under the sandbox launcher](https://github.com/ACE-Collective/ace3/pull/1080)
+- [Release a local lock when the block under it raises](https://github.com/ACE-Collective/ace3/pull/1079)
+- [Write nothing at encrypt()'s target unless encryption succeeds](https://github.com/ACE-Collective/ace3/pull/1078)
+- [Let a person end a started SVS run early](https://github.com/ACE-Collective/ace3/pull/1077)
+- [/ace-review: count a dropped alert as harm, check cache lifetimes, verify dismissals](https://github.com/ACE-Collective/ace3/pull/1075)
+- [Re-enable the email archive tests that were skipped](https://github.com/ACE-Collective/ace3/pull/1074)
+- [Remove the event pages' disabled sections](https://github.com/ACE-Collective/ace3/pull/1073)
+
 ## [3.0.134] - 2026-10-28
 
 - [Fail clicker searches on an invalid Splunk clicker config](https://github.com/ACE-Collective/ace3/pull/1070)
