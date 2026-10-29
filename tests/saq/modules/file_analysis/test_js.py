@@ -53,7 +53,7 @@ HARNESS_PATH = os.path.normpath(
 )
 
 
-def _local_deobfuscate_file(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+def _local_deobfuscate_file(file_path, output_dir, timeout=60, scanner_timeout=30,
                             dom_snapshot_path=None):
     """Stand-in for saq.js_deobfuscator.deobfuscate_file that runs the
     harness directly via node. The harness finds the snapshot at
@@ -315,7 +315,7 @@ def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
     still emit the deobfuscated-<name> observable carrying analysis.error."""
     import json as _json
 
-    def _crashing_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+    def _crashing_shim(file_path, output_dir, timeout=60, scanner_timeout=30,
                        dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")
@@ -735,7 +735,7 @@ def test_legacy_report_without_error_type_does_not_tag(tmpdir, monkeypatch):
     """
     import json as _json
 
-    def _legacy_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+    def _legacy_shim(file_path, output_dir, timeout=60, scanner_timeout=30,
                      dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")
@@ -816,7 +816,7 @@ def test_webcrack_failure_is_reported_in_summary(tmpdir, monkeypatch, patched_de
     """
     import json as _json
 
-    def _webcrack_failed_shim(file_path, output_dir, is_async=False, timeout=60, scanner_timeout=30,
+    def _webcrack_failed_shim(file_path, output_dir, timeout=60, scanner_timeout=30,
                               dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
         out_js = os.path.join(output_dir, "deobfuscated.js")

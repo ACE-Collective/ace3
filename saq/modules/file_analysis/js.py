@@ -286,7 +286,6 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             result_files = deobfuscate_file(
                 local_file_path,
                 scratch_dir,
-                is_async=False,
                 timeout=self.config.celery_timeout,
                 scanner_timeout=self.config.scanner_timeout,
                 dom_snapshot_path=dom_snapshot_path,
