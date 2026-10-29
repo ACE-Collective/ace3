@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, UTC
+import logging
 from uuid import uuid4
 
 import pytest
@@ -96,18 +97,87 @@ def test_collect_work_item_without_alert():
 
 
 @pytest.mark.integration
-def test_collect_work_item_with_missing_alert():
-    """A collection whose alert is gone is not handed out."""
-    queue_file_collection(
+def test_collect_work_item_with_missing_alert(caplog):
+    """A collection whose alert is gone is finished as failed instead of handed out, so it is
+    neither left locked nor locked again at every lock timeout."""
+    alert_uuid = str(uuid4())
+    collection_id = queue_file_collection(
         collector_name="custom",
         observable_type=F_FILE_LOCATION,
         observable_value="host@/path/to/file",
+        alert_uuid=alert_uuid,
+    )
+
+    collector = FileCollectionCollector()
+    listener = TestFileCollectionListener()
+    collector.register_listener("custom", listener)
+    collector.shutdown_event.set()
+    with caplog.at_level(logging.WARNING):
+        collector.collection_loop()
+        # with no lock timeout, a row left unfinished would be locked again on the next pass
+        collector.lock_timeout_seconds = 0
+        collector.collection_loop()
+
+    assert not listener.collections
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).one()
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.result == FileCollectorStatus.FAILED.value
+    assert alert_uuid in file_collection.result_message
+    assert file_collection.lock is None
+    assert file_collection.update_time is not None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].file_collection_id == collection_id
+    assert warnings[0].alert_uuid == alert_uuid
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.integration
+def test_collect_finishes_only_the_collection_whose_alert_is_gone(db_alert):
+    """The collections locked in the same pass are still handed out, including one no alert
+    asked for, whose alert_uuid is NULL by design."""
+    missing_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/missing",
         alert_uuid=str(uuid4()),
+    )
+    with_alert_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/with_alert",
+        alert_uuid=db_alert.uuid,
+    )
+    without_alert_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/without_alert",
     )
 
     collector = FileCollectionCollector()
     collector.register_listener("custom", TestFileCollectionListener())
-    assert not collector.collect_work_items()
+    tasks = {task.id: task for task in collector.collect_work_items()}
+    assert sorted(tasks) == sorted([with_alert_id, without_alert_id])
+    assert tasks[with_alert_id].storage_dir == db_alert.storage_dir
+    assert tasks[without_alert_id].storage_dir == unattached_storage_dir(without_alert_id)
+
+    # discards anything the collector did not commit
+    get_db().rollback()
+    rows = {
+        row.id: row
+        for row in get_db().query(FileCollection).filter(
+            FileCollection.id.in_([missing_id, with_alert_id, without_alert_id])
+        )
+    }
+
+    for collection_id in (with_alert_id, without_alert_id):
+        assert rows[collection_id].status == FileCollectionStatus.IN_PROGRESS.value
+        assert rows[collection_id].result is None
+        assert rows[collection_id].lock == tasks[collection_id].lock
+
+    assert rows[missing_id].status == FileCollectionStatus.COMPLETED.value
+    assert rows[missing_id].result == FileCollectorStatus.FAILED.value
 
 
 @pytest.mark.integration

@@ -65,8 +65,9 @@ class QueueCollector(ABC, Generic[ItemT]):
 
     @abstractmethod
     def build_work_item(self, row) -> Optional[ItemT]:
-        """The work item for a row this collector locked, or None to skip it (the row stays
-        locked until the lock times out)."""
+        """The work item for a row this collector locked, or None for a row with no work left.
+        Before it returns None it finishes the row, and collect_work_items commits that write.
+        A row left unfinished would be locked again at every lock timeout."""
 
     def start(self):
         self.collector_thread = Thread(target=self.collection_loop, name=type(self).__name__)
@@ -146,6 +147,9 @@ class QueueCollector(ABC, Generic[ItemT]):
         query = query.filter(model.lock == lock_uuid)
         query = query.order_by(model.insert_date.desc())
         work_items = [self.build_work_item(row) for row in query.all()]
+        # commits the rows build_work_item finished, once for the batch, because a commit per row
+        # would expire the rows not built yet and reload each of them
+        get_db().commit()
         return [work_item for work_item in work_items if work_item is not None]
 
     def collection_loop(self):
