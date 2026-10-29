@@ -10,7 +10,7 @@ from saq.database.model import Alert, FileCollection
 from saq.database.pool import get_db
 from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.storage import unattached_storage_dir
-from saq.file_collection.types import FileCollectionWorkItem
+from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
 from saq.queue_service import QueueCollector
 from saq.util.time import calculate_backoff_delay
 
@@ -19,15 +19,32 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
     """Creates a FileCollectionWorkItem from a FileCollection database object.
 
     The collected file goes in the alert's storage directory, or for a collection no alert asked
-    for, in this node's directory for it (saq.file_collection.storage). Returns None if the
-    associated alert cannot be found.
+    for, in this node's directory for it (saq.file_collection.storage). Deleting an alert leaves
+    its collections behind. A collection whose alert no longer exists has nowhere to put its file,
+    so this marks it completed and failed, releases its lock and returns None.
+    QueueCollector.collect_work_items commits that update.
     """
     if file_collection.alert_uuid is None:
         storage_dir = unattached_storage_dir(file_collection.id)
     else:
         alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
         if alert is None:
-            logging.error(f"Alert {file_collection.alert_uuid} not found for file collection {file_collection.id}")
+            message = f"alert {file_collection.alert_uuid} no longer exists"
+            update = FileCollection.__table__.update()
+            update = update.values(
+                lock=None,
+                status=FileCollectionStatus.COMPLETED.value,
+                result=FileCollectorStatus.FAILED.value,
+                result_message=message,
+                update_time=func.NOW(),
+            )
+            update = update.where(FileCollection.id == file_collection.id, FileCollection.lock == file_collection.lock)
+            get_db().execute(update)
+            logging.warning(
+                f"file collection {file_collection.id} for {file_collection.type} {file_collection.key} "
+                f"failed: {message}",
+                extra={"file_collection_id": file_collection.id, "alert_uuid": file_collection.alert_uuid},
+            )
             return None
         storage_dir = alert.storage_dir
 
