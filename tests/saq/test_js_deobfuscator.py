@@ -1,4 +1,4 @@
-"""Tests for js-deobfuscator file maintenance: the manager's task, ACE's client and `ace js-deobfuscator`."""
+"""Tests for the js-deobfuscator manager's tasks, ACE's client and `ace js-deobfuscator`."""
 
 import logging
 import os
@@ -9,11 +9,67 @@ import pytest
 
 import js_deobfuscator.js_deobfuscator as manager
 import saq.cli.commands.js_deobfuscator as js_deobfuscator_cli
+import saq.js_deobfuscator
 from saq.cli.cli_main import get_cli_parser
 from saq.configuration.config import get_config
-from saq.js_deobfuscator import maintain_files
+from saq.js_deobfuscator import deobfuscate_file, maintain_files
 
 DAY = 86400
+
+
+# stands in for the broker the manager's module builds its app with, the one the manager consumes from
+MANAGER_BROKER = "pyamqp://ace3:manager-pass@rabbitmq//"
+
+
+@pytest.fixture
+def divergent_rabbitmq_config(monkeypatch):
+    """A rabbitmq configuration that names another broker than the manager's."""
+    rabbitmq = get_config().rabbitmq
+    monkeypatch.setattr(rabbitmq, "username", "jd-user")
+    monkeypatch.setattr(rabbitmq, "password", "jd-pass")
+    monkeypatch.setattr(rabbitmq, "host", "jd-host")
+    monkeypatch.setitem(manager.app.conf, "broker_url", MANAGER_BROKER)
+
+
+def _send_records_broker(monkeypatch, task, result):
+    """Replace task.delay with one that records the broker the app would have sent the task to."""
+    sent = []
+
+    def _delay(*args, **kwargs):
+        sent.append({"broker_url": manager.app.conf.broker_url, "args": args, "kwargs": kwargs})
+        return SimpleNamespace(get=lambda timeout: result)
+
+    monkeypatch.setattr(task, "delay", _delay)
+    return sent
+
+
+@pytest.mark.unit
+def test_deobfuscate_file_is_sent_to_the_managers_broker(divergent_rabbitmq_config, monkeypatch, tmp_path):
+    shared_input = tmp_path / "shared-input"
+    monkeypatch.setattr(saq.js_deobfuscator, "SHARED_INPUT_DIR", str(shared_input))
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    (result_dir / "deobfuscated.js").write_text("trace")
+    sample = tmp_path / "sample.js"
+    sample.write_text("eval('x')")
+    sent = _send_records_broker(monkeypatch, manager.deobfuscate, str(result_dir))
+
+    results = deobfuscate_file(str(sample), str(tmp_path / "collected"), timeout=9, scanner_timeout=4)
+
+    assert [s["broker_url"] for s in sent] == [MANAGER_BROKER]
+    (shared_path,) = sent[0]["args"]
+    assert shared_path.startswith(str(shared_input)) and os.path.basename(shared_path) == "sample.js"
+    assert sent[0]["kwargs"] == {"timeout": 4}
+    assert results == [str(tmp_path / "collected" / "deobfuscated.js")]
+
+
+@pytest.mark.unit
+def test_maintain_files_is_sent_to_the_managers_broker(divergent_rabbitmq_config, monkeypatch):
+    sent = _send_records_broker(monkeypatch, manager.maintain_files, {})
+
+    maintain_files(3)
+
+    assert [s["broker_url"] for s in sent] == [MANAGER_BROKER]
 
 
 @pytest.fixture
