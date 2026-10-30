@@ -7,6 +7,7 @@ desynchronises the record layer, and the *parent* is usually the one that notice
 ``[SSL: RECORD_LAYER_FAILURE] ... Lost connection to MySQL server during query``.
 """
 
+import gc
 import io
 import logging
 import os
@@ -19,6 +20,7 @@ import pymysql
 import pytest
 
 from sqlalchemy import text
+from sqlalchemy.pool.base import reset_none, reset_rollback
 
 import saq
 from saq.database import pool
@@ -103,6 +105,66 @@ def test_at_fork_child_hook_does_not_use_logging():
     emitted = os.read(read_fd, 4096)
     os.close(read_fd)
     assert emitted == b"", "the at-fork child hook emitted a log record"
+
+
+def _child_collects_what_it_inherited():
+    """Runs in the forked child. The inherited session's connection is in a reference cycle, so it goes back to
+    the inherited pool here rather than in the at-fork hook."""
+    gc.collect()
+
+
+@pytest.mark.integration
+def test_a_connection_checked_out_at_the_fork_is_dropped_in_the_child_without_an_error():
+    # an open transaction holds a connection checked out at the fork, the state Engine.start_nonblocking() forks
+    # in. returning it to the pool the child abandoned must not try to roll it back over the socket the hook took
+    # away, which SQLAlchemy logs at ERROR as "Exception during reset or similar"
+    assert get_db().execute(text("SELECT 1")).scalar() == 1
+
+    read_fd, write_fd = os.pipe()
+    parent_pid = os.getpid()
+
+    class ForkProbe(logging.Handler):
+        def emit(self, record):
+            if os.getpid() != parent_pid and record.levelno >= logging.WARNING:
+                os.write(write_fd, f"{record.name}: {record.getMessage()}\n".encode())
+
+    handler = ForkProbe()
+    root = logging.getLogger()
+    root.addHandler(handler)
+
+    try:
+        process = ACE_MP_CONTEXT.Process(target=_child_collects_what_it_inherited)
+        process.start()
+        process.join(30)
+    finally:
+        root.removeHandler(handler)
+        os.close(write_fd)
+
+    assert not process.is_alive()
+    assert process.exitcode == 0
+
+    emitted = os.read(read_fd, 65536).decode()
+    os.close(read_fd)
+    assert "Exception during reset" not in emitted
+
+    # the parent's connection is untouched
+    assert get_db().execute(text("SELECT 1")).scalar() == 1
+    get_db().commit()
+
+
+@pytest.mark.integration
+def test_only_the_abandoned_pool_stops_rolling_back(capfd):
+    # recreate() copies reset_on_return into the pool that replaces the abandoned one, and a pool that never rolls
+    # back hands the next checkout a connection still inside the last one's transaction
+    engine = get_db().get_bind()
+    inherited_pool = engine.pool
+    assert inherited_pool._reset_on_return is reset_rollback
+
+    reset_database_after_fork()
+
+    assert engine.pool is not inherited_pool
+    assert inherited_pool._reset_on_return is reset_none
+    assert engine.pool._reset_on_return is reset_rollback
 
 
 @pytest.mark.integration
@@ -238,7 +300,7 @@ def test_reset_database_after_fork_drops_what_it_inherited_and_reports_what_it_c
         raise RuntimeError("gone")
 
     monkeypatch.setattr(pool, "_abandoned_after_fork", [])
-    monkeypatch.setattr(pool, "_db_engines", {type("Engine", (), {"dispose": lambda self, close: fail()})()})
+    monkeypatch.setattr(pool, "_db_engines", {type("Engine", (), {"pool": None, "dispose": lambda self, close: fail()})()})
     monkeypatch.setattr(pool, "_db_sessions", {"ace": type("Session", (), {"registry": type("Registry", (), {"clear": staticmethod(fail)})()})()})
     try:
         reset_database_after_fork()

@@ -545,14 +545,16 @@ def reset_database_after_fork():
     no read buffer, and this process's copy of the socket's file descriptor is closed. That
     is all: the parent still holds its own descriptor for the same socket, so the connection
     stays up and the server is told nothing. This is the same reasoning _database_pool.close()
-    already documents. It has to happen first, before the connections become unreachable:
-    once SQLAlchemy's _finalize_fairy runs on a garbage collected connection it issues a reset
-    (a ROLLBACK) on the way out. With no socket, pymysql refuses it before writing a byte, and
-    SQLAlchemy logs that ("Exception during reset or similar") and invalidates the record,
-    whose close is then a no-op. Nothing reaches the server.
+    already documents. It has to happen first, before the connections become unreachable, so
+    that a close on the way out (garbage collection, or invalidating the record) is a no-op.
 
     engine.dispose(close=False) is then SQLAlchemy's documented after-fork call: it swaps
-    in a fresh pool and abandons the inherited one rather than closing it.
+    in a fresh pool and abandons the inherited one rather than closing it. The abandoned pool
+    is then set not to reset what is checked in to it. A connection that was checked out at
+    the fork (a session holding an open transaction) is checked in to it when the child
+    garbage collects it, and SQLAlchemy's _finalize_fairy would reset it with a ROLLBACK.
+    pymysql refuses that before writing a byte, since there is no socket, but SQLAlchemy logs
+    it at ERROR ("Exception during reset or similar"), which reads as a database failure.
     registry.clear() drops the inherited Session objects the same way -- unlike
     remove_all_sessions(), which calls Session.close() and would check a connection back
     into the pool with a rollback on the way.
@@ -602,7 +604,14 @@ def reset_database_after_fork():
 
     for engine in list(_db_engines):
         try:
+            # local, like every SQLAlchemy import here; an engine exists, so this only reads sys.modules
+            from sqlalchemy.pool.base import reset_none
+
+            inherited_pool = engine.pool
             engine.dispose(close=False)
+            # only once it has been swapped out: recreate() copies this setting into the new pool, which must
+            # keep rolling back. _ConnectionFairy._reset reads this private attribute; test_pool_fork.py pins it
+            inherited_pool._reset_on_return = reset_none
         except Exception as e:
             _write_stderr(f"WARNING: unable to dispose inherited engine after fork: {e}\n")
 
