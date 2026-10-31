@@ -26,7 +26,10 @@ if TYPE_CHECKING:
 # every pool in this module, the SQLAlchemy engines' and the raw one, keeps POOL_SIZE idle connections for reuse
 # and closes the rest as they come back. a SQLAlchemy engine makes a caller wait once POOL_SIZE + POOL_MAX_OVERFLOW
 # are checked out; the raw pool opens more past that point, because callers nest get_db_connection() and would
-# deadlock waiting on themselves, and warns instead
+# deadlock waiting on themselves, and warns instead.
+# the raw pool opens a connection only when every open one is checked out, and retires each one max_connection_lifetime
+# after it opened it, so it holds no more than the most it had in use over that time. it logs that number once
+# per max_connection_lifetime (_database_pool._rotate_window), which is what to look at before changing POOL_SIZE
 POOL_SIZE = 5
 POOL_MAX_OVERFLOW = 10
 
@@ -127,6 +130,10 @@ class _database_pool:
         self.peak_over_cap = 0
 
         self.database_config = get_config().get_database_config(name)
+        # how often the pool logs what it used: connections do not outlive this, so nor does what the pool holds
+        self.window = create_timedelta(self.database_config.max_connection_lifetime)
+        self._reset_window(datetime.now())
+
         kwargs: dict[str, Any] = {
             'database': self.database_config.database,
             'user': self.database_config.username,
@@ -193,11 +200,51 @@ class _database_pool:
             self.available.clear()
             self.in_use.clear()
             self.peak_over_cap = 0
+            self._reset_window(datetime.now())
             self.emit_monitors()
+
+    def _reset_window(self, now: datetime):
+        """Starts counting what the pool uses over the next window. Called with the lock held."""
+        self.window_start = now
+        self.window_peak = len(self.in_use)
+        self.checkouts = 0
+        self.opened = 0
+        self.closed_expired = 0
+        self.closed_idle = 0
+        self.closed_broken = 0
+
+    def _rotate_window(self, now: datetime):
+        """Logs what the pool used over the window that has ended, if it has, and starts the next one. Checked on
+        every checkout and return rather than by a thread, so a pool nobody uses logs nothing. Called with the lock
+        held."""
+        if now - self.window_start < self.window:
+            return
+
+        summary = {
+            "database": self.name,
+            "window_seconds": int((now - self.window_start).total_seconds()),
+            "peak_in_use": self.window_peak,
+            "idle": len(self.available),
+            "checkouts": self.checkouts,
+            "opened": self.opened,
+            "closed_expired": self.closed_expired,
+            "closed_idle": self.closed_idle,
+            "closed_broken": self.closed_broken,
+        }
+        self._reset_window(now)
+        logging.info(
+            f"database pool {self.name} in pid {self.pid} over the last {summary['window_seconds']}s: "
+            f"at most {summary['peak_in_use']} connections in use, {summary['idle']} idle now, "
+            f"{summary['checkouts']} checkouts, {summary['opened']} opened, "
+            f"{summary['closed_expired']} closed past their lifetime, {summary['closed_idle']} closed as idle, "
+            f"{summary['closed_broken']} closed as broken",
+            extra=summary)
 
     def get_connection(self):
         connection = None
         with self.lock:
+            self._rotate_window(datetime.now())
+            self.checkouts += 1
             try:
                 connection = self.available.pop()
 
@@ -210,17 +257,20 @@ class _database_pool:
                     # if we can't rollback then toss this connection and get a new one
                     _log_pool_issue("unable to rollback connection on get_connection", e)
                     self.close_connection(connection)
+                    self.closed_broken += 1
                     connection = self.open_new_connection()
 
                 # drop old connections
                 if datetime.now() >= connection.termination_date: # termination_date is a property we add in open_new_connection()
                     logging.info(f"terminating old connection {connection}")
                     self.close_connection(connection)
+                    self.closed_expired += 1
                     connection = self.open_new_connection()
             except IndexError:
                 connection = self.open_new_connection()
 
             self.in_use.append(connection)
+            self.window_peak = max(self.window_peak, len(self.in_use))
             connection.acquired = datetime.now()
             self._warn_past_soft_cap()
             self.emit_monitors()
@@ -252,6 +302,7 @@ class _database_pool:
 
         now = datetime.now()
         with self.lock:
+            self._rotate_window(now)
             self.in_use.remove(connection)
             self.available.append(connection)
             # the pool reuses the connection returned last, so one under it is never checked out for get_connection()
@@ -262,6 +313,8 @@ class _database_pool:
             excess = []
             while len(self.available) > POOL_SIZE:
                 excess.append(self.available.popleft())
+            self.closed_expired += len(expired)
+            self.closed_idle += len(excess)
             self.emit_monitors()
 
         # outside the lock, because closing a connection writes to the server
@@ -286,6 +339,7 @@ class _database_pool:
         with self.lock:
             try:
                 self.in_use.remove(connection)
+                self.closed_broken += 1
                 self.emit_monitors()
             except ValueError:
                 logging.warning(f"attempted to remove missing database connection {connection}")
@@ -297,6 +351,8 @@ class _database_pool:
         cursor.execute('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED')
         cursor.close()
         connection.commit()
+        # get_connection() opens connections, with the lock held
+        self.opened += 1
 
         # keep track of when this connection should be invalidated
         setattr(connection,
@@ -337,6 +393,7 @@ class _database_pool:
 
             self.in_use.clear()
             self.peak_over_cap = 0
+            self._reset_window(datetime.now())
             self.emit_monitors()
 
     @property

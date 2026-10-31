@@ -367,6 +367,107 @@ def test_a_discarded_connection_that_fails_to_close_is_logged(monkeypatch, caplo
     database_pool.clear()
 
 
+class _Clock(datetime):
+    """datetime, moved forward by offset."""
+    offset = timedelta(0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + cls.offset
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    monkeypatch.setattr(pool, "datetime", _Clock)
+    monkeypatch.setattr(_Clock, "offset", timedelta(0))
+    return _Clock
+
+
+def _query():
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+
+
+def _summaries(caplog):
+    return [r for r in caplog.records if r.levelno == logging.INFO and hasattr(r, "peak_in_use")]
+
+
+@pytest.mark.integration
+def test_a_pool_used_one_at_a_time_after_a_burst_keeps_one_once_the_lifetime_passes(clock):
+    # no setting or thread sizes the pool: it holds what the burst opened until those connections expire
+    database_pool = get_pool()
+    database_pool.clear()
+
+    burst = [database_pool.get_connection() for _ in range(3)]
+    for connection in burst:
+        database_pool.return_connection(connection)
+    for _ in range(10):
+        _query()
+    assert database_pool.available_count == 3
+
+    clock.offset = timedelta(minutes=16)
+    for _ in range(10):
+        _query()
+    assert database_pool.available_count == 1
+
+
+@pytest.mark.integration
+def test_the_pool_logs_what_it_used_once_per_connection_lifetime(clock, caplog):
+    database_pool = get_pool()
+    database_pool.clear()
+
+    burst = [database_pool.get_connection() for _ in range(3)]
+    for connection in burst:
+        database_pool.return_connection(connection)
+    _query()
+    assert not _summaries(caplog)
+
+    # the first checkout after max_connection_lifetime (15 minutes) reports the window that ended
+    clock.offset = timedelta(minutes=16)
+    _query()
+    [first] = _summaries(caplog)
+    assert first.database == DB_ACE
+    assert (first.peak_in_use, first.checkouts, first.opened, first.idle) == (3, 4, 3, 3)
+    assert (first.closed_expired, first.closed_idle, first.closed_broken) == (0, 0, 0)
+
+    # that checkout found all three expired: it replaced the one it took and its return closed the other two
+    clock.offset = timedelta(minutes=32)
+    _query()
+    second = _summaries(caplog)[1]
+    assert (second.peak_in_use, second.checkouts, second.opened, second.idle) == (1, 1, 1, 1)
+    assert (second.closed_expired, second.closed_idle, second.closed_broken) == (3, 0, 0)
+
+
+@pytest.mark.integration
+def test_the_summary_counts_connections_closed_as_idle_or_broken(clock, caplog, monkeypatch):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    burst = [database_pool.get_connection() for _ in range(3)]
+    for connection in burst:
+        database_pool.return_connection(connection)
+
+    def _explode():
+        raise OSError("nope")
+
+    # one that cannot roll back when it is checked out, and its replacement when it is returned
+    [idle] = database_pool.available
+    monkeypatch.setattr(idle, "rollback", _explode)
+    connection = database_pool.get_connection()
+    assert connection is not idle
+    monkeypatch.setattr(connection, "rollback", _explode)
+    database_pool.return_connection(connection)
+
+    clock.offset = timedelta(minutes=16)
+    _query()
+    [summary] = _summaries(caplog)
+    assert (summary.peak_in_use, summary.checkouts, summary.opened, summary.idle) == (3, 4, 4, 0)
+    assert (summary.closed_expired, summary.closed_idle, summary.closed_broken) == (0, 2, 2)
+
+
 @pytest.fixture
 def no_sessions(monkeypatch):
     """Starts the test with no session or engine registered, and disposes the engines it creates."""
