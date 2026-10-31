@@ -34,7 +34,7 @@ Each service container in `docker-compose.yml` runs:
 /opt/ace/docker/startup/start.sh ace service start <name>
 ```
 
-`start.sh` waits for the database, then **execs** the `ace` CLI. The `exec` matters: without it bash stays PID 1 with the Python process as a foreground child and never forwards SIGTERM, so the process is SIGKILLed by docker instead of shutting down (see `docs/SHUTDOWN.md`).
+`start.sh` waits for the database, then **execs** the `ace` CLI. It waits only while `ace` exits with 75 (`EXIT_DATABASE_UNAVAILABLE`, the database is unreachable), and for at most `ACE_DATABASE_WAIT_SECONDS` (default 300); any other failure, such as a configuration error, exits the container so its restart policy shows it. The `dev` container (`start_nothing.sh`) stays up when the wait fails, so it can be used to fix what made it fail. The `exec` matters: without it bash stays PID 1 with the Python process as a foreground child and never forwards SIGTERM, so the process is SIGKILLed by docker instead of shutting down (see `docs/SHUTDOWN.md`).
 
 The `service start` subcommand (`saq/cli/commands/service.py`) does roughly:
 

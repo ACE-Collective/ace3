@@ -11,8 +11,10 @@ import saq.database
 import saq.modules.adapter
 import saq.network_semaphore
 import saq.proxy
-from saq.cli.cli_main import get_cli_parser
+from saq.cli.cli_main import EXIT_DATABASE_UNAVAILABLE, get_cli_parser
+from saq.configuration.config import get_database_config
 from saq.configuration.schema import ProxyConfig
+from saq.database.pool import reset_pools
 
 
 def _ace(*argv) -> int:
@@ -108,6 +110,19 @@ def test_database_connection_failure_exits_1(monkeypatch, capsys):
 
     assert _ace("database-connections") == 1
     assert "FAILED: cannot reach " in capsys.readouterr().out
+
+
+@pytest.mark.integration
+def test_unreachable_database_exits_with_its_own_code(monkeypatch, capsys):
+    # docker/startup/start.sh waits and retries only on this code
+    monkeypatch.setattr(get_database_config("brocess"), "port", 1)
+    reset_pools()
+    try:
+        assert _ace("database-connections") == EXIT_DATABASE_UNAVAILABLE
+    finally:
+        reset_pools()
+
+    assert "FAILED: (2003, " in capsys.readouterr().out
 
 
 class _FakeSemaphoreClient:

@@ -4,8 +4,9 @@ import time
 
 import requests
 
-from saq.cli.cli_main import get_cli_subparsers
+from saq.cli.cli_main import EXIT_DATABASE_UNAVAILABLE, get_cli_subparsers
 from saq.configuration import get_config
+from saq.database.retry import is_connection_lost
 
 
 # ============================================================================
@@ -48,7 +49,7 @@ def test_database_connections(args):
                 print("OK")
         except Exception as e:
             print("FAILED: {}".format(e))
-            sys.exit(1)
+            sys.exit(EXIT_DATABASE_UNAVAILABLE if is_connection_lost(e) else 1)
 
     sys.exit(0)
 

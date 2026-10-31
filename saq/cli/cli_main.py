@@ -5,7 +5,12 @@ import sys
 from typing import Optional
 
 from saq.cli.commands import import_command_modules
+from saq.database.retry import is_connection_lost
 from saq.environment import get_base_dir, initialize_base_dir, initialize_environment
+
+# EX_TEMPFAIL: ace could not reach a database, the one startup failure that waiting fixes.
+# docker/startup/start.sh retries only on this code
+EXIT_DATABASE_UNAVAILABLE = 75
 
 
 def _add_global_arguments(target: argparse.ArgumentParser):
@@ -70,13 +75,20 @@ def main():
     initialize_base_dir(args.saq_home)
     os.chdir(get_base_dir())
 
-    # initialize saq
-    initialize_environment(
-        saq_home=get_base_dir(),
-        config_paths=args.config_paths,
-        logging_config_path=args.logging_config_path,
-        force_alerts=args.force_alerts,
-    )
+    # initialize saq. this is where a database that is not up yet is first noticed
+    try:
+        initialize_environment(
+            saq_home=get_base_dir(),
+            config_paths=args.config_paths,
+            logging_config_path=args.logging_config_path,
+            force_alerts=args.force_alerts,
+        )
+    except Exception as e:
+        if not is_connection_lost(e):
+            raise
+
+        print(f"unable to reach a database: {e}", file=sys.stderr)
+        sys.exit(EXIT_DATABASE_UNAVAILABLE)
 
     if args.debug_on_error:
         def info(type, value, tb):
