@@ -134,6 +134,11 @@ def _prctl(option: int, value: int):
     _check(_libc.prctl(ctypes.c_int(option), ctypes.c_ulong(value), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)))
 
 
+def set_child_subreaper(enabled: bool):
+    """Have the orphans of this process's descendants reparented to it instead of to init, or stop adopting them."""
+    _prctl(_PR_SET_CHILD_SUBREAPER, int(enabled))
+
+
 def landlock_abi() -> int:
     """The kernel's Landlock ABI version, or 0 when Landlock is unavailable."""
     try:
@@ -414,7 +419,7 @@ def main(argv: list[str]) -> int:
         return EXIT_SANDBOX_FAILURE
 
     try:
-        _prctl(_PR_SET_CHILD_SUBREAPER, 1)
+        set_child_subreaper(True)
     except OSError as e:
         _say(f"cannot become a child subreaper: {e}")
         return EXIT_SANDBOX_FAILURE

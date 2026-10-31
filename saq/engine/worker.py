@@ -403,9 +403,10 @@ class Worker:
         How the manager stops a worker past its analysis timeout or memory limit, one that does not start
         and one that ignored the shutdown event past its deadline, and how it clears up after a worker that
         died on its own (the analysis module monitor's os._exit, a crash, the OOM killer): what that worker
-        left running was reparented to init, but it is still in the group, and the group outlives its leader
-        while it has members. A process that starts a session or group of its own has left it, and has to
-        bound what it started itself. Never raises: it runs on the manager's supervision and shutdown paths.
+        left running was reparented to the manager, but it is still in the group, and the group outlives its
+        leader while it has members. A process that starts a session or group of its own has left it: the
+        manager kills it once the worker is gone (WorkerManager.kill_adopted). Never raises: it runs on the
+        manager's supervision and shutdown paths.
         """
         if self.process is None or self.process.pid is None:
             return

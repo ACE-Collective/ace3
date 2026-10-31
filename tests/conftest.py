@@ -45,6 +45,7 @@ from tests.saq.helpers import (
     restore_integration_configurations,
     snapshot_integration_configurations,
     start_api_server,
+    stop_adopting,
     stop_api_server,
 )
 from tests.saq.test_util import create_test_context
@@ -488,6 +489,10 @@ def global_function_setup(request):
     # second failure presents as an unbounded hang, with the actual assertion buried in
     # output pytest never gets to print.
     reap_stray_child_processes(request.node.name, preexisting_child_processes)
+
+    # a test that calls WorkerManager.start_workers() and never shuts the manager down leaves this process adopting
+    # every later test's orphans
+    stop_adopting(request.node.name)
 
     # SQLAlchemy session management
     #

@@ -1,5 +1,6 @@
 import copy
 from contextlib import contextmanager
+import ctypes
 from datetime import datetime, timedelta
 import logging
 from multiprocessing import Manager, Pipe, Process, RLock
@@ -35,6 +36,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.node_manager.node_manager_factory import create_node_manager
 from saq.engine.worker import Worker
 from saq.environment import ACE_MP_CONTEXT, get_base_dir, get_global_runtime_settings
+from saq.sandbox.launcher import set_child_subreaper
 from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
@@ -178,6 +180,39 @@ def process_is_gone(pid: int) -> bool:
         return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return True
+
+
+_PR_GET_CHILD_SUBREAPER = 37
+
+
+def is_child_subreaper() -> bool:
+    """True while this process adopts the orphans of its descendants (PR_SET_CHILD_SUBREAPER)."""
+    value = ctypes.c_int()
+    assert ctypes.CDLL(None, use_errno=True).prctl(_PR_GET_CHILD_SUBREAPER, ctypes.byref(value), 0, 0, 0) == 0
+    return value.value == 1
+
+
+def stop_adopting(test_name: str):
+    """Stop this process being the child subreaper a finished test left it, and reap what it adopted and has
+    exited. WorkerManager.start_workers() makes its caller one and only supervise_shutdown() stops it, and a
+    test that never shuts its manager down would leave every later orphan in the session a zombie of this
+    process: alive to psutil.pid_exists(). By pid, and not multiprocessing's children, whose exit codes it
+    reads itself."""
+    if not is_child_subreaper():
+        return
+
+    logging.info("test %s left this process a child subreaper - stopping it", test_name)
+    set_child_subreaper(False)
+    multiprocessing_children = {process.pid for process in multiprocessing.active_children()}
+    for child in psutil.Process().children():
+        if child.pid in multiprocessing_children:
+            continue
+
+        try:
+            if child.status() == psutil.STATUS_ZOMBIE:
+                os.waitpid(child.pid, os.WNOHANG)
+        except (psutil.NoSuchProcess, ChildProcessError):
+            pass  # reaped since the listing
 
 
 def inject_deadlock(monkeypatch: pytest.MonkeyPatch, sql_fragment: str, skip: int = 0) -> list[str]:
