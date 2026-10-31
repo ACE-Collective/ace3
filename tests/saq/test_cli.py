@@ -235,3 +235,33 @@ def test_an_unknown_command_lists_every_command():
     assert result.returncode == 2
     assert "invalid choice" in result.stderr
     assert "yara-qa" in result.stderr and "js-deobfuscator" in result.stderr
+
+
+def _run_ace(tmp_path, overlay: str, *argv) -> subprocess.CompletedProcess:
+    config_path = tmp_path / "overlay.yaml"
+    config_path.write_text(overlay)
+    # etc/saq.yaml loads after -c, so it would win over the overlay
+    env = dict(os.environ, SAQ_SKIP_LOCAL_SAQ_YAML="1")
+    return subprocess.run([sys.executable, "ace", "-c", str(config_path), *argv], cwd=get_base_dir(),
+                          capture_output=True, text=True, timeout=120, env=env)
+
+
+@pytest.mark.unit
+def test_ace_exits_with_its_own_code_when_it_cannot_reach_a_database(tmp_path):
+    # every database on a port nothing listens on, so nothing here reaches a real one
+    overlay = "".join(f"{section}:\n  port: 1\n" for section in (
+        "database_ace", "database_brocess", "database_email_archive", "database_analysis_result_cache"))
+
+    result = _run_ace(tmp_path, overlay, "test", "database-connections")
+
+    assert result.returncode == cli_main.EXIT_DATABASE_UNAVAILABLE, result.stderr[-4000:]
+    assert "unable to reach a database: (2003, " in result.stderr
+
+
+@pytest.mark.unit
+def test_a_configuration_error_does_not_exit_with_the_database_code(tmp_path):
+    result = _run_ace(tmp_path, "global:\n  instance_name: env:ACE_NO_SUCH_VARIABLE_1008\n",
+                      "test", "database-connections")
+
+    assert result.returncode not in (0, cli_main.EXIT_DATABASE_UNAVAILABLE)
+    assert "configuration referenced unknown environment variable ACE_NO_SUCH_VARIABLE_1008" in result.stderr
