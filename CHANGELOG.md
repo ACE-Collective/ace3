@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.136] - 2026-10-31
+
+- [Resolve each configuration section's env: references when it is validated](https://github.com/ACE-Collective/ace3/pull/1112)
+- [Retry only an unreachable database in start.sh, and only for a while](https://github.com/ACE-Collective/ace3/pull/1111)
+- [Don't roll back a connection returned to the pool a forked child abandoned](https://github.com/ACE-Collective/ace3/pull/1109)
+- [Keep the JavaScript deobfuscator client on the manager's broker and remove its unused code](https://github.com/ACE-Collective/ace3/pull/1108)
+- [Finish a file collection whose alert no longer exists](https://github.com/ACE-Collective/ace3/pull/1107)
+- [Search indexer: losing the race to create the collection is not an error](https://github.com/ACE-Collective/ace3/pull/1106)
+
 ## [3.0.135] - 2026-10-29
 
 - [Make file_collection.alert_uuid nullable on databases created before Alembic](https://github.com/ACE-Collective/ace3/pull/1098)
