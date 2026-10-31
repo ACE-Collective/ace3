@@ -1,5 +1,7 @@
 import logging
 import threading
+from datetime import datetime, timedelta
+
 import pytest
 from sqlalchemy import text
 
@@ -248,6 +250,121 @@ def test_pooling_multi_process(test_comms):
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
         assert conn_1 is conn_4
+
+
+def _open_on_server(thread_ids):
+    """The MySQL thread ids, of those given, whose connections are still open on the server."""
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT id FROM information_schema.processlist")
+        return set(thread_ids) & {row[0] for row in cursor.fetchall()}
+
+
+@pytest.mark.integration
+def test_returning_a_burst_keeps_only_pool_size_idle(monkeypatch):
+    monkeypatch.setattr(pool, "POOL_SIZE", 2)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    burst = [database_pool.get_connection() for _ in range(5)]
+    thread_ids = [connection.thread_id() for connection in burst]
+    for connection in burst:
+        database_pool.return_connection(connection)
+
+    assert database_pool.in_use_count == 0
+    assert database_pool.available_count == 2
+    assert len(_open_on_server(thread_ids)) == 2
+
+
+@pytest.mark.integration
+def test_a_connection_returned_past_its_lifetime_is_closed():
+    database_pool = get_pool()
+    database_pool.clear()
+
+    connection = database_pool.get_connection()
+    connection.termination_date = datetime.now() - timedelta(seconds=1)
+    thread_id = connection.thread_id()
+    database_pool.return_connection(connection)
+
+    assert database_pool.in_use_count == 0
+    assert database_pool.available_count == 0
+    assert not _open_on_server([thread_id])
+
+
+@pytest.mark.integration
+def test_expired_idle_connections_are_closed_by_the_next_return():
+    # the pool reuses the connection returned last, so one request only ever checks the top of the
+    # stack: the connections under it used to stay open past their lifetime for as long as the
+    # traffic stayed below the burst that opened them
+    database_pool = get_pool()
+    database_pool.clear()
+
+    idle = [database_pool.get_connection() for _ in range(3)]
+    thread_ids = [connection.thread_id() for connection in idle]
+    for connection in idle:
+        database_pool.return_connection(connection)
+        connection.termination_date = datetime.now() - timedelta(seconds=1)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+
+    assert database_pool.available_count == 1
+    assert not _open_on_server(thread_ids)
+
+
+@pytest.mark.integration
+def test_opening_past_the_soft_cap_warns_at_each_new_peak(monkeypatch, caplog):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    monkeypatch.setattr(pool, "POOL_MAX_OVERFLOW", 1)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    def _warnings():
+        return [r for r in caplog.records if r.levelno == logging.WARNING and hasattr(r, "open_connections")]
+
+    # the cap is soft: the third connection is opened, and the warning says so
+    held = [database_pool.get_connection() for _ in range(3)]
+    assert database_pool.in_use_count == 3
+    assert [(r.open_connections, r.database) for r in _warnings()] == [(3, DB_ACE)]
+
+    # the same peak again is not a new warning, a higher one is
+    for connection in held:
+        database_pool.return_connection(connection)
+    held = [database_pool.get_connection() for _ in range(4)]
+    assert [r.open_connections for r in _warnings()] == [3, 4]
+
+    for connection in held:
+        database_pool.return_connection(connection)
+    database_pool.clear()
+
+
+@pytest.mark.integration
+def test_a_discarded_connection_that_fails_to_close_is_logged(monkeypatch, caplog):
+    monkeypatch.setattr(pool, "POOL_SIZE", 1)
+    database_pool = get_pool()
+    database_pool.clear()
+
+    first = database_pool.get_connection()
+    second = database_pool.get_connection()
+    database_pool.return_connection(first)
+
+    def _explode():
+        raise OSError("nope")
+
+    # the oldest idle connection is the one trimmed
+    monkeypatch.setattr(first, "close", _explode)
+    database_pool.return_connection(second)
+
+    assert database_pool.in_use_count == 0
+    assert list(database_pool.available) == [second]
+    assert any(r.levelno == logging.WARNING and "unable to close database connection: nope" in r.getMessage()
+               for r in caplog.records)
+
+    monkeypatch.undo()
+    first.close()
+    database_pool.clear()
 
 
 @pytest.fixture

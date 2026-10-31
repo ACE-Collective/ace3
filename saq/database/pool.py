@@ -23,6 +23,13 @@ if TYPE_CHECKING:
 # SQLAlchemy is imported only where an engine or a session is built: every process imports this module for its
 # raw connections (node registration, the email archive), and only the ones that query through the ORM need it
 
+# every pool in this module, the SQLAlchemy engines' and the raw one, keeps POOL_SIZE idle connections for reuse
+# and closes the rest as they come back. a SQLAlchemy engine makes a caller wait once POOL_SIZE + POOL_MAX_OVERFLOW
+# are checked out; the raw pool opens more past that point, because callers nest get_db_connection() and would
+# deadlock waiting on themselves, and warns instead
+POOL_SIZE = 5
+POOL_MAX_OVERFLOW = 10
+
 # registry of SQLAlchemy ORM scoped sessions keyed by database config name, each created
 # (with its own engine) on its first get_db() request
 _db_sessions: dict[str, "scoped_session"] = {}
@@ -116,6 +123,8 @@ class _database_pool:
         self.pid = os.getpid()
         # lock used to make changes to the queues
         self.lock = threading.RLock()
+        # the most connections this pool has had open at once past the soft cap, so that it warns once per new peak
+        self.peak_over_cap = 0
 
         self.database_config = get_config().get_database_config(name)
         kwargs: dict[str, Any] = {
@@ -183,6 +192,7 @@ class _database_pool:
 
             self.available.clear()
             self.in_use.clear()
+            self.peak_over_cap = 0
             self.emit_monitors()
 
     def get_connection(self):
@@ -212,9 +222,22 @@ class _database_pool:
 
             self.in_use.append(connection)
             connection.acquired = datetime.now()
+            self._warn_past_soft_cap()
             self.emit_monitors()
 
         return connection
+
+    def _warn_past_soft_cap(self):
+        """Warns when the pool has more connections open than a SQLAlchemy engine would allow, once per new peak.
+        The connection is opened anyway (see POOL_MAX_OVERFLOW). Called with the lock held."""
+        soft_cap = POOL_SIZE + POOL_MAX_OVERFLOW
+        open_connections = len(self.in_use) + len(self.available)
+        if open_connections > max(soft_cap, self.peak_over_cap):
+            self.peak_over_cap = open_connections
+            logging.warning(
+                f"{open_connections} connections open to database {self.name} in pid {self.pid}, "
+                f"past the soft cap of {soft_cap}",
+                extra={"database": self.name, "open_connections": open_connections, "soft_cap": soft_cap})
 
     def return_connection(self, connection):
         if connection is None:
@@ -227,10 +250,29 @@ class _database_pool:
             self.destroy_connection(connection)
             return
 
+        now = datetime.now()
         with self.lock:
             self.in_use.remove(connection)
             self.available.append(connection)
+            # the pool reuses the connection returned last, so one under it is never checked out for get_connection()
+            # to retire: every expired one is retired here, and only POOL_SIZE are kept
+            expired = [c for c in self.available if now >= c.termination_date]
+            for c in expired:
+                self.available.remove(c)
+            excess = []
+            while len(self.available) > POOL_SIZE:
+                excess.append(self.available.popleft())
             self.emit_monitors()
+
+        # outside the lock, because closing a connection writes to the server
+        for c in expired:
+            logging.info(f"terminating old connection {c}")
+            self.close_connection(c)
+
+        if excess:
+            logging.debug(f"closing {len(excess)} idle connections to {self.name} past the pool size of {POOL_SIZE}")
+            for c in excess:
+                self.close_connection(c)
 
     def close_connection(self, connection):
         try:
@@ -294,6 +336,7 @@ class _database_pool:
                     _log_pool_issue("unable to close database connection", e)
 
             self.in_use.clear()
+            self.peak_over_cap = 0
             self.emit_monitors()
 
     @property
@@ -452,7 +495,8 @@ def _build_engine_options(database_config) -> dict:
     options: dict[str, Any] = {
         "pool_recycle": 60 * 10,  # 10 minute connection pool recycle
         "pool_timeout": 30,
-        "pool_size": 5,
+        "pool_size": POOL_SIZE,
+        "max_overflow": POOL_MAX_OVERFLOW,
         "connect_args": {"init_command": "SET NAMES utf8mb4"},
         "pool_pre_ping": True,
     }
