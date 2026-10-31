@@ -338,7 +338,6 @@ def test_opening_past_the_soft_cap_warns_at_each_new_peak(monkeypatch, caplog):
 
     for connection in held:
         database_pool.return_connection(connection)
-    database_pool.clear()
 
 
 @pytest.mark.integration
@@ -365,7 +364,6 @@ def test_a_discarded_connection_that_fails_to_close_is_logged(monkeypatch, caplo
 
     monkeypatch.undo()
     first.close()
-    database_pool.clear()
 
 
 class _Clock(datetime):
@@ -379,8 +377,11 @@ class _Clock(datetime):
 
 @pytest.fixture
 def clock(monkeypatch):
+    """Moves the pool's clock, and starts the test on a new pool: the cached one keeps the connection lifetime, and
+    so the window, it was built with, which an earlier test may have changed."""
     monkeypatch.setattr(pool, "datetime", _Clock)
     monkeypatch.setattr(_Clock, "offset", timedelta(0))
+    reset_pools()
     return _Clock
 
 
@@ -399,7 +400,6 @@ def _summaries(caplog):
 def test_a_pool_used_one_at_a_time_after_a_burst_keeps_one_once_the_lifetime_passes(clock):
     # no setting or thread sizes the pool: it holds what the burst opened until those connections expire
     database_pool = get_pool()
-    database_pool.clear()
 
     burst = [database_pool.get_connection() for _ in range(3)]
     for connection in burst:
@@ -417,7 +417,6 @@ def test_a_pool_used_one_at_a_time_after_a_burst_keeps_one_once_the_lifetime_pas
 @pytest.mark.integration
 def test_the_pool_logs_what_it_used_once_per_connection_lifetime(clock, caplog):
     database_pool = get_pool()
-    database_pool.clear()
 
     burst = [database_pool.get_connection() for _ in range(3)]
     for connection in burst:
@@ -445,7 +444,6 @@ def test_the_pool_logs_what_it_used_once_per_connection_lifetime(clock, caplog):
 def test_the_summary_counts_connections_closed_as_idle_or_broken(clock, caplog, monkeypatch):
     monkeypatch.setattr(pool, "POOL_SIZE", 1)
     database_pool = get_pool()
-    database_pool.clear()
 
     burst = [database_pool.get_connection() for _ in range(3)]
     for connection in burst:
