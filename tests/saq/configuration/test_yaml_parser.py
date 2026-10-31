@@ -3,9 +3,14 @@ import os
 import sys
 
 import pytest
+from pydantic import BaseModel, Field
 
 from saq.configuration.yaml_parser import (
+    MissingEnvironmentVariable,
     YAMLConfig,
+    resolve_model_fields,
+    resolve_value,
+    resolve_values,
 )
 from saq.environment import get_global_runtime_settings, get_base_dir
 
@@ -29,18 +34,16 @@ def test_yaml_config_environment_variable_resolution():
     os.environ["TEST_YAML_VAR2"] = "env_value_2"
     
     try:
-        config = YAMLConfig()
-        
         # Test env: prefix resolution
-        assert config._resolve_value("env:TEST_YAML_VAR2") == "env_value_2"
+        assert resolve_value("env:TEST_YAML_VAR2") == "env_value_2"
         
         # Test error for unknown environment variable
-        with pytest.raises(RuntimeError, match="configuration referenced unknown environment variable"):
-            config._resolve_value("env:NONEXISTENT_VAR")
+        with pytest.raises(MissingEnvironmentVariable, match="configuration referenced unknown environment variable NONEXISTENT_VAR at section.key"):
+            resolve_value("env:NONEXISTENT_VAR", "section.key")
         
         # Test regular strings are not modified
-        assert config._resolve_value("regular_string") == "regular_string"
-        assert config._resolve_value("prefix:but_not_env") == "prefix:but_not_env"
+        assert resolve_value("regular_string") == "regular_string"
+        assert resolve_value("prefix:but_not_env") == "prefix:but_not_env"
         
     finally:
         del os.environ["TEST_YAML_VAR1"]
@@ -51,8 +54,7 @@ def test_yaml_config_environment_variable_resolution():
 def test_yaml_config_encrypted_marker_left_unresolved():
     """encrypted:<name> markers are never resolved by the loader -- they are left intact so they
     validate into a SecretRef field and are resolved lazily at point-of-use."""
-    config = YAMLConfig()
-    assert config._resolve_value("encrypted:test_key") == "encrypted:test_key"
+    assert resolve_value("encrypted:test_key") == "encrypted:test_key"
 
 
 @pytest.mark.unit
@@ -554,8 +556,7 @@ def test_yaml_config_file_prefix_absolute_path(tmpdir):
     secret_file = tmpdir.join("secret.txt")
     secret_file.write("my_secret_value")
 
-    config = YAMLConfig()
-    result = config._resolve_value(f"file:{secret_file}")
+    result = resolve_value(f"file:{secret_file}")
     assert result == "my_secret_value"
 
 
@@ -568,36 +569,32 @@ def test_yaml_config_file_prefix_relative_path(tmpdir, monkeypatch):
 
     monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
 
-    config = YAMLConfig()
-    result = config._resolve_value("file:secrets/db_password.txt")
+    result = resolve_value("file:secrets/db_password.txt")
     assert result == "relative_secret"
 
 
 @pytest.mark.unit
 def test_yaml_config_file_prefix_missing_file():
     """Test file: prefix raises FileNotFoundError for missing files."""
-    config = YAMLConfig()
     with pytest.raises(FileNotFoundError):
-        config._resolve_value("file:/nonexistent/path/to/secret.txt")
+        resolve_value("file:/nonexistent/path/to/secret.txt")
 
 
 @pytest.mark.unit
 def test_a_file_url_is_a_value_not_a_file_to_read(tmpdir):
     """A git_repo section's git_url may name a local repository as a file:// URL."""
     repository = tmpdir.mkdir("rules.git")
-    config = YAMLConfig()
-    assert config._resolve_value(f"file://{repository}") == f"file://{repository}"
+    assert resolve_value(f"file://{repository}") == f"file://{repository}"
 
-    config._data = {"git_repo_rules": {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}}
-    config.resolve_all_values()
-    assert config._data["git_repo_rules"] == {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}
+    section = {"git_url": f"file://{repository}", "mirrors": [f"file://{repository}"]}
+    assert resolve_values(section, "git_repo_rules") == section
 
 
 @pytest.mark.unit
 def test_a_file_value_that_cannot_be_read_names_itself(tmpdir):
     directory = tmpdir.mkdir("not-a-file")
     with pytest.raises(IsADirectoryError, match=f"the configuration value 'file:{directory}' reads its value"):
-        YAMLConfig()._resolve_value(f"file:{directory}")
+        resolve_value(f"file:{directory}")
 
 
 @pytest.mark.unit
@@ -606,14 +603,13 @@ def test_yaml_config_file_prefix_strips_trailing_whitespace(tmpdir):
     secret_file = tmpdir.join("secret_with_newlines.txt")
     secret_file.write("secret\n\n")
 
-    config = YAMLConfig()
-    result = config._resolve_value(f"file:{secret_file}")
+    result = resolve_value(f"file:{secret_file}")
     assert result == "secret"
 
 
 @pytest.mark.unit
-def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
-    """Test resolve_all_values handles file: prefix in dict values and list items."""
+def test_resolve_values_file_prefix(tmpdir, monkeypatch):
+    """resolve_values handles the file: prefix in dict values and list items."""
     secret1 = tmpdir.join("secret1.txt")
     secret1.write("dict_secret\n")
     secret2 = tmpdir.join("secret2.txt")
@@ -621,19 +617,15 @@ def test_yaml_config_resolve_all_values_file_prefix(tmpdir, monkeypatch):
 
     monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(tmpdir))
 
-    config = YAMLConfig()
-    config._data = {
-        "section": {
-            "password": f"file:{secret1}",
-            "tokens": [f"file:{secret2}", "plain_value"],
-        }
+    section = {
+        "password": f"file:{secret1}",
+        "tokens": [f"file:{secret2}", "plain_value"],
     }
 
-    config.resolve_all_values()
-
-    assert config._data["section"]["password"] == "dict_secret"
-    assert config._data["section"]["tokens"][0] == "list_secret"
-    assert config._data["section"]["tokens"][1] == "plain_value"
+    assert resolve_values(section, "section") == {
+        "password": "dict_secret",
+        "tokens": ["list_secret", "plain_value"],
+    }
 
 #
 # duplicate key detection
@@ -691,3 +683,24 @@ def test_duplicate_key_reported_once_per_occurrence(tmp_path, caplog):
     messages = [r.getMessage() for r in caplog.records if "duplicate key" in r.getMessage()]
     assert len(messages) == 2
     assert data == {"outer": {"inner": {"a": 2}, "other": {"b": 2}}}
+
+
+@pytest.mark.unit
+def test_resolve_model_fields_resolves_only_the_declared_fields(monkeypatch):
+    class Model(BaseModel):
+        global_settings: dict = Field(alias="global")
+        plain: str
+
+    monkeypatch.setenv("TEST_YAML_DECLARED", "declared")
+    monkeypatch.delenv("TEST_YAML_UNDECLARED", raising=False)
+    data = {
+        "global": {"name": "env:TEST_YAML_DECLARED"},
+        "plain": "env:TEST_YAML_DECLARED",
+        "other": "env:TEST_YAML_UNDECLARED",
+    }
+
+    assert resolve_model_fields(Model, data) == {"global": {"name": "declared"}, "plain": "declared"}
+    # the input keeps its references
+    assert data["plain"] == "env:TEST_YAML_DECLARED"
+    # a value that is not a mapping is left for validation to reject
+    assert resolve_model_fields(Model, ["not", "a", "mapping"]) == ["not", "a", "mapping"]

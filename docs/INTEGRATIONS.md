@@ -227,7 +227,8 @@ message is shown on the trace.
 - `hunt_start_time`, `hunt_end_time`
 - `timeout` (a `timedelta`)
 - `temp_dir`, the hunt's scratch directory, which is deleted after the step
-- `config`, the raw merged configuration
+- `config`, the raw merged configuration. Its `env:` and `file:` references are not resolved;
+  `saq.configuration.yaml_parser.resolve_values()` resolves a section of it
 
 Checklist:
 

@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
+from saq.configuration.yaml_parser import resolve_model_fields, resolve_values
 from saq.svs.attack_files import release_path
 
 if TYPE_CHECKING:
@@ -492,11 +493,12 @@ class AIQueryBackendLimits(BaseModel):
 class AIQueryBackendConfig(BaseModel):
     """Base configuration for an ai_query_backend_<name> section.
 
-    Backend-specific fields are permitted (extra="allow") because the registry re-validates the raw
-    section against the backend class's own get_config_class() at the point the class is imported.
-    The prefix scan below validates only this base model and deliberately does NOT import
-    python_module -- every ACE process parses the config, and only the AI API app should ever
-    import vendor query clients.
+    The prefix scan below validates only the fields this base model declares, and deliberately does
+    NOT import python_module -- every ACE process parses the config, and only the AI API app should
+    ever import vendor query clients (or has the backend's environment variables). The backend's own
+    fields reach it when load_backend() re-validates the whole section against the backend class's
+    get_config_class(); extra="allow" keeps them there for a backend that does not declare its own
+    config class, and for the fields a subclass leaves undeclared.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1018,6 +1020,14 @@ class ACEConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _resolve_references(cls, data):
+        # the other sections are resolved by whatever validates them, when it does
+        if isinstance(data, dict):
+            return {**data, **resolve_model_fields(cls, data)}
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _reject_removed_disposition_keys(cls, data):
         if isinstance(data, dict):
             removed = [key for key in REMOVED_DISPOSITION_CONFIG_KEYS if key in data]
@@ -1102,10 +1112,6 @@ class ACEConfig(BaseModel):
         # generated_analysis_type, and the alert page looks this up for every tree node
         self.__module_config_name_by_module_path: dict[str, Optional[str]] = {}
 
-    def resolve_all_values(self):
-        self.__raw.resolve_all_values()
-        self.parse_raw_data()
-
     #
     # raw data parsing
     #
@@ -1164,7 +1170,7 @@ class ACEConfig(BaseModel):
 
             integration_name = key[len("integration_"):]
 
-            integration_config = IntegrationConfig.model_validate(value)
+            integration_config = IntegrationConfig.model_validate(resolve_values(value, key))
             self.__integrations[integration_name] = integration_config
 
     @property
@@ -1193,7 +1199,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("database_"):
                 continue
 
-            database_config = DatabaseConfig.model_validate(value)
+            database_config = DatabaseConfig.model_validate(resolve_values(value, key))
             self.add_database_config(database_config.name, database_config)
 
     def add_database_config(self, name: str, database_config: DatabaseConfig):
@@ -1312,16 +1318,23 @@ class ACEConfig(BaseModel):
 
         return self.__analysis_modules.get(name)
 
-    def is_analysis_module_enabled(self, name: str) -> bool:
-        # enabled is on the base config, so this imports nothing; get_analysis_module_config() imports the
-        # module to validate its own config class, and the engine asks this of every module it might load
+    def peek_analysis_module_config(self, name: str) -> "AnalysisModuleConfig":
+        """Returns an analysis module's config without importing the module or reading the environment
+        variables of the fields its own config class declares: the base config until
+        get_analysis_module_config() has resolved it. The GUI reads the base fields of every module, and
+        has only their variables."""
         if self.__analysis_modules is None:
             self._raise_raw_data_error()
 
         if name not in self.__analysis_modules:
             raise ValueError(f"analysis module config for {name} not found")
 
-        return self.__analysis_modules.peek(name).enabled
+        return self.__analysis_modules.peek(name)
+
+    def is_analysis_module_enabled(self, name: str) -> bool:
+        # enabled is on the base config, so this imports nothing; get_analysis_module_config() imports the
+        # module to validate its own config class, and the engine asks this of every module it might load
+        return self.peek_analysis_module_config(name).enabled
 
     def has_analysis_module_config(self, name: str) -> bool:
         if self.__analysis_modules is None:
@@ -1330,9 +1343,9 @@ class ACEConfig(BaseModel):
         return name in self.__analysis_modules
 
     def get_analysis_module_config_by_module_path(self, module_path: str) -> Optional["AnalysisModuleConfig"]:
-        """Look up the config of the analysis module that generates the analysis a module_path
-        string names (e.g. 'saq.modules.x:AnalysisClass:instance'), or None if no configured
-        module generates it."""
+        """Look up the base config (see peek_analysis_module_config()) of the analysis module that
+        generates the analysis a module_path string names (e.g. 'saq.modules.x:AnalysisClass:instance'),
+        or None if no configured module generates it."""
         try:
             name = self.__module_config_name_by_module_path[module_path]
         except KeyError:
@@ -1342,7 +1355,7 @@ class ACEConfig(BaseModel):
         if name is None:
             return None
 
-        return self.get_analysis_module_config(name)
+        return self.peek_analysis_module_config(name)
 
     def _find_analysis_module_config_name(self, module_path: str) -> Optional[str]:
         # local: saq.analysis imports saq.configuration, so a module-level import is circular
@@ -1356,7 +1369,7 @@ class ACEConfig(BaseModel):
         # candidate in that python module is asked which Analysis class it generates
         for name in self.__module_configs_by_python_module.get((module_name, instance), []):
             try:
-                config = self.get_analysis_module_config(name)
+                config = self.peek_analysis_module_config(name)
                 module_class = getattr(importlib.import_module(config.python_module), config.python_class)
                 # generated_analysis_type is an instance property, and instantiating a module
                 # runs its __init__, which can create directories or open clients; every module
@@ -1397,7 +1410,7 @@ class ACEConfig(BaseModel):
                 continue
 
             try:
-                analysis_mode_config = AnalysisModeConfig.model_validate(value)
+                analysis_mode_config = AnalysisModeConfig.model_validate(resolve_values(value, key))
             except ValidationError as e:
                 sys.stderr.write(f"CONFIG ERROR: failed to validate analysis mode config for {key}\n")
                 sys.stderr.write(str(value))
@@ -1433,7 +1446,7 @@ class ACEConfig(BaseModel):
                 continue
 
             module_group_name = key[len("module_group_"):]
-            module_group_config = AnalysisModuleGroupConfig.model_validate(value)
+            module_group_config = AnalysisModuleGroupConfig.model_validate(resolve_values(value, key))
             self.add_module_group_config(module_group_name, module_group_config)
 
     def add_module_group_config(self, name: str, module_group_config: AnalysisModuleGroupConfig):
@@ -1473,7 +1486,7 @@ class ACEConfig(BaseModel):
                 continue
 
             collection_group_name = key[len("collection_group_"):]
-            collection_group_config = CollectionGroupConfig.model_validate(value)
+            collection_group_config = CollectionGroupConfig.model_validate(resolve_values(value, key))
             self.add_collection_group_config(collection_group_name, collection_group_config)
 
     def get_collection_group_config(self, name: str) -> CollectionGroupConfig:
@@ -1510,7 +1523,7 @@ class ACEConfig(BaseModel):
                 continue
 
             proxy_name = key[len("proxy_"):]
-            proxy_config = ProxyConfig.model_validate(value)
+            proxy_config = ProxyConfig.model_validate(resolve_values(value, key))
             self.add_proxy_config(proxy_name, proxy_config)
 
     def get_proxy_config(self, name: Optional[str] = None) -> ProxyConfig:
@@ -1553,7 +1566,7 @@ class ACEConfig(BaseModel):
                 continue
 
             splunk_name = key[len("splunk_config_"):]
-            splunk_config = SplunkConfig.model_validate(value)
+            splunk_config = SplunkConfig.model_validate(resolve_values(value, key))
             self.add_splunk_config(splunk_name, splunk_config)
 
     def get_splunk_config(self, name: str = "default") -> SplunkConfig:
@@ -1584,7 +1597,7 @@ class ACEConfig(BaseModel):
                 continue
 
             api_query_defaults_name = key[len("api_query_defaults_"):]
-            api_query_defaults_config = APIQueryDefaultsConfig.model_validate(value)
+            api_query_defaults_config = APIQueryDefaultsConfig.model_validate(resolve_values(value, key))
             self.add_api_query_defaults_config(api_query_defaults_name, api_query_defaults_config)
 
     def add_api_query_defaults_config(self, name: str, api_query_defaults_config: APIQueryDefaultsConfig):
@@ -1624,7 +1637,7 @@ class ACEConfig(BaseModel):
                 continue
 
             hunt_type_name = key[len("hunt_type_"):]
-            hunt_type_config = HuntTypeConfig.model_validate(value)
+            hunt_type_config = HuntTypeConfig.model_validate(resolve_values(value, key))
             self.add_hunt_type_config(hunt_type_name, hunt_type_config)
 
     def get_hunt_type_config(self, name: str) -> HuntTypeConfig:
@@ -1655,7 +1668,7 @@ class ACEConfig(BaseModel):
                 continue
 
             backend_name = key[len("ai_query_backend_"):]
-            backend_config = AIQueryBackendConfig.model_validate(value)
+            backend_config = AIQueryBackendConfig.model_validate(resolve_model_fields(AIQueryBackendConfig, value, key))
             self.__ai_query_backends[backend_name] = backend_config
 
     def get_ai_query_backend_config(self, name: str) -> AIQueryBackendConfig:
@@ -1673,7 +1686,7 @@ class ACEConfig(BaseModel):
         if key not in self.raw._data:
             raise ValueError(f"ai query backend config for {name} not found")
 
-        return self.raw._data[key]
+        return resolve_values(self.raw._data[key], key)
 
     #
     # git repos
@@ -1698,7 +1711,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("git_repo_"):
                 continue
 
-            git_repo_config = GitRepoConfig.model_validate(value)
+            git_repo_config = GitRepoConfig.model_validate(resolve_values(value, key))
             if git_repo_config.name in section_keys:
                 logging.error(
                     "git repo sections %s and %s are both named %s: %s replaces %s",
@@ -1738,7 +1751,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("remediator_"):
                 continue
 
-            remediator_config = RemediatorConfig.model_validate(value)
+            remediator_config = RemediatorConfig.model_validate(resolve_values(value, key))
             self.add_remediator_config(remediator_config.name, remediator_config)
     
     def add_remediator_config(self, name: str, remediator_config: RemediatorConfig):
@@ -1771,7 +1784,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("file_collector_"):
                 continue
 
-            file_collector_config = FileCollectorConfig.model_validate(value)
+            file_collector_config = FileCollectorConfig.model_validate(resolve_values(value, key))
             self.add_file_collector_config(file_collector_config.name, file_collector_config)
 
     def add_file_collector_config(self, name: str, file_collector_config: FileCollectorConfig):
@@ -1804,7 +1817,7 @@ class ACEConfig(BaseModel):
             if not key.startswith("external_remediation_probe_"):
                 continue
 
-            probe_config = ExternalRemediationProbeConfig.model_validate(value)
+            probe_config = ExternalRemediationProbeConfig.model_validate(resolve_values(value, key))
             self.add_external_remediation_probe_config(probe_config.name, probe_config)
 
     def add_external_remediation_probe_config(

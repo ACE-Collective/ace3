@@ -53,23 +53,13 @@ class ModuleLoader:
         """
         # Build analysis mode to module section mapping
         analysis_mode_section_names_map = self._build_analysis_mode_mapping()
-        
-        # Get all unique module sections to load
-        analysis_module_sections = set()
-        for mode_sections in analysis_mode_section_names_map.values():
-            analysis_module_sections.update(mode_sections)
-        
-        # Add locally enabled modules
-        analysis_module_sections.update(self.locally_enabled_modules)
-        
+        analysis_module_sections = self._module_names_to_load(analysis_mode_section_names_map)
+
         logging.debug(f"loading {len(analysis_module_sections)} analysis modules...")
         
         # Load each module
         loaded_modules = {}
         for section_name in analysis_module_sections:
-            if not self._should_load_module(section_name):
-                continue
-            
             module = self._load_single_module(section_name)
             if module is None:
                 continue
@@ -85,6 +75,17 @@ class ModuleLoader:
         logging.debug(f"finished loading {len(loaded_modules)} modules")
         return loaded_modules
     
+    def module_names_to_load(self) -> Set[str]:
+        """Returns the names of the analysis modules load_modules() would load, without loading them."""
+        return self._module_names_to_load(self._build_analysis_mode_mapping())
+
+    def _module_names_to_load(self, analysis_mode_section_names_map: Dict[str, Set[str]]) -> Set[str]:
+        analysis_module_sections = set(self.locally_enabled_modules)
+        for mode_sections in analysis_mode_section_names_map.values():
+            analysis_module_sections.update(mode_sections)
+
+        return {name for name in analysis_module_sections if self._should_load_module(name)}
+
     def is_analysis_mode_supported(self, analysis_mode: str) -> bool:
         """Check if the given analysis mode is supported."""
         if analysis_mode in self.excluded_analysis_modes:
