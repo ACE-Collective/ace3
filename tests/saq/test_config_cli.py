@@ -60,6 +60,20 @@ def test_config_value_of_a_list_setting(capsys):
 
 
 @pytest.mark.unit
+def test_config_prints_what_an_env_reference_stands_for(capsys, monkeypatch):
+    # cron reads `ace config -v global.instance_type`, which etc/saq.default.yaml sets to an env: reference
+    monkeypatch.setitem(get_config().raw._data, "global",
+                        {**get_config().raw._data["global"], "instance_type": "env:ACE_TEST_CONFIG_CLI_TYPE"})
+    monkeypatch.setenv("ACE_TEST_CONFIG_CLI_TYPE", "PRODUCTION")
+
+    assert _run("config", "-v", "global.instance_type") == 0
+    assert capsys.readouterr().out == "PRODUCTION\n"
+
+    assert _run("config", "global") == 0
+    assert yaml.safe_load(capsys.readouterr().out)["global"]["instance_type"] == "PRODUCTION"
+
+
+@pytest.mark.unit
 def test_config_everything(capsys):
     assert _run("config") == 0
     assert set(yaml.safe_load(capsys.readouterr().out)) == set(get_config().raw._data)

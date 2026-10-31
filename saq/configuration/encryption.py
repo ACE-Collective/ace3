@@ -70,10 +70,10 @@ def find_encrypted_config_references():
     scan each loaded file's raw YAML **independently** and union the results, rather than merging or
     walking the live config, and that distinction matters:
 
-    - The live config (``get_config().raw._data``) can't be used here: ``resolve_all_values`` resolves
-      every ``encrypted:`` marker away in place at startup, so set secrets and, in some load orders,
-      unset ones leave no marker behind. (See find_effective_encrypted_config_references, which uses
-      exactly that property to detect plaintext overrides.)
+    - The live config (``get_config().raw._data``) can't be used here: it holds only the value that
+      won the merge, so a marker a later-loaded file overrode leaves nothing behind. (See
+      find_effective_encrypted_config_references, which uses exactly that property to detect
+      plaintext overrides.)
     - Re-merging the loaded files into one parser is order-dependent -- ``loaded_files`` is a set, and
       a later-merged file (e.g. a dev override that pins an integration's key to a literal value)
       silently replaces an earlier ``encrypted:`` marker, so the result flips with iteration order.
@@ -100,14 +100,12 @@ def find_effective_encrypted_config_references():
     """Returns the secret names whose ``encrypted:<name>`` marker survives in the *effective* config.
 
     Walks the live merged config (``get_config().raw._data``), which reflects the real load order and
-    has had ``resolve_all_values`` applied. A marker survives there only when the effective value at
-    that key is still ``encrypted:<name>`` -- i.e. no later-loaded file overrode it with a literal,
-    and the secret was not resolved to a stored value.
+    which nothing resolves in place. A marker survives there only when the effective value at that key
+    is still ``encrypted:<name>`` -- i.e. no later-loaded file overrode it with a literal.
 
     Compared against find_encrypted_config_references(), this is how a plaintext override is detected:
-    a name that is *declared* but does not appear here, and is not set in the store, has had its
-    marker masked by a later-loaded plaintext value (an unset secret's marker otherwise survives
-    resolution untouched, since decryption of a missing secret is a no-op).
+    a name that is *declared* but does not appear here has had its marker masked by a later-loaded
+    plaintext value.
     """
     from saq.configuration.config import get_config
     references = set()
