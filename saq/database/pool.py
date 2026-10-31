@@ -23,10 +23,10 @@ if TYPE_CHECKING:
 # SQLAlchemy is imported only where an engine or a session is built: every process imports this module for its
 # raw connections (node registration, the email archive), and only the ones that query through the ORM need it
 
-# every pool in this module, the SQLAlchemy engines' and the raw one, keeps POOL_SIZE idle connections for reuse
-# and closes the rest as they come back. a SQLAlchemy engine makes a caller wait once POOL_SIZE + POOL_MAX_OVERFLOW
-# are checked out; the raw pool opens more past that point, because callers nest get_db_connection() and would
-# deadlock waiting on themselves, and warns instead.
+# every pool ACE builds (the SQLAlchemy engines here and in aceapi_v2/database.py, and the raw one) keeps POOL_SIZE
+# idle connections for reuse and closes the rest as they come back. a SQLAlchemy engine makes a caller wait once
+# POOL_SIZE + POOL_MAX_OVERFLOW are checked out; the raw pool opens more past that point, because callers nest
+# get_db_connection() and would deadlock waiting on themselves, and warns instead.
 # the raw pool opens a connection only when every open one is checked out, and retires each one max_connection_lifetime
 # after it opened it, so it holds no more than the most it had in use over that time. it logs that number once
 # per max_connection_lifetime (_database_pool._rotate_window), which is what to look at before changing POOL_SIZE
