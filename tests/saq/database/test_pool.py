@@ -12,7 +12,7 @@ from saq.configuration.config import get_config, get_database_config
 from saq.constants import DB_ACE
 from saq.database import pool
 from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
-from tests.saq.helpers import log_count, recv_test_message, send_test_message
+from tests.saq.helpers import log_count, recv_test_message, send_test_message, wait_for_condition
 
 @pytest.mark.unit
 def test_execute_with_db_cursor():
@@ -253,7 +253,8 @@ def test_pooling_multi_process(test_comms):
 
 
 def _open_on_server(thread_ids):
-    """The MySQL thread ids, of those given, whose connections are still open on the server."""
+    """The MySQL thread ids, of those given, whose connections are still open on the server. pymysql's close()
+    does not wait for the server to drop the thread, so a test waits for this to settle rather than reading it once."""
     with get_db_connection() as db:
         cursor = db.cursor()
         cursor.execute("SELECT id FROM information_schema.processlist")
@@ -273,7 +274,7 @@ def test_returning_a_burst_keeps_only_pool_size_idle(monkeypatch):
 
     assert database_pool.in_use_count == 0
     assert database_pool.available_count == 2
-    assert len(_open_on_server(thread_ids)) == 2
+    wait_for_condition(lambda: len(_open_on_server(thread_ids)) == 2)
 
 
 @pytest.mark.integration
@@ -288,7 +289,7 @@ def test_a_connection_returned_past_its_lifetime_is_closed():
 
     assert database_pool.in_use_count == 0
     assert database_pool.available_count == 0
-    assert not _open_on_server([thread_id])
+    wait_for_condition(lambda: not _open_on_server([thread_id]))
 
 
 @pytest.mark.integration
@@ -311,7 +312,7 @@ def test_expired_idle_connections_are_closed_by_the_next_return():
         cursor.fetchone()
 
     assert database_pool.available_count == 1
-    assert not _open_on_server(thread_ids)
+    wait_for_condition(lambda: not _open_on_server(thread_ids))
 
 
 @pytest.mark.integration
