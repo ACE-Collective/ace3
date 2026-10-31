@@ -1,4 +1,5 @@
-"""Every forked worker leads a process group, and the manager kills that group whenever the worker ends."""
+"""Every forked worker leads a process group, and the manager kills that group whenever the worker ends. The manager
+also adopts what the workers' processes orphan, and kills it once a worker has died."""
 
 import logging
 import os
@@ -13,6 +14,7 @@ import psutil
 import pytest
 
 from saq.engine import worker as worker_module
+from saq.engine import worker_manager as worker_manager_module
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
@@ -21,8 +23,10 @@ from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker, _process_group_members
 from saq.engine.worker_manager import WorkerManager
 from saq.environment import ACE_MP_CONTEXT
+from saq.sandbox.launcher import set_child_subreaper
+import saq.shutdown
 from saq.shutdown import reset_shutdown_coordinator
-from tests.saq.helpers import wait_for_condition
+from tests.saq.helpers import is_child_subreaper, stop_adopting, wait_for_condition
 
 
 def _configuration_manager() -> ConfigurationManager:
@@ -351,3 +355,314 @@ def test_single_threaded_mode_keeps_the_callers_process_group(root_analysis, mon
 
     assert calls == []
     assert os.getpgrp() == process_group
+
+
+def _parent(pid: int) -> int:
+    return psutil.Process(pid).ppid()
+
+
+@pytest.fixture
+def adopting(started):
+    """A manager for the test to make a subreaper, which stops being one afterwards whatever happened to the test."""
+    manager = _manager()
+    yield manager
+    if manager.subreaper:
+        manager.kill_adopted()
+    set_child_subreaper(False)
+
+
+def _orphan(command: str) -> list[int]:
+    """Runs command in a shell, which orphans what it started in the background when it exits. Returns the pids
+    the command prints. What runs on must not keep its stdout open."""
+    shell = subprocess.Popen(["sh", "-c", command], stdout=subprocess.PIPE, text=True)
+    output, _ = shell.communicate(timeout=10)
+    return [int(pid) for pid in output.split()]
+
+
+def _leave_a_session_and_die(write_fd: int):
+    """A worker_loop whose module started a process in a session of its own, outside the worker's process group,
+    which the worker then left running when it died."""
+    def worker_loop(execution_mode, pending_failure):
+        child = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        os.write(write_fd, f"{child.pid} ".encode())
+        os._exit(1)
+
+    return worker_loop
+
+
+def _orphan_then(write_fd: int, command: str, then):
+    """A worker_loop that orphans command, reports the pids it prints and then does what then says."""
+    def worker_loop(execution_mode, pending_failure):
+        os.write(write_fd, " ".join(str(pid) for pid in _orphan(command)).encode() + b" ")
+        then()
+
+    return worker_loop
+
+
+def _adopted_records(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if "the engine controller adopted" in r.getMessage()]
+
+
+@pytest.mark.unit
+def test_check_workers_kills_what_a_dead_worker_started_outside_its_group(adopting, started, pipe, caplog):
+    read_fd, write_fd = pipe
+    adopting.become_subreaper()
+    alive = _start_worker(started, lambda execution_mode, pending_failure: time.sleep(60))
+    dead = _start_worker(started, _leave_a_session_and_die(write_fd))
+    [child] = _read_pids(read_fd)
+    started[1].append(child)
+    wait_for_condition(lambda: dead.process.exitcode is not None, timeout=10)
+
+    # out of reach of the group kill, and adopted rather than left to init
+    assert os.getpgid(child) != dead.process.pid
+    wait_for_condition(lambda: _parent(child) == os.getpid(), timeout=10)
+
+    adopting.workers = [alive, dead]
+    adopting.restart_worker = Mock()
+    with caplog.at_level(logging.WARNING):
+        adopting.check_workers()
+
+    adopting.restart_worker.assert_called_once_with(dead)
+    # killed and reaped, and the live worker left alone
+    assert not psutil.pid_exists(child)
+    assert alive.is_alive()
+    [record] = _adopted_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.killed_pids == [child]
+    assert f"{child} sleep" in record.getMessage()
+
+
+@pytest.mark.unit
+def test_check_workers_reaps_what_was_adopted_and_exited_while_every_worker_lives(adopting, started, pipe, caplog):
+    read_fd, write_fd = pipe
+    adopting.become_subreaper()
+    worker = _start_worker(started, _orphan_then(write_fd, "sleep 0.1 >/dev/null & echo $!; sleep 60 >/dev/null & echo $!",
+                                                 lambda: time.sleep(60)))
+    exited, running = _read_pids(read_fd)
+    started[1].append(running)
+    wait_for_condition(lambda: _parent(exited) == os.getpid() == _parent(running), timeout=10)
+    wait_for_condition(lambda: psutil.Process(exited).status() == psutil.STATUS_ZOMBIE, timeout=10)
+
+    adopting.workers = [worker]
+    with caplog.at_level(logging.WARNING):
+        adopting.check_workers()
+
+    assert not psutil.pid_exists(exited)
+    # no worker died, so what is adopted and still running is left running
+    assert _is_running(running)
+    assert worker.is_alive()
+    assert _adopted_records(caplog) == []
+
+
+@pytest.mark.unit
+def test_check_workers_leaves_the_children_the_process_had_before_it_adopted(adopting, started, pipe):
+    read_fd, write_fd = pipe
+    own = subprocess.Popen(["sleep", "60"])
+    started[1].append(own.pid)
+    adopting.become_subreaper()
+    dead = _start_worker(started, _leave_a_session_and_die(write_fd))
+    [child] = _read_pids(read_fd)
+    started[1].append(child)
+    wait_for_condition(lambda: dead.process.exitcode is not None, timeout=10)
+    wait_for_condition(lambda: _parent(child) == os.getpid(), timeout=10)
+
+    adopting.workers = [dead]
+    adopting.restart_worker = Mock()
+    adopting.check_workers()
+
+    assert not psutil.pid_exists(child)
+    assert own.poll() is None
+
+
+@pytest.mark.unit
+def test_shutdown_kills_what_was_adopted_and_stops_adopting(adopting, started, pipe, caplog, shutdown_coordinator):
+    read_fd, write_fd = pipe
+    adopting.become_subreaper()
+    assert is_child_subreaper()
+    worker = _start_worker(started, _leave_a_session_and_die(write_fd))
+    [child] = _read_pids(read_fd)
+    started[1].append(child)
+    wait_for_condition(lambda: not worker.is_alive(), timeout=10)
+    wait_for_condition(lambda: _parent(child) == os.getpid(), timeout=10)
+
+    adopting.workers = [worker]
+    with caplog.at_level(logging.WARNING):
+        adopting.supervise_shutdown(poll_interval=0.05)
+
+    assert not psutil.pid_exists(child)
+    [record] = _adopted_records(caplog)
+    assert record.killed_pids == [child]
+    assert adopting.subreaper is False
+    assert not is_child_subreaper()
+
+
+@pytest.mark.unit
+def test_kill_adopted_kills_everything_an_adopted_process_started(adopting, started, caplog):
+    adopting.become_subreaper()
+    # the outer shell exits, so the inner one is adopted, with its sleep still its own child
+    pids = _orphan("sh -c 'sleep 60 >/dev/null & echo $!; exec >/dev/null; wait' & echo $!")
+    [shell] = [pid for pid in pids if psutil.Process(pid).name() == "sh"]
+    [sleep] = [pid for pid in pids if pid != shell]
+    started[1].extend([sleep, shell])
+    wait_for_condition(lambda: _parent(shell) == os.getpid() and _parent(sleep) == shell, timeout=10)
+
+    with caplog.at_level(logging.WARNING):
+        adopting.kill_adopted()
+
+    assert not psutil.pid_exists(shell)
+    assert not psutil.pid_exists(sleep)
+    [record] = _adopted_records(caplog)
+    assert record.killed_pids == sorted([sleep, shell])
+
+
+@pytest.mark.unit
+def test_kill_adopted_gives_up_on_a_process_that_survives(adopting, started, monkeypatch, caplog):
+    adopting.become_subreaper()
+    [sleep] = _orphan("sleep 60 >/dev/null & echo $!")
+    started[1].append(sleep)
+    wait_for_condition(lambda: _parent(sleep) == os.getpid(), timeout=10)
+
+    # a process that cannot be signalled is what survives
+    def denied(self, *args):
+        raise psutil.AccessDenied(self.pid)
+
+    monkeypatch.setattr(psutil.Process, "send_signal", denied)
+    monkeypatch.setattr(psutil.Process, "kill", denied)
+    monkeypatch.setattr(worker_manager_module, "ADOPTED_KILL_SECONDS", 0.1)
+    adopting.kill_adopted()
+
+    assert _is_running(sleep)
+    [error] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error.getMessage() == f"1 processes the engine controller adopted survived being killed: {sleep}"
+    assert error.pids == [sleep]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["kill_adopted", "reap_adopted"])
+def test_a_failed_sweep_is_logged_and_does_not_raise(adopting, monkeypatch, caplog, method):
+    adopting.become_subreaper()
+
+    def broken():
+        raise RuntimeError("no /proc")
+
+    monkeypatch.setattr(adopting, "_adopted_children", broken)
+    getattr(adopting, method)()
+
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "unable to " in record.getMessage() and "the engine controller adopted" in record.getMessage()
+    assert record.exc_info
+
+
+@pytest.mark.unit
+def test_a_manager_that_cannot_adopt_sweeps_nothing(adopting, started, monkeypatch, caplog):
+    def fails(enabled):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(worker_manager_module, "set_child_subreaper", fails)
+    adopting.become_subreaper()
+
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert record.getMessage() == f"unable to make the engine controller (pid {os.getpid()}) a child subreaper"
+    assert record.exc_info
+    assert adopting.subreaper is False
+
+    # a child of its own is not taken for an adopted one when a worker dies
+    own = subprocess.Popen(["sleep", "60"])
+    started[1].append(own.pid)
+    dead = _start_worker(started, lambda execution_mode, pending_failure: None)
+    wait_for_condition(lambda: dead.process.exitcode is not None, timeout=10)
+    adopting.workers = [dead]
+    adopting.restart_worker = Mock()
+    adopting.check_workers()
+
+    adopting.restart_worker.assert_called_once_with(dead)
+    assert own.poll() is None
+
+
+@pytest.mark.unit
+def test_start_workers_adopts_before_the_first_worker_starts(adopting, monkeypatch):
+    became = Mock()
+    monkeypatch.setattr(adopting, "become_subreaper", became)
+    worker = Mock(wait_for_start=Mock(return_value=True))
+    worker.start.side_effect = lambda **kwargs: became.assert_called_once_with()
+    adopting.workers = [worker]
+    adopting.tracking_reader = Mock(recover_pending_failures=Mock(return_value=[]))
+
+    adopting.start_workers(EngineExecutionMode.NORMAL)
+
+    worker.start.assert_called_once()
+
+
+@pytest.mark.unit
+def test_a_manager_that_cannot_stop_adopting_logs_it(adopting, monkeypatch, caplog):
+    adopting.become_subreaper()
+
+    def fails(enabled):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(worker_manager_module, "set_child_subreaper", fails)
+    adopting.stop_adopting()
+
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert record.getMessage() == f"unable to stop the engine controller (pid {os.getpid()}) being a child subreaper"
+    assert record.exc_info
+    assert adopting.subreaper is False
+
+
+@pytest.mark.unit
+def test_reap_counts_a_process_that_is_not_a_child_as_gone():
+    # what something else reaped between the listing and the wait
+    assert worker_manager_module._reap(os.getppid()) is True
+
+
+@pytest.mark.unit
+def test_stop_adopting_undoes_a_manager_that_was_never_shut_down(adopting, started, monkeypatch, caplog):
+    # what a test that calls start_workers() and drops the manager leaves behind for the tests after it
+    monkeypatch.setattr(Worker, "start", lambda self, **kwargs: None)
+    monkeypatch.setattr(Worker, "wait_for_start", lambda self: True)
+    adopting.workers = [Worker(name="test_worker", configuration_manager=_configuration_manager(),
+                               node_manager=Mock(spec=NodeManagerInterface))]
+    adopting.start_workers(EngineExecutionMode.NORMAL)
+    assert is_child_subreaper()
+    [exited] = _orphan("sleep 0.1 >/dev/null & echo $!")
+    wait_for_condition(lambda: psutil.Process(exited).status() == psutil.STATUS_ZOMBIE, timeout=10)
+    own = subprocess.Popen(["sleep", "60"])
+    started[1].append(own.pid)
+
+    with caplog.at_level(logging.INFO):
+        stop_adopting("test_x")
+
+    assert not is_child_subreaper()
+    assert not psutil.pid_exists(exited)
+    assert own.poll() is None
+    assert "test test_x left this process a child subreaper - stopping it" in caplog.text
+    # the next orphan goes to init
+    [orphan] = _orphan("sleep 60 >/dev/null & echo $!")
+    started[1].append(orphan)
+    wait_for_condition(lambda: _parent(orphan) != os.getpid(), timeout=10)
+
+
+@pytest.mark.unit
+def test_stop_adopting_does_nothing_in_a_process_that_does_not_adopt(caplog):
+    assert not is_child_subreaper()
+    with caplog.at_level(logging.INFO):
+        stop_adopting("test_x")
+
+    assert "child subreaper" not in caplog.text
+
+
+@pytest.mark.unit
+def test_a_failed_sweep_at_shutdown_keeps_its_traceback(adopting, monkeypatch, caplog):
+    # supervise_shutdown sweeps once, at its end: not a loop that the stopping peers make fail on every pass
+    adopting.become_subreaper()
+    monkeypatch.setattr(saq.shutdown, "is_shutting_down", lambda: True)
+
+    def broken():
+        raise RuntimeError("no /proc")
+
+    monkeypatch.setattr(adopting, "_adopted_children", broken)
+    adopting.kill_adopted()
+
+    [record] = [r for r in caplog.records if "the engine controller adopted" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info

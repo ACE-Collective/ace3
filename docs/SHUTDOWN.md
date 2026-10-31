@@ -116,7 +116,7 @@ to stop. Three backstops handle it, and all three now keep running *during* shut
 | Backstop | Where |
 |---|---|
 | `AnalysisModuleMonitor` calls `os._exit(1)` past `maximum_analysis_time` | `saq/engine/executor.py` |
-| `WorkerManager.check()` SIGKILLs the worker's process group on timeout or memory limit, and kills what a dead worker left in it | `saq/engine/worker_manager.py` |
+| `WorkerManager.check()` SIGKILLs the worker's process group on timeout or memory limit, and kills what a dead worker left in it; `kill_adopted()` kills what the controller adopted, after a worker dies and at the end of `supervise_shutdown` | `saq/engine/worker_manager.py` |
 | The coordinator's watchdog force-exits the process at the deadline | `saq/shutdown.py` |
 
 The second one used to stop the moment the controller loop broke for shutdown — exactly

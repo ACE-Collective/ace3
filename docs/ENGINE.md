@@ -261,17 +261,32 @@ memory limit, one that does not start (`wait_for_start`) and one that outlived t
 shutdown budget (`docs/SHUTDOWN.md`). It is also what `check()` does to a worker that died on its own
 (the monitor's `os._exit(1)` (§8), a crash, the OOM killer), and what the end of
 `supervise_shutdown` does to every worker that exited while it waited: what that worker
-left running was reparented to init but kept its group, and a group outlives its leader
-while it has members. When `kill()` finds such processes it logs one warning naming
+left running kept its group, and a group outlives its leader while it has members.
+When `kill()` finds such processes it logs one warning naming
 them (pid and process name). A leftover named like the engine itself (`python3`) is
 a copy of the worker that never reached its exec, which is what a child that runs
 Python before its exec in a threaded process does when it deadlocks on a lock another
-thread held at the fork (see `saq/database/pool.py`'s `reset_database_after_fork`). A process that starts a session
-or group of its own has left the group, and nothing here kills it, so it has to bound
-itself: the sandbox launcher is a subreaper and stops everything at its `--deadline`.
-A tool that can stay in the group should, and bound itself anyway: `bin/pcodedmp_wrapper`
-runs `pcodedmp` under `timeout --foreground`, so it stops at its deadline even when its
-worker is killed while it waits, and dies with the worker's group otherwise.
+thread held at the fork (see `saq/database/pool.py`'s `reset_database_after_fork`).
+
+Process groups do not nest, so a process that starts a session or group of its own
+(`start_new_session`, `process_group`) has left the worker's group and `kill()` does
+not reach it. The engine controller is a child subreaper for that:
+`WorkerManager.start_workers()` calls `become_subreaper()` (`PR_SET_CHILD_SUBREAPER`)
+before it forks the first worker, so every orphan of a worker's descendants is
+reparented to the controller instead of to the container's init, which reaps it but
+never kills it. `check_workers()` reaps the adopted processes that have exited every
+second, and after any worker has died it calls `kill_adopted()`, which stops, kills and
+reaps every adopted process and everything those started, and logs one warning naming
+them. That includes what a live worker's processes orphaned, which nothing waits for
+either. `supervise_shutdown` sweeps once more at its end and then stops adopting, since
+the engine can run in a process that outlives it (a test). The sweep
+waits by pid, never `waitpid(-1)`, so multiprocessing still reaps the workers itself,
+and it leaves alone the children the process already had when it became a subreaper. A
+controller that cannot become a subreaper logs an error and runs on with the process
+groups alone. A tool that can stay in the group should, and bound itself anyway:
+`bin/pcodedmp_wrapper` runs `pcodedmp` under `timeout --foreground`, so it stops at its
+deadline even when its worker is killed while it waits, and dies with the worker's
+group otherwise.
 
 `Worker.start()` calls `gc.freeze()` right before the fork and `gc.unfreeze()` right after
 it, in a `finally`. The worker keeps every object it inherited in the collector's permanent
