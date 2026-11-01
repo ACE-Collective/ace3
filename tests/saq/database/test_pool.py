@@ -377,11 +377,13 @@ class _Clock(datetime):
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Moves the pool's clock, and starts the test on a new pool: the cached one keeps the connection lifetime, and
-    so the window, it was built with, which an earlier test may have changed."""
+    """Moves the pool's clock, and starts the test on a new ace pool: the cached one keeps the connection lifetime,
+    and so the window, it was built with, which an earlier test may have changed. The other pools are left alone,
+    because the next test's setup would log reconnecting to each of them."""
     monkeypatch.setattr(pool, "datetime", _Clock)
     monkeypatch.setattr(_Clock, "offset", timedelta(0))
-    reset_pools()
+    get_pool(DB_ACE).clear()
+    del pool._global_db_pools[DB_ACE]
     return _Clock
 
 
