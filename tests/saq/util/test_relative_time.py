@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytz
@@ -102,12 +103,35 @@ def test_snap_happens_in_user_timezone_not_utc():
 
 
 @pytest.mark.unit
-def test_offset_across_dst_boundary_keeps_wall_clock():
-    """US spring-forward is 2026-03-08. Going back 1 day from noon local on the 9th must
-    land on noon local on the 8th -- a 23-hour real-time step, not 24."""
-    now = EASTERN.localize(datetime(2026, 3, 9, 12, 0)).astimezone(UTC)
-    result = parse_relative_time("-1d", now=now, tz=EASTERN).astimezone(EASTERN)
-    assert (result.year, result.month, result.day, result.hour) == (2026, 3, 8, 12)
+@pytest.mark.parametrize("now_local, is_dst, token, expected_local, expected_is_dst", [
+    # US fall-back is 2026-11-01 at 02:00 EDT: midnight was EDT, now is EST
+    (datetime(2026, 11, 1, 10, 0), False, "@d", datetime(2026, 11, 1, 0, 0), True),
+    (datetime(2026, 11, 15, 10, 0), False, "@mon", datetime(2026, 11, 1, 0, 0), True),
+    # US spring-forward is 2026-03-08 at 02:00 EST: midnight was EST, now is EDT
+    (datetime(2026, 3, 8, 10, 0), True, "@d", datetime(2026, 3, 8, 0, 0), False),
+    (datetime(2026, 3, 9, 10, 0), True, "-1d@d", datetime(2026, 3, 8, 0, 0), False),
+    # 01:xx happens twice on fall-back day; @h stays in the occurrence it started in
+    (datetime(2026, 11, 1, 1, 30), True, "@h", datetime(2026, 11, 1, 1, 0), True),
+    (datetime(2026, 11, 1, 1, 30), False, "@h", datetime(2026, 11, 1, 1, 0), False),
+])
+@pytest.mark.parametrize("tz", [EASTERN, ZoneInfo("America/New_York")], ids=["pytz", "zoneinfo"])
+def test_snap_on_a_dst_change_day_uses_the_offset_at_the_snapped_time(
+        now_local, is_dst, token, expected_local, expected_is_dst, tz):
+    now = EASTERN.localize(now_local, is_dst=is_dst).astimezone(UTC)
+    expected = EASTERN.localize(expected_local, is_dst=expected_is_dst).astimezone(UTC)
+
+    assert parse_relative_time(token, now=now, tz=tz) == expected
+
+
+@pytest.mark.unit
+def test_offset_across_dst_boundary_is_real_time():
+    """US spring-forward is 2026-03-08 at 02:00. -1d from noon EDT on the 8th is 24 real
+    hours back, which is 11:00 EST on the 7th, not noon."""
+    now = EASTERN.localize(datetime(2026, 3, 8, 12, 0)).astimezone(UTC)
+    result = parse_relative_time("-1d", now=now, tz=EASTERN)
+
+    assert now - result == timedelta(hours=24)
+    assert result == EASTERN.localize(datetime(2026, 3, 7, 11, 0)).astimezone(UTC)
 
 
 @pytest.mark.unit

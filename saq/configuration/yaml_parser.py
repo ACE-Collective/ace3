@@ -83,6 +83,65 @@ def _read_file_value(value: str) -> str:
                                f"{e.strerror} (a local git repository is a plain path or a file:/// URL)", path) from None
 
 
+class MissingEnvironmentVariable(RuntimeError):
+    """An env: reference names a variable this process does not have."""
+
+
+def resolve_value(value: Any, path: str = "") -> Any:
+    """The value an env:VAR or file:PATH reference stands for; any other value unchanged. path is
+    where the value sits in the configuration (service_x.api_key), for the error messages.
+
+    encrypted:<name> is not resolved here: the marker validates into a SecretRef field, which
+    resolves it when it is used (saq/configuration/secret_ref.py)."""
+    if not isinstance(value, str):
+        return value
+
+    if value.startswith(ENV_PREFIX):
+        var = value[len(ENV_PREFIX):]
+        if var not in os.environ:
+            raise MissingEnvironmentVariable(
+                f"configuration referenced unknown environment variable {var}" + (f" at {path}" if path else ""))
+
+        return os.environ[var]
+
+    if value.startswith(FILE_PREFIX) and not value.startswith(FILE_URL_PREFIX):
+        return _read_file_value(value)
+
+    return value
+
+
+def resolve_values(value: Any, path: str = "") -> Any:
+    """A copy of value with every env: and file: reference in it resolved, at any depth.
+
+    The parsed configuration keeps its references, and each section is resolved when it is
+    validated, so a process needs the environment variables of the sections it reads and no
+    others."""
+    if isinstance(value, dict):
+        return {key: resolve_values(item, f"{path}.{key}" if path else str(key)) for key, item in value.items()}
+
+    if isinstance(value, list):
+        return [resolve_values(item, f"{path}[{index}]") for index, item in enumerate(value)]
+
+    return resolve_value(value, path)
+
+
+def resolve_model_fields(model_class: type, data: dict[str, Any], path: str = "") -> dict[str, Any]:
+    """The keys of data that model_class (a pydantic model) declares as fields, resolved. The keys
+    it does not declare are left out, so a model validated from the result never sees an
+    unresolved reference and nothing resolves the settings it does not read."""
+    if not isinstance(data, dict):
+        # validating it reports what it is instead
+        return data
+
+    names = set()
+    for name, field in model_class.model_fields.items():
+        names.add(field.alias or name)
+        names.add(name)
+
+    return {key: resolve_values(value, f"{path}.{key}" if path else key)
+            for key, value in data.items() if key in names}
+
+
 class YAMLConfig:
     """YAML-based configuration interface.
     - Supports recursive includes via top-level 'config' mapping or list of paths.
@@ -99,29 +158,6 @@ class YAMLConfig:
         new_config._data = copy.deepcopy(self._data)
         new_config.loaded_files = copy.deepcopy(self.loaded_files)
         return new_config
-
-    # do resolve behaviors
-    def _resolve_value(self, value: Any) -> Any:
-        # support string prefix forms
-        if isinstance(value, str):
-            if value.startswith(ENV_PREFIX):
-                var = value[len(ENV_PREFIX) :]
-                if var not in os.environ:
-                    raise RuntimeError(
-                        f"configuration referenced unknown environment variable {var}"
-                    )
-
-                return os.environ[var]
-
-            # NOTE: encrypted:<name> is intentionally NOT resolved here. Encrypted secrets are now
-            # resolved lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py); the
-            # marker is left intact so it validates into a SecretRef field. See resolve_all_values.
-
-            if value.startswith(FILE_PREFIX) and not value.startswith(FILE_URL_PREFIX):
-                return _read_file_value(value)
-
-        # otherwise no special handling
-        return value
 
     def merge(self, other: dict[str, dict[str, Any]]) -> None:
         """Overlay configuration from another mapping-like object.
@@ -233,34 +269,6 @@ class YAMLConfig:
             return
 
         for _key, value in path_mapping.items():
-            resolved = self._resolve_value(value)
+            resolved = resolve_value(value, f"path.{_key}")
             if isinstance(resolved, str):
                 sys.path.append(resolved)
-
-    def resolve_all_values(self) -> None:
-        """Recursively resolve env:VAR_NAME and file:PATH values in the configuration, in place. A
-        file:// URL is left as it is.
-
-        encrypted:<name> markers are intentionally left unresolved: encrypted secrets are resolved
-        lazily at point-of-use via SecretRef (saq/configuration/secret_ref.py), so the marker must
-        survive into model validation where it becomes a SecretRef field.
-        """
-        def _resolve_recursive(mapping: dict[str, Any]) -> None:
-            """Recursively resolve the values in a mapping."""
-            for key, value in mapping.items():
-                if isinstance(value, dict):
-                    _resolve_recursive(value)
-                elif isinstance(value, list):
-                    for index, item in enumerate(value):
-                        if isinstance(item, dict):
-                            _resolve_recursive(item)
-                        elif isinstance(item, str):
-                            value[index] = self._resolve_value(item)
-                elif isinstance(value, str):
-                    mapping[key] = self._resolve_value(value)
-
-        # process all values in the configuration
-        for key, value in self._data.items():
-            if isinstance(value, dict):
-                _resolve_recursive(value)
-

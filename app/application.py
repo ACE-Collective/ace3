@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -82,17 +83,21 @@ def render_markdown(text):
     return Markup(markdown.markdown(text, extensions=["extra", _ExternalLinksExtension()]))
 
 def initialize_presenters():
-    """Ensures that the appropriate presenters are registered for the current engine configuration."""
+    """Imports the python module of each analysis module the engine would load, which registers its
+    presenters. The modules are not built: that validates each module's whole config block, and with
+    it environment variables only the engine has (#1009)."""
     from saq.engine.configuration_manager import ConfigurationManager
     from saq.engine.engine_configuration import EngineConfiguration
     from saq.engine.enums import EngineType
 
     configuration_manager = ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL, single_threaded_mode=True))
-    configuration_manager.load_modules()
-
-    for analysis_module in configuration_manager.analysis_modules:
-        # there isn't anythign to do here yet, but will soon
-        pass
+    for name in configuration_manager.module_loader.module_names_to_load():
+        python_module = get_config().peek_analysis_module_config(name).python_module
+        try:
+            importlib.import_module(python_module)
+        except Exception:
+            logging.exception("unable to import analysis module %s from %s", name, python_module,
+                              extra={"analysis_module": name, "python_module": python_module})
 
 # (mode, bootstrap icon, label, tooltip) for the theme switchers in base.html and preferences.html
 THEME_CHOICES = [

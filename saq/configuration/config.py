@@ -1,3 +1,4 @@
+import logging
 import sys
 from typing import TYPE_CHECKING
 
@@ -5,6 +6,7 @@ from pydantic import BaseModel
 
 from saq.configuration.loader import load_configuration
 from saq.configuration.schema import ACEConfig
+from saq.configuration.yaml_parser import MissingEnvironmentVariable, resolve_model_fields
 from saq.constants import DB_ACE, SERVICE_ENGINE
 
 if TYPE_CHECKING:
@@ -27,9 +29,9 @@ REGISTERED_INTEGRATION_CONFIGURATIONS: dict[str, type[BaseModel]] = {}
 # integration configurations
 INTEGRATION_CONFIGURATIONS: dict[str, BaseModel] = {}
 
-# True once resolve_configuration() has run. From that point on CONFIG.raw._data has been through
-# resolve_all_values(), so an integration config model registered later can be validated against it
-# immediately instead of waiting for a resolve pass that is never going to happen again.
+# True once resolve_configuration() has run. From that point on an integration config model registered
+# later is validated against CONFIG.raw._data immediately instead of waiting for a resolve pass that is
+# never going to happen again.
 CONFIG_RESOLVED: bool = False
 
 def get_config(name: str | None = None) -> ACEConfig:
@@ -40,6 +42,11 @@ def get_config(name: str | None = None) -> ACEConfig:
     try:
         return INTEGRATION_CONFIGURATIONS[name]
     except KeyError:
+        if name in REGISTERED_INTEGRATION_CONFIGURATIONS and CONFIG_RESOLVED:
+            # deferred because it references an environment variable this process does not have,
+            # which raises here, in the process that reads it
+            return _build_integration_configuration(name, REGISTERED_INTEGRATION_CONFIGURATIONS[name])
+
         registered = ", ".join(sorted(REGISTERED_INTEGRATION_CONFIGURATIONS)) or "(none)"
         raise KeyError(
             f"integration configuration for {name} not found -- the package that calls "
@@ -74,14 +81,13 @@ def set_config(config):
 
 def resolve_configuration(existing_config: ACEConfig):
     global CONFIG, CONFIG_RESOLVED
-    existing_config.resolve_all_values()
     CONFIG = ACEConfig.model_validate(existing_config.raw._data)
     CONFIG.raw = existing_config.raw
     CONFIG_RESOLVED = True
 
     # load integration configurations as separate objects
     for integration_name, integration_class in REGISTERED_INTEGRATION_CONFIGURATIONS.items():
-        _build_integration_configuration(integration_name, integration_class)
+        _build_integration_configuration_unless_deferred(integration_name, integration_class)
 
     # encrypted:<name> markers are no longer resolved eagerly -- they must land in a SecretRef field
     # (resolved lazily at point-of-use). Any that reached a plain-string field is an unmigrated secret
@@ -96,10 +102,24 @@ def _build_integration_configuration(integration_name: str, integration_class: t
     registered after resolve_configuration() gets exactly the same validation as one registered
     before it.
     """
-    integration_config = integration_class.model_validate(CONFIG.raw._data)
+    # only the sections the model declares are resolved: every process imports every integration
+    raw = CONFIG.raw._data
+    integration_config = integration_class.model_validate({**raw, **resolve_model_fields(integration_class, raw)})
     _assert_no_unresolved_encrypted_markers(integration_config, context=f"integration '{integration_name}'")
     INTEGRATION_CONFIGURATIONS[integration_name] = integration_config
     return integration_config
+
+
+def _build_integration_configuration_unless_deferred(integration_name: str, integration_class: type[BaseModel]):
+    """Builds the integration's config now, or leaves it for get_config(<name>) to build when it
+    references an environment variable this process does not have: every process imports every
+    integration, and only the processes that use one need its variables."""
+    INTEGRATION_CONFIGURATIONS.pop(integration_name, None)
+    try:
+        _build_integration_configuration(integration_name, integration_class)
+    except MissingEnvironmentVariable as e:
+        logging.info("integration %s configuration is not loaded in this process: %s",
+                     integration_name, e, extra={"integration": integration_name})
 
 
 def _assert_no_unresolved_encrypted_markers(model: BaseModel, context: str = "configuration") -> None:
@@ -143,12 +163,13 @@ def register_integration_configuration(integration_name: str, integration_class:
     # now, or every get_config(<name>) in that integration raises KeyError for the life of the
     # process. Building it here rather than on demand in get_config() also keeps
     # INTEGRATION_CONFIGURATIONS complete for the callers that iterate it (the secret custody sweep
-    # in aceapi_ai/startup_checks.py).
+    # in aceapi_ai/startup_checks.py), except for a config left unbuilt for a missing environment
+    # variable, which holds nothing in this process until get_config(<name>) builds it.
     # NOTE this runs at import time of the integration package, so it must not raise for a reason
     # as mundane as the config not being loaded yet -- that would turn a benign ordering into an
     # ImportError. A genuine validation failure still propagates.
     if CONFIG_RESOLVED and CONFIG is not None and CONFIG.has_raw_data:
-        _build_integration_configuration(integration_name, integration_class)
+        _build_integration_configuration_unless_deferred(integration_name, integration_class)
 
 def initialize_configuration(config_paths: list[str] | None=None):
     global CONFIG
