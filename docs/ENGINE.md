@@ -965,6 +965,8 @@ call returns. Outside of an engine call it returns `maximum_analysis_time`.
 `self.run_tool(args, target, **kwargs)` runs an external tool that way: as `subprocess.run()`, killed
 `TOOL_TIMEOUT_MARGIN_SECONDS` before the call runs out of time (and logged), returning `None`, so
 that the module can still return before the watchdog kills the worker.
+`self.run_sandboxed_tool(args, target, ...)` does the same for a tool that parses a file from the
+alert, in the Landlock sandbox (`docs/TOOL_SANDBOX.md`).
 
 ### 12.2 Cancellation
 

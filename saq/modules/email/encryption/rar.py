@@ -172,22 +172,19 @@ class RarEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = self.run_tool([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], _file.full_path,
-                          capture_output=True)
+        p = self.run_sandboxed_tool([os.path.join(self.john_bin_path, 'rar2john'), _file.full_path], _file.full_path)
         if p is None:
-            analysis.error = "rar2john timed out"
+            analysis.error = "rar2john did not finish"
             return AnalysisExecutionResult.COMPLETED
 
-        stdout, stderr = p.stdout, p.stderr
-
         # did we get the hash?
-        if not stdout:
-            analysis.error = f"rar2john failed: {stderr.decode()}"
+        if not p.stdout:
+            analysis.error = f"rar2john failed: {p.stderr}"
             return AnalysisExecutionResult.COMPLETED
 
         hash_file = f'{_file.full_path}.hash'
-        with open(hash_file, 'wb') as fp:
-            fp.write(stdout)
+        with open(hash_file, 'w') as fp:
+            fp.write(p.stdout)
 
         # build wordlist for cracking password from email body text, if available
         analysis.word_list = []
@@ -214,7 +211,9 @@ class RarEncryptionAnalyzer(AnalysisModule):
                             fp.write(f'{word}\n')
 
                     try:
-                        analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
+                        analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                                           f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                           read_files=[wordlist_path])
                     except Exception as e:
                         logging.error(f"Error encountered when trying to crack password for {_file}: {e}")
                         return AnalysisExecutionResult.COMPLETED
@@ -236,11 +235,14 @@ class RarEncryptionAnalyzer(AnalysisModule):
             if not os.path.isdir(output_dir):
                 raise Exception(f"unable to create archive directory {output_dir}: {e}")
 
-        try:
-            with rarfile.RarFile(_file.full_path) as rar_fp:
-                rar_fp.extractall(output_dir, pwd=analysis.password)
-        except Exception as e:
-            logging.error(f"Unable to extract data from encrypted rar {_file}: {e}")
+        # rarfile would run unrar outside the sandbox. the trailing separator makes unrar take
+        # output_dir as the directory to extract into
+        result = self.run_sandboxed_tool(['unrar', 'x', '-y', f'-p{analysis.password}', _file.full_path,
+                                          os.path.join(os.path.abspath(output_dir), '')], _file.full_path,
+                                         write_dirs=[output_dir])
+        if result is None or result.returncode != 0:
+            logging.warning(f"Unable to extract data from encrypted rar {_file}: "
+                            f"{result.stderr.strip()[-500:] if result else 'unrar did not finish'}")
             return AnalysisExecutionResult.COMPLETED
 
         # add files in the Rar as observables

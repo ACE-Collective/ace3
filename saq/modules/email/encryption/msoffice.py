@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 
 import msoffcrypto
@@ -16,6 +15,7 @@ from saq.modules.email.encryption.email_password import (
 )
 
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import sandbox_python
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
 
@@ -90,17 +90,21 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
             _file.add_tag('encrypted_msoffice')
 
             # extract the hash for cracking
-            p = Popen(['python3', os.path.join(get_base_dir(), "bin", "office2john.py"), _file.full_path], stdout=PIPE, stderr=PIPE)
-            stdout, stderr = p.communicate()
+            script = os.path.join(get_base_dir(), "bin", "office2john.py")
+            p = self.run_sandboxed_tool([sandbox_python(), '-I', script, _file.full_path], _file.full_path,
+                                        read_files=[script])
+            if p is None:
+                analysis.error = "office2john.py did not finish"
+                return AnalysisExecutionResult.COMPLETED
 
             # did we get the hash?
-            if not stdout:
-                analysis.error = f"office2john.py failed: {stderr.decode()}"
+            if not p.stdout:
+                analysis.error = f"office2john.py failed: {p.stderr}"
                 return AnalysisExecutionResult.COMPLETED
 
             hash_file = f'{_file.full_path}.hash'
-            with open(hash_file, 'wb') as fp:
-                fp.write(stdout)
+            with open(hash_file, 'w') as fp:
+                fp.write(p.stdout)
 
             # OK then we've found an office document that is encrypted
 
@@ -121,7 +125,8 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
                     fp.write(f'{word}\n')
 
             # crack it with john the ripper using wordlist
-            analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
+            analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                               f'--wordlist={os.path.abspath(wordlist_path)}', read_files=[wordlist_path])
 
             if not analysis.password:
                 analysis.error = "could not crack password"

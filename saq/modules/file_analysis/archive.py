@@ -1,13 +1,15 @@
 import logging
 import os
 import re
-from subprocess import PIPE, Popen, TimeoutExpired
+import shutil
+import tempfile
 from typing import Optional, Type, override
 import zipfile
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
+from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_office_file, is_ole_file, is_pcap_file
@@ -84,8 +86,34 @@ def normalize_extracted_permissions(extracted_path: str):
         logging.exception("some error was reported when trying to recursively chmod {}: {}".format(extracted_path, e))
 
 
+# the name of the first volume of a multi-volume archive, and the pattern its other volumes' names follow
+_VOLUME_SETS = [
+    (re.compile(r"(?P<base>.+)\.\d{3}", re.IGNORECASE), r"\.\d{3}"),
+    (re.compile(r"(?P<base>.+)\.part\d+\.rar", re.IGNORECASE), r"\.part\d+\.rar"),
+    (re.compile(r"(?P<base>.+)\.rar", re.IGNORECASE), r"\.r\d{2}"),
+    (re.compile(r"(?P<base>.+)\.zip", re.IGNORECASE), r"\.z\d{2}"),
+    (re.compile(r"(?P<base>.+)\.ace", re.IGNORECASE), r"\.c\d{2}"),
+]
+
+
+def archive_volumes(path: str) -> list[str]:
+    """The other volumes of the multi-volume archive whose first volume is path, from the files next
+    to it. The extractor in the sandbox can read only what it is given, and a split archive does not
+    extract without them. A link is never one: it could point the extractor at a file of ACE's."""
+    directory, name = os.path.split(path)
+    for first, others in _VOLUME_SETS:
+        if m := first.fullmatch(name):
+            pattern = re.compile(re.escape(m["base"]) + others, re.IGNORECASE)
+            return sorted(entry.path for entry in os.scandir(directory or ".")
+                          if entry.name != name and pattern.fullmatch(entry.name)
+                          and entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_nlink == 1)
+
+    return []
+
+
 KEY_FILE_COUNT = 'file_count'
 KEY_EXTRACTED_FILES = 'extracted_files'
+KEY_EXTRACTION_ERROR = 'extraction_error'
 
 
 class ArchiveAnalysis(Analysis):
@@ -119,6 +147,16 @@ class ArchiveAnalysis(Analysis):
     def extracted_files(self, value: list[str]):
         self.details[KEY_EXTRACTED_FILES] = value
 
+    @property
+    def extraction_error(self) -> Optional[str]:
+        """Why the extractor did not extract everything, when it did not; analyses saved before
+        this was recorded have no such key."""
+        return self.details.get(KEY_EXTRACTION_ERROR)
+
+    @extraction_error.setter
+    def extraction_error(self, value: Optional[str]):
+        self.details[KEY_EXTRACTION_ERROR] = value
+
     def generate_summary(self):
         if not self.file_count:
             return None
@@ -126,6 +164,8 @@ class ArchiveAnalysis(Analysis):
         result = f"{self.display_name}: extracted {len(self.extracted_files)} of {self.file_count} files"
         if self.extracted_files:
             result += f": ({format_item_list_for_summary(self.extracted_files)})"
+        if self.extraction_error:
+            result += f" ({self.extraction_error})"
 
         return result
 
@@ -194,17 +234,34 @@ class ArchiveAnalyzer(AnalysisModule):
 
     def _list_files(self, params: list[str], local_file_path: str) -> Optional[bytes]:
         """Returns what the archive listing command prints, or None if it did not finish in time."""
-        p = Popen(params, stdout=PIPE, stderr=PIPE)
-        try:
-            stdout, _ = p.communicate(timeout=self.timeout)
-        except TimeoutExpired:
-            # communicate() leaves the process running when it times out
-            p.kill()
-            p.communicate()
-            logging.warning("timed out listing the files in %s with %s", local_file_path, params[0])
+        result = self.run_sandboxed_tool(params, local_file_path, timeout=self.timeout,
+                                         read_files=archive_volumes(local_file_path))
+        if result is None:
             return None
 
-        return stdout
+        # the listings are parsed as bytes; a member name that is not UTF-8 only has to be counted
+        return result.stdout.encode()
+
+    def _run_unace(self, command: str, local_file_path: str, extracted_path: Optional[str] = None) -> Optional[bytes]:
+        """Runs unace l (list) or x (extract into extracted_path) on the archive and returns what it
+        printed, or None if it did not finish in time. unace opens the directory the archive is in,
+        to look for its other volumes, and fails when it cannot, so it runs on a copy in a directory
+        of its own rather than being let into the directory of the alert's files."""
+        with tempfile.TemporaryDirectory(dir=get_temp_dir(), prefix="unace-") as staging_dir:
+            archive = os.path.join(staging_dir, os.path.basename(local_file_path))
+            for volume in [local_file_path, *archive_volumes(local_file_path)]:
+                shutil.copyfile(volume, os.path.join(staging_dir, os.path.basename(volume)))
+            if command == 'l':
+                args, write_dirs, cwd = ['unace', 'l', archive], [], None
+            else:
+                # unace does not take a full path to extract
+                args = ['unace', 'x', '-y', '-o', os.path.relpath(archive, start=extracted_path)]
+                write_dirs, cwd = [extracted_path], extracted_path
+
+            result = self.run_sandboxed_tool(args, archive, timeout=self.timeout, read_dirs=[staging_dir],
+                                             write_dirs=write_dirs, cwd=cwd)
+
+        return None if result is None else result.stdout.encode()
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -346,7 +403,7 @@ class ArchiveAnalyzer(AnalysisModule):
             is_office_document |= (ole_object_regex.search(stdout) is not None)
                 
         elif is_ace_file:
-            stdout = self._list_files(['unace', 'l', local_file_path], local_file_path)
+            stdout = self._run_unace('l', local_file_path)
             if stdout is None:
                 return AnalysisExecutionResult.COMPLETED
 
@@ -436,7 +493,7 @@ class ArchiveAnalyzer(AnalysisModule):
         logging.debug("extracting {} files from archive {} into {}".format(count, local_file_path, extracted_path))
 
         params = []
-        kwargs = { 'stdout': PIPE, 'stderr': PIPE }
+        finished = True
 
         if is_rar_file:
             params = ['unrar', 'e', '-y', '-o+', local_file_path, extracted_path]
@@ -459,23 +516,23 @@ class ArchiveAnalyzer(AnalysisModule):
                                                 '-x', 'xl/ctrlProps/*.xml',
                       '-d', extracted_path]
         elif is_msi_file(local_file_path):
-            params = ['7z', '-y', '-o{}'.format(extracted_path), 'x', local_file_path] 
+            params = ['7z', '-y', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
         elif is_ace_file:
-            # for some reason, unace doesn't let you use a full path
-            params = ['unace', 'x', '-y', '-o', os.path.relpath(local_file_path, start=extracted_path)]
-            kwargs['cwd'] = extracted_path
+            # what it extracted before it was stopped is still analyzed
+            finished = self._run_unace('x', local_file_path, extracted_path) is not None
         else:
-            params = ['7z', '-y', '-pinfected', '-o{}'.format(extracted_path), 'x', local_file_path]
+            params = ['7z', '-y', '-pinfected', '-o{}'.format(os.path.abspath(extracted_path)), 'x', local_file_path]
 
         if params:
-            p = Popen(params, **kwargs)
+            # the extractor writes only extracted_path, whatever names the archive gives its members.
+            # what it extracted before it was stopped is still analyzed
+            finished = self.run_sandboxed_tool(params, local_file_path, timeout=self.timeout,
+                                               read_files=archive_volumes(local_file_path),
+                                               write_dirs=[extracted_path]) is not None
 
-            try:
-                (stdout, stderr) = p.communicate(timeout=self.timeout)
-            except TimeoutExpired:
-                logging.warning(f"archive extraction timeout on {local_file_path}: params {params} kwargs {kwargs}")
-                p.kill()
-                (stdout, stderr) = p.communicate()
+        if not finished:
+            # run_sandboxed_tool() logged why: a timeout, a member over the file size limit
+            analysis.extraction_error = "the extractor did not finish"
 
         # the extractor may have honored stored mode bits that make files unreadable to us
         normalize_extracted_permissions(extracted_path)

@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import stat
+import subprocess
 import uuid
 import zipfile
 from glob import glob
@@ -14,13 +15,13 @@ import pytest
 
 from saq.analysis.root import load_root
 from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_FILE_TYPE, DIRECTIVE_SANDBOX, F_FILE, AnalysisExecutionResult
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.crash_report import get_crash_report_root_dir
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_data_dir
 from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
-from saq.modules.file_analysis.archive import ArchiveAnalysis, ArchiveAnalyzer, normalize_extracted_permissions, order_archive_file_list
+from saq.modules.file_analysis.archive import ArchiveAnalysis, ArchiveAnalyzer, archive_volumes, normalize_extracted_permissions, order_archive_file_list
 from saq.modules.file_analysis.file_type import FileTypeAnalysis
 from saq.util.uuid import get_storage_dir
 from tests.saq.test_util import create_test_context
@@ -320,38 +321,35 @@ def test_the_permissions_pass_leaves_link_targets_alone(root_analysis, tmp_path,
 @pytest.fixture
 def tools_that_hang(monkeypatch):
     """Returns a function that puts tools first on the PATH, each running its shell snippet and then
-    never finishing, and returns a function listing their pids. They live under the data directory
-    because /tmp is mounted noexec."""
+    never finishing, and returns a function listing the pids of those still running. They live under
+    the data directory because /tmp is mounted noexec. A tool runs in the sandbox, where it can write
+    nothing outside its working directory, so it is found by the unique argument of its sleep."""
     tool_dir = os.path.join(get_data_dir(), f"hanging-tools-{uuid.uuid4()}")
     os.makedirs(tool_dir)
-    pid_file = os.path.join(tool_dir, "pids")
-    pids = []
+    marker = f"60.{uuid.uuid4().int % 10 ** 9}"
+
+    def _running() -> list[int]:
+        return [process.pid for process in psutil.process_iter(["cmdline"])
+                if process.info["cmdline"] == ["sleep", marker]]
 
     def _install(snippets: dict[str, str]):
         for tool, snippet in snippets.items():
             tool_path = os.path.join(tool_dir, tool)
             with open(tool_path, "w") as fp:
-                fp.write(f"#!/bin/sh\n{snippet}\necho $$ >> {pid_file}\nexec sleep 60\n")
+                fp.write(f"#!/bin/sh\n{snippet}\nexec sleep {marker}\n")
             os.chmod(tool_path, 0o755)
 
         monkeypatch.setenv("PATH", f"{tool_dir}{os.pathsep}{os.environ['PATH']}")
-
-        def _pids() -> list[int]:
-            if os.path.exists(pid_file):
-                with open(pid_file) as fp:
-                    pids[:] = [int(line) for line in fp if line.strip()]
-            return pids
-
-        return _pids
+        return _running
 
     yield _install
 
     # what a failing run left behind
-    for pid in pids:
+    for pid in _running():
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
-            pass  # killed and reaped, as it should be
+            pass  # it finished in the meantime
 
     shutil.rmtree(tool_dir, ignore_errors=True)
 
@@ -393,11 +391,10 @@ def test_a_listing_that_times_out_is_killed(root_analysis, hanging_tools, monkey
         assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     assert observable.get_analysis(ArchiveAnalysis) is None
-    (pid,) = hanging_tools()
-    # killed and reaped before execute_analysis returned
-    assert not psutil.pid_exists(pid)
-    assert any(r.getMessage() == f"timed out listing the files in {observable.full_path} with {tool}"
-               for r in caplog.records)
+    # it ran until it was stopped, and nothing of it is left running. unace runs on a copy of the archive
+    assert any(r.getMessage().startswith(f"ArchiveAnalyzer stopped {tool} on /")
+               and r.getMessage().endswith(f"/{name}: command timed out after 0:00:01") for r in caplog.records)
+    assert hanging_tools() == []
 
 
 @pytest.mark.unit
@@ -577,6 +574,72 @@ def test_an_archive_over_the_file_count_is_limited(root_analysis, monkeypatch, c
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("file_type,mime_type", [SPREADSHEET_ZIP, ZIP], ids=["unzip", "7z"])
+def test_an_extraction_that_does_not_finish_is_recorded(root_analysis, monkeypatch, file_type, mime_type):
+    # a member padded past the file size limit, a common way to get past scanners, stops the
+    # extractor there: it and the members after it are incomplete
+    monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 1024 * 1024)
+    observable = _archive_observable(root_analysis, "data.bin", file_type, mime_type,
+                                     _zip_bytes({"a_big.bin": "\0" * 2000000, "b_small.txt": "b"}))
+
+    assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(ArchiveAnalysis)
+    assert "b_small.txt" not in analysis.extracted_files
+    assert analysis.extraction_error == "the extractor did not finish"
+    assert analysis.generate_summary().endswith("(the extractor did not finish)")
+
+
+@pytest.mark.integration
+def test_a_multi_volume_archive_is_extracted(root_analysis, tmp_path):
+    # a payload split across attachments, which sit next to each other in the files directory
+    (tmp_path / "payload.exe").write_bytes(os.urandom(3000))
+    subprocess.run(["7z", "a", "-v2k", str(tmp_path / "split.7z"), str(tmp_path / "payload.exe")],
+                   check=True, capture_output=True)
+    first, second = sorted(tmp_path.glob("split.7z.*"))
+    shutil.copyfile(second, root_analysis.create_file_path(second.name))
+    observable = _archive_observable(root_analysis, first.name, "7-zip archive data, version 0.4",
+                                     "application/x-7z-compressed", first.read_bytes())
+
+    assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(ArchiveAnalysis)
+    assert analysis.extracted_files == ["payload.exe"]
+    assert analysis.extraction_error is None
+
+
+@pytest.mark.integration
+def test_unace_gets_the_other_volumes(root_analysis, fake_tools):
+    # unace looks for the other volumes next to its copy of the archive
+    fake_tools({"unace": 'ls "$(dirname "$2")"'})
+    observable = _archive_observable(root_analysis, "split.ace", "ACE archive data", "application/octet-stream")
+    with open(root_analysis.create_file_path("split.c00"), "wb") as fp:
+        fp.write(b"second volume")
+
+    assert _analyzer(root_analysis)._run_unace("l", observable.full_path).split() == [b"split.ace", b"split.c00"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("first,others", [
+    ("a.7z.001", ["a.7z.002", "a.7z.010"]),
+    ("a.zip.001", ["a.zip.002"]),
+    ("a.part1.rar", ["a.part2.rar", "a.PART03.rar"]),
+    ("a.rar", ["a.r00", "a.r01"]),
+    ("a.zip", ["a.z01"]),
+    ("a.ace", ["a.c00"]),
+    ("a.7z", []),
+])
+def test_the_other_volumes_of_an_archive(tmp_path, first, others):
+    for name in [first, *others, "b.7z.002", "b.r00", "b.part2.rar", "a.txt", "a.7z.002.txt"]:
+        (tmp_path / name).write_bytes(b"x")
+    # a link could point the tool at a file of ACE's, and a directory is not a volume
+    os.symlink("/etc/passwd", tmp_path / ("a.7z.003" if first.endswith(".001") else "a.r02"))
+    os.mkdir(tmp_path / "a.z02")
+
+    assert archive_volumes(str(tmp_path / first)) == sorted(str(tmp_path / name) for name in others)
+
+
+@pytest.mark.integration
 def test_a_zip_with_a_manifest_is_extracted_as_a_jar(root_analysis, monkeypatch):
     analyzer = _analyzer(root_analysis)
     monkeypatch.setattr(analyzer.config, "max_file_count", 1)
@@ -650,10 +713,10 @@ def test_an_extraction_that_times_out_is_killed(root_analysis, tools_that_hang, 
     with caplog.at_level(logging.WARNING):
         assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
-    (pid,) = pids()
-    # killed and reaped before execute_analysis returned
-    assert not psutil.pid_exists(pid)
-    assert any(r.getMessage().startswith(f"archive extraction timeout on {observable.full_path}") for r in caplog.records)
+    # it ran until it was stopped, and nothing of it is left running
+    assert any(r.getMessage() == f"ArchiveAnalyzer stopped 7z on {os.path.abspath(observable.full_path)}: "
+               "command timed out after 0:00:01" for r in caplog.records)
+    assert pids() == []
     analysis = observable.get_analysis(ArchiveAnalysis)
     assert analysis.file_count == 1
     assert analysis.extracted_files == []

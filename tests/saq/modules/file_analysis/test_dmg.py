@@ -1,4 +1,3 @@
-import subprocess
 import zipfile
 from pathlib import Path
 
@@ -8,7 +7,8 @@ from saq.analysis.root import load_root
 from saq.constants import F_FILE
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.modules.file_analysis.dmg import DMGAnalysis
+from saq.modules.file_analysis.dmg import DMGAnalysis, DMGAnalyzer
+from saq.sandbox.runner import SandboxResult
 from saq.util.uuid import get_storage_dir
 
 
@@ -29,19 +29,19 @@ def _analyze(root_analysis, path: Path):
 @pytest.fixture
 def fake_dmg2img(monkeypatch):
     """dmg2img converts the image; here it writes an archive 7z can list in its place."""
-    real_popen = subprocess.Popen
+    real_run = DMGAnalyzer.run_sandboxed_tool
 
-    def _popen(args, *a, **kw):
+    def _run(self, args, target, **kwargs):
         if args[0] == "dmg2img":
-            image = args[1][:-4] + ".img"
+            [image] = kwargs["outputs"].values()
             with zipfile.ZipFile(image, "w") as zip_fp:
                 zip_fp.writestr("Installer/", "")
                 zip_fp.writestr("Installer/payload.app", b"payload" * 100)
                 zip_fp.writestr("Installer/.DS_Store", b"ds")
-            args = ["echo", "dmg2img converted"]
-        return real_popen(args, *a, **kw)
+            return SandboxResult(0, "dmg2img converted", "")
+        return real_run(self, args, target, **kwargs)
 
-    monkeypatch.setattr("subprocess.Popen", _popen)
+    monkeypatch.setattr(DMGAnalyzer, "run_sandboxed_tool", _run)
 
 
 @pytest.mark.integration

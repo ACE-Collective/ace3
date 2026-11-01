@@ -23,7 +23,6 @@ support Landlock, a caller must not run the command at all (landlock_available()
 """
 
 import datetime
-import functools
 import logging
 import math
 import os
@@ -34,10 +33,11 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from saq.configuration.schema import SandboxConfig
+from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
 
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
@@ -77,6 +77,11 @@ SANDBOX_READ_FILES = (
     "/dev/zero",
 )
 
+# what a command that never ran exits with: the launcher could not set the sandbox up
+# (EXIT_SANDBOX_FAILURE), or prlimit or setpriv could not execute the program (126: not executable or
+# not readable in the sandbox, 127: not found)
+NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
+
 # how much of stderr is kept in the error raised for a failed command
 STDERR_TAIL_BYTES = 16 * 1024
 
@@ -107,9 +112,18 @@ def get_read_files() -> list[str]:
     return [path for path in SANDBOX_READ_FILES if os.path.exists(path)]
 
 
-@functools.cache
+# what setpriv said about Landlock here, once it has run: the kernel's answer does not change while the
+# process lives, but a probe that could not run (a fork that failed under load) says nothing about it
+_LANDLOCK_AVAILABLE: bool | None = None
+
+
 def landlock_available() -> bool:
-    """True when setpriv can apply a Landlock ruleset here (cached for the life of the process)."""
+    """True when setpriv can apply a Landlock ruleset here (kept for the life of the process once
+    setpriv has answered)."""
+    global _LANDLOCK_AVAILABLE
+    if _LANDLOCK_AVAILABLE is not None:
+        return _LANDLOCK_AVAILABLE
+
     try:
         result = subprocess.run(
             [SETPRIV, "--no-new-privs", "--landlock-access", "fs",
@@ -121,14 +135,14 @@ def landlock_available() -> bool:
         logging.error("unable to probe for landlock support: %s", e)
         return False
 
-    if result.returncode != 0:
+    _LANDLOCK_AVAILABLE = result.returncode == 0
+    if not _LANDLOCK_AVAILABLE:
         logging.error(
             "landlock is unavailable, sandboxed commands cannot run: %s",
             result.stderr.decode(errors="replace").strip(),
         )
-        return False
 
-    return True
+    return _LANDLOCK_AVAILABLE
 
 
 def sandbox_python() -> str:
@@ -137,15 +151,23 @@ def sandbox_python() -> str:
     return python if os.path.exists(python) else sys.executable
 
 
-def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, timeout: datetime.timedelta) -> list[str]:
-    """Wrap argv so it runs under the launcher, the rlimits and the Landlock ruleset."""
+def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, timeout: datetime.timedelta,
+                       read_files: Sequence[str] = (), read_dirs: Sequence[str] = (),
+                       write_dirs: Sequence[str] = (), cpu_seconds: int | None = None) -> list[str]:
+    """Wrap argv so it runs under the launcher, the rlimits and the Landlock ruleset.
+
+    Besides the fixed allowlist and workdir, read_files and read_dirs are readable (a read_dir's
+    programs executable too) and write_dirs are as writable as workdir. Each must exist: setpriv
+    refuses a rule for a missing path, and the command would not run. cpu_seconds (the timeout by
+    default) is the CPU time the command may use, summed over all of its threads."""
     rules = []
-    for path in get_read_dirs():
+    for path in [*get_read_dirs(), *read_dirs]:
         rules.extend(["--landlock-rule", f"path-beneath:{_READ_DIR}:{path}"])
-    for path in get_read_files():
+    for path in [*get_read_files(), *read_files]:
         rules.extend(["--landlock-rule", f"path-beneath:{_READ_FILE}:{path}"])
     rules.extend(["--landlock-rule", "path-beneath:read-file,write-file:/dev/null"])
-    rules.extend(["--landlock-rule", f"path-beneath:{_WORKDIR}:{workdir}"])
+    for path in [workdir, *write_dirs]:
+        rules.extend(["--landlock-rule", f"path-beneath:{_WORKDIR}:{path}"])
 
     launcher_options = [
         f"--max-processes={config.max_processes}",
@@ -162,7 +184,7 @@ def build_sandbox_argv(argv: list[str], workdir: str, config: SandboxConfig, tim
         f"--as={config.memory_limit}",
         f"--fsize={config.file_size_limit}",
         f"--nofile={config.open_files_limit}",
-        f"--cpu={max(1, math.ceil(timeout.total_seconds()))}",
+        f"--cpu={cpu_seconds or max(1, math.ceil(timeout.total_seconds()))}",
         "--core=0",
         "--",
         SETPRIV, "--no-new-privs", "--landlock-access", "fs", *rules,

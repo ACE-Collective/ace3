@@ -266,6 +266,11 @@ class ExecutableSandboxConfig(SandboxConfig):
     work_dir: str = Field(default="var/correlation_sandbox", description="where each execution gets its private working directory (relative to DATA_DIR); must be on a filesystem that allows execution (not a noexec tmpfs)")
     allowed_tcp_ports: Optional[list[Annotated[int, Field(ge=1, le=65535)]]] = Field(default_factory=lambda: [443, 53], description="the only TCP ports a command may connect to (Landlock ABI 4, Linux 6.7); keeps it off the cloud metadata endpoint and ACE's own services. null leaves TCP unrestricted, and has to on an older kernel, where every command fails otherwise")
 
+class ToolSandboxConfig(SandboxConfig):
+    """the Landlock sandbox analysis modules run their external tools in (AnalysisModule.run_sandboxed_tool)"""
+    work_dir: str = Field(default="var/tool_sandbox", description="where each tool run gets its private working directory (relative to DATA_DIR); on the same filesystem as the alert storage, the outputs a module keeps are moved out by a rename")
+    file_size_limit: int = Field(default=1024 ** 3, gt=0, description="largest file a tool may write, in bytes (RLIMIT_FSIZE); a tool that writes a larger one is stopped there, and an extraction stopped this way is recorded as incomplete")
+
 class PcapConfig(BaseModel):
     """pcap/pcapng dissection with tshark in the Landlock sandbox, shared by every pcap module (docs/PCAP_ANALYSIS.md)"""
     model_config = ConfigDict(extra="forbid")
@@ -946,6 +951,7 @@ class ACEConfig(BaseModel):
     phishkit: PhishkitConfig = Field(default_factory=PhishkitConfig, description="phishkit subsystem configuration")
     js_deobfuscator: JsDeobfuscatorConfig = Field(default_factory=JsDeobfuscatorConfig, description="js-deobfuscator subsystem configuration")
     pcap: PcapConfig = Field(default_factory=PcapConfig, description="pcap/pcapng dissection shared by every pcap analysis module")
+    tool_sandbox: ToolSandboxConfig = Field(default_factory=ToolSandboxConfig, description="the Landlock sandbox analysis modules run the external tools that parse alert files in")
     storage: Optional[StorageConfig] = None
     s3: Optional[S3Config] = None
     redis: Optional[RedisConfig] = None

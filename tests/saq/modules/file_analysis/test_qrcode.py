@@ -10,6 +10,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_QRCODE, F_FILE
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer, QRCodeFilter
+from saq.sandbox.runner import SandboxResult
 from tests.saq.test_util import create_test_context
 
 DATA_DIR = Path(__file__).parent.parent / "test_file_analysis"
@@ -154,3 +155,20 @@ def test_summary(tmp_path):
     analysis.details = None
     assert analysis.extracted_text == []
     assert analysis.inverted is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("result,logged", [
+    (None, None),
+    (SandboxResult(0, "Title: x\nPages: many\n", ""), "unreadable page count"),
+    (SandboxResult(0, "Title: x\n", ""), None),
+])
+def test_pdf_page_count_that_cannot_be_read(tmp_path, monkeypatch, caplog, result, logged):
+    # pdfinfo did not finish or printed no count: every page is rendered instead
+    analyzer, _, _ = _analyze(tmp_path, QR_IMAGE)
+    monkeypatch.setattr(analyzer, "run_sandboxed_tool", lambda args, target, **kwargs: result)
+
+    assert analyzer._get_pdf_page_count(str(tmp_path / "document.pdf")) is None
+    if logged:
+        [record] = [r for r in caplog.records if logged in r.getMessage()]
+        assert record.path == str(tmp_path / "document.pdf")

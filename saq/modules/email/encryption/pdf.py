@@ -49,7 +49,8 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
             with open(wordlist_path, 'w') as fp:
                 fp.writelines(f'{word}\n' for word in word_list)
 
-            return crack_password(self.john_bin_path, hash_file, hash_file, f'--wordlist={wordlist_path}', login='pdf')
+            return crack_password(self, self.john_bin_path, hash_file, hash_file, f'--wordlist={os.path.abspath(wordlist_path)}',
+                                  login='pdf', read_files=[wordlist_path])
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
@@ -92,14 +93,16 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
                 return AnalysisExecutionResult.COMPLETED
 
             # extract the hash for cracking; pdf2john.pl ships in john's run directory (the .py variant needs pyhanko)
-            p = self.run_tool(['perl', os.path.join(self.john_bin_path, 'pdf2john.pl'), _file.full_path], _file.full_path, capture_output=True)
+            # its ExifTool library is in john's run directory too
+            p = self.run_sandboxed_tool(['perl', os.path.join(self.john_bin_path, 'pdf2john.pl'), _file.full_path],
+                                        _file.full_path, read_dirs=[self.john_bin_path])
             if p is None:
-                analysis.error = "pdf2john.pl timed out"
+                analysis.error = "pdf2john.pl did not finish"
                 return AnalysisExecutionResult.COMPLETED
 
             # pdf2john prints "<path>:" before it parses anything, so output with no hash is its failure too
-            if b'$pdf$' not in p.stdout:
-                stderr = p.stderr.decode(errors='ignore')
+            if '$pdf$' not in p.stdout:
+                stderr = p.stderr
                 analysis.error = f"pdf2john.pl failed: {stderr}"
                 logging.error(f"pdf2john.pl failed on {_file.full_path} with exit code {p.returncode}: {stderr.strip()}",
                               extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
@@ -107,7 +110,7 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
 
             # pdf2john puts the file's path in front of the hash, and john splits the line at the
             # first ':', so a ':' in the attachment's name would keep it from loading the hash
-            analysis.password = self.crack(b'pdf:' + p.stdout[p.stdout.index(b'$pdf$'):], analysis.word_list)
+            analysis.password = self.crack(b'pdf:' + p.stdout[p.stdout.index('$pdf$'):].encode(), analysis.word_list)
 
             if not analysis.password:
                 analysis.error = "could not crack password"

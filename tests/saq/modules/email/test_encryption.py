@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import uuid
 import zipfile
 from email import message_from_bytes, policy
 from email.message import EmailMessage
@@ -12,6 +14,7 @@ from pathlib import Path
 
 import msoffcrypto
 import pikepdf
+import psutil
 import pytest
 from msoffcrypto.format.ooxml import OOXMLFile
 
@@ -28,11 +31,13 @@ from saq.constants import (
 from saq.crash_report import get_crash_report_root_dir
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.environment import get_base_dir
 from saq.modules.email import EmailAnalysis
-from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis
+from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis, MSOfficeEncryptionAnalyzer
 from saq.modules.email.encryption.pdf import PDFEncryptionAnalysis, PDFEncryptionAnalyzer
-from saq.modules.email.encryption.rar import RarEncryptionAnalysis
-from saq.modules.email.encryption.zip import ZipEncryptionAnalysis
+from saq.modules.email.encryption.rar import RarEncryptionAnalysis, RarEncryptionAnalyzer
+from saq.modules.email.encryption.zip import ZipEncryptionAnalysis, ZipEncryptionAnalyzer
+from saq.sandbox.runner import SandboxResult
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
 from saq.util.uuid import get_storage_dir
 
@@ -157,17 +162,22 @@ def test_encrypted_zip_without_an_email(root_analysis, tmp_path):
     assert analysis.error == "ZipEncryptionAnalyzer was unable to crack the password"
 
 
+def _tool_runs_instead(monkeypatch, cls, tool_name: str, command: list[str]):
+    """Runs command in the sandbox in place of the module's tool_name; every other tool is left alone."""
+    real_run = cls.run_sandboxed_tool
+
+    def _run(self, args, target, **kwargs):
+        if any(os.path.basename(str(arg)) == tool_name for arg in args):
+            args = command
+        return real_run(self, args, target, **kwargs)
+
+    monkeypatch.setattr(cls, "run_sandboxed_tool", _run)
+
+
 @pytest.mark.integration
 def test_zip2john_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
-    real_popen = subprocess.Popen
-
-    def _popen(args, *a, **kw):
-        if args[0].endswith("zip2john"):
-            # a zip2john that prints nothing and complains
-            args = ["sh", "-c", "echo 'cannot read archive' >&2"]
-        return real_popen(args, *a, **kw)
-
-    monkeypatch.setattr("subprocess.Popen", _popen)
+    # a zip2john that prints nothing and complains
+    _tool_runs_instead(monkeypatch, ZipEncryptionAnalyzer, "zip2john", ["sh", "-c", "echo 'cannot read archive' >&2"])
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
     analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
@@ -191,24 +201,17 @@ def test_crack_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
 @pytest.mark.integration
 def test_extraction_timeout_stops_7z(root_analysis, tmp_path, monkeypatch, caplog):
     get_analysis_module_config(ANALYSIS_MODULE_ZIP_ENCRYPTION_ANALYZER).extract_timeout = 1
-    real_popen = subprocess.Popen
-    extractions = []
-
-    def _popen(args, *a, **kw):
-        if args[0] == "7z":
-            # a 7z that never finishes
-            process = real_popen(["sleep", "60"], *a, **kw)
-            extractions.append(process)
-            return process
-        return real_popen(args, *a, **kw)
-
-    monkeypatch.setattr("saq.modules.email.encryption.zip.Popen", _popen)
+    # a 7z that never finishes, found by its sleep's unique argument
+    marker = f"60.{uuid.uuid4().int % 10 ** 9}"
+    _tool_runs_instead(monkeypatch, ZipEncryptionAnalyzer, "7z", ["sleep", marker])
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
-    assert len(extractions) == 1
-    # killed, not left running
-    assert extractions[0].returncode == -9
-    assert any(r.levelno == logging.ERROR and "Unable to extract data from encrypted zip" in r.getMessage() for r in caplog.records)
+    # it ran until it was stopped, and is not left running
+    assert any(r.levelno == logging.WARNING and "stopped sleep" in r.getMessage() and "timed out" in r.getMessage()
+               for r in caplog.records)
+    assert not [p for p in psutil.process_iter(["cmdline"]) if p.info["cmdline"] == ["sleep", marker]]
+    # an archive that cannot be extracted in time is the file's problem, not the node's
+    assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted zip" in r.getMessage() for r in caplog.records)
 
     analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password == PASSWORD
@@ -285,14 +288,8 @@ def test_msoffice_password_not_found(root_analysis, tmp_path):
 
 @pytest.mark.integration
 def test_msoffice_office2john_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
-    real_popen = subprocess.Popen
-
-    def _popen(args, *a, **kw):
-        if args[-2].endswith("office2john.py"):
-            args = ["sh", "-c", "echo 'unsupported document' >&2"]
-        return real_popen(args, *a, **kw)
-
-    monkeypatch.setattr("saq.modules.email.encryption.msoffice.Popen", _popen)
+    _tool_runs_instead(monkeypatch, MSOfficeEncryptionAnalyzer, "office2john.py",
+                       ["sh", "-c", "echo 'unsupported document' >&2"])
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_docx(tmp_path), subtype="octet-stream"), MSOFFICE_MODULES)
 
     analysis = _attachment(email_observable, "statement.docx").get_and_load_analysis(MSOfficeEncryptionAnalysis)
@@ -334,8 +331,8 @@ def test_msoffice_ignores_files_that_are_not_office_documents(root_analysis, tmp
 #
 # rar
 #
-# nothing here can create a rar archive, so these replace rarfile and rar2john and check what the
-# module does around them
+# nothing here can create an encrypted rar archive, so these replace rarfile and rar2john and check
+# what the module does around them. The real unrar extracts the archive, which takes any password
 
 class _FakeRarFile:
     """An encrypted rar holding one file."""
@@ -356,31 +353,34 @@ class _FakeRarFile:
     def needs_password(self):
         return True
 
-    def extractall(self, path, pwd=None):
-        _FakeRarFile.extracted_with.append(pwd)
-        Path(path, "payload.exe").write_bytes(b"MZ payload")
-
 
 @pytest.fixture
 def fake_rar(monkeypatch, tmp_path):
+    """An "encrypted" rar: rarfile says it needs a password and rar2john gives its hash, and the real
+    unrar extracts it with whatever password it is given (there is no rar on the node to make an
+    encrypted one)."""
     import rarfile
 
     _FakeRarFile.extracted_with = []
     monkeypatch.setattr(rarfile, "RarFile", _FakeRarFile)
-    real_popen = subprocess.Popen
+    real_run = RarEncryptionAnalyzer.run_sandboxed_tool
 
-    def _popen(args, *a, **kw):
+    def _run(self, args, target, **kwargs):
         if args[0].endswith("rar2john"):
-            args = ["echo", "payload.rar:$rar5$fakehash"]
-        return real_popen(args, *a, **kw)
+            return SandboxResult(0, "payload.rar:$rar5$fakehash\n", "")
+        if args[0] == "unrar":
+            _FakeRarFile.extracted_with.append(next(arg[2:] for arg in args if arg.startswith("-p")))
+        return real_run(self, args, target, **kwargs)
 
-    monkeypatch.setattr("subprocess.Popen", _popen)
+    monkeypatch.setattr(RarEncryptionAnalyzer, "run_sandboxed_tool", _run)
 
     archive = tmp_path / "payload.rar"
-    archive.write_bytes(b"Rar!\x1a\x07\x01\x00 not really")
+    shutil.copyfile(RAR_SAMPLE, archive)
     return archive
 
 
+RAR_SAMPLE = os.path.join(get_base_dir(), "tests", "saq", "modules", "test_file_analysis_full", "rar", "test.r07")
+RAR_SAMPLE_MEMBER = "IMPORTANT DOCUMENT.vbs"
 RAR_MODULES = ("file_type", "email_analyzer", ANALYSIS_MODULE_RAR_ENCRYPTION_ANALYZER)
 
 
@@ -388,7 +388,7 @@ RAR_MODULES = ("file_type", "email_analyzer", ANALYSIS_MODULE_RAR_ENCRYPTION_ANA
 def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path, fake_rar, monkeypatch):
     wordlists = []
 
-    def _crack(john_bin_path, hash_file, filename, mode):
+    def _crack(module, john_bin_path, hash_file, filename, mode, **kwargs):
         with open(mode.removeprefix("--wordlist=")) as fp:
             words = fp.read().split()
         wordlists.append(words)
@@ -406,13 +406,43 @@ def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path,
     assert analysis.password == PASSWORD
     assert _FakeRarFile.extracted_with == [PASSWORD]
 
-    payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "payload.exe")
+    payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
     assert [d.signature_uuid for d in payload.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
 
 
 @pytest.mark.integration
+def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
+
+    def _run(self, args, target, **kwargs):
+        if args[0] == "unrar":
+            return SandboxResult(3, "", f"CRC failed in the encrypted file {RAR_SAMPLE_MEMBER}\n")
+        return fake_run(self, args, target, **kwargs)
+
+    monkeypatch.setattr(RarEncryptionAnalyzer, "run_sandboxed_tool", _run)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.password == PASSWORD
+    assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
+    assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted rar" in r.getMessage()
+               and "CRC failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_msoffice_office2john_that_does_not_finish(root_analysis, tmp_path, monkeypatch):
+    monkeypatch.setattr(MSOfficeEncryptionAnalyzer, "run_sandboxed_tool", lambda self, args, target, **kwargs: None)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_docx(tmp_path), subtype="octet-stream"), MSOFFICE_MODULES)
+
+    analysis = _attachment(email_observable, "statement.docx").get_and_load_analysis(MSOfficeEncryptionAnalysis)
+    assert analysis.error == "office2john.py did not finish"
+    assert analysis.password is None
+
+
+@pytest.mark.integration
 def test_rar_password_not_found(root_analysis, tmp_path, fake_rar, monkeypatch):
-    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args: None)
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: None)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
@@ -548,14 +578,7 @@ def test_pdf_password_not_in_email(root_analysis, tmp_path):
 
 @pytest.mark.integration
 def test_pdf2john_failure_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
-    real_popen = subprocess.Popen
-
-    def _popen(args, *a, **kw):
-        if args[0] == "perl" and args[1].endswith("pdf2john.pl"):
-            args = ["sh", "-c", "echo 'not a pdf' >&2; exit 2"]
-        return real_popen(args, *a, **kw)
-
-    monkeypatch.setattr("subprocess.Popen", _popen)
+    _tool_runs_instead(monkeypatch, PDFEncryptionAnalyzer, "pdf2john.pl", ["sh", "-c", "echo 'not a pdf' >&2; exit 2"])
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf"), PDF_MODULES)
 
     analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
@@ -581,12 +604,12 @@ def test_pdf2john_without_a_hash_is_recorded(root_analysis, tmp_path, caplog):
 
 @pytest.mark.integration
 def test_pdf2john_timeout_is_recorded(root_analysis, tmp_path, monkeypatch):
-    # run_tool returns None once it has stopped a tool that would outlive the module's time
-    monkeypatch.setattr(PDFEncryptionAnalyzer, "run_tool", lambda self, args, target, **kwargs: None)
+    # run_sandboxed_tool returns None once it has stopped a tool that would outlive the module's time
+    monkeypatch.setattr(PDFEncryptionAnalyzer, "run_sandboxed_tool", lambda self, args, target, **kwargs: None)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf"), PDF_MODULES)
 
     analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
-    assert analysis.error == "pdf2john.pl timed out"
+    assert analysis.error == "pdf2john.pl did not finish"
     assert analysis.password is None
 
 

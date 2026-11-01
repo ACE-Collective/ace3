@@ -1,6 +1,5 @@
 import logging
 import os
-from subprocess import PIPE, Popen
 from typing import Type, override
 import zipfile
 
@@ -177,22 +176,19 @@ class ZipEncryptionAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # extract the hash for cracking
-        p = self.run_tool([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], _file.full_path,
-                          capture_output=True)
+        p = self.run_sandboxed_tool([os.path.join(self.john_bin_path, 'zip2john'), _file.full_path], _file.full_path)
         if p is None:
-            analysis.error = "zip2john timed out"
+            analysis.error = "zip2john did not finish"
             return AnalysisExecutionResult.COMPLETED
 
-        stdout, stderr = p.stdout, p.stderr
-
         # did we get the hash?
-        if not stdout:
-            analysis.error = f"zip2john failed: {stderr.decode()}"
+        if not p.stdout:
+            analysis.error = f"zip2john failed: {p.stderr}"
             return AnalysisExecutionResult.COMPLETED
 
         hash_file = f'{_file.full_path}.hash'
-        with open(hash_file, 'wb') as fp:
-            fp.write(stdout)
+        with open(hash_file, 'w') as fp:
+            fp.write(p.stdout)
 
         # build wordlist for cracking password from email body text, if available
         analysis.word_list = []
@@ -224,7 +220,9 @@ class ZipEncryptionAnalyzer(AnalysisModule):
                             fp.write(f'{word}\n')
 
                     try:
-                        analysis.password = crack_password(self.john_bin_path, hash_file, _file.full_path, f'--wordlist={wordlist_path}')
+                        analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
+                                                           f'--wordlist={os.path.abspath(wordlist_path)}',
+                                                           read_files=[wordlist_path])
                     except Exception as e:
                         logging.error(f"error encountered when trying to crack password for {_file}: {e}")
                         return AnalysisExecutionResult.COMPLETED
@@ -248,14 +246,11 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
         # extract data from zip to output directory w/ 7zip
         # 'x' = extract, '-y' = assume yes to all queries
-        p = Popen(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{output_dir}", _file.full_path], stdout=PIPE, stderr=PIPE)
-        try:
-            p.communicate(timeout=self.extract_timeout)
-        except Exception as e:
-            # a 7z that timed out is still running (and still writing): stop it before moving on
-            p.kill()
-            p.communicate()
-            logging.error(f"Unable to extract data from encrypted zip {_file}: {e}")
+        if self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
+                                    _file.full_path], _file.full_path, timeout=self.extract_timeout,
+                                   write_dirs=[output_dir]) is None:
+            # whatever it extracted before it was stopped may be cut short
+            logging.warning(f"Unable to extract data from encrypted zip {_file}")
             return AnalysisExecutionResult.COMPLETED
 
         # add files in the zip as observables

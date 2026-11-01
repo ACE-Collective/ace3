@@ -1,6 +1,5 @@
 import base64
 import logging
-import subprocess
 from pathlib import Path
 
 import pikepdf
@@ -12,7 +11,7 @@ from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.file_analysis.archive import ArchiveAnalyzer
-from saq.modules.file_analysis.pdf import PDFAnalysis, PDFTextAnalysis
+from saq.modules.file_analysis.pdf import PDFAnalysis, PDFTextAnalysis, PDFTextAnalyzer
 from saq.util.uuid import get_storage_dir
 
 TEXT = "Your invoice is ready"
@@ -197,19 +196,19 @@ def test_pdftotext_ignores_files_that_are_not_pdfs(root_analysis, tmp_path):
 @pytest.mark.integration
 def test_pdftotext_timeout_stops_it(root_analysis, tmp_path, monkeypatch, caplog):
     get_analysis_module_config("pdftotext").timeout = 1
-    real_popen = subprocess.Popen
-    processes = []
+    real_run = PDFTextAnalyzer.run_sandboxed_tool
 
-    def _popen(args, *a, **kw):
-        process = real_popen(["sleep", "60"], *a, **kw)
-        processes.append(process)
-        return process
+    def _run(self, args, target, **kwargs):
+        # a pdftotext that hangs once it has started writing its output
+        return real_run(self, ["sh", "-c", "echo partial > output.txt; exec sleep 60"], target,
+                        **kwargs)
 
-    monkeypatch.setattr("saq.modules.file_analysis.pdf.Popen", _popen)
+    monkeypatch.setattr(PDFTextAnalyzer, "run_sandboxed_tool", _run)
     pdf = _analyze(root_analysis, _pdf(tmp_path), "pdftotext")
 
     analysis = pdf.get_and_load_analysis(PDFTextAnalysis)
     assert analysis.output_path is None
-    # killed and reaped, not left running
-    assert [p.returncode for p in processes] == [-9]
-    assert any(r.levelno == logging.WARNING and "timeout executing" in r.getMessage() for r in caplog.records)
+    # what it wrote before it was stopped is not kept
+    assert not [o for o in analysis.observables if o.type == F_FILE]
+    assert any(r.levelno == logging.WARNING and "stopped sh" in r.getMessage() and "timed out" in r.getMessage()
+               for r in caplog.records)
