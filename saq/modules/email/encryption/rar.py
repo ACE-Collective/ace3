@@ -238,7 +238,8 @@ class RarEncryptionAnalyzer(AnalysisModule):
 
         # rarfile would run unrar outside the sandbox. the trailing separator makes unrar take
         # output_dir as the directory to extract into
-        result = self.run_sandboxed_tool(['unrar', 'x', '-y', f'-p{analysis.password}', _file.full_path,
+        # -kb keeps a member cut off at the file size limit (UNRAR_WRITE_ERROR)
+        result = self.run_sandboxed_tool(['unrar', 'x', '-y', '-kb', f'-p{analysis.password}', _file.full_path,
                                           os.path.join(os.path.abspath(output_dir), '')], _file.full_path,
                                          read_files=archive_volumes(_file.full_path), write_dirs=[output_dir])
         if result is None:

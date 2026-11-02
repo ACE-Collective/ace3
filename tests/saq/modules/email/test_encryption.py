@@ -36,6 +36,7 @@ from saq.modules.email import EmailAnalysis
 from saq.modules.email.encryption.msoffice import MSOfficeEncryptionAnalysis, MSOfficeEncryptionAnalyzer
 from saq.modules.email.encryption.pdf import PDFEncryptionAnalysis, PDFEncryptionAnalyzer
 from saq.modules.email.encryption.rar import RarEncryptionAnalysis, RarEncryptionAnalyzer
+from saq.modules.file_analysis.archive import UNRAR_WRITE_ERROR
 from saq.modules.email.encryption.zip import ZipEncryptionAnalysis, ZipEncryptionAnalyzer
 from saq.sandbox.runner import SandboxResult
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
@@ -451,7 +452,7 @@ def test_rar_split_across_attachments_gets_its_other_volumes(root_analysis, tmp_
 @pytest.mark.integration
 def test_rar_stopped_at_the_file_size_limit_is_recorded(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
     monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
-    # the archive's one member is 900 KB, which unrar deletes once it cannot write it
+    # the archive's one member is 900 KB, which unrar keeps cut off at the limit
     monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
 
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
@@ -459,6 +460,30 @@ def test_rar_stopped_at_the_file_size_limit_is_recorded(root_analysis, tmp_path,
     analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
     assert analysis.error == "unrar could not write every file"
     assert any(r.levelno == logging.WARNING and "Write error" in r.getMessage() for r in caplog.records)
+    payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
+    assert [d.signature_uuid for d in payload.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
+
+
+@pytest.mark.integration
+def test_rar_that_unrar_cannot_write_keeps_what_it_extracted(root_analysis, tmp_path, fake_rar, monkeypatch):
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
+
+    def _run(self, args, target, **kwargs):
+        if args[0] == "unrar":
+            # it wrote one member before the one it could not
+            [output_dir] = kwargs["write_dirs"]
+            Path(output_dir, "first.vbs").write_text("decrypted")
+            return SandboxResult(UNRAR_WRITE_ERROR, "", "Write error in the file second.vbs\n")
+        return fake_run(self, args, target, **kwargs)
+
+    monkeypatch.setattr(RarEncryptionAnalyzer, "run_sandboxed_tool", _run)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.error == "unrar could not write every file"
+    payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "first.vbs")
+    assert [d.signature_uuid for d in payload.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
 
 
 @pytest.mark.integration

@@ -611,7 +611,8 @@ def test_an_archive_whose_listing_is_too_large_is_still_extracted(root_analysis,
 
 @pytest.mark.integration
 def test_a_rar_extraction_stopped_at_the_file_size_limit_is_recorded(root_analysis, monkeypatch, caplog):
-    # unrar does not die at the limit as 7z does: it stops with a write error and deletes the member
+    # unrar does not die at the limit as 7z does: it stops with a write error, and keeps the member cut
+    # off there only when told to (-kb). A single dangerous member padded past the limit still alerts
     monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
     with open(os.path.join(get_base_dir(), "tests/saq/modules/test_file_analysis_full/rar/test.r07"), "rb") as fp:
         # its one member is 900 KB
@@ -621,8 +622,13 @@ def test_a_rar_extraction_stopped_at_the_file_size_limit_is_recorded(root_analys
     with caplog.at_level(logging.WARNING):
         assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
-    assert observable.get_analysis(ArchiveAnalysis).extraction_error == "the extractor did not finish"
+    analysis = observable.get_analysis(ArchiveAnalysis)
+    assert analysis.extraction_error == "the extractor did not finish"
     assert any(r.levelno == logging.WARNING and "Write error" in r.getMessage() for r in caplog.records)
+    assert analysis.extracted_files == ["IMPORTANT DOCUMENT.vbs"]
+    (member,) = analysis.get_observables_by_type(F_FILE)
+    assert os.path.getsize(member.full_path) == 512 * 1024
+    assert [d.signature_uuid for d in member.detections] == [ARCHIVE_SINGLE_DANGEROUS_FILE.uuid]
 
 
 @pytest.mark.integration

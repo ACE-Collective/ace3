@@ -44,8 +44,8 @@ directory as hostile, as it did before.
 
 - A timeout, too much output or a file larger than `tool_sandbox.file_size_limit` is the file's
   doing. It is logged at WARNING with the path, and the module records that the tool did not finish.
-  A file that hit the limit is cut off there, and the tool wrote nothing after it (unrar instead
-  deletes it and exits 5). The archive and encrypted-archive modules keep what was extracted, and
+  A file that hit the limit is cut off there, and the tool wrote nothing after it. unrar exits 5
+  instead of dying, and keeps the file only with `-kb`, which both unrar extractions pass. The archive and encrypted-archive modules keep what was extracted, and
   their analysis says the extraction did not finish.
 - An archive listing is read even when it is longer than `tool_sandbox.max_output_bytes`
   (`partial_output`): an archive padded with entries has more files than any limit, so it is

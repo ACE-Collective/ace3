@@ -91,7 +91,8 @@ def normalize_extracted_permissions(extracted_path: str):
 
 
 # unrar does not die of SIGXFSZ: on a member past tool_sandbox.file_size_limit it stops with a write
-# error, deletes that member and exits with this
+# error and exits with this. Without -kb it also deletes that member, which 7z keeps cut off at the
+# limit, and a single dangerous member padded past it would raise no detection
 UNRAR_WRITE_ERROR = 5
 
 # the name of the first volume of a multi-volume archive, and the pattern its other volumes' names follow
@@ -521,7 +522,8 @@ class ArchiveAnalyzer(AnalysisModule):
 
         if is_rar_file:
             # quiet, as unzip is: a line per member would stop an archive padded with entries
-            params = ['unrar', 'e', '-y', '-o+', '-idq', local_file_path, extracted_path]
+            # -kb keeps a member cut off at the file size limit (UNRAR_WRITE_ERROR)
+            params = ['unrar', 'e', '-y', '-o+', '-idq', '-kb', local_file_path, extracted_path]
         elif is_jar_file:
             # Disabled on 02/17/2021 since the procyon_decompiler.jar version we have is old and busted. They moved
             # from Bitbucket to GitHub at some point and no longer have precompiled releases available.
