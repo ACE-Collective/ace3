@@ -14,6 +14,16 @@ from saq.database import pool
 from saq.database.pool import execute_with_db_cursor, get_db, get_db_connection, get_pool, initialize_database, reset_pools
 from tests.saq.helpers import log_count, recv_test_message, send_test_message, wait_for_condition
 
+
+@pytest.fixture(autouse=True)
+def fresh_ace_pool():
+    """Starts each test on a new ace pool. The cached one keeps the config object, and so the connection lifetime
+    and the window, it was built with, which the per-test config restore never reaches. The other pools are left
+    alone, because the next test's setup would log reconnecting to each of them."""
+    get_pool(DB_ACE).clear()
+    del pool._global_db_pools[DB_ACE]
+
+
 @pytest.mark.unit
 def test_execute_with_db_cursor():
     def _target(db, cursor, param1):
@@ -49,38 +59,45 @@ def test_pooling():
     assert get_pool().available_count == 2
 
 @pytest.mark.integration
-def test_pooling_old_connection():
+def test_pooling_old_connection(monkeypatch):
     get_pool().clear()
 
-    # make them invalid immediately
-    get_database_config(DB_ACE).max_connection_lifetime = "00:00:00"
+    # the pool holds this config object, which the per-test config restore never reaches, so monkeypatch puts the
+    # lifetime back even when an assert below fails
+    monkeypatch.setattr(get_database_config(DB_ACE), "max_connection_lifetime", "00:00:00")
 
     # this is needed to reset the timeouts on the existing connections
     reset_pools()
 
+    # the test's setup may have opened connections of its own
+    def new_connections():
+        return log_count('got new database connection to') - before
+
+    before = log_count('got new database connection to')
+
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') ==  1
+    assert new_connections() == 1
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 2
+    assert new_connections() == 2
 
     # change it back and then we should start re-using the connections again
-    get_database_config(DB_ACE).max_connection_lifetime = "00:01:00"
+    monkeypatch.setattr(get_database_config(DB_ACE), "max_connection_lifetime", "00:01:00")
     reset_pools()
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 3
+    assert new_connections() == 3
 
     with get_db_connection() as _:
         pass
 
-    assert log_count('got new database connection to') == 3
+    assert new_connections() == 3
 
 @pytest.mark.integration
 def test_pooling_without_contextmanager():
@@ -377,13 +394,10 @@ class _Clock(datetime):
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Moves the pool's clock, and starts the test on a new ace pool: the cached one keeps the connection lifetime,
-    and so the window, it was built with, which an earlier test may have changed. The other pools are left alone,
-    because the next test's setup would log reconnecting to each of them."""
+    """Moves the pool's clock. fresh_ace_pool has dropped the cached ace pool, so the test's first checkout builds one
+    whose window starts on this clock."""
     monkeypatch.setattr(pool, "datetime", _Clock)
     monkeypatch.setattr(_Clock, "offset", timedelta(0))
-    get_pool(DB_ACE).clear()
-    del pool._global_db_pools[DB_ACE]
     return _Clock
 
 
