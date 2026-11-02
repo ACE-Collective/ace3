@@ -13,6 +13,7 @@ from whoisit.errors import (
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
     ANALYSIS_MODULE_RDAP_ANALYZER,
+    F_EMAIL_FIRST_HOP_IP,
     F_FQDN,
     F_IP,
     AnalysisExecutionResult,
@@ -333,6 +334,19 @@ def test_rdap_analyzer_accepts_routable_ip(value):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("value, expected", [("10.1.2.3", False), ("8.8.8.8", True)])
+def test_rdap_analyzer_custom_requirement_ip_subtype(value, expected):
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_EMAIL_FIRST_HOP_IP, value)
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is expected
+
+
+@pytest.mark.unit
 def test_rdap_analyzer_custom_requirement_ignores_fqdn():
     root = create_root_analysis()
     root.initialize_storage()
@@ -524,6 +538,35 @@ def test_rdap_analyzer_ip_queried_verbatim(test_context, monkeypatch):
 
     analyzer.execute_analysis(observable)
     assert seen["query"] == "8.8.8.8"
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_ip_subtype_queried_as_ip(test_context, monkeypatch):
+    """A subtype of ``ip`` (the first-hop IP of an email) is looked up as
+    an IP, not as a domain whose TLD is the last octet."""
+    seen = {}
+
+    def _capture(ip, **_kw):
+        seen["query"] = ip
+        return _make_rdap_ip_result()
+
+    _patch_rdap_ip(monkeypatch, _capture)
+    monkeypatch.setattr("whoisit.domain", lambda *_a, **_kw: pytest.fail("queried as a domain"))
+    _patch_whois_must_not_be_called(monkeypatch)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_EMAIL_FIRST_HOP_IP, "8.8.8.8")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+    assert seen["query"] == "8.8.8.8"
+    assert analysis.lookup_protocol == "rdap"
+    assert analysis.network_cidr == "8.8.8.0/24"
+    assert analysis.error is None
 
 
 @pytest.mark.unit
