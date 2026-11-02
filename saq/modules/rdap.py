@@ -54,6 +54,7 @@ from saq.analysis.presenter.analysis_presenter import (
 )
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util.strings import format_item_list_for_summary
 
 # whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
@@ -541,6 +542,12 @@ class RdapAnalysis(Analysis):
         return f"RDAP Analysis{suffix}: " + ", ".join(parts)
 
 
+def _is_ip(observable) -> bool:
+    # the module also runs on subtypes of ip (email_first_hop_ip), which an
+    # exact type comparison would send down the domain path
+    return get_type_hierarchy().is_subtype(observable.type, F_IP)
+
+
 class RdapAnalyzer(AnalysisModule):
     """Analysis module performing RDAP (with WHOIS fallback) on FQDN
     observables.
@@ -558,7 +565,7 @@ class RdapAnalyzer(AnalysisModule):
         """Skip IP observables that are not globally routable (RFC1918,
         loopback, link-local, CGNAT, multicast, reserved) — they have no
         public RDAP registration data."""
-        if observable.type != F_IP:
+        if not _is_ip(observable):
             return True
         try:
             return ipaddress.ip_address(observable.value).is_global
@@ -575,7 +582,7 @@ class RdapAnalyzer(AnalysisModule):
         now = datetime.now(timezone.utc)
         analysis.datetime_of_analysis = now.isoformat(" ")
 
-        is_ip = observable.type == F_IP
+        is_ip = _is_ip(observable)
         if is_ip:
             # IPs are queried verbatim; RDAP answers for the network the
             # address falls in, so no eTLD+1-style reduction applies.

@@ -1667,6 +1667,7 @@ analysis_module_rdap_analyzer:
   python_class: RdapAnalyzer
   enabled: true
   cache_ttl: 604800  # 7 days
+  version: 2 # 2: subtypes of ip (email_first_hop_ip) were looked up as domains
 
 analysis_module_nrd_analyzer:
   name: nrd_analyzer
