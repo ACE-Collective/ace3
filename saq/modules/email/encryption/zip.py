@@ -249,9 +249,10 @@ class ZipEncryptionAnalyzer(AnalysisModule):
         if self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
                                     _file.full_path], _file.full_path, timeout=self.extract_timeout,
                                    write_dirs=[output_dir]) is None:
-            # whatever it extracted before it was stopped may be cut short
-            logging.warning(f"Unable to extract data from encrypted zip {_file}")
-            return AnalysisExecutionResult.COMPLETED
+            # run_sandboxed_tool() logged why (a timeout, a member over the file size limit). What it
+            # extracted before it was stopped is still decrypted content and is still added: the last
+            # file may be cut short
+            analysis.error = "7z did not finish"
 
         # add files in the zip as observables
         for dirpath, dirnames, filenames in os.walk(output_dir):

@@ -624,6 +624,25 @@ def test_a_program_the_sandbox_cannot_start_is_reported(root_analysis, fake_tool
 
 
 @pytest.mark.unit
+def test_a_landlock_probe_that_could_not_run_is_not_blamed_on_the_node(root_analysis, monkeypatch, caplog):
+    # landlock_available() reported why the probe could not run (a fork that failed under load)
+    monkeypatch.setattr(base_module, "landlock_available", lambda: None)
+    run = Mock()
+    monkeypatch.setattr(base_module, "run_sandboxed", run)
+    module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+
+    with caplog.at_level(logging.WARNING):
+        assert module.run_sandboxed_tool(["true"], "target") is None
+
+    run.assert_not_called()
+    [record] = [r for r in caplog.records if "SsdeepAnalyzer" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert "the Landlock probe could not run" in record.getMessage()
+    # the next tool that cannot run on this node is still reported
+    assert not base_module._REPORTED_SANDBOX_FAILURES
+
+
+@pytest.mark.unit
 def test_without_landlock_no_tool_runs(root_analysis, monkeypatch, caplog):
     monkeypatch.setattr(base_module, "landlock_available", lambda: False)
     run = Mock()

@@ -11,6 +11,7 @@ from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResul
 from saq.cracking import crack_password, generate_wordlist
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.archive import UNRAR_WRITE_ERROR, archive_volumes
 from saq.observables.file import FileObservable
 
 KEY_ENCRYPTION_INFO = 'encryption_info'
@@ -239,10 +240,17 @@ class RarEncryptionAnalyzer(AnalysisModule):
         # output_dir as the directory to extract into
         result = self.run_sandboxed_tool(['unrar', 'x', '-y', f'-p{analysis.password}', _file.full_path,
                                           os.path.join(os.path.abspath(output_dir), '')], _file.full_path,
-                                         write_dirs=[output_dir])
-        if result is None or result.returncode != 0:
-            logging.warning(f"Unable to extract data from encrypted rar {_file}: "
-                            f"{result.stderr.strip()[-500:] if result else 'unrar did not finish'}")
+                                         read_files=archive_volumes(_file.full_path), write_dirs=[output_dir])
+        if result is None:
+            # run_sandboxed_tool() logged why (a timeout). What it extracted before it was stopped is
+            # still decrypted content and is still added: the last file may be cut short
+            analysis.error = "unrar did not finish"
+        elif result.returncode == UNRAR_WRITE_ERROR:
+            # what it wrote before the member it could not is still decrypted content and is still added
+            logging.warning(f"unrar could not write every file of encrypted rar {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = "unrar could not write every file"
+        elif result.returncode != 0:
+            logging.warning(f"Unable to extract data from encrypted rar {_file}: {result.stderr.strip()[-500:]}")
             return AnalysisExecutionResult.COMPLETED
 
         # add files in the Rar as observables

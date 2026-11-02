@@ -44,9 +44,16 @@ directory as hostile, as it did before.
 
 - A timeout, too much output or a file larger than `tool_sandbox.file_size_limit` is the file's
   doing. It is logged at WARNING with the path, and the module records that the tool did not finish.
-  A file that hit the limit is cut off there, and the tool wrote nothing after it: an archive keeps
-  what was extracted, and its analysis says the extraction did not finish.
+  A file that hit the limit is cut off there, and the tool wrote nothing after it (unrar instead
+  deletes it and exits 5). The archive and encrypted-archive modules keep what was extracted, and
+  their analysis says the extraction did not finish.
+- An archive listing is read even when it is longer than `tool_sandbox.max_output_bytes`
+  (`partial_output`): an archive padded with entries has more files than any limit, so it is
+  extracted under the file count limit, which takes the dangerous files first. The extractors run
+  quiet, so the padding does not stop the extraction too.
 - A cancelled analysis is logged at INFO.
+- A Landlock probe that could not run (a fork that failed under load) is logged at ERROR with its
+  traceback, and the tool is skipped with a WARNING. The next call probes again.
 - A tool the node cannot run at all is an operator's problem. That covers a node without Landlock, a
   program that is not found, a program in a directory that holds SAQ_HOME or the data directory,
   a program the sandbox cannot start (exit 125, 126 or 127 with no output), and a runtime it keeps
@@ -69,7 +76,8 @@ On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails.
 - A split archive does not extract without its other volumes. The archive module gives the
   extractor the files next to the first volume that are named as its other volumes are
   (`name.7z.002`, `name.part2.rar`, `name.r00`, `name.z01`, `name.c00`), as `read_files`, and never a
-  link (`archive_volumes()`).
+  symlink (`archive_volumes()`). The encrypted-rar module does the same. A hard link can be one:
+  ACE links every file it stores into its `.hardcopy` store.
 - unace opens the directory its archive is in, to look for other volumes, and fails when it cannot.
   It runs on a copy of the archive and its other volumes in a temporary directory of its own, so the
   sandbox never lets it list the alert's files.

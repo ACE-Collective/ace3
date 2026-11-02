@@ -19,7 +19,7 @@ from saq.configuration.config import get_analysis_module_config, get_config
 from saq.crash_report import get_crash_report_root_dir
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.environment import get_data_dir
+from saq.environment import get_base_dir, get_data_dir
 from saq.signatures.builtin import ARCHIVE_SINGLE_DANGEROUS_FILE
 from saq.modules.file_analysis.archive import ArchiveAnalysis, ArchiveAnalyzer, archive_volumes, normalize_extracted_permissions, order_archive_file_list
 from saq.modules.file_analysis.file_type import FileTypeAnalysis
@@ -591,13 +591,52 @@ def test_an_extraction_that_does_not_finish_is_recorded(root_analysis, monkeypat
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("file_type,mime_type", [SPREADSHEET_ZIP, ZIP], ids=["unzip", "7z"])
+def test_an_archive_whose_listing_is_too_large_is_still_extracted(root_analysis, monkeypatch, file_type, mime_type):
+    # a small archive padded with empty, long-named entries lists more than the sandbox keeps of a
+    # tool's output; it is extracted under the file count limit, which takes the executable first
+    monkeypatch.setattr(get_config().tool_sandbox, "max_output_bytes", 16 * 1024)
+    analyzer = _analyzer(root_analysis)
+    monkeypatch.setattr(analyzer.config, "max_file_count", 1)
+    members = {f"padding/{'x' * 100}{i}.txt": "" for i in range(300)}
+    observable = _archive_observable(root_analysis, "data.bin", file_type, mime_type,
+                                     _zip_bytes({**members, "payload.exe": "MZ"}))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(ArchiveAnalysis)
+    assert analysis.extracted_files == ["payload.exe"]
+    assert analysis.extraction_error == "the listing was larger than 16384 bytes, so the file count is not known"
+
+
+@pytest.mark.integration
+def test_a_rar_extraction_stopped_at_the_file_size_limit_is_recorded(root_analysis, monkeypatch, caplog):
+    # unrar does not die at the limit as 7z does: it stops with a write error and deletes the member
+    monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
+    with open(os.path.join(get_base_dir(), "tests/saq/modules/test_file_analysis_full/rar/test.r07"), "rb") as fp:
+        # its one member is 900 KB
+        observable = _archive_observable(root_analysis, "sample.rar", "RAR archive data, v4", "application/x-rar",
+                                         fp.read())
+
+    with caplog.at_level(logging.WARNING):
+        assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    assert observable.get_analysis(ArchiveAnalysis).extraction_error == "the extractor did not finish"
+    assert any(r.levelno == logging.WARNING and "Write error" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
 def test_a_multi_volume_archive_is_extracted(root_analysis, tmp_path):
     # a payload split across attachments, which sit next to each other in the files directory
     (tmp_path / "payload.exe").write_bytes(os.urandom(3000))
     subprocess.run(["7z", "a", "-v2k", str(tmp_path / "split.7z"), str(tmp_path / "payload.exe")],
                    check=True, capture_output=True)
     first, second = sorted(tmp_path.glob("split.7z.*"))
-    shutil.copyfile(second, root_analysis.create_file_path(second.name))
+    # added as the attachment it is, which ACE hard-links into its .hardcopy store
+    second_path = root_analysis.create_file_path(second.name)
+    shutil.copyfile(second, second_path)
+    root_analysis.add_file_observable(second_path)
+    assert os.stat(second_path).st_nlink > 1
     observable = _archive_observable(root_analysis, first.name, "7-zip archive data, version 0.4",
                                      "application/x-7z-compressed", first.read_bytes())
 
@@ -616,7 +655,7 @@ def test_unace_gets_the_other_volumes(root_analysis, fake_tools):
     with open(root_analysis.create_file_path("split.c00"), "wb") as fp:
         fp.write(b"second volume")
 
-    assert _analyzer(root_analysis)._run_unace("l", observable.full_path).split() == [b"split.ace", b"split.c00"]
+    assert _analyzer(root_analysis)._run_unace("l", observable.full_path).stdout.split() == ["split.ace", "split.c00"]
 
 
 @pytest.mark.unit
@@ -632,9 +671,12 @@ def test_unace_gets_the_other_volumes(root_analysis, fake_tools):
 def test_the_other_volumes_of_an_archive(tmp_path, first, others):
     for name in [first, *others, "b.7z.002", "b.r00", "b.part2.rar", "a.txt", "a.7z.002.txt"]:
         (tmp_path / name).write_bytes(b"x")
-    # a link could point the tool at a file of ACE's, and a directory is not a volume
+    # a symlink could point the tool at a file of ACE's, and a directory is not a volume
     os.symlink("/etc/passwd", tmp_path / ("a.7z.003" if first.endswith(".001") else "a.r02"))
     os.mkdir(tmp_path / "a.z02")
+    # every file ACE stores has a hard link in its .hardcopy store
+    for name in others:
+        os.link(tmp_path / name, tmp_path / f"hardcopy-{name}")
 
     assert archive_volumes(str(tmp_path / first)) == sorted(str(tmp_path / name) for name in others)
 

@@ -30,6 +30,7 @@ from saq.util.filesystem import is_path_under
 from saq.sandbox.runner import (
     NODE_FAILURE_EXIT_CODES,
     SandboxCancelled,
+    SandboxOutputExceeded,
     SandboxResult,
     build_sandbox_argv,
     create_workdir,
@@ -405,6 +406,7 @@ class AnalysisModule(FileWatcherMixin):
         env: Optional[dict[str, str]] = None,
         memory_limit: Optional[int] = None,
         startup_errors: Sequence[str] = (),
+        partial_output: bool = False,
     ) -> Optional[SandboxResult]:
         """Runs an external tool on target, a file from the alert, in the Landlock sandbox
         (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
@@ -425,7 +427,8 @@ class AnalysisModule(FileWatcherMixin):
         space than it uses. startup_errors are what such a runtime starts its stdout or stderr with
         when the sandbox keeps it from starting (a directory it needs is not readable, the memory
         limit is too small for it): a non-zero exit that starts so is reported like a program the
-        sandbox cannot start."""
+        sandbox cannot start. With partial_output, a tool stopped for writing too much output returns
+        what it wrote up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
         config = get_config().tool_sandbox
         if memory_limit is not None:
             config = config.model_copy(update={"memory_limit": memory_limit})
@@ -440,7 +443,14 @@ class AnalysisModule(FileWatcherMixin):
             self._sandbox_failed(program, target, str(e))
             return None
 
-        if not landlock_available():
+        available = landlock_available()
+        if available is None:
+            # landlock_available() reported why with its traceback; the next call probes again, so
+            # this says nothing about the node, and a later failure of the tool is still reported
+            logging.warning("%s did not run %s on %s: the Landlock probe could not run", self, os.path.basename(program),
+                            target, extra={"path": target})
+            return None
+        if not available:
             self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
             return None
 
@@ -474,8 +484,12 @@ class AnalysisModule(FileWatcherMixin):
                 logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,
                              extra={"path": target})
                 return None
+            except SandboxOutputExceeded as e:
+                # the file's doing, not the node's
+                logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return e.result if partial_output else None
             except RuntimeError as e:
-                # a timeout or too much output: the file's doing, not the node's
+                # a timeout: the file's doing, not the node's
                 logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
                 return None
 

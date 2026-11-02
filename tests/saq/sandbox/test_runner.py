@@ -1,6 +1,7 @@
 """The sandbox as any caller uses it, with its own config and working directory root."""
 
 import datetime
+import logging
 import os
 import threading
 import time
@@ -241,7 +242,7 @@ def _alive(pid: int) -> bool:
 
 
 @pytest.mark.unit
-def test_a_probe_that_could_not_run_is_tried_again(monkeypatch):
+def test_a_probe_that_could_not_run_is_tried_again(monkeypatch, caplog):
     # a fork that failed for want of a pid, under load: the next call asks the kernel again
     real_run = runner.subprocess.run
     calls = []
@@ -259,7 +260,11 @@ def test_a_probe_that_could_not_run_is_tried_again(monkeypatch):
     second = landlock_available()
     third = landlock_available()
 
-    assert first is False
+    # no answer, which says nothing about the kernel
+    assert first is None
     assert second == third
     # the kernel's answer is kept
     assert len(calls) == 2
+    [record] = [r for r in caplog.records if "unable to probe for landlock support" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info

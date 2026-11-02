@@ -19,7 +19,7 @@ import pytest
 from msoffcrypto.format.ooxml import OOXMLFile
 
 from saq.analysis.root import load_root
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import (
     ANALYSIS_MODULE_MSOFFICE_ENCRYPTION_ANALYZER,
     ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER,
@@ -56,14 +56,16 @@ def _encrypted_zip(tmp_path: Path, password: str = PASSWORD, plain_entry: bool =
     return archive
 
 
-def _email(tmp_path: Path, attachment: Path, body: str = f"The password for the attached invoice is {PASSWORD} thanks", subtype: str = "zip") -> Path:
+def _email(tmp_path: Path, attachment: Path, body: str = f"The password for the attached invoice is {PASSWORD} thanks", subtype: str = "zip",
+           others: tuple[Path, ...] = ()) -> Path:
     message = EmailMessage()
     message["From"] = "sender@example.com"
     message["To"] = "recipient@example.com"
     message["Subject"] = "invoice"
     message["Message-ID"] = "<encrypted-zip-test@example.com>"
     message.set_content(body)
-    message.add_attachment(attachment.read_bytes(), maintype="application", subtype=subtype, filename=attachment.name)
+    for part in (attachment, *others):
+        message.add_attachment(part.read_bytes(), maintype="application", subtype=subtype, filename=part.name)
     path = tmp_path / "message.email.rfc822"
     path.write_bytes(bytes(message))
     return path
@@ -89,6 +91,26 @@ def _attachment(email_observable, file_name: str):
     email_analysis = email_observable.get_and_load_analysis(EmailAnalysis)
     assert email_analysis
     return email_analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == file_name)
+
+
+@pytest.mark.integration
+def test_zip_stopped_at_the_file_size_limit_keeps_what_it_extracted(root_analysis, tmp_path, monkeypatch):
+    # a member padded past the limit, a common way to get past scanners, stops 7z there
+    monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("the decrypted payload https://payload.example.com/x\n")
+    padding = tmp_path / "padding.bin"
+    padding.write_bytes(bytes(2 * 1024 * 1024))
+    archive = tmp_path / "invoice.zip"
+    subprocess.run(["7z", "a", "-tzip", f"-p{PASSWORD}", str(archive), str(payload), str(padding)],
+                   check=True, capture_output=True)
+
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, archive))
+
+    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    assert analysis.error == "7z did not finish"
+    decrypted = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.txt")
+    assert [d.signature_uuid for d in decrypted.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
 
 
 @pytest.mark.integration
@@ -210,11 +232,9 @@ def test_extraction_timeout_stops_7z(root_analysis, tmp_path, monkeypatch, caplo
     assert any(r.levelno == logging.WARNING and "stopped sleep" in r.getMessage() and "timed out" in r.getMessage()
                for r in caplog.records)
     assert not [p for p in psutil.process_iter(["cmdline"]) if p.info["cmdline"] == ["sleep", marker]]
-    # an archive that cannot be extracted in time is the file's problem, not the node's
-    assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted zip" in r.getMessage() for r in caplog.records)
-
     analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password == PASSWORD
+    assert analysis.error == "7z did not finish"
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.txt")
 
 
@@ -338,6 +358,8 @@ class _FakeRarFile:
     """An encrypted rar holding one file."""
 
     extracted_with = []
+    # what each unrar call was let read besides the archive
+    read_files = []
 
     def __init__(self, path):
         with open(path, "rb") as fp:
@@ -362,6 +384,7 @@ def fake_rar(monkeypatch, tmp_path):
     import rarfile
 
     _FakeRarFile.extracted_with = []
+    _FakeRarFile.read_files = []
     monkeypatch.setattr(rarfile, "RarFile", _FakeRarFile)
     real_run = RarEncryptionAnalyzer.run_sandboxed_tool
 
@@ -370,6 +393,7 @@ def fake_rar(monkeypatch, tmp_path):
             return SandboxResult(0, "payload.rar:$rar5$fakehash\n", "")
         if args[0] == "unrar":
             _FakeRarFile.extracted_with.append(next(arg[2:] for arg in args if arg.startswith("-p")))
+            _FakeRarFile.read_files.append([os.path.basename(path) for path in kwargs.get("read_files", ())])
         return real_run(self, args, target, **kwargs)
 
     monkeypatch.setattr(RarEncryptionAnalyzer, "run_sandboxed_tool", _run)
@@ -411,6 +435,33 @@ def test_rar_cracks_with_a_wordlist_from_the_email_body(root_analysis, tmp_path,
 
 
 @pytest.mark.integration
+def test_rar_split_across_attachments_gets_its_other_volumes(root_analysis, tmp_path, fake_rar, monkeypatch):
+    # unrar in the sandbox reads only what it is given, and extracts no split archive without its other volumes
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    first = tmp_path / "invoice.part1.rar"
+    fake_rar.rename(first)
+    second = tmp_path / "invoice.part2.rar"
+    second.write_bytes(b"the second volume")
+
+    _analyze(root_analysis, _email(tmp_path, first, subtype="x-rar", others=(second,)), RAR_MODULES)
+
+    assert _FakeRarFile.read_files == [["invoice.part2.rar"]]
+
+
+@pytest.mark.integration
+def test_rar_stopped_at_the_file_size_limit_is_recorded(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    # the archive's one member is 900 KB, which unrar deletes once it cannot write it
+    monkeypatch.setattr(get_config().tool_sandbox, "file_size_limit", 512 * 1024)
+
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.error == "unrar could not write every file"
+    assert any(r.levelno == logging.WARNING and "Write error" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
 def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
     monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
     fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
@@ -428,6 +479,28 @@ def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkey
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
     assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted rar" in r.getMessage()
                and "CRC failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_rar_that_unrar_does_not_finish_keeps_what_it_extracted(root_analysis, tmp_path, fake_rar, monkeypatch):
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", lambda *args, **kwargs: PASSWORD)
+    fake_run = RarEncryptionAnalyzer.run_sandboxed_tool
+
+    def _run(self, args, target, **kwargs):
+        if args[0] == "unrar":
+            # stopped at its timeout after it wrote one member
+            [output_dir] = kwargs["write_dirs"]
+            Path(output_dir, "first.vbs").write_text("decrypted")
+            return None
+        return fake_run(self, args, target, **kwargs)
+
+    monkeypatch.setattr(RarEncryptionAnalyzer, "run_sandboxed_tool", _run)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.error == "unrar did not finish"
+    payload = analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "first.vbs")
+    assert [d.signature_uuid for d in payload.detections] == [EMAIL_ENCRYPTED_DECRYPTED.uuid]
 
 
 @pytest.mark.integration

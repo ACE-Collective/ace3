@@ -117,9 +117,10 @@ def get_read_files() -> list[str]:
 _LANDLOCK_AVAILABLE: bool | None = None
 
 
-def landlock_available() -> bool:
+def landlock_available() -> bool | None:
     """True when setpriv can apply a Landlock ruleset here (kept for the life of the process once
-    setpriv has answered)."""
+    setpriv has answered); None when the probe itself could not run, which is tried again next time
+    and is falsy, so a caller that only asks whether it may run a command does not run it."""
     global _LANDLOCK_AVAILABLE
     if _LANDLOCK_AVAILABLE is not None:
         return _LANDLOCK_AVAILABLE
@@ -132,8 +133,8 @@ def landlock_available() -> bool:
             timeout=30,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        logging.error("unable to probe for landlock support: %s", e)
-        return False
+        logging.error("unable to probe for landlock support: %s", e, exc_info=e)
+        return None
 
     _LANDLOCK_AVAILABLE = result.returncode == 0
     if not _LANDLOCK_AVAILABLE:
@@ -206,6 +207,19 @@ class SandboxResult:
     returncode: int
     stdout: str
     stderr: str
+    # the command was stopped for writing more than max_output_bytes; stdout and stderr are what it
+    # wrote up to then
+    output_exceeded: bool = False
+
+
+class SandboxOutputExceeded(RuntimeError):
+    """The command wrote more than max_output_bytes and everything it started is gone. A RuntimeError,
+    as a timeout is, for the callers that treat both alike; result is what it wrote up to then, for
+    one whose tool's output is still worth reading (an archive listing padded past the limit)."""
+
+    def __init__(self, message: str, result: SandboxResult):
+        super().__init__(message)
+        self.result = result
 
 
 def _kill_session(pid: int):
@@ -344,14 +358,16 @@ def run_sandboxed(
     if timed_out:
         raise RuntimeError(f"command timed out after {timeout}")
 
-    if output_exceeded.is_set():
-        raise RuntimeError(f"command wrote more than {max_output_bytes} bytes of output")
-
-    return SandboxResult(
+    result = SandboxResult(
         returncode=process.returncode,
         stdout=buffers["stdout"].decode("utf-8", errors="replace"),
         stderr=buffers["stderr"][-STDERR_TAIL_BYTES:].decode("utf-8", errors="replace"),
+        output_exceeded=output_exceeded.is_set(),
     )
+    if result.output_exceeded:
+        raise SandboxOutputExceeded(f"command wrote more than {max_output_bytes} bytes of output", result)
+
+    return result
 
 
 def create_workdir(root: str) -> tempfile.TemporaryDirectory:
