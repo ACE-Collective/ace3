@@ -3,7 +3,7 @@ import logging
 import pytest
 from sqlalchemy import select, update
 
-from saq.cas import Hold, get_cas
+from saq.cas import CASPool, Hold, get_cas
 from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch
 from saq.database.private_session import private_transaction
@@ -197,3 +197,21 @@ def test_a_purge_that_fails_partway_logs_what_it_removed(make_file, root_analysi
     assert match_rows() == []
     (record,) = [r for r in caplog.records if r.getMessage().startswith("purge of yara qa matches of signature")]
     assert (record.levelno, record.signature_uuid, record.deleted) == (logging.WARNING, QA_UUID, 2)
+
+
+def test_a_purge_whose_hold_releases_fail_still_removes_the_rows(make_file, root_analysis, monkeypatch, caplog):
+    ids = [_store(make_file, root_analysis) for _ in range(2)]
+
+    def release_fails(self, digest, hold):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(CASPool, "release", release_fails)
+    with caplog.at_level(logging.WARNING):
+        stats = purge_matches(QA_UUID, versions=[VERSION_A])
+
+    # the holds expire on their own; the rows and their slots are gone now
+    assert (stats.deleted, stats.remaining, stats.release_failures) == (2, 0, 2)
+    assert match_rows() == []
+    assert counter_row(VERSION_A).stored_count == 0
+    warned = {r.getMessage() for r in caplog.records if r.getMessage().startswith("unable to release yara qa hold")}
+    assert all(any(f"match {match_id}" in message for message in warned) for match_id in ids)
