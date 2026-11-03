@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Generic, Optional, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 T = TypeVar("T")
 
@@ -78,3 +78,24 @@ class QAMatch(BaseModel):
 
 class QAMatchDetail(QAMatch):
     match_summary: dict[str, Any] = Field(default_factory=dict, description="the rule, its meta and tags, and per string identifier how many times it matched and where first. The full record is at /matches/{id}/record")
+
+
+class QAPurgeRequest(BaseModel):
+    """What to purge from one signature: whole versions, or chosen files. Exactly one of the two."""
+    model_config = ConfigDict(extra="forbid")
+
+    versions: Optional[list[str]] = Field(default=None, min_length=1, max_length=1000, description="purge every stored file of these versions")
+    match_ids: Optional[list[int]] = Field(default=None, min_length=1, description="purge these stored files; at most yara_qa.max_bulk_download_files, and only those of this signature")
+    reason: Optional[str] = Field(default=None, max_length=1024, description="recorded in the audit log")
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "QAPurgeRequest":
+        if (self.versions is None) == (self.match_ids is None):
+            raise ValueError("give versions or match_ids, not both")
+        return self
+
+
+class QAPurgeResult(BaseModel):
+    deleted: int = Field(description="stored files removed; their bytes go at the next CAS GC once nothing else holds them")
+    remaining: int = Field(description="files that matched but were held by another transaction (a recorder renewing them); purging again removes them")
+    release_failures: int = Field(description="holds that could not be released now; they expire on their own")

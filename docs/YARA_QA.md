@@ -130,6 +130,16 @@ The hourly CAS GC then reclaims the bytes once the pool's grace period has passe
 
 The holds carry the expiry themselves, so an object is collected even if a prune never runs.
 
+**Purging.** An analyst with `signature:qa_purge` can remove stored files before they expire: every
+file of chosen versions of a rule, or chosen files (`POST .../{uuid}/purge`, below). A purge works
+like a prune: batches of primary keys, rows selected `FOR UPDATE SKIP LOCKED` (a row a recorder is
+renewing at that moment is left and counted as `remaining`), slots given back, then holds
+released. It skips a row whose puts are still in flight. It touches only the YARA QA store: the
+`yara_qa_matches` rows and their `yara_qa` holds. A file another QA rule or version still holds
+stays, and SVS samples and the alerts' own copies are never touched. A purged file that matches
+again is stored again. Each purge is logged as an `AUDIT:` record naming who purged what, and a
+config API key with the permission may purge too (the record names the key).
+
 ## Nodes
 
 The default pool uses the `local` backend, so a file's bytes are only on the node that matched it.
@@ -170,6 +180,7 @@ These routes are served by `aceapi_v2/yara_qa/`, mounted at `/api/v2/signatures/
 | `GET /matches/{id}/record` | `signature:read` | The full match record (`application/json`), read from the CAS |
 | `GET /matches/{id}/download` | `signature:download` | The file and its record, zipped |
 | `GET /{uuid}/download?version=&match_id=…` | `signature:download` | Bulk download. With `match_id`s, the selection; otherwise every stored file of the signature, or of one version. Limited to `yara_qa.max_bulk_download_files` and `yara_qa.max_bulk_download_bytes`, with 413 past either |
+| `POST /{uuid}/purge` | `signature:qa_purge` | Purge stored files. The body is `{"versions": [...]}` or `{"match_ids": [...]}` (at most `yara_qa.max_bulk_download_files`), exactly one, and an optional `reason`. Returns `{deleted, remaining, release_failures}` |
 
 The status values mean:
 
@@ -206,11 +217,15 @@ The hub has one module, **Yara QA Results**. That page is a shell: all its data 
 above, fetched by `app/static/js/signatures_yara_qa.js`. It lets an analyst:
 
 - filter and sort the rules;
-- open a rule to see its versions and stored files;
+- open a rule to see its versions and stored files. Each version is labeled `rule <hash>` with the
+  commits it matched under (or `commit <hash>` for a commit version), and the one loaded now is
+  marked `[current]`;
 - view a match's summary and full record;
-- download files one at a time, as a selection, or all at once.
+- download files one at a time, as a selection, or all at once;
+- purge the selected files, the version picked, or every version but the current one.
 
-The download controls appear only with `signature:download`.
+The download controls appear only with `signature:download`, and the purge controls only with
+`signature:qa_purge`. A purge asks for confirmation first.
 
 ## CLI
 

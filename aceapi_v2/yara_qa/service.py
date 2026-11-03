@@ -23,6 +23,8 @@ from aceapi_v2.yara_qa.schemas import (
     QAMatch,
     QAMatchDetail,
     QAPage,
+    QAPurgeRequest,
+    QAPurgeResult,
     QASignatureDetail,
     QASignaturePage,
     QASignatureSummary,
@@ -35,6 +37,7 @@ from saq.database.model import Alert, YaraQAMatch
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, YaraInventory
 from saq.yara_qa.listing import QASignature, QASort, QAStatus, filter_and_sort, merge, version_rows_statement
+from saq.yara_qa.prune import purge_matches
 
 logger = logging.getLogger(__name__)
 
@@ -304,3 +307,19 @@ def create_encrypted_zip(label: str, rows: list[YaraQAMatch], remote: list[YaraQ
         label, get_cas().pool(get_config().yara_qa.pool), entries,
         [{**_manifest_entry(row), "reason": "wrong_node"} for row in remote],
         manifest_key="matches", description=f"yara qa {label}", actor=actor, node=_local_node())
+
+
+#
+# purging
+#
+
+def purge(signature_uuid: str, body: QAPurgeRequest) -> QAPurgeResult:
+    """Runs in a worker thread (run_db_in_thread): the removal runs in private transactions and
+    releases CAS holds."""
+    validate_signature_uuid(signature_uuid)
+    limit = get_config().yara_qa.max_bulk_download_files
+    if body.match_ids is not None and len(body.match_ids) > limit:
+        raise HTTPException(status_code=422, detail=f"more than {limit} match ids; purge by version instead")
+
+    stats = purge_matches(signature_uuid, versions=body.versions, match_ids=body.match_ids)
+    return QAPurgeResult(deleted=stats.deleted, remaining=stats.remaining, release_failures=stats.release_failures)

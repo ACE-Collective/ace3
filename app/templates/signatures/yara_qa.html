@@ -68,7 +68,8 @@
 <div id="yara_qa_page"
      data-api="/api/v2/signatures/yara-qa"
      data-alert-url="{{ url_for('analysis.index') }}"
-     data-can-download="{{ 'true' if has_permission('signature', 'download') else 'false' }}">
+     data-can-download="{{ 'true' if has_permission('signature', 'download') else 'false' }}"
+     data-can-purge="{{ 'true' if has_permission('signature', 'qa_purge') else 'false' }}">
 
     <h2 class="mb-1">Yara QA Results</h2>
     <p class="text-muted mb-3">
@@ -78,6 +79,7 @@
     </p>
 
     <div id="qa_error" class="alert alert-danger d-none" role="alert"></div>
+    <div id="qa_notice" class="alert alert-info d-none" role="status"></div>
     <div id="qa_inventory_warning" class="alert alert-warning d-none" role="alert"></div>
 
     <table id="qa_signature_table" class="table table-sm table-hover">

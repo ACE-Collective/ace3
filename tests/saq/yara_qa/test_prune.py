@@ -1,9 +1,21 @@
 import pytest
+from sqlalchemy import select, update
 
+from saq.cas import Hold, get_cas
 from saq.configuration.config import get_config
-from saq.yara_qa.prune import prune_expired
+from saq.database.model import YaraQAMatch
+from saq.database.private_session import private_transaction
+from saq.yara_qa.prune import prune_expired, purge_matches
 from saq.yara_qa.store import QATarget, record_qa_match
-from tests.saq.yara_qa.conftest import VERSION_A, VERSION_B, counter_row, expire_matches, match_rows, qa_match_result
+from tests.saq.yara_qa.conftest import (
+    QA_UUID,
+    VERSION_A,
+    VERSION_B,
+    counter_row,
+    expire_matches,
+    match_rows,
+    qa_match_result,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -55,3 +67,107 @@ def test_a_pruned_slot_can_be_used_again(make_file, root_analysis):
     expire_matches([match_rows()[0].id])
     prune_expired()
     assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "stored"
+
+
+#
+# purging
+#
+
+OTHER_UUID = "6b1d8a2f-2d54-4b4a-9e9f-3a2c4d5e6f70"
+
+
+def _store(make_file, root_analysis, version: str = VERSION_A, signature_uuid: str = QA_UUID, file_observable=None):
+    result = record_qa_match(qa_match_result(signature_uuid=signature_uuid, commit=version),
+                             QATarget.from_file_observable(file_observable or make_file(), root_analysis.uuid))
+    assert result.status == "stored"
+    return result.match_id
+
+
+def test_purge_by_version(qa_pool, make_file, root_analysis):
+    purged = [_store(make_file, root_analysis, VERSION_A) for _ in range(3)]
+    kept = [_store(make_file, root_analysis, VERSION_B) for _ in range(2)]
+    purged_rows = [row for row in match_rows() if row.id in purged]
+
+    stats = purge_matches(QA_UUID, versions=[VERSION_A])
+
+    assert (stats.deleted, stats.remaining, stats.release_failures) == (3, 0, 0)
+    assert [row.id for row in match_rows()] == kept
+    assert (counter_row(VERSION_A).stored_count, counter_row(VERSION_A).match_count) == (0, 3)
+    assert counter_row(VERSION_B).stored_count == 2
+    for row in purged_rows:
+        assert qa_pool.holds(row.sha256) == []
+
+
+def test_purge_by_match_ids_only_touches_its_signature(make_file, root_analysis):
+    mine = [_store(make_file, root_analysis) for _ in range(2)]
+    other = _store(make_file, root_analysis, signature_uuid=OTHER_UUID)
+
+    stats = purge_matches(QA_UUID, match_ids=[mine[0], other])
+
+    assert stats.deleted == 1
+    assert [row.id for row in match_rows()] == [mine[1]]
+    assert [row.id for row in match_rows(OTHER_UUID)] == [other]
+
+
+def test_purge_leaves_rows_another_transaction_holds(make_file, root_analysis):
+    ids = [_store(make_file, root_analysis) for _ in range(3)]
+    with private_transaction() as locker:
+        locker.execute(select(YaraQAMatch.id).where(YaraQAMatch.id == ids[0]).with_for_update()).all()
+
+        # does not wait on the lock
+        stats = purge_matches(QA_UUID, versions=[VERSION_A])
+
+    assert (stats.deleted, stats.remaining) == (2, 1)
+    assert [row.id for row in match_rows()] == [ids[0]]
+
+
+def test_purge_leaves_a_match_whose_puts_are_in_flight(make_file, root_analysis):
+    ids = [_store(make_file, root_analysis) for _ in range(2)]
+    with private_transaction() as session:
+        session.execute(update(YaraQAMatch).where(YaraQAMatch.id == ids[0]).values(match_digest=None)
+                        .execution_options(synchronize_session=False))
+
+    stats = purge_matches(QA_UUID, versions=[VERSION_A])
+
+    assert (stats.deleted, stats.remaining) == (1, 0)
+    assert [row.id for row in match_rows()] == [ids[0]]
+
+
+def test_purge_keeps_every_other_hold_on_the_file(qa_pool, make_file, root_analysis):
+    file_observable = make_file()
+    purged = _store(make_file, root_analysis, VERSION_A, file_observable=file_observable)
+    kept = _store(make_file, root_analysis, VERSION_B, file_observable=file_observable)
+    svs_pool = get_cas().pool("svs_samples")
+    svs_hold = Hold("svs_capture", "1")
+    svs_pool.put(file_observable.full_path, hold=svs_hold, digest=file_observable.sha256_hash)
+
+    assert purge_matches(QA_UUID, versions=[VERSION_A]).deleted == 1
+
+    # the other version's row still holds the file in the yara_qa pool, and SVS's hold is in
+    # another pool, which a purge never touches
+    assert [h.holder_id for h in qa_pool.holds(file_observable.sha256_hash)] == [str(kept)]
+    assert qa_pool.exists(file_observable.sha256_hash)
+    assert [(h.holder_kind, h.holder_id) for h in svs_pool.holds(file_observable.sha256_hash)] == [("svs_capture", "1")]
+    assert purged not in [row.id for row in match_rows()]
+
+
+def test_a_purged_slot_can_be_used_again(make_file, root_analysis):
+    cap = get_config().yara_qa.max_files_per_version
+    ids = [_store(make_file, root_analysis) for _ in range(cap)]
+    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "capped"
+
+    purge_matches(QA_UUID, match_ids=[ids[0]])
+    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "stored"
+
+
+@pytest.mark.parametrize("targets", [{}, {"versions": [VERSION_A], "match_ids": [1]}])
+def test_purge_needs_exactly_one_target(targets):
+    with pytest.raises(ValueError):
+        purge_matches(QA_UUID, **targets)
+
+
+def test_purging_nothing_is_not_an_error(make_file, root_analysis):
+    _store(make_file, root_analysis)
+    assert purge_matches(QA_UUID, versions=[]).deleted == 0
+    assert purge_matches(QA_UUID, match_ids=[]).deleted == 0
+    assert len(match_rows()) == 1

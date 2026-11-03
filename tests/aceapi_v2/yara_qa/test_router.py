@@ -5,6 +5,7 @@ session (rolled back after each test); the CAS objects they point at are real pu
 yara_qa pool.
 """
 
+import hashlib
 import io
 import json
 import logging
@@ -14,14 +15,19 @@ from typing import Optional
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.cas import get_cas
 from saq.configuration.config import get_config, get_service_config
+from saq.configuration.schema import ConfigApiKey
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import YaraQAMatch, YaraQASignature
+from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.signatures.yara_inventory import get_yara_inventory
+from saq.util import sha256_str
+from saq.yara_qa.store import QARecordStatus, QATarget, record_qa_match
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.helpers import audit_actor_of, audit_record
@@ -412,3 +418,90 @@ async def test_expired_object_is_reported_as_gone(client: AsyncClient, session: 
     get_cas().pool("yara_qa").purge(row.sha256, reason="unittest", actor="unittest")
     response = await client.get(f"/signatures/yara-qa/matches/{row.id}/download")
     assert response.status_code == 404
+
+
+#
+# purging
+#
+
+CONFIG_KEY = "unittest-yara-qa-config-key"
+
+
+def _recorded_match(tmp_path, content: bytes, version: str) -> int:
+    """A committed match, as the recorder stores one: a purge runs in its own transactions, which
+    cannot see rows the shared test session has not committed."""
+    path = tmp_path / f"{hashlib.sha256(content).hexdigest()}.bin"
+    path.write_bytes(content)
+    target = QATarget(path=str(path), sha256=hashlib.sha256(content).hexdigest(), file_name="invoice.doc",
+                      file_size=len(content), root_uuid="11111111-2222-3333-4444-555555555555",
+                      observable_uuid="66666666-7777-8888-9999-000000000000")
+    result = record_qa_match(_match_result(MATCHED_UUID, version), target)
+    assert result.status == QARecordStatus.STORED
+    return result.match_id
+
+
+@pytest.mark.asyncio
+async def test_purge_requires_the_purge_permission(_override_db_session, session: AsyncSession, test_user):
+    key = await make_api_key(session, test_user.id, inherit=False, scope=[("signature", "read"), ("signature", "download")])
+    async with api_key_client(key) as client:
+        response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"versions": [VERSION_A]})
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body", [
+    {},
+    {"versions": [VERSION_A], "match_ids": [1]},
+    {"versions": []},
+    {"match_ids": []},
+    {"versions": [VERSION_A], "bogus": True},
+])
+async def test_purge_rejects_bad_bodies(client: AsyncClient, body):
+    assert (await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json=body)).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_purge_refuses_more_match_ids_than_a_bulk_download(client: AsyncClient):
+    too_many = list(range(1, get_config().yara_qa.max_bulk_download_files + 2))
+    response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"match_ids": too_many})
+    assert response.status_code == 422
+    assert (await client.post("/signatures/yara-qa/not;a;uuid/purge", json={"match_ids": [1]})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_purge_a_version(client: AsyncClient, client_actor, tmp_path, caplog):
+    purged = [_recorded_match(tmp_path, f"old {n}".encode(), VERSION_A) for n in range(2)]
+    kept = _recorded_match(tmp_path, b"new", VERSION_B)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge",
+                                     json={"versions": [VERSION_A], "reason": "old rule"})
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": 2, "remaining": 0, "release_failures": 0}
+    # read on a connection of its own: the shared test session's snapshot predates the rows
+    with private_transaction() as check:
+        left = check.execute(select(YaraQAMatch.id).where(YaraQAMatch.signature_uuid == MATCHED_UUID)).scalars().all()
+    assert left == [kept]
+    assert not set(purged) & set(left)
+
+    audit = audit_record(caplog, f"unittest purged 2 yara qa matches of signature {MATCHED_UUID}")
+    assert (*audit_actor_of(audit), audit.signature_versions, audit.match_ids, audit.deleted, audit.reason) == (
+        *client_actor, [VERSION_A], None, 2, "old rule")
+
+
+@pytest.mark.asyncio
+async def test_a_config_key_can_purge(_override_db_session, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(get_config(), "apikeys", {
+        "qa-automation": ConfigApiKey(key=sha256_str(CONFIG_KEY), scope=["signature:qa_purge"]),
+    })
+    match_id = _recorded_match(tmp_path, b"a sample", VERSION_A)
+
+    with caplog.at_level(logging.INFO):
+        async with api_key_client(CONFIG_KEY) as client:
+            response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"match_ids": [match_id]})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+    audit = audit_record(caplog, f"qa-automation purged 1 yara qa matches of signature {MATCHED_UUID}")
+    assert (audit.actor, audit.actor_user_id, audit.actor_key_name, audit.auth_type) == ("qa-automation", None, "qa-automation", "config")

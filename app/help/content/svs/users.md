@@ -31,6 +31,7 @@ you don't see is usually a permission you don't hold.
 | `svs:admin` | Manage test hosts; ignore a signature for every test; retire and delete samples |
 | `signature:read` | Open the Signatures area: Samples, Validations and Yara QA Results |
 | `signature:download` | Download sample files (as zips protected with the password `infected`) |
+| `signature:qa_purge` | Purge files stored for YARA rules in QA mode |
 | `alert:write` | From an alert's page, *Disassociate from run* and *Not a test*; on a sample, *Relabel*, *Reset* and *Confirm* |
 | `svs:run_register` | The launcher's own calls. People rarely hold it: it belongs to the launcher's API key |
 
@@ -664,6 +665,12 @@ alerts, and ACE keeps the files it matches for review. Use it to see how noisy a
 before it can wake anyone up. [Signatures → Yara QA Results](/ace/signatures/yara-qa) lists the
 rules in QA mode with how often they matched; click a rule to see its files. When the matches look
 right, remove the `qa` modifier in a pull request.
+
+Files are kept per version of the rule, and a version changes only when the rule itself is edited,
+so the version marked *current* shows what the rule as it runs now matched. When a rule has kept
+as many files as it may, the files of versions that stopped matching make room for the current
+one's. With `signature:qa_purge` you can also purge files by hand: the ones you select, the version
+you picked, or every version but the current one.
 
 ![The Yara QA Results page](images/yara-qa.png)
 
