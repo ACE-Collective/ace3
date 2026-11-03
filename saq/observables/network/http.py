@@ -18,6 +18,7 @@ from saq.util import is_subdomain
 
 # URLs with these schemes always name a host; mailto:, file:, data: and scheme-less values are not checked
 HOST_URL_SCHEMES = frozenset({"http", "https", "ftp"})
+BROWSER_IGNORED_CHARS = str.maketrans("", "", "\t\r\n")
 
 
 class UserAgentObservable(Observable):
@@ -59,9 +60,9 @@ class URLObservable(Observable):
             scheme = urlsplit(new_value).scheme
             missing_host = False
             if scheme in HOST_URL_SCHEMES:
-                # browsers treat \ as / in these URLs and skip any run of them after "scheme:", so
-                # "https:\\evil.com" and "https:/evil.com" both open evil.com
-                rest = new_value.partition(":")[2].replace("\\", "/").lstrip("/")
+                # browsers drop tab, CR and LF, treat \ as / in these URLs and skip any run of them after
+                # "scheme:", so "https:\\evil.com", "https:/evil.com" and "https:/\t/evil.com" all open evil.com
+                rest = new_value.partition(":")[2].translate(BROWSER_IGNORED_CHARS).replace("\\", "/").lstrip("/")
                 missing_host = not (urlsplit(f"{scheme}://{rest}").hostname or "").strip(".")
         except ValueError:
             # urlsplit refuses some netlocs that still name a host ("http://[x/", NFKC look-alikes); an

@@ -45,6 +45,9 @@ def test_url_without_host_is_rejected(url):
     "https:evil.com/x",
     "http:///evil.com/x",
     "https:\\\\evil.com\\x",
+    # and drop tab, CR and LF anywhere first, which a Safe Links url=...%09... decodes to
+    "https:/\t/evil.com/x",
+    "https:\t//evil.com/x",
     # urlsplit refuses these netlocs, but an attacker wrote them and they still name a host
     "http://[x/",
     # schemes that do not name a host, and values without a scheme, are not checked
