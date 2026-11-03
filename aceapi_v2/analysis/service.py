@@ -146,6 +146,12 @@ def submit(submission: dict, files: list[tuple[str, IO[bytes]]], remote_addr: st
                     observable = create_observable_from_dict(observable_dict)
                 except (KeyError, TypeError, ValueError) as e:
                     raise HTTPException(status_code=400, detail=f"invalid observable {observable_dict!r}: {e!r}")
+                # a value its type rejects ("https:.." as a url) often comes from attacker-written content the
+                # submitter extracted; drop that one observable rather than the event, as loading a stored root does
+                if observable is None:
+                    logger.warning("skipped invalid observable type %s value %r in submission %s",
+                                   observable_dict.get("type"), observable_dict.get("value"), root.uuid)
+                    continue
                 root.add_observable(observable)
 
         file_list = []
