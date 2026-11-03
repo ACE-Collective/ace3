@@ -117,12 +117,21 @@ def purge_matches(signature_uuid: str, *, versions: Optional[list[str]] = None,
     if versions == [] or match_ids == []:
         return stats
 
-    _remove_matches(conditions, [YaraQAMatch.id], stats)
+    finished = False
+    try:
+        _remove_matches(conditions, [YaraQAMatch.id], stats)
 
-    with private_transaction() as session:
-        stats.remaining = session.execute(select(func.count()).select_from(YaraQAMatch).where(*conditions)).scalar_one()
+        with private_transaction() as session:
+            stats.remaining = session.execute(select(func.count()).select_from(YaraQAMatch).where(*conditions)).scalar_one()
+
+        finished = True
+    finally:
+        # each batch commits on its own, so a purge that fails partway has removed rows already
+        if not finished:
+            logging.warning("purge of yara qa matches of signature %s stopped after removing %s", signature_uuid,
+                            stats.deleted, extra={"signature_uuid": signature_uuid, "deleted": stats.deleted})
 
     logging.info("purged %s yara qa matches of signature %s (%s left held by another transaction, %s hold releases failed)",
                  stats.deleted, signature_uuid, stats.remaining, stats.release_failures,
-                 extra={"signature_uuid": signature_uuid})
+                 extra={"signature_uuid": signature_uuid, "deleted": stats.deleted})
     return stats

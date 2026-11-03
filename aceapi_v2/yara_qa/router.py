@@ -174,12 +174,13 @@ async def purge_matches(
     matches (at most yara_qa.max_bulk_download_files). Removes only YARA QA rows and their holds in
     the yara_qa pool; a file another rule or version still holds stays. A purged file that
     matches again is stored again."""
-    result = await run_db_in_thread(service.purge, signature_uuid, body)
-    log_audit("%s purged %s yara qa matches of signature %s (versions %s, match ids %s): %s",
-              auth.auth_name, result.deleted, signature_uuid, body.versions, body.match_ids, body.reason,
+    # before the purge: its batches commit one by one, so a purge that fails partway has already
+    # deleted rows
+    log_audit("%s purging yara qa matches of signature %s (versions %s, match ids %s): %s",
+              auth.auth_name, signature_uuid, body.versions, body.match_ids, body.reason,
               auth=auth, signature_uuid=signature_uuid, signature_versions=body.versions, match_ids=body.match_ids,
-              deleted=result.deleted, remaining=result.remaining, reason=body.reason)
-    return result
+              reason=body.reason)
+    return await run_db_in_thread(service.purge, signature_uuid, body)
 
 
 @router.get(

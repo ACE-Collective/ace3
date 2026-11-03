@@ -18,6 +18,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.yara_qa import service
 from saq.cas import get_cas
 from saq.configuration.config import get_config, get_service_config
 from saq.configuration.schema import ConfigApiKey
@@ -485,9 +486,9 @@ async def test_purge_a_version(client: AsyncClient, client_actor, tmp_path, capl
     assert left == [kept]
     assert not set(purged) & set(left)
 
-    audit = audit_record(caplog, f"unittest purged 2 yara qa matches of signature {MATCHED_UUID}")
-    assert (*audit_actor_of(audit), audit.signature_versions, audit.match_ids, audit.deleted, audit.reason) == (
-        *client_actor, [VERSION_A], None, 2, "old rule")
+    audit = audit_record(caplog, f"unittest purging yara qa matches of signature {MATCHED_UUID}")
+    assert (*audit_actor_of(audit), audit.signature_versions, audit.match_ids, audit.reason) == (
+        *client_actor, [VERSION_A], None, "old rule")
 
 
 @pytest.mark.asyncio
@@ -503,5 +504,20 @@ async def test_a_config_key_can_purge(_override_db_session, tmp_path, monkeypatc
 
     assert response.status_code == 200
     assert response.json()["deleted"] == 1
-    audit = audit_record(caplog, f"qa-automation purged 1 yara qa matches of signature {MATCHED_UUID}")
+    audit = audit_record(caplog, f"qa-automation purging yara qa matches of signature {MATCHED_UUID}")
     assert (audit.actor, audit.actor_user_id, audit.actor_key_name, audit.auth_type) == ("qa-automation", None, "qa-automation", "config")
+
+
+@pytest.mark.asyncio
+async def test_a_purge_is_audited_before_it_runs(client: AsyncClient, client_actor, monkeypatch, caplog):
+    def purge_fails(signature_uuid, body):
+        raise RuntimeError("the database went away after a batch was committed")
+
+    monkeypatch.setattr(service, "purge", purge_fails)
+
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError):
+        await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"versions": [VERSION_A], "reason": "old rule"})
+
+    audit = audit_record(caplog, f"unittest purging yara qa matches of signature {MATCHED_UUID}")
+    assert (*audit_actor_of(audit), audit.signature_versions, audit.match_ids, audit.reason) == (
+        *client_actor, [VERSION_A], None, "old rule")

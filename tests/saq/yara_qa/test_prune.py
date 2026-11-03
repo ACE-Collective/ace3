@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from sqlalchemy import select, update
 
@@ -5,6 +7,7 @@ from saq.cas import Hold, get_cas
 from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch
 from saq.database.private_session import private_transaction
+from saq.yara_qa import prune
 from saq.yara_qa.prune import prune_expired, purge_matches
 from saq.yara_qa.store import QATarget, record_qa_match
 from tests.saq.yara_qa.conftest import (
@@ -171,3 +174,26 @@ def test_purging_nothing_is_not_an_error(make_file, root_analysis):
     assert purge_matches(QA_UUID, versions=[]).deleted == 0
     assert purge_matches(QA_UUID, match_ids=[]).deleted == 0
     assert len(match_rows()) == 1
+
+
+def test_a_purge_that_fails_partway_logs_what_it_removed(make_file, root_analysis, monkeypatch, caplog):
+    for _ in range(2):
+        _store(make_file, root_analysis)
+
+    real_transaction = prune.private_transaction
+    calls = []
+
+    def fails_after_the_batch():
+        # the first transaction deletes the batch; the second, the remaining count, fails
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("the database went away")
+        return real_transaction()
+
+    monkeypatch.setattr(prune, "private_transaction", fails_after_the_batch)
+    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError):
+        purge_matches(QA_UUID, versions=[VERSION_A])
+
+    assert match_rows() == []
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("purge of yara qa matches of signature")]
+    assert (record.levelno, record.signature_uuid, record.deleted) == (logging.WARNING, QA_UUID, 2)
