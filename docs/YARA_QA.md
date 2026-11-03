@@ -88,6 +88,21 @@ really is even when no more files are being kept.
 A new match of a file that is already stored, under the same version, does not use another slot.
 It increments `hit_count` and renews the expiry.
 
+**Rollover.** When the per-uuid ceiling stops a file from being stored, older versions make room
+for it. The recorder deletes one stored file of a **superseded** version, then stores the new file.
+A version is superseded when it has not matched for an hour while another version of the rule is
+matching. The hour keeps two nodes that load different rules for a few minutes during a rollout
+from deleting each other's files. The version that went longest without matching goes first, and
+within it the file seen longest ago. Each rollover is logged at INFO with the match id, the
+`sha256` and both versions.
+
+Rollover only makes room under the per-uuid ceiling. It never touches the current version: once
+that has `max_files_per_version` files, it keeps them while they keep matching, and later files
+are counted but not stored. With the default caps rollover also never reaches the version just
+before the current one: the oldest versions are emptied first, and the current version needs at
+most 25 of the 250 slots. It reaches the previous version only when `max_files_per_signature` is
+less than twice `max_files_per_version`.
+
 **How the caps hold under concurrency.** Each node's recorder stores one match at a time, but the
 recorders of several nodes can store at once, and none of them waits on a lock for this. The slot
 is reserved with a single conditional `UPDATE` of the counter row:
@@ -96,6 +111,9 @@ is reserved with a single conditional `UPDATE` of the counter row:
 - The per-uuid ceiling is read in the same statement. Two recorders storing under *different* versions
   of one uuid at the same instant can both pass it, so it can be exceeded by the number of versions
   racing, which in practice is one.
+- A rollover is its own short transaction. It selects the file it deletes `FOR UPDATE SKIP LOCKED`,
+  so it never waits on a renewal or a prune that holds that row (it stores nothing then), and runs
+  again if MySQL picks it as a deadlock victim.
 
 ## Retention
 

@@ -759,11 +759,12 @@ class YaraQAConfig(BaseModel):
     the last time the file matched. The number of files kept per rule is capped twice: per
     (signature uuid, signature version), and per signature uuid across all of its versions. The
     version is the rule's content hash, so only an edit to the rule starts a new version, and the
-    per-uuid ceiling bounds what a rule that is edited often keeps."""
+    per-uuid ceiling bounds what a rule that is edited often keeps. When the ceiling stops a file
+    from being stored, a file of a version that has stopped matching makes room for it."""
     model_config = ConfigDict(extra="forbid")
     pool: str = Field(default="yara_qa", description="the CAS pool (cas.pools.<name>) that holds the files and match records. A multi-node site redefines this pool with a shared backend")
     max_files_per_version: int = Field(default=25, ge=0, description="most distinct files kept for one (signature uuid, signature version). Matches past the cap are still counted")
-    max_files_per_signature: int = Field(default=250, ge=0, description="most distinct files kept for one signature uuid across all of its versions")
+    max_files_per_signature: int = Field(default=250, ge=0, description="most distinct files kept for one signature uuid across all of its versions. When it is reached, files of versions that have stopped matching make room for the current version's (rollover)")
     retention_days: int = Field(default=30, ge=1, description="how long a stored file is kept after it last matched; each new match of the same file renews it")
     prune_batch_size: int = Field(default=500, ge=1, le=5000, description="expired matches removed per batch by `ace yara-qa prune`, one short transaction each")
     prune_batch_pause_seconds: float = Field(default=0.5, ge=0, description="pause between prune batches")

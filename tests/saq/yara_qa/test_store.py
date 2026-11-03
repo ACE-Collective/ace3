@@ -1,10 +1,14 @@
 import json
+import logging
 from datetime import datetime, timedelta
 
 import pytest
+from sqlalchemy import select, update
 
 from saq.cas import CASPool, Hold
 from saq.configuration.config import get_config
+from saq.database.model import YaraQAMatch, YaraQASignature
+from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.yara_qa import store
@@ -288,3 +292,134 @@ def test_losing_the_insert_race_renews_the_winner(make_file, root_analysis, monk
     assert row.hit_count == 2
     counters = counter_row()
     assert (counters.match_count, counters.stored_count) == (2, 1)
+
+
+#
+# rolling over superseded versions (unittest caps: 3 per version, 5 per uuid)
+#
+
+RULE_HASH_3 = "3" * 64
+
+
+def _store(make_file, root_analysis, rule_hash: str):
+    return record_qa_match(qa_match_result(rule_content_hash=rule_hash),
+                           QATarget.from_file_observable(make_file(), root_analysis.uuid))
+
+
+def _last_matched(signature_version: str, ago: timedelta) -> None:
+    """Move a version's last match into the past, as the database sees time."""
+    with private_transaction() as session:
+        session.execute(
+            update(YaraQASignature)
+            .where(YaraQASignature.signature_uuid == QA_UUID, YaraQASignature.signature_version == signature_version)
+            .values(last_match_at=datetime.now() - ago)
+            .execution_options(synchronize_session=False))
+
+
+def _last_seen(match_id: int, ago: timedelta) -> None:
+    with private_transaction() as session:
+        session.execute(
+            update(YaraQAMatch).where(YaraQAMatch.id == match_id)
+            .values(last_seen=datetime.now() - ago).execution_options(synchronize_session=False))
+
+
+def _versions() -> dict[str, int]:
+    result: dict[str, int] = {}
+    for row in match_rows():
+        result[row.signature_version] = result.get(row.signature_version, 0) + 1
+    return result
+
+
+@pytest.fixture
+def full_rule(make_file, root_analysis) -> list[int]:
+    """Rule hash 1 with three files that last matched three hours ago, the oldest seen first, and
+    rule hash 2 with two files that last matched two hours ago: the uuid is at its ceiling of 5."""
+    config = get_config().yara_qa
+    assert (config.max_files_per_version, config.max_files_per_signature) == (3, 5)
+
+    first = [_store(make_file, root_analysis, RULE_HASH_1).match_id for _ in range(3)]
+    second = [_store(make_file, root_analysis, RULE_HASH_2).match_id for _ in range(2)]
+    for n, match_id in enumerate(first):
+        _last_seen(match_id, timedelta(hours=3, minutes=10 - n))
+    _last_matched(RULE_HASH_1, timedelta(hours=3))
+    _last_matched(RULE_HASH_2, timedelta(hours=2))
+    return first
+
+
+def test_a_superseded_version_rolls_over_to_make_room(qa_pool, make_file, root_analysis, full_rule, caplog):
+    evicted = next(row for row in match_rows() if row.id == full_rule[0])
+
+    with caplog.at_level(logging.INFO):
+        result = _store(make_file, root_analysis, RULE_HASH_3)
+
+    assert result.status == QARecordStatus.STORED
+    # the oldest version gives up the file it saw longest ago
+    assert _versions() == {RULE_HASH_1: 2, RULE_HASH_2: 2, RULE_HASH_3: 1}
+    assert full_rule[0] not in {row.id for row in match_rows()}
+    assert (counter_row(RULE_HASH_1).stored_count, counter_row(RULE_HASH_3).stored_count) == (2, 1)
+    assert _holds(qa_pool, evicted.sha256) == []
+    # the match record is the same for every match here, so other rows still hold it
+    assert str(evicted.id) not in {h.holder_id for h in _holds(qa_pool, evicted.match_digest)}
+
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("rolled over yara qa match")]
+    assert (record.match_id, record.evicted_signature_version, record.signature_version) == (
+        evicted.id, RULE_HASH_1, RULE_HASH_3)
+
+
+def test_each_new_file_rolls_over_one_file(make_file, root_analysis, full_rule):
+    statuses = [_store(make_file, root_analysis, RULE_HASH_3).status for _ in range(4)]
+
+    # the third file fills the new version's own cap; rollover never makes room past it
+    assert statuses == [QARecordStatus.STORED] * 3 + [QARecordStatus.CAPPED]
+    assert _versions() == {RULE_HASH_2: 2, RULE_HASH_3: 3}
+
+
+def test_a_version_that_matched_within_the_hour_is_not_rolled_over(make_file, root_analysis, full_rule):
+    _last_matched(RULE_HASH_1, timedelta(minutes=30))
+    _last_matched(RULE_HASH_2, timedelta(minutes=50))
+
+    assert _store(make_file, root_analysis, RULE_HASH_3).status == QARecordStatus.CAPPED
+    assert _versions() == {RULE_HASH_1: 3, RULE_HASH_2: 2}
+
+
+def test_the_current_versions_own_cap_does_not_roll_over(make_file, root_analysis):
+    for _ in range(2):
+        _store(make_file, root_analysis, RULE_HASH_1)
+    for _ in range(3):
+        _store(make_file, root_analysis, RULE_HASH_2)
+    _last_matched(RULE_HASH_1, timedelta(hours=3))
+
+    assert _store(make_file, root_analysis, RULE_HASH_2).status == QARecordStatus.CAPPED
+    assert _versions() == {RULE_HASH_1: 2, RULE_HASH_2: 3}
+
+
+def test_rollover_skips_files_another_transaction_holds(make_file, root_analysis, full_rule):
+    superseded = [row.id for row in match_rows()]
+    with private_transaction() as locker:
+        locker.execute(select(YaraQAMatch.id).where(YaraQAMatch.id.in_(superseded)).with_for_update()).all()
+
+        # does not wait on the locks
+        assert _store(make_file, root_analysis, RULE_HASH_3).status == QARecordStatus.CAPPED
+
+    assert _versions() == {RULE_HASH_1: 3, RULE_HASH_2: 2}
+
+
+def test_a_failed_hold_release_still_rolls_over(make_file, root_analysis, full_rule, monkeypatch, caplog):
+    def release_fails(self, digest, hold):
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(CASPool, "release", release_fails)
+    with caplog.at_level(logging.WARNING):
+        assert _store(make_file, root_analysis, RULE_HASH_3).status == QARecordStatus.STORED
+
+    assert full_rule[0] not in {row.id for row in match_rows()}
+    assert any(r.getMessage().startswith("unable to release yara qa hold") and f"match {full_rule[0]}" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_nothing_rolls_over_when_storing_is_turned_off(make_file, root_analysis, full_rule, monkeypatch):
+    # a ceiling of 0 stores nothing, so deleting an old file would only lose it
+    monkeypatch.setattr(get_config().yara_qa, "max_files_per_signature", 0)
+
+    assert _store(make_file, root_analysis, RULE_HASH_3).status == QARecordStatus.CAPPED
+    assert _versions() == {RULE_HASH_1: 3, RULE_HASH_2: 2}
