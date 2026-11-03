@@ -79,6 +79,25 @@ DOM_NAME = "dom.html"
 # takes an explicit exclude_analysis below.
 RESPONSE_BODIES_NAME = "response_bodies.txt"
 
+# A browser reads any run of slashes or backslashes after http: or https: as the "//"
+# before the host, so https:\\example.com and https:example.com both have one.
+SPECIAL_SCHEME_PREFIX = re.compile(r"^(https?):[/\\]*", re.IGNORECASE)
+
+
+def _url_has_host(url: str) -> bool:
+    """Returns False for an http(s) URL with no host a browser could look up, such as
+    https:.. from an OCR'd address bar cut off with an ellipsis. Chrome can only fail
+    on one. Any other URL returns True and is left to the scanner."""
+    try:
+        parsed = urlparse(SPECIAL_SCHEME_PREFIX.sub(r"\1://", url.strip()))
+        if parsed.scheme.lower() not in ("http", "https"):
+            return True
+        hostname = parsed.hostname
+    except ValueError:
+        # an authority urlparse cannot parse (an unclosed "[") is the scanner's to report
+        return True
+    return any(c.isalnum() for c in hostname or "")
+
 
 class PhishkitAnalysis(Analysis):
     """Analysis results from Phishkit scanning of URLs and files."""
@@ -344,6 +363,9 @@ class PhishkitAnalyzer(AnalysisModule):
         if observable.type == F_URL:
             # urls require crawl directives
             if not observable.has_directive(DIRECTIVE_CRAWL):
+                return False
+            if not _url_has_host(observable.value):
+                logging.info(f"phishkit refusing to scan {observable.value} - the url has no host")
                 return False
             url_lc = observable.value.lower()
             for pattern in self._deny_crawl_patterns:
