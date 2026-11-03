@@ -336,16 +336,17 @@ def full_rule(make_file, root_analysis) -> list[int]:
     files that last matched two hours ago: the uuid is at its ceiling of 5. Returns rule hash 1's
     match ids, the file seen longest ago first.
 
-    Rule hash 2's files are stored first and rule hash 1's are seen longer ago the higher their id,
-    so deleting in id order picks other files than the documented order does."""
+    Rule hash 2's files are stored first, one of them was seen longest ago of all, and rule hash 1's
+    are seen longer ago the higher their id, so deleting in id order, or by last_seen alone, picks
+    other files than the documented order does."""
     config = get_config().yara_qa
     assert (config.max_files_per_version, config.max_files_per_signature) == (3, 5)
 
-    for _ in range(2):
-        _store(make_file, root_analysis, RULE_HASH_2)
+    second = [_store(make_file, root_analysis, RULE_HASH_2).match_id for _ in range(2)]
     first = [_store(make_file, root_analysis, RULE_HASH_1).match_id for _ in range(3)]
     for n, match_id in enumerate(first):
         _last_seen(match_id, timedelta(hours=3, minutes=n))
+    _last_seen(second[0], timedelta(hours=5))
     _last_matched(RULE_HASH_1, timedelta(hours=3))
     _last_matched(RULE_HASH_2, timedelta(hours=2))
     return list(reversed(first))
