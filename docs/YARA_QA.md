@@ -36,7 +36,7 @@ writes to them.
 
 | Table | One row per | Holds |
 |---|---|---|
-| `yara_qa_signatures` | (signature uuid, signature version) | `match_count` (every match, including those past the cap), `stored_count` (files kept, which is the slot counter), first and last match |
+| `yara_qa_signatures` | (signature uuid, signature version) | `version_kind`; the first and last commit it matched under; `match_count` (every match, including those past the cap), `stored_count` (files kept, which is the slot counter), first and last match |
 | `yara_qa_matches` | stored file | the file's sha256, name and size; the analysis it came from; the node that stored it; `match_digest`; a `match_summary`; `hit_count`; `first_seen` / `last_seen`; `expires_at` |
 
 **The match summary.** `match_summary` is derived from the record: the rule, its meta and tags, and
@@ -48,9 +48,23 @@ is fetched only on request.
 the row's expiry. The same file matched by two rules, or under two versions of one rule, is stored
 once and held twice.
 
-**Versions.** The signature version is the one a detection point would carry: the commit of the
-rule's repository, or `unknown` for a rule directory that is not listed in
-`service_yara.git_repo_dirs`.
+**Versions.** A match is filed under the version of the rule that matched: its **content hash**,
+the same value the signature inventory gives the rule (`Signature.content_hash`). The yara service
+computes it when a generation compiles the rules and sends it with each match
+([YARA_SCANNER.md](YARA_SCANNER.md)), so it is the hash of the rule that was scanned with, not of
+the file as it is later. A commit that does not touch a rule keeps its version, and a file it
+matches again renews its existing row. Each version records the first and last commit of the
+rule's repository it matched under (`first_commit`, `last_commit`).
+
+The hash covers the rule's own lines, from the `rule` line through its closing brace, meta
+included. A change elsewhere that changes what the rule matches (a private rule its condition
+names, a global rule in its namespace, an `include`, an `import`) does not start a new version.
+
+A match that comes without a hash is filed under the commit of the rule's repository, or `unknown`
+for a rule directory that is not listed in `service_yara.git_repo_dirs`, which is how every match
+was filed before content versions. That happens when the rule's file could not be parsed with
+plyara, or changed while it compiled (both are logged by the yara service). Such a version has
+`version_kind` `commit`; a content version has `content`.
 
 **Rules without a uuid.** A rule with no `uuid` meta has nothing to be filed under, so its matches
 are not stored. The service does not spool them, and `record_qa_match()` logs a warning if it is
@@ -65,9 +79,8 @@ Two caps limit how many files are kept:
 - **`yara_qa.max_files_per_signature`** (default 250): distinct files per uuid, across all of its
   versions.
 
-Because the version is a repository commit, every commit to the signatures repository starts a new
-version of every rule in it. The per-uuid ceiling is what keeps that churn from growing storage
-without bound.
+Because a version is the rule's content, only an edit to the rule starts a new version. The per-uuid
+ceiling bounds the files a rule that is edited often keeps across its versions.
 
 A match past either cap is still counted in `match_count`, so the listing shows how noisy a rule
 really is even when no more files are being kept.

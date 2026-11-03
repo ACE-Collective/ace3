@@ -181,7 +181,8 @@ def _format_string_pattern(string: dict) -> str:
 # observable_export's can hold thousands of strings
 MAX_RULE_SOURCE_BYTES = 50 * 1024
 
-# rule name -> {"patterns": {string identifier -> pattern}, "source": {"file", "start_line", "text"} or None}
+# rule name -> {"patterns": {string identifier -> pattern}, "source": {"file", "start_line", "text"} or None,
+#               "content_hash": the inventory's Signature.content_hash for the rule, or None}
 RuleDetails = dict[str, dict]
 
 # (namespace, rule name) -> the details of the rules a scanner compiled
@@ -192,15 +193,18 @@ RuleDetailsRead = dict[str, tuple[FileIdentity, str, RuleDetails]]
 
 
 def _parse_rule_details(path: str) -> RuleDetails:
-    """The string patterns and source of every rule in one rule file. Anonymous strings ($) get no
-    pattern: a match names them only as $, so a match can't tell them apart. A rule whose source
-    is over MAX_RULE_SOURCE_BYTES gets none."""
+    """The string patterns, source and content hash of every rule in one rule file. Anonymous
+    strings ($) get no pattern: a match names them only as $, so a match can't tell them apart. A
+    rule whose source is over MAX_RULE_SOURCE_BYTES gets no source, but still gets its hash."""
     source, parsed_rules = _read_and_parse(path)
     source_lines = source.splitlines(keepends=True)
     result = {}
     for parsed_rule in parsed_rules:
         name = parsed_rule.get("rule_name")
         rule_source = _rule_source(source_lines, parsed_rule)
+        # the same slice and hash parse_rule_file() gives the inventory, so a match names the version
+        # of the rule the scanner compiled (YARA QA keys its versions on it, docs/YARA_QA.md)
+        rule_hash = None if rule_source is None else content_hash(rule_source)
         if rule_source is not None and len(rule_source.encode("utf-8", errors="surrogateescape")) > MAX_RULE_SOURCE_BYTES:
             logging.info("yara rule %s in %s is over %d bytes: its source is not shown", name, path,
                          MAX_RULE_SOURCE_BYTES, extra={"path": path, "yara_rule": name})
@@ -216,6 +220,7 @@ def _parse_rule_details(path: str) -> RuleDetails:
                 # surrogates stand for bytes that aren't utf-8, which the alert's JSON can't hold
                 "text": rule_source.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace"),
             },
+            "content_hash": rule_hash,
         }
 
     return result
@@ -270,13 +275,15 @@ def compiled_rule_details(read: RuleDetailsRead) -> CompiledRuleDetails:
 
 def attach_rule_details(matches: list[dict], rule_details: CompiledRuleDetails) -> None:
     """Adds to each match in YaraScanner.scan_results string_patterns (identifier -> pattern, for
-    the strings that matched) and rule_source (the rule's source, or None)."""
+    the strings that matched), rule_source (the rule's source, or None) and rule_content_hash (the
+    rule's content hash, or None)."""
     for match in matches:
         details = rule_details.get((match.get("namespace"), match.get("rule"))) or {}
         matched = {string[1] for string in match.get("strings") or []}
         match["string_patterns"] = {identifier: pattern for identifier, pattern in (details.get("patterns") or {}).items()
                                     if identifier in matched}
         match["rule_source"] = details.get("source")
+        match["rule_content_hash"] = details.get("content_hash")
 
 
 def _declared_repo_paths(signature_dir: str, git_repo_dirs: list[str]) -> set[str]:

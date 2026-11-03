@@ -94,6 +94,7 @@ def _signature_summary(signature: QASignature) -> QASignatureSummary:
     return QASignatureSummary(
         signature_uuid=signature.signature_uuid, name=signature.name, status=signature.status.value,
         enabled=signature.enabled, current_version=signature.current_version,
+        current_content_hash=signature.current_content_hash,
         source_path=signature.source_path, tags=list(signature.tags), namespace=signature.namespace,
         match_count=signature.match_count, stored_count=signature.stored_count,
         version_count=signature.version_count, first_match_at=signature.first_match_at,
@@ -123,7 +124,9 @@ async def get_signature(session: AsyncSession, signature_uuid: str) -> QASignatu
     return QASignatureDetail(
         **_signature_summary(signature).model_dump(),
         versions=[QASignatureVersion(
-            signature_version=v.signature_version, rule_name=v.rule_name, namespace=v.namespace,
+            signature_version=v.signature_version, version_kind=v.version_kind,
+            first_commit=v.first_commit, last_commit=v.last_commit,
+            rule_name=v.rule_name, namespace=v.namespace,
             match_count=v.match_count, stored_count=v.stored_count,
             first_match_at=v.first_match_at, last_match_at=v.last_match_at) for v in signature.versions])
 
@@ -147,6 +150,7 @@ async def _alert_uuids(session: AsyncSession, root_uuids: set[str]) -> set[str]:
 def _match(row: YaraQAMatch, alert_uuids: set[str]) -> dict:
     return dict(
         id=row.id, signature_uuid=row.signature_uuid, signature_version=row.signature_version,
+        version_kind=row.version_kind,
         sha256=row.sha256, file_name=row.file_name, file_size=row.file_size, hit_count=row.hit_count,
         first_seen=row.first_seen, last_seen=row.last_seen, expires_at=row.expires_at, node=row.node,
         local=is_local(row), root_uuid=row.root_uuid, observable_uuid=row.observable_uuid,

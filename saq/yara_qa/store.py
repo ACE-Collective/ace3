@@ -5,9 +5,9 @@ every match of a rule whose `modifiers` include `qa`, off the scanning path: the
 only spool the match (docs/YARA_SCANNER.md). It keeps the matched file and the full match record
 in the yara_qa CAS pool and indexes them in yara_qa_matches, subject to two caps: at most
 yara_qa.max_files_per_version distinct files per (signature uuid, signature version), and at most
-yara_qa.max_files_per_signature per uuid across all of its versions. The version is the commit of
-the rule's repository, so every commit to it starts a new version of every rule in it; the per-uuid
-ceiling is what keeps that churn from growing storage.
+yara_qa.max_files_per_signature per uuid across all of its versions. The version is the content
+hash of the rule the yara service compiled (qa_version()), so only a change to the rule itself
+starts a new version.
 
 Every match is counted in yara_qa_signatures.match_count, including the ones past the cap.
 
@@ -64,6 +64,7 @@ HOLDER_KIND = "yara_qa"
 _RULE_NAME_MAX_LENGTH = 256
 _NAMESPACE_MAX_LENGTH = 256
 _FILE_NAME_MAX_LENGTH = 1024
+_COMMIT_MAX_LENGTH = 64
 
 
 class QARecordStatus(StrEnum):
@@ -72,6 +73,23 @@ class QARecordStatus(StrEnum):
     CAPPED = "capped"      # counted, but not stored: a cap was reached
     SKIPPED = "skipped"    # not counted: no usable uuid, or no pool configured
     FAILED = "failed"      # something went wrong; logged
+
+
+class QAVersionKind(StrEnum):
+    CONTENT = "content"    # signature_version is the rule's content hash
+    COMMIT = "commit"      # signature_version is the rule repository's commit, or 'unknown'
+
+
+def qa_version(match_result: dict) -> tuple[str, QAVersionKind]:
+    """The version a match is filed under: the content hash of the rule the yara service compiled
+    (saq.signatures.loaders.yara.attach_rule_details), so a commit that does not touch a rule keeps
+    its version. A match without one (its rule file could not be parsed, or changed while it
+    compiled) is filed under its commit, as every match was before content versions."""
+    rule_hash = match_result.get("rule_content_hash")
+    if rule_hash:
+        return str(rule_hash), QAVersionKind.CONTENT
+
+    return match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN, QAVersionKind.COMMIT
 
 
 @dataclass(frozen=True)
@@ -116,15 +134,16 @@ def _local_node() -> str:
 # the counter row
 #
 
-def _count_match(session: Session, signature_uuid: str, signature_version: str, rule_name: str,
-                 namespace: Optional[str], now: datetime) -> None:
+def _count_match(session: Session, signature_uuid: str, signature_version: str, version_kind: QAVersionKind,
+                 commit: Optional[str], rule_name: str, namespace: Optional[str], now: datetime) -> None:
     stmt = mysql_insert(YaraQASignature).values(
-        signature_uuid=signature_uuid, signature_version=signature_version,
+        signature_uuid=signature_uuid, signature_version=signature_version, version_kind=version_kind,
+        first_commit=commit, last_commit=commit,
         rule_name=rule_name, namespace=namespace, match_count=1, stored_count=0,
         first_match_at=now, last_match_at=now)
     session.execute(stmt.on_duplicate_key_update(
         match_count=YaraQASignature.__table__.c.match_count + 1,
-        last_match_at=now, rule_name=rule_name, namespace=namespace))
+        last_match_at=now, last_commit=commit, rule_name=rule_name, namespace=namespace))
 
 
 # one statement, so no lock is held past it and nothing waits in between. The per-uuid SUM is read
@@ -255,7 +274,8 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
         logging.warning("cas pool %s is not configured - yara qa matches are not stored", config.pool)
         return QARecordResult(QARecordStatus.SKIPPED)
 
-    signature_version = match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
+    signature_version, version_kind = qa_version(match_result)
+    commit = _truncate(match_result.get("commit"), _COMMIT_MAX_LENGTH)
     namespace = _truncate(match_result.get("namespace"), _NAMESPACE_MAX_LENGTH)
     sha256 = target.sha256
     file_path = target.path
@@ -266,7 +286,7 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
 
     # committed on its own, so the match is counted whatever happens to the storage below
     with private_transaction() as session:
-        _count_match(session, signature_uuid, signature_version, rule_name, namespace, now)
+        _count_match(session, signature_uuid, signature_version, version_kind, commit, rule_name, namespace, now)
 
     renewed = _renew(pool, signature_uuid, signature_version, sha256, file_path, match_result, now, expires_at)
     if renewed is not None:
@@ -280,7 +300,8 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
                 return QARecordResult(QARecordStatus.CAPPED)
 
             match = YaraQAMatch(
-                signature_uuid=signature_uuid, signature_version=signature_version, sha256=sha256,
+                signature_uuid=signature_uuid, signature_version=signature_version, version_kind=version_kind,
+                sha256=sha256,
                 file_name=_truncate(target.file_name, _FILE_NAME_MAX_LENGTH),
                 file_size=target.file_size, root_uuid=target.root_uuid,
                 observable_uuid=target.observable_uuid, node=_local_node(), match_digest=None,

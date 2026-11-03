@@ -14,11 +14,15 @@ QA_UUID = "5a0c7f1e-1c43-4a39-8d8e-2f1b3c4d5e6f"
 VERSION_A = "a" * 40
 VERSION_B = "b" * 40
 VERSION_C = "c" * 40
+RULE_HASH_1 = "1" * 64
+RULE_HASH_2 = "2" * 64
 
 
 def qa_match_result(signature_uuid: Optional[str] = QA_UUID, commit: Optional[str] = VERSION_A,
-                    rule: str = "qa_rule", strings: Optional[list] = None) -> dict:
-    """A match dict shaped the way yara_scanner returns one."""
+                    rule: str = "qa_rule", strings: Optional[list] = None,
+                    rule_content_hash: Optional[str] = None) -> dict:
+    """A match dict shaped the way the yara service returns one. Without rule_content_hash it is
+    filed under its commit, which is what most tests here exercise."""
     meta = {"modifiers": "qa", "author": "unittest"}
     if signature_uuid is not None:
         meta["uuid"] = signature_uuid
@@ -31,6 +35,7 @@ def qa_match_result(signature_uuid: Optional[str] = QA_UUID, commit: Optional[st
         "tags": ["unittest"],
         "meta": meta,
         "strings": strings if strings is not None else [(0, "$a", b"abc"), (10, "$a", b"abc"), (5, "$b", b"\x00x")],
+        "rule_content_hash": rule_content_hash,
     }
 
 

@@ -8,10 +8,12 @@ from saq.configuration.config import get_config
 from saq.environment import get_global_runtime_settings
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.yara_qa import store
-from saq.yara_qa.store import QARecordStatus, QATarget, record_qa_match
+from saq.yara_qa.store import QARecordStatus, QATarget, QAVersionKind, record_qa_match
 from saq.yara_scanning.match_record import serialize_match_record
 from tests.saq.yara_qa.conftest import (
     QA_UUID,
+    RULE_HASH_1,
+    RULE_HASH_2,
     VERSION_A,
     VERSION_B,
     VERSION_C,
@@ -133,6 +135,42 @@ def test_missing_commit_is_the_unknown_version(make_file, root_analysis):
     record_qa_match(qa_match_result(commit=None), QATarget.from_file_observable(make_file(), root_analysis.uuid))
     (row,) = match_rows()
     assert row.signature_version == SIGNATURE_VERSION_UNKNOWN
+
+
+def test_a_commit_that_does_not_touch_the_rule_keeps_its_version(make_file, root_analysis):
+    file_observable = make_file()
+    first = record_qa_match(qa_match_result(commit=VERSION_A, rule_content_hash=RULE_HASH_1),
+                            QATarget.from_file_observable(file_observable, root_analysis.uuid))
+    second = record_qa_match(qa_match_result(commit=VERSION_B, rule_content_hash=RULE_HASH_1),
+                             QATarget.from_file_observable(file_observable, root_analysis.uuid))
+
+    assert (first.status, second.status) == (QARecordStatus.STORED, QARecordStatus.RENEWED)
+    (row,) = match_rows()
+    assert (row.signature_version, row.version_kind, row.hit_count) == (RULE_HASH_1, QAVersionKind.CONTENT, 2)
+
+    counters = counter_row(RULE_HASH_1)
+    assert (counters.version_kind, counters.match_count, counters.stored_count) == (QAVersionKind.CONTENT, 2, 1)
+    assert (counters.first_commit, counters.last_commit) == (VERSION_A, VERSION_B)
+    assert counter_row(VERSION_A) is None and counter_row(VERSION_B) is None
+
+
+def test_a_changed_rule_is_a_new_version(make_file, root_analysis):
+    file_observable = make_file()
+    record_qa_match(qa_match_result(rule_content_hash=RULE_HASH_1), QATarget.from_file_observable(file_observable, root_analysis.uuid))
+    result = record_qa_match(qa_match_result(rule_content_hash=RULE_HASH_2), QATarget.from_file_observable(file_observable, root_analysis.uuid))
+
+    assert result.status == QARecordStatus.STORED
+    assert [row.signature_version for row in match_rows()] == [RULE_HASH_1, RULE_HASH_2]
+
+
+def test_a_match_without_a_content_hash_is_filed_under_its_commit(make_file, root_analysis):
+    record_qa_match(qa_match_result(commit=VERSION_A, rule_content_hash=None),
+                    QATarget.from_file_observable(make_file(), root_analysis.uuid))
+
+    (row,) = match_rows()
+    assert (row.signature_version, row.version_kind) == (VERSION_A, QAVersionKind.COMMIT)
+    counters = counter_row(VERSION_A)
+    assert (counters.version_kind, counters.first_commit, counters.last_commit) == (QAVersionKind.COMMIT, VERSION_A, VERSION_A)
 
 
 @pytest.mark.parametrize("signature_uuid", [None, "", "   ", "x" * 37])

@@ -802,9 +802,62 @@ def test_rule_source_over_the_cap_is_not_kept(tmp_path, caplog):
         details = _read({"ns": [path]})
 
     assert details[("ns", "big_rule")]["source"] is None
-    # the patterns are still kept
+    # the patterns and the content hash are still kept
     assert details[("ns", "big_rule")]["patterns"]["$s0"] == '"' + "x" * 60 + '"'
+    with open(path) as fp:
+        assert details[("ns", "big_rule")]["content_hash"] == hashlib.sha256(fp.read().encode()).hexdigest()
     assert [r.yara_rule for r in caplog.records if "its source is not shown" in r.getMessage()] == ["big_rule"]
+
+
+HASHED_RULES = """rule first_rule
+{
+    meta:
+        uuid = "11111111-1111-4111-8111-111111111111"
+    strings:
+        $a = "first"
+    condition:
+        $a
+}
+
+rule second_rule
+{
+    meta:
+        uuid = "22222222-2222-4222-8222-222222222222"
+    strings:
+        $b = "second"
+    condition:
+        $b
+}
+"""
+
+
+def _content_hashes(details: dict) -> dict:
+    return {key: rule["content_hash"] for key, rule in details.items()}
+
+
+@pytest.mark.unit
+def test_rule_details_carry_the_content_hash_the_inventory_gives(tmp_path):
+    rule_dir = tmp_path / "ns"
+    rule_dir.mkdir()
+    path = _write_rule_file(rule_dir, "rules.yar", HASHED_RULES)
+
+    inventory = {("ns", s.name): s.content_hash for s in load_yara_signatures(str(tmp_path), [])}
+
+    assert _content_hashes(_read({"ns": [path]})) == inventory
+    # each rule is hashed on its own, not the file
+    assert len(set(inventory.values())) == 2
+
+
+@pytest.mark.unit
+def test_editing_one_rule_changes_only_its_content_hash(tmp_path):
+    path = _write_rule_file(tmp_path, "rules.yar", HASHED_RULES)
+    before = _content_hashes(_read({"ns": [path]}))
+
+    _write_rule_file(tmp_path, "rules.yar", HASHED_RULES.replace('"second"', '"edited"'))
+    after = _content_hashes(_read({"ns": [path]}))
+
+    assert after[("ns", "first_rule")] == before[("ns", "first_rule")]
+    assert after[("ns", "second_rule")] != before[("ns", "second_rule")]
 
 
 @pytest.mark.unit
@@ -875,7 +928,7 @@ def test_rule_details_never_raise_when_the_rule_files_cannot_be_listed(caplog):
 @pytest.mark.unit
 def test_attach_rule_details_keeps_the_matched_strings_and_the_source():
     source = {"file": "a.yar", "start_line": 1, "text": "rule rule_a {}"}
-    details = {("ns", "rule_a"): {"patterns": {"$a": '"a"', "$b": '"b"'}, "source": source}}
+    details = {("ns", "rule_a"): {"patterns": {"$a": '"a"', "$b": '"b"'}, "source": source, "content_hash": "f" * 64}}
     matches = [
         {"namespace": "ns", "rule": "rule_a", "strings": [(0, "$a", b"a"), (5, "$a", b"a")]},
         {"namespace": "other", "rule": "rule_a", "strings": [(0, "$a", b"a")]},
@@ -885,3 +938,4 @@ def test_attach_rule_details_keeps_the_matched_strings_and_the_source():
 
     assert [m["string_patterns"] for m in matches] == [{"$a": '"a"'}, {}]
     assert [m["rule_source"] for m in matches] == [source, None]
+    assert [m["rule_content_hash"] for m in matches] == ["f" * 64, None]

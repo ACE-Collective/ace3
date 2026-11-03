@@ -142,7 +142,9 @@ def test_qa_list_json_filtered(qa_rules, capsys):
 
     assert json.loads(capsys.readouterr().out) == [{
         "signature_uuid": QA_RULE_UUID, "name": "qa_rule", "status": "qa", "enabled": True,
-        "current_version": "unknown", "source_path": "rules.yar", "match_count": 0, "stored_count": 0,
+        "current_version": "unknown",
+        "current_content_hash": yara_inventory.get_yara_inventory(0).by_uuid[QA_RULE_UUID].content_hash,
+        "source_path": "rules.yar", "match_count": 0, "stored_count": 0,
         "version_count": 0, "last_match_at": None,
     }]
 

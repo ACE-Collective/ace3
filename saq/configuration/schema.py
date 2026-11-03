@@ -758,8 +758,8 @@ class YaraQAConfig(BaseModel):
     Every matched file and its full match record go into a CAS pool, held for retention_days after
     the last time the file matched. The number of files kept per rule is capped twice: per
     (signature uuid, signature version), and per signature uuid across all of its versions. The
-    version is the commit of the rule's repository, so every commit to that repository starts a new
-    version of every rule in it, and the per-uuid ceiling keeps that churn from growing storage."""
+    version is the rule's content hash, so only an edit to the rule starts a new version, and the
+    per-uuid ceiling bounds what a rule that is edited often keeps."""
     model_config = ConfigDict(extra="forbid")
     pool: str = Field(default="yara_qa", description="the CAS pool (cas.pools.<name>) that holds the files and match records. A multi-node site redefines this pool with a shared backend")
     max_files_per_version: int = Field(default=25, ge=0, description="most distinct files kept for one (signature uuid, signature version). Matches past the cap are still counted")

@@ -79,7 +79,29 @@ function qa_size(bytes) {
 }
 
 function qa_short_version(version) {
-    return /^[0-9a-f]{40}$/.test(version) ? version.substring(0, 10) : version;
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(version || "") ? version.substring(0, 10) : version;
+}
+
+// a content version is the rule's own hash (docs/YARA_QA.md, Versions); a commit version is the
+// rule repository's commit, for matches recorded without a hash
+function qa_version_label(version, current_content_hash) {
+    var label;
+    if (version.version_kind === "content") {
+        label = "rule " + qa_short_version(version.signature_version);
+        if (version.first_commit) {
+            label += " (commits " + qa_short_version(version.first_commit);
+            if (version.last_commit && version.last_commit !== version.first_commit) {
+                label += " … " + qa_short_version(version.last_commit);
+            }
+            label += ")";
+        }
+    } else {
+        label = "commit " + qa_short_version(version.signature_version);
+    }
+    if (current_content_hash && version.signature_version === current_content_hash) {
+        label += " [current]";
+    }
+    return label;
 }
 
 var QA_STATUS_LABELS = {
@@ -185,7 +207,7 @@ function qa_render_detail(cell, signature) {
     select.append($("<option>").val("").text("all versions"));
     signature.versions.forEach(function(version) {
         select.append($("<option>").val(version.signature_version).text(
-            qa_short_version(version.signature_version) + " — " + version.match_count + " matches, " +
+            qa_version_label(version, signature.current_content_hash) + " — " + version.match_count + " matches, " +
             version.stored_count + " stored, last " + qa_date(version.last_match_at)));
     });
     select.val(qa_state.version);
@@ -193,8 +215,10 @@ function qa_render_detail(cell, signature) {
     var toolbar = $('<div class="d-flex flex-wrap align-items-center gap-2 mb-2">');
     toolbar.append($('<label class="small text-muted mb-0">').text("Version"));
     toolbar.append(select);
-    if (signature.current_version) {
-        toolbar.append($('<span class="small text-muted">').text("loaded now: " + qa_short_version(signature.current_version)));
+    if (signature.current_content_hash) {
+        toolbar.append($('<span class="small text-muted">').text(
+            "loaded now: rule " + qa_short_version(signature.current_content_hash) +
+            (signature.current_version ? " at commit " + qa_short_version(signature.current_version) : "")));
     }
     if (QA_CAN_DOWNLOAD) {
         toolbar.append('<button type="button" class="btn btn-sm btn-outline-dark qa-download-selected" disabled>Download selected</button>');
@@ -262,7 +286,9 @@ function qa_render_matches(target, signature_uuid, page) {
         row.append($('<td class="qa-file-name">').text(match.file_name));
         row.append($('<td class="qa-sha256">').append($("<code>").text(match.sha256.substring(0, 16) + "…").attr("title", match.sha256)));
         row.append($("<td>").text(qa_size(match.file_size)));
-        row.append($("<td>").append($("<code>").text(qa_short_version(match.signature_version)).attr("title", match.signature_version)));
+        row.append($("<td>").append($("<code>").text(
+            (match.version_kind === "content" ? "rule " : "commit ") + qa_short_version(match.signature_version))
+            .attr("title", match.signature_version)));
         row.append($("<td>").text(match.hit_count));
         row.append($("<td>").text(qa_date(match.first_seen)));
         row.append($("<td>").text(qa_date(match.last_seen)));

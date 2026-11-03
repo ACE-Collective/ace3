@@ -84,16 +84,19 @@ it back into the `(offset, identifier, bytes)` tuple, so a match looks exactly l
 
 Yara can't return a rule's source or the pattern a string was written with, so a generation reads
 the rules in the files it is about to compile (plyara, `read_rule_details()` in
-`saq/signatures/loaders/yara.py`), and the workers add two keys to each match:
+`saq/signatures/loaders/yara.py`), and the workers add three keys to each match:
 
 - `string_patterns`: identifier → pattern (e.g. `"$a": "\"foo\" nocase"`), for the strings that
   matched. Anonymous (`$`) strings get no pattern.
 - `rule_source`: `{"file", "start_line", "text"}`, the rule as written, or `null` when the rule is
   over 50 KB (`MAX_RULE_SOURCE_BYTES`; generated rules can hold thousands of strings), because it
   is saved with every match.
+- `rule_content_hash`: the rule's content hash, the same value the signature inventory gives it
+  (`Signature.content_hash`), including for a rule over 50 KB. YARA QA files its matches under it
+  ([YARA_QA.md](YARA_QA.md), *Versions*).
 
-Both come from the rules that matched, not the file as it is on disk later: a file that changed
-between being read and compiled gets neither. The local fallback scanner does the same. The module
+All three come from the rules that matched, not the file as it is on disk later: a file that changed
+between being read and compiled gets none of them. The local fallback scanner does the same. The module
 saves them with the match. The GUI shows each pattern next to its string match, and shows the meta
 with a button that swaps it for the full rule, with the lines of the strings that matched marked.
 With `gui.hide_intel` set, the rule is not shown. Results saved before this have neither key. A rule

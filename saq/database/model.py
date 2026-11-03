@@ -1570,19 +1570,26 @@ class CASPurge(Base):
 class YaraQASignature(Base):
     """Per (signature uuid, signature version) counters for YARA rules in QA mode (docs/YARA_QA.md).
 
-    signature_version is the commit of the rule's repository (or 'unknown'), the same value a
-    detection point carries, so one rule has a row per commit it matched under. match_count counts
+    signature_version is the rule's content hash (version_kind 'content'), so a commit that does not
+    touch the rule keeps its version. A match that came without a hash (its rule file could not be
+    parsed, or changed while it compiled), and every row recorded before content versions, is filed
+    under the commit of the rule's repository or 'unknown' (version_kind 'commit'). first_commit
+    and last_commit are the commits the version first and last matched under. match_count counts
     every match, including those past the file cap, because "how noisy is this rule" is the
     question QA answers and the cap must not hide it. stored_count is the number of
     yara_qa_matches rows for this version: it is the slot counter the cap is enforced against,
     incremented by one conditional UPDATE when a file is stored and decremented when a match is
-    pruned. Only saq/yara_qa writes this table.
+    pruned, evicted or purged. Only saq/yara_qa writes this table.
     """
 
     __tablename__ = 'yara_qa_signatures'
 
     signature_uuid: Mapped[str] = mapped_column(String(36), primary_key=True)
     signature_version: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 'content' or 'commit' (saq.yara_qa.store.QAVersionKind)
+    version_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'commit'"))
+    first_commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    last_commit: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # the rule's name and namespace when it last matched
     rule_name: Mapped[str] = mapped_column(String(256), nullable=False)
     namespace: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -1604,8 +1611,9 @@ class YaraQAMatch(Base):
     thousands of times, each with its bytes), which is why it lives in the CAS and not here.
 
     node is the node that stored the file: with a node-local pool the bytes are only there.
-    Rows are removed by `ace yara-qa prune` once expired, in primary-key batches. Only saq/yara_qa
-    writes this table.
+    Rows are removed by `ace yara-qa prune` once expired, in primary-key batches, by the recorder
+    when it rolls a superseded version over, and by an analyst's purge. Only saq/yara_qa writes
+    this table.
     """
 
     __tablename__ = 'yara_qa_matches'
@@ -1618,6 +1626,8 @@ class YaraQAMatch(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     signature_uuid: Mapped[str] = mapped_column(String(36), nullable=False)
     signature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # the version's kind, as in yara_qa_signatures
+    version_kind: Mapped[str] = mapped_column(String(16), nullable=False, server_default=text("'commit'"))
     # the file's digest in the pool
     sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     file_name: Mapped[str] = mapped_column(String(1024), nullable=False)

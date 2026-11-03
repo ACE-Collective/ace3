@@ -17,9 +17,11 @@ class QAPage(BaseModel, Generic[T]):
 
 
 class QASignatureVersion(BaseModel):
-    """What was recorded for one version of a signature. The version is the commit of the rule's
-    repository when it matched ('unknown' for rules outside a declared git repo)."""
-    signature_version: str
+    """What was recorded for one version of a signature (docs/YARA_QA.md, Versions)."""
+    signature_version: str = Field(description="the rule's content hash (version_kind content), or for a match recorded without one the commit of the rule's repository, 'unknown' for rules outside a declared git repo (version_kind commit)")
+    version_kind: str = Field(description="content or commit")
+    first_commit: Optional[str] = Field(default=None, description="the commit of the rule's repository when this version first matched; null for versions recorded before content versions")
+    last_commit: Optional[str] = Field(default=None, description="the commit of the rule's repository when this version last matched")
     rule_name: str = Field(description="the rule's name when it last matched under this version")
     namespace: Optional[str] = None
     match_count: int = Field(description="every match under this version, including those past the file cap")
@@ -34,7 +36,8 @@ class QASignatureSummary(BaseModel):
     name: str
     status: str = Field(description="qa: in QA mode now. not_qa: the rule exists but is no longer in QA mode. missing: no loaded rule has this uuid any more")
     enabled: Optional[bool] = Field(default=None, description="the rule's enabled meta; null when the rule is missing")
-    current_version: Optional[str] = Field(default=None, description="the version of the rule as loaded now; null when the rule is missing")
+    current_version: Optional[str] = Field(default=None, description="the commit of the rule's repository as loaded now; null when the rule is missing")
+    current_content_hash: Optional[str] = Field(default=None, description="the content hash of the rule as loaded now, which is the signature_version its matches are filed under; null when the rule is missing")
     source_path: Optional[str] = Field(default=None, description="the rule's file, relative to its repository")
     tags: list[str] = Field(default_factory=list)
     namespace: Optional[str] = Field(default=None, description="the yara namespace of the most recent match")
@@ -58,6 +61,7 @@ class QAMatch(BaseModel):
     id: int
     signature_uuid: str
     signature_version: str
+    version_kind: str = Field(description="content or commit, as in the signature's versions")
     sha256: str
     file_name: str
     file_size: int

@@ -21,6 +21,7 @@ from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.environment import get_global_runtime_settings
+from saq.signatures.yara_inventory import get_yara_inventory
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
 from tests.saq.helpers import audit_actor_of, audit_record
@@ -87,11 +88,11 @@ def _match_result(signature_uuid: str, version: str) -> dict:
 
 
 async def _counters(session: AsyncSession, signature_uuid: str, version: str, match_count: int,
-                    stored_count: int, last_match_at: datetime) -> None:
+                    stored_count: int, last_match_at: datetime, **columns) -> None:
     session.add(YaraQASignature(
         signature_uuid=signature_uuid, signature_version=version, rule_name="matched_qa_rule",
         namespace="unittest", match_count=match_count, stored_count=stored_count,
-        first_match_at=last_match_at - timedelta(days=1), last_match_at=last_match_at))
+        first_match_at=last_match_at - timedelta(days=1), last_match_at=last_match_at, **columns))
     await session.flush()
 
 
@@ -229,6 +230,23 @@ async def test_get_signature(client: AsyncClient, session: AsyncSession):
     assert (await client.get("/signatures/yara-qa/not;a;uuid")).status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_get_signature_names_the_current_content_version(client: AsyncClient, session: AsyncSession):
+    current_hash = get_yara_inventory(0).by_uuid[MATCHED_UUID].content_hash
+    await _counters(session, MATCHED_UUID, VERSION_A, 3, 1, datetime(2026, 9, 1))
+    await _counters(session, MATCHED_UUID, current_hash, 5, 2, datetime(2026, 9, 20),
+                    version_kind="content", first_commit=VERSION_A, last_commit=VERSION_B)
+
+    detail = (await client.get(f"/signatures/yara-qa/{MATCHED_UUID}")).json()
+
+    assert detail["current_content_hash"] == current_hash
+    assert [(v["signature_version"], v["version_kind"], v["first_commit"], v["last_commit"]) for v in detail["versions"]] == [
+        (current_hash, "content", VERSION_A, VERSION_B),
+        # recorded before content versions: the server default
+        (VERSION_A, "commit", None, None),
+    ]
+
+
 #
 # matches
 #
@@ -247,6 +265,7 @@ async def test_list_matches(client: AsyncClient, session: AsyncSession):
     assert [m["id"] for m in page["data"]] == [second.id, first.id]
     assert [m["local"] for m in page["data"]] == [False, True]
     assert page["data"][1]["sha256"] == first.sha256
+    assert page["data"][1]["version_kind"] == "commit"
     assert page["data"][1]["alert_uuid"] is None
 
     response = await client.get(f"/signatures/yara-qa/{MATCHED_UUID}/matches", params={"version": VERSION_A})
