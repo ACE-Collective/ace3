@@ -1,6 +1,7 @@
 
 import logging
 import os
+import uuid
 
 from unittest.mock import Mock
 
@@ -681,7 +682,7 @@ OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 ])
 @pytest.mark.unit
 def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
-    root = create_root_analysis(analysis_mode='test_single')
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
     root.initialize_storage()
     rels_path = tmp_path / file_name
     rels_path.write_text(OFFICE_XML_RELS)
@@ -705,6 +706,25 @@ def test_office_xml_rel(tmp_path, test_context, file_name, expected_urls):
     urls = analysis.get_observables_by_type(F_URL)
     assert [o.value for o in urls] == expected_urls
     assert all(o.has_directive(DIRECTIVE_FORCE_DOWNLOAD) for o in urls)
+    assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
+
+@pytest.mark.unit
+def test_office_xml_rel_target_without_host(tmp_path, test_context):
+    """An oleObject target that is not a valid URL adds no URL observable, but the document still alerts."""
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    rels_path = tmp_path / "document.xml.rels"
+    rels_path.write_text(OFFICE_XML_RELS.replace("https://example.com/payload.html!", "https:.."))
+    observable = root.add_file_observable(rels_path)
+
+    analyzer = OfficeXMLRelationshipExternalURLAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OFFICE_XML_REL))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OfficeXMLRelationshipExternalURLAnalysis)
+    assert analysis.urls == ["https:.."]
+    assert analysis.get_observables_by_type(F_URL) == []
     assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
 
 @pytest.mark.unit

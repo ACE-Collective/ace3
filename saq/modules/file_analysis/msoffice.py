@@ -115,7 +115,9 @@ class OfficeXMLRelationshipExternalURLAnalyzer(AnalysisModule):
 
         for url in parser_target.urls:
             url = analysis.add_observable_by_spec(F_URL, url)
-            url.add_directive(DIRECTIVE_FORCE_DOWNLOAD)
+            # a target that is not a valid URL ("https:..") adds no observable, but the external link still alerts
+            if url is not None:
+                url.add_directive(DIRECTIVE_FORCE_DOWNLOAD)
             _file.add_detection_point('{} contains a link to an external oleobject'.format(_file), signature_uuid=OFFICE_EXTERNAL_OLEOBJECT.uuid)
 
         analysis.urls = parser_target.urls
