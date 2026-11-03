@@ -22,9 +22,9 @@ def test_url_is_managed(monkeypatch, url, managed):
 @pytest.mark.unit
 @pytest.mark.parametrize("url", [
     "https:..",
-    "https:/x",
     "http://",
     "HTTPS://..",
+    "https:\\\\..\\x",
     "https://user@/path",
     "ftp://:21/file",
 ])
@@ -40,6 +40,11 @@ def test_url_without_host_is_rejected(url):
     "https://bücher.example/",
     "http://1.2.3.4/x",
     "http://[2001:db8::1]/x",
+    # browsers skip any run of / and \ after the scheme of an http(s) or ftp URL, so these all open a real host
+    "https:/x",
+    "https:evil.com/x",
+    "http:///evil.com/x",
+    "https:\\\\evil.com\\x",
     # urlsplit refuses these netlocs, but an attacker wrote them and they still name a host
     "http://[x/",
     # schemes that do not name a host, and values without a scheme, are not checked

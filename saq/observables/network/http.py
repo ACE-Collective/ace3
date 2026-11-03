@@ -56,8 +56,13 @@ class URLObservable(Observable):
         # parameters) and not all of them check what they add, so "https:.." would otherwise reach the
         # crawler, urlscan and the domain lookups.
         try:
-            parts = urlsplit(new_value)
-            missing_host = parts.scheme in HOST_URL_SCHEMES and not (parts.hostname or "").strip(".")
+            scheme = urlsplit(new_value).scheme
+            missing_host = False
+            if scheme in HOST_URL_SCHEMES:
+                # browsers treat \ as / in these URLs and skip any run of them after "scheme:", so
+                # "https:\\evil.com" and "https:/evil.com" both open evil.com
+                rest = new_value.partition(":")[2].replace("\\", "/").lstrip("/")
+                missing_host = not (urlsplit(f"{scheme}://{rest}").hostname or "").strip(".")
         except ValueError:
             # urlsplit refuses some netlocs that still name a host ("http://[x/", NFKC look-alikes); an
             # attacker wrote them, so keep the URL rather than drop it
