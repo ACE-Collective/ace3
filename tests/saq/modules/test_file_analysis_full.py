@@ -29,6 +29,8 @@ from saq.modules.file_analysis.xml import XMLPlainTextAnalysis
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.git_context import GitContext
+from saq.signatures.loaders.yara import parse_rule_file
 from saq.util.hashing import sha256_file
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning.service import YaraScannerService
@@ -616,9 +618,13 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
     assert len(root_analysis.all_detection_points) == 0
 
     # the yara scanner service stores the file and its match record in the yara_qa cas pool,
-    # indexed by the rule's uuid, after it answered the scan. the test rules are not in a declared
-    # git repo, so the version is unknown
+    # indexed by the rule's uuid, after it answered the scan. it is filed under the content hash of
+    # the rule the service compiled, the same hash the signature inventory gives the rule (the Yara QA
+    # page marks the loaded version by comparing the two), not under the commit
     qa_uuid = "7f3c1c2e-5b7e-4f7a-9a51-0c1d2e3f4a5b"
+    rule_path = str(datadir / "yara_rules/custom/test.yar")
+    git_context = GitContext(root=os.path.dirname(rule_path), git_remote=None, version=SIGNATURE_VERSION_UNKNOWN)
+    (qa_signature,) = [s for s in parse_rule_file(rule_path, git_context) if s.uuid == qa_uuid]
 
     def _stored() -> bool:
         get_db().rollback()  # a fresh snapshot each time
@@ -627,7 +633,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
 
     wait_for_condition(_stored, timeout=30)
     match = get_db().execute(select(YaraQAMatch).where(YaraQAMatch.signature_uuid == qa_uuid)).scalar_one()
-    assert match.signature_version == SIGNATURE_VERSION_UNKNOWN
+    assert (match.signature_version, match.version_kind) == (qa_signature.content_hash, "content")
     assert match.sha256 == _file.sha256_hash
     assert match.file_name == _file.file_name
     assert match.root_uuid == root_analysis.uuid
@@ -636,6 +642,7 @@ def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datad
 
     counters = get_db().execute(select(YaraQASignature).where(YaraQASignature.signature_uuid == qa_uuid)).scalar_one()
     assert counters.rule_name == "test_qa_modifier"
+    assert (counters.signature_version, counters.version_kind) == (qa_signature.content_hash, "content")
     assert (counters.match_count, counters.stored_count) == (1, 1)
 
     pool = get_cas().pool("yara_qa")
