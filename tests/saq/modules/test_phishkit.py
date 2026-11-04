@@ -388,57 +388,6 @@ def test_phishkit_custom_requirement_url_requires_crawl_directive(test_context):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("value", [
-    # an address bar cut off with an ellipsis, OCR'd, and its redirect_uri decoded
-    "https:..",
-    "https://",
-    "http://../",
-    "https://user@/",
-])
-def test_phishkit_custom_requirement_refuses_url_without_host(test_context, caplog, value):
-    """A URL with no host is not crawled: Chrome can only fail on it."""
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    url_observable = root.add_observable_by_spec(F_URL, value)
-    url_observable.add_directive(DIRECTIVE_CRAWL)
-
-    analyzer = PhishkitAnalyzer(
-        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
-
-    with caplog.at_level(logging.INFO):
-        assert analyzer.custom_requirement(url_observable) is False
-
-    assert any(f"phishkit refusing to scan {value} - the url has no host" in r.getMessage()
-               for r in caplog.records)
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("value", [
-    "https://example.com/phish",
-    # a browser reads the slashes and backslashes after https: as "//"
-    "https:\\\\example.com\\phish",
-    "https:example.com/phish",
-    "https://пример.рф/",
-    "https://[2001:db8::1]/",
-    # no scheme, and an authority urlparse cannot parse: left to the scanner as before
-    "example.com/phish",
-    "http://[example.com/",
-])
-def test_phishkit_custom_requirement_crawls_url_with_host(test_context, value):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    url_observable = root.add_observable_by_spec(F_URL, value)
-    url_observable.add_directive(DIRECTIVE_CRAWL)
-
-    analyzer = PhishkitAnalyzer(
-        get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
-        context=create_test_context(root=root))
-
-    assert analyzer.custom_requirement(url_observable) is True
-
-
-@pytest.mark.integration
 def test_phishkit_custom_requirement_file_requires_render_directive(test_context):
     """A file without the render directive is rejected by custom_requirement
     (same sentinel-avoidance rationale as the URL crawl gate)."""

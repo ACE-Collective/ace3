@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from saq.analysis.observable import Observable
 from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.configuration.config import get_config
@@ -9,9 +11,14 @@ from saq.gui import (
     ObservableActionCheckForClickers,
     ObservableActionOpenSplunkClickerSearch,
 )
+from saq.observables.base import ObservableValueError
 from saq.observables.generator import register_observable_type
 
 from saq.util import is_subdomain
+
+# URLs with these schemes always name a host; mailto:, file:, data: and scheme-less values are not checked
+HOST_URL_SCHEMES = frozenset({"http", "https", "ftp"})
+BROWSER_IGNORED_CHARS = str.maketrans("", "", "\t\r\n")
 
 
 class UserAgentObservable(Observable):
@@ -43,6 +50,30 @@ class URIPathObservable(Observable):
 class URLObservable(Observable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_URL, *args, **kwargs)
+
+    @Observable.value.setter
+    def value(self, new_value):
+        # Modules add URLs from attacker-written content (office relationships, kit pages, protected-URL
+        # parameters) and not all of them check what they add, so "https:.." would otherwise reach the
+        # crawler, urlscan and the domain lookups.
+        try:
+            scheme = urlsplit(new_value).scheme
+            missing_host = False
+            if scheme in HOST_URL_SCHEMES:
+                # browsers drop tab, CR and LF, treat \ as / in these URLs and skip any run of them after
+                # "scheme:", so "https:\\evil.com", "https:/evil.com" and "https:/\t/evil.com" all open evil.com
+                rest = new_value.partition(":")[2].translate(BROWSER_IGNORED_CHARS).replace("\\", "/").lstrip("/")
+                # a host with no letter or digit ("..", "-") is not one a browser can look up
+                missing_host = not any(c.isalnum() for c in urlsplit(f"{scheme}://{rest}").hostname or "")
+        except ValueError:
+            # urlsplit refuses some netlocs that still name a host ("http://[x/", NFKC look-alikes); an
+            # attacker wrote them, so keep the URL rather than drop it
+            missing_host = False
+
+        if missing_host:
+            raise ObservableValueError(f"{new_value} has no host")
+
+        self._value = new_value
 
     @property
     def jinja_available_actions(self):

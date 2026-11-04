@@ -18,6 +18,7 @@ from saq.constants import (
     EVENT_TIME_FORMAT_JSON_TZ,
     F_FILE,
     F_IP,
+    F_URL,
     F_USER,
     NODE_STATUS_DRAINING,
     NODE_STATUS_RUNNING,
@@ -148,6 +149,21 @@ class TestSubmit:
                 assert (observable["added_by"], observable["added_time"]) == ("analyst1", "2026-06-11T09:30:00.000000+0000")
             else:
                 assert (observable["added_by"], observable["added_time"]) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_observable_value_is_skipped(self, client: AsyncClient, caplog: pytest.LogCaptureFixture):
+        response = await _submit(client, _submission(observables=[
+            {"type": F_IP, "value": "1.2.3.4"},
+            {"type": F_URL, "value": "https:.."},
+        ]))
+
+        assert response.status_code == 201
+        uuid = response.json()["uuid"]
+        stored = _load(uuid).json["observable_store"].values()
+        assert [(o["type"], o["value"]) for o in stored] == [(F_IP, "1.2.3.4")]
+        (record,) = [r for r in caplog.records if "skipped invalid observable" in r.getMessage()]
+        assert record.levelno == logging.WARNING
+        assert uuid in record.getMessage() and "https:.." in record.getMessage()
 
     @pytest.mark.asyncio
     async def test_the_queue(self, client: AsyncClient):
