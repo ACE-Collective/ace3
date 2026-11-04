@@ -11,8 +11,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from aceapi_v2.common.router import router as common_router
+from aceapi_v2.database import dispose_engines_for_current_loop
 from aceapi_v2.engine.router import router as engine_router
 from aceapi_v2.health.router import router as health_router
+from aceapi_v2.sync import shutdown_loop
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +26,17 @@ async def lifespan(app: FastAPI):
 
     logger.info("shutting down api")
 
-    from aceapi_v2.database import dispose_engines_for_current_loop
-    from aceapi_v2.sync import shutdown_loop
-
     try:
         await dispose_engines_for_current_loop()
-    except Exception as e:
-        logger.debug("error disposing async engines: %s", e)
+    except Exception:
+        # logged, not raised: the loop below must still be stopped, and the shutdown path never raises
+        logger.exception("error disposing the async database engines of the api's event loop")
 
     try:
         shutdown_loop()
-    except Exception as e:
-        logger.debug("error stopping the background event loop: %s", e)
+    except Exception:
+        # logged, not raised: the shutdown path never raises
+        logger.exception("error stopping the background event loop of aceapi_v2.sync")
 
 
 def new_app(title: str, description: str) -> FastAPI:
