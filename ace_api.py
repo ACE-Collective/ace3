@@ -110,7 +110,7 @@ def _api_command(parser):
     parser.add_argument('--remote-host', required=False, default=os.environ.get('ICE_API_HOST', 'localhost:443'), dest='remote_host',
         help="The remote host to connect to in host[:port] format.")
     parser.add_argument('--ssl-verification', required=False, default=None, dest='ssl_verification',
-        help="Optional path to root CA ssl to load. Defaults to system installed CA.")
+        help="Optional path to root CA ssl to load. Defaults to the bundle requests uses (certifi's, or REQUESTS_CA_BUNDLE).")
     parser.add_argument('-S', '--disable-ssl-verification', required=False, default=False, dest='disable_ssl_verification', action='store_true',
         help="Do not perform SSL verification.")
     parser.add_argument('--disable-proxy', required=False, default=True, action='store_true',
@@ -152,7 +152,7 @@ def get_default_remote_host():
 def set_default_ssl_ca_path(ssl_verification):
     """Sets the default SSL verification mode. Behavior: 
       
-       - If set to None (the default) then the system installed CAs are used.
+       - If set to None (the default) then requests verifies against its default bundle (certifi's, or REQUESTS_CA_BUNDLE).
        - If set to False, then SSL verification is disabled.
        - Else, it is assumed to be a file that contains the CAs to be used to verify the SSL certificates.
 
@@ -217,8 +217,6 @@ def _execute_api_call(command,
         if api_key is None:
             api_key = os.environ.get("ACE_API_KEY", None)
 
-    ssl_verification = False
-
     import requests  # see the note at the top of this module
 
     if method == METHOD_GET:
@@ -233,10 +231,9 @@ def _execute_api_call(command,
     kwargs = { 'stream': stream }
     if params is not None:
         kwargs['params'] = params
+    # None leaves requests' default, which verifies against certifi's bundle (or REQUESTS_CA_BUNDLE)
     if ssl_verification is not None:
         kwargs['verify'] = ssl_verification
-    else:
-        kwargs['verify'] = False
     if data is not None:
         kwargs['data'] = data
     if json is not None:
@@ -803,7 +800,7 @@ class Analysis(object):
     def set_ssl_verification(self, ssl_verification):
         """Set the ssl verification behavior.
 
-           - If set to None (the default) then the system installed CAs are used.
+           - If set to None (the default) then requests verifies against its default bundle (certifi's, or REQUESTS_CA_BUNDLE).
            - If set to False, then SSL verification is disabled.
            - Else, it is assumed to be a file that contains the CAs to be used to verify the SSL certificates.
 
@@ -1378,6 +1375,10 @@ def main():
                             help="specify an ACE environment to work with.", choices=ace_instances)
 
     args = parser.parse_args()
+
+    # every command takes -S, and only submit passes it on by itself
+    if args.disable_ssl_verification:
+        args.ssl_verification = False
 
     if args.disable_proxy:
         for env_var in [ 'http_proxy', 'https_proxy', 'ftp_proxy' ]:

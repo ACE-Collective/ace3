@@ -17,7 +17,7 @@ from saq.database.util.alert import get_alert_by_uuid
 from saq.environment import get_global_runtime_settings
 from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import create_submission
+from tests.saq.helpers import certificate_verification_failure, create_submission
 
 @pytest.fixture
 def remote_node() -> RemoteNode:
@@ -646,6 +646,32 @@ def test_failed_delivery_reports_only_unexpected_errors(monkeypatch, remote_node
     assert len(records) == 1
     assert records[0].levelno == level
     assert write_error_report.called is reported
+
+
+@pytest.mark.integration
+def test_failed_delivery_reports_a_certificate_that_does_not_verify(monkeypatch, remote_node_group, caplog):
+    # requests raises it as a ConnectionError, but the node is misconfigured, not down
+    _ensure_live_any_mode_node()
+    error = certificate_verification_failure()
+
+    def _fails(self, submission):
+        raise error
+
+    monkeypatch.setattr(RemoteNode, "submit", _fails)
+    write_error_report = Mock()
+    monkeypatch.setattr("saq.error.reporting.write_error_report", write_error_report)
+
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        insert_deliverable_work_item(cursor, remote_node_group)
+        db.commit()
+
+    with caplog.at_level(logging.WARNING):
+        execute_with_db_cursor(DB_ACE, remote_node_group.execute, str(uuid_module.uuid4()))
+
+    records = [r for r in caplog.records if r.getMessage().startswith("unable to submit work item")]
+    assert [(r.levelno, r.exc_info is not None) for r in records] == [(logging.ERROR, True)]
+    assert write_error_report.called
 
 
 @pytest.mark.integration

@@ -20,7 +20,7 @@ from saq.database import ALERT, execute_with_retry, get_db_connection, remove_al
 from saq.database.pool import execute_with_db_cursor
 from saq.engine.node_manager.distributed_node_manager import translate_node
 from saq.environment import get_collection_error_dir, get_data_dir, get_global_runtime_settings
-from saq.error.reporting import log_loop_exception
+from saq.error.reporting import is_certificate_failure, log_loop_exception
 from saq.logging import get_transaction_id, transaction_id
 from saq.util.uuid import storage_dir_from_uuid
 
@@ -639,7 +639,7 @@ ORDER BY
                                          load_seconds, time.monotonic() - submit_start_time))
                         submission_success = True
                     except Exception as e:
-                        if isinstance(e, UNREACHABLE_NODE_ERRORS):
+                        if isinstance(e, UNREACHABLE_NODE_ERRORS) and not is_certificate_failure(e):
                             logging.warning("unable to submit work item {} to {} via group {}: {}".format(
                                     submission, target, self, e))
                         else:

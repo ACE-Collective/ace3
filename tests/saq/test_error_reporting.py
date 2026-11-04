@@ -12,6 +12,7 @@ from saq.error.reporting import ErrorReportHandler, log_loop_exception, log_peer
 from saq.logging import _install_error_report_handler, suppress_external_logging, transaction_id
 from saq.monitor import enable_monitor_cache, get_emitter
 from saq.monitor_definitions import MONITOR_ERROR_REPORT
+from tests.saq.helpers import certificate_verification_failure, tls_handshake_failure
 
 
 def _error_reporting_dir() -> str:
@@ -301,6 +302,25 @@ def test_log_peer_unavailable_rejects_a_wrapped_local_file_error(caplog):
     assert not log_peer_unavailable(wrapped, "reading x", unreachable=(_ClientTransportError,))
 
     assert [r for r in caplog.records if r.getMessage().startswith("reading x")] == []
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_rejects_a_certificate_that_does_not_verify(caplog):
+    # a peer whose certificate does not verify is misconfigured, not down
+    caplog.set_level(logging.INFO)
+    assert not log_peer_unavailable(certificate_verification_failure(), "reading x")
+
+    assert [r for r in caplog.records if r.getMessage().startswith("reading x")] == []
+
+
+@pytest.mark.unit
+def test_log_peer_unavailable_accepts_a_tls_handshake_failure(reports, caplog):
+    caplog.set_level(logging.INFO)
+    assert log_peer_unavailable(tls_handshake_failure(), "reading x")
+
+    assert reports == []
+    records = [r for r in caplog.records if r.getMessage().startswith("reading x")]
+    assert [r.levelno for r in records] == [logging.WARNING]
 
 
 @pytest.mark.unit
