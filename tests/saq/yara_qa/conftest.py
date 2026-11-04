@@ -11,6 +11,7 @@ from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.database.private_session import private_transaction
 
 QA_UUID = "5a0c7f1e-1c43-4a39-8d8e-2f1b3c4d5e6f"
+OTHER_UUID = "6b1d8a2f-2d54-4b4a-9e9f-3a2c4d5e6f70"
 VERSION_A = "a" * 40
 VERSION_B = "b" * 40
 VERSION_C = "c" * 40

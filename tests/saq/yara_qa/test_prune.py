@@ -11,6 +11,7 @@ from saq.yara_qa import prune
 from saq.yara_qa.prune import prune_expired, purge_matches
 from saq.yara_qa.store import QATarget, record_qa_match
 from tests.saq.yara_qa.conftest import (
+    OTHER_UUID,
     QA_UUID,
     VERSION_A,
     VERSION_B,
@@ -76,7 +77,6 @@ def test_a_pruned_slot_can_be_used_again(make_file, root_analysis):
 # purging
 #
 
-OTHER_UUID = "6b1d8a2f-2d54-4b4a-9e9f-3a2c4d5e6f70"
 
 
 def _store(make_file, root_analysis, version: str = VERSION_A, signature_uuid: str = QA_UUID, file_observable=None):

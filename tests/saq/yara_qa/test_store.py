@@ -15,6 +15,7 @@ from saq.yara_qa import store
 from saq.yara_qa.store import QARecordStatus, QATarget, QAVersionKind, record_qa_match
 from saq.yara_scanning.match_record import serialize_match_record
 from tests.saq.yara_qa.conftest import (
+    OTHER_UUID,
     QA_UUID,
     RULE_HASH_1,
     RULE_HASH_2,
@@ -301,17 +302,17 @@ def test_losing_the_insert_race_renews_the_winner(make_file, root_analysis, monk
 RULE_HASH_3 = "3" * 64
 
 
-def _store(make_file, root_analysis, rule_hash: str):
-    return record_qa_match(qa_match_result(rule_content_hash=rule_hash),
+def _store(make_file, root_analysis, rule_hash: str, signature_uuid: str = QA_UUID):
+    return record_qa_match(qa_match_result(signature_uuid=signature_uuid, rule_content_hash=rule_hash),
                            QATarget.from_file_observable(make_file(), root_analysis.uuid))
 
 
-def _last_matched(signature_version: str, ago: timedelta) -> None:
+def _last_matched(signature_version: str, ago: timedelta, signature_uuid: str = QA_UUID) -> None:
     """Move a version's last match into the past, as the database sees time."""
     with private_transaction() as session:
         session.execute(
             update(YaraQASignature)
-            .where(YaraQASignature.signature_uuid == QA_UUID, YaraQASignature.signature_version == signature_version)
+            .where(YaraQASignature.signature_uuid == signature_uuid, YaraQASignature.signature_version == signature_version)
             .values(last_match_at=datetime.now() - ago)
             .execution_options(synchronize_session=False))
 
@@ -370,6 +371,19 @@ def test_a_superseded_version_rolls_over_to_make_room(qa_pool, make_file, root_a
     (record,) = [r for r in caplog.records if r.getMessage().startswith("rolled over yara qa match")]
     assert (record.match_id, record.evicted_signature_version, record.signature_version) == (
         evicted.id, RULE_HASH_1, RULE_HASH_3)
+
+
+def test_rollover_only_takes_the_full_rules_own_files(make_file, root_analysis, full_rule):
+    # another rule's version went longer without matching than any of this rule's
+    other = _store(make_file, root_analysis, RULE_HASH_1, signature_uuid=OTHER_UUID).match_id
+    _last_seen(other, timedelta(hours=10))
+    _last_matched(RULE_HASH_1, timedelta(hours=10), signature_uuid=OTHER_UUID)
+
+    assert _store(make_file, root_analysis, RULE_HASH_3).status == QARecordStatus.STORED
+
+    assert full_rule[0] not in {row.id for row in match_rows()}
+    assert [row.id for row in match_rows(OTHER_UUID)] == [other]
+    assert counter_row(RULE_HASH_1, OTHER_UUID).stored_count == 1
 
 
 def test_each_new_file_rolls_over_one_file(make_file, root_analysis, full_rule):
