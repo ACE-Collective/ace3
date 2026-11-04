@@ -77,6 +77,7 @@ PERMISSION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("secret", "read", "View encrypted-secret names and config references."),
     CatalogEntry("secret", "write", "Create, overwrite, or delete encrypted secrets."),
     CatalogEntry("signature", "download", "Download the files matched by YARA rules in QA mode and the SVS YARA samples (live malware, in zips protected with the password infected)."),
+    CatalogEntry("signature", "qa_purge", "Purge the files stored for YARA rules in QA mode: a rule's versions, or chosen files (audited). Touches only the YARA QA store."),
     CatalogEntry("signature", "read", "Access the Signatures area and read YARA QA results (rules in QA mode, match counts and match records) and the SVS YARA samples (their labels, captures and match records)."),
     CatalogEntry("svs", "admin", "Administer SVS: retire SVS YARA samples for a rule and delete sample files (their bytes are purged, audited), manage the test hosts, and ignore signatures for every test (global ignores)."),
     CatalogEntry("svs", "run_manage", "Manage SVS test runs: take ownership, cancel, close and review runs, decide a test's expectations, ignores and settings, resolve the coverage worklist, associate alerts with runs."),

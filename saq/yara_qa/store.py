@@ -5,11 +5,17 @@ every match of a rule whose `modifiers` include `qa`, off the scanning path: the
 only spool the match (docs/YARA_SCANNER.md). It keeps the matched file and the full match record
 in the yara_qa CAS pool and indexes them in yara_qa_matches, subject to two caps: at most
 yara_qa.max_files_per_version distinct files per (signature uuid, signature version), and at most
-yara_qa.max_files_per_signature per uuid across all of its versions. The version is the commit of
-the rule's repository, so every commit to it starts a new version of every rule in it; the per-uuid
-ceiling is what keeps that churn from growing storage.
+yara_qa.max_files_per_signature per uuid across all of its versions. The version is the content
+hash of the rule the yara service compiled (qa_version()), so only a change to the rule itself
+starts a new version.
 
 Every match is counted in yara_qa_signatures.match_count, including the ones past the cap.
+
+Rollover. When the per-uuid ceiling (not the version's own cap) stops a file from being stored,
+the recorder deletes one stored file of a superseded version of the rule, one that has not matched
+for SUPERSEDED_AFTER_SECONDS, and reserves again once. The oldest version goes first, so with the
+default caps the version just before the current one is never reached. The current version is
+never rolled over: once it has max_files_per_version files, it keeps them.
 
 Concurrency. The recorders of several nodes can record the same rule at once, and none of them
 should wait on a lock, so every step is a single statement or a short transaction:
@@ -23,6 +29,8 @@ should wait on a lock, so every step is a single statement or a short transactio
 - the CAS puts run after that commit, outside any yara_qa transaction. If one fails, the row is
   deleted and the slot given back. A row whose match_digest is still NULL is one whose puts are in
   flight (or were interrupted), and readers skip it.
+- a rollover is its own transaction, run again if MySQL picks it as a deadlock victim. It selects
+  its victim FOR UPDATE SKIP LOCKED, so it never waits on a renewal or a prune holding that row.
 
 Every hold carries the same expiry as its row, so nothing is kept forever even if a prune or a
 compensating delete never runs: GC collects an object once its holds have expired.
@@ -45,7 +53,7 @@ from saq.cas.errors import ObjectDeleting, ObjectNotFound, PoolNotFound
 from saq.cas.pool import CASPool
 from saq.configuration.config import get_config
 from saq.database.model import YaraQAMatch, YaraQASignature
-from saq.database.private_session import private_transaction
+from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.json_encoding import _JSONEncoder
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
@@ -64,6 +72,7 @@ HOLDER_KIND = "yara_qa"
 _RULE_NAME_MAX_LENGTH = 256
 _NAMESPACE_MAX_LENGTH = 256
 _FILE_NAME_MAX_LENGTH = 1024
+_COMMIT_MAX_LENGTH = 64
 
 
 class QARecordStatus(StrEnum):
@@ -72,6 +81,23 @@ class QARecordStatus(StrEnum):
     CAPPED = "capped"      # counted, but not stored: a cap was reached
     SKIPPED = "skipped"    # not counted: no usable uuid, or no pool configured
     FAILED = "failed"      # something went wrong; logged
+
+
+class QAVersionKind(StrEnum):
+    CONTENT = "content"    # signature_version is the rule's content hash
+    COMMIT = "commit"      # signature_version is the rule repository's commit, or 'unknown'
+
+
+def qa_version(match_result: dict) -> tuple[str, QAVersionKind]:
+    """The version a match is filed under: the content hash of the rule the yara service compiled
+    (saq.signatures.loaders.yara.attach_rule_details), so a commit that does not touch a rule keeps
+    its version. A match without one (its rule file could not be parsed, or changed while it
+    compiled) is filed under its commit, as every match was before content versions."""
+    rule_hash = match_result.get("rule_content_hash")
+    if rule_hash:
+        return str(rule_hash), QAVersionKind.CONTENT
+
+    return match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN, QAVersionKind.COMMIT
 
 
 @dataclass(frozen=True)
@@ -116,15 +142,16 @@ def _local_node() -> str:
 # the counter row
 #
 
-def _count_match(session: Session, signature_uuid: str, signature_version: str, rule_name: str,
-                 namespace: Optional[str], now: datetime) -> None:
+def _count_match(session: Session, signature_uuid: str, signature_version: str, version_kind: QAVersionKind,
+                 commit: Optional[str], rule_name: str, namespace: Optional[str], now: datetime) -> None:
     stmt = mysql_insert(YaraQASignature).values(
-        signature_uuid=signature_uuid, signature_version=signature_version,
+        signature_uuid=signature_uuid, signature_version=signature_version, version_kind=version_kind,
+        first_commit=commit, last_commit=commit,
         rule_name=rule_name, namespace=namespace, match_count=1, stored_count=0,
         first_match_at=now, last_match_at=now)
     session.execute(stmt.on_duplicate_key_update(
         match_count=YaraQASignature.__table__.c.match_count + 1,
-        last_match_at=now, rule_name=rule_name, namespace=namespace))
+        last_match_at=now, last_commit=commit, rule_name=rule_name, namespace=namespace))
 
 
 # one statement, so no lock is held past it and nothing waits in between. The per-uuid SUM is read
@@ -217,6 +244,76 @@ def release_match_holds(pool: CASPool, match: MatchRef) -> bool:
 
 
 #
+# rolling over superseded versions
+#
+
+# a version that has not matched for this long while another version of its rule is matching is
+# superseded, and its files make room for the current version's. Long enough that two nodes running
+# different generations during a rollout (minutes) don't evict each other's files, short enough
+# that a rule edited during tuning starts storing again within the hour
+SUPERSEDED_AFTER_SECONDS = 3600
+
+
+def _delete_one_superseded(session: Session, signature_uuid: str, signature_version: str) -> Optional[MatchRef]:
+    """Deletes the stored file of a superseded version of the uuid that has gone longest without
+    matching, oldest version first. Locks the match row before its counter row, as prune does, and
+    skips a row another transaction holds."""
+    superseded_before = func.date_sub(func.now(), text(f"INTERVAL {SUPERSEDED_AFTER_SECONDS} SECOND"))
+    row = session.execute(
+        select(YaraQAMatch.id, YaraQAMatch.signature_uuid, YaraQAMatch.signature_version,
+               YaraQAMatch.sha256, YaraQAMatch.match_digest, YaraQAMatch.expires_at)
+        .join(YaraQASignature, (YaraQASignature.signature_uuid == YaraQAMatch.signature_uuid)
+              & (YaraQASignature.signature_version == YaraQAMatch.signature_version))
+        .where(YaraQAMatch.signature_uuid == signature_uuid,
+               YaraQAMatch.signature_version != signature_version,
+               # a NULL digest is a match whose puts are in flight
+               YaraQAMatch.match_digest.is_not(None),
+               YaraQASignature.last_match_at < superseded_before)
+        .order_by(YaraQASignature.last_match_at, YaraQAMatch.last_seen, YaraQAMatch.id)
+        .limit(1)
+        .with_for_update(skip_locked=True, of=YaraQAMatch)).first()
+    if row is None:
+        return None
+
+    match = MatchRef.from_row(row)
+    delete_match_rows(session, [match])
+    return match
+
+
+def _roll_over(pool: CASPool, signature_uuid: str, signature_version: str, rule_name: str) -> bool:
+    """Called when a file could not be stored: if the per-uuid ceiling stopped it (not the version's
+    own cap), deletes one file of a superseded version to make room. Returns whether it did."""
+    config = get_config().yara_qa
+    if config.max_files_per_version == 0 or config.max_files_per_signature == 0:
+        return False
+
+    with private_transaction() as session:
+        stored = session.execute(
+            select(YaraQASignature.stored_count)
+            .where(YaraQASignature.signature_uuid == signature_uuid,
+                   YaraQASignature.signature_version == signature_version)).scalar_one_or_none()
+
+    if stored is not None and stored >= config.max_files_per_version:
+        return False
+
+    evicted = run_private_transaction(
+        _delete_one_superseded, signature_uuid, signature_version,
+        description="rolling over a superseded yara qa version",
+        extra={"signature_uuid": signature_uuid, "signature_version": signature_version})
+    if evicted is None:
+        return False
+
+    # after the commit: a match is gone from the index before its bytes can go
+    release_match_holds(pool, evicted)
+    logging.info("rolled over yara qa match %s of rule %s (%s @ %s) to make room for version %s",
+                 evicted.id, rule_name, signature_uuid, evicted.signature_version, signature_version,
+                 extra={"signature_uuid": signature_uuid, "signature_version": signature_version,
+                        "evicted_signature_version": evicted.signature_version,
+                        "match_id": evicted.id, "sha256": evicted.sha256})
+    return True
+
+
+#
 # record_qa_match
 #
 
@@ -255,7 +352,8 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
         logging.warning("cas pool %s is not configured - yara qa matches are not stored", config.pool)
         return QARecordResult(QARecordStatus.SKIPPED)
 
-    signature_version = match_result.get("commit") or SIGNATURE_VERSION_UNKNOWN
+    signature_version, version_kind = qa_version(match_result)
+    commit = _truncate(match_result.get("commit"), _COMMIT_MAX_LENGTH)
     namespace = _truncate(match_result.get("namespace"), _NAMESPACE_MAX_LENGTH)
     sha256 = target.sha256
     file_path = target.path
@@ -266,32 +364,42 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
 
     # committed on its own, so the match is counted whatever happens to the storage below
     with private_transaction() as session:
-        _count_match(session, signature_uuid, signature_version, rule_name, namespace, now)
+        _count_match(session, signature_uuid, signature_version, version_kind, commit, rule_name, namespace, now)
 
     renewed = _renew(pool, signature_uuid, signature_version, sha256, file_path, match_result, now, expires_at)
     if renewed is not None:
         return renewed
 
     summary = json.dumps(summarize_match_record(match_result), cls=_JSONEncoder)
-    try:
+
+    def _reserve_and_insert() -> Optional[MatchRef]:
         with private_transaction() as session:
             if not _reserve_slot(session, signature_uuid, signature_version):
-                logging.debug("yara qa file cap reached for rule %s (%s @ %s)", rule_name, signature_uuid, signature_version)
-                return QARecordResult(QARecordStatus.CAPPED)
+                return None
 
             match = YaraQAMatch(
-                signature_uuid=signature_uuid, signature_version=signature_version, sha256=sha256,
+                signature_uuid=signature_uuid, signature_version=signature_version, version_kind=version_kind,
+                sha256=sha256,
                 file_name=_truncate(target.file_name, _FILE_NAME_MAX_LENGTH),
                 file_size=target.file_size, root_uuid=target.root_uuid,
                 observable_uuid=target.observable_uuid, node=_local_node(), match_digest=None,
                 match_summary=summary, hit_count=1, first_seen=now, last_seen=now, expires_at=expires_at)
             session.add(match)
             session.flush()
-            match_ref = MatchRef.from_row(match)
+            return MatchRef.from_row(match)
+
+    try:
+        match_ref = _reserve_and_insert()
+        if match_ref is None and _roll_over(pool, signature_uuid, signature_version, rule_name):
+            match_ref = _reserve_and_insert()
     except IntegrityError:
         # another recorder stored this file for this version first. the rollback gave the slot back
         renewed = _renew(pool, signature_uuid, signature_version, sha256, file_path, match_result, now, expires_at)
         return renewed if renewed is not None else QARecordResult(QARecordStatus.FAILED)
+
+    if match_ref is None:
+        logging.debug("yara qa file cap reached for rule %s (%s @ %s)", rule_name, signature_uuid, signature_version)
+        return QARecordResult(QARecordStatus.CAPPED)
 
     hold = qa_hold(match_ref.id, expires_at)
     try:

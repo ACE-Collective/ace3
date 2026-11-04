@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Generic, Optional, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 T = TypeVar("T")
 
@@ -17,9 +17,11 @@ class QAPage(BaseModel, Generic[T]):
 
 
 class QASignatureVersion(BaseModel):
-    """What was recorded for one version of a signature. The version is the commit of the rule's
-    repository when it matched ('unknown' for rules outside a declared git repo)."""
-    signature_version: str
+    """What was recorded for one version of a signature (docs/YARA_QA.md, Versions)."""
+    signature_version: str = Field(description="the rule's content hash (version_kind content), or for a match recorded without one the commit of the rule's repository, 'unknown' for rules outside a declared git repo (version_kind commit)")
+    version_kind: str = Field(description="content or commit")
+    first_commit: Optional[str] = Field(default=None, description="the commit of the rule's repository when this version first matched; null for versions recorded before content versions")
+    last_commit: Optional[str] = Field(default=None, description="the commit of the rule's repository when this version last matched")
     rule_name: str = Field(description="the rule's name when it last matched under this version")
     namespace: Optional[str] = None
     match_count: int = Field(description="every match under this version, including those past the file cap")
@@ -34,7 +36,8 @@ class QASignatureSummary(BaseModel):
     name: str
     status: str = Field(description="qa: in QA mode now. not_qa: the rule exists but is no longer in QA mode. missing: no loaded rule has this uuid any more")
     enabled: Optional[bool] = Field(default=None, description="the rule's enabled meta; null when the rule is missing")
-    current_version: Optional[str] = Field(default=None, description="the version of the rule as loaded now; null when the rule is missing")
+    current_version: Optional[str] = Field(default=None, description="the commit of the rule's repository as loaded now; null when the rule is missing")
+    current_content_hash: Optional[str] = Field(default=None, description="the content hash of the rule as loaded now, which is the signature_version its matches are filed under; null when the rule is missing")
     source_path: Optional[str] = Field(default=None, description="the rule's file, relative to its repository")
     tags: list[str] = Field(default_factory=list)
     namespace: Optional[str] = Field(default=None, description="the yara namespace of the most recent match")
@@ -58,6 +61,7 @@ class QAMatch(BaseModel):
     id: int
     signature_uuid: str
     signature_version: str
+    version_kind: str = Field(description="content or commit, as in the signature's versions")
     sha256: str
     file_name: str
     file_size: int
@@ -74,3 +78,24 @@ class QAMatch(BaseModel):
 
 class QAMatchDetail(QAMatch):
     match_summary: dict[str, Any] = Field(default_factory=dict, description="the rule, its meta and tags, and per string identifier how many times it matched and where first. The full record is at /matches/{id}/record")
+
+
+class QAPurgeRequest(BaseModel):
+    """What to purge from one signature: whole versions, or chosen files. Exactly one of the two."""
+    model_config = ConfigDict(extra="forbid")
+
+    versions: Optional[list[str]] = Field(default=None, min_length=1, max_length=1000, description="purge every stored file of these versions")
+    match_ids: Optional[list[int]] = Field(default=None, min_length=1, description="purge these stored files; at most yara_qa.max_bulk_download_files, and only those of this signature")
+    reason: Optional[str] = Field(default=None, max_length=1024, description="recorded in the audit log")
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> "QAPurgeRequest":
+        if (self.versions is None) == (self.match_ids is None):
+            raise ValueError("give versions or match_ids, not both")
+        return self
+
+
+class QAPurgeResult(BaseModel):
+    deleted: int = Field(description="stored files removed; their bytes go at the next CAS GC once nothing else holds them")
+    remaining: int = Field(description="files that matched but were held by another transaction (a recorder renewing them); purging again removes them")
+    release_failures: int = Field(description="holds that could not be released now; they expire on their own")

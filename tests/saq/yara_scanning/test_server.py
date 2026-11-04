@@ -15,6 +15,7 @@ import pytest
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
+from saq.signatures.loaders.util import content_hash
 from saq.svs.marker_rule import MARKER_RULE_DIR, MARKER_RULE_NAME
 from saq.svs.markers import find_markers_in_match, new_marker
 from saq.util.hashing import sha256_file
@@ -550,7 +551,10 @@ def test_qa_matches_are_recorded_after_the_answer(make_server, rules_dir, target
     (row,) = match_rows()
     assert row.sha256 == qa_context["sha256"]
     assert (row.root_uuid, row.observable_uuid) == (qa_context["root_uuid"], qa_context["observable_uuid"])
-    assert counter_row(SIGNATURE_VERSION_UNKNOWN).match_count == 1
+    # filed under the content hash of the rule the generation compiled, not the commit
+    assert (row.signature_version, row.version_kind) == (content_hash(RULE_QA.lstrip("\n")), "content")
+    assert counter_row(row.signature_version).match_count == 1
+    assert counter_row(SIGNATURE_VERSION_UNKNOWN) is None
 
 
 @pytest.mark.integration

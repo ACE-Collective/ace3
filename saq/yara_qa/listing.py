@@ -39,6 +39,9 @@ class QASort(StrEnum):
 @dataclass(frozen=True)
 class VersionCounts:
     signature_version: str
+    version_kind: str
+    first_commit: Optional[str]
+    last_commit: Optional[str]
     rule_name: str
     namespace: Optional[str]
     match_count: int
@@ -55,6 +58,7 @@ class QASignature:
     # from the inventory; None when the rule is missing
     enabled: Optional[bool] = None
     current_version: Optional[str] = None
+    current_content_hash: Optional[str] = None
     source_path: Optional[str] = None
     tags: tuple[str, ...] = ()
     # from the recorded matches (the most recent version's)
@@ -80,7 +84,9 @@ def version_rows_statement(signature_uuid: Optional[str] = None) -> Select:
 
 def _version_counts(row: YaraQASignature) -> VersionCounts:
     return VersionCounts(
-        signature_version=row.signature_version, rule_name=row.rule_name, namespace=row.namespace,
+        signature_version=row.signature_version, version_kind=row.version_kind,
+        first_commit=row.first_commit, last_commit=row.last_commit,
+        rule_name=row.rule_name, namespace=row.namespace,
         match_count=row.match_count, stored_count=row.stored_count,
         first_match_at=row.first_match_at, last_match_at=row.last_match_at)
 
@@ -97,6 +103,7 @@ def merge(inventory: YaraInventory, version_rows: Iterable[YaraQASignature]) -> 
             signature_uuid=signature_uuid, name=signature.name,
             status=QAStatus.QA if is_qa_signature(signature) else QAStatus.NOT_QA,
             enabled=signature.enabled, current_version=signature.version,
+            current_content_hash=signature.content_hash,
             source_path=signature.source_path, tags=signature.tags)
 
     for signature in qa_signatures(inventory):

@@ -213,10 +213,11 @@ cas:
 # can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
 yara_qa:
   pool: yara_qa
-  # most distinct files kept per (rule uuid, rule version). the version is the commit of the rule's
-  # repository, so every commit to it starts a new version of every rule in it
+  # most distinct files kept per (rule uuid, rule version). the version is the rule's content hash,
+  # so only an edit to the rule starts a new version
   max_files_per_version: 25
-  # most distinct files kept per rule uuid across all of its versions
+  # most distinct files kept per rule uuid across all of its versions. once it is reached, files of
+  # versions that have stopped matching make room for the current version's (rollover)
   max_files_per_signature: 250
   # a stored file is kept this long after it last matched
   retention_days: 30

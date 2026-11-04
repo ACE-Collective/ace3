@@ -237,7 +237,9 @@ in the service, keyed on `(rule uuid, rule version, sha256)`, capped and expirin
 disposition time, in the engine, only on classified alerts, keyed on `(alert, sha256, rule uuid)`,
 and holds for as long as the capture record exists. `svs_yara_captures` stays its own table and
 reuses the building blocks: the hold idiom, the row written before the CAS puts in private
-sessions, the record's serialization and summary, `signature_version` taken exactly as QA takes it,
+sessions, the record's serialization and summary, `signature_version` taken as a detection point
+carries it (the commit; QA has since filed its matches under the rule's content hash instead,
+`docs/YARA_QA.md`, *Versions*),
 the namespace stored relative to the signature directory (the match carries the absolute rule
 directory, which a replay tree does not have), the `wrong_node` answer for bytes on another node's
 local pool, and the infected-password zips of `aceapi_v2/common/archive.py` for downloads. [FR-27]

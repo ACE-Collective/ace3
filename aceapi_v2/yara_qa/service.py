@@ -23,6 +23,8 @@ from aceapi_v2.yara_qa.schemas import (
     QAMatch,
     QAMatchDetail,
     QAPage,
+    QAPurgeRequest,
+    QAPurgeResult,
     QASignatureDetail,
     QASignaturePage,
     QASignatureSummary,
@@ -35,6 +37,7 @@ from saq.database.model import Alert, YaraQAMatch
 from saq.environment import get_global_runtime_settings, get_temp_dir
 from saq.signatures.model import SIGNATURE_UUID_PATTERN, YaraInventory
 from saq.yara_qa.listing import QASignature, QASort, QAStatus, filter_and_sort, merge, version_rows_statement
+from saq.yara_qa.prune import purge_matches
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,7 @@ def _signature_summary(signature: QASignature) -> QASignatureSummary:
     return QASignatureSummary(
         signature_uuid=signature.signature_uuid, name=signature.name, status=signature.status.value,
         enabled=signature.enabled, current_version=signature.current_version,
+        current_content_hash=signature.current_content_hash,
         source_path=signature.source_path, tags=list(signature.tags), namespace=signature.namespace,
         match_count=signature.match_count, stored_count=signature.stored_count,
         version_count=signature.version_count, first_match_at=signature.first_match_at,
@@ -123,7 +127,9 @@ async def get_signature(session: AsyncSession, signature_uuid: str) -> QASignatu
     return QASignatureDetail(
         **_signature_summary(signature).model_dump(),
         versions=[QASignatureVersion(
-            signature_version=v.signature_version, rule_name=v.rule_name, namespace=v.namespace,
+            signature_version=v.signature_version, version_kind=v.version_kind,
+            first_commit=v.first_commit, last_commit=v.last_commit,
+            rule_name=v.rule_name, namespace=v.namespace,
             match_count=v.match_count, stored_count=v.stored_count,
             first_match_at=v.first_match_at, last_match_at=v.last_match_at) for v in signature.versions])
 
@@ -147,6 +153,7 @@ async def _alert_uuids(session: AsyncSession, root_uuids: set[str]) -> set[str]:
 def _match(row: YaraQAMatch, alert_uuids: set[str]) -> dict:
     return dict(
         id=row.id, signature_uuid=row.signature_uuid, signature_version=row.signature_version,
+        version_kind=row.version_kind,
         sha256=row.sha256, file_name=row.file_name, file_size=row.file_size, hit_count=row.hit_count,
         first_seen=row.first_seen, last_seen=row.last_seen, expires_at=row.expires_at, node=row.node,
         local=is_local(row), root_uuid=row.root_uuid, observable_uuid=row.observable_uuid,
@@ -300,3 +307,22 @@ def create_encrypted_zip(label: str, rows: list[YaraQAMatch], remote: list[YaraQ
         label, get_cas().pool(get_config().yara_qa.pool), entries,
         [{**_manifest_entry(row), "reason": "wrong_node"} for row in remote],
         manifest_key="matches", description=f"yara qa {label}", actor=actor, node=_local_node())
+
+
+#
+# purging
+#
+
+def validate_purge(signature_uuid: str, body: QAPurgeRequest) -> None:
+    """Refuses a purge before it is audited, so a refused one leaves no record that it ran."""
+    validate_signature_uuid(signature_uuid)
+    limit = get_config().yara_qa.max_bulk_download_files
+    if body.match_ids is not None and len(body.match_ids) > limit:
+        raise HTTPException(status_code=422, detail=f"more than {limit} match ids; purge by version instead")
+
+
+def purge(signature_uuid: str, body: QAPurgeRequest) -> QAPurgeResult:
+    """Runs in a worker thread (run_db_in_thread): the removal runs in private transactions and
+    releases CAS holds. The router has run validate_purge()."""
+    stats = purge_matches(signature_uuid, versions=body.versions, match_ids=body.match_ids)
+    return QAPurgeResult(deleted=stats.deleted, remaining=stats.remaining, release_failures=stats.release_failures)
