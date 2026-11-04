@@ -20,7 +20,7 @@ from saq.database.model import CliExecution, Nodes, User
 from saq.database.pool import get_db
 from saq.environment import get_global_runtime_settings
 from saq.shutdown import DEFAULT_SHUTDOWN_DEADLINE, WATCHDOG_GRACE
-from tests.saq.helpers import process_is_gone, wait_for_condition
+from tests.saq.helpers import certificate_verification_failure, process_is_gone, wait_for_condition
 
 
 # starts a process in a session of its own, the way a script daemonizes something, and prints its pid
@@ -330,6 +330,25 @@ def test_dispatch_to_an_unreachable_node_fails_the_run(monkeypatch, caplog):
     assert "unable to reach node node-a at node-a.example:443" in row.error
     assert row.finished_at is not None
     assert f"starting cli execution {execution_id} on node node-a" in caplog.text
+
+
+@pytest.mark.integration
+def test_dispatch_to_a_node_whose_certificate_does_not_verify_is_reported(monkeypatch, caplog):
+    # a misconfigured certificate is not a node that is down: it gets an ERROR with its traceback
+    a = _add_node("node-a", location="node-a.example:443")
+    (execution_id,) = _create(["node", "list"], [a])
+    error = certificate_verification_failure()
+
+    def _untrusted(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(service.ace_api, "start_cli_execution", _untrusted)
+    with caplog.at_level(logging.WARNING):
+        service.dispatch_execution(execution_id)
+
+    assert _row(execution_id).status == service.STATUS_FAILED
+    records = [r for r in caplog.records if r.getMessage().startswith(f"starting cli execution {execution_id}")]
+    assert [(r.levelno, r.exc_info is not None) for r in records] == [(logging.ERROR, True)]
 
 
 @pytest.mark.integration

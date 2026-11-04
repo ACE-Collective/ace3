@@ -6,8 +6,11 @@ import logging
 from multiprocessing import Manager, Pipe, Process, RLock
 import multiprocessing.util
 import os
+import socket
+import ssl
 import subprocess
 import sys
+import threading
 
 import time
 from typing import Union
@@ -40,10 +43,12 @@ from saq.sandbox.launcher import set_child_subreaper
 from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
+import certifi
 import psutil
 import pymysql
 import pymysql.cursors
 import pytest
+import requests
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
@@ -734,3 +739,52 @@ def audit_actor_of(record: logging.LogRecord) -> tuple:
 def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
     """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
     return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+
+
+def _requests_error_from_local_server(handle) -> requests.exceptions.RequestException:
+    """The exception requests raises over HTTPS to a one-connection local server that runs handle(conn)."""
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        # bounds accept(): the request below connects at once or not at all
+        server.settimeout(10)
+
+        def _serve():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return  # nothing connected, and the request below says why
+            with conn:
+                conn.settimeout(10)
+                try:
+                    handle(conn)
+                except OSError:
+                    pass  # the client gave up on the handshake, which is the failure the caller wants
+
+        thread = threading.Thread(target=_serve, daemon=True)
+        thread.start()
+        try:
+            requests.get(f"https://localhost:{server.getsockname()[1]}/", verify=certifi.where(), timeout=10)
+        except requests.exceptions.RequestException as e:
+            return e
+        finally:
+            thread.join(10)
+
+    raise AssertionError("an HTTPS request to the local server succeeded")
+
+
+def certificate_verification_failure() -> requests.exceptions.RequestException:
+    """requests' exception for a server whose certificate does not verify: ACE's test certificate,
+    checked against certifi's bundle, which lacks the CA that signed it."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(os.path.join(get_base_dir(), get_config().api.ssl_cert),
+                            os.path.join(get_base_dir(), get_config().api.ssl_key))
+    return _requests_error_from_local_server(lambda conn: context.wrap_socket(conn, server_side=True))
+
+
+def tls_handshake_failure() -> requests.exceptions.RequestException:
+    """requests' exception for a TLS handshake that fails before any certificate is checked: the
+    server answers the ClientHello with plain HTTP."""
+    def _answer_in_plain_http(conn):
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+    return _requests_error_from_local_server(_answer_in_plain_http)

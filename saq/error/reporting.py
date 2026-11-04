@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 import os
+import ssl
 import threading
 from types import TracebackType
 from typing import Optional
@@ -167,7 +168,24 @@ _LOCAL_FILE_ERRORS = (
 )
 
 
+def is_certificate_failure(e: BaseException) -> bool:
+    """True when e failed a TLS certificate check: a peer whose certificate does not verify is
+    misconfigured, not down, although requests raises it as a ConnectionError."""
+    # requests keeps the ssl error only as __context__: its SSLError was raised while handling
+    # urllib3's MaxRetryError, whose reason holds the ssl.SSLCertVerificationError
+    seen = set()
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        if isinstance(e, ssl.SSLCertVerificationError):
+            return True
+        e = e.__cause__ or e.__context__
+    return False
+
+
 def _is_peer_unavailable(e: BaseException, unreachable: tuple[type[BaseException], ...]) -> bool:
+    if is_certificate_failure(e):
+        return False
+
     # client libraries wrap a transport failure in an exception of their own and keep the
     # original as __cause__ (azure-identity's credentials raise ClientAuthenticationError)
     types = _EXPECTED_SHUTDOWN_ERRORS + unreachable
@@ -191,7 +209,8 @@ def log_peer_unavailable(e: Exception, context: str, unreachable: tuple[type[Bas
     `unreachable` names the transport errors of the caller's client library that are not
     OSErrors (httpx.TransportError, azure-core's ServiceRequestError). An exception counts
     when it, or an exception in its __cause__ chain, is one of these or a connection-level
-    OSError; a missing or unreadable local file never counts.
+    OSError; a missing or unreadable local file, or a certificate that does not verify, never
+    counts.
 
     Returns False without logging if the exception is not connection-level, so the
     caller can fall through to its normal handling.

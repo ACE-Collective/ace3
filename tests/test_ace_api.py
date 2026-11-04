@@ -1,7 +1,9 @@
+import certifi
 import io
 import os
 import pickle
 import shutil
+import sys
 import tempfile
 import uuid
 import pytest
@@ -23,9 +25,6 @@ from saq.util.time import local_time
 from saq.util.uuid import get_storage_dir, validate_uuid
 from tests.saq.helpers import create_root_analysis, log_count, start_api_server, stop_api_server
 
-# ace_api forces ssl_verification = False on every request
-pytestmark = pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
-
 @pytest.fixture(autouse=True, scope="function")
 def api_server():
     ace_api.set_default_api_key(get_config().api.api_key)
@@ -44,6 +43,38 @@ def test_invalid_auth():
     ace_api.set_default_api_key("invalid")
     with pytest.raises(requests.exceptions.HTTPError):
         result = ace_api.ping()
+
+@pytest.mark.integration
+def test_untrusted_certificate_is_rejected():
+    # certifi's bundle does not hold the CA that signed the test API server's certificate
+    with pytest.raises(requests.exceptions.SSLError):
+        ace_api.ping(ssl_verification=certifi.where())
+
+@pytest.mark.integration
+def test_no_ca_path_verifies_against_the_requests_bundle():
+    ace_api.set_default_ssl_ca_path(None)
+    with pytest.raises(requests.exceptions.SSLError):
+        ace_api.ping()
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_disable_ssl_verification():
+    result = ace_api.ping(ssl_verification=certifi.where(), disable_ssl_verification=True)
+    assert result['result'] == 'pong'
+
+@pytest.mark.integration
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+def test_cli_disable_ssl_verification(monkeypatch, capsys):
+    # every command takes -S, not only submit
+    monkeypatch.setattr(sys, "argv", ["ace_api.py", "ping", "-S",
+                                      "--remote-host", get_global_runtime_settings().api_prefix,
+                                      "--ssl-verification", certifi.where(),
+                                      "--api-key", get_config().api.api_key])
+    ace_api.main()
+
+    captured = capsys.readouterr()
+    assert "unable to execute api call" not in captured.err
+    assert "pong" in captured.out
 
 @pytest.mark.integration
 def test_ping():
