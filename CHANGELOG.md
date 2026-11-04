@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.137] - 2026-11-04
+
+- [Expect the YARA QA test's match under the rule's content hash](https://github.com/ACE-Collective/ace3/pull/1136)
+- [YARA QA: file matches under the rule's content hash, roll over old versions, let analysts purge](https://github.com/ACE-Collective/ace3/pull/1133)
+- [Run the analysis modules' external tools in the Landlock sandbox](https://github.com/ACE-Collective/ace3/pull/1129)
+- [Reject http(s) and ftp URL observables that name no host](https://github.com/ACE-Collective/ace3/pull/1126)
+- [Don't crawl a URL that has no host](https://github.com/ACE-Collective/ace3/pull/1125)
+- [Look up first-hop IPs as IPs in the RDAP module](https://github.com/ACE-Collective/ace3/pull/1121)
+- [Bound the raw database pool's idle connections and log what it uses](https://github.com/ACE-Collective/ace3/pull/1114)
+
 ## [3.0.136] - 2026-10-31
 
 - [Resolve each configuration section's env: references when it is validated](https://github.com/ACE-Collective/ace3/pull/1112)

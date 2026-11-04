@@ -15,6 +15,8 @@
 
 import os
 import re
+import select
+import threading
 
 import yaml
 
@@ -33,6 +35,27 @@ _SLOT_PATTERN = re.compile(r"^(main|gw\d+)$")
 
 def get_project_root() -> str:
     return os.environ.get("SAQ_HOME", os.getcwd())
+
+
+def exit_with(pid: int) -> None:
+    """Ends this process when process pid exits, however that process exits.
+
+    The log collector's Manager server (tests/saq/helpers.py) runs this as its initializer, so
+    that it does not outlive a pytest process that was SIGKILLed: no finalizer of that process
+    runs to stop it, and an orphaned server keeps every record it holds. It is here rather than
+    in tests/saq/helpers.py because the server, started by the forkserver, imports the module of
+    its initializer, and this one imports nothing from saq."""
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        os._exit(1)
+
+    def wait_for_exit():
+        # bounded by the life of process pid: its pidfd turns readable when it exits
+        select.select([pidfd], [], [])
+        os._exit(0)
+
+    threading.Thread(target=wait_for_exit, name=f"exit-with-{pid}", daemon=True).start()
 
 
 def get_slot() -> str:

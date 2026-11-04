@@ -3,7 +3,8 @@ from contextlib import contextmanager
 import ctypes
 from datetime import datetime, timedelta
 import logging
-from multiprocessing import Manager, Pipe, Process, RLock
+from multiprocessing import Pipe, Process, RLock
+from multiprocessing.managers import SyncManager
 import multiprocessing.util
 import os
 import socket
@@ -467,8 +468,8 @@ def initialize_unittest_logging():
     global memory_log_handler
 
     test_log_sync = RLock()
-    test_log_manager = Manager()
-    #atexit.register(_atexit_callback)
+    test_log_manager = SyncManager()
+    test_log_manager.start(unittest_session.exit_with, (os.getpid(),))
     test_log_messages = test_log_manager.list()
 
     log_format = logging.Formatter(datefmt='%(asctime)s')
