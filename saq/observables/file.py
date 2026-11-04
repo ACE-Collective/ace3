@@ -12,7 +12,6 @@ from saq.configuration.config import get_config
 from saq.constants import DIRECTIVE_YARA_META_PREFIX, EVENT_RELATIONSHIP_ADDED, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_MD5, F_SHA1, F_SHA256, FILE_SUBDIR, R_IS_HASH_OF, parse_file_location
 from saq.gui import ObservableActionCollectFile, ObservableActionSeparator
 from saq.observables.base import CaselessObservable, ObservableValueError
-from saq.observables.generator import register_observable_type
 from saq.util.hashing import EMPTY_CONTENT_MD5, EMPTY_CONTENT_SHA1, EMPTY_CONTENT_SHA256, is_sha256_hex
 from saq.util.ui import human_readable_size
 
@@ -640,11 +639,3 @@ class SHA256ObservablePresenter(ObservablePresenter):
 
 
 register_observable_presenter(SHA256Observable, SHA256ObservablePresenter)
-
-register_observable_type(F_FILE, FileObservable)
-register_observable_type(F_FILE_PATH, FilePathObservable)
-register_observable_type(F_FILE_NAME, FileNameObservable)
-register_observable_type(F_FILE_LOCATION, FileLocationObservable)
-register_observable_type(F_MD5, MD5Observable)
-register_observable_type(F_SHA1, SHA1Observable)
-register_observable_type(F_SHA256, SHA256Observable)

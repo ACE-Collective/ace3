@@ -5,7 +5,6 @@ from saq.analysis.presenter.observable_presenter import ObservablePresenter, reg
 from saq.constants import F_IP, F_IP_CONVERSATION, F_IP_FULL_CONVERSATION, parse_ip_full_conversation, parse_ipv4_conversation
 from saq.environment import get_global_runtime_settings
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 
 class IPObservable(Observable):
@@ -130,9 +129,5 @@ class IPFullConversationObservable(Observable):
     def dest_port(self):
         return self._dest_port
 
-
-register_observable_type(F_IP, IPObservable)
-register_observable_type(F_IP_CONVERSATION, IPConversationObservable)
-register_observable_type(F_IP_FULL_CONVERSATION, IPFullConversationObservable)
 
 register_observable_presenter(IPObservable, IPObservablePresenter)

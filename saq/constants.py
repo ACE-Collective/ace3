@@ -126,10 +126,8 @@ F_DISPOSITION = 'disposition'
 #
 
 #
-# WARNING
-# XXX NOTE
-# when you add a new observable type you ALSO need to edit lib/saq/observables/__init__.py
-# and add a matching entry to the _OBSERVABLE_TYPE_MAPPING dictionary
+# an observable type with a Python class also needs an entry in observable_types.classes
+# (etc/saq.default.yaml)
 
 F_ASSET = 'asset'
 F_AV_STREETNAME = 'av_streetname'

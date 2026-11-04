@@ -6,7 +6,6 @@ from saq.email import normalize_email_address, normalize_message_id
 from saq.configuration.config import get_config
 from saq.gui import ObservableActionAddLocalEmailDomain
 from saq.observables.base import CaselessObservable, ObservableValueError
-from saq.observables.generator import register_observable_type
 from saq.observables.network.ip import IPObservable
 from saq.util import is_subdomain
 
@@ -176,14 +175,3 @@ class EmailFirstHopIPObservable(IPObservable):
     validation is what keeps malformed hop tokens from becoming observables.
     """
     OBSERVABLE_TYPE = F_EMAIL_FIRST_HOP_IP
-
-
-register_observable_type(F_EMAIL_ADDRESS, EmailAddressObservable)
-register_observable_type(F_EMAIL_DELIVERY, EmailDeliveryObservable)
-register_observable_type(F_EMAIL_SUBJECT, EmailSubjectObservable)
-register_observable_type(F_EMAIL_X_MAILER, EmailXMailerObservable)
-register_observable_type(F_EMAIL_CONVERSATION, EmailConversationObservable)
-register_observable_type(F_MESSAGE_ID, MessageIDObservable)
-register_observable_type(F_EMAIL_BODY, EmailBodyObservable)
-register_observable_type(F_EMAIL_HEADER, EmailHeaderObservable)
-register_observable_type(F_EMAIL_FIRST_HOP_IP, EmailFirstHopIPObservable)

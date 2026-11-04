@@ -1,7 +1,6 @@
 import logging
 from saq.analysis.observable import Observable
 from saq.constants import F_AV_STREETNAME, F_IDS_STREETNAME, F_SNORT_SIGNATURE
-from saq.observables.generator import register_observable_type
 
 
 class SnortSignatureObservable(Observable):
@@ -35,7 +34,3 @@ class IDSStreetnameObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-register_observable_type(F_SNORT_SIGNATURE, SnortSignatureObservable)
-register_observable_type(F_AV_STREETNAME, AVStreetnameObservable)
-register_observable_type(F_IDS_STREETNAME, IDSStreetnameObservable)

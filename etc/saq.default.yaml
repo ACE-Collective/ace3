@@ -892,6 +892,72 @@ observable_types:
   # never reload.
   reload_check_interval_seconds: 60.0
 
+  # The Python class of each observable type, as "module:Class". create_observable() imports the
+  # module the first time it builds an observable of that type, so a process imports only the
+  # observable types it handles. A type without an entry is a DefaultObservable. An integration adds
+  # its own types under observable_types.classes in its etc/saq.integration.yaml, and a later file can
+  # replace a class listed here.
+  classes:
+    asset: "saq.observables.asset:AssetObservable"
+    av_streetname: "saq.observables.ids:AVStreetnameObservable"
+    aws_access_key_id: "saq.observables.cloud.aws:AWSAccessKeyIdObservable"
+    aws_account_id: "saq.observables.cloud.aws:AWSAccountObservable"
+    aws_instance_id: "saq.observables.cloud.aws:AWSInstanceID"
+    aws_principal_id: "saq.observables.cloud.aws:AWSPrincipalIdObservable"
+    aws_private_dns_name: "saq.observables.cloud.aws:AWSPrivateDNSName"
+    aws_security_group_id: "saq.observables.cloud.aws:AWSSecurityGroupID"
+    aws_username: "saq.observables.cloud.aws:AWSUsername"
+    email_address: "saq.observables.email:EmailAddressObservable"
+    email_body: "saq.observables.email:EmailBodyObservable"
+    email_conversation: "saq.observables.email:EmailConversationObservable"
+    email_delivery: "saq.observables.email:EmailDeliveryObservable"
+    email_first_hop_ip: "saq.observables.email:EmailFirstHopIPObservable"
+    email_header: "saq.observables.email:EmailHeaderObservable"
+    email_subject: "saq.observables.email:EmailSubjectObservable"
+    email_x_mailer: "saq.observables.email:EmailXMailerObservable"
+    file: "saq.observables.file:FileObservable"
+    file_location: "saq.observables.file:FileLocationObservable"
+    file_name: "saq.observables.file:FileNameObservable"
+    file_path: "saq.observables.file:FilePathObservable"
+    fqdn: "saq.observables.network.dns:FQDNObservable"
+    hostname: "saq.observables.asset:HostnameObservable"
+    ids_streetname: "saq.observables.ids:IDSStreetnameObservable"
+    indicator: "saq.observables.intel:IndicatorObservable"
+    ip: "saq.observables.network.ip:IPObservable"
+    ip_conversation: "saq.observables.network.ip:IPConversationObservable"
+    ip_full_conversation: "saq.observables.network.ip:IPFullConversationObservable"
+    ipv4: "saq.observables.network.ipv4:IPv4Observable"
+    ipv4_conversation: "saq.observables.network.ipv4:IPv4ConversationObservable"
+    ipv4_full_conversation: "saq.observables.network.ipv4:IPv4FullConversationObservable"
+    mac_address: "saq.observables.network.layer2:MacAddressObservable"
+    md5: "saq.observables.file:MD5Observable"
+    message_id: "saq.observables.email:MessageIDObservable"
+    mutex: "saq.observables.windows:MutexObservable"
+    sha1: "saq.observables.file:SHA1Observable"
+    sha256: "saq.observables.file:SHA256Observable"
+    snort_sig: "saq.observables.ids:SnortSignatureObservable"
+    string_eps: "saq.observables.string:StringEPSObservable"
+    string_html: "saq.observables.string:StringHTMLObservable"
+    string_java: "saq.observables.string:StringJavaObservable"
+    string_js: "saq.observables.string:StringJSObservable"
+    string_office: "saq.observables.string:StringOfficeObservable"
+    string_pdf: "saq.observables.string:StringPDFObservable"
+    string_pe: "saq.observables.string:StringPEObservable"
+    string_rtf: "saq.observables.string:StringRTFObservable"
+    string_swf: "saq.observables.string:StringSWFObservable"
+    string_unix_shell: "saq.observables.string:StringUnixShellObservable"
+    string_vbs: "saq.observables.string:StringVBSObservable"
+    string_windows_shell: "saq.observables.string:StringWindowsShellObservable"
+    test: "saq.observables.testing:TestObservable"
+    uri_path: "saq.observables.network.http:URIPathObservable"
+    url: "saq.observables.network.http:URLObservable"
+    user: "saq.observables.user:UserObservable"
+    user_agent: "saq.observables.network.http:UserAgentObservable"
+    windows_registry: "saq.observables.windows:WindowsRegistryObservable"
+    windows_service: "saq.observables.windows:WindowsServiceObservable"
+    yara_rule: "saq.observables.yara:YaraRuleObservable"
+    yara_string: "saq.observables.yara:YaraStringObservable"
+
 email_archive:
   target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config

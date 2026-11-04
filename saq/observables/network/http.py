@@ -12,7 +12,6 @@ from saq.gui import (
     ObservableActionOpenSplunkClickerSearch,
 )
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 from saq.util import is_subdomain
 
@@ -28,7 +27,6 @@ class UserAgentObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
 
 
 class URIPathObservable(Observable):
@@ -87,7 +85,7 @@ class URLObservable(Observable):
 
     def is_managed(self):
         """Returns True if this URL has a managed domain."""
-        # imported here: every process that loads the observable types imports this module, and urlfinderlib
+        # imported here: every process that loads an alert with a url in it imports this module, and urlfinderlib
         # costs ~11 MB where nothing else needs it (the hunter)
         from urlfinderlib.url import URL
 
@@ -102,9 +100,6 @@ class URLObservable(Observable):
 
         return False
 
-register_observable_type(F_USER_AGENT, UserAgentObservable)
-register_observable_type(F_URI_PATH, URIPathObservable)
-register_observable_type(F_URL, URLObservable)
 
 # crawl the URL with phishkit
 register_observable_action(F_URL, ObservableActionUrlCrawl)
