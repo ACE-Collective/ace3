@@ -81,6 +81,13 @@ def signature_downloader():
 
 
 @pytest.fixture
+def signature_purger():
+    _make_user("sig_purger", [("signature", "read"), ("signature", "qa_purge")])
+    yield "sig_purger"
+    delete_user("sig_purger")
+
+
+@pytest.fixture
 def signature_actor():
     _make_user("sig_actor", [("signature", "read"), ("alert", "write"), ("svs", "admin")])
     yield "sig_actor"
@@ -139,6 +146,15 @@ class TestSignaturesPages:
         with app.test_client() as client:
             _login(client, signature_downloader)
             assert b'data-can-download="true"' in client.get(url_for("signatures.yara_qa")).data
+
+    def test_purge_controls_follow_signature_qa_purge(self, app, signature_reader, signature_purger):
+        with app.test_client() as client:
+            _login(client, signature_reader)
+            assert b'data-can-purge="false"' in client.get(url_for("signatures.yara_qa")).data
+
+        with app.test_client() as client:
+            _login(client, signature_purger)
+            assert b'data-can-purge="true"' in client.get(url_for("signatures.yara_qa")).data
 
 
 class TestSamplesPages:
