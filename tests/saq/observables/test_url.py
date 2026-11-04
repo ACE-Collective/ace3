@@ -27,6 +27,12 @@ def test_url_is_managed(monkeypatch, url, managed):
     "https:\\\\..\\x",
     "https://user@/path",
     "ftp://:21/file",
+    "http://../",
+    # a host with no letter or digit is not one a browser can look up
+    "https://-/",
+    "http://_/x",
+    "https:~",
+    "https://-.-/",
 ])
 def test_url_without_host_is_rejected(url):
     assert RootAnalysis().add_observable_by_spec(F_URL, url) is None

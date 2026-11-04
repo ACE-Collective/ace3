@@ -63,7 +63,8 @@ class URLObservable(Observable):
                 # browsers drop tab, CR and LF, treat \ as / in these URLs and skip any run of them after
                 # "scheme:", so "https:\\evil.com", "https:/evil.com" and "https:/\t/evil.com" all open evil.com
                 rest = new_value.partition(":")[2].translate(BROWSER_IGNORED_CHARS).replace("\\", "/").lstrip("/")
-                missing_host = not (urlsplit(f"{scheme}://{rest}").hostname or "").strip(".")
+                # a host with no letter or digit ("..", "-") is not one a browser can look up
+                missing_host = not any(c.isalnum() for c in urlsplit(f"{scheme}://{rest}").hostname or "")
         except ValueError:
             # urlsplit refuses some netlocs that still name a host ("http://[x/", NFKC look-alikes); an
             # attacker wrote them, so keep the URL rather than drop it
