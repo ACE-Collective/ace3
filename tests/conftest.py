@@ -40,6 +40,7 @@ from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
 from saq.remediation.target import reset_observable_remediation_interface_registry
+import saq.observables.generator as observable_generator
 from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import (
     initialize_unittest_logging,
@@ -439,6 +440,9 @@ def global_function_setup(request):
 
     # reset the observable remediation interface registry
     reset_observable_remediation_interface_registry()
+
+    # the observable classes loaded so far (saq.observables.generator)
+    observable_generator._LOADED_CLASSES.clear()
 
     existing_nodes = None
 

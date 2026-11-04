@@ -1,7 +1,6 @@
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_ASSET, F_HOSTNAME
 from saq.observables.base import CaselessObservable
-from saq.observables.generator import register_observable_type
 
 
 class HostnameObservable(CaselessObservable):
@@ -24,7 +23,6 @@ class HostnameObservablePresenter(ObservablePresenter):
         return "analysis/hostname_observable.html"
 
 register_observable_presenter(HostnameObservable, HostnameObservablePresenter)
-register_observable_type(F_HOSTNAME, HostnameObservable)
 
 class AssetObservable(CaselessObservable):
     def __init__(self, *args, **kwargs):
@@ -33,5 +31,3 @@ class AssetObservable(CaselessObservable):
     @CaselessObservable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-register_observable_type(F_ASSET, AssetObservable)

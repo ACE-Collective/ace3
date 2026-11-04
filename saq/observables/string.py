@@ -1,6 +1,5 @@
 from saq.analysis.observable import Observable
 from saq.constants import F_STRING_EPS, F_STRING_HTML, F_STRING_JAVA, F_STRING_JS, F_STRING_OFFICE, F_STRING_PDF, F_STRING_PE, F_STRING_RTF, F_STRING_SWF, F_STRING_UNIX_SHELL, F_STRING_VBS, F_STRING_WINDOWS_SHELL
-from saq.observables.generator import register_observable_type
 
 
 class StringEPSObservable(Observable):
@@ -109,16 +108,3 @@ class StringWindowsShellObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value
-
-register_observable_type(F_STRING_EPS, StringEPSObservable)
-register_observable_type(F_STRING_HTML, StringHTMLObservable)
-register_observable_type(F_STRING_JAVA, StringJavaObservable)
-register_observable_type(F_STRING_JS, StringJSObservable)
-register_observable_type(F_STRING_OFFICE, StringOfficeObservable)
-register_observable_type(F_STRING_PDF, StringPDFObservable)
-register_observable_type(F_STRING_PE, StringPEObservable)
-register_observable_type(F_STRING_RTF, StringRTFObservable)
-register_observable_type(F_STRING_SWF, StringSWFObservable)
-register_observable_type(F_STRING_UNIX_SHELL, StringUnixShellObservable)
-register_observable_type(F_STRING_VBS, StringVBSObservable)
-register_observable_type(F_STRING_WINDOWS_SHELL, StringWindowsShellObservable)

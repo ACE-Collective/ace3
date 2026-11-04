@@ -6,7 +6,6 @@ from saq.analysis.presenter.observable_presenter import ObservablePresenter, reg
 from saq.constants import F_IPV4, F_IPV4_CONVERSATION, F_IPV4_FULL_CONVERSATION, parse_ipv4_conversation, parse_ipv4_full_conversation
 from saq.environment import get_global_runtime_settings
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 
 class IPv4Observable(Observable):
@@ -129,7 +128,3 @@ class IPv4FullConversationObservable(Observable):
     @property   
     def dest_port(self):
         return self._dest_port
-
-register_observable_type(F_IPV4, IPv4Observable)
-register_observable_type(F_IPV4_CONVERSATION, IPv4ConversationObservable)
-register_observable_type(F_IPV4_FULL_CONVERSATION, IPv4FullConversationObservable)

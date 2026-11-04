@@ -316,7 +316,6 @@ def test_yaml_reload_clears_removed_description_and_deprecated():
 @pytest.mark.unit
 def test_get_all_valid_types_combines_yaml_and_python():
     """A type counts as valid whether it has a Python class or only a YAML entry."""
-    from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
     from saq.observables.type_hierarchy import get_all_valid_types
 
     h = get_type_hierarchy()
@@ -325,10 +324,10 @@ def test_get_all_valid_types_combines_yaml_and_python():
     try:
         result = set(get_all_valid_types())
         assert "__pytest_yaml_only__" in result
-        # A python-registered type that's not in YAML still appears.
-        assert "test" in result  # F_TEST has a registered TestObservable class
+        # A type with a Python class that's not in YAML still appears.
+        assert "test" in result  # F_TEST has the TestObservable class
         # Sanity: the result spans both sources
-        assert set(OBSERVABLE_TYPE_MAPPING.keys()).issubset(result)
+        assert set(get_config().observable_types.classes).issubset(result)
     finally:
         h._yaml_declared_types = declared_snapshot
 
@@ -726,7 +725,7 @@ def test_bootstrap_waits_for_the_configuration(monkeypatch):
     monkeypatch.setattr(type_hierarchy, "_HIERARCHY", fresh)
 
     with monkeypatch.context() as no_config:
-        no_config.setattr("saq.configuration.get_config", lambda: None)
+        no_config.setattr(type_hierarchy, "get_config", lambda: None)
         get_type_hierarchy()
         assert fresh.parent_of("email_cc") is None
 

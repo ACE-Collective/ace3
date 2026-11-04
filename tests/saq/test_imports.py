@@ -4,7 +4,6 @@ Each test imports in a fresh interpreter: the test process itself has imported n
 codebase before any test runs, so an import cycle or a heavy import is invisible from inside it.
 """
 
-import ast
 import importlib
 import os
 import subprocess
@@ -17,7 +16,6 @@ import saq.database
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir
 from saq.integration.integration_util import get_valid_integration_dirs
-from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
 from tests.saq.helpers import run_python
 
 pytestmark = pytest.mark.unit
@@ -28,6 +26,15 @@ def _assert_loads_none(imports: str, forbidden: list[str], timeout: int = 120):
     run_python(f"import sys\n{imports}"
                f"loaded = [name for name in {forbidden!r} if name in sys.modules]\n"
                "assert not loaded, loaded\n", timeout=timeout)
+
+
+_INITIALIZE_CONFIGURATION = ("from saq.environment import get_global_runtime_settings, initialize_base_dir\n"
+                             "get_global_runtime_settings().unit_testing = True\n"
+                             "initialize_base_dir()\n"
+                             "from saq.configuration import initialize_configuration\n"
+                             "from saq.integration.integration_loader import load_integrations\n"
+                             "load_integrations()\n"
+                             "initialize_configuration()\n")
 
 
 def test_saq_imports_without_yara_scanner():
@@ -78,14 +85,9 @@ def test_configuration_does_not_import_the_analysis_framework():
     # every process reads its configuration, so every process pays for what config parsing imports. It
     # validates each analysis module and observable export block against a pydantic base class, and
     # those must not drag in the analysis framework, the observable types or the database models.
-    _assert_loads_none("from saq.environment import get_global_runtime_settings, initialize_base_dir\n"
-                       "get_global_runtime_settings().unit_testing = True\n"
-                       "initialize_base_dir()\n"
-                       "from saq.configuration import initialize_configuration\n"
-                       "from saq.integration.integration_loader import load_integrations\n"
-                       "load_integrations()\n"
-                       "initialize_configuration()\n",
-                       ["saq.modules.base_module", "saq.observables", "saq.database.model", "sqlalchemy", "flask"])
+    _assert_loads_none(_INITIALIZE_CONFIGURATION,
+                       ["saq.modules.base_module", "saq.observables.base", "saq.observables.generator",
+                        "saq.database.model", "sqlalchemy", "flask"])
 
 
 def test_integration_registration_does_not_load_the_apps():
@@ -100,7 +102,7 @@ def test_the_example_integration_registers_without_loading_what_it_registers():
     src = os.path.join(get_base_dir(), "integrations.example", "example", "src")
     _assert_loads_none(f"sys.path.insert(0, {src!r})\n"
                        "import example\n",
-                       ["example.modules", "example.app.blueprint", "example.api.router", "saq.observables",
+                       ["example.modules", "example.app.blueprint", "example.api.router", "saq.observables.base",
                         "saq.modules.base_module", "saq.analysis.root", "flask", "werkzeug", "fastapi"])
 
 
@@ -118,13 +120,20 @@ def test_sql_timing_listeners_come_with_the_first_engine():
                "assert 'app' not in sys.modules\n")
 
 
-def test_importing_the_generator_registers_every_core_observable_type():
-    # create_observable() falls back to DefaultObservable for a type nobody registered, and nothing
-    # registers the types at startup: importing create_observable has to register all of them
-    expected = sorted(name for name, cls in OBSERVABLE_TYPE_MAPPING.items() if cls.__module__.startswith("saq."))
-    result = run_python("from saq.observables.generator import OBSERVABLE_TYPE_MAPPING\n"
-                        "print(sorted(name for name, cls in OBSERVABLE_TYPE_MAPPING.items() if cls.__module__.startswith('saq.')))\n")
-    assert ast.literal_eval(result.stdout.strip().splitlines()[-1]) == expected
+def test_building_an_observable_imports_only_its_type():
+    # an observable type's module is imported the first time an observable of that type is built: the
+    # package, the generator, the hierarchy and the export config import none of them
+    run_python(f"import sys\n{_INITIALIZE_CONFIGURATION}"
+               "import saq.observables, saq.observables.type_hierarchy, saq.observables.export.config\n"
+               "from saq.observables import create_observable\n"
+               "from saq.configuration import get_config\n"
+               "type_modules = {target.split(':')[0] for target in get_config().observable_types.classes.values()}\n"
+               "loaded = sorted(type_modules & set(sys.modules))\n"
+               "assert not loaded, loaded\n"
+               "assert 'saq.gui' not in sys.modules\n"
+               "assert type(create_observable('url', 'https://example.com/')).__name__ == 'URLObservable'\n"
+               "loaded = sorted(type_modules & set(sys.modules))\n"
+               "assert loaded == ['saq.observables.network.http'], loaded\n")
 
 
 @pytest.mark.integration
@@ -140,7 +149,8 @@ def test_initialization_does_not_import_what_only_some_processes_need(tmp_path):
                        "get_global_runtime_settings().unit_testing = True\n"
                        f"initialize_environment(saq_home={get_base_dir()!r}, data_dir={str(data_dir)!r}, "
                        f"temp_dir={str(temp_dir)!r}, config_paths=[])\n",
-                       ["saq.observables", "saq.modules.base_module", "saq.engine.core", "saq.database.model",
+                       ["saq.observables.base", "saq.observables.generator", "saq.modules.base_module",
+                        "saq.engine.core", "saq.database.model",
                         "saq.analysis.root", "saq.gui.alert", "flask", "werkzeug", "urlfinderlib", "requests",
                         "celery", "phishkit", "botocore", "boto3", "sqlalchemy"],
                        timeout=180)
@@ -192,7 +202,8 @@ def test_the_apps_register_the_root_analysis_presenter(app_module):
                "assert isinstance(create_analysis_presenter(RootAnalysis()), GUIAlertPresenter)\n", timeout=180)
 
 
-@pytest.mark.parametrize("package", ["saq.analysis", "saq.gui", "saq.collectors.hunter", "saq.modules.file_analysis"])
+@pytest.mark.parametrize("package", ["saq.analysis", "saq.gui", "saq.collectors.hunter", "saq.modules.file_analysis",
+                                     "saq.observables"])
 def test_package_exports_load_on_first_use(package):
     module = importlib.import_module(package)
     for name, module_name in module._EXPORTS.items():
@@ -280,7 +291,8 @@ def test_the_email_archive_and_phishkit_clients_load_their_libraries_on_use():
 
 # modules whose import closures loop back through saq.analysis.presenter, imported first so a re-export
 # there cannot close a cycle again (see the comment in saq/analysis/presenter/__init__.py)
-CYCLE_MODULES = ["saq.database.model", "saq.gui", "saq.analysis.presenter.observable_presenter", "saq.observables"]
+CYCLE_MODULES = ["saq.database.model", "saq.gui", "saq.analysis.presenter.observable_presenter",
+                 "saq.observables.generator"]
 
 # what the ace script, the API containers and the GUI import first
 CLI_AND_APPS = ["saq.cli.cli_main", "saq.cli.commands", "aceapi_v2.application", "aceapi_v2.app_factory",
@@ -318,7 +330,9 @@ def _import_failures(modules: list[str], setup: str) -> str:
 
 def _entry_points() -> list[str]:
     services = sorted({f"{service.python_module}:{service.python_class}" for service in get_config().services})
-    return CYCLE_MODULES + services + CLI_AND_APPS
+    # create_observable() imports these one at a time, so any of them can be the first a process imports
+    observable_types = sorted({target.split(":")[0] for target in get_config().observable_types.classes.values()})
+    return CYCLE_MODULES + observable_types + services + CLI_AND_APPS
 
 
 def test_entry_points_import_first():
@@ -333,7 +347,8 @@ LIGHT_SERVICES = ["saq.network_semaphore.service", "saq.git", "saq.monitoring.se
                   "saq.remediation.service", "saq.remediation.external.service", "saq.yara_scanning.service",
                   "saq.svs.service"]
 HEAVY_PACKAGES = ["aceapi_v2", "aceapi_ai", "app", "fastapi", "flask", "werkzeug", "qdrant_client", "numpy", "grpc",
-                  "celery", "botocore", "pandas", "cv2", "torch", "saq.observables", "urlfinderlib", "requests"]
+                  "celery", "botocore", "pandas", "cv2", "torch", "saq.observables.base", "saq.observables.generator",
+                  "urlfinderlib", "requests"]
 
 # these need no database either, so neither the models nor the analysis framework
 NO_DATABASE_SERVICES = ["saq.network_semaphore.service", "saq.git", "saq.monitoring.service", "saq.cron"]

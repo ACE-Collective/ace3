@@ -44,6 +44,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from saq.configuration import get_config
 from saq.environment import get_base_dir
 
 
@@ -332,7 +333,7 @@ def get_type_hierarchy() -> TypeHierarchy:
 
 def _ensure_bootstrapped() -> None:
     # bootstrapped on first use rather than at startup, so a process that never looks at an observable
-    # never imports saq.observables (this module's package) at all
+    # never reads the YAML
     if _HIERARCHY._bootstrapped:
         return
 
@@ -342,19 +343,17 @@ def _ensure_bootstrapped() -> None:
 
 
 def get_all_valid_types() -> list[str]:
-    """Return the sorted union of YAML-declared and Python-registered observable types.
+    """Return the sorted union of YAML-declared observable types and those with a Python class.
 
     A type counts as "valid" if it has either a Python ``Observable`` subclass
-    registered via :func:`saq.observables.generator.register_observable_type` or
-    an entry in the YAML config loaded by :func:`bootstrap_type_hierarchy`.
+    in ``observable_types.classes`` or an entry in the YAML config loaded by
+    :func:`bootstrap_type_hierarchy`. None of the classes is imported.
 
     Triggers the same debounced mtime check as :func:`get_type_hierarchy`.
     """
-    from saq.observables.generator import OBSERVABLE_TYPE_MAPPING
-
     _ensure_bootstrapped()
     _HIERARCHY._maybe_reload()
-    return sorted(set(OBSERVABLE_TYPE_MAPPING.keys()) | _HIERARCHY.yaml_declared_types())
+    return sorted(set(get_config().observable_types.classes) | _HIERARCHY.yaml_declared_types())
 
 
 def bootstrap_type_hierarchy() -> None:
@@ -368,13 +367,7 @@ def bootstrap_type_hierarchy() -> None:
     Also primes the runtime-reload interval from
     ``observable_types.reload_check_interval_seconds``; a value of 0 or
     less disables runtime reload.
-
-    Imported lazily inside the function so this module can be imported during
-    ``saq.observables`` package init (before configuration has been loaded)
-    without pulling in the configuration machinery.
     """
-    from saq.configuration import get_config
-
     try:
         observable_types_config = get_config().observable_types
     except AttributeError:

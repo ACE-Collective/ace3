@@ -1,7 +1,6 @@
 from saq.analysis.observable import Observable
 from saq.constants import F_AWS_ACCESS_KEY_ID, F_AWS_ACCOUNT_ID, F_AWS_INSTANCE_ID, F_AWS_PRINCIPAL_ID, F_AWS_PRIVATE_DNS_NAME, F_AWS_SECURITY_GROUP_ID, F_AWS_USERNAME
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 
 class AWSAccessKeyIdObservable(Observable):
@@ -67,11 +66,3 @@ class AWSPrivateDNSName(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-register_observable_type(F_AWS_ACCESS_KEY_ID, AWSAccessKeyIdObservable)
-register_observable_type(F_AWS_PRINCIPAL_ID, AWSPrincipalIdObservable)
-register_observable_type(F_AWS_ACCOUNT_ID, AWSAccountObservable)
-register_observable_type(F_AWS_USERNAME, AWSUsername)
-register_observable_type(F_AWS_INSTANCE_ID, AWSInstanceID)
-register_observable_type(F_AWS_SECURITY_GROUP_ID, AWSSecurityGroupID)
-register_observable_type(F_AWS_PRIVATE_DNS_NAME, AWSPrivateDNSName)

@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
 from saq.configuration.yaml_parser import resolve_model_fields, resolve_values
+from saq.observables.export.config import ObservableExportConfig
 from saq.svs.attack_files import release_path
 
 if TYPE_CHECKING:
@@ -67,15 +68,6 @@ class ServiceConfig(BaseModel):
     enabled: bool = Field(..., description="Controls whether the service is enabled or disabled.")
     instance_types: Optional[list[str]] = Field(default=None, description="The instance types that the service is valid for.")
     shutdown_deadline_seconds: float = Field(default=20.0, description="How long this service may take to shut down after receiving SIGTERM. Must stay below the container stop_grace_period so the process always exits before docker escalates to SIGKILL.")
-
-class ObservableExportConfig(BaseModel):
-    """The base configuration of an ``observable_export_<name>:`` block."""
-
-    name: str = Field(..., description="Unique identifier for the export target.")
-    python_module: str = Field(..., description="The Python module that contains the export class.")
-    python_class: str = Field(..., description="The name of the export class inside the module.")
-    enabled: bool = Field(default=True, description="Controls whether the export target is enabled or disabled.")
-    description: Optional[str] = Field(default=None, description="A brief description of the export target.")
 
 class DatabaseConfig(BaseModel):
     name: str = Field(..., description="The name of the database.")
@@ -623,10 +615,25 @@ class NRDURLList(BaseModel):
     backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
 
 
+_OBSERVABLE_CLASS_TARGET = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
+
+
 class ObservableTypesConfig(BaseModel):
     """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
     config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
     reload_check_interval_seconds: float = Field(default=60.0, description="how often (in seconds) accessors stat the YAML and reload if mtime changed; set to 0 (or negative) to disable runtime reload entirely")
+    classes: dict[str, str] = Field(default_factory=dict, description="the Python class of each observable type as module:Class, imported the first time an observable of that type is built; a type without one is a DefaultObservable")
+
+    @field_validator("classes")
+    @classmethod
+    def _validate_classes(cls, value: dict[str, str]) -> dict[str, str]:
+        # a value that is not module:Class fails at startup in every process; a module or class that
+        # does not exist fails only when its type is first built, since importing it here would load
+        # every observable type into every process
+        for o_type, target in value.items():
+            if not _OBSERVABLE_CLASS_TARGET.fullmatch(target):
+                raise ValueError(f"observable_types.classes.{o_type}: {target!r} is not module:Class")
+        return value
 
 
 class SecretsConfig(BaseModel):

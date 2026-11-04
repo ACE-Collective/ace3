@@ -1,7 +1,6 @@
 from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_USER
 from saq.observables.base import CaselessObservable
-from saq.observables.generator import register_observable_type
 
 
 class UserObservable(CaselessObservable):
@@ -39,5 +38,3 @@ class UserObservablePresenter(ObservablePresenter):
 
 
 register_observable_presenter(UserObservable, UserObservablePresenter)
-
-register_observable_type(F_USER, UserObservable)

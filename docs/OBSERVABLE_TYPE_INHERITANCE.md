@@ -206,6 +206,27 @@ The `F_*` Python constant is only required if Python code needs to reference
 the type by symbolic name. Hunt rules and observable-modifier rules can refer
 to the YAML name directly.
 
+### Give a type a Python class
+
+A type without a class is a `DefaultObservable`. A type that needs its own
+validation, normalization or presenter gets an `Observable` subclass, named in
+`observable_types.classes` in the saq config (`etc/saq.default.yaml`, or an
+integration's `etc/saq.integration.yaml`) as `module:Class`:
+
+```yaml
+observable_types:
+  classes:
+    pdf_file: "vendor.observables:PDFFileObservable"
+```
+
+`create_observable()` and `create_observable_from_dict()` import the module
+the first time they build an observable of that type, so a process imports
+only the observable types it handles. A class that cannot be imported raises
+`ImportError` there rather than falling back to `DefaultObservable`, which
+would drop what the class keeps when the root is saved again. The class map is
+not part of `etc/observable_types.yaml`, because a deployment replaces that
+file with its own.
+
 ### Get consistent display labels for free
 
 Before this change, getting "Mail Return Path" to appear in the UI for a
@@ -268,6 +289,7 @@ email addresses.
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Built-in YAML                            | `etc/observable_types.yaml`                                                                     |
 | Config knob (`observable_types.config_path`) | `etc/saq.default.yaml`                                                                          |
+| Observable classes (`observable_types.classes`) | `etc/saq.default.yaml`, resolved by `saq/observables/generator.py` (`get_observable_class()`) |
 | Registry implementation                  | `saq/observables/type_hierarchy.py` (`get_type_hierarchy()`, `get_all_valid_types()`)           |
 | Module dispatch (subtype-aware)          | `saq/modules/base_module.py` (`AnalysisModule.accepts`, `valid_observable_subtypes`)            |
 | Display-label fallback                   | `saq/analysis/observable.py` (`Observable.display_type`)                                        |

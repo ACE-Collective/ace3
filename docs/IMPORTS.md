@@ -17,7 +17,7 @@ These rules come from the October 2026 import work:
    - A name from a module that loads more stays importable from the package through a PEP 562 `__getattr__` that imports the defining module on first use: `__getattr__ = lazy_getattr(__name__, _EXPORTS)` (`saq/lazy_exports.py`). Examples: `saq/analysis/__init__.py`, `saq/gui/__init__.py`, `saq/database/__init__.py`, `saq/modules/file_analysis/__init__.py`, `saq/collectors/hunter/__init__.py`.
    - A light re-export can stay. `saq/storage/__init__.py` re-exports its interfaces and leaves out `S3Storage`, which loads boto3.
    - Don't export a name that is also a submodule's name. Importing the submodule rebinds the name to the module (`saq.database.retry`).
-   - `saq/observables/__init__.py` is the exception. Its imports are what register the core observable types, and `tests/saq/test_imports.py` checks that importing the generator still registers them all.
+   - An observable type's class is named in `observable_types.classes` (`etc/saq.default.yaml`) as `module:Class`, and `create_observable()` imports it the first time it builds an observable of that type, so `saq/observables/__init__.py` imports nothing either.
    - The `__init__.py` of `aceapi_v2/`, `aceapi_ai/` and `app/` has nothing to re-export, and imports nothing at all.
 2. **Core does not import the web layer.**
    - Nothing under `saq/` imports Flask, FastAPI, `app/`, `aceapi_v2/` or `aceapi_ai/` at module level. `saq.gui.alert` uses `flask.url_for`, so only the apps import it.

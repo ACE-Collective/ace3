@@ -1,7 +1,6 @@
 from saq.analysis.observable import Observable
 from saq.constants import F_YARA_RULE, F_YARA_STRING
 from saq.observables.base import ObservableValueError
-from saq.observables.generator import register_observable_type
 
 
 class YaraRuleObservable(Observable):
@@ -53,6 +52,3 @@ class YaraStringObservable(Observable):
             return None
 
         return parsed[1]
-
-register_observable_type(F_YARA_RULE, YaraRuleObservable)
-register_observable_type(F_YARA_STRING, YaraStringObservable)
