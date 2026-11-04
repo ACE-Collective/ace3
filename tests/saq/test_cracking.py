@@ -5,7 +5,12 @@ import threading
 import pytest
 import tempfile
 
+from saq.configuration.config import get_analysis_module_config
+from saq.constants import ANALYSIS_MODULE_ZIP_ENCRYPTION_ANALYZER
 from saq.cracking import generate_wordlist, crack_password
+from saq.modules.email.encryption.zip import ZipEncryptionAnalyzer
+from saq.sandbox.runner import SandboxResult
+from tests.saq.test_util import create_test_context
 
 
 @pytest.mark.unit
@@ -137,6 +142,12 @@ def test_generate_wordlist_binary_file_handling(tmpdir):
     assert any('pass' in word for word in wordlist)
 
 
+def _module():
+    """The module john runs in the sandbox of."""
+    return ZipEncryptionAnalyzer(context=create_test_context(),
+                                 config=get_analysis_module_config(ANALYSIS_MODULE_ZIP_ENCRYPTION_ANALYZER))
+
+
 def _john_available():
     """Check if john the ripper is available in common locations."""
     path = "/opt/tools/john-1.9.0-jumbo-1/run"
@@ -161,7 +172,7 @@ def test_crack_password_with_john():
     
     try:
         # Test with invalid mode to ensure function handles failures gracefully
-        result = crack_password(john_path, hash_file_path, "testfile", "--test=0")
+        result = crack_password(_module(), john_path, hash_file_path, "testfile", "--test=0")
         
         # Function should return None or a password string, never crash
         assert result is None or isinstance(result, str)
@@ -181,7 +192,7 @@ def test_crack_password_nonexistent_john():
     try:
         # This should raise an exception or handle the error gracefully
         with pytest.raises((FileNotFoundError, OSError)):
-            crack_password("/nonexistent/path", hash_file_path, "testfile", "--test=0")
+            crack_password(_module(), "/nonexistent/path", hash_file_path, "testfile", "--test=0")
     finally:
         os.unlink(hash_file_path)
 
@@ -195,7 +206,7 @@ def test_crack_password_nonexistent_hash_file():
     
     # This should raise an exception or handle the error gracefully
     with pytest.raises((FileNotFoundError, OSError)):
-        crack_password(john_path, "/nonexistent/hash/file.txt", "testfile", "--test=0")
+        crack_password(_module(), john_path, "/nonexistent/hash/file.txt", "testfile", "--test=0")
 
 
 @pytest.mark.integration
@@ -211,7 +222,7 @@ def test_crack_password_empty_hash_file():
         hash_file_path = hash_file.name
     
     try:
-        result = crack_password(john_path, hash_file_path, "testfile", "--test=0")
+        result = crack_password(_module(), john_path, hash_file_path, "testfile", "--test=0")
         # Should handle empty file gracefully
         assert result is None or isinstance(result, str)
     finally:
@@ -231,7 +242,7 @@ def test_crack_password_invalid_mode():
     
     try:
         # Test with invalid mode - should handle gracefully
-        result = crack_password(john_path, hash_file_path, "testfile", "--invalid-mode-xyz")
+        result = crack_password(_module(), john_path, hash_file_path, "testfile", "--invalid-mode-xyz")
         # Function should not crash, may return None
         assert result is None or isinstance(result, str)
     finally:
@@ -268,7 +279,8 @@ def test_crack_password_concurrently(tmp_path):
 
     def _crack(index: int):
         barrier.wait()
-        results[index] = crack_password(john_path, hash_files[index], f"archive{index}.zip", f"--wordlist={wordlist}")
+        results[index] = crack_password(_module(), john_path, hash_files[index], f"archive{index}.zip", f"--wordlist={wordlist}",
+                                        read_files=[str(wordlist)])
 
     threads = [threading.Thread(target=_crack, args=(i,)) for i in range(count)]
     for thread in threads:
@@ -287,7 +299,52 @@ def test_crack_password_logs_john_failure(tmp_path, caplog):
 
     hash_file = _encrypted_zip_hash(str(tmp_path), "archive", "secret")
 
-    assert crack_password(john_path, hash_file, "archive.zip", "--incremental=NoSuchMode") is None
+    assert crack_password(_module(), john_path, hash_file, "archive.zip", "--incremental=NoSuchMode") is None
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "--incremental=NoSuchMode" in r.getMessage()]
     assert len(warnings) == 1
     assert "Unknown incremental mode: NoSuchMode" in warnings[0].getMessage()
+
+
+@pytest.mark.unit
+def test_crack_password_when_john_is_stopped(tmp_path, monkeypatch):
+    """A john run that was stopped (a timeout, a cancelled analysis) cracked nothing."""
+    john_path = _john_available()
+    if not john_path:
+        pytest.skip("John the Ripper not found in common locations")
+
+    hash_file = tmp_path / "archive.zip.hash"
+    hash_file.write_text("archive.zip:$pkzip$hash\n")
+    module = _module()
+    runs = []
+    monkeypatch.setattr(module, "run_sandboxed_tool", lambda args, target, **kwargs: runs.append(args))
+
+    assert crack_password(module, john_path, str(hash_file), "archive.zip", "--wordlist=words") is None
+    # nothing to --show without the first run's pot
+    assert len(runs) == 1
+
+
+@pytest.mark.unit
+def test_crack_password_when_john_show_is_stopped(tmp_path, monkeypatch):
+    """The first run cracked the hash, and the --show that reads its pot was stopped."""
+    john_path = _john_available()
+    if not john_path:
+        pytest.skip("John the Ripper not found in common locations")
+
+    hash_file = tmp_path / "archive.zip.hash"
+    hash_file.write_text("archive.zip:$pkzip$hash\n")
+    module = _module()
+    runs = []
+
+    def _run(args, target, outputs=None, **kwargs):
+        runs.append(args)
+        if outputs:
+            for destination in outputs.values():
+                with open(destination, "w") as fp:
+                    fp.write("$pkzip$hash:secret\n")
+            return SandboxResult(0, "", "")
+        return None
+
+    monkeypatch.setattr(module, "run_sandboxed_tool", _run)
+
+    assert crack_password(module, john_path, str(hash_file), "archive.zip", "--wordlist=words") is None
+    assert "--show" in runs[-1] and len(runs) == 2

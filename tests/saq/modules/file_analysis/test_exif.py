@@ -12,9 +12,11 @@ from saq.constants import ANALYSIS_MODULE_EXIF, F_FILE, R_EXTRACTED_FROM
 from saq.database import pool
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.modules.file_analysis.exif import ExifAnalysis
+from saq.environment import get_base_dir
+from saq.modules.file_analysis.exif import ExifAnalysis, ExifAnalyzer
 from saq.modules.file_analysis.file_type import FileTypeAnalyzer
 from saq.modules.file_analysis.hash import FileHashAnalyzer
+from saq.sandbox.runner import SandboxResult
 from saq.util.uuid import get_storage_dir
 
 SAMPLES = Path(__file__).parents[1] / "test_file_analysis"
@@ -159,7 +161,8 @@ class _RecordingPopen(subprocess.Popen):
 
 
 def _exiftool_processes():
-    return [process for args, process in _RecordingPopen.started if "exiftool" in str(args[0])]
+    """The sandbox launchers started for exiftool (the launcher execs prlimit, then setpriv, then exiftool)."""
+    return [process for args, process in _RecordingPopen.started if any(str(arg).endswith("/exiftool") for arg in args)]
 
 
 @pytest.fixture
@@ -171,27 +174,24 @@ def recording_popen(monkeypatch):
 
 
 def _exiftool_returns(monkeypatch, outcome):
-    """Makes the module's exiftool run give outcome: a CompletedProcess's (returncode, stdout, stderr), an
-    exception to raise, or a command line to run in its place. Every other run is left alone."""
-    real_run = subprocess.run
+    """Makes the module's exiftool run give outcome: a SandboxResult's (returncode, stdout, stderr), or a
+    command line to run in the sandbox in its place."""
+    real_run = ExifAnalyzer.run_sandboxed_tool
 
-    def run(args, *a, **kw):
-        if args[0] != "exiftool":
-            return real_run(args, *a, **kw)
-        if isinstance(outcome, BaseException):
-            raise outcome
+    def run(self, args, target, **kw):
         if isinstance(outcome, list):
-            return real_run(outcome, *a, **kw)
+            return real_run(self, outcome, target, **kw)
         returncode, stdout, stderr = outcome
-        return subprocess.CompletedProcess(args, returncode, stdout, stderr)
+        return SandboxResult(returncode, stdout, stderr)
 
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(ExifAnalyzer, "run_sandboxed_tool", run)
 
 
 @pytest.mark.integration
 def test_no_python_runs_in_the_exiftool_child(root_analysis, monkeypatch, recording_popen):
     # every child that runs Python between its fork and its exec runs the at-fork hooks, and in a worker one
-    # of them can wait for ever on a lock another thread held at the fork. This hook records who ran it
+    # of them can wait for ever on a lock another thread held at the fork. This hook records who ran it.
+    # The sandbox launcher is a fresh python, which only starts once the exec is done
     read_fd, write_fd = os.pipe()
     os.set_blocking(read_fd, False)
     monkeypatch.setattr(pool, "reset_database_after_fork", lambda: os.write(write_fd, f"{os.getpid()} ".encode()))
@@ -220,6 +220,18 @@ def test_no_python_runs_in_the_exiftool_child(root_analysis, monkeypatch, record
 
 
 @pytest.mark.integration
+def test_exiftool_cannot_read_ace(root_analysis, monkeypatch):
+    # what the sandbox is for: a file that gets exiftool to run code finds nothing of ACE's to read
+    config_file = os.path.join(get_base_dir(), "etc", "saq.default.yaml")
+    script = f"cat {config_file} >/dev/null 2>&1 && echo readable >&2 || echo refused >&2; exit 1"
+    _exiftool_returns(monkeypatch, ["sh", "-c", script])
+
+    analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
+
+    assert analysis.error == "refused"
+
+
+@pytest.mark.integration
 def test_file_exiftool_cannot_read_records_its_reason(root_analysis, tmp_path, caplog):
     # an OLE header and nothing else: exiftool exits 1, with the reason in its JSON and nothing on stderr
     path = tmp_path / "header_only.doc"
@@ -239,16 +251,17 @@ def test_file_exiftool_cannot_read_records_its_reason(root_analysis, tmp_path, c
 
 @pytest.mark.parametrize("returncode,stderr,error", [
     # a Perl runtime error on a crafted file: the last line is the one that ended it
-    (255, b"Warning: something first\n'x' outside of string in unpack at ExifTool.pm line 5920.\n",
+    (255, "Warning: something first\n'x' outside of string in unpack at ExifTool.pm line 5920.\n",
      "'x' outside of string in unpack at ExifTool.pm line 5920."),
     # a long line (a vanished file's path, say) is cut short: it ends up in the summary
-    (1, b"first\n" + b"x" * 2000 + b"\n", "x" * 500),
-    (1, b"", "exiftool exited with status 1"),
-    (-9, b"", "exiftool was killed by signal 9"),
+    (1, "first\n" + "x" * 2000 + "\n", "x" * 500),
+    (1, "", "exiftool exited with status 1"),
+    (255, "", "exiftool exited with status 255"),
+    (128 + 9, "", "exiftool was killed by signal 9"),
 ])
 @pytest.mark.integration
 def test_exiftool_failure_without_its_json(root_analysis, monkeypatch, returncode, stderr, error):
-    _exiftool_returns(monkeypatch, (returncode, b"", stderr))
+    _exiftool_returns(monkeypatch, (returncode, "", stderr))
 
     analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
 
@@ -263,18 +276,19 @@ def test_exiftool_timeout_is_recorded(root_analysis, monkeypatch, recording_pope
 
     analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
 
-    assert analysis.error == "exiftool timed out after 1 seconds"
+    assert analysis.error == "exiftool did not finish"
     assert analysis.get_observables_by_type(F_FILE) == []
-    # killed and reaped, not left running
-    sleeps = [process for args, process in _RecordingPopen.started if args[0] == "sleep"]
-    assert [process.returncode for process in sleeps] == [-9]
-    assert any(r.levelno == logging.WARNING and "exiftool timed out" in r.getMessage() for r in caplog.records)
+    # the launcher has exited, and it kills everything it started before it does
+    launchers = [process for args, process in _RecordingPopen.started if any(str(arg).endswith("/sleep") for arg in args)]
+    assert len(launchers) == 1 and launchers[0].returncode is not None
+    assert any(r.levelno == logging.WARNING and "stopped sleep" in r.getMessage() and "timed out" in r.getMessage()
+               for r in caplog.records)
 
 
-@pytest.mark.parametrize("stdout", [b"not json", b"[]", b"{}", b"[1]"])
+@pytest.mark.parametrize("stdout", ["not json", "[]", "{}", "[1]"])
 @pytest.mark.integration
 def test_unreadable_exiftool_output_is_an_error(root_analysis, monkeypatch, caplog, stdout):
-    _exiftool_returns(monkeypatch, (0, stdout, b""))
+    _exiftool_returns(monkeypatch, (0, stdout, ""))
 
     analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
 
@@ -286,11 +300,11 @@ def test_unreadable_exiftool_output_is_an_error(root_analysis, monkeypatch, capl
 
 @pytest.mark.integration
 def test_exiftool_that_cannot_run_is_an_error(root_analysis, monkeypatch, caplog):
-    _exiftool_returns(monkeypatch, FileNotFoundError(2, "No such file or directory", "exiftool"))
+    _exiftool_returns(monkeypatch, ["/nonexistent/exiftool", "-j"])
 
     analysis = _analyze(root_analysis, SAMPLES / "sample_pdf_with_qr_code.pdf")
 
-    assert analysis.error.startswith("unable to run exiftool: ")
+    assert analysis.error == "exiftool did not finish"
     assert analysis.get_observables_by_type(F_FILE) == []
-    assert any(r.levelno == logging.ERROR and r.exc_info and "unable to run exiftool" in r.getMessage()
+    assert any(r.levelno == logging.ERROR and r.exc_info and "cannot run /nonexistent/exiftool in the sandbox" in r.getMessage()
                for r in caplog.records)

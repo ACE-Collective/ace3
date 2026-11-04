@@ -96,14 +96,12 @@ class DMGAnalyzer(AnalysisModule):
 
         analysis = self.create_analysis(_file)
 
-        # this simply creates the img file in the same folder the file is in
-        # replacing .dmg with .img
+        # the image is kept next to the dmg, replacing .dmg with .img
         image_file = local_file_path[:-4] + ".img"
-        result = self.run_tool(["dmg2img", local_file_path], local_file_path, capture_output=True)
+        result = self.run_sandboxed_tool(["dmg2img", local_file_path, "image.img"], local_file_path,
+                                         outputs={"image.img": image_file})
         if result is None:
-            # whatever it wrote is incomplete
-            if os.path.exists(image_file):
-                os.remove(image_file)
+            # whatever it wrote is incomplete, and was not kept
             return AnalysisExecutionResult.COMPLETED
 
         analysis.details["stdout"], analysis.details["stderr"] = result.stdout, result.stderr
@@ -121,7 +119,7 @@ class DMGAnalyzer(AnalysisModule):
             file_observable.redirection = _file
 
         # get the list of files
-        result = self.run_tool(['7z', 'l', image_file], image_file, capture_output=True, universal_newlines=True)
+        result = self.run_sandboxed_tool(['7z', 'l', image_file], image_file)
         if result is None:
             return AnalysisExecutionResult.COMPLETED
 

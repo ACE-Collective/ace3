@@ -54,8 +54,8 @@ from saq.observables.network.layer2 import normalize_mac_address
 from saq.util.hashing import sha256_bytes, sha256_file
 from saq.util.strings import format_item_list_for_summary
 from saq.util.ui import human_readable_size
-from saq.sandbox.launcher import EXIT_SANDBOX_FAILURE
 from saq.sandbox.runner import (
+    NODE_FAILURE_EXIT_CODES,
     SandboxCancelled,
     build_sandbox_argv,
     create_workdir,
@@ -125,9 +125,6 @@ DNS_ROOT_NAME = "<root>"
 CAPINFOS_TIMEOUT_SECONDS = 30
 # copying the capture into the workdir, stopping the sandbox and parsing tshark's output, around one tshark run
 RUN_MARGIN_SECONDS = 30
-# the tool never ran: the launcher could not set the sandbox up (EXIT_SANDBOX_FAILURE), or prlimit or
-# setpriv could not execute it (126, 127); tshark and capinfos never exit with these themselves
-NODE_FAILURE_EXIT_CODES = (EXIT_SANDBOX_FAILURE, 126, 127)
 
 # TLS handshake message types
 TLS_CLIENT_HELLO = "1"

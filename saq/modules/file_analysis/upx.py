@@ -84,11 +84,11 @@ class UPXAnalyzer(AnalysisModule):
 
     def test_upx(self, path):
         """Returns True if the upx command returns OK for the file at path."""
-        result = self.run_tool(['upx', '-t', path], path, capture_output=True)
+        result = self.run_sandboxed_tool(['upx', '-t', path], path)
         if result is None:
             return False
 
-        ok_regex = re.compile(b'^testing .* \\[OK\\]$', re.M)
+        ok_regex = re.compile('^testing .* \\[OK\\]$', re.M)
         return ok_regex.search(result.stdout) is not None
 
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
@@ -106,12 +106,11 @@ class UPXAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
         output_path = f'{local_file_path}.upx.exe'
         try:
-            result = self.run_tool(['upx', '-d', f'-o{output_path}', local_file_path], local_file_path, capture_output=True)
+            result = self.run_sandboxed_tool(['upx', '-d', '-ounpacked.exe', local_file_path], local_file_path,
+                                             outputs={'unpacked.exe': output_path})
             if result is None:
-                analysis.details['error'] = "upx -d timed out"
-                # whatever it wrote is incomplete
-                if os.path.exists(output_path):
-                    os.remove(output_path)
+                # whatever it wrote is incomplete, and was not kept
+                analysis.details['error'] = "upx -d did not finish"
                 return AnalysisExecutionResult.COMPLETED
 
             analysis.details['stdout'], analysis.details['stderr'] = result.stdout, result.stderr

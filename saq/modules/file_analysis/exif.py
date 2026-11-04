@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import pprint
-import subprocess
+import signal
 from typing import Type, override
 
 from pydantic import Field
@@ -19,6 +19,7 @@ from saq.modules.file_analysis.is_file_type import (
     is_pdf_file,
 )
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import SandboxResult
 from saq.util.strings import format_item_list_for_summary
 
 example_exif_data = [
@@ -99,7 +100,7 @@ class ExifAnalysis(Analysis):
         return f"{self.display_name}: {format_item_list_for_summary(parts)}"
 
 
-def _read_metadata(stdout: bytes) -> dict:
+def _read_metadata(stdout: str) -> dict:
     """The metadata exiftool printed for the one file it was given. Raises ValueError for anything else."""
     metadata = json.loads(stdout)
     if not isinstance(metadata, list) or len(metadata) != 1 or not isinstance(metadata[0], dict):
@@ -108,7 +109,7 @@ def _read_metadata(stdout: bytes) -> dict:
     return metadata[0]
 
 
-def _failure_reason(process: subprocess.CompletedProcess) -> str:
+def _failure_reason(process: SandboxResult) -> str:
     # a file exiftool cannot read still gets its JSON, with the reason in ExifTool:Error and nothing on stderr
     try:
         reason = _read_metadata(process.stdout).get("ExifTool:Error")
@@ -119,12 +120,13 @@ def _failure_reason(process: subprocess.CompletedProcess) -> str:
         return str(reason)
 
     # Perl prints its warnings before the line that ended it, and this ends up in the summary
-    lines = process.stderr.decode(errors="replace").strip().splitlines()
+    lines = process.stderr.strip().splitlines()
     if lines:
         return lines[-1][:500]
 
-    if process.returncode < 0:
-        return f"exiftool was killed by signal {-process.returncode}"
+    # the sandbox exits 128 + N for a command killed by signal N; Perl exits 255 when it dies
+    if 128 < process.returncode <= 128 + signal.SIGRTMAX:
+        return f"exiftool was killed by signal {process.returncode - 128}"
 
     return f"exiftool exited with status {process.returncode}"
 
@@ -176,23 +178,12 @@ class ExifAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
         log_extra = {"alert_uuid": self.get_root().uuid, "path": local_file_path}
 
-        # a plain subprocess with no preexec_fn, so CPython execs exiftool without running any Python in the
-        # child first. This process has other threads, and Python run in a fork of it (every library's at-fork
-        # hooks, then the preexec_fn) can wait for ever on a lock one of them held, before the exec ever happens
-        try:
-            process = subprocess.run(["exiftool", "-j", "-G", "-n", local_file_path], capture_output=True,
-                                     timeout=self.config.timeout)
-        except subprocess.TimeoutExpired:
-            # run() has killed and reaped exiftool
-            analysis.error = f"exiftool timed out after {self.config.timeout} seconds"
-            logging.warning("exiftool timed out after %s seconds on %s", self.config.timeout, local_file_path,
-                            extra=log_extra)
-            return AnalysisExecutionResult.COMPLETED
-        except OSError as e:
-            # exiftool could not be started at all: it is gone or not executable (verify_environment found it
-            # when the module loaded), or the worker is out of processes, file descriptors or memory
-            analysis.error = f"unable to run exiftool: {e}"
-            logging.exception("unable to run exiftool on %s", local_file_path, extra=log_extra)
+        # exiftool has had code execution bugs in its parsers (CVE-2021-22204), so it runs in the sandbox
+        process = self.run_sandboxed_tool(["exiftool", "-j", "-G", "-n", local_file_path], local_file_path,
+                                          timeout=self.config.timeout)
+        if process is None:
+            # stopped (a timeout, too much output) or not run at all; the log says which
+            analysis.error = "exiftool did not finish"
             return AnalysisExecutionResult.COMPLETED
 
         if process.returncode != 0:

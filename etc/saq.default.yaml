@@ -1423,6 +1423,18 @@ pcap:
     - .arpa
     - .local
 
+# the Landlock sandbox analysis modules run the external tools that parse alert files in (gs,
+# exiftool, the archive extractors, ...; see docs/TOOL_SANDBOX.md). A tool reads only the file it
+# analyzes and writes only its own working directory and the output directory the module gives
+# it, with no network. On a node without Landlock these tools are not run at all. On a kernel
+# older than 6.7 set allowed_tcp_ports to null, or every tool fails
+tool_sandbox:
+  # relative to DATA_DIR
+  work_dir: var/tool_sandbox
+  memory_limit: 4294967296
+  file_size_limit: 1073741824
+  allowed_tcp_ports: []
+
 analysis_module_pcap_analyzer:
   name: pcap_analyzer
   python_module: saq.modules.file_analysis.pcap
@@ -2042,6 +2054,9 @@ analysis_module_de4dot:
   python_module: saq.modules.file_analysis.dotnet
   python_class: De4dotAnalyzer
   enabled: true
+  # the binary itself, not the /usr/local/bin/de4dot wrapper: the sandbox makes only the
+  # binary's own directory readable
+  binary_path: /opt/de4dotEx/de4dot
 
 analysis_module_ilspy:
   name: ilspy

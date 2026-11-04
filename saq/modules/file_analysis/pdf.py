@@ -13,6 +13,9 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_pdf_file
 from saq.observables.file import FileObservable
 
+# how long ghostscript may take to rewrite a PDF
+GS_TIMEOUT_SECONDS = 10
+
 
 class PDFAnalysis(Analysis):
     @override
@@ -109,18 +112,9 @@ class PDFAnalyzer(AnalysisModule):
         # evaluate with ghostscript as well to try to get the URLs out of AES encrypted PDFs
         # changing command line to match our needs as the old commands were tailed for Qakbot PDFs we no longer observe
         gs_output_file = f"{local_file_path}.gs.pdf"
-        p = Popen([
-            "gs", 
-            "-sDEVICE=pdfwrite", 
-            "-o", gs_output_file,
-            "-f", local_file_path], stdout=PIPE, stderr=PIPE)
-
-        try:
-            _, stderr = p.communicate(timeout=10)
-        except TimeoutExpired:
-            logging.warning("pdfparser timed out on {}".format(local_file_path))
-            p.kill()
-            _, stderr = p.communicate()
+        # ghostscript interprets the document, and its -dSAFER mode has been escaped many times
+        self.run_sandboxed_tool(["gs", "-sDEVICE=pdfwrite", "-o", "output.pdf", "-f", local_file_path], local_file_path,
+                                timeout=GS_TIMEOUT_SECONDS, outputs={"output.pdf": gs_output_file})
 
         if os.path.exists(gs_output_file) and os.path.getsize(gs_output_file) > 0:
             file_observable = analysis.add_file_observable(gs_output_file, volatile=True)
@@ -347,16 +341,12 @@ class PDFTextAnalyzer(AnalysisModule):
         else:
             output_path = '{}.pdf.txt'.format(local_file_path)
 
-        p = Popen([self.pdftotext_path, local_file_path, output_path], stdout=PIPE, stderr=PIPE)
-        try:
-            analysis.stdout, analysis.stderr = p.communicate(timeout=self.timeout)
-        except TimeoutExpired:
-            logging.warning(f"timeout executing {self.pdftotext_path} on {local_file_path}")
-            # a pdftotext that timed out is still running: stop it before moving on
-            p.kill()
-            p.communicate()
+        result = self.run_sandboxed_tool([self.pdftotext_path, local_file_path, "output.txt"], local_file_path,
+                                         timeout=self.timeout, outputs={"output.txt": output_path})
+        if result is None:
             return AnalysisExecutionResult.COMPLETED
-        
+
+        analysis.stdout, analysis.stderr = result.stdout, result.stderr
         if len(analysis.stderr) > 0:
             logging.debug("pdftotext returned errors for {}".format(local_file_path))
 

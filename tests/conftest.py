@@ -34,6 +34,8 @@ from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_
 import pytest
 from saq.integration.integration_loader import load_integration_component_src
 from saq.integration.integration_util import get_valid_integration_dirs
+from saq.modules import base_module
+from saq.sandbox import runner as sandbox_runner
 from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
@@ -413,6 +415,10 @@ def global_function_setup(request):
     threat_types_router = sys.modules.get("aceapi_v2.threat_types.router")
     if threat_types_router is not None:
         threat_types_router._cache.clear()
+    # a sandboxed tool's failure is reported once per process, and each work root swept once
+    base_module._REPORTED_SANDBOX_FAILURES.clear()
+    base_module._SWEPT_WORK_ROOTS.clear()
+    sandbox_runner._LANDLOCK_AVAILABLE = None
 
     # XXX we're initializing AND THEN we're resetting the database
 

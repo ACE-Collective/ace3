@@ -1,14 +1,20 @@
 from datetime import datetime, timedelta
 import inspect
 import logging
+import math
 import os
+import shutil
+import signal
+import stat
 import subprocess
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Optional, Type, Union
 from saq.analysis.analysis import Analysis
 from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
+from saq.configuration.config import get_config
 from saq.constants import (
     DIRECTIVE_EXCLUDE_ALL,
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS,
@@ -20,6 +26,19 @@ from saq.filesystem.notification import FileWatcherMixin
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
 from saq.observables.type_hierarchy import get_type_hierarchy
+from saq.util.filesystem import is_path_under
+from saq.sandbox.runner import (
+    NODE_FAILURE_EXIT_CODES,
+    SandboxCancelled,
+    SandboxOutputExceeded,
+    SandboxResult,
+    build_sandbox_argv,
+    create_workdir,
+    get_read_dirs,
+    landlock_available,
+    run_sandboxed,
+    sweep_stale_workdirs,
+)
 
 if TYPE_CHECKING:
     pass
@@ -28,6 +47,56 @@ if TYPE_CHECKING:
 # how long before its call to analyze() runs out of time run_tool() stops a tool, so that the module
 # still returns before the engine's watchdog kills the whole worker
 TOOL_TIMEOUT_MARGIN_SECONDS = 5
+
+# the tools run_sandboxed_tool() could not run, as "<module>:<program>": each is reported with an
+# error report once per process, not once per file
+_REPORTED_SANDBOX_FAILURES: set[str] = set()
+
+# the sandbox work roots swept for directories a killed worker left behind, once per process
+_SWEPT_WORK_ROOTS: set[str] = set()
+
+# a program's own directory is readable to it in the sandbox unless it is one of these, or holds
+# SAQ_HOME or the data directory: a tool installed there would expose everything under it
+_NEVER_TOOL_DIRS = ("/", "/etc", "/home", "/root", "/auth", "/tmp", "/proc", "/var", "/opt")
+
+
+def _tool_dirs(program: str) -> list[str]:
+    """The directory of the program a sandboxed tool runs, when the fixed allowlist does not cover it
+    (/opt/dotnet for ilspycmd, john's run directory). Raises ValueError for one that must not be
+    readable."""
+    directory = os.path.dirname(os.path.realpath(program))
+    if any(is_path_under(directory, path) for path in get_read_dirs()):
+        return []
+
+    if directory in _NEVER_TOOL_DIRS or any(
+            root and is_path_under(root, directory) for root in (get_base_dir(), get_data_dir())):
+        raise ValueError(f"{program} is in {directory}, which cannot be made readable to the tool")
+
+    return [directory]
+
+
+def _sweep_tool_workdirs(work_root: str):
+    if work_root not in _SWEPT_WORK_ROOTS:
+        _SWEPT_WORK_ROOTS.add(work_root)
+        sweep_stale_workdirs(work_root)
+
+
+def _keep_tool_output(path: str, destination: str) -> bool:
+    """Moves a file a sandboxed tool wrote to where the module keeps it, and returns False when the
+    tool left something there that is not one. The tool may have left anything there, so only a plain
+    file with a single link is taken: not a symlink to a file of ACE's, not a hard link to one. The
+    launcher has killed everything the tool started, so nothing can swap the path after it is checked."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        # the tool did not write this output, which is how most tools fail
+        return True
+
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        return False
+
+    shutil.move(path, destination)
+    return True
 
 
 class AnalysisModule(FileWatcherMixin):
@@ -322,6 +391,151 @@ class AnalysisModule(FileWatcherMixin):
         except subprocess.TimeoutExpired:
             logging.warning("%s stopped %s on %s after %.0f seconds", self, args[0], target, timeout)
             return None
+
+    def run_sandboxed_tool(
+        self,
+        args: list[str],
+        target: str,
+        *,
+        timeout: Optional[float] = None,
+        read_files: Sequence[str] = (),
+        read_dirs: Sequence[str] = (),
+        write_dirs: Sequence[str] = (),
+        outputs: Optional[dict[str, str]] = None,
+        cwd: Optional[str] = None,
+        env: Optional[dict[str, str]] = None,
+        memory_limit: Optional[int] = None,
+        startup_errors: Sequence[str] = (),
+        partial_output: bool = False,
+    ) -> Optional[SandboxResult]:
+        """Runs an external tool on target, a file from the alert, in the Landlock sandbox
+        (docs/TOOL_SANDBOX.md), and returns what it did; None if it was stopped or could not run.
+
+        The tool can read target, read_files and read_dirs, and the directory its program is in, and
+        write only its own empty working directory (its cwd, HOME and TMPDIR, unless cwd names one of
+        write_dirs) and write_dirs, which the module creates for it; no network. A name in args
+        without a directory is relative to the working directory, and an arg that is target or one of
+        read_files or write_dirs is made absolute (one inside a longer arg, like 7z's -o<dir>, is the
+        module's to make absolute). outputs maps names relative to the working directory to where
+        the module keeps them, and each one the tool left as a plain file is moved there once it has
+        finished, whatever its exit status. Nothing is moved from a tool that was stopped.
+
+        It is stopped like run_tool() stops one (at timeout seconds, or before this call to analyze()
+        runs out of time), when it writes more than tool_sandbox.max_output_bytes, and when
+        should_stop() says so. env is added to the tool's environment, which is never ACE's own.
+        memory_limit replaces tool_sandbox.memory_limit for a runtime that reserves more address
+        space than it uses. startup_errors are what such a runtime starts its stdout or stderr with
+        when the sandbox keeps it from starting (a directory it needs is not readable, the memory
+        limit is too small for it): a non-zero exit that starts so is reported like a program the
+        sandbox cannot start. With partial_output, a tool stopped for writing too much output returns
+        what it wrote up to then, flagged output_exceeded, rather than None; it keeps no outputs."""
+        config = get_config().tool_sandbox
+        if memory_limit is not None:
+            config = config.model_copy(update={"memory_limit": memory_limit})
+        program = self._resolve_tool(args[0])
+        if program is None:
+            self._sandbox_failed(args[0], target, f"{args[0]} not found")
+            return None
+
+        try:
+            tool_dirs = _tool_dirs(program)
+        except ValueError as e:
+            self._sandbox_failed(program, target, str(e))
+            return None
+
+        available = landlock_available()
+        if available is None:
+            # landlock_available() reported why with its traceback; the next call probes again, so
+            # this says nothing about the node, and a later failure of the tool is still reported
+            logging.warning("%s did not run %s on %s: the Landlock probe could not run", self, os.path.basename(program),
+                            target, extra={"path": target})
+            return None
+        if not available:
+            self._sandbox_failed(program, target, "the Landlock sandbox is not available on this node")
+            return None
+
+        # ACE's paths are often relative to SAQ_HOME, the tool's are relative to its working directory
+        absolute = {path: os.path.abspath(path) for path in [target, *read_files, *write_dirs]}
+        args = [absolute.get(arg, arg) for arg in args]
+        target = absolute[target]
+
+        allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        seconds = allowed if timeout is None else max(1.0, min(timeout, allowed))
+        tool = os.path.basename(program)
+        work_root = os.path.abspath(os.path.join(get_data_dir(), config.work_dir))
+        _sweep_tool_workdirs(work_root)
+        with create_workdir(work_root) as workdir:
+            argv = build_sandbox_argv(
+                [program, *args[1:]], workdir, config, timedelta(seconds=seconds),
+                read_files=[path for path in (target, *(absolute[path] for path in read_files)) if os.path.exists(path)],
+                read_dirs=[*tool_dirs, *read_dirs],
+                write_dirs=[absolute[path] for path in write_dirs],
+                # RLIMIT_CPU counts every thread, and john, 7z and the JVM run one per core; the
+                # timeout still bounds the wall time
+                cpu_seconds=math.ceil(seconds * (os.cpu_count() or 1)),
+            )
+            # never os.environ: Landlock does not filter the environment and ACE's carries secrets
+            tool_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8", "HOME": workdir,
+                        "TMPDIR": workdir, **(env or {})}
+            try:
+                result = run_sandboxed(argv, None, tool_env, os.path.abspath(cwd) if cwd else workdir,
+                                       timedelta(seconds=seconds), config.max_output_bytes, cancel=self.should_stop)
+            except SandboxCancelled:
+                logging.info("%s stopped %s on %s: the analysis was stopped", self, tool, target,
+                             extra={"path": target})
+                return None
+            except SandboxOutputExceeded as e:
+                # the file's doing, not the node's
+                logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return e.result if partial_output else None
+            except RuntimeError as e:
+                # a timeout: the file's doing, not the node's
+                logging.warning("%s stopped %s on %s: %s", self, tool, target, e, extra={"path": target})
+                return None
+
+            # a program the sandbox cannot start: a wrong path, or a directory it needs that is not readable
+            if not result.stdout.strip() and result.returncode in NODE_FAILURE_EXIT_CODES:
+                self._sandbox_failed(program, target, result.stderr.strip()[-500:])
+                return None
+
+            # the start of the output, which the file it analyzes does not decide
+            if result.returncode != 0 and any(output.lstrip().startswith(error) for error in startup_errors
+                                              for output in (result.stdout, result.stderr)):
+                self._sandbox_failed(program, target, (result.stdout.strip() or result.stderr.strip())[:500])
+                return None
+
+            # SIGXFSZ: what it was writing is cut off at the limit, and it wrote nothing after that.
+            # The file's doing, like a timeout
+            if result.returncode == 128 + signal.SIGXFSZ:
+                logging.warning("%s stopped %s on %s: it wrote a file larger than tool_sandbox's file size limit "
+                                "of %d bytes", self, tool, target, config.file_size_limit, extra={"path": target})
+                return None
+
+            for name, destination in (outputs or {}).items():
+                if not _keep_tool_output(os.path.join(workdir, name), destination):
+                    logging.warning("%s did not keep %s's output %s on %s: not a plain file", self, tool, name, target,
+                                    extra={"path": target})
+
+        return result
+
+    def _resolve_tool(self, name: str) -> Optional[str]:
+        """The absolute path of the program a tool runs, found the way Popen would find it."""
+        if os.sep not in name:
+            return shutil.which(name)
+
+        path = name if os.path.isabs(name) else os.path.join(get_base_dir(), name)
+        return path if os.access(path, os.X_OK) else None
+
+    def _sandbox_failed(self, program: str, target: str, reason: str):
+        """A tool this node cannot run in the sandbox is an operator's problem, reported once per process."""
+        key = f"{self.config.name}:{program}"
+        message = f"{self} cannot run {program} in the sandbox: {reason}"
+        if key in _REPORTED_SANDBOX_FAILURES:
+            logging.warning("%s (on %s)", message, target, extra={"path": target})
+            return
+
+        _REPORTED_SANDBOX_FAILURES.add(key)
+        logging.error("%s (on %s)", message, target, exc_info=RuntimeError(message), extra={"path": target})
 
     def get_root(self) -> RootAnalysisInterface:
         """Get the root analysis interface from the dependency injection context."""

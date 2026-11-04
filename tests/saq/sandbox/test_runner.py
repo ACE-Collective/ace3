@@ -1,6 +1,7 @@
 """The sandbox as any caller uses it, with its own config and working directory root."""
 
 import datetime
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ from saq.configuration.schema import SandboxConfig
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.sandbox import runner
 from saq.sandbox.launcher import NET_ABI, landlock_abi
 from saq.sandbox.runner import (
     SandboxCancelled,
@@ -44,6 +46,14 @@ def test_default_config_allows_no_tcp():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("cpu_seconds,expected", [(None, "--cpu=5"), (60, "--cpu=60")])
+def test_cpu_time_is_the_timeout_unless_given(cpu_seconds, expected):
+    argv = build_sandbox_argv(["/bin/true"], "/nonexistent", SandboxConfig(), datetime.timedelta(seconds=4.5),
+                              cpu_seconds=cpu_seconds)
+    assert expected in argv
+
+
+@pytest.mark.unit
 def test_workdir_is_created_under_the_callers_root(tmp_path):
     root = str(tmp_path / "svs")
     with create_workdir(root) as workdir:
@@ -71,6 +81,45 @@ def test_command_writes_its_workdir_and_cannot_read_saq_home(tmp_path):
         assert result.stdout.strip() == "refused"
         with open(os.path.join(workdir, "out.txt")) as fp:
             assert fp.read() == "ok"
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not landlock_available(), reason="landlock is unavailable")
+def test_extra_paths_are_readable_or_writable_as_named(tmp_path):
+    # what an analysis module's tool gets: the file it analyzes, a directory of its program's and
+    # the directory it extracts into. tmp_path, not a sandbox root: its siblings stay unreadable
+    readable_file = tmp_path / "sample.bin"
+    readable_file.write_text("sample")
+    (tmp_path / "beside.bin").write_text("beside")
+    readable_dir = tmp_path / "program"
+    readable_dir.mkdir()
+    (readable_dir / "data").write_text("data")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    code = (
+        "import sys\n"
+        "def attempt(f):\n"
+        "    try:\n"
+        "        f()\n"
+        "        return 'yes'\n"
+        "    except PermissionError:\n"
+        "        return 'no'\n"
+        "print(attempt(lambda: open(sys.argv[1]).read()),\n"
+        "      attempt(lambda: open(sys.argv[4]).read()),\n"
+        "      attempt(lambda: open(sys.argv[2] + '/data').read()),\n"
+        "      attempt(lambda: open(sys.argv[2] + '/new', 'w')),\n"
+        "      attempt(lambda: open(sys.argv[3] + '/new', 'w').write('x')))"
+    )
+    with create_workdir(str(tmp_path / "root")) as workdir:
+        argv = build_sandbox_argv([PYTHON, "-I", "-c", code, str(readable_file), str(readable_dir), str(output_dir),
+                                   str(tmp_path / "beside.bin")],
+                                  workdir, NO_TCP_RULES, datetime.timedelta(seconds=30), read_files=[str(readable_file)],
+                                  read_dirs=[str(readable_dir)], write_dirs=[str(output_dir)])
+        result = run_sandboxed(argv, None, {"PATH": "/usr/bin:/bin", "HOME": workdir, "TMPDIR": workdir}, workdir,
+                               datetime.timedelta(seconds=30), 1024 * 1024)
+
+    assert result.stdout.split() == ["yes", "no", "yes", "no", "yes"], result.stderr
+    assert (output_dir / "new").read_text() == "x"
 
 
 @pytest.mark.unit
@@ -190,3 +239,32 @@ def _alive(pid: int) -> bool:
             return fp.read().split(")")[-1].split()[0] != "Z"
     except FileNotFoundError:
         return False
+
+
+@pytest.mark.unit
+def test_a_probe_that_could_not_run_is_tried_again(monkeypatch, caplog):
+    # a fork that failed for want of a pid, under load: the next call asks the kernel again
+    real_run = runner.subprocess.run
+    calls = []
+
+    def _run(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise BlockingIOError(11, "Resource temporarily unavailable")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_LANDLOCK_AVAILABLE", None)
+    monkeypatch.setattr(runner.subprocess, "run", _run)
+
+    first = landlock_available()
+    second = landlock_available()
+    third = landlock_available()
+
+    # no answer, which says nothing about the kernel
+    assert first is None
+    assert second == third
+    # the kernel's answer is kept
+    assert len(calls) == 2
+    [record] = [r for r in caplog.records if "unable to probe for landlock support" in r.getMessage()]
+    assert record.levelno == logging.ERROR
+    assert record.exc_info

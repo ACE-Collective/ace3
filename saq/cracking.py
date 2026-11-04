@@ -4,12 +4,15 @@ import logging
 import os
 import re
 
-from subprocess import PIPE, Popen
-from typing import Optional
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Optional
 
 from html2text import html2text
 
 from saq.analysis.search import search_down
+
+if TYPE_CHECKING:
+    from saq.modules.base_module import AnalysisModule
 
 whitespace_re = re.compile(r'\s')
 
@@ -77,8 +80,12 @@ def generate_wordlist(
 
     return list(password_list)
 
-def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str, login: str | None = None) -> str | None:
-    """Cracks the hash in hash_file with john and returns the password, or None.
+def crack_password(module: "AnalysisModule", john_bin_path: str, hash_file: str, filename: str, mode: str,
+                   login: str | None = None, read_files: Sequence[str] = ()) -> str | None:
+    """Cracks the hash in hash_file with john and returns the password, or None, also when john was
+    stopped or could not be run. john runs in the module's sandbox (run_sandboxed_tool): the hash
+    is the attacker's file's, and the wordlist comes from the email. read_files are the files mode
+    names (the wordlist), which john may read besides the hash file.
 
     A hash file written as the single line '<login>:<hash>' names its login, which has no ':' in
     it, so everything after it on the --show line is the password, ':' included. Otherwise the
@@ -91,23 +98,28 @@ def crack_password(john_bin_path: str, hash_file: str, filename: str, mode: str,
     if not os.path.exists(john_bin):
         raise FileNotFoundError(f"john binary {john_bin} not found")
 
-    # john defaults to one session file and one pot for the whole install. a run refuses to start
-    # while another holds the session ("Crash recovery file is locked"), so concurrent workers
-    # cracking at the same time failed. each hash file gets its own session and pot instead
-    session = f'--session={hash_file}.john'
-    pot = f'--pot={hash_file}.pot'
+    # john defaults to one session file and one pot for the whole install, where a run refuses to
+    # start while another holds the session ("Crash recovery file is locked"). each run has a
+    # working directory of its own for them, and the pot is kept for the --show that follows
+    pot = os.path.abspath(f'{hash_file}.pot')
+    result = module.run_sandboxed_tool([john_bin, '--session=john', '--pot=john.pot', mode, hash_file], hash_file,
+                                       read_files=read_files, outputs={'john.pot': pot})
+    if result is None:
+        return None
 
-    p = Popen([john_bin, session, pot, mode, hash_file], stdin=PIPE, stdout=PIPE,
-              stderr=PIPE)
-    _, stderr = p.communicate()
-    if p.returncode != 0:
-        logging.warning(f"john {mode} on {hash_file} exited with {p.returncode}: {stderr.decode(errors='ignore').strip()}")
+    if result.returncode != 0:
+        logging.warning(f"john {mode} on {hash_file} exited with {result.returncode}: {result.stderr.strip()}")
 
-    p = Popen([john_bin, pot, '--show', hash_file], stdin=PIPE, stdout=PIPE, stderr=PIPE)
-    stdout, _ = p.communicate()
+    # a run that found nothing may leave no pot
+    if not os.path.exists(pot):
+        return None
+
+    result = module.run_sandboxed_tool([john_bin, f'--pot={pot}', '--show', hash_file], hash_file, read_files=[pot])
+    if result is None:
+        return None
 
     password = None
-    for line in stdout.decode(errors='ignore').split('\n'):
+    for line in result.stdout.split('\n'):
         if login is not None:
             if line.startswith(f'{login}:'):
                 password = line[len(login) + 1:]

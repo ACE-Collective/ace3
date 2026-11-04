@@ -1,7 +1,7 @@
 from datetime import datetime
 import logging
 import os
-from subprocess import PIPE, Popen
+import shutil
 from typing import Optional, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -12,87 +12,51 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_java_class_file
 from saq.observables.file import FileObservable
 
-class DecompileFailedError(Exception):
-    pass
+CFR_JAR = "/usr/local/bin/cfr.jar"
 
-def decompile_java_class_file(class_file: str, timeout: float = 30) -> Optional[str]:
-    """Decompiles a given java class file into a file in the given output_directory named
-    class_file-N-decompiled.java
-    where N makes the file name unique.
+# the JVM reserves more address space than the sandbox's memory limit unless it is told how much heap
+# and class space to reserve, and then fails to start one time in three
+JVM_OPTIONS = ["-Xmx1g", "-XX:CompressedClassSpaceSize=128m", "-XX:ReservedCodeCacheSize=128m", "-XX:-UsePerfData"]
 
-    Returns the path to the decompiled java file, or, None if the decompliation failed."""
+# what the JVM starts its output with when the sandbox keeps it from starting: too little address
+# space for its heap, or no readable java.security
+JVM_STARTUP_ERRORS = ["Error occurred during initialization of VM",
+                      'Exception in thread "main" java.lang.InternalError: Error loading java.security file']
 
-    java = None
-    sed = None
-    output_file = None
 
-    # make sure the class file exists
-    if not os.path.exists(class_file):
-        logging.error(f"class file {class_file} does not exist")
-        return None
+def jvm_conf_dirs() -> list[str]:
+    """Where the JVM's configuration really is: Debian links the files in its conf directory into
+    /etc/java-<version>-openjdk, which the sandbox does not make readable on its own, and the JVM
+    cannot start without java.security."""
+    java = shutil.which("java")
+    if java is None:
+        return []
 
-    try:
-        # generate a unique output file path
-        counter = 0
-        output_file = f"{class_file}-{counter}-decompiled.java"
-        while os.path.exists(output_file):
-            counter += 1
-            output_file = f"{class_file}-{counter}-decompiled.java"
+    java_security = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(java))), "conf", "security",
+                                 "java.security")
+    conf = os.path.dirname(os.path.dirname(os.path.realpath(java_security)))
+    if os.path.isfile(java_security) and os.path.isdir(conf):
+        return [conf]
 
-    except Exception as e:
-        logging.error(f"unable to create output file path: {e}")
-        return None
-            
-    try:
-        start_time = datetime.now()
-        with open(output_file, 'w') as fp:
-            # strip the banner out that this java tool generates
-            sed = Popen(['sed', '-e', r'/^\/\*/,/^ \*\// d'], stdin=PIPE, stdout=fp)
-            java = Popen(['java', '-jar', '/usr/local/bin/cfr.jar', class_file], stdout=sed.stdin, stderr=PIPE)
+    logging.warning("cannot find the configuration of the JVM %s (no %s): it will not start in the sandbox",
+                    java, java_security)
+    return []
 
-            (_, stderr) = sed.communicate(timeout=timeout) # NOTE the high timeout here
-            sed.wait(timeout=timeout)
-            sed = None
-            java.wait(timeout=timeout)
-            java = None
 
-        end_time = datetime.now()
-        logging.info(f"decompiled {class_file} in {(end_time - start_time).total_seconds()} seconds")
+def strip_banner(source: str) -> str:
+    """Removes the comment blocks cfr starts its output with: every block from a line starting with
+    "/*" to the next line starting with " */", which a sed script used to cut."""
+    lines = []
+    in_comment = False
+    for line in source.splitlines(keepends=True):
+        if in_comment:
+            in_comment = not line.startswith(" */")
+        elif line.startswith("/*"):
+            in_comment = True
+        else:
+            lines.append(line)
 
-        if os.path.getsize(output_file) == 0:
-            logging.warning(f"decompilation of {class_file} returned nothing")
-            raise DecompileFailedError(f"decompilation of {class_file} returned nothing")
-
-        return output_file
-
-    except Exception as e:
-        logging.info(f"failed to extract java from {class_file}: {e}")
-
-        # this file gets created no matter what
-        # delete it if something went wrong
-        if output_file:
-            try:
-                if os.path.exists(output_file):
-                    os.remove(output_file)
-            except Exception as e:
-                logging.error(f"unable to remove {output_file}: {e}")
-
-        return None
-
-    finally:
-        # make sure child pids are reaped
-        for process in [ java, sed ]:
-            try:
-                if process:
-                    process.kill()
-            except Exception:
-                pass
-
-            try:
-                if process:
-                    process.wait()
-            except Exception:
-                pass
+    return "".join(lines)
 
 
 KEY_DECOMPILED_FILES = 'decompiled_files'
@@ -131,6 +95,43 @@ class JavaClassDecompilerAnalysisModule(AnalysisModule):
         """The maximum amount of time (in seconds) to wait for the decompiler to complete."""
         return self.config.timeout
 
+    def decompile_class_file(self, class_file: str) -> Optional[str]:
+        """Decompiles class_file into class_file-N-decompiled.java next to it, where N makes the name
+        unique, and returns its path; None if the decompilation failed."""
+        # make sure the class file exists
+        if not os.path.exists(class_file):
+            logging.error(f"class file {class_file} does not exist")
+            return None
+
+        start_time = datetime.now()
+        result = self.run_sandboxed_tool(["java", *JVM_OPTIONS, "-jar", CFR_JAR, class_file], class_file,
+                                         timeout=self.timeout, read_dirs=jvm_conf_dirs(),
+                                         startup_errors=JVM_STARTUP_ERRORS)
+        if result is None:
+            return None
+
+        # cfr exits 0 for a file it cannot decompile; anything else is a crash, and its output is not source
+        if result.returncode != 0:
+            logging.info(f"decompilation of {class_file} exited with {result.returncode}: {result.stderr.strip()[-500:]}")
+            return None
+
+        source = strip_banner(result.stdout)
+        if not source:
+            logging.info(f"decompilation of {class_file} returned nothing: {result.stderr.strip()[-500:]}")
+            return None
+
+        counter = 0
+        output_file = f"{class_file}-{counter}-decompiled.java"
+        while os.path.exists(output_file):
+            counter += 1
+            output_file = f"{class_file}-{counter}-decompiled.java"
+
+        with open(output_file, "w") as fp:
+            fp.write(source)
+
+        logging.info(f"decompiled {class_file} in {(datetime.now() - start_time).total_seconds()} seconds")
+        return output_file
+
     @override
     @property
     def generated_analysis_type(self):
@@ -161,7 +162,7 @@ class JavaClassDecompilerAnalysisModule(AnalysisModule):
         assert isinstance(analysis, JavaClassDecompilerAnalysis)
 
         # attempt to decompile the java class file
-        decompiled_file = decompile_java_class_file(observable.full_path, self.timeout)
+        decompiled_file = self.decompile_class_file(observable.full_path)
         if decompiled_file:
             # add the decompiled file as an observable
             decompiled_file_observable = analysis.add_file_observable(decompiled_file)
