@@ -174,6 +174,7 @@ async def purge_matches(
     matches (at most yara_qa.max_bulk_download_files). Removes only YARA QA rows and their holds in
     the yara_qa pool; a file another rule or version still holds stays. A purged file that
     matches again is stored again."""
+    service.validate_purge(signature_uuid, body)
     # before the purge: its batches commit one by one, so a purge that fails partway has already
     # deleted rows
     log_audit("%s purging yara qa matches of signature %s (versions %s, match ids %s): %s",

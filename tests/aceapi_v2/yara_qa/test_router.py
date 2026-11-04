@@ -462,11 +462,15 @@ async def test_purge_rejects_bad_bodies(client: AsyncClient, body):
 
 
 @pytest.mark.asyncio
-async def test_purge_refuses_more_match_ids_than_a_bulk_download(client: AsyncClient):
+async def test_purge_refuses_more_match_ids_than_a_bulk_download(client: AsyncClient, caplog):
     too_many = list(range(1, get_config().yara_qa.max_bulk_download_files + 2))
-    response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"match_ids": too_many})
-    assert response.status_code == 422
-    assert (await client.post("/signatures/yara-qa/not;a;uuid/purge", json={"match_ids": [1]})).status_code == 400
+    with caplog.at_level(logging.INFO):
+        response = await client.post(f"/signatures/yara-qa/{MATCHED_UUID}/purge", json={"match_ids": too_many})
+        assert response.status_code == 422
+        assert (await client.post("/signatures/yara-qa/not;a;uuid/purge", json={"match_ids": [1]})).status_code == 400
+
+    # a refused purge removed nothing, so it has no audit record saying it did
+    assert not [r for r in caplog.records if r.getMessage().startswith("AUDIT: unittest purging")]
 
 
 @pytest.mark.asyncio

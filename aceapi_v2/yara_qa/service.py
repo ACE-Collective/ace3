@@ -313,13 +313,16 @@ def create_encrypted_zip(label: str, rows: list[YaraQAMatch], remote: list[YaraQ
 # purging
 #
 
-def purge(signature_uuid: str, body: QAPurgeRequest) -> QAPurgeResult:
-    """Runs in a worker thread (run_db_in_thread): the removal runs in private transactions and
-    releases CAS holds."""
+def validate_purge(signature_uuid: str, body: QAPurgeRequest) -> None:
+    """Refuses a purge before it is audited, so a refused one leaves no record that it ran."""
     validate_signature_uuid(signature_uuid)
     limit = get_config().yara_qa.max_bulk_download_files
     if body.match_ids is not None and len(body.match_ids) > limit:
         raise HTTPException(status_code=422, detail=f"more than {limit} match ids; purge by version instead")
 
+
+def purge(signature_uuid: str, body: QAPurgeRequest) -> QAPurgeResult:
+    """Runs in a worker thread (run_db_in_thread): the removal runs in private transactions and
+    releases CAS holds. The router has run validate_purge()."""
     stats = purge_matches(signature_uuid, versions=body.versions, match_ids=body.match_ids)
     return QAPurgeResult(deleted=stats.deleted, remaining=stats.remaining, release_failures=stats.release_failures)
