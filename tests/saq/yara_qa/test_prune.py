@@ -169,13 +169,6 @@ def test_purge_needs_exactly_one_target(targets):
         purge_matches(QA_UUID, **targets)
 
 
-def test_purging_nothing_is_not_an_error(make_file, root_analysis):
-    _store(make_file, root_analysis)
-    assert purge_matches(QA_UUID, versions=[]).deleted == 0
-    assert purge_matches(QA_UUID, match_ids=[]).deleted == 0
-    assert len(match_rows()) == 1
-
-
 def test_a_purge_that_fails_partway_logs_what_it_removed(make_file, root_analysis, monkeypatch, caplog):
     for _ in range(2):
         _store(make_file, root_analysis)

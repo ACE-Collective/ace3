@@ -114,9 +114,6 @@ def purge_matches(signature_uuid: str, *, versions: Optional[list[str]] = None,
         conditions.append(YaraQAMatch.id.in_(match_ids))
 
     stats = PurgeStats()
-    if versions == [] or match_ids == []:
-        return stats
-
     finished = False
     try:
         _remove_matches(conditions, [YaraQAMatch.id], stats)
