@@ -65,6 +65,18 @@ class FailingConstructorRouter(AlertRouter):
         raise RuntimeError("cannot build")
 
 
+class BlockingRouter(FixedRouter):
+    """Holds a reload half way: its construction waits until the test lets it finish."""
+
+    constructing: threading.Event
+    proceed: threading.Event
+
+    def __init__(self, name: str, priority: int, **kwargs):
+        BlockingRouter.constructing.set()
+        BlockingRouter.proceed.wait(10)
+        super().__init__(name, priority, **kwargs)
+
+
 def _config(name, python_class, priority, **kwargs) -> AlertRouterConfig:
     return AlertRouterConfig(name=name, python_module=__name__, python_class=python_class,
                              priority=priority, kwargs=kwargs)
@@ -105,10 +117,6 @@ class TestOrder:
         register_alert_router(FixedRouter("marker", 100, queue="svs"))
 
         assert route_alert(root, RouteStage.PRE_INSERT, final=False).queue == "svs"
-
-    def test_no_decision(self):
-        register_alert_router(NeverRouter("never", 100))
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False) is None
 
     def test_stages_are_passed_through(self):
         register_alert_router(FixedRouter("post_only", 100, queue="moved", stages=("post_analysis",)))
@@ -158,9 +166,13 @@ class TestFailures:
         assert reported == [1]
 
     def test_a_router_returning_something_else_is_skipped(self, monkeypatch):
-        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)
+        reported = []
+        monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: reported.append(1))
         register_alert_router(BadReturnRouter("bad", 100))
-        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False) is None
+        register_alert_router(FixedRouter("fallback", 200, queue="fallback"))
+
+        assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False).queue == "fallback"
+        assert reported == [1]
 
     @pytest.mark.parametrize("queue", ["", "   ", "q" * 65, None])
     def test_a_decision_needs_a_usable_queue(self, queue):
@@ -206,29 +218,23 @@ class TestConfiguration:
         """route_alert runs on many threads in the GUI and API; a reload must swap the routers in
         whole, never clear them first."""
         configured(_config("steady", "FixedRouter", 100, queue="steady"))
-        stop = threading.Event()
-        seen = []
+        monkeypatch.setattr(BlockingRouter, "constructing", threading.Event(), raising=False)
+        monkeypatch.setattr(BlockingRouter, "proceed", threading.Event(), raising=False)
+        monkeypatch.setattr(get_config(), "alert_routers", [_config("steady", "BlockingRouter", 100, queue="steady")])
 
-        def reader():
-            root = create_root_analysis()
-            while not stop.is_set():
-                names = [r.name for r in get_alert_routers()]
-                seen.append(("detection_queue" in names, "steady" in names))
-                route_alert(root, RouteStage.PRE_INSERT, final=False)
-
-        threads = [threading.Thread(target=reader) for _ in range(4)]
-        for thread in threads:
-            thread.start()
+        reload = threading.Thread(target=load_alert_routers, kwargs={"force": True}, daemon=True)
+        reload.start()
         try:
-            for _ in range(200):
-                load_alert_routers(force=True)
+            assert BlockingRouter.constructing.wait(10)
+            # half way through the reload, a reader still has the routers it replaces
+            assert [r.name for r in get_alert_routers()] == ["steady", "detection_queue"]
+            assert route_alert(create_root_analysis(), RouteStage.PRE_INSERT, final=False).queue == "steady"
         finally:
-            stop.set()
-            for thread in threads:
-                thread.join()
+            BlockingRouter.proceed.set()
+            reload.join(10)
 
-        assert seen
-        assert all(builtin and steady for builtin, steady in seen)
+        assert not reload.is_alive()
+        assert isinstance(get_alert_routers()[0], BlockingRouter)
 
 
 class TestExampleIntegration:

@@ -64,9 +64,9 @@ def test_routed_detection_on_observable():
     assert _route(root).queue == "experimental"
 
 
-def test_root_detections_are_counted_once():
-    """all_detection_points already includes the root's own detection points (FR-24); a plain
-    one there keeps the default queue."""
+def test_a_plain_detection_on_the_root_keeps_the_default_queue():
+    """all_detection_points includes the root's own detection points (FR-24), so a plain one
+    there keeps the default queue although an observable's detection requests one."""
     root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec("yara_rule", "routed_rule")

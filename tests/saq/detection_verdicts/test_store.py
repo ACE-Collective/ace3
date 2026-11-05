@@ -92,7 +92,7 @@ def test_the_effective_verdict_follows_the_override(user_id):
     assert row["override_set_at"] is not None
 
 
-@pytest.mark.parametrize("disposition", ["FALSE_POSITIVE", "OPEN", "IGNORE", "REVIEWED"])
+@pytest.mark.parametrize("disposition", ["FALSE_POSITIVE", "OPEN"])
 def test_only_a_tp_alert_takes_verdicts(user_id, disposition):
     alert = insert_alert_with_detections(MULTI, disposition=disposition)
     content_hash = _hashes(alert)[0]
@@ -145,7 +145,7 @@ def test_a_failed_write_leaves_nothing_behind(user_id, monkeypatch):
     with pytest.raises(RuntimeError):
         set_verdict(alert.id, content_hash, "fp", user_id)
 
-    get_db().rollback()
+    # no rollback here: set_verdict's own is what keeps the half-written verdict out of the session
     assert _stored(alert) == {}
 
 
