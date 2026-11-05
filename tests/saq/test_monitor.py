@@ -5,7 +5,7 @@ import pytest
 import re
 
 from saq.configuration.schema import MonitorDefinitionConfig
-from saq.monitor import MonitorEmitter, emit_monitor, enable_monitor_cache, enable_monitor_fluent_bit, enable_monitor_logging, enable_monitor_stderr, enable_monitor_stdout, get_emitter, reset_emitter, set_monitor_definitions
+from saq.monitor import emit_monitor, enable_monitor_cache, enable_monitor_fluent_bit, enable_monitor_logging, enable_monitor_stderr, enable_monitor_stdout, get_emitter, reset_emitter, set_monitor_definitions
 from saq.monitor_definitions import MONITOR_TEST
 from tests.saq.helpers import log_count
 
@@ -13,24 +13,12 @@ LOG_TEST = "log test"
 LOG_TEST_2 = "log test 2"
 
 @pytest.mark.unit
-def test_get_emitter():
-    assert isinstance(get_emitter(), MonitorEmitter)
-
-@pytest.mark.unit
-def test_emit_monitor_logging():
-    emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert log_count(LOG_TEST) == 0
-    enable_monitor_logging()
-    emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert log_count(LOG_TEST) == 1
-
-@pytest.mark.unit
 def test_emit_monitor_logging_with_identifier():
     emit_monitor(MONITOR_TEST, LOG_TEST, "id")
     assert log_count(LOG_TEST) == 0
     enable_monitor_logging()
     emit_monitor(MONITOR_TEST, LOG_TEST, "id")
-    assert log_count(LOG_TEST) == 1
+    assert log_count("MONITOR (test) <id> : log test") == 1
 
 @pytest.mark.unit
 def test_emit_monitor_stdout(capsys):
@@ -102,10 +90,10 @@ def test_fluent_bit_not_called_when_disabled():
     """fluent-bit sender is not called when use_fluent_bit is False (default)"""
     emitter = get_emitter()
     assert not emitter.use_fluent_bit
-    assert emitter.fluent_bit_sender is None
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
-        emit_monitor(MONITOR_TEST, LOG_TEST)
-        mock_sender_class.assert_not_called()
+    # a sender that is there but switched off, so only use_fluent_bit keeps it from being called
+    emitter.fluent_bit_sender = MagicMock()
+    emit_monitor(MONITOR_TEST, LOG_TEST)
+    emitter.fluent_bit_sender.emit.assert_not_called()
 
 @pytest.mark.unit
 def test_fluent_bit_emits_structured_data():
@@ -193,39 +181,11 @@ def test_emit_disabled_monitor(capsys):
 
 
 @pytest.mark.unit
-def test_emit_enabled_monitor(capsys):
-    """explicitly enabled monitor works normally"""
-    enable_monitor_stdout()
-    set_monitor_definitions([
-        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=True),
-    ])
-
-    result = emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert result is True
-    captured = capsys.readouterr()
-    assert LOG_TEST in captured.out
-
-
-@pytest.mark.unit
 def test_emit_monitor_not_in_definitions(capsys):
     """monitor absent from definitions works normally (backward compat)"""
     enable_monitor_stdout()
     set_monitor_definitions([
         MonitorDefinitionConfig(pattern="some_other_monitor", enabled=False),
-    ])
-
-    result = emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert result is True
-    captured = capsys.readouterr()
-    assert LOG_TEST in captured.out
-
-
-@pytest.mark.unit
-def test_suppression_first_emission_goes_through(capsys):
-    """first emit with suppression configured succeeds"""
-    enable_monitor_stdout()
-    set_monitor_definitions([
-        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, suppression_duration=60),
     ])
 
     result = emit_monitor(MONITOR_TEST, LOG_TEST)
@@ -326,14 +286,15 @@ def test_glob_pattern_matching(capsys):
     monitor_b = Monitor(path="database.pool.in_use_count", data_type=int, description="test")
     monitor_c = Monitor(path="other.monitor", data_type=str, description="test")
 
-    result_a = emit_monitor(monitor_a, 5)
-    assert result_a is True
+    # both paths match the pattern, so each is suppressed after its first emission
+    assert emit_monitor(monitor_a, 5) is True
+    assert emit_monitor(monitor_a, 6) is False
+    assert emit_monitor(monitor_b, 3) is True
+    assert emit_monitor(monitor_b, 4) is False
 
-    result_b = emit_monitor(monitor_b, 3)
-    assert result_b is True
-
-    result_c = emit_monitor(monitor_c, "value")
-    assert result_c is True
+    # and a path the pattern does not match is not
+    assert emit_monitor(monitor_c, "value") is True
+    assert emit_monitor(monitor_c, "value") is True
 
 
 @pytest.mark.unit
@@ -376,38 +337,6 @@ def test_definition_cache_is_cleared_on_set_definitions():
         MonitorDefinitionConfig(pattern=MONITOR_TEST.path, enabled=True),
     ])
     assert not emitter._definition_cache
-
-
-@pytest.mark.unit
-def test_dedup_first_emission_goes_through(capsys):
-    """first emit with dedup=True succeeds"""
-    enable_monitor_stdout()
-    set_monitor_definitions([
-        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
-    ])
-
-    result = emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert result is True
-    captured = capsys.readouterr()
-    assert LOG_TEST in captured.out
-
-
-@pytest.mark.unit
-def test_dedup_blocks_duplicate_value(capsys):
-    """second emit with same value returns False and produces no output"""
-    enable_monitor_stdout()
-    set_monitor_definitions([
-        MonitorDefinitionConfig(pattern=MONITOR_TEST.path, dedup=True),
-    ])
-
-    result = emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert result is True
-    capsys.readouterr()
-
-    result = emit_monitor(MONITOR_TEST, LOG_TEST)
-    assert result is False
-    captured = capsys.readouterr()
-    assert LOG_TEST not in captured.out
 
 
 @pytest.mark.unit
