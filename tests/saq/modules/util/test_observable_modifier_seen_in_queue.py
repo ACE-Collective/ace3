@@ -336,21 +336,37 @@ def test_sightings_lookup_shared_across_rules(monkeypatch):
 
 
 @pytest.mark.integration
-def test_lookup_failure_does_not_match_or_raise(monkeypatch):
-    import saq.database.util.queue_sighting as queue_sighting
+def test_lookup_failure_leaves_the_shared_session_alone(monkeypatch):
+    """Other modules' uncommitted work in the shared session survives a failed lookup."""
+    from contextlib import contextmanager
 
-    def broken(*args, **kwargs):
+    import saq.database.util.queue_sighting as queue_sighting
+    from saq.database.model import Tag as DBTag
+
+    real_private_transaction = queue_sighting.private_transaction
+    lookup_sessions = []
+
+    def broken_query(*args, **kwargs):
         raise RuntimeError("database down")
 
-    monkeypatch.setattr(queue_sighting, "find_queue_sightings", broken)
-    rollbacks = []
-    monkeypatch.setattr(get_db(), "rollback", lambda: rollbacks.append(True))
+    @contextmanager
+    def failing_private_transaction():
+        with real_private_transaction() as session:
+            lookup_sessions.append(session)
+            monkeypatch.setattr(session, "query", broken_query)
+            yield session
+
+    monkeypatch.setattr(queue_sighting, "private_transaction", failing_private_transaction)
     root, observable = _current("intel", tags=["intel_indicator"])
+    pending_name = f"pending_{uuid_lib.uuid4()}"
+    get_db().add(DBTag(name=pending_name))
 
     _run_post(root, observable, [_rule("default", "seen_in_default_queue")])
+
+    assert lookup_sessions and lookup_sessions[0] is not get_db()()
     assert not observable.has_tag("seen_in_default_queue")
-    # the session is shared with every other module, so a failed lookup must not leave it broken
-    assert rollbacks
+    get_db().commit()
+    assert get_db().query(DBTag).filter(DBTag.name == pending_name).one_or_none() is not None
 
 
 @pytest.mark.unit

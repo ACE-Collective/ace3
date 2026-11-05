@@ -412,7 +412,6 @@ class SeenInQueueCondition:
         key = (self.queue, tuple(self.indicator_tags), observable.type, observable.sha256_hash)
         sightings = cache.get(key) if cache is not None else None
         if sightings is None:
-            from saq.database.pool import get_db
             from saq.database.util.queue_sighting import find_queue_sightings
             try:
                 sightings = find_queue_sightings(
@@ -420,12 +419,9 @@ class SeenInQueueCondition:
                     self.indicator_tags)
             except Exception as e:
                 # the rule does not match rather than failing the module, whose other rules
-                # (ignores among them) must still apply; the session is shared with them
+                # (ignores among them) must still apply. the lookup ran in its own transaction,
+                # which is already rolled back; the shared session is untouched
                 logging.error(f"seen_in_queue lookup failed for {observable} in queue {self.queue}: {e}")
-                try:
-                    get_db().rollback()
-                except Exception as rollback_error:
-                    logging.error(f"unable to roll back after the seen_in_queue lookup failed: {rollback_error}")
                 return None
             if cache is not None:
                 cache[key] = sightings
