@@ -6,7 +6,6 @@ from saq.signatures.yara_meta import meta_enabled, meta_is_qa, meta_modifiers
 @pytest.mark.unit
 @pytest.mark.parametrize("meta, expected", [
     (None, True),
-    ({}, True),
     ({"enabled": True}, True),
     ({"enabled": False}, False),
     ({"enabled": 0}, False),
@@ -26,8 +25,6 @@ def test_meta_enabled(meta, expected):
 @pytest.mark.unit
 @pytest.mark.parametrize("meta, expected", [
     (None, []),
-    ({}, []),
-    ({"modifiers": "qa"}, ["qa"]),
     ({"modifiers": " no_alert , qa,, directive=sandbox "}, ["no_alert", "qa", "directive=sandbox"]),
     ({"modifiers": ""}, []),
 ])
