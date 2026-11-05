@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.138] - 2026-11-05
+
+- [Run pdfparser on a decrypted copy of PDFs with an empty user password](https://github.com/ACE-Collective/ace3/pull/1150)
+- [Resolve observable classes from config instead of import-time registration](https://github.com/ACE-Collective/ace3/pull/1141)
+- [Log API lifespan shutdown failures at ERROR and test the lifespan](https://github.com/ACE-Collective/ace3/pull/1139)
+- [Verify TLS certificates in ace_api](https://github.com/ACE-Collective/ace3/pull/1138)
+- [Stop the test suite's log collector when its pytest process is killed](https://github.com/ACE-Collective/ace3/pull/1134)
+
 ## [3.0.137] - 2026-11-04
 
 - [Expect the YARA QA test's match under the rule's content hash](https://github.com/ACE-Collective/ace3/pull/1136)
