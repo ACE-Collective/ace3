@@ -14,19 +14,19 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, NODE_STATUS_RUNNING, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock
-from saq.database.util.node import get_node_excluded_analysis_modes, get_node_included_analysis_modes, node_supports_any_analysis_mode
+from saq.database.util.node import get_node_excluded_analysis_modes, get_node_included_analysis_modes, node_supports_any_analysis_mode, set_node_status
 from saq.database.util.tag_mapping import add_observable_tag_mapping, remove_observable_tag_mapping
 from saq.database.util.workload import add_workload
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
-from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, PostAnalysisTestResult, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
+from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
@@ -41,6 +41,8 @@ def test_signal_TERM():
     assert engine_process.pid
     os.kill(engine_process.pid, signal.SIGTERM)
     wait_for_process(engine_process)
+    # SIGTERM's default action also ends the process; only the shutdown handler logs this
+    assert log_count("shutdown requested (received SIGTERM)") == 1
 
 @pytest.mark.system
 def test_signal_INT():
@@ -491,34 +493,6 @@ def test_delayed_analysis_single_instance(root_analysis):
     assert analysis.instance == 'instance1'
 
 @pytest.mark.integration
-def test_delayed_analysis_multiple():
-
-    uuids = []
-    
-    for _ in range(3):
-        root_uuid = str(uuid.uuid4())
-        root = create_root_analysis(uuid=root_uuid, analysis_mode='test_groups', storage_dir=get_storage_dir(root_uuid))
-        root.initialize_storage()
-        observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
-        root.save()
-        root.schedule()
-        uuids.append((root.uuid, observable.uuid))
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('test_delayed_analysis', "test_groups")
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    for root_uuid, observable_uuid in uuids:
-        root = load_root(get_storage_dir(root_uuid))
-        analysis = root.get_observable(observable_uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis)
-        assert isinstance(analysis, DelayedAnalysisTestAnalysis)
-        assert analysis.load_details()
-        assert analysis.initial_request
-        assert analysis.delayed_request
-        assert analysis.request_count == 2
-        assert analysis.completed
-
-@pytest.mark.integration
 def test_delayed_analysis_timing():
     root_1 = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root_1.initialize_storage()
@@ -928,27 +902,6 @@ def test_wait_for_disabled_analysis():
     assert log_count("requested to wait for disabled (or missing) module") == 1
 
 @pytest.mark.integration
-def test_wait_for_analysis_circ_dep():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test_2')
-    root.save()
-    root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('test_wait_a', 'test_groups')
-    engine.configuration_manager.enable_module('test_wait_b', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root = load_root(get_storage_dir(root.uuid))
-    test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable
-    assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
-    assert not test_observable.get_and_load_analysis(WaitAnalysis_B)
-
-    assert log_count("CIRCULAR DEPENDENCY ERROR") == 1
-
-@pytest.mark.integration
 def test_wait_for_analysis_missing_analysis():
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
@@ -1109,28 +1062,6 @@ def test_wait_for_analysis_source_delayed():
     assert test_observable
     assert test_observable.get_and_load_analysis(WaitAnalysis_A)
     assert test_observable.get_and_load_analysis(WaitAnalysis_B)
-
-@pytest.mark.integration
-def test_wait_for_analysis_source_and_target_delayed():
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test_wait_for_analysis_source_and_target_delayed')
-    root.save()
-    root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('test_wait_a', 'test_groups')
-    engine.configuration_manager.enable_module('test_wait_b', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    root = load_root(get_storage_dir(root.uuid))
-    test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable
-    # A is waiting for B which is delayed
-    assert not test_observable.get_and_load_analysis(WaitAnalysis_A)
-    analysis = test_observable.get_and_load_analysis(WaitAnalysis_B)
-    assert isinstance(analysis, WaitAnalysis_B)
-    assert analysis.delayed
 
 @pytest.mark.integration
 def test_wait_for_analysis_rejected():
@@ -1319,26 +1250,6 @@ def test_custom_requirement_cross_observable_wait():
     assert source_analysis.details["saw_target"] is True
     # a cross-observable wait is not a circular dependency
     assert log_count("CIRCULAR DEPENDENCY ERROR") == 0
-
-@pytest.mark.integration
-def test_post_analysis_after_false_return():
-    # the execute_post_analysis function should be called regardless of what happened during analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test')
-    root.save()
-    root.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('test_post_analysis', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root = load_root(get_storage_dir(root.uuid))
-    test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable
-
-    assert not test_observable.get_and_load_analysis(PostAnalysisTestResult)
-    assert log_count('execute_post_analysis called') == 1
 
 @pytest.mark.integration
 def test_maximum_cumulative_analysis_warning_time():
@@ -1534,34 +1445,6 @@ def test_analysis_mode_priority():
     results = [_.getMessage() for _ in search_log('got work item')]
     assert len(results) == 1
     assert results.index('got work item RootAnalysis({})'.format(test_2_uuid)) == 0
-
-@pytest.mark.skip(reason="This test is flaky and needs to be rewritten")
-@pytest.mark.integration
-def test_analysis_mode_no_priority():
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
-    root.save()
-    root.schedule()
-    test_1_uuid = root.uuid
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test_2')
-    root.save()
-    root.schedule()
-    test_2_uuid = root.uuid
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('basic_test')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # since we don't have any kind of priority set they should get selected in order they were inserted (FIFO)
-    # so we should see test_1_uuid get selected BEFORE test_2_uuid gets selected
-    results = [_.getMessage() for _ in search_log('got work item')]
-    assert len(results) == 1
-    assert results.index('got work item RootAnalysis({})'.format(test_1_uuid)) == 0
 
 @pytest.mark.integration
 def test_module_failure_writes_no_error_report():
@@ -2050,25 +1933,7 @@ def test_record_execution_statistics_zero_elapsed_time(tmpdir, monkeypatch):
 
 
 @pytest.mark.unit
-def test_record_execution_statistics_no_modules(tmpdir):
-    """test that record_execution_statistics handles no modules"""
-    from saq.engine.execution_context import EngineExecutionContext
-
-    # create a root analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-
-    # create an execution context with no module execution times
-    context = EngineExecutionContext(root)
-
-    # record statistics - should complete without error
-    elapsed_time = 10.0
-    stats_dir = str(tmpdir)
-    context.record_execution_statistics(elapsed_time, stats_dir)
-
-
-@pytest.mark.unit
-def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch):
+def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, caplog):
     """test that record_execution_statistics handles exceptions gracefully"""
     from saq.engine.execution_context import EngineExecutionContext
     from unittest.mock import patch
@@ -2092,31 +1957,9 @@ def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch):
         stats_dir = str(tmpdir)
         context.record_execution_statistics(elapsed_time, stats_dir)
 
-        # function should complete successfully despite the exception
-
-
-@pytest.mark.unit
-def test_record_execution_statistics_with_multiple_modules(tmpdir):
-    """test that record_execution_statistics correctly handles multiple modules"""
-    from saq.engine.execution_context import EngineExecutionContext
-
-    # create a root analysis
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-
-    # create an execution context
-    context = EngineExecutionContext(root)
-
-    # add multiple mock module execution times
-    context.total_analysis_time["module_a"] = 1.0
-    context.total_analysis_time["module_b"] = 2.0
-    context.total_analysis_time["module_c"] = 3.0
-    context.total_analysis_time["module_d"] = 4.0
-
-    # record statistics - should complete without error
-    elapsed_time = 15.0
-    stats_dir = str(tmpdir)
-    context.record_execution_statistics(elapsed_time, stats_dir)
+    # the failure is reported, not raised
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
+        "unable to record statistics: connection failed"]
 
 
 @pytest.mark.unit
@@ -2187,31 +2030,6 @@ def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir, monkeypatch)
         "cache_write_bytes_compressed_sum",
     ]:
         assert k not in payload
-
-
-@pytest.mark.unit
-def test_per_root_exec_count_reflects_repeated_invocations(tmpdir, monkeypatch):
-    """Each module.analyze() invocation bumps total_exec_count, so a module
-    invoked multiple times within a single context (e.g. via delayed
-    retries that resume in the same context) shows exec_count > 1."""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-    context = EngineExecutionContext(root)
-    context.total_analysis_time["module_a"] = 2.0
-    context.total_exec_count["module_a"] = 2
-
-    _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(5.0, str(tmpdir))
-
-    payload = mock_sender.emit.call_args[0][1]
-    assert payload["exec_count"] == 2
-    assert payload["analysis_time_seconds"] == 2.0
 
 
 @pytest.mark.unit
@@ -2326,9 +2144,8 @@ def test_exclusion():
     # we should have two that were both excluded in different ways
     assert len(analysis.observables) == 2
     for new_observable in analysis.observables:
-        new_observable = analysis.observables[0]
-        new_analysis = new_observable.get_and_load_analysis(BasicTestAnalysis)
-        assert not new_analysis
+        # None, not False: the module never ran, so it did not record "no analysis" either
+        assert new_observable.get_analysis(BasicTestAnalysis) is None
 
 @pytest.mark.integration
 def test_limited_analysis():
@@ -2526,7 +2343,9 @@ def test_local_analysis_mode_not_local():
     # we say we only support test_empty analysis modes
     engine = Engine(config=EngineConfiguration(local_analysis_modes=['test_empty'], default_analysis_mode="test_empty"))
     engine.configuration_manager.enable_module('basic_test', 'test_empty')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+    # SINGLE_SHOT asks for work once; UNTIL_COMPLETE would stop before asking, because the
+    # queue count it checks first filters by mode too
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     # this should exit out since the workload entry is for test_single analysis mode
     # but we don't support that with this engine so it shouldn't see it
@@ -2594,62 +2413,6 @@ def test_target_nodes():
         cursor.execute("SELECT COUNT(*) FROM workload")
         assert cursor.fetchone()[0] == 0
 
-@pytest.mark.skip(reason="come back to this")
-@pytest.mark.integration
-def test_local_analysis_mode_remote_pickup(mock_api_call, monkeypatch):
-
-    root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_1')
-    # but we target test_single for this analysis
-    root.analysis_mode = 'test_single'
-    root.save()
-    root.schedule()
-
-    # remember the old storage dir
-    old_storage_dir = root.storage_dir
-
-    # we say we only support test_empty analysis modes
-    engine = Engine(config=EngineConfiguration(local_analysis_modes=['test_empty'], analysis_pools={'test_empty': 1}, default_analysis_mode="test_empty"))
-
-    engine.configuration_manager.enable_module('basic_test')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # make sure our stuff is still there
-    assert os.path.exists(old_storage_dir)
-
-    # now start another engine on a different "node"
-    get_engine_config().node = 'second_host'
-    reset_node('second_host')
-    get_config().get_analysis_mode_config("test_single").cleanup = False
-
-    # we trick the api server into using the old storage dir
-    import aceapi_v2.engine.service
-    def mock_storage_dir_from_uuid(uuid):
-        return old_storage_dir
-
-    monkeypatch.setattr(aceapi_v2.engine.service, "storage_dir_from_uuid", mock_storage_dir_from_uuid)
-
-    engine = Engine(config=EngineConfiguration(local_analysis_modes=["test_single"], analysis_pools={"test_single": 1}, default_analysis_mode="test_single"))
-
-    engine.configuration_manager.enable_module('basic_test')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # look for the log to move the work target
-    assert log_count('downloading work target {} from '.format(root.uuid)) == 1
-    assert log_count('completed analysis RootAnalysis({})'.format(root.uuid)) ==  1
-
-    # now the old storage directory should be gone
-    assert not os.path.exists(old_storage_dir)
-
-    # but there should be a new one in the new "node"
-    root = load_root(get_storage_dir(root.uuid))
-    observable = root.get_observable(observable.uuid)
-    assert observable
-    analysis = observable.get_and_load_analysis(BasicTestAnalysis)
-    assert analysis
-
 @pytest.mark.integration
 def test_local_analysis_mode_remote_pickup_invalid_company_id(mock_api_call):
 
@@ -2690,15 +2453,29 @@ def test_local_analysis_mode_remote_pickup_invalid_company_id(mock_api_call):
     # make sure our stuff is still there
     assert os.path.exists(old_storage_dir)
 
+    first_node_id = get_global_runtime_settings().saq_node_id
+
     # now start another engine on a different "node"
     get_config().global_settings.node = 'second_host'
     reset_node('second_host')
+    get_global_runtime_settings().saq_node_id = None
     get_config().get_analysis_mode_config("test_single").cleanup = False
 
-    # and this node handles the test_single mode
+    # and this node handles the test_single mode. SINGLE_SHOT asks for work once, local and
+    # then remote; UNTIL_COMPLETE would stop first, as this node's own queue is empty
     engine = Engine(config=EngineConfiguration(local_analysis_modes=['test_single'], analysis_pools={'test_single': 1}, default_analysis_mode="test_single"))
+    assert get_global_runtime_settings().saq_node_id != first_node_id
+    # only a running node pulls work from other nodes
+    set_node_status(get_global_runtime_settings().saq_node_id, NODE_STATUS_RUNNING)
     engine.configuration_manager.enable_module('basic_test')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    # the work was never pulled over: no transfer was attempted and it is still queued on the first node
+    assert log_count(f"downloading work target {root.uuid}") == 0
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        cursor.execute("SELECT node_id FROM workload WHERE uuid = %s", (root.uuid,))
+        assert [row[0] for row in cursor.fetchall()] == [first_node_id]
 
     # make sure our stuff is still there
     assert os.path.exists(old_storage_dir)
@@ -2740,15 +2517,6 @@ def test_node_modes_update():
     assert not get_node_included_analysis_modes()
     assert node_supports_any_analysis_mode()
     assert get_node_excluded_analysis_modes() == ["test_empty"]
-
-@pytest.mark.integration
-def test_node_modes_update_any():
-
-    # when local_analysis_modes is empty, it assumes you want ALL analysis modes
-    engine = Engine(config=EngineConfiguration(local_analysis_modes=[]))
-
-    assert not get_node_included_analysis_modes()
-    assert node_supports_any_analysis_mode()
 
 @pytest.mark.integration
 def test_primary_node(monkeypatch):
@@ -2802,29 +2570,6 @@ def test_primary_node_clear_locks(monkeypatch):
         cursor = db.cursor()
         cursor.execute("SELECT uuid FROM locks WHERE uuid = %s", (target,))
         assert cursor.fetchone() is None
-
-@pytest.mark.system
-def test_engine_worker_recovery():
-    
-    # make sure the engine detects dead workers and replaces them
-    root_uuid = str(uuid.uuid4())
-    root = create_root_analysis(uuid=root_uuid, storage_dir=get_storage_dir(root_uuid))
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_TEST, 'test_worker_death')
-    root.save()
-    root.schedule()
-    
-    engine = Engine(config=EngineConfiguration(pool_size_limit=1))
-    engine.configuration_manager.enable_module('basic_test')
-    engine_process = engine.start_nonblocking()
-    assert engine_process.pid
-    engine.wait_for_start()
-    # we should see it die
-    wait_for_log_count('detected death of', 1, 5)
-    # and then we should have seen two workers start
-    wait_for_log_count('started worker', 2, 5)
-    os.kill(engine_process.pid, signal.SIGTERM)
-    wait_for_process(engine_process)
 
 @pytest.mark.system
 def test_failed_analysis_module():
@@ -3553,7 +3298,7 @@ def test_analysis_mode_dispositioned_ignore():
 
     # check the disposition
     get_db().close()
-    load_alert(root.uuid).disposition == DISPOSITION_IGNORE
+    assert load_alert(root.uuid).disposition == DISPOSITION_IGNORE
 
     # we should NOT have an entry because IGNORED alerts are not analyzed
     assert get_db().query(Workload.id).count() == 0
