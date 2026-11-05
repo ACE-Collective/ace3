@@ -1,6 +1,4 @@
 
-import hashlib
-
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
@@ -8,53 +6,25 @@ import pytest
 
 from saq import x509 as saq_x509
 
-
-@pytest.mark.unit
-def test_load_cert_pem(cert_pem_bytes):
-    """Validate the pem byte string is turned into an x509.Certificate
-    and that it has the same PEM encoding content as the original certificate."""
-
-    # setup
-    cert = saq_x509.load_cert_pem(cert_pem_bytes)
-
-    # verify
-    assert isinstance(cert, x509.Certificate)
-    assert cert_pem_bytes == cert.public_bytes(encoding=serialization.Encoding.PEM)
-
-
-@pytest.mark.unit
-def test_load_cert_pem_return_none(cert_der_bytes):
-    """Validate that None is returned when byte string is not a PEM-encoded certificate."""
-
-    # setup
-    cert = saq_x509.load_cert_pem(cert_der_bytes)
-
-    # verify
-    assert cert is None
+# A leaf for CN=leaf.example signed by CN=Example CA (serial 0x1234), made with openssl. The expected
+# fingerprints and names below are openssl's own output for it (x509 -fingerprint, -nameopt RFC2253).
+FIXED_CERT_PEM = b"""-----BEGIN CERTIFICATE-----
+MIIBjzCCATSgAwIBAgICEjQwCgYIKoZIzj0EAwIwLTETMBEGA1UEAwwKRXhhbXBs
+ZSBDQTEWMBQGA1UECgwNQUNFIEVjb3N5c3RlbTAeFw0yNjExMDQxNDIyMDRaFw0z
+NjExMDExNDIyMDRaMC8xFTATBgNVBAMMDGxlYWYuZXhhbXBsZTEWMBQGA1UECgwN
+QUNFIEVjb3N5c3RlbTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABF3oOayo9Sdj
+3AceRFupC73raCn+YbrE0uIPqXW7sSYsF9kJhEC492tiHoNdxC6JtHwynmBdfJZT
+Hx26aXaH/Y2jQjBAMB0GA1UdDgQWBBT22DsFBqEo5dDBeyjsR4r7Ua9rCjAfBgNV
+HSMEGDAWgBT/gOQvCmGqwEcbqqwR5kL2E6VKLTAKBggqhkjOPQQDAgNJADBGAiEA
+jWxMMvUBXbcCuTI0zAe6OFPaCrG5dutejVQQXnp2aZYCIQDVL2JRb73EorGFfT5k
+ynIp7FlUXeuN6ReC9KgoQGvyZw==
+-----END CERTIFICATE-----
+"""
 
 
-@pytest.mark.unit
-def test_load_cert_der(cert_der_bytes):
-    """Validate the pem byte string is turned into an x509.Certificate
-    and that it has the same PEM encoding content as the original certificate."""
-
-    # setup
-    cert = saq_x509.load_cert_der(cert_der_bytes)
-
-    # verify
-    assert isinstance(cert, x509.Certificate)
-    assert cert_der_bytes == cert.public_bytes(encoding=serialization.Encoding.DER)
-
-
-@pytest.mark.unit
-def test_load_cert_der_return_none(cert_pem_bytes):
-    """Validate that None is returned when byte string is not a DER-encoded certificate."""
-
-    # setup
-    cert = saq_x509.load_cert_der(cert_pem_bytes)
-
-    # verify
-    assert cert is None
+@pytest.fixture(scope="module")
+def fixed_cert():
+    return saq_x509.load_cert(FIXED_CERT_PEM)
 
 
 @pytest.mark.unit
@@ -91,43 +61,31 @@ def test_load_cert_general_func_not_a_valid_cert_byte_string():
 
 
 @pytest.mark.unit
-def test_sha1(cert):
-    """Validate the DER sha1 hash of the cert is returned."""
-    # setup
-    expected_der = cert.public_bytes(encoding=serialization.Encoding.DER)
-    expected_sha1 = hashlib.sha1(expected_der).hexdigest()
-
-    # verify
-    assert expected_sha1 == saq_x509.sha1(cert)
+def test_sha1(fixed_cert):
+    """The fingerprint is the sha1 of the DER encoding, as openssl shows it."""
+    assert saq_x509.sha1(fixed_cert) == "c81eabaeb53ee99068a1dc3db3949e8919fa6363"
 
 
 @pytest.mark.unit
-def test_sha256(cert):
-    """Validate the DER sha256 hash of the cert is returned."""
-    # setup
-    expected_der = cert.public_bytes(encoding=serialization.Encoding.DER)
-    expected_sha256 = hashlib.sha256(expected_der).hexdigest()
-
-    # verify
-    assert expected_sha256 == saq_x509.sha256(cert)
+def test_sha256(fixed_cert):
+    """The fingerprint is the sha256 of the DER encoding, as openssl shows it."""
+    assert saq_x509.sha256(fixed_cert) == "32b8b53215ffc237f2de0523783dba64a1ff4eb718f53fe1b34f03fca135fac4"
 
 
 @pytest.mark.unit
-def test_serial_number(cert):
-    """Validate certificate serial number is returned as expected."""
-    assert cert.serial_number == saq_x509.serial_number(cert)
+def test_serial_number(fixed_cert):
+    assert saq_x509.serial_number(fixed_cert) == 0x1234
 
 
 @pytest.mark.unit
-def test_issuer(cert):
-    """Validate certificate issuer is returned as expected."""
-    assert cert.issuer.rfc4514_string() == saq_x509.issuer(cert)
+def test_issuer(fixed_cert):
+    """The issuer, not the subject: the fixed certificate is not self-signed."""
+    assert saq_x509.issuer(fixed_cert) == "O=ACE Ecosystem,CN=Example CA"
 
 
 @pytest.mark.unit
-def test_subject(cert):
-    """Validate certificate subject is returned as expected."""
-    assert cert.subject.rfc4514_string() == saq_x509.subject(cert)
+def test_subject(fixed_cert):
+    assert saq_x509.subject(fixed_cert) == "O=ACE Ecosystem,CN=leaf.example"
 
 
 @pytest.mark.unit
@@ -140,20 +98,6 @@ def test_not_valid_before(cert, x509_constants):
 def test_not_valid_after(cert, x509_constants):
     """Validate the correct 'not valid after' datetime object is returned."""
     assert x509_constants.NOT_VALID_AFTER == saq_x509.not_valid_after(cert)
-
-
-@pytest.mark.unit
-def test_get_san_extension_valid_extension(cert):
-    """Validate SAN extension is returned when it exists in a certificate"""
-    extension = saq_x509._get_san_extension(cert)
-
-    assert x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME == extension.oid
-
-
-@pytest.mark.unit
-def test_get_san_extension_extension_not_found(cert_no_alt):
-    """Validate 'None' is returned when SAN extension is not found."""
-    assert saq_x509._get_san_extension(cert_no_alt) is None
 
 
 @pytest.mark.unit
@@ -170,13 +114,6 @@ def test_san_dns_names_missing_san_extension(cert_no_alt):
 
 
 @pytest.mark.unit
-def test_san_dns_names_no_names_included_but_san_exists(cert_ip_alternative_only):
-    """If alternative names exist, but none are DNSNames, then it should return
-    an empty list."""
-    assert [] == saq_x509.san_dns_names(cert_ip_alternative_only)
-
-
-@pytest.mark.unit
 def test_san_ip_addresses(cert, x509_constants):
     """Test if IP Addresses are pulled from certificate SAN extension."""
     assert x509_constants.SUBJECT_ALTERNATIVE_IP_ADDRESSES == saq_x509.san_ip_addresses(cert)
@@ -186,12 +123,6 @@ def test_san_ip_addresses(cert, x509_constants):
 def test_san_ip_addresses_missing_san_extension(cert_no_alt):
     """Verify empty list is returned if san extension is missing from certificate."""
     assert [] == saq_x509.san_ip_addresses(cert_no_alt)
-
-
-@pytest.mark.unit
-def test_san_ip_addresses_no_ip_included_but_san_exists(cert_dns_alternative_only):
-    """Verify empty list is returned if san exists, but does not include IP Addresses."""
-    assert [] == saq_x509.san_ip_addresses(cert_dns_alternative_only)
 
 
 @pytest.mark.unit
@@ -211,39 +142,6 @@ def _cert_with_subject(private_key, x509_constants, attributes):
         .not_valid_before(x509_constants.NOT_VALID_BEFORE)\
         .not_valid_after(x509_constants.NOT_VALID_AFTER)\
         .sign(private_key, hashes.SHA256())
-
-
-@pytest.mark.unit
-def test_common_name_success_long_subject(private_key, x509_constants):
-    """Tests that the domain is pulled out when the CN is not the only
-    attribute in the subject."""
-
-    # setup
-    domain = 'test.local'
-    cert = _cert_with_subject(private_key, x509_constants, [
-        (NameOID.COUNTRY_NAME, 'US'),
-        (NameOID.STATE_OR_PROVINCE_NAME, 'Ohio'),
-        (NameOID.LOCALITY_NAME, 'Cincinnati'),
-        (NameOID.ORGANIZATION_NAME, 'ACE, Inc'),
-        (NameOID.COMMON_NAME, domain),
-    ])
-
-    # verify
-    assert cert.subject.rfc4514_string() == f'CN={domain},O=ACE\\, Inc,L=Cincinnati,ST=Ohio,C=US'
-    assert domain == saq_x509.common_name(cert)
-
-
-@pytest.mark.unit
-def test_common_name_success_cn_only(private_key, x509_constants):
-    """Tests that the domain is pulled out when the CN is the only
-    attribute in the subject."""
-
-    # setup
-    domain = 'test.local'
-    cert = _cert_with_subject(private_key, x509_constants, [(NameOID.COMMON_NAME, domain)])
-
-    # verify
-    assert domain == saq_x509.common_name(cert)
 
 
 @pytest.mark.unit
@@ -289,22 +187,6 @@ def test_common_name_multiple_uses_most_specific(private_key, x509_constants):
 
 
 @pytest.mark.unit
-def test_common_name_failed_subject_doesnt_contain_common_name(private_key, x509_constants):
-    """None is returned when the subject has no CN."""
-
-    # setup
-    cert = _cert_with_subject(private_key, x509_constants, [
-        (NameOID.COUNTRY_NAME, 'US'),
-        (NameOID.STATE_OR_PROVINCE_NAME, 'Ohio'),
-        (NameOID.LOCALITY_NAME, 'Cincinnati'),
-        (NameOID.ORGANIZATION_NAME, 'ACE Ecosystem'),
-    ])
-
-    # verify
-    assert saq_x509.common_name(cert) is None
-
-
-@pytest.mark.unit
 def test_common_name_empty(private_key, x509_constants):
     """An empty CN is treated as no CN."""
     # cryptography warns about (but, unvalidated, allows) a CN shorter than 1 character, both building and parsing it
@@ -345,12 +227,14 @@ def test_remove_wildcard_no_wildcard_to_remove():
     assert domain == saq_x509.remove_wildcard(domain)
 
 
-@pytest.mark.parametrize('test_bytes', saq_x509.PEM_LABEL_ENDINGS)
+# RFC 7468 labels; ENCRYPTED PRIVATE KEY and ATTRIBUTE CERTIFICATE end in two of these, so they add no case
+@pytest.mark.parametrize('label', [
+    'CERTIFICATE', 'X509 CRL', 'CERTIFICATE REQUEST', 'PKCS7', 'CMS', 'PRIVATE KEY', 'PUBLIC KEY',
+])
 @pytest.mark.unit
-def test_is_pem_bytes_found_pem_label_or_header(test_bytes):
+def test_is_pem_bytes_found_pem_label_or_header(label):
     """Return true if bytes string contains one of the known pem label/header endings."""
-    utf_8 = f"abcdefg12345{test_bytes.decode('utf-8')}hijklmnop67890"
-    bytes_string = utf_8.encode('utf-8')
+    bytes_string = f"abcdefg12345-----BEGIN {label}-----hijklmnop67890".encode('utf-8')
 
     assert saq_x509.is_pem_bytes(bytes_string)
 

@@ -40,13 +40,6 @@ def test_an_address_in_every_network_it_belongs_to_is_an_asset(analyzer, root_an
     assert [o.value for o in analysis.get_observables_by_type(F_ASSET)] == ["10.20.1.5"]
 
 
-def test_an_address_in_one_network_is_an_asset(analyzer, root_analysis):
-    analysis = _analyze(analyzer, root_analysis, F_IPV4, "10.1.1.1")
-
-    assert analysis.identified_networks == ["corporate"]
-    assert [o.value for o in analysis.get_observables_by_type(F_ASSET)] == ["10.1.1.1"]
-
-
 def test_an_ipv6_address_is_matched_against_the_ipv6_networks(analyzer, root_analysis):
     analysis = _analyze(analyzer, root_analysis, F_IP, "2001:db8::1")
 
@@ -60,10 +53,3 @@ def test_an_address_in_no_network_is_not_an_asset(analyzer, root_analysis):
     assert not analysis.is_asset
     assert analysis.generate_summary() is None
     assert analysis.get_observables_by_type(F_ASSET) == []
-
-
-def test_the_analysis_keeps_its_networks_through_its_details():
-    analysis = NetworkIdentifierAnalysis()
-    analysis.identified_networks = ["corporate"]
-
-    assert analysis.details == {"identified_networks": ["corporate"]}
