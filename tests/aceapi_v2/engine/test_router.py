@@ -23,8 +23,10 @@ from tests.saq.helpers import create_root_analysis
 pytestmark = pytest.mark.integration
 
 
-def _root_with_a_file(storage_dir: str | None = None, analysis_mode: str | None = None) -> tuple[RootAnalysis, str]:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=storage_dir, analysis_mode=analysis_mode)
+def _root_with_a_file(storage_dir: str | None = None, analysis_mode: str | None = None,
+                      location: str | None = None) -> tuple[RootAnalysis, str]:
+    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=storage_dir, analysis_mode=analysis_mode,
+                                location=location)
     root.initialize_storage()
     root.details = {"hello": "world"}
     with open(root.create_file_path("test.dat"), "w") as fp:
@@ -35,8 +37,10 @@ def _root_with_a_file(storage_dir: str | None = None, analysis_mode: str | None 
 
 
 def _uploadable(analysis_mode: str | None = None) -> RootAnalysis:
-    """A root outside this node's storage, as another node would hold it."""
-    root, _ = _root_with_a_file(os.path.join(get_temp_dir(), f"test_upload_{uuid.uuid4()}"), analysis_mode)
+    """A root outside this node's storage, located on another node, as that node would hold it.
+    (A root's location defaults to this node, which would hide an upload that never takes it over.)"""
+    root, _ = _root_with_a_file(os.path.join(get_temp_dir(), f"test_upload_{uuid.uuid4()}"), analysis_mode,
+                                location="another-node")
     return root
 
 
