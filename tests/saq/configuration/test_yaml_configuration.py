@@ -260,5 +260,6 @@ def test_malformed_observable_expiration_mapping_fails_at_load(tmp_path):
 def test_observable_expiration_mapping_can_be_null(tmp_path):
     # null keeps one type's detections permanent while the global default expires the rest
     config = _load_with_overlay(tmp_path, "observable_expiration_mappings:\n  file: null\n  ipv4: '14:00:00:00'\n")
-    assert config.observable_expiration_mappings == {"file": None, "ipv4": "14:00:00:00"}
+    assert config.observable_expiration_mappings["file"] is None
+    assert config.observable_expiration_mappings["ipv4"] == "14:00:00:00"
     assert config.observable_expiration_default == "90:00:00:00"

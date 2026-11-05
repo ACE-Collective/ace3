@@ -2940,13 +2940,17 @@ settings:
 # Analysts can review/change the date when enabling detection from an alert, and adjust it later.
 observable_expiration_default: "90:00:00:00"
 #
-# Optional per-type overrides. Types not listed here use observable_expiration_default.
+# Optional per-type overrides. A type not listed here takes the setting of its nearest ancestor
+# type that is listed (email_from takes email_address's), and otherwise observable_expiration_default.
 #
 # This is only a default for *new* detections -- it is never applied retroactively, and re-enabling
 # an existing detection does not reset its expiration.
 #
 # format: <observable_type>: "DD:HH:MM:SS", or null for detections of that type that never expire
-observable_expiration_mappings: {}
+observable_expiration_mappings:
+  # a hash names the same content forever
+  sha256: null
+  md5: null
   #ipv4: "14:00:00:00"
 
 # Events

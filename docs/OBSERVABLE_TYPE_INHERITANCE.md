@@ -251,6 +251,8 @@ ACE has the ability to mark observables for detection such that ACE will add a d
 
 ACE will add a detection point when the observable **and the type** match exactly.
 
+A new detection's default expiration does follow the tree. `observable_expiration_mappings` is checked for the type, then for each ancestor nearest first, and only then falls back to `observable_expiration_default`. So `email_address: "30:00:00:00"` gives `email_from` detections 30 days unless `email_from` has its own entry.
+
 When ACE exports observable detection information into the yara export, it **collapses the type to the parent type**. For example, observables with the type `email_reply_to` that are enabled for detection are exported as the `email_address` observable type. ACE often understands the context of observations because it did the analysis/parsing; a yara rule scanning an entire blob of data does not, so the context of an email address being used as the reply-to is not available there.
 
 The Splunk KV store export instead keeps the **exact type** on each document and publishes the ancestor chain alongside it (`type_path`), so a hunt can select a whole family itself while the alert it creates carries the exact type the engine's own match fires on.

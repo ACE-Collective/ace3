@@ -12,6 +12,7 @@ from saq.analysis.serialize.observable_serializer import ObservableSerializer
 from saq.configuration.config import get_config
 from saq.constants import EVENT_ANALYSIS_ADDED, EVENT_DIRECTIVE_ADDED, EVENT_RELATIONSHIP_ADDED, EVENT_TIME_FORMAT_TZ, F_TEST, VALID_RELATIONSHIP_TYPES
 from saq.environment import get_local_timezone
+from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util import create_timedelta, parse_event_time
 
 if TYPE_CHECKING:
@@ -817,9 +818,14 @@ class Observable(BaseNode):
         return str(self).__hash__() # XXX this isn't right, is it?
 
 def get_observable_type_expiration_time(observable_type: str) -> Union[datetime, None]:
-    """Calculates a new detection's expiration using its type override or the global lifetime."""
+    """Calculates a new detection's expiration from the nearest of the type and its ancestors that has
+    a mapping (so email_from inherits email_address's), else the global lifetime."""
     config = get_config()
-    delta = config.observable_expiration_mappings.get(observable_type, config.observable_expiration_default)
+    delta = config.observable_expiration_default
+    for t in (observable_type, *get_type_hierarchy().ancestors(observable_type)):
+        if t in config.observable_expiration_mappings:
+            delta = config.observable_expiration_mappings[t]
+            break
 
     if delta:
         return datetime.now(UTC) + create_timedelta(delta)
