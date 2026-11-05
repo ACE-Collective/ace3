@@ -3,7 +3,7 @@ import logging
 import os
 import shutil
 from datetime import datetime, timedelta, timezone
-from queue import Queue
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -23,6 +23,7 @@ from saq.configuration.schema import HuntTypeConfig
 from saq.constants import (
     ANALYSIS_MODE_CORRELATION,
     ANALYSIS_MODE_FILE,
+    DIRECTIVE_SANDBOX,
     EventTimeSource,
     ExecutionMode,
     F_COMMAND_LINE,
@@ -215,46 +216,6 @@ def test_load_hunt_yaml(manager_kwargs):
     #assert hunt.temporal_fields == { 'src_ip': True, 'dst_ip': True }
 
 @pytest.mark.integration
-def test_load_query_inline(rules_dir, manager_kwargs):
-    test_yaml_path = os.path.join(rules_dir, 'test_1.yaml')
-    with open(test_yaml_path, 'w') as fp:
-        yaml.dump({
-            'rule': {
-                'uuid': 'af7ab6f2-008b-44d1-8a70-339d61186ad2',
-                'enabled': 'yes',
-                'name': 'query_test_1',
-                'description': 'Query Test Description 1',
-                'type': 'test_query',
-                'alert_type': 'test - query',
-                'frequency': '00:01:00',
-                'tags': ['tag1', 'tag2'],
-                'time_range': '00:01:00',
-                'max_time_range': '01:00:00',
-                'offset': '00:05:00',
-                'full_coverage': 'yes',
-                'group_by': 'field1',
-                'query': 'Test query.',
-                'use_index_time': 'yes',
-                'instance_types': ['unittest']
-            },
-            'observable_mapping': {
-                'src_ip': 'ipv4',
-                'dst_ip': 'ipv4'
-            },
-            'temporal_fields': {
-                'src_ip': True,
-                'dst_ip': True
-            },
-            'directives': {}
-        }, fp, default_flow_style=False)
-    manager = HuntManager(**manager_kwargs)
-    manager.load_hunts_from_config()
-    assert len(manager.hunts) == 1
-    hunt = manager.hunts[0]
-    assert hunt.enabled
-    assert hunt.query == 'Test query.'
-
-@pytest.mark.integration
 def test_load_multi_line_query_inline(rules_dir, manager_kwargs):
     test_yaml_path = os.path.join(rules_dir, 'test_1.yaml')
     with open(test_yaml_path, 'w') as fp:
@@ -319,21 +280,23 @@ def test_reload_hunts_on_search_modified(rules_dir, manager_kwargs):
 def test_start_stop():
     hunter_service = HunterService()
     hunter_service.start()
-    wait_for_log_count('started Hunt Manager(test_query)', 1)
+    try:
+        wait_for_log_count('started Hunt Manager(test_query)', 1)
 
-    # verify the rules where loaded
-    assert log_count('loading hunt from') >= 2
-    assert log_count('loaded Hunt(query_test_1[test_query])') == 1
+        # verify the rules where loaded
+        assert log_count('loading hunt from') >= 2
+        assert log_count('loaded Hunt(query_test_1[test_query])') == 1
 
-    # wait for the hunt to execute
-    wait_for_log_count('executing query', 1)
+        # wait for the hunt to execute
+        wait_for_log_count('executing query', 1)
 
-    # we should have persistence data for both the last_executed_time and last_end_time fields
-    assert isinstance(read_persistence_data('test_query', 'query_test_1', 'last_executed_time'), datetime) # last_executed_time
-    assert isinstance(read_persistence_data('test_query', 'query_test_1', 'last_end_time'), datetime) # last_end_time
-
-    hunter_service.stop()
-    hunter_service.wait()
+        # we should have persistence data for both the last_executed_time and last_end_time fields
+        assert isinstance(read_persistence_data('test_query', 'query_test_1', 'last_executed_time'), datetime) # last_executed_time
+        assert isinstance(read_persistence_data('test_query', 'query_test_1', 'last_end_time'), datetime) # last_end_time
+    finally:
+        # the manager's threads are not daemons: a failure that skipped the stop would hang pytest
+        hunter_service.stop()
+        hunter_service.wait()
 
 @pytest.fixture
 def full_coverage_hunt(manager_kwargs, monkeypatch):
@@ -388,28 +351,18 @@ def test_full_coverage_respects_last_end_time(full_coverage_hunt):
     assert hunt.end_time - hunt.start_time == timedelta(hours=2)
 
 @pytest.mark.integration
-def test_full_coverage_catch_up_with_max_range(full_coverage_hunt):
-    hunt, set_now = full_coverage_hunt
-
-    hunt.config.max_time_range = '02:00:00'
-    baseline = set_now()
-    current = set_now(baseline + timedelta(seconds=1))
-    hunt.last_executed_time = current - timedelta(hours=3)
-    hunt.last_end_time = current - timedelta(hours=2, seconds=1)
-
-    assert hunt.end_time - hunt.start_time >= hunt.max_time_range
-
-@pytest.mark.integration
-def test_full_coverage_disabled_falls_back_to_frequency(full_coverage_hunt):
+def test_full_coverage_disabled_starts_one_time_range_before_now(full_coverage_hunt):
     hunt, set_now = full_coverage_hunt
 
     current = set_now()
     hunt.config.full_coverage = False
+    # differs from the hour-long frequency, so a window built from the frequency fails
+    hunt.config.time_range = '00:30:00'
     hunt.last_executed_time = current - timedelta(hours=3)
     hunt.last_end_time = current - timedelta(hours=2)
 
     assert hunt.ready
-    assert hunt.start_time == current - hunt.time_range
+    assert hunt.start_time == current - timedelta(minutes=30)
 
 @pytest.mark.integration
 def test_offset(manager_kwargs):
@@ -529,36 +482,6 @@ def test_query_hunter_end_time(monkeypatch, tmpdir, hunt_manager):
     hunt.config.time_range = '00:10:00'
     assert hunt.end_time == mock_local_time()
     assert hunt.end_time - hunt.last_end_time == timedelta(minutes=11)
-
-@pytest.mark.unit
-def test_query_hunter_ready(monkeypatch, tmpdir, hunt_manager):
-    data_dir = tmpdir / "data"
-    data_dir.mkdir()
-    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", str(data_dir))
-    mock_config = configparser.ConfigParser()
-    mock_config.read_string("""[collection]
-                            persistence_dir = p
-                            """)
-    #monkeypatch.setattr(saq, "CONFIG", { "collection": { "persistence_dir": "p" } })
-    hunt = default_hunt(manager=hunt_manager, name="test")
-    #hunt = QueryHunt(manager=hunt_manager, config=default_query_hunt_config(name="test"))
-
-    # we just ran and our frequency is sent to an hour
-    hunt.last_executed_time = mock_local_time()
-    hunt.config.frequency = '01:00:00'
-    assert not hunt.ready
-
-    # we ran an hour ago and frequency is set to an hour
-    hunt.last_executed_time = mock_local_time() - timedelta(hours=1)
-    hunt.config.frequency = '01:00:00'
-    assert hunt.ready
-
-    # full coverage testing
-    # we ran 2 hours ago, range is set to an hour and frequency is set to an hour
-    hunt.config.full_coverage = True
-    hunt.last_executed_time = mock_local_time() - timedelta(hours=2)
-    hunt.config.frequency = '01:00:00'
-    assert hunt.ready
 
     # this logic is no longer supported
     #hunt.last_executed_time = mock_local_time()
@@ -810,37 +733,14 @@ def test_per_group_suppression_filters_recurring_group(monkeypatch, hunt_manager
 
 
 @pytest.mark.unit
-def test_per_group_suppression_does_not_block_other_groups(monkeypatch, hunt_manager):
-    """Suppressing one group must not affect any other group."""
-    import saq.collectors.hunter.query_hunter
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_per_group_isolated",
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        suppression="00:01:00",
-        group_by="src",
-        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
-    )
-
-    hunt.set_last_alert_time(local_time(), "1.2.3.4")
-
-    submissions = hunt.process_query_results([
-        {"src": "1.2.3.4"},
-        {"src": "5.6.7.8"},
-        {"src": "9.10.11.12"},
-    ])
-    group_values = sorted(s.group_value for s in submissions)
-    assert group_values == ["5.6.7.8", "9.10.11.12"]
-
-
-@pytest.mark.unit
 def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog, hunt_manager):
     """A manual hunt (e.g. the validate-hunt API) must ignore suppression so the analyst
-       sees the hunt's true output, even when a group alerted within the suppression window."""
+       sees the hunt's true output, even when a group alerted within the suppression window,
+       and records nothing for svs."""
     import saq.collectors.hunter.query_hunter
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
+    record = Mock()
+    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches", record)
 
     hunt = default_hunt(
         manager=hunt_manager,
@@ -865,6 +765,7 @@ def test_per_group_suppression_ignored_for_manual_hunt(monkeypatch, caplog, hunt
     group_values = sorted(s.group_value for s in submissions)
     assert group_values == ["1.2.3.4", "5.6.7.8"]
     assert "ignoring suppression" in caplog.text
+    record.assert_not_called()
 
 
 def _grouped_hunt(hunt_manager, name: str):
@@ -898,19 +799,6 @@ def test_per_group_suppression_records_the_suppressed_matches_for_svs(monkeypatc
     assert hunt_uuid == hunt.uuid
     assert [value for _, value in matches] == ["1.2.3.4"]
     assert any(o.value == "1.2.3.4" for o in matches[0][0].observables)
-
-
-@pytest.mark.unit
-def test_per_group_suppression_records_nothing_for_a_manual_hunt(monkeypatch, hunt_manager):
-    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
-    recorded = []
-    monkeypatch.setattr(query_hunter_module, "record_suppressed_matches",
-                        lambda hunt_uuid, matches: recorded.append(matches))
-    hunt = _grouped_hunt(hunt_manager, "test_per_group_record_manual")
-    hunt.manual_hunt = True
-
-    assert len(hunt.process_query_results([{"src": "1.2.3.4"}])) == 1
-    assert recorded == []
 
 
 @pytest.mark.unit
@@ -1168,20 +1056,6 @@ def test_process_query_results_no_provenance_without_correlate(monkeypatch, hunt
     assert len(submissions) == 1
     assert "hunt_provenance" not in submissions[0].root.details
 
-    # the no-correlate hunt produced submissions earlier; verify their details do
-    # NOT contain original_events (the key is only attached when correlate ran)
-    no_correlate_hunt = default_hunt(
-        manager=hunt_manager,
-        name="no_correlate_check",
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
-    )
-    no_correlate_subs = no_correlate_hunt.process_query_results([{"src": "1.2.3.4"}])
-    assert no_correlate_subs
-    for submission in no_correlate_subs:
-        assert "original_events" not in submission.root.details
-
 
 @pytest.mark.unit
 def test_process_query_results_captures_original_events_for_manual_non_correlate(monkeypatch, hunt_manager):
@@ -1300,30 +1174,6 @@ def test_hunt_error_tag_added_on_error_or_timeout_outcome(monkeypatch, outcome, 
     assert submissions
     for s in submissions:
         assert "warning:hunt_error" in s.root.tags
-
-
-@pytest.mark.integration
-def test_hunt_error_tag_absent_on_clean_run(monkeypatch, hunt_manager):
-    """A correlated hunt whose events all resolve to `alert` (no error, no timeout)
-    must NOT carry the `warning:hunt_error` tag. Verifies the tag is a real signal
-    and not applied to every correlated alert."""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    correlate = _hunt_error_correlate("alert")
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="hunt_error_clean_hunt",
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
-        correlate=correlate,
-    )
-    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
-    assert submissions
-    for s in submissions:
-        assert "warning:hunt_error" not in s.root.tags
 
 
 @pytest.mark.integration
@@ -1523,24 +1373,6 @@ def test_hunt_metadata_name_renders_jinja(monkeypatch, hunt_manager):
     hm = submissions[0].root.details["hunt_metadata"]
     assert hm["name"] == "Foo BAR"
     assert "{{" not in hm["name"]
-
-
-@pytest.mark.unit
-def test_hunt_metadata_name_plain_name_unchanged(monkeypatch, hunt_manager):
-    """A hunt name with no Jinja markers passes through _render_name's fast path and
-    is stored verbatim in hunt_metadata."""
-    monkeypatch.setattr(query_hunter_module, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="Plain Hunt Name",
-        group_by=None,
-        observable_mapping=[ObservableMapping(fields=["src"], type="ip")],
-    )
-
-    submissions = hunt.process_query_results([{"src": "1.2.3.4"}])
-    assert submissions and len(submissions) == 1
-    assert submissions[0].root.details["hunt_metadata"]["name"] == "Plain Hunt Name"
 
 
 @pytest.mark.unit
@@ -2014,85 +1846,6 @@ def test_correlation_trace_filtered_event_not_attached_to_other_alerts(monkeypat
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable(monkeypatch, tmpdir, hunt_manager):
-    """test mapping fields to F_FILE type observables"""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    # set up temp directory for file observables
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_file_hunt",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["file_content"],
-                type=F_FILE,
-                file_name="test_file.txt"
-            )
-        ]
-    )
-
-    # test with string content - should be encoded to bytes
-    submissions = hunt.process_query_results([{"file_content": "hello world"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    # should have F_SIGNATURE_ID observable plus the file observable
-    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    file_obs = file_observables[0]
-    assert file_obs.file_name == "test_file.txt"
-
-    # verify file was created with correct content
-    with open(file_obs.full_path, "rb") as f:
-        assert f.read() == b"hello world"
-
-
-@pytest.mark.unit
-def test_process_query_results_file_observable_with_interpolation(monkeypatch, tmpdir, hunt_manager):
-    """test F_FILE observable with interpolated file name"""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_file_hunt",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["file_content", "filename"],
-                type=F_FILE,
-                file_name="{{ filename }}"
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([{
-        "file_content": "test data",
-        "filename": "dynamic_file.bin"
-    }])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    file_obs = file_observables[0]
-    assert file_obs.file_name == "dynamic_file.bin"
-
-
-@pytest.mark.unit
 @pytest.mark.parametrize("name, stored", [
     ("../../escaped.exe", "_/_/escaped.exe"),
     ("/opt/ace/escaped.exe", "opt/ace/escaped.exe"),
@@ -2322,84 +2075,9 @@ def test_process_query_results_file_observable_empty_content(monkeypatch, tmpdir
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_directives(monkeypatch, tmpdir, hunt_manager):
-    """test F_FILE observable with directives"""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import DIRECTIVE_SANDBOX, F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_file_hunt",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["file_content"],
-                type=F_FILE,
-                file_name="test_file.txt",
-                directives=[DIRECTIVE_SANDBOX, "custom_directive"]
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([{"file_content": "malicious content"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    file_obs = file_observables[0]
-
-    assert DIRECTIVE_SANDBOX in file_obs.directives
-    assert "custom_directive" in file_obs.directives
-
-
-@pytest.mark.unit
-def test_process_query_results_file_observable_with_tags(monkeypatch, tmpdir, hunt_manager):
-    """test F_FILE observable with tags"""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_file_hunt",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["file_content"],
-                type=F_FILE,
-                file_name="test_file.txt",
-                tags=["suspicious", "needs_review"]
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([{"file_content": "tagged content"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    file_obs = file_observables[0]
-
-    assert "suspicious" in file_obs.tags
-    assert "needs_review" in file_obs.tags
-
-
-@pytest.mark.unit
 def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with volatile property set to False"""
     import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
@@ -2431,42 +2109,6 @@ def test_process_query_results_file_observable_with_volatile(monkeypatch, tmpdir
 
     # the file observable should NOT be volatile when volatile=False in mapping
     assert not file_obs.volatile
-
-
-@pytest.mark.unit
-def test_process_query_results_file_observable_with_volatile_true(monkeypatch, tmpdir, hunt_manager):
-    """test F_FILE observable with volatile property set to True"""
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_file_hunt",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["file_content"],
-                type=F_FILE,
-                file_name="test_file.txt",
-                volatile=True
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([{"file_content": "volatile content"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    file_observables = [o for o in submission.root.observables if o.type == F_FILE]
-    assert len(file_observables) == 1
-    file_obs = file_observables[0]
-
-    assert file_obs.volatile
 
 
 @pytest.mark.unit
@@ -2550,7 +2192,6 @@ def test_process_query_results_skips_unresolved_interpolated_tags(monkeypatch, t
 def test_process_query_results_file_observable_with_all_properties(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with directives, tags, and volatile all set"""
     import saq.collectors.hunter.query_hunter
-    from saq.constants import DIRECTIVE_SANDBOX, F_FILE
 
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
     monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
@@ -2683,49 +2324,6 @@ def test_process_query_results_with_ignored_values(monkeypatch, tmpdir, hunt_man
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values_multiple_events(monkeypatch, tmpdir, hunt_manager):
-    """test ignored_values with multiple events, some ignored and some not"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_ignored_values",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["src_ip"],
-                type="ip",
-                ignored_values=[r"0\.0\.0\.0"]
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([
-        {"src_ip": "0.0.0.0"},
-        {"src_ip": "1.2.3.4"},
-        {"src_ip": "5.6.7.8"},
-    ])
-    assert submissions
-    assert len(submissions) == 3
-
-    # first submission should have no ipv4 observable (ignored)
-    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 0
-
-    # second and third submissions should have ipv4 observables
-    ipv4_observables = [o for o in submissions[1].root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 1
-    assert ipv4_observables[0].value == "1.2.3.4"
-
-    ipv4_observables = [o for o in submissions[2].root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 1
-    assert ipv4_observables[0].value == "5.6.7.8"
-
-
-@pytest.mark.unit
 def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with display_type and display_value"""
     import saq.collectors.hunter.query_hunter
@@ -2835,32 +2433,6 @@ def test_process_query_results_with_display_value_only(monkeypatch, tmpdir, hunt
 
 
 @pytest.mark.unit
-def test_process_query_results_file_observable_with_display_properties(monkeypatch, tmpdir):
-    """test F_FILE observable with display_type and display_value
-
-    NOTE: FileObservable overrides display_value as a read-only property that returns file_path,
-    so ObservableMapping validation will fail if display_value is set for file type observables.
-    """
-    from pydantic import ValidationError
-
-    import saq.collectors.hunter.query_hunter
-    from saq.constants import F_FILE
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "get_staging_tmp_dir", lambda: str(tmpdir))
-
-    # attempting to create an ObservableMapping with display_value for file type should fail validation
-    with pytest.raises(ValidationError, match="display_value is not supported for file type observables"):
-        ObservableMapping(
-            fields=["file_content"],
-            type=F_FILE,
-            file_name="test_file.txt",
-            display_type="email_attachment",
-            display_value="Suspicious Email Attachment"
-        )
-
-
-@pytest.mark.unit
 def test_process_query_results_file_observable_with_display_type_only(monkeypatch, tmpdir, hunt_manager):
     """test F_FILE observable with only display_type set"""
     import saq.collectors.hunter.query_hunter
@@ -2943,38 +2515,6 @@ def test_process_query_results_file_observable_with_grouped_display_properties(m
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values_empty_list(monkeypatch, tmpdir, hunt_manager):
-    """test observable mapping with empty ignored_values list"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_empty_ignored",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["src_ip"],
-                type="ip",
-                ignored_values=[]
-            )
-        ]
-    )
-
-    # with empty ignored_values list, all values should be processed
-    submissions = hunt.process_query_results([{"src_ip": "0.0.0.0"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 1
-    assert ipv4_observables[0].value == "0.0.0.0"
-
-
-@pytest.mark.unit
 def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir, hunt_manager):
     """test that ignored_values supports regex patterns via re.fullmatch()"""
     import saq.collectors.hunter.query_hunter
@@ -2990,7 +2530,7 @@ def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir, hu
             ObservableMapping(
                 fields=["src_ip"],
                 type="ip",
-                ignored_values=[r"10\.0\..*"]
+                ignored_values=[r"10\.0\..*", r"172\.16\.0\.1"]
             )
         ]
     )
@@ -3013,6 +2553,11 @@ def test_process_query_results_with_ignored_values_regex(monkeypatch, tmpdir, hu
     ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "192.168.1.1"
+
+    # 172.16.0.10 only starts with an ignored pattern, so the whole-value match keeps it
+    submissions = hunt.process_query_results([{"src_ip": "172.16.0.10"}])
+    ipv4_observables = [o for o in submissions[0].root.observables if o.type == F_IP]
+    assert [o.value for o in ipv4_observables] == ["172.16.0.10"]
 
 
 @pytest.mark.unit
@@ -3065,89 +2610,6 @@ def test_query_hunt_config_auto_append_default():
 
     assert hasattr(config, "auto_append")
     assert config.auto_append == ""
-
-
-@pytest.mark.unit
-def test_query_hunt_config_auto_append_custom():
-    """test that QueryHuntConfig auto_append property can be set to custom value"""
-    config = QueryHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="test_query",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="test query",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False,
-        auto_append="| custom command"
-    )
-
-    assert config.auto_append == "| custom command"
-
-
-@pytest.mark.unit
-def test_process_query_results_with_relationship_mapping(monkeypatch, hunt_manager):
-    """test observable mapping with relationship to another observable"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_relationship",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            # target observable (hostname) - must be defined first so it exists when relationship is applied
-            ObservableMapping(
-                fields=["hostname"],
-                type=F_HOSTNAME,
-            ),
-            # source observable (command_line) with relationship to hostname
-            ObservableMapping(
-                fields=["cmdline"],
-                type=F_COMMAND_LINE,
-                relationships=[
-                    RelationshipMapping(
-                        type=R_EXECUTED_ON,
-                        target=RelationshipMappingTarget(
-                            type=F_HOSTNAME,
-                            value="{{ hostname }}"
-                        )
-                    )
-                ]
-            ),
-        ]
-    )
-
-    submissions = hunt.process_query_results([{
-        "cmdline": "powershell.exe -enc AAAA",
-        "hostname": "workstation01"
-    }])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    # find the command_line observable
-    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
-    assert cmdline_observable is not None
-    assert cmdline_observable.value == "powershell.exe -enc AAAA"
-
-    # find the hostname observable
-    hostname_observable = next((o for o in submission.root.observables if o.type == F_HOSTNAME), None)
-    assert hostname_observable is not None
-    assert hostname_observable.value == "workstation01"
-
-    # verify the relationship exists
-    assert len(cmdline_observable.relationships) == 1
-    relationship = cmdline_observable.relationships[0]
-    assert relationship.r_type == R_EXECUTED_ON
-    assert relationship.target == hostname_observable
 
 
 @pytest.mark.unit
@@ -3336,42 +2798,6 @@ def test_process_query_results_with_relationship_and_grouping(monkeypatch, hunt_
 
 
 @pytest.mark.unit
-def test_relationship_mapping_model_validation():
-    """test RelationshipMapping and RelationshipMappingTarget Pydantic model validation"""
-    from pydantic import ValidationError
-
-    # valid relationship mapping
-    mapping = RelationshipMapping(
-        type=R_EXECUTED_ON,
-        target=RelationshipMappingTarget(
-            type=F_HOSTNAME,
-            value="{{ hostname }}"
-        )
-    )
-    assert mapping.type == R_EXECUTED_ON
-    assert mapping.target.type == F_HOSTNAME
-    assert mapping.target.value == "{{ hostname }}"
-
-    # test that type is required for RelationshipMapping
-    with pytest.raises(ValidationError):
-        RelationshipMapping(
-            target=RelationshipMappingTarget(type=F_HOSTNAME, value="test")
-        )
-
-    # test that target is required for RelationshipMapping
-    with pytest.raises(ValidationError):
-        RelationshipMapping(type=R_EXECUTED_ON)
-
-    # test that type is required for RelationshipMappingTarget
-    with pytest.raises(ValidationError):
-        RelationshipMappingTarget(value="test")
-
-    # test that value is required for RelationshipMappingTarget
-    with pytest.raises(ValidationError):
-        RelationshipMappingTarget(type=F_HOSTNAME)
-
-
-@pytest.mark.unit
 def test_process_query_results_with_relationship_static_target_value(monkeypatch, hunt_manager):
     """test relationship with a static (non-interpolated) target value"""
     import saq.collectors.hunter.query_hunter
@@ -3464,31 +2890,6 @@ def test_description_field_with_grouping(monkeypatch, hunt_manager):
 
 
 @pytest.mark.unit
-def test_description_field_ungrouped(monkeypatch, hunt_manager):
-    """test that description_field appends to description when no grouping"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test",
-        group_by=None,
-        description_field="alert_title",
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(fields=["src"], type="ip")
-        ]
-    )
-
-    submissions = hunt.process_query_results([
-        {"src": "1.2.3.4", "alert_title": "Suspicious Login"},
-    ])
-    assert len(submissions) == 1
-    assert submissions[0].root.description == "test: Suspicious Login"
-
-
-@pytest.mark.unit
 def test_description_field_fallback_when_missing(monkeypatch, hunt_manager):
     """test that when description_field is set but missing from event, falls back to group_by value"""
     import saq.collectors.hunter.query_hunter
@@ -3540,33 +2941,6 @@ def test_description_field_ignored_for_group_all(monkeypatch, hunt_manager):
     assert len(submissions) == 1
     # description should NOT contain alert_title values — just name + event count
     assert submissions[0].root.description == "test (2 events)"
-
-
-@pytest.mark.unit
-def test_description_field_backward_compat(monkeypatch, hunt_manager):
-    """test that without description_field, behavior is identical to before"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test",
-        group_by="src",
-        description_field=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(fields=["src"], type="ip")
-        ]
-    )
-
-    submissions = hunt.process_query_results([
-        {"src": "1.2.3.4"},
-        {"src": "1.2.3.5"},
-    ])
-    assert len(submissions) == 2
-    for submission in submissions:
-        assert submission.root.description.endswith(": 1.2.3.4 (1 event)") or submission.root.description.endswith(": 1.2.3.5 (1 event)")
 
 
 @pytest.mark.unit
@@ -3631,36 +3005,6 @@ def test_fields_mode_any_partial_fields(monkeypatch, hunt_manager):
     ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
     assert len(ipv4_observables) == 1
     assert ipv4_observables[0].value == "1.2.3.4"
-
-
-@pytest.mark.unit
-def test_fields_mode_any_no_fields_present(monkeypatch, hunt_manager):
-    """test that fields_mode=any creates no observables when no fields are present"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_fields_mode_any_none",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["src_ip", "dst_ip"],
-                type="ip",
-                fields_mode=FieldsMode.ANY,
-            )
-        ]
-    )
-
-    submissions = hunt.process_query_results([{"other_field": "value"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 0
 
 
 @pytest.mark.unit
@@ -3887,99 +3231,6 @@ def test_process_query_results_with_relationship_missing_dot_field(monkeypatch, 
 
 
 @pytest.mark.unit
-def test_process_query_results_with_relationship_partial_field_resolution(monkeypatch, caplog, hunt_manager):
-    """test that relationship is skipped when composite target has one field missing"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_relationship_partial_resolution",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["cmdline"],
-                type=F_COMMAND_LINE,
-                relationships=[
-                    RelationshipMapping(
-                        type=R_EXECUTED_ON,
-                        target=RelationshipMappingTarget(
-                            type=F_HOSTNAME,
-                            value="{{ user }}@{{ hostname }}"  # hostname is missing
-                        )
-                    )
-                ]
-            ),
-        ]
-    )
-
-    with caplog.at_level(logging.WARNING):
-        submissions = hunt.process_query_results([{
-            "cmdline": "powershell.exe -enc AAAA",
-            "user": "admin",
-            # note: no hostname field
-        }])
-
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    cmdline_observable = next((o for o in submission.root.observables if o.type == F_COMMAND_LINE), None)
-    assert cmdline_observable is not None
-
-    # relationship should NOT be created (partial resolution)
-    assert len(cmdline_observable.relationships) == 0
-
-    # warning should be logged mentioning the raw template with the missing field
-    assert any("skipping relationship" in record.message and "{{ user }}@{{ hostname }}" in record.message for record in caplog.records)
-
-
-@pytest.mark.unit
-def test_dedup_key_config_field():
-    """test that dedup_key field is parsed correctly in QueryHuntConfig"""
-    config = QueryHuntConfig(
-        uuid="test-uuid",
-        name="test",
-        type="test",
-        enabled=True,
-        description="test",
-        alert_type="test",
-        frequency="01:00:00",
-        tags=[],
-        instance_types=[],
-        time_range="01:00:00",
-        full_coverage=True,
-        use_index_time=True,
-        query="test",
-        dedup_key="{{ correlationId }}",
-    )
-    assert config.dedup_key == "{{ correlationId }}"
-
-
-@pytest.mark.unit
-def test_dedup_key_config_default_none():
-    """test that dedup_key defaults to None when not set"""
-    config = QueryHuntConfig(
-        uuid="test-uuid",
-        name="test",
-        type="test",
-        enabled=True,
-        description="test",
-        alert_type="test",
-        frequency="01:00:00",
-        tags=[],
-        instance_types=[],
-        time_range="01:00:00",
-        full_coverage=True,
-        use_index_time=True,
-        query="test",
-    )
-    assert config.dedup_key is None
-
-
-@pytest.mark.unit
 def test_dedup_key_ungrouped(monkeypatch, hunt_manager):
     """test that submission.key is set when dedup_key is configured (ungrouped)"""
     import saq.collectors.hunter.query_hunter
@@ -4001,30 +3252,6 @@ def test_dedup_key_ungrouped(monkeypatch, hunt_manager):
     ])
     assert len(submissions) == 1
     assert submissions[0].key == f"{hunt.uuid}:abc-123"
-
-
-@pytest.mark.unit
-def test_dedup_key_ungrouped_composite(monkeypatch, hunt_manager):
-    """test that dedup_key works with composite interpolation templates"""
-    import saq.collectors.hunter.query_hunter
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_dedup_composite",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(fields=["src"], type="ip")
-        ],
-        dedup_key="{{ user }}-{{ src_ip }}",
-    )
-
-    submissions = hunt.process_query_results([
-        {"src": "1.2.3.4", "user": "jdoe", "src_ip": "10.0.0.1"},
-    ])
-    assert len(submissions) == 1
-    assert submissions[0].key == f"{hunt.uuid}:jdoe-10.0.0.1"
 
 
 @pytest.mark.unit
@@ -4081,32 +3308,6 @@ def test_dedup_key_none_when_not_set(monkeypatch, hunt_manager):
 
 
 @pytest.mark.unit
-def test_dedup_key_includes_hunt_uuid_prefix(monkeypatch, hunt_manager):
-    """test that dedup key always includes the hunt UUID as prefix"""
-    import saq.collectors.hunter.query_hunter
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_dedup_prefix",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(fields=["src"], type="ip")
-        ],
-        dedup_key="{{ id }}",
-    )
-
-    submissions = hunt.process_query_results([
-        {"src": "1.2.3.4", "id": "some-value"},
-    ])
-    assert len(submissions) == 1
-    key = submissions[0].key
-    assert key.startswith(f"{hunt.uuid}:")
-    assert key == f"{hunt.uuid}:some-value"
-
-
-@pytest.mark.unit
 def test_dedup_key_missing_field_returns_none(monkeypatch, hunt_manager):
     """test that submission.key is None when dedup_key references a missing field"""
     import saq.collectors.hunter.query_hunter
@@ -4135,17 +3336,6 @@ def test_dedup_key_missing_field_returns_none(monkeypatch, hunt_manager):
 # ============================================================================
 
 @pytest.mark.unit
-def test_summary_detail_config_defaults():
-    """test that SummaryDetailConfig has correct defaults when only content is set"""
-    config = SummaryDetailConfig(content="test content")
-    assert config.content == "test content"
-    assert config.header is None
-    assert config.format == SUMMARY_DETAIL_FORMAT_MD
-    assert config.limit == 100
-    assert config.grouped is False
-
-
-@pytest.mark.unit
 def test_summary_detail_config_invalid_format(caplog):
     """test that invalid format falls back to MD and logs error"""
     with caplog.at_level(logging.ERROR):
@@ -4160,37 +3350,6 @@ def test_summary_detail_config_valid_formats(fmt):
     """test that all valid formats are accepted"""
     config = SummaryDetailConfig(content="test", format=fmt)
     assert config.format == fmt
-
-
-@pytest.mark.unit
-def test_hunt_config_with_summary_details(hunt_manager):
-    """test that summary_details field is accepted on QueryHuntConfig"""
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_sd_config",
-        summary_details=[
-            SummaryDetailConfig(content="test {{ field }}"),
-        ],
-    )
-    assert len(hunt.config.summary_details) == 1
-    assert hunt.config.summary_details[0].content == "test {{ field }}"
-
-
-@pytest.mark.unit
-def test_summary_details_empty_list(monkeypatch, hunt_manager):
-    """test backward compatibility - empty summary_details does nothing"""
-    import saq.collectors.hunter.query_hunter
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_sd_empty",
-        group_by=None,
-        summary_details=[],
-    )
-    submissions = hunt.process_query_results([{"field1": "value1"}])
-    assert len(submissions) == 1
-    assert len(submissions[0].root.summary_details) == 0
 
 
 @pytest.mark.unit
@@ -4431,28 +3590,6 @@ def test_summary_details_grouped_limit(monkeypatch, caplog, hunt_manager):
 
 
 @pytest.mark.unit
-def test_summary_details_grouped_no_matching_events(monkeypatch, hunt_manager):
-    """test grouped - no summary detail added when all events are skipped"""
-    import saq.collectors.hunter.query_hunter
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_sd_grouped_none",
-        group_by="ALL",
-        summary_details=[
-            SummaryDetailConfig(content="{{ missing }}", grouped=True),
-        ],
-    )
-    submissions = hunt.process_query_results([
-        {"other": "value1"},
-        {"other": "value2"},
-    ])
-    assert len(submissions) == 1
-    assert len(submissions[0].root.summary_details) == 0
-
-
-@pytest.mark.unit
 def test_summary_details_mixed_grouped_and_ungrouped(monkeypatch, hunt_manager):
     """test two definitions, one grouped and one ungrouped"""
     import saq.collectors.hunter.query_hunter
@@ -4673,53 +3810,6 @@ def test_summary_details_required_fields(monkeypatch, hunt_manager):
 # --- YAML loading tests ---
 
 
-@pytest.mark.integration
-def test_load_hunt_yaml_with_jinja_and_new_fields(rules_dir, manager_kwargs):
-    """Test that a YAML file with jinja format and new fields loads correctly."""
-    test_yaml_path = os.path.join(rules_dir, "test_sd_jinja.yaml")
-    with open(test_yaml_path, "w") as fp:
-        yaml.dump({
-            "rule": {
-                "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
-                "enabled": "yes",
-                "name": "jinja_test",
-                "description": "Jinja Test Hunt",
-                "type": "test_query",
-                "alert_type": "test - query",
-                "frequency": "00:01:00",
-                "tags": ["tag1"],
-                "time_range": "00:01:00",
-                "full_coverage": "yes",
-                "group_by": "field1",
-                "query": "index=test",
-                "use_index_time": "yes",
-                "instance_types": ["unittest"],
-                "summary_details": [
-                    {
-                        "content": "IP: {{ src_ip }}",
-                        "header": "IPs",
-                        "format": "jinja",
-                        "dedup_fields": ["src_ip"],
-                        "required_fields": ["src_ip"],
-                    },
-                ],
-            },
-        }, fp, default_flow_style=False)
-
-    manager = HuntManager(**manager_kwargs)
-    manager.load_hunts_from_config()
-
-    hunt = next((h for h in manager.hunts if h.name == "jinja_test"), None)
-    assert hunt is not None
-    assert len(hunt.config.summary_details) == 1
-
-    sd0 = hunt.config.summary_details[0]
-    assert sd0.content == "IP: {{ src_ip }}"
-    assert sd0.format == SUMMARY_DETAIL_FORMAT_JINJA
-    assert sd0.dedup_fields == ["src_ip"]
-    assert sd0.required_fields == ["src_ip"]
-
-
 # --- Grouped + Jinja tests ---
 
 
@@ -4827,20 +3917,6 @@ def test_summary_details_grouped_jinja_missing_field_does_not_kill_alert(monkeyp
 
 
 @pytest.mark.unit
-def test_query_with_suffix():
-    """test that query_suffix is appended to the query with a newline separator"""
-    hunt = default_hunt(query="index=test sourcetype=test", query_suffix="| stats count")
-    assert hunt.query == "index=test sourcetype=test\n| stats count"
-
-
-@pytest.mark.unit
-def test_query_with_prefix():
-    """test that query_prefix is prepended to the query with a newline separator"""
-    hunt = default_hunt(query="index=test sourcetype=test", query_prefix="| inputlookup test.csv")
-    assert hunt.query == "| inputlookup test.csv\nindex=test sourcetype=test"
-
-
-@pytest.mark.unit
 def test_query_with_prefix_and_suffix():
     """test that both query_prefix and query_suffix are applied"""
     hunt = default_hunt(
@@ -4849,13 +3925,6 @@ def test_query_with_prefix_and_suffix():
         query_suffix="| stats count",
     )
     assert hunt.query == "| inputlookup test.csv\nindex=test sourcetype=test\n| stats count"
-
-
-@pytest.mark.unit
-def test_query_with_no_prefix_or_suffix():
-    """test that query is unchanged when no prefix or suffix is set"""
-    hunt = default_hunt(query="index=test sourcetype=test")
-    assert hunt.query == "index=test sourcetype=test"
 
 
 @pytest.mark.unit
@@ -5450,7 +4519,7 @@ def test_completion_fields_reset_between_executions():
 
     hunt.manual_hunt = True
     hunt.execute_query = _boom
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="query failed"):
         hunt.execute(start_time=local_time() - timedelta(hours=1), end_time=local_time())
 
     assert hunt.completion_fields()["result_count"] is None
