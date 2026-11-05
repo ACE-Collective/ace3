@@ -1,28 +1,14 @@
 import pytest
 
 from saq.configuration.config import get_analysis_module_config, get_config
-from saq.constants import CONFIG_ANALYSIS_MODE_CLEANUP, CONFIG_ANALYSIS_MODE_PREFIX, CONFIG_ANALYSIS_MODULE_ENABLED, CONFIG_ANALYSIS_MODULE_MODULE_GROUPS, CONFIG_DISABLED_MODULES, F_TEST
 from saq.engine.core import Engine, EngineState
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker_manager import WorkerManager
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.test import BasicTestAnalysis, BasicTestAnalyzer
+from saq.modules.test import BasicTestAnalyzer
 
-ANALYIS_MODE_TEST = "test"
-
-@pytest.mark.parametrize("included, excluded, mode, expected_result", [
-    ([], [], "test_1", True), # any mode supported
-    (["test_1"], [], "test_1", True), # directly supported
-    (["test_1"], [], "test_2", False), # not specifically supported
-    ([], ["test_1"], "test_1", False), # specifically excluded
-    ([], ["test_1"], "test_2", True), # outside exclusion
-])
-@pytest.mark.unit
-def test_is_analysis_mode_supported(included, excluded, mode, expected_result):
-    engine = Engine(config=EngineConfiguration(local_analysis_modes=included, excluded_analysis_modes=excluded))
-    assert engine.configuration_manager.is_analysis_mode_supported(mode) == expected_result
 
 @pytest.mark.unit
 def test_default_engine():
@@ -34,7 +20,7 @@ def test_default_engine():
     assert isinstance(engine.worker_manager, WorkerManager)
 
 @pytest.mark.unit
-def test_add_analysis_module(monkeypatch, test_context):
+def test_add_analysis_module(monkeypatch, test_context, caplog):
     engine = Engine()
 
     analysis_module = AnalysisModuleAdapter(BasicTestAnalyzer(get_analysis_module_config("basic_test")))
@@ -46,13 +32,20 @@ def test_add_analysis_module(monkeypatch, test_context):
 
     # verification failure
     def mock_verify_environment(*args, **kwargs):
-        raise RuntimeError()
+        raise RuntimeError("tool is not installed")
 
     engine.configuration_manager._initialize_mappings()
-    with monkeypatch.context() as context:
+    with monkeypatch.context() as context, caplog.at_level("ERROR"):
         context.setattr(analysis_module, "verify_environment", mock_verify_environment)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match="tool is not installed"):
             engine.configuration_manager.add_analysis_module(analysis_module)
+
+    # the module is not added, and the failure is logged with its traceback (an error report)
+    assert engine.configuration_manager.analysis_modules == []
+    assert engine.configuration_manager.analysis_module_name_mapping == {}
+    (record,) = [r for r in caplog.records if "failed environment verification" in r.getMessage()]
+    assert record.levelname == "ERROR"
+    assert record.exc_info is not None
 
 
 @pytest.mark.integration

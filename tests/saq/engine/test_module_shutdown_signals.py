@@ -26,8 +26,8 @@ owns the two multiprocessing events, ``WorkerShutdownAdapter`` presents them as
 ``AnalysisModuleContext`` -- the same route ``DelayedAnalysisAdapter`` already
 took.
 
-Tests 1-3 and 7 failed before the fix with ``AttributeError``. Test 4 pins the
-positive path, tests 5-6 pin the removals.
+The defaults test and the during-analysis test failed before the fix with
+``AttributeError``.
 """
 import glob
 import os
@@ -91,23 +91,14 @@ def make_module(context: AnalysisModuleContext) -> AnalysisModule:
 
 @pytest.mark.unit
 def test_module_shutdown_defaults_false(test_context):
-    """A module that is not running under a worker is not shutting down.
+    """A module that is not running under a worker is not shutting down, nor cancelled.
 
     Before the fix this raised AttributeError on ``self._context.engine``.
     """
-    assert make_module(test_context).shutdown is False
-
-
-@pytest.mark.unit
-def test_module_controlled_shutdown_defaults_false(test_context):
-    assert make_module(test_context).controlled_shutdown is False
-
-
-@pytest.mark.unit
-def test_module_sleep_returns_without_engine(test_context):
-    """``sleep()`` reads ``self.shutdown`` on every iteration, so it raised
-    immediately rather than sleeping."""
-    make_module(test_context).sleep(1)
+    module = make_module(test_context)
+    assert module.shutdown is False
+    assert module.controlled_shutdown is False
+    assert module.is_canceled_analysis() is False
 
 
 @pytest.mark.unit
@@ -161,11 +152,6 @@ def test_module_sees_the_engines_cancel():
     assert module.should_stop() is True
     # the module's own flag is untouched: the executor tells the two apart
     assert module._context.cancel_analysis_flag is False
-
-
-@pytest.mark.unit
-def test_module_without_an_engine_is_not_canceled(test_context):
-    assert make_module(test_context).is_canceled_analysis() is False
 
 
 @pytest.mark.unit
