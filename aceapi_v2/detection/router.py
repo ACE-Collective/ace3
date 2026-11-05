@@ -76,8 +76,9 @@ async def create_detection(
     except service.DetectionAlreadyExists as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
-    log_audit("user %s added detection %s for %s %r: %s",
-              auth.auth_name, detection.id, detection.type, detection.value, detection_context,
+    log_audit("user %s added detection %s for %s %r expiring %s: %s",
+              auth.auth_name, detection.id, detection.type, detection.value, detection.expires_on or "never",
+              detection_context,
               auth=auth, detection_id=detection.id, observable_type=detection.type, observable_value=detection.value)
     return detection
 

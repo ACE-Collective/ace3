@@ -93,6 +93,11 @@ def test_observable_type_expiration_time_is_the_detection_default(monkeypatch):
     finally:
         del get_config().observable_expiration_mappings[F_TEST]
 
+    # a type mapped to null never expires, whatever the global default
+    monkeypatch.setitem(config.observable_expiration_mappings, F_TEST, None)
+    assert get_observable_type_expiration_time(F_TEST) is None
+    monkeypatch.delitem(config.observable_expiration_mappings, F_TEST)
+
     monkeypatch.setattr(config, "observable_expiration_default", None)
     assert get_observable_type_expiration_time(F_TEST) is None
 

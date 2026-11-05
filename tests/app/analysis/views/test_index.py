@@ -1,6 +1,6 @@
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from flask import url_for
 from jinja2 import ChoiceLoader, DictLoader
@@ -21,6 +21,7 @@ from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING, AN
 from saq.database.model import Alert, Observable as DBObservable
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
+from saq.database.util.observable_detection import create_observable_detection
 from saq.gui import alert_actions
 from saq.gui.alert_actions import AlertAction, register_alert_action
 from saq.observables.testing import TestObservable
@@ -756,11 +757,39 @@ def test_index_renders_detection_and_interesting_actions(
     body = result.data.decode("utf-8")
     assert "Disable observable for future detection" in body
     assert "Enable observable for future detection" not in body
+    assert "(detect enabled" in body
+    assert "(detection expired" not in body
 
     # disable and adjust-expiration address the detection by id through /api/v2/detection, and the
     # expiration dialog opens with the detection's current expiration
     assert f'aceApi.del("/detection/{detection_id}")' in body
     assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection_id},\s*"2099-01-02 03:04:05"\)', body)
+
+
+@pytest.mark.integration
+def test_index_labels_an_expired_detection_expired(
+    web_client, root_analysis, test_context,
+):
+    """An expired detection no longer fires, so the page must not call it enabled; disable and
+    adjust-expiration stay offered, since the row still exists and enable would be refused."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    detection = create_observable_detection(
+        test_observable.type, test_observable.value, get_config().global_settings.automation_user_id,
+        detection_context="enabled by tester", expires_on=datetime(2020, 1, 2, 3, 4, 5))
+
+    result = web_client.get(
+        url_for("analysis.index"),
+        query_string={"direct": root_analysis.uuid},
+    )
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "(detection expired" in body
+    assert "(detect enabled" not in body
+    assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection.id},\s*"2020-01-02 03:04:05"\)', body)
 
 
 @pytest.mark.integration
@@ -788,23 +817,33 @@ def test_index_enable_detection_action_posts_to_the_api(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("default_lifetime,days", [("14:00:00:00", 14), (None, None)])
 def test_index_enable_detection_prefills_configured_expiration(
-    web_client, root_analysis, test_context, monkeypatch,
+    web_client, root_analysis, test_context, monkeypatch, default_lifetime, days,
 ):
-    from saq.gui.observable_actions import detection
-
-    monkeypatch.setattr(detection, "default_detection_expiration",
-                        lambda observable_type: datetime(2099, 3, 4, 5, 6, 7))
+    """The enable dialog opens with the configured default, or with "never expires" when the
+    default is null (the setting that keeps the old behavior)."""
+    monkeypatch.setattr(get_config(), "observable_expiration_default", default_lifetime)
+    monkeypatch.setattr(get_config(), "observable_expiration_mappings", {})
     _run_basic_analyzer(root_analysis, test_context)
     root_analysis.save()
     ALERT(root_analysis)
 
+    before = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
     result = web_client.get(
         url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
     assert result.status_code == 200
     body = result.data.decode("utf-8")
-    assert re.search(r'show_enable_detection_modal_for\(\{.*?\}, "2099-03-04 05:06:07"\)',
-                     body, re.DOTALL)
+    prefills = re.findall(r'show_enable_detection_modal_for\(\{.*?\}, (null|"[^"]*")\)', body, re.DOTALL)
+    assert prefills
+    if days is None:
+        assert set(prefills) == {"null"}
+    else:
+        assert "null" not in prefills
+        for prefill in prefills:
+            expires_on = datetime.strptime(prefill.strip('"'), "%Y-%m-%d %H:%M:%S")
+            assert before + timedelta(days=days) <= expires_on <= after + timedelta(days=days)
 
 
 @pytest.mark.integration

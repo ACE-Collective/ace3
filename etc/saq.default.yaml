@@ -2945,7 +2945,7 @@ observable_expiration_default: "90:00:00:00"
 # This is only a default for *new* detections -- it is never applied retroactively, and re-enabling
 # an existing detection does not reset its expiration.
 #
-# format: <observable_type>: "DD:HH:MM:SS"
+# format: <observable_type>: "DD:HH:MM:SS", or null for detections of that type that never expire
 observable_expiration_mappings: {}
   #ipv4: "14:00:00:00"
 

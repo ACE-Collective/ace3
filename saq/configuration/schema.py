@@ -952,6 +952,10 @@ REMOVED_DISPOSITION_CONFIG_KEYS = (
 DISPOSITION_NAME_MAX_LENGTH = 64  # alerts.disposition
 
 
+# DD:HH:MM:SS as create_timedelta parses it, checked at load because the alert page computes it on render
+DetectionLifetime = Annotated[Optional[str], Field(pattern=r"^\d+(?::\d+){0,3}$")]
+
+
 class ACEConfig(BaseModel):
     global_settings: GlobalConfig = Field(alias="global")
     fixed_directives: list[str] = Field(default_factory=list, description="Directives that cannot be copied between observables via copy_directives_to.")
@@ -1025,8 +1029,8 @@ class ACEConfig(BaseModel):
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
     settings: Optional[SettingsConfig] = None
-    observable_expiration_default: Optional[str] = Field(default="90:00:00:00", pattern=r"^\d+(?::\d+){0,3}$", description="default lifetime for new observable detections in DD:HH:MM:SS format; null means never expire")
-    observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="per-observable-type detection lifetimes, overriding observable_expiration_default")
+    observable_expiration_default: DetectionLifetime = Field(default="90:00:00:00", description="default lifetime for new observable detections in DD:HH:MM:SS format; null means never expire")
+    observable_expiration_mappings: dict[str, DetectionLifetime] = Field(default_factory=dict, description="per-observable-type detection lifetimes, overriding observable_expiration_default; null means never expire for that type")
     events: Optional[EventsConfig] = None
     timeline: Optional[TimelineConfig] = None
     alert_routers: list[AlertRouterConfig] = Field(default_factory=list, description="alert routers to load in every process that creates or analyzes alerts, next to the built-in ones (see docs/INTEGRATIONS.md)")

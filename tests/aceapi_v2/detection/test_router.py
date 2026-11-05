@@ -248,7 +248,8 @@ class TestAudit:
         caplog.set_level(logging.INFO)
 
         created = await client.post("/detection/", json={
-            "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert"})
+            "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert",
+            "expires_on": "2099-01-02T03:04:05"})
         detection_id = created.json()["id"]
         await client.patch(f"/detection/{detection_id}/expiration", json={"expires_on": None})
         await client.delete(f"/detection/{detection_id}")
@@ -258,7 +259,8 @@ class TestAudit:
             (*client_actor, detection_id, "fqdn", "audited.example.com")] * 3
         audit = [r.getMessage() for r in records]
         assert audit == [
-            f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com': from an alert",
+            f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com' "
+            f"expiring 2099-01-02 03:04:05: from an alert",
             f"AUDIT: user unittest set the expiration of detection {detection_id} for fqdn 'audited.example.com' to never",
             f"AUDIT: user unittest removed detection {detection_id} for fqdn 'audited.example.com'",
         ]
