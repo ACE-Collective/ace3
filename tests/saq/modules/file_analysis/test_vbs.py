@@ -106,10 +106,11 @@ def test_many_large_hex_strings_of_one_length(root_analysis, tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("name, content", [("script.txt", 'x = "' + "ab" * 40 + '"\n'), ("empty.vbs", "")])
-def test_only_vbs_files(root_analysis, tmp_path, name, content):
+def test_only_vbs_files(root_analysis, tmp_path, caplog, name, content):
     vbs = _analyze(root_analysis, _vbs(tmp_path, content, name=name), "vbscript_analyzer")
 
     assert not vbs.get_and_load_analysis(VBScriptAnalysis)
+    assert not [r for r in caplog.records if "failed on" in r.getMessage()]
 
 
 #
