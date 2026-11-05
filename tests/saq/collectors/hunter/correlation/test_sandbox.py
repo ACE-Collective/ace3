@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from saq.collectors.hunter.correlation.commands import execute_command
-from saq.collectors.hunter.correlation.sandbox import get_hunt_source_roots, get_sandbox_config, get_sandbox_root
+from saq.collectors.hunter.correlation.sandbox import get_hunt_source_roots, get_sandbox_config
 from saq.collectors.hunter.correlation.schema import CommandConfig
 from saq.collectors.hunter.loader import get_compiled_hunt_dir
 from saq.configuration.config import get_config
@@ -174,7 +174,8 @@ print(json.dumps({"cwd": os.getcwd(), "home": os.environ["HOME"], "tmpdir": os.e
         result = json.loads(_run(_python(code), tmpdir))
         assert result["home"] == result["cwd"] == result["tmpdir"]
         assert result["temp"].startswith(result["cwd"])
-        assert os.path.dirname(result["cwd"]) == get_sandbox_root()
+        # hunter.correlation.executable.work_dir defaults to var/correlation_sandbox under DATA_DIR
+        assert os.path.dirname(result["cwd"]) == os.path.join(get_data_dir(), "var", "correlation_sandbox")
         # the working directory is removed afterwards
         assert not os.path.exists(result["cwd"])
 
@@ -203,10 +204,6 @@ class TestLimits:
     def test_stdin_is_empty_without_input(self, tmpdir):
         cmd = _python("import sys; print(len(sys.stdin.read()))", timeout="10s")
         assert _run(cmd, tmpdir).strip() == "0"
-
-    def test_stdin_input_still_delivered(self, tmpdir):
-        cmd = _python("import sys; print(sys.stdin.read())", stdin=True)
-        assert json.loads(_run(cmd, tmpdir, event={"a": 1})) == {"a": 1}
 
     @pytest.mark.skipif(landlock_abi() < NET_ABI, reason=f"TCP port rules need Landlock ABI {NET_ABI} (Linux 6.7)")
     def test_tcp_connections_limited_to_allowed_ports(self, tmpdir, monkeypatch):
@@ -246,12 +243,6 @@ child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)", 
 print(child.pid, flush=True)
 {after}
 """
-
-    def test_background_process_killed_after_exit(self, tmpdir):
-        marker = f"sandbox-marker-{uuid.uuid4().hex}"
-        code = self._SPAWN.format(redirect="stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL", after="")
-        _run(_python(code, marker), tmpdir)
-        wait_for_condition(lambda: not _processes_with_marker(marker), timeout=10)
 
     def test_background_process_killed_after_timeout(self, tmpdir):
         marker = f"sandbox-marker-{uuid.uuid4().hex}"

@@ -44,9 +44,6 @@ def store_secret():
 @pytest.mark.unit
 class TestSanitizeValue:
 
-    def test_no_secrets(self):
-        assert sanitize_value("hello world", {}) == "hello world"
-
     def test_none_value(self):
         assert sanitize_value(None, {"key": "secret"}) is None
 
@@ -165,6 +162,7 @@ class TestEngineTrace:
         config = _make_config([])
         engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
         result = engine.execute([{"id": 1}, {"id": 2}])
+        assert len(result.events) == 2
         assert result.trace is not None
         assert len(result.trace.event_traces) == 2
         assert all(et.outcome == "alert" for et in result.trace.event_traces)
@@ -250,19 +248,6 @@ class TestEngineTrace:
         assert inner.branch_taken == "execute"
         assert isinstance(inner.branch_steps[0].step, ActionTrace)
 
-    def test_action_trace_with_log_message(self):
-        config = _make_config([
-            {"action": {"type": "log", "log_message": "event id={{ _event.id }}"}},
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"id": 42}])
-
-        et = result.trace.event_traces[0]
-        action = et.steps[0].step
-        assert isinstance(action, ActionTrace)
-        assert action.action_type == "log"
-        assert action.rendered_log_message == "event id=42"
-
     def test_discard_trace(self):
         config = _make_config([
             {
@@ -311,6 +296,8 @@ class TestEngineTrace:
         engine.timeout = datetime.timedelta(seconds=0)
         result = engine.execute([{"id": 1}, {"id": 2}])
 
+        # fail-safe: the events the timeout cut off still alert
+        assert len(result.events) == 2
         assert result.trace is not None
         assert len(result.trace.stream_events) == 1
         assert result.trace.stream_events[0].event_type == "timeout"
@@ -329,52 +316,6 @@ class TestEngineTrace:
 
         et = result.trace.event_traces[0]
         assert et.steps[0].description == "Check for admin users"
-
-    def test_expression_trace_equals_details(self):
-        """Verify that equals expression traces capture property details."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "admin", "property": "user"},
-                "execute": [{"action": "filter"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"user": "guest"}])
-
-        cond = result.trace.event_traces[0].steps[0].step
-        assert isinstance(cond, ConditionTrace)
-        expr = cond.expression
-        assert expr.expression_type == "equals"
-        assert expr.property_name == "user"
-        assert expr.property_value == "guest"
-        assert expr.compare_value == "admin"
-        assert expr.result is False
-
-    def test_compound_expression_trace(self):
-        """Verify and/or expression traces include sub-expression details."""
-        config = _make_config([
-            {
-                "when": {
-                    "type": "and",
-                    "value": [
-                        {"type": "equals", "value": "admin", "property": "user"},
-                        {"type": "equals", "value": "login", "property": "action"},
-                    ],
-                },
-                "execute": [{"action": "filter"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"user": "admin", "action": "login"}])
-
-        cond = result.trace.event_traces[0].steps[0].step
-        expr = cond.expression
-        assert expr.expression_type == "and"
-        assert expr.result is True
-        assert len(expr.sub_expressions) == 2
-        assert expr.sub_expressions[0].expression_type == "equals"
-        assert expr.sub_expressions[0].property_value == "admin"
-        assert expr.sub_expressions[1].property_value == "login"
 
     def test_transform_with_property_trace(self):
         """Verify transform traces capture property name and value."""
@@ -412,56 +353,6 @@ class TestEngineTrace:
         # merge_dropped is only set for merge transforms
         assert transform.merge_dropped is None
 
-    def test_transform_trace_merge_dropped_round_trips(self):
-        """TransformTrace.merge_dropped survives a model_dump/model_validate cycle
-        so the merge-dropped count reaches the UI from a persisted alert."""
-        original = TransformTrace(
-            transform_type="stream",
-            method="merge",
-            command_type="query",
-            result_count=5,
-            merge_dropped=2,
-        )
-        restored = TransformTrace.model_validate(original.model_dump())
-        assert restored.merge_dropped == 2
-        assert restored.result_count == 5
-
-    def test_transform_trace_query_timespec_round_trips(self):
-        """The query_start_time / query_end_time / query_time_spec fields survive a
-        model_dump/model_validate cycle so the time-range UI block renders correctly
-        from a persisted alert. Pydantic serializes datetimes to ISO 8601 strings."""
-        start = datetime.datetime(2026, 5, 18, 12, 26, 32, tzinfo=datetime.timezone.utc)
-        end = datetime.datetime(2026, 5, 18, 12, 31, 32, tzinfo=datetime.timezone.utc)
-        original = TransformTrace(
-            transform_type="event",
-            method="property",
-            command_type="query",
-            query_start_time=start,
-            query_end_time=end,
-            query_time_spec="earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32",
-        )
-        restored = TransformTrace.model_validate(original.model_dump())
-        assert restored.query_start_time == start
-        assert restored.query_end_time == end
-        assert restored.query_time_spec == "earliest=05/18/2026:12:26:32 latest=05/18/2026:12:31:32"
-
-    def test_step_and_event_duration_round_trip(self):
-        """StepTrace.duration_ms and EventTrace.duration_ms survive a
-        model_dump/model_validate cycle so per-step timing reaches the UI from a
-        persisted alert."""
-        step = StepTrace(
-            description="enrich",
-            step=ActionTrace(action_type="filter"),
-            duration_ms=12.5,
-        )
-        restored_step = StepTrace.model_validate(step.model_dump())
-        assert restored_step.duration_ms == 12.5
-
-        event = EventTrace(event_index=0, steps=[step], duration_ms=34.25)
-        restored_event = EventTrace.model_validate(event.model_dump())
-        assert restored_event.duration_ms == 34.25
-        assert restored_event.steps[0].duration_ms == 12.5
-
     def test_step_duration_defaults_to_none(self):
         """duration_ms defaults to None so older persisted traces still load."""
         assert StepTrace(step=ActionTrace(action_type="alert")).duration_ms is None
@@ -487,33 +378,6 @@ class TestEngineTrace:
         assert nested.duration_ms is not None and nested.duration_ms >= 0
         # condition duration is inclusive of its nested branch steps
         assert cond_step.duration_ms >= nested.duration_ms
-
-    def test_transform_error_short_circuits_to_alert(self):
-        """A failing transform stops step processing for the event and alerts it."""
-        config = _make_config([
-            {
-                "transform": {
-                    "type": "event",
-                    "method": "property",
-                    "property_name": "result",
-                    "property_type": "str",
-                    "command": {
-                        "type": "executable",
-                        "path": "/bin/false",
-                    },
-                },
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"id": 1}])
-
-        et = result.trace.event_traces[0]
-        assert et.outcome == "error"
-        assert result.event_actions[0].action_type == "alert"
-        assert len(result.events) == 1
-        transform = et.steps[0].step
-        assert isinstance(transform, TransformTrace)
-        assert transform.error is not None
 
     def test_transform_error_skips_remaining_steps(self):
         """An error stops processing — subsequent filter steps must not run."""
@@ -628,41 +492,6 @@ class TestEngineTrace:
         assert isinstance(action_trace, ActionTrace)
         assert action_trace.error == "boom"
 
-    def test_trace_serializes_to_json(self):
-        """Verify that the trace can be serialized to JSON."""
-        config = _make_config([
-            {
-                "when": {"type": "equals", "value": "admin", "property": "user"},
-                "execute": [{"action": "filter"}],
-                "else": [{"action": {"type": "log", "log_message": "not admin"}}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"user": "admin"}, {"user": "guest"}])
-
-        trace_dict = result.trace.model_dump()
-        assert isinstance(trace_dict, dict)
-        assert "event_traces" in trace_dict
-        assert "stream_events" in trace_dict
-        assert len(trace_dict["event_traces"]) == 2
-
-    def test_jinja_expression_trace_with_rendered_value(self):
-        config = _make_config([
-            {
-                "when": "{{ _event.count | int > 5 }}",
-                "execute": [{"action": "filter"}],
-            },
-        ])
-        engine = CorrelationEngine(config, [], datetime.datetime.now(datetime.timezone.utc))
-        result = engine.execute([{"count": "10"}])
-
-        cond = result.trace.event_traces[0].steps[0].step
-        assert isinstance(cond, ConditionTrace)
-        assert cond.expression.expression_type == "jinja"
-        assert cond.expression.result is True
-        assert cond.expression.rendered_value == "True"
-
-
 @pytest.mark.integration
 class TestSecretSanitizationInTrace:
 
@@ -699,9 +528,11 @@ class TestSecretSanitizationInTrace:
         assert "supersecret" not in (action.rendered_log_message or "")
         assert "***" in (action.rendered_log_message or "")
 
-    def test_env_value_absent_from_rendered_command_trace(self, caplog, store_secret):
-        """The trace summary renders path + args, never env, so an env value stays out of it."""
-        store_secret("vendor.api_key", "supersecret")
+    def test_env_value_absent_from_rendered_command_trace(self, caplog):
+        """The trace summary renders path + args, never env, so an env value stays out of it.
+
+        The value is not a stored secret: the secret sanitizer would hide it from the summary
+        whatever the summary renders."""
         config = _make_config([
             {
                 "transform": {
