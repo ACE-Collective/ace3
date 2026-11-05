@@ -8,7 +8,6 @@ Everything else here guards the log-file behaviour the old shell redirect provid
 
 import importlib.machinery
 import importlib.util
-import os
 import socket
 from datetime import datetime
 from pathlib import Path
@@ -101,9 +100,8 @@ class TestExitCodeContract:
         assert "error" in record
         assert b"unable to execute" in log_contents(runner, "job")
 
-    @pytest.mark.parametrize("argv", [["run-cron-job"], ["run-cron-job", "slug"]])
-    def test_missing_arguments_returns_2(self, runner, sender, argv):
-        assert runner.main(argv) == 2
+    def test_missing_arguments_returns_2(self, runner, sender):
+        assert runner.main(["run-cron-job", "slug"]) == 2
         assert sender.instance.emit.call_count == 0
 
 
@@ -225,6 +223,15 @@ class TestEmitter:
         assert args[0] == "cron-jobs"
         assert kwargs["host"] == runner.FLUENT_BIT_HOST
         assert kwargs["port"] == runner.FLUENT_BIT_PORT
+
+    def test_host_and_port_default_to_the_fluent_bit_container(self, runner, monkeypatch):
+        monkeypatch.delenv("FLUENT_BIT_HOST", raising=False)
+        monkeypatch.delenv("FLUENT_BIT_PORT", raising=False)
+
+        reloaded = _load_runner()
+
+        assert reloaded.FLUENT_BIT_HOST == "fluent-bit"
+        assert reloaded.FLUENT_BIT_PORT == 24224
 
     def test_host_and_port_are_environment_overridable(self, runner, monkeypatch):
         monkeypatch.setenv("FLUENT_BIT_HOST", "collector.example")

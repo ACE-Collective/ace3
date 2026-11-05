@@ -32,10 +32,10 @@ def test_pins_a_package_pip_freeze_spells_differently(pip_freeze):
     # pip freeze writes the name as the package's metadata spells it (diff_cover 11 has an underscore)
     pip_freeze("diff_cover==11.0.0\nPyJWT==2.15.1\nfakeredis==2.40.0\n")
 
-    lines = script.generate_pinned_lines(["diff-cover", "pyjwt", "fakeredis[lua]", "# a comment"],
+    lines = script.generate_pinned_lines(["diff-cover", "pyjwt", "FakeRedis[lua]", "# a comment"],
                                          script.get_installed_versions())
 
-    assert lines == ["diff-cover==11.0.0", "pyjwt==2.15.1", "fakeredis[lua]==2.40.0", "# a comment"]
+    assert lines == ["diff-cover==11.0.0", "pyjwt==2.15.1", "FakeRedis[lua]==2.40.0", "# a comment"]
 
 
 def test_check_finds_an_outdated_package_pip_freeze_spells_differently(pip_freeze, tmp_path, monkeypatch, capsys):

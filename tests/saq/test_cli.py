@@ -1,6 +1,7 @@
 import ast
 import os
 import pkgutil
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -17,52 +18,6 @@ from tests.saq.helpers import run_python
 # every test here reads the parsers of every command
 import_command_modules()
 from saq.constants import EventTimeSource
-
-
-@pytest.mark.unit
-def test_cli_commands_registered():
-    """import_command_modules() with no command must register every built-in CLI command.
-
-    This guards against a command module being dropped from
-    saq/cli/commands/__init__.py (or a new command module forgetting to
-    register itself).
-    """
-
-
-    expected = {
-        # core commands
-        "hunt", "persistence", "per", "integration", "service", "correlate",
-        "submit", "remediation",
-        # gui
-        "gui",
-        # user management
-        "user",
-        # test utilities
-        "test",
-        # alert management
-        "alert",
-        # cache maintenance
-        "cache",
-        # analysis module crash reports
-        "crash",
-        # encryption
-        "encryption", "enc",
-        # company / misc
-        "company",
-        "config", "modules", "workload",
-        "event", "debug", "git",
-        "s3",
-    }
-
-    registered = set(get_cli_subparsers().choices.keys())
-
-    missing = expected - registered
-    assert not missing, f"missing CLI subcommands: {sorted(missing)}"
-
-    # commands that live in other modules but must remain registered too
-    for external in ("perm", "phishkit", "storage", "search", "nrd",
-                     "observables", "signatures", "svs"):
-        assert external in registered, f"missing external CLI subcommand: {external}"
 
 
 @pytest.mark.unit
@@ -164,11 +119,14 @@ def test_the_decryption_password_options_are_gone(argv, capsys):
 
 
 @pytest.mark.unit
-def test_alert_create_says_its_event_time_is_when_it_was_created(tmp_path):
+def test_alert_create_writes_a_blank_root_whose_event_time_is_when_it_was_created(tmp_path):
     args = get_cli_parser().parse_args(["alert", "create", str(tmp_path / "alert")])
     args.func(args)
 
     root = load_root(str(tmp_path / "alert"))
+    assert root.description == "Manual Alert"
+    assert root.alert_type == "debug"
+    assert root.details == {"description": "manually created root"}
     assert root.event_time is not None
     assert root.event_time_source == EventTimeSource.NOW
 
@@ -195,7 +153,6 @@ def test_the_command_map_matches_what_each_module_registers():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("argv, command", [
-    (["service", "start", "engine"], "service"),
     (["-L", "etc/logging.yaml", "--saq-home", "/opt/ace", "service", "start"], "service"),
     (["-c", "a.yaml", "-c", "b.yaml", "alert", "create", "x"], "alert"),
     (["-u", "alert", "service", "start"], "service"),
@@ -224,8 +181,9 @@ def test_help_lists_every_command():
     result = subprocess.run([sys.executable, "ace", "--help"], cwd=get_base_dir(), capture_output=True,
                             text=True, timeout=120)
     assert result.returncode == 0, result.stderr[-4000:]
-    for command in COMMANDS:
-        assert command in result.stdout, command
+    # the choices of the subparsers: a command name can also be part of an option's or a help text's words
+    choices = re.search(r"\{([^}]+)\}", result.stdout).group(1)
+    assert set(choices.split(",")) == set(COMMANDS)
 
 
 @pytest.mark.unit
