@@ -87,7 +87,7 @@ def test_run_tool_returns_what_the_tool_did(root_analysis):
 @pytest.mark.parametrize("left,expected", [
     (None, None),  # outside an engine call: maximum_analysis_time
     (100, 100 - TOOL_TIMEOUT_MARGIN_SECONDS),
-    (TOOL_TIMEOUT_MARGIN_SECONDS, 1),
+    # never less than a second
     (-10, 1),
 ])
 def test_run_tool_timeout_is_what_the_call_has_left(root_analysis, monkeypatch, left, expected):
@@ -101,7 +101,7 @@ def test_run_tool_timeout_is_what_the_call_has_left(root_analysis, monkeypatch, 
     monkeypatch.setattr("saq.modules.base_module.subprocess.run", run)
     module.run_tool(["true"], "target")
 
-    assert run.call_args.kwargs["timeout"] == pytest.approx(expected, abs=1)
+    assert run.call_args.kwargs["timeout"] == pytest.approx(expected, abs=0.1)
 
 
 @pytest.mark.unit

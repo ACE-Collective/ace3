@@ -3,7 +3,7 @@ import logging
 import pytest
 
 from saq.analysis import Analysis, RootAnalysis
-from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
+from saq.constants import F_FQDN, F_IP, F_TEST, AnalysisExecutionResult
 from saq.database.util.tag_mapping import add_observable_tag_mapping
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.context import AnalysisModuleContext
@@ -41,7 +41,8 @@ def tree():
 def test_configuration_defined_tagging(tree, monkeypatch):
     root, a, b, e = tree
     monkeypatch.setattr("saq.modules.tag.get_config",
-                        lambda: type("_Config", (), {"tags": {"phish": "alert", "internal": "hidden"}})())
+                        lambda: type("_Config", (), {"tags": {"phish": "alert", "internal": "hidden",
+                                                              "urgent": "critical", "watch": "warning"}})())
     analyzer = ConfigurationDefinedTaggingAnalyzer(context=AnalysisModuleContext(root=root), config=_config())
     a.add_tag("phish")
     e.add_tag("phish")
@@ -55,6 +56,8 @@ def test_configuration_defined_tagging(tree, monkeypatch):
     assert [(d.description, d.signature_uuid) for d in root.detections] == [
         ("tag phish is configured to be alertable", ALERTABLE_TAG.uuid)]
     assert analyzer.is_alertable_tag("phish")
+    assert analyzer.is_alertable_tag("urgent")
+    assert analyzer.is_alertable_tag("watch")
     assert not analyzer.is_alertable_tag("internal")
     assert not analyzer.is_alertable_tag("unknown")
 
@@ -65,6 +68,8 @@ def test_user_defined_tagging(root_analysis):
     add_observable_tag_mapping(tagged, "known-scanner")
     add_observable_tag_mapping(tagged, "vpn")
     untagged = root_analysis.add_observable_by_spec(F_IP, "10.0.0.2")
+    # the same value as another type is another observable
+    add_observable_tag_mapping(root_analysis.add_observable_by_spec(F_TEST, "10.0.0.2"), "decoy")
     analyzer = UserDefinedTaggingAnalyzer(context=AnalysisModuleContext(root=root_analysis), config=_config())
 
     assert analyzer.valid_observable_types is None
