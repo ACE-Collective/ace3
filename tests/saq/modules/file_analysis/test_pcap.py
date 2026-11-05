@@ -898,6 +898,21 @@ def test_keylog_analyzer_skips_pcaps_it_cannot_apply_to(monkeypatch):
 
 
 @pytest.mark.unit
+def test_keylog_analyzer_skips_a_decrypted_pcap_without_an_index(monkeypatch):
+    applied = []
+    monkeypatch.setattr(pcap, "apply_keylogs", lambda *args, **kwargs: applied.append(args))
+
+    root = _new_root()
+    keylog = root.add_file_observable(SSLKEYLOG)
+    capture = root.add_file_observable(NETWORK_PCAP)
+    capture.add_analysis(PcapTlsDecryptionAnalysis())
+
+    analyzer = _adapter(pcap.TlsKeylogAnalyzer, root, ANALYSIS_MODULE_TLS_KEYLOG)
+    assert analyzer.execute_analysis(keylog) == AnalysisExecutionResult.COMPLETED
+    assert applied == []
+
+
+@pytest.mark.unit
 def test_keylog_analyzer_ignores_other_files(tmp_path):
     root = _new_root()
     observable = root.add_file_observable(NETWORK_PCAP)

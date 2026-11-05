@@ -250,6 +250,31 @@ def test_record_crash_finds_file_by_hardcopy(root_analysis):
 
 
 @pytest.mark.unit
+def test_record_crash_finds_file_through_the_saved_tree(root_analysis):
+    path = os.path.join(root_analysis.storage_dir, "extracted.bin")
+    with open(path, "w") as fp:
+        fp.write("payload")
+
+    sha256 = root_analysis.add_file_observable(path).value
+    root_analysis.save()
+    # without the content addressed copy, only the observable in the saved tree leads to the bytes
+    os.remove(os.path.join(root_analysis.storage_dir, HARDCOPY_SUBDIR, sha256))
+
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_KILLED,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        observable_type=F_FILE,
+        observable_value=sha256,
+        index=False,
+    )
+
+    metadata = _read_metadata(crash_id)
+    assert metadata["file_name"] is not None
+    assert _read(os.path.join(find_crash_report_dir(crash_id), FILE_DIR, metadata["file_name"])) == "payload"
+
+
+@pytest.mark.unit
 def test_record_crash_honors_file_size_cap(root_analysis, monkeypatch):
     """An oversized file is skipped *and says so*, rather than looking like it was never there."""
     monkeypatch.setattr(get_config().crash_reporting, "max_file_size", 4)
