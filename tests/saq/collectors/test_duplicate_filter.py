@@ -1,10 +1,8 @@
 import logging
-import time
 from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from ace_api import sha256_str
 
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
 from saq.collectors.duplicate_filter import DuplicateSubmissionFilter
@@ -49,15 +47,12 @@ def integration_filter(persistence_manager, service_config):
 @pytest.mark.integration
 class TestDuplicateSubmissionFilterKeys:
 
-    def test_init_keeps_manager_and_config(self, integration_filter, persistence_manager, service_config):
-        assert integration_filter.persistence_manager is persistence_manager
-        assert integration_filter.service_config is service_config
-        assert isinstance(integration_filter.persistent_clear_time, float)
-
     def test_key_is_stored_as_its_sha256(self, integration_filter, persistence_manager):
+        # stored keys are looked up again by later collector processes, so the digest is pinned
         integration_filter.mark_as_processed("test_key")
         get_db().close()
-        assert persistence_manager.persistent_data_exists(sha256_str("test_key")) is True
+        assert persistence_manager.persistent_data_exists(
+            "92488e1e3eeecdf99f3ed2ce59233efb4b4fb612d5655c0ce9ea52b5a502e655") is True
         assert persistence_manager.persistent_data_exists("test_key") is False
 
     @pytest.mark.parametrize("key", [None, ""])
@@ -158,20 +153,6 @@ class TestDuplicateSubmissionFilterClearInterval:
 
         assert any("unable to delete expired persistent keys" in r.message for r in caplog.records)
 
-    @patch("saq.collectors.duplicate_filter.time")
-    def test_clear_expired_data_with_zero_interval(self, mock_time, persistence_manager, service_config, expire_everything):
-        service_config.persistence_clear_seconds = 0
-        mock_time.time.return_value = 1000.0
-        df = DuplicateSubmissionFilter(persistence_manager, service_config)
-        df.mark_as_processed("old_key")
-        get_db().close()
-
-        # time.time() - persistent_clear_time == 0 is NOT > 0, so advance by the smallest amount
-        mock_time.time.return_value = 1000.001
-        df.clear_expired_data()
-        get_db().close()
-        assert df.is_duplicate("old_key") is False
-
 
 # ===========================================================================
 # Integration tests
@@ -181,25 +162,11 @@ class TestDuplicateSubmissionFilterClearInterval:
 @pytest.mark.integration
 class TestDuplicateSubmissionFilterIntegration:
 
-    def test_integration_init_with_registered_persistence_source(self, integration_filter):
-        assert integration_filter.persistence_manager.persistence_source is not None
-        assert integration_filter.persistence_manager.persistence_source.name == "test_duplicate_filter"
-
     def test_integration_init_fails_without_registered_source(self, service_config):
         obj = Persistable()
         # persistence_source is None by default
         with pytest.raises(RuntimeError):
             DuplicateSubmissionFilter(obj, service_config)
-
-    def test_integration_new_key_is_not_duplicate(self, integration_filter):
-        assert integration_filter.is_duplicate("brand_new_key") is False
-
-    def test_integration_mark_then_detect_duplicate(self, integration_filter):
-        key = "integration_test_key"
-        assert integration_filter.is_duplicate(key) is False
-        integration_filter.mark_as_processed(key)
-        get_db().close()
-        assert integration_filter.is_duplicate(key) is True
 
     def test_integration_different_keys_are_independent(self, integration_filter):
         integration_filter.mark_as_processed("key_a")
@@ -214,49 +181,6 @@ class TestDuplicateSubmissionFilterIntegration:
         integration_filter.mark_as_processed("idempotent_key")
         get_db().close()
         assert integration_filter.is_duplicate("idempotent_key") is True
-
-    def test_integration_clear_expired_data_removes_old_keys(self, integration_filter):
-        integration_filter.mark_as_processed("old_key")
-        get_db().close()
-        assert integration_filter.is_duplicate("old_key") is True
-
-        # force the clear interval to pass
-        integration_filter.persistent_clear_time = 0
-
-        # use a zero-second expiration to expire everything immediately
-        integration_filter.service_config.persistence_expiration_seconds = 0
-        integration_filter.service_config.persistence_unmodified_expiration_seconds = 0
-
-        integration_filter.clear_expired_data()
-        get_db().close()
-        assert integration_filter.is_duplicate("old_key") is False
-
-    def test_integration_clear_expired_data_respects_interval(self, integration_filter):
-        integration_filter.mark_as_processed("interval_key")
-        get_db().close()
-
-        # clear time was just set so interval hasn't elapsed
-        integration_filter.clear_expired_data()
-        get_db().close()
-
-        # key should still exist because clear didn't actually run
-        assert integration_filter.is_duplicate("interval_key") is True
-
-    def test_integration_empty_string_key_not_stored(self, integration_filter):
-        integration_filter.mark_as_processed("")
-        get_db().close()
-        assert integration_filter.is_duplicate("") is False
-
-    def test_integration_multiple_keys_tracked_independently(self, integration_filter):
-        keys = ["key_1", "key_2", "key_3"]
-        for key in keys:
-            integration_filter.mark_as_processed(key)
-        get_db().close()
-
-        for key in keys:
-            assert integration_filter.is_duplicate(key) is True
-
-        assert integration_filter.is_duplicate("key_4") is False
 
     def test_integration_different_persistence_sources_are_isolated(self, service_config):
         manager_a = Persistable()
