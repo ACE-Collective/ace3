@@ -15,7 +15,7 @@ from saq.database.model import (
     ObservableTagIndex,
     Tag as DBTag,
 )
-from saq.database.pool import get_db
+from saq.database.private_session import private_transaction
 
 # detection points sitting on the observable itself or on one of its analyses; a root-level
 # detection says the alert fired, not that this observable is why
@@ -63,12 +63,22 @@ def find_queue_sightings(
     indicator_tags on the observable there, or a detection point attributed to the observable
     (or to one of its analyses). Indicator tags are found in every alert; the rest only in the
     scan_limit newest, so a very common observable costs a bounded lookup.
+
+    The lookup runs in a private transaction: it is called from inside analysis, where the
+    thread-shared get_db() session may hold other modules' uncommitted work, and a failure here
+    must roll back only this read.
     """
+    with private_transaction() as db:
+        return _find_queue_sightings(db, observable_types, sha256_bytes, queue, exclude_alert_uuid,
+                                     indicator_tags, scan_limit)
+
+
+def _find_queue_sightings(db, observable_types, sha256_bytes, queue, exclude_alert_uuid, indicator_tags,
+                          scan_limit) -> QueueSightings:
     from saq.util.time import local_time
 
     result = QueueSightings(queue=queue)
     types = sorted(set(observable_types))
-    db = get_db()
 
     db_observables = db.query(DBObservable.id, DBObservable.is_interesting).filter(
         DBObservable.sha256 == sha256_bytes,
