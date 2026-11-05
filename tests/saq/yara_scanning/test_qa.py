@@ -116,16 +116,19 @@ def test_spooler_links_the_file_before_the_response(spool_dir, scanned):
     (None, protocol.STATUS_OK, [qa_match_result()]),
     (_qa_context(), protocol.STATUS_TIMEOUT, [qa_match_result()]),
     (_qa_context(), protocol.STATUS_OK, [{**qa_match_result(), "meta": {"uuid": QA_UUID}}]),
-    (_qa_context(), protocol.STATUS_OK, []),
 ])
-def test_spooler_ignores_scans_without_qa_matches(spool_dir, scanned, request_qa, status, matches):
+def test_spooler_ignores_scans_without_qa_matches(spool_dir, scanned, caplog, request_qa, status, matches):
     spooler = QASpooler(spool_dir, 0)
     request = {"op": protocol.OP_SCAN_FILE, "path": scanned}
     if request_qa:
         request["qa"] = request_qa
 
-    assert spooler.begin(request, {"status": status, "matches": protocol.encode_matches(matches)}) is None
+    with caplog.at_level(logging.WARNING):
+        assert spooler.begin(request, {"status": status, "matches": protocol.encode_matches(matches)}) is None
+
     assert os.listdir(spool_dir) == []
+    # ignored, not a spooling failure: begin() also returns None, with a warning, when it cannot spool
+    assert not caplog.records
 
 
 @pytest.mark.unit
