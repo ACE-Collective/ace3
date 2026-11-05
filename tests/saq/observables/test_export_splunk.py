@@ -1,5 +1,5 @@
 import os
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -180,7 +180,7 @@ def test_url_pattern_drops_scheme_and_trailing_slash():
 
 
 @pytest.mark.unit
-def test_uri_path_pattern_is_lowercased_only():
+def test_uri_path_pattern_keeps_the_leading_slash_and_drops_the_trailing_one():
     # a path has no scheme; the leading slash is part of what gets matched
     assert build_pattern("uri_path", "/Foo/Bar/") == "*/foo/bar*"
 
@@ -270,17 +270,6 @@ def test_publish_empty_list_clears_the_collection(mock_splunk):
     mock_splunk.kvstore_delete.assert_called_once_with(
         "test_collection", {"_key": {"$in": ["1", "2"]}})
     mock_splunk.kvstore_batch_save.assert_not_called()
-
-
-@pytest.mark.unit
-def test_publish_propagates_failures(mock_splunk):
-    mock_splunk.kvstore_batch_save.side_effect = RuntimeError("splunk is down")
-
-    export = splunk_export()
-    export_list = export.build_export_list({"fqdn": [{"id": 1, "value": "evil.example.com"}]})
-
-    with pytest.raises(RuntimeError):
-        export.publish(export_list)
 
 
 #

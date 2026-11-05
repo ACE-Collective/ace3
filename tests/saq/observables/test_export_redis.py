@@ -50,7 +50,7 @@ def test_build_export_list_does_not_filter():
 
 
 @pytest.mark.unit
-def test_record_fingerprint_is_a_noop(fake_redis, live_db):
+def test_record_fingerprint_is_a_noop(live_db):
     # publish() records it atomically with the data, so this must not write a second copy
     redis_export().record_fingerprint("abc123")
     assert live_db.get(FINGERPRINT_KEY) is None
@@ -82,6 +82,14 @@ def test_export_replaces_the_previous_generation(no_detections, live_db):
     assert run_exports(["redis"]) == os.EX_OK
     assert live_db.get(f"{F_TEST}:stale_value") is None
     assert live_db.get(f"{F_TEST}:fresh_value") is not None
+
+    # the scratch database now holds the generation with stale_value in it, so the next rebuild only
+    # leaves it out if it starts from an empty database
+    create_observable_detection(F_TEST, "third_value", None)
+    assert run_exports(["redis"]) == os.EX_OK
+    assert live_db.get(f"{F_TEST}:stale_value") is None
+    assert live_db.get(f"{F_TEST}:fresh_value") is not None
+    assert live_db.get(f"{F_TEST}:third_value") is not None
 
 
 @pytest.mark.integration
