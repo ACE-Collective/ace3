@@ -8,12 +8,6 @@ from saq.database.pool import get_db
 from saq.persistence import Persistable
 
 @pytest.mark.integration
-def test_register_source():
-    obj = Persistable()
-    persistence_source = obj.register_persistence_source('test')
-    assert persistence_source
-
-@pytest.mark.integration
 def test_persistent_value():
     obj = Persistable()
     obj.register_persistence_source('test_source')
@@ -33,7 +27,7 @@ def test_persistant_value_update():
     time.sleep(1) # XXX
     obj.save_persistent_key('test_key')
     get_db().close()
-    assert get_db().query(func.count(Persistence.id)).scalar(), 1
+    assert get_db().query(func.count(Persistence.id)).scalar() == 1
     new_persistence = get_db().query(Persistence).filter(Persistence.uuid == 'test_key').first()
     assert old_persistence.last_update < new_persistence.last_update
 

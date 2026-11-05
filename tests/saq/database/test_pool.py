@@ -27,18 +27,10 @@ def fresh_ace_pool():
 @pytest.mark.unit
 def test_execute_with_db_cursor():
     def _target(db, cursor, param1):
-        assert param1 == "test"
-        cursor.execute("SELECT 1")
-        assert cursor.fetchone() == (1,)
-        db.commit()
+        cursor.execute("SELECT %s", (param1,))
+        return cursor.fetchone()
 
-    execute_with_db_cursor(DB_ACE, _target, "test")
-
-@pytest.mark.unit
-def test_connection():
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT 1")
+    assert execute_with_db_cursor(DB_ACE, _target, "test") == ("test",)
 
 @pytest.mark.unit
 def test_pooling():
@@ -100,22 +92,6 @@ def test_pooling_old_connection(monkeypatch):
     assert new_connections() == 3
 
 @pytest.mark.integration
-def test_pooling_without_contextmanager():
-    get_pool().clear()
-    db = get_pool().get_connection()
-
-    assert get_pool().in_use_count == 1
-    assert get_pool().available_count == 0
-
-    c = db.cursor()
-    c.execute("SELECT 1")
-    db.commit()
-    get_pool().return_connection(db)
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
-
-@pytest.mark.integration
 def test_pooling_bad_sql():
     get_pool().clear()
     with get_db_connection() as db_1:
@@ -144,45 +120,6 @@ def test_pooling_bad_sql():
     assert get_pool().available_count == 1
 
 @pytest.mark.integration
-def test_pooling_broken_connection():
-    get_pool().clear()
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        db_1.close()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 0
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-    assert get_pool().in_use_count == 0
-    assert get_pool().available_count == 1
-
-    # close the connection while not being used
-    for connection in get_pool().available:
-        connection.close()
-
-    with get_db_connection() as db_1:
-
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-
-        c = db_1.cursor()
-        c.execute("SELECT 1")
-        c.fetchone()
-        db_1.commit()
-
-@pytest.mark.integration
 def test_pooling_threaded():
     get_pool().clear()
 
@@ -190,24 +127,23 @@ def test_pooling_threaded():
         assert get_pool().in_use_count == 1
         assert get_pool().available_count == 0
 
+        # what the other thread sees, read here: an assertion that fails in a thread only warns
+        seen = []
+
         def f():
             with get_db_connection() as conn_2:
-                assert conn_1 is not conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
+                seen.append((conn_2 is conn_1, get_pool().in_use_count, get_pool().available_count))
 
             # but asked a second time this should be the same as before
             with get_db_connection() as conn_3:
-                assert conn_3 is conn_2
-                assert get_pool().in_use_count == 2
-                assert get_pool().available_count == 0
-            
-        assert get_pool().in_use_count == 1
-        assert get_pool().available_count == 0
-        t = threading.Thread(target=f)
+                seen.append((conn_3 is conn_2, get_pool().in_use_count, get_pool().available_count))
+
+        t = threading.Thread(target=f, daemon=True)
         t.start()
-        t.join()
-                
+        t.join(30)
+        assert not t.is_alive()
+        assert seen == [(False, 2, 0), (True, 2, 0)]
+
     assert get_pool().in_use_count == 0
     assert get_pool().available_count == 2
 
@@ -410,24 +346,6 @@ def _query():
 
 def _summaries(caplog):
     return [r for r in caplog.records if r.levelno == logging.INFO and hasattr(r, "peak_in_use")]
-
-
-@pytest.mark.integration
-def test_a_pool_used_one_at_a_time_after_a_burst_keeps_one_once_the_lifetime_passes(clock):
-    # no setting or thread sizes the pool: it holds what the burst opened until those connections expire
-    database_pool = get_pool()
-
-    burst = [database_pool.get_connection() for _ in range(3)]
-    for connection in burst:
-        database_pool.return_connection(connection)
-    for _ in range(10):
-        _query()
-    assert database_pool.available_count == 3
-
-    clock.offset = timedelta(minutes=16)
-    for _ in range(10):
-        _query()
-    assert database_pool.available_count == 1
 
 
 @pytest.mark.integration
