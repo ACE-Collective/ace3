@@ -1025,7 +1025,8 @@ class ACEConfig(BaseModel):
     tags: Optional[dict[str, str]] = None
     tag_css_class: Optional[dict[str, str]] = None
     settings: Optional[SettingsConfig] = None
-    observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="dictionary of observable types and their expiration mappings")
+    observable_expiration_default: Optional[str] = Field(default="90:00:00:00", pattern=r"^\d+(?::\d+){0,3}$", description="default lifetime for new observable detections in DD:HH:MM:SS format; null means never expire")
+    observable_expiration_mappings: dict[str, str] = Field(default_factory=dict, description="per-observable-type detection lifetimes, overriding observable_expiration_default")
     events: Optional[EventsConfig] = None
     timeline: Optional[TimelineConfig] = None
     alert_routers: list[AlertRouterConfig] = Field(default_factory=list, description="alert routers to load in every process that creates or analyzes alerts, next to the built-in ones (see docs/INTEGRATIONS.md)")

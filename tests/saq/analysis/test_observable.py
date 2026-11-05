@@ -73,11 +73,15 @@ def test_ingest_does_not_stamp_observable_expiration(db_event):
 
 
 @pytest.mark.integration
-def test_observable_type_expiration_time_is_the_detection_default():
+def test_observable_type_expiration_time_is_the_detection_default(monkeypatch):
     """observable_expiration_mappings is a detection's default lifetime."""
     from saq.analysis.observable import get_observable_type_expiration_time
 
-    assert get_observable_type_expiration_time(F_TEST) is None
+    config = get_config()
+    monkeypatch.setattr(config, "observable_expiration_default", "90:00:00:00")
+    expires_on = get_observable_type_expiration_time(F_TEST)
+    delta = expires_on - datetime.datetime.now(datetime.UTC)
+    assert datetime.timedelta(days=89, hours=23) < delta <= datetime.timedelta(days=90)
 
     get_config().observable_expiration_mappings[F_TEST] = '01:00:00:00'
     try:
@@ -88,6 +92,9 @@ def test_observable_type_expiration_time_is_the_detection_default():
         assert datetime.timedelta(hours=23) < delta < datetime.timedelta(hours=25)
     finally:
         del get_config().observable_expiration_mappings[F_TEST]
+
+    monkeypatch.setattr(config, "observable_expiration_default", None)
+    assert get_observable_type_expiration_time(F_TEST) is None
 
 
 @pytest.mark.unit

@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
@@ -230,8 +230,18 @@ def test_new_detection_gets_the_configured_per_type_default_expiration(test_user
 
 
 @pytest.mark.integration
-def test_new_detection_of_an_unmapped_type_never_expires(test_user):
-    """The default configuration maps nothing, so detections never expire unless told to."""
+def test_new_detection_of_an_unmapped_type_uses_global_default(test_user, monkeypatch):
+    monkeypatch.setattr(get_config(), "observable_expiration_default", "90:00:00:00")
+    before = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    detection = create_observable_detection("fqdn", "unmapped.example.com", test_user.id)
+    after = datetime.now(UTC).replace(tzinfo=None)
+    # MySQL rounds this column to whole seconds.
+    assert before + timedelta(days=90) <= detection.expires_on <= after + timedelta(days=90, seconds=1)
+
+
+@pytest.mark.integration
+def test_new_detection_can_have_no_global_expiration(test_user, monkeypatch):
+    monkeypatch.setattr(get_config(), "observable_expiration_default", None)
     detection = create_observable_detection("fqdn", "unmapped.example.com", test_user.id)
     assert detection.expires_on is None
 

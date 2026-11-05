@@ -139,9 +139,9 @@ def _identity_from_observable(observable: Observable) -> DetectionIdentity:
 
 
 def default_detection_expiration(observable_type: str) -> Optional[datetime]:
-    """How long a new detection of this type should live, per `observable_expiration_mappings`.
+    """Expiration for a new detection, using a type override or the global default lifetime.
 
-    Returns None -- never expires -- for a type with no mapping, which is the default configuration.
+    Returns None -- never expires -- when the configured lifetime is null.
     """
     return get_observable_type_expiration_time(observable_type)
 

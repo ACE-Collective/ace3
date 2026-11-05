@@ -817,8 +817,9 @@ class Observable(BaseNode):
         return str(self).__hash__() # XXX this isn't right, is it?
 
 def get_observable_type_expiration_time(observable_type: str) -> Union[datetime, None]:
-    """Calculates the observable expiration datetime based on now + the configured time delta for this observable type."""
-    delta = get_config().observable_expiration_mappings.get(observable_type)
+    """Calculates a new detection's expiration using its type override or the global lifetime."""
+    config = get_config()
+    delta = config.observable_expiration_mappings.get(observable_type, config.observable_expiration_default)
 
     if delta:
         return datetime.now(UTC) + create_timedelta(delta)

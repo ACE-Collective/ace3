@@ -781,8 +781,30 @@ def test_index_enable_detection_action_posts_to_the_api(
 
     body = result.data.decode("utf-8")
     assert "Enable observable for future detection" in body
-    assert 'aceApi.post("/detection/", {' in body
+    assert 'show_enable_detection_modal_for({' in body
     assert f'value: "{test_observable.value}"' in body
+    assert 'id="detection_expiration_new"' in body
+    assert 'name="observable_expiration_time"' in body
+
+
+@pytest.mark.integration
+def test_index_enable_detection_prefills_configured_expiration(
+    web_client, root_analysis, test_context, monkeypatch,
+):
+    from saq.gui.observable_actions import detection
+
+    monkeypatch.setattr(detection, "default_detection_expiration",
+                        lambda observable_type: datetime(2099, 3, 4, 5, 6, 7))
+    _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(
+        url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+    body = result.data.decode("utf-8")
+    assert re.search(r'show_enable_detection_modal_for\(\{.*?\}, "2099-03-04 05:06:07"\)',
+                     body, re.DOTALL)
 
 
 @pytest.mark.integration

@@ -773,13 +773,34 @@ function edit_observable_comment(commentId, element) {
     modal.show();
 }
 
+var detection_to_enable = null;
+
 // currentExpiration is "YYYY-MM-DD HH:MM:SS" (UTC), or null for a detection that never expires
 function show_detection_expiration_modal_for(detectionId, currentExpiration) {
+    detection_to_enable = null;
     $('#detection_expiration_id').val(detectionId.toString());
+    $('#detection_expiration_modal_label').text('Adjust Detection Expiration');
+    $('#detection_expiration_current_label').text('Current expiration (UTC)');
+    $('#detection_expiration_observable').text('');
+    $('#btn-save-detection-expiration').text('Save').prop('disabled', false);
     $('#detection_expiration_current').val(currentExpiration || 'never');
-    $('#detection_expiration_new').val('').prop('disabled', false);
-    $('#detection_expiration_never').prop('checked', false);
-    var modal = new bootstrap.Modal(document.getElementById('detection_expiration_modal'));
+    $('#detection_expiration_new').val(currentExpiration || '').prop('disabled', !currentExpiration);
+    $('#detection_expiration_never').prop('checked', !currentExpiration);
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('detection_expiration_modal'));
+    modal.show();
+}
+
+function show_enable_detection_modal_for(observable, defaultExpiration) {
+    detection_to_enable = observable;
+    $('#detection_expiration_id').val('');
+    $('#detection_expiration_modal_label').text('Enable Observable Detection');
+    $('#detection_expiration_current_label').text('Default expiration (UTC)');
+    $('#detection_expiration_observable').text(observable.type + ': ' + observable.value);
+    $('#btn-save-detection-expiration').text('Enable detection').prop('disabled', false);
+    $('#detection_expiration_current').val(defaultExpiration || 'never');
+    $('#detection_expiration_new').val(defaultExpiration || '').prop('disabled', !defaultExpiration);
+    $('#detection_expiration_never').prop('checked', !defaultExpiration);
+    var modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('detection_expiration_modal'));
     modal.show();
 }
 
@@ -792,7 +813,7 @@ function submit_detection_expiration() {
     var expiresOn = null;
     if (!$('#detection_expiration_never').is(':checked')) {
         var value = $('#detection_expiration_new').val().trim();
-        if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+        if (!moment.utc(value, 'YYYY-MM-DD HH:mm:ss', true).isValid()) {
             alert('Enter the new expiration as YYYY-MM-DD HH:MM:SS (UTC), or check "Never expires".');
             return;
         }
@@ -800,9 +821,16 @@ function submit_detection_expiration() {
         expiresOn = value.replace(' ', 'T');
     }
 
-    aceApi.patch('/detection/' + detectionId + '/expiration', {expires_on: expiresOn})
+    $('#btn-save-detection-expiration').prop('disabled', true);
+    var request = detection_to_enable
+        ? aceApi.post('/detection/', Object.assign({}, detection_to_enable, {expires_on: expiresOn}))
+        : aceApi.patch('/detection/' + detectionId + '/expiration', {expires_on: expiresOn});
+    request
         .then(function() { window.location.reload(); })
-        .catch(function(error) { alert(error.message); });
+        .catch(function(error) {
+            $('#btn-save-detection-expiration').prop('disabled', false);
+            alert(error.message);
+        });
 }
 
 // This is kind of gross, but it does the job until we have proper searching/filtering routes.

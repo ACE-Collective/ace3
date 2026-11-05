@@ -2935,10 +2935,12 @@ integrations: {}
 settings:
   refresh_seconds: 60
 
-# How long a new observable detection of a given type lives before it stops firing, as a time delta
-# in DD:HH:MM:SS format. Applied when a detection is created without an explicit expiration; a type
-# that is not listed here produces detections that never expire. An analyst can always override the
-# expiration on an individual detection.
+# How long a new observable detection lives before it stops firing, in DD:HH:MM:SS format.
+# Applies to every observable type unless overridden below. Set to null for no expiration.
+# Analysts can review/change the date when enabling detection from an alert, and adjust it later.
+observable_expiration_default: "90:00:00:00"
+#
+# Optional per-type overrides. Types not listed here use observable_expiration_default.
 #
 # This is only a default for *new* detections -- it is never applied retroactively, and re-enabling
 # an existing detection does not reset its expiration.
