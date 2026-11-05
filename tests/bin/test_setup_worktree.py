@@ -1,5 +1,6 @@
 """Tests for bin/setup-worktree.sh, which gives a git worktree the integration repositories,
-integration test links, local/ and .worktreeinclude files that the main checkout has outside of git.
+integration test links, local/, .worktreeinclude files and skills that the main checkout and the user
+have outside of git.
 
 Each test builds a throwaway main checkout with one integration repository and runs the real
 script from a worktree of it.
@@ -38,6 +39,15 @@ def _add_worktree(main: Path, name: str) -> Path:
     path = main / ".claude" / "worktrees" / name
     _git(main, "worktree", "add", "--quiet", "--detach", str(path))
     return path
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch) -> Path:
+    """a home directory of the test's own, so the real user's skills stay out of its worktrees"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
 
 
 @pytest.fixture
@@ -278,3 +288,126 @@ def test_reports_a_worktreeinclude_path_it_cannot_copy(main):
     assert result.returncode == 1
     assert "ssl: copied" not in result.stdout
     assert "ca.pem" in result.stderr
+
+
+def _make_skill(skills_dir: Path, name: str, text: str = "a skill") -> Path:
+    skill = skills_dir / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(text)
+    return skill
+
+
+def _skill_text(worktree: Path, name: str) -> str:
+    return (worktree / ".claude" / "skills" / name / "SKILL.md").read_text()
+
+
+def test_links_the_skills_of_the_main_checkout_and_the_user(main, home, tmp_path):
+    _make_skill(main / ".claude" / "skills", "ignored", "from the main checkout")
+    elsewhere = _make_skill(tmp_path / "another-repo", "linked", "through the main checkout's link")
+    (main / ".claude" / "skills" / "linked").symlink_to(elsewhere)
+    _make_skill(home / ".claude" / "skills", "personal", "from the user")
+    worktree = _add_worktree(main, "wt")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert _skill_text(worktree, "ignored") == "from the main checkout"
+    assert _skill_text(worktree, "linked") == "through the main checkout's link"
+    assert _skill_text(worktree, "personal") == "from the user"
+    # a session's first turn lists only the skills that existed before this hook ran, so the hook's
+    # output is the only way that turn learns of them
+    assert "skills: linked 3" in result.stdout
+    for name in ("ignored", "linked", "personal"):
+        assert name in result.stdout
+    assert ".claude/skills/<name>/SKILL.md" in result.stdout
+
+
+def test_skill_links_of_a_worktree_inside_the_checkout_are_relative(main):
+    # relative, so they resolve in the dev container, which mounts the main checkout at /opt/ace
+    _make_skill(main / ".claude" / "skills", "ignored")
+    worktree = _add_worktree(main, "wt")
+
+    _run(worktree)
+
+    assert os.readlink(worktree / ".claude" / "skills" / "ignored") == "../../../../../.claude/skills/ignored"
+
+
+def test_links_skills_into_a_worktree_outside_the_checkout(main, tmp_path):
+    _make_skill(main / ".claude" / "skills", "ignored", "from the main checkout")
+    worktree = tmp_path / "elsewhere" / "wt"
+    _git(main, "worktree", "add", "--quiet", "--detach", str(worktree))
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert _skill_text(worktree, "ignored") == "from the main checkout"
+
+
+def test_a_skill_in_the_worktree_wins_over_both_links(main, home):
+    _make_skill(main / ".claude" / "skills", "tracked", "the branch's")
+    _git(main, "add", "-f", ".claude/skills/tracked")
+    _git(main, "commit", "--quiet", "-m", "a tracked skill")
+    worktree = _add_worktree(main, "wt")
+    (worktree / ".claude" / "skills" / "tracked" / "SKILL.md").write_text("this worktree's edit")
+    _make_skill(home / ".claude" / "skills", "tracked", "the user's")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not (worktree / ".claude" / "skills" / "tracked").is_symlink()
+    assert _skill_text(worktree, "tracked") == "this worktree's edit"
+
+
+def test_the_main_checkout_wins_over_the_user_for_a_skill_they_both_have(main, home):
+    _make_skill(main / ".claude" / "skills", "both", "the repository's")
+    _make_skill(home / ".claude" / "skills", "both", "the user's")
+    worktree = _add_worktree(main, "wt")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert _skill_text(worktree, "both") == "the repository's"
+    assert "skills: linked 1" in result.stdout
+
+
+def test_skips_what_is_not_a_skill(main, home, tmp_path):
+    (home / ".claude" / "skills" / "no-skill-file").mkdir(parents=True)
+    (main / ".claude" / "skills").mkdir(parents=True)
+    (main / ".claude" / "skills" / "dangling").symlink_to(tmp_path / "gone")
+    worktree = _add_worktree(main, "wt")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not (worktree / ".claude" / "skills" / "no-skill-file").is_symlink()
+    assert not (worktree / ".claude" / "skills" / "dangling").is_symlink()
+    assert "skills: linked" not in result.stdout
+
+
+def test_a_second_run_links_only_a_new_skill(main):
+    _make_skill(main / ".claude" / "skills", "first")
+    worktree = _add_worktree(main, "wt")
+    _run(worktree)
+    _make_skill(main / ".claude" / "skills", "second")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert (worktree / ".claude" / "skills" / "second").is_symlink()
+    assert "skills: linked 1" in result.stdout
+
+
+def test_reports_a_skill_it_cannot_link(main):
+    _make_skill(main / ".claude" / "skills", "ignored")
+    worktree = _add_worktree(main, "wt")
+    (worktree / ".claude" / "skills").mkdir(parents=True)
+    (worktree / ".claude" / "skills").chmod(0o555)
+
+    try:
+        result = _run(worktree)
+    finally:
+        (worktree / ".claude" / "skills").chmod(0o755)
+
+    assert result.returncode == 1
+    assert "skills: linked" not in result.stdout
+    assert "ignored" in result.stderr
