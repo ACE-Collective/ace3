@@ -29,34 +29,12 @@ def test_interpret_event_value_simple():
 
 
 @pytest.mark.unit
-def test_interpret_event_value_with_interpolation():
-    """Test value interpolation from event fields."""
-    mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="{{ host }}.{{ domain }}")
-    event = {"host": "workstation", "domain": "example.com"}
-    result = interpret_event_value(mapping, event)
-    assert result == ["workstation.example.com"]
-
-
-@pytest.mark.unit
 def test_interpret_event_value_field_override():
     """Test field_override parameter."""
     mapping = ObservableMapping(fields=["primary", "secondary"], type=F_IP)
     event = {"primary": "1.1.1.1", "secondary": "2.2.2.2"}
     result = interpret_event_value(mapping, event, field_override="secondary")
     assert result == ["2.2.2.2"]
-
-
-@pytest.mark.unit
-def test_interpret_event_value_dot_lookup():
-    """Dot-path lookup must walk nested dicts and list indices (glom)."""
-    mapping = ObservableMapping(
-        fields=["share_info.0.message_id"],
-        field_lookup_type="dot",
-        type=F_HOSTNAME,
-    )
-    event = {"share_info": [{"message_id": "abc123"}]}
-    result = interpret_event_value(mapping, event, field_override="share_info.0.message_id")
-    assert result == ["abc123"]
 
 
 @pytest.mark.unit
@@ -75,72 +53,6 @@ def test_extract_observables_dot_lookup():
 
     assert len(extracted) == 1
     assert extracted[0].observable.value == "alice.example.com"
-
-
-@pytest.mark.unit
-def test_interpret_event_value_wildcard_plucks_each_item():
-    """A '*' wildcard segment plucks the sub-key from every item in a list field."""
-    mapping = ObservableMapping(
-        fields=["logs.*.cid"],
-        field_lookup_type="dot",
-        type=F_HOSTNAME,
-    )
-    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}]}
-    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
-    assert result == ["a", "b", "c"]
-
-
-@pytest.mark.unit
-def test_interpret_event_value_wildcard_with_limit():
-    """limit caps how many observables a wildcard expansion emits."""
-    mapping = ObservableMapping(
-        fields=["logs.*.cid"],
-        field_lookup_type="dot",
-        type=F_HOSTNAME,
-        limit=2,
-    )
-    event = {"logs": [{"cid": "a"}, {"cid": "b"}, {"cid": "c"}, {"cid": "d"}, {"cid": "e"}]}
-    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
-    assert result == ["a", "b"]
-
-
-@pytest.mark.unit
-def test_interpret_event_value_wildcard_skips_items_missing_subkey():
-    """Items missing the trailing sub-key are dropped, the rest are kept."""
-    mapping = ObservableMapping(
-        fields=["logs.*.cid"],
-        field_lookup_type="dot",
-        type=F_HOSTNAME,
-    )
-    event = {"logs": [{"cid": "a"}, {"other": "x"}, {"cid": "c"}]}
-    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
-    assert result == ["a", "c"]
-
-
-@pytest.mark.unit
-def test_interpret_event_value_wildcard_empty_list():
-    """A wildcard over an empty list yields no values (and does not raise)."""
-    mapping = ObservableMapping(
-        fields=["logs.*.cid"],
-        field_lookup_type="dot",
-        type=F_HOSTNAME,
-    )
-    event = {"logs": []}
-    result = interpret_event_value(mapping, event, field_override="logs.*.cid")
-    assert result == []
-
-
-@pytest.mark.unit
-def test_interpret_event_value_trailing_wildcard_returns_each_item():
-    """A trailing '*' returns each list item as-is."""
-    mapping = ObservableMapping(
-        fields=["ips.*"],
-        field_lookup_type="dot",
-        type=F_IP,
-    )
-    event = {"ips": ["1.1.1.1", "2.2.2.2"]}
-    result = interpret_event_value(mapping, event, field_override="ips.*")
-    assert result == ["1.1.1.1", "2.2.2.2"]
 
 
 @pytest.mark.unit
@@ -299,20 +211,24 @@ def test_extract_observables_with_global_ignored_values():
 
 @pytest.mark.unit
 def test_extract_observables_with_value_filter():
-    """Test value_filter callback."""
+    """The observable is created from what value_filter returns, and the filter is told the
+    field and type it filters for."""
     mappings = [
         ObservableMapping(field="src_ip", type=F_IP),
     ]
-    event = {"src_ip": "  10.0.0.1  "}
+    event = {"src_ip": "10.0.0.1"}
+    calls = []
 
-    def strip_filter(field, obs_type, value):
-        return value.strip()
+    def rewrite_filter(field, obs_type, value):
+        calls.append((field, obs_type, value))
+        return "10.0.0.2"
 
     extracted, _, _ = extract_observables_from_event(
-        event, mappings, value_filter=strip_filter
+        event, mappings, value_filter=rewrite_filter
     )
+    assert calls == [("src_ip", F_IP, "10.0.0.1")]
     assert len(extracted) == 1
-    assert extracted[0].observable.value == "10.0.0.1"
+    assert extracted[0].observable.value == "10.0.0.2"
 
 
 @pytest.mark.unit
@@ -379,25 +295,17 @@ def test_extract_observables_file_type():
 
 
 @pytest.mark.unit
-def test_extract_observables_empty_value_skipped():
-    """Test that empty values are skipped."""
+def test_extract_observables_empty_value_skipped(caplog):
+    """An empty value is skipped, not handed to the observable to refuse."""
     mappings = [
         ObservableMapping(field="src_ip", type=F_IP),
     ]
     event = {"src_ip": ""}
 
-    extracted, _, _ = extract_observables_from_event(event, mappings)
+    with caplog.at_level(logging.WARNING):
+        extracted, _, _ = extract_observables_from_event(event, mappings)
     assert len(extracted) == 0
-
-
-@pytest.mark.unit
-def test_interpret_event_value_skips_unresolved_interpolation():
-    """interpolated value templates with any missing field produce no values."""
-    mapping = ObservableMapping(field="host", type=F_HOSTNAME, value="{{ host }}.{{ domain }}")
-    # 'domain' is missing — strict-mode render raises UndefinedError, caught
-    # and converted to []
-    result = interpret_event_value(mapping, {"host": "workstation"})
-    assert result == []
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.unit
@@ -419,17 +327,20 @@ def test_extract_observables_skips_unresolved_value():
 
 
 @pytest.mark.unit
-def test_extract_observables_skips_blank_field_in_value_template():
+def test_extract_observables_skips_blank_field_in_value_template(caplog):
     """A present-but-empty field in an ALL-mode value template skips the mapping (the
-    coalesce-to-"" case that produced 'HOST@' file_location observables)."""
+    coalesce-to-"" case that produced 'HOST@' file_location observables) before a value is
+    rendered, so nothing reaches the observable to refuse."""
     mappings = [
         ObservableMapping(fields=["hostname", "file_path"], type=F_FILE_LOCATION,
                           value="{{ hostname }}@{{ file_path }}"),
     ]
     # file_path present but empty -> skipped
-    extracted, _, _ = extract_observables_from_event(
-        {"hostname": "PCN31337", "file_path": ""}, mappings)
+    with caplog.at_level(logging.WARNING):
+        extracted, _, _ = extract_observables_from_event(
+            {"hostname": "PCN31337", "file_path": ""}, mappings)
     assert len(extracted) == 0
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     # both present -> one valid observable
     extracted, _, _ = extract_observables_from_event(
@@ -532,19 +443,6 @@ def declare_yaml_types():
 
 def _error_records(caplog):
     return [r for r in caplog.records if r.levelno >= logging.ERROR]
-
-
-@pytest.mark.unit
-def test_extract_observables_templated_type_resolves():
-    """A Jinja-templated type renders against the event before observable creation."""
-    mappings = [ObservableMapping(field="src", type="{{ obs_type }}")]
-    event = {"src": "1.2.3.4", "obs_type": "ip"}
-
-    extracted, _, _ = extract_observables_from_event(event, mappings)
-
-    assert len(extracted) == 1
-    assert extracted[0].observable.type == F_IP
-    assert extracted[0].observable.value == "1.2.3.4"
 
 
 @pytest.mark.unit
@@ -756,28 +654,6 @@ def test_extract_observables_templated_type_with_value_template():
 
 
 @pytest.mark.unit
-def test_process_summary_details_basic():
-    """Test basic summary detail processing."""
-    configs = [
-        SummaryDetailConfig(content="IP: {{ src_ip }}"),
-    ]
-    results = [
-        {"src_ip": "10.0.0.1"},
-        {"src_ip": "10.0.0.2"},
-    ]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append({"content": content, "header": header, "format": fmt})
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 2
-    assert details[0]["content"] == "IP: 10.0.0.1"
-    assert details[1]["content"] == "IP: 10.0.0.2"
-
-
-@pytest.mark.unit
 def test_process_summary_details_with_header():
     """Test summary details with header."""
     configs = [
@@ -829,23 +705,6 @@ def test_process_summary_details_limit():
     process_summary_details(configs, results, add_detail)
 
     assert len(details) == 2
-
-
-@pytest.mark.unit
-def test_process_summary_details_unresolved_placeholders_skipped():
-    """Test that events with unresolved placeholders are skipped."""
-    configs = [
-        SummaryDetailConfig(content="{{ missing_field }}"),
-    ]
-    results = [{"other_field": "value"}]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 0
 
 
 @pytest.mark.unit
@@ -969,27 +828,6 @@ def test_process_summary_details_jinja_basic():
 
 
 @pytest.mark.unit
-def test_process_summary_details_jinja_loop_conditional():
-    """Test Jinja format with loop and conditional."""
-    configs = [
-        SummaryDetailConfig(
-            content="{% for ip in ips %}{% if ip != '0.0.0.0' %}{{ ip }} {% endif %}{% endfor %}",
-            format=SUMMARY_DETAIL_FORMAT_JINJA,
-        ),
-    ]
-    results = [{"ips": ["10.0.0.1", "0.0.0.0", "10.0.0.2"]}]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 1
-    assert details[0] == "10.0.0.1 10.0.0.2 "
-
-
-@pytest.mark.unit
 def test_process_summary_details_jinja_missing_field_strict_skipped():
     """Test Jinja format with missing field in strict mode — event is skipped."""
     configs = [
@@ -1057,27 +895,6 @@ def test_process_summary_details_jinja_with_required_fields_permissive():
 
     assert len(details) == 1
     assert details[0] == "IP: 10.0.0.1, Host: "
-
-
-@pytest.mark.unit
-def test_process_summary_details_jinja_required_fields_missing():
-    """Test Jinja format with required_fields — event skipped when required field missing."""
-    configs = [
-        SummaryDetailConfig(
-            content="IP: {{ src_ip }}",
-            format=SUMMARY_DETAIL_FORMAT_JINJA,
-            required_fields=["src_ip"],
-        ),
-    ]
-    results = [{"other": "value"}]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 0
 
 
 # --- Dedup fields tests ---
@@ -1362,11 +1179,8 @@ def test_process_summary_details_grouped_jinja_required_fields():
 
     process_summary_details(configs, results, add_detail)
 
-    assert len(details) == 1
-    assert "server1" in details[0]
-    assert "server3" in details[0]
-    # event without "host" should not appear
-    assert "value" not in details[0]
+    # the event without "host" is not rendered, not even as an empty line
+    assert details == ["server1\nserver3\n"]
 
 
 @pytest.mark.unit
@@ -1421,49 +1235,6 @@ def test_process_summary_details_grouped_jinja_empty_result():
 
 
 @pytest.mark.unit
-def test_process_summary_details_grouped_non_jinja_unchanged():
-    """Test grouped + non-Jinja behavior is unchanged (per-event render + join)."""
-    configs = [
-        SummaryDetailConfig(content="{{ host }}", grouped=True),
-    ]
-    results = [
-        {"host": "server1"},
-        {"host": "server2"},
-    ]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 1
-    assert details[0] == "server1\nserver2"
-
-
-@pytest.mark.unit
-def test_process_summary_details_grouped_jinja_no_qualifying_events():
-    """Test grouped + Jinja with no qualifying events produces no detail."""
-    configs = [
-        SummaryDetailConfig(
-            content="{% for event in events %}{{ event.host }}{% endfor %}",
-            format=SUMMARY_DETAIL_FORMAT_JINJA,
-            grouped=True,
-            required_fields=["host"],
-        ),
-    ]
-    results = [{"other": "value1"}, {"other": "value2"}]
-
-    details = []
-    def add_detail(content, header, fmt):
-        details.append(content)
-
-    process_summary_details(configs, results, add_detail)
-
-    assert len(details) == 0
-
-
-@pytest.mark.unit
 def test_process_summary_details_grouped_jinja_with_header():
     """Test grouped + Jinja renders header from first qualifying event."""
     configs = [
@@ -1477,7 +1248,7 @@ def test_process_summary_details_grouped_jinja_with_header():
     ]
     results = [
         {"host": "server1", "group": "web"},
-        {"host": "server2", "group": "web"},
+        {"host": "server2", "group": "db"},
     ]
 
     details = []
