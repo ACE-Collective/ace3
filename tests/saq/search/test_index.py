@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
 from unittest.mock import Mock
 
@@ -93,7 +94,39 @@ ALL_PAYLOAD_INDEXES = set(index.KEYWORD_INDEXES + index.DATETIME_INDEXES)
 CREATE_RUNNING = (500, b'{"status":{"error":"Service internal error: 0 of 0 read operations failed"}}')
 
 
-def fail_first_read(monkeypatch, client, status: int = CREATE_RUNNING[0], content: bytes = CREATE_RUNNING[1]):
+# and what it answers an update of it, such as creating a payload index, in that time
+CREATE_RUNNING_UPDATE = (500, b'{"status":{"error":"Service internal error: Failed to apply operation to at least one '
+                              b'`Active` replica. Consistency of this update is not guaranteed. Please retry. "}}')
+
+
+def create_running(monkeypatch, client, seconds: float):
+    """Makes the client see another worker's create of the collection as still running for this
+    long: qdrant fails reads and updates of the collection with a 500 until that create finishes.
+    Returns the real get_collection and the list of reads made."""
+    ends = time.monotonic() + seconds
+    real_get_collection = client.get_collection
+    real_create_payload_index = client.create_payload_index
+    reads = []
+
+    def fail_while_running(reply):
+        if time.monotonic() < ends:
+            raise UnexpectedResponse(status_code=reply[0], reason_phrase="", headers=httpx.Headers(), content=reply[1])
+
+    def get_collection(**kwargs):
+        reads.append(kwargs)
+        fail_while_running(CREATE_RUNNING)
+        return real_get_collection(**kwargs)
+
+    def create_payload_index(**kwargs):
+        fail_while_running(CREATE_RUNNING_UPDATE)
+        return real_create_payload_index(**kwargs)
+
+    monkeypatch.setattr(client, "get_collection", get_collection)
+    monkeypatch.setattr(client, "create_payload_index", create_payload_index)
+    return real_get_collection, reads
+
+
+def fail_first_read(monkeypatch, client, status: int, content: bytes):
     """Makes the client's first get_collection() fail with this reply. Returns the real get_collection."""
     real_get_collection = client.get_collection
     reads = []
@@ -114,13 +147,13 @@ class TestEnsureCollectionRace:
     two of them can both find it missing and both create it. These tests use the real qdrant, so
     the 409 is the one the client raises."""
 
-    def test_losing_the_create_race_still_creates_the_payload_indexes(self, real_collection, mock_model, monkeypatch, caplog):
+    def test_losing_the_create_race_waits_for_the_winners_create(self, real_collection, mock_model, monkeypatch, caplog):
         client, name = real_collection
-        # the winner has created the collection but not yet its payload indexes
+        # the winner's create has registered the collection but is still running
         client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        real_get_collection, _ = create_running(monkeypatch, client, seconds=0.3)
         # what the loser saw just before the winner's create
         monkeypatch.setattr(client, "collection_exists", lambda **kwargs: False)
-        real_get_collection = fail_first_read(monkeypatch, client)
 
         with caplog.at_level(logging.INFO):
             assert index.ensure_collection(client, mock_model, name=name) == name
@@ -130,12 +163,12 @@ class TestEnsureCollectionRace:
         assert "search_collection_created" not in events
         assert "search_collection_already_exists" in events
 
-    def test_reading_the_schema_during_the_winners_create_still_creates_the_payload_indexes(self, real_collection, mock_model, monkeypatch, caplog):
+    def test_reading_the_schema_during_the_winners_create_waits_for_it(self, real_collection, mock_model, monkeypatch, caplog):
         client, name = real_collection
+        # qdrant lists the collection before the winner's create has finished, so a worker can
+        # find it and then fail to read it
         client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
-        # qdrant reports the collection as existing about a millisecond before the winner's
-        # create returns, so a worker can find it and then fail to read it
-        real_get_collection = fail_first_read(monkeypatch, client)
+        real_get_collection, _ = create_running(monkeypatch, client, seconds=0.3)
 
         with caplog.at_level(logging.INFO):
             assert index.ensure_collection(client, mock_model, name=name) == name
@@ -143,6 +176,30 @@ class TestEnsureCollectionRace:
         assert set(real_get_collection(collection_name=name).payload_schema) == ALL_PAYLOAD_INDEXES
         unreadable = [record for record in caplog.records if record.message == "search_collection_schema_unreadable"]
         assert [(record.levelno, record.collection, record.status) for record in unreadable] == [(logging.INFO, name, 500)]
+
+    def test_a_create_that_never_finishes_is_raised(self, real_collection, mock_model, monkeypatch):
+        client, name = real_collection
+        client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        real_get_collection, _ = create_running(monkeypatch, client, seconds=3600)
+        monkeypatch.setattr(index, "CREATE_WAIT_SECONDS", 0.2)
+
+        with pytest.raises(UnexpectedResponse) as error:
+            index.ensure_collection(client, mock_model, name=name)
+
+        assert error.value.status_code == 500
+        assert not real_get_collection(collection_name=name).payload_schema
+
+    def test_shutdown_ends_the_wait(self, real_collection, mock_model, monkeypatch):
+        client, name = real_collection
+        client.create_collection(collection_name=name, vectors_config={index.DENSE: models.VectorParams(size=8, distance=models.Distance.COSINE)})
+        _, reads = create_running(monkeypatch, client, seconds=3600)
+        monkeypatch.setattr(index, "is_shutting_down", lambda: True)
+
+        with pytest.raises(UnexpectedResponse) as error:
+            index.ensure_collection(client, mock_model, name=name)
+
+        assert error.value.status_code == 500
+        assert len(reads) == 1
 
     def test_other_schema_read_failures_still_raise(self, real_collection, mock_model, monkeypatch):
         client, name = real_collection

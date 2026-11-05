@@ -1,7 +1,8 @@
 """Tests for the `ace event`, `ace git`, `ace debug` and `ace s3` commands."""
 
+import sys
 from datetime import date, timedelta
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -213,7 +214,12 @@ def test_s3_upload_argument_errors(argv, message, caplog):
 def test_s3_upload_failure_is_logged_with_traceback(tmp_path, caplog, monkeypatch):
     client = Mock()
     client.upload_file.side_effect = RuntimeError("upload refused")
-    monkeypatch.setattr("boto3.client", lambda *args, **kwargs: client)
+    # boto3 is not a dependency of open source ACE, so the command's lazy import gets a stand-in, and the
+    # botocore Config it would be handed is stubbed too
+    monkeypatch.setattr("saq.storage.s3.build_boto_config", lambda: None)
+    fake_boto3 = ModuleType("boto3")
+    fake_boto3.client = lambda *args, **kwargs: client
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     path = tmp_path / "upload.txt"
     path.write_text("data")
     args = _parse("s3", "upload", "--file", str(path), "--bucket", "bucket", "--key", "key")
