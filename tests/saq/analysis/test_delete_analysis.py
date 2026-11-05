@@ -240,14 +240,15 @@ def test_delete_analysis_twice_is_a_noop():
 
 @pytest.mark.integration
 def test_delete_analysis_not_on_observable_is_a_noop():
-    """deleting an analysis object that was never attached to the observable is a no-op."""
+    """deleting an analysis object that was never attached to the observable is a no-op, even
+    when one of the same type (so the same module path) is attached."""
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     obs = root.add_observable_by_spec(F_TEST, "host")
     attached = DeletableAnalysis()
     obs.add_analysis(attached)
 
-    stray = FirstAnalysis()  # never added to anything
+    stray = DeletableAnalysis()  # never added to anything
     obs.delete_analysis(stray)
 
     # the real analysis is untouched

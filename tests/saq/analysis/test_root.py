@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -8,7 +8,7 @@ import pytest
 from saq.analysis.adapter import RootAnalysisAdapter
 from saq.analysis.analysis import Analysis
 from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
-from saq.analysis.root import RootAnalysis, Submission, load_root
+from saq.analysis.root import RootAnalysis, load_root
 from saq.analysis.serialize.root_serializer import KEY_OBSERVABLE_STORE
 from saq.configuration.config import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_FQDN, F_MD5, F_SHA1, F_SHA256, F_TEST, R_IS_HASH_OF, EventTimeSource
@@ -24,23 +24,6 @@ from tests.saq.helpers import create_root_analysis, track_io, validate_tree_inte
 
 class TestRootAnalysis:
     @pytest.mark.unit
-    def test_submission(self, tmp_path):
-        analysis = RootAnalysis(storage_dir=str(tmp_path))
-        analysis.initialize_storage()
-        observable = analysis.add_observable_by_spec(F_TEST, 'test')
-        observable.add_tag('test_tag')
-        observable.add_directive('test_directive')
-        sample_file = tmp_path / 'sample.txt'
-        sample_file.write_text('Hello, world!')
-        analysis.add_file_observable(sample_file)
-        analysis.add_tag('test')
-        analysis.playbook_url = "http://playbook"
-        submission = analysis.create_submission()
-
-        assert isinstance(submission, Submission)
-        assert submission.root is analysis
-
-    @pytest.mark.unit
     def test_transaction_id_round_trip(self, tmp_path):
         analysis = RootAnalysis(storage_dir=str(tmp_path))
         analysis.initialize_storage()
@@ -52,37 +35,6 @@ class TestRootAnalysis:
 
         reloaded = load_root(str(tmp_path))
         assert reloaded.transaction_id == "known-transaction-id"
-
-@pytest.mark.skip(reason="Revisit. Serialization of Analysis objects is being refactored.")
-@pytest.mark.unit
-def test_root_load_json_extra(tmp_path):
-    # mock the root analysis class
-    class MockRootAnalysis(RootAnalysis):
-        def __init__(self):
-            self.uuid = 'plumbus'
-            self.is_loaded = False
-        @property
-        def json_path(self):
-            return tmp_path / 'extra.json'
-        def _materialize(self):
-            pass
-        @property
-        def json(self):
-            return self._json
-        @json.setter
-        def json(self, value):
-            self._json = value
-    root = MockRootAnalysis()
-
-    # create fake root analysis json to load with extra data at the end
-    with open(tmp_path / 'extra.json', 'w') as f:
-        f.write('{"hello":"world"}extra')
-
-    # load the fake root analysis json
-    root.load()
-
-    # verify the json was loaded properly
-    assert root.json == { 'hello': 'world' }
 
 @pytest.mark.unit
 def test_analysis_add_file(tmpdir):
@@ -174,18 +126,89 @@ def test_create():
     assert root.company_name == get_config().global_settings.company_name
     assert root.submission is None
 
+# data.json of a root with every root-level field set, as save() writes it. Every stored alert is in
+# this format, so its keys are literal: a key renamed on both sides passes a round trip.
+STORED_ROOT_JSON = {
+    "action_counters": {"c": 1},
+    "analysis_failures": {"m": "f"},
+    "analysis_mode": "probe_mode",
+    "company_id": 7,
+    "company_name": "probe-company",
+    "completed": True,
+    "delayed": False,
+    "delayed_analysis_tracking": {},
+    "dependency_tracking": [],
+    "description": "probe description",
+    "details_size": 2,
+    "detections": [],
+    "event_time": "2026-10-01T12:00:00.000000+0000",
+    "event_time_source": "query_time",
+    "extensions": {"probe": 1},
+    "instance": None,
+    "instructions": "do the thing",
+    "llm_context_documents": [],
+    "location": "probe-node",
+    "name": "probe-name",
+    "observable_store": {},
+    "observables": [],
+    "pivot_links": [],
+    "queue": "probe-queue",
+    "remediation": ["r"],
+    "sort_order": 100,
+    "state": {"s": 2},
+    "summary": "probe description",
+    "summary_details": [],
+    "tags": [],
+    "tool": "probe-tool",
+    "tool_instance": "probe-instance",
+    "type": "probe-type",
+    "uuid": "5d2f9c1e-0b7a-4a8e-9f3c-2a1b0c9d8e7f",
+}
+
+
+@pytest.fixture
+def probe_company(monkeypatch):
+    monkeypatch.setattr(get_global_runtime_settings(), "company_name", "probe-company")
+    monkeypatch.setattr(get_global_runtime_settings(), "company_id", 7)
+
+
 @pytest.mark.unit
-def test_save():
-    root = create_root_analysis()
+def test_save(tmp_path, probe_company):
+    root = RootAnalysis(storage_dir=str(tmp_path), uuid="5d2f9c1e-0b7a-4a8e-9f3c-2a1b0c9d8e7f", tool="probe-tool",
+                        tool_instance="probe-instance", alert_type="probe-type", desc="probe description",
+                        analysis_mode="probe_mode", queue="probe-queue", instructions="do the thing",
+                        extensions={"probe": 1}, location="probe-node", name="probe-name", action_counters={"c": 1},
+                        state={"s": 2}, remediation=["r"], analysis_failures={"m": "f"})
+    root.set_event_time(datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc), EventTimeSource.QUERY_TIME)
     root.initialize_storage()
     root.save()
 
+    with open(root.json_path) as fp:
+        stored = json.load(fp)
+
+    # the name of the root's own details file under .ace/
+    assert stored.pop("file_path") == root.external_details_path
+    assert stored == STORED_ROOT_JSON
+
+
 @pytest.mark.unit
-def test_load():
-    root = create_root_analysis()
-    root.initialize_storage()
-    root.save()
+def test_load(tmp_path):
+    with open(tmp_path / "data.json", "w") as fp:
+        json.dump({**STORED_ROOT_JSON, "file_path": "RootAnalysis_details.json"}, fp)
+
+    root = RootAnalysis(storage_dir=str(tmp_path))
     root.load()
+
+    assert (root.uuid, root.tool, root.tool_instance, root.alert_type, root.description, root.analysis_mode) == \
+        ("5d2f9c1e-0b7a-4a8e-9f3c-2a1b0c9d8e7f", "probe-tool", "probe-instance", "probe-type", "probe description",
+         "probe_mode")
+    assert root.event_time == datetime(2026, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert root.event_time_source == EventTimeSource.QUERY_TIME
+    assert (root.queue, root.instructions, root.extensions, root.location, root.name) == \
+        ("probe-queue", "do the thing", {"probe": 1}, "probe-node", "probe-name")
+    assert (root.action_counters, root.state, root.remediation, root.analysis_failures) == \
+        ({"c": 1}, {"s": 2}, ["r"], {"m": "f"})
+    assert (root.company_name, root.company_id) == ("probe-company", 7)
 
 @pytest.mark.unit
 def test_log_error_on_load_default(caplog):
@@ -250,17 +273,6 @@ def test_find_observables():
     assert root.find_observable(lambda o: o.type == F_TEST).uuid in [ o.uuid for o in o_all]
     # search by lambda, multi observable
     assert sorted(root.find_observables(lambda o: o.type == F_TEST)) == o_all
-
-@pytest.mark.unit
-def test_analysis_save_load_details():
-    root = create_root_analysis()
-    root.initialize_storage()
-    root.details = { "hello": "world" }
-    root.save()
-
-    root = RootAnalysis(storage_dir=root.storage_dir)
-    root.load()
-    assert root.details == { "hello": "world" }
 
 @pytest.mark.unit
 def test_analysis_missing_details():

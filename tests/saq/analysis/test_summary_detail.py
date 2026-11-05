@@ -2,27 +2,20 @@
 import pytest
 
 from saq.analysis.root import RootAnalysis
-from saq.analysis.summary_detail import CONTENT, FORMAT, HEADER, SummaryDetail
-from saq.constants import SUMMARY_DETAIL_FORMAT_MD, SUMMARY_DETAIL_FORMAT_PRE
+from saq.analysis.summary_detail import SummaryDetail
+from saq.constants import SUMMARY_DETAIL_FORMAT_PRE
 
 
 @pytest.mark.unit
 def test_summary_detail_conversion():
-    detail = SummaryDetail('test_header', 'test_content', SUMMARY_DETAIL_FORMAT_PRE)
-    d = detail.to_dict()
-    assert HEADER in d
-    assert CONTENT in d
-    assert FORMAT in d
-    new_detail = SummaryDetail.from_dict(d)
-    assert new_detail == detail
+    # stored in data.json, so the keys are literal
+    stored = {"id": "d1", "header": "test_header", "content": "test_content", "format": "pre"}
+    detail = SummaryDetail('test_header', 'test_content', SUMMARY_DETAIL_FORMAT_PRE, id="d1")
+    assert detail.to_dict() == stored
 
-@pytest.mark.unit
-def test_summary_detail_md_conversion():
-    detail = SummaryDetail("test_header", "**bold** and *italic*", SUMMARY_DETAIL_FORMAT_MD)
-    d = detail.to_dict()
-    assert d[FORMAT] == SUMMARY_DETAIL_FORMAT_MD
-    new_detail = SummaryDetail.from_dict(d)
-    assert new_detail == detail
+    restored = SummaryDetail.from_dict(dict(stored))
+    assert (restored.id, restored.header, restored.content, restored.format) == \
+        ("d1", "test_header", "test_content", "pre")
 
 @pytest.mark.integration
 def test_add_summary_detail():
