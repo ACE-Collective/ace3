@@ -380,12 +380,14 @@ class AnalysisModule(FileWatcherMixin):
 
         return self._context.analysis_deadline - time.monotonic()
 
-    def run_tool(self, args: list[str], target: str, **kwargs) -> Optional[subprocess.CompletedProcess]:
+    def run_tool(self, args: list[str], target: str, *, timeout: Optional[float] = None,
+                 **kwargs) -> Optional[subprocess.CompletedProcess]:
         """Runs an external tool on target as subprocess.run(args, **kwargs) does and returns its
-        CompletedProcess, or None if it had to be stopped: a tool still running
-        TOOL_TIMEOUT_MARGIN_SECONDS before this call to analyze() runs out of time is killed, where
-        it would otherwise run until the engine kills the worker."""
-        timeout = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        CompletedProcess, or None if it had to be stopped: a tool still running after timeout
+        seconds, or TOOL_TIMEOUT_MARGIN_SECONDS before this call to analyze() runs out of time, is
+        killed, where it would otherwise run until the engine kills the worker."""
+        allowed = max(1.0, self.time_left() - TOOL_TIMEOUT_MARGIN_SECONDS)
+        timeout = allowed if timeout is None else max(1.0, min(timeout, allowed))
         try:
             return subprocess.run(args, timeout=timeout, **kwargs)
         except subprocess.TimeoutExpired:

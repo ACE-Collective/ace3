@@ -120,13 +120,19 @@ def test_file_analysis_000_url_extraction_002_gs(root_analysis, datadir):
     pdf_analysis = file_observable.get_and_load_analysis(PDFAnalysis)
     assert pdf_analysis
     pdfparser_files = pdf_analysis.get_observables_by_type(F_FILE)
-    assert len(pdfparser_files) == 3
+    # the sample is AES-256 encrypted with an owner password only, so it also gets a decrypted copy and its pdfparser output
+    assert len(pdfparser_files) == 5
     annotation_uris_file = [_ for _ in pdfparser_files if _.file_name.endswith(".annotation_uris.txt")][0]
     url_analysis = annotation_uris_file.get_and_load_analysis(URLExtractionAnalysis)
     assert url_analysis
     # should have a bad url in it
     bad_url = 'http://12tkj5.my.id/blog/642ec2b466aed.zip'
     assert bad_url in [url.value for url in url_analysis.get_observables_by_type(F_URL)]
+
+    # pdfparser reads the url in the decrypted copy's objects
+    [pdfparser] = [_ for _ in pdfparser_files if _.file_name.endswith(".decrypted.pdf.pdfparser")]
+    with open(pdfparser.full_path, errors="replace") as fp:
+        assert bad_url in fp.read()
 
 KEY_STORAGE_DIR = 'storage_dir'
 KEY_TAGS = 'tags'

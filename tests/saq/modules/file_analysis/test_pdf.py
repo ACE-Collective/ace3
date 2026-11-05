@@ -1,18 +1,25 @@
 import base64
 import logging
+import time
+import uuid
+import zlib
 from pathlib import Path
 
 import pikepdf
 import pytest
 
-from saq.analysis.root import load_root
+from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
+from saq.constants import ANALYSIS_MODE_ANALYSIS, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.file_analysis.archive import ArchiveAnalyzer
-from saq.modules.file_analysis.pdf import PDFAnalysis, PDFTextAnalysis, PDFTextAnalyzer
-from saq.util.uuid import get_storage_dir
+from saq.modules.file_analysis import pdf as pdf_module
+from saq.modules.file_analysis.exif import ExifAnalyzer
+from saq.modules.file_analysis.pdf import PDFAnalysis, PDFAnalyzer, PDFTextAnalysis, PDFTextAnalyzer
+from saq.modules.file_analysis.qrcode import QRCodeAnalyzer
+from saq.util.uuid import get_storage_dir, storage_dir_from_uuid
+from tests.saq.helpers import wait_for_condition
 
 TEXT = "Your invoice is ready"
 FORM_PAYLOAD = b"<script>location='https://form.example.com/landing'</script>" * 2
@@ -54,14 +61,15 @@ def _pdf(tmp_path: Path, name: str = "document.pdf", annotation_uri: str = None,
     return path
 
 
-def _analyze(root_analysis, path: Path, module: str):
+def _analyze(root_analysis, path: Path, *modules: str):
     root_analysis.analysis_mode = "test_groups"
     file_observable = root_analysis.add_file_observable(str(path))
     root_analysis.save()
     root_analysis.schedule()
 
     engine = Engine()
-    engine.configuration_manager.enable_module(module, "test_groups")
+    for module in modules:
+        engine.configuration_manager.enable_module(module, "test_groups")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(get_storage_dir(root_analysis.uuid))
@@ -117,6 +125,184 @@ def test_pdf_analyzer_outputs(root_analysis, tmp_path):
     # the pdf_analyzer doesn't analyze what it extracted
     assert not outputs["document.pdf.gs.pdf"].get_and_load_analysis(PDFAnalysis)
 
+    # an unencrypted PDF gets no decrypted copy, which the set of outputs above shows, and no encryption details
+    assert analysis.encryption is None
+    assert analysis.summary is None
+    assert not pdf.has_tag("encrypted_pdf_empty_password")
+
+
+def _encrypted_pdf(tmp_path: Path, encryption: pikepdf.Encryption, name: str = "document.pdf",
+                   payload: pikepdf.Array = None) -> Path:
+    plain = _pdf(tmp_path, name="plain.pdf", annotation_uri=ENCRYPTED_URI)
+    path = tmp_path / name
+    with pikepdf.open(plain) as pdf:
+        if payload is not None:
+            # a stream deflated once per filter, saved without recompressing so the filters stay as built
+            data = PAYLOAD
+            for _ in payload:
+                data = zlib.compress(data)
+            stream = pikepdf.Stream(pdf, data)
+            stream.Filter = payload
+            pdf.Root.Payload = pdf.make_indirect(stream)
+        pdf.save(path, encryption=encryption, compress_streams=payload is None)
+    return path
+
+
+def _new_root() -> RootAnalysis:
+    root_uuid = str(uuid.uuid4())
+    root = RootAnalysis(uuid=root_uuid, tool="tool", tool_instance="tool_instance", alert_type="alert_type",
+                        desc="Test Alert", storage_dir=storage_dir_from_uuid(root_uuid),
+                        analysis_mode=ANALYSIS_MODE_ANALYSIS)
+    root.initialize_storage()
+    return root
+
+
+ENCRYPTED_URI = "https://hidden.example.com/lure"
+PAYLOAD = b"hidden payload " * 64
+RESTRICTED = pikepdf.Permissions(extract=False, modify_other=False, print_highres=False)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("encryption, method, bits, owner_password_empty, extract", [
+    # RC4 revisions have no crypt filters, so pikepdf reports their stream method as none
+    (pikepdf.Encryption(owner="", user="", R=3, aes=False, metadata=False), "rc4", 128, True, True),
+    (pikepdf.Encryption(owner="", user="", R=4, aes=True), "aes", 128, True, True),
+    (pikepdf.Encryption(owner="", user="", R=6), "aesv3", 256, True, True),
+    # an owner (permissions) password only, with restricted permissions
+    (pikepdf.Encryption(owner="secret", user="", R=6, allow=RESTRICTED), "aesv3", 256, False, False),
+], ids=["rc4_128", "aes128", "aes256", "owner_password_only"])
+def test_pdf_analyzer_decrypts_pdf_with_empty_user_password(root_analysis, tmp_path, encryption, method, bits,
+                                                            owner_password_empty, extract):
+    pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, encryption), "pdf_analyzer")
+
+    analysis = pdf.get_and_load_analysis(PDFAnalysis)
+    assert pdf.has_tag("encrypted_pdf_empty_password")
+    assert analysis.encryption["filter"] == "/Standard"
+    assert analysis.encryption["R"] == encryption.R
+    assert analysis.encryption["method"] == method
+    assert analysis.encryption["bits"] == bits
+    assert analysis.encryption["owner_password_empty"] is owner_password_empty
+    assert analysis.encryption["permissions"]["extract"] is extract
+    assert analysis.summary == (f"PDF Analysis: encrypted ({method} {bits}-bit, R{encryption.R}, "
+                                f"P {analysis.encryption['P']}), opens with an empty user password")
+
+    outputs = _outputs(analysis)
+    # pdfparser cannot read the encrypted original's strings
+    with open(outputs["document.pdf.pdfparser"].full_path) as fp:
+        assert ENCRYPTED_URI not in fp.read()
+
+    decrypted = outputs["document.pdf.decrypted.pdf"]
+    assert decrypted.redirection.uuid == pdf.uuid
+    assert decrypted.get_relationship_by_type(R_EXTRACTED_FROM).target.uuid == pdf.uuid
+    assert decrypted.has_tag("decrypted_pdf")
+    assert decrypted.has_yara_meta("type", "document.pdf")
+    with pikepdf.open(decrypted.full_path) as copy:
+        assert not copy.is_encrypted
+
+    # pdfparser reads the decrypted copy's objects in plaintext
+    pdfparser = outputs["document.pdf.decrypted.pdf.pdfparser"]
+    assert pdfparser.redirection.uuid == pdf.uuid
+    assert pdfparser.get_relationship_by_type(R_EXTRACTED_FROM).target.uuid == decrypted.uuid
+    assert pdfparser.has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert pdfparser.has_yara_meta("type", "document.pdf.object")
+    with open(pdfparser.full_path) as fp:
+        assert ENCRYPTED_URI in fp.read()
+
+    # the copy is not analyzed again, so it is not decrypted again either
+    assert not decrypted.get_and_load_analysis(PDFAnalysis)
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_decrypts_without_decoding_streams(root_analysis, tmp_path):
+    # decoding is pdfparser's job, under its timeout: a nested-Flate stream a few KB long can inflate to gigabytes
+    payload = pikepdf.Array([pikepdf.Name.FlateDecode, pikepdf.Name.FlateDecode])
+    pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="", user="", R=6), payload=payload),
+                   "pdf_analyzer")
+
+    decrypted = _outputs(pdf.get_and_load_analysis(PDFAnalysis))["document.pdf.decrypted.pdf"]
+    with pikepdf.open(decrypted.full_path) as copy:
+        assert not copy.is_encrypted
+        assert copy.Root.Payload.Filter == payload
+        assert copy.Root.Payload.read_bytes() == PAYLOAD
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_decrypts_pdf_with_a_long_name(root_analysis, tmp_path):
+    # long enough that <name>.decrypted.pdf.pdfparser does not fit in NAME_MAX, short enough that the original's
+    # own outputs still do
+    name = "a" * 230 + ".pdf"
+    pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="", user="", R=6), name=name),
+                   "pdf_analyzer")
+
+    outputs = _outputs(pdf.get_and_load_analysis(PDFAnalysis))
+    [decrypted] = [o for o in outputs.values() if o.has_tag("decrypted_pdf")]
+    [pdfparser] = [o for o in outputs.values()
+                   if o.get_relationship_by_type(R_EXTRACTED_FROM).target.uuid == decrypted.uuid]
+    assert pdfparser.has_yara_meta("type", "document.pdf.object")
+    with open(pdfparser.full_path) as fp:
+        assert ENCRYPTED_URI in fp.read()
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_leaves_the_renderers_to_the_original(root_analysis, tmp_path):
+    # ghostscript and poppler open the original with its empty password, so on the copy they would only repeat it
+    pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="", user="", R=6)),
+                   "pdf_analyzer", "pdftotext")
+
+    assert pdf.get_and_load_analysis(PDFTextAnalysis)
+    decrypted = _outputs(pdf.get_and_load_analysis(PDFAnalysis))["document.pdf.decrypted.pdf"]
+    assert not decrypted.get_and_load_analysis(PDFTextAnalysis)
+    assert not decrypted.get_and_load_analysis(PDFAnalysis)
+    for module in (PDFAnalyzer, PDFTextAnalyzer, ExifAnalyzer, QRCodeAnalyzer):
+        assert any(module.__name__ in name for name in decrypted.excluded_analysis)
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_writes_the_same_decrypted_copy_every_time(root_analysis, tmp_path):
+    # the copy's sha256 keys every cached result on it, so a later alert with the same attachment reuses them
+    path = _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="", user="", R=6))
+
+    first = _outputs(_analyze(root_analysis, path, "pdf_analyzer").get_and_load_analysis(PDFAnalysis))
+    # a random /ID comes from the clock in whole seconds, so two saves in the same second would match anyway
+    later = int(time.time()) + 1
+    wait_for_condition(lambda: time.time() >= later, timeout=2)
+    second = _outputs(_analyze(_new_root(), path, "pdf_analyzer").get_and_load_analysis(PDFAnalysis))
+
+    assert first["document.pdf.decrypted.pdf"].sha256_hash == second["document.pdf.decrypted.pdf"].sha256_hash
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_leaves_pdf_that_needs_a_user_password(root_analysis, tmp_path):
+    pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="owner", user="user", R=6)),
+                   "pdf_analyzer")
+
+    analysis = pdf.get_and_load_analysis(PDFAnalysis)
+    assert analysis.encryption is None
+    assert not pdf.has_tag("encrypted_pdf_empty_password")
+    assert not [name for name in _outputs(analysis) if name.endswith(".decrypted.pdf")]
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_survives_a_decrypted_copy_it_cannot_save(root_analysis, tmp_path, monkeypatch, caplog):
+    def _save(self, *args, **kwargs):
+        raise pikepdf.PdfError("damaged object stream")
+
+    path = _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="", user="", R=6))
+    monkeypatch.setattr(pikepdf.Pdf, "save", _save)
+    pdf = _analyze(root_analysis, path, "pdf_analyzer")
+
+    analysis = pdf.get_and_load_analysis(PDFAnalysis)
+    assert analysis.encryption["R"] == 6
+    outputs = _outputs(analysis)
+    assert not [name for name in outputs if name.endswith(".decrypted.pdf")]
+    # nothing half-written is left behind, and the rest of the extraction still runs
+    assert not list(Path(pdf.full_path).parent.glob("*.decrypted.pdf"))
+    assert "document.pdf.annotation_uris.txt" in outputs
+    [record] = [r for r in caplog.records if "cannot save a decrypted copy" in r.getMessage()]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info
+    assert record.path == pdf.full_path
+
 
 @pytest.mark.integration
 @pytest.mark.parametrize("form_value", [
@@ -137,6 +323,24 @@ def test_pdf_analyzer_skips_empty_javascript(root_analysis, tmp_path):
     pdf = _analyze(root_analysis, _pdf(tmp_path, javascript={"blank": "   "}), "pdf_analyzer")
 
     assert not [name for name in _outputs(pdf.get_and_load_analysis(PDFAnalysis)) if ".js_" in name]
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_stops_a_pdfparser_that_hangs(root_analysis, tmp_path, monkeypatch, caplog):
+    hang = tmp_path / "hang.py"
+    hang.write_text("import sys, time\nprint('partial', flush=True)\ntime.sleep(60)\n")
+    get_analysis_module_config("pdf_analyzer").pdfparser_path = str(hang)
+    monkeypatch.setattr(pdf_module, "PDFPARSER_TIMEOUT_SECONDS", 1)
+
+    pdf = _analyze(root_analysis, _pdf(tmp_path), "pdf_analyzer")
+
+    # what it wrote before it was stopped is still scanned
+    pdfparser = _outputs(pdf.get_and_load_analysis(PDFAnalysis))["document.pdf.pdfparser"]
+    with open(pdfparser.full_path) as fp:
+        assert fp.read() == "partial\n"
+    # stopped at PDFPARSER_TIMEOUT_SECONDS, long before the call runs out of time
+    assert any(r.levelno == logging.WARNING and r.getMessage().startswith("PDFAnalyzer stopped python3 on ")
+               and r.getMessage().endswith("document.pdf after 1 seconds") for r in caplog.records)
 
 
 @pytest.mark.integration

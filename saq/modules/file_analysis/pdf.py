@@ -2,7 +2,7 @@ import base64
 import logging
 import os
 import re
-from subprocess import PIPE, Popen, TimeoutExpired
+from subprocess import PIPE
 from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
@@ -10,11 +10,18 @@ from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, F_FIL
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.file_analysis.exif import ExifAnalyzer
 from saq.modules.file_analysis.is_file_type import is_pdf_file
 from saq.observables.file import FileObservable
 
 # how long ghostscript may take to rewrite a PDF
 GS_TIMEOUT_SECONDS = 10
+# how long pdfparser may take to dump a PDF's objects
+PDFPARSER_TIMEOUT_SECONDS = 10
+
+
+# PDFAnalysis.details key: the encryption dictionary of a PDF that opens without a password
+KEY_ENCRYPTION = "encryption"
 
 
 class PDFAnalysis(Analysis):
@@ -22,6 +29,18 @@ class PDFAnalysis(Analysis):
     @property
     def display_name(self) -> str:
         return "PDF Analysis"
+
+    @property
+    def encryption(self) -> dict | None:
+        return self.details.get(KEY_ENCRYPTION) if self.details else None
+
+    @override
+    def generate_summary(self) -> str | None:
+        if not self.encryption:
+            return None
+
+        return (f"{self.display_name}: encrypted ({self.encryption['method']} {self.encryption['bits']}-bit, "
+                f"R{self.encryption['R']}, P {self.encryption['P']}), opens with an empty user password")
 
 class PDFAnalyzerConfig(AnalysisModuleConfig):
     pdfparser_path: str = Field(..., description="Path to pdfparser executable.")
@@ -78,35 +97,7 @@ class PDFAnalyzer(AnalysisModule):
 
         logging.debug("analyzing file {}".format(local_file_path))
         analysis = self.create_analysis(_file)
-
-        # we'll create an output file for the output of the pdf analysis
-        pdfparser_output_file = '{}.pdfparser'.format(local_file_path)
-
-        # run pdf parser
-        with open(pdfparser_output_file, 'wb') as fp:
-            p = Popen(['python3', self.pdfparser_path,
-            '-f', '-w', '-v', '-c', '--debug', local_file_path], stdout=fp, stderr=PIPE)
-            try:
-                _, stderr = p.communicate(timeout=10)
-            except TimeoutExpired:
-                logging.warning("pdfparser timed out on {}".format(local_file_path))
-                p.kill()
-                _, stderr = p.communicate()
-
-        if len(stderr) > 0:
-            logging.warning("pdfparser returned errors for {}".format(local_file_path))
-
-        # add the output file as a new file to scan
-        # the FILE type indicators are relative to the alert storage directory
-        file_observable = analysis.add_file_observable(pdfparser_output_file, volatile=True)
-
-        if file_observable:
-            # point actions back at the source ole file
-            file_observable.redirection = _file
-            file_observable.add_relationship(R_EXTRACTED_FROM, _file)
-            # extract URLs from this file
-            file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
-            file_observable.add_yara_meta("type", "document.pdf.object")
+        self.run_pdfparser(_file, f"{local_file_path}.pdfparser", analysis, redirection=_file)
 
         # gs -sDEVICE=pdfwrite -dNOPAUSE -dBATCH -sOutputFile=output.pdf -c ".setpdfwrite <</NeverEmbed [ ]>> setdistillerparams" -f input.pdf
         # evaluate with ghostscript as well to try to get the URLs out of AES encrypted PDFs
@@ -134,6 +125,12 @@ class PDFAnalyzer(AnalysisModule):
 
         try:
             pdf = pikepdf.open(local_file_path)
+
+            # an encrypted PDF that opens without a password has an empty user password, and pdfparser reads
+            # only ciphertext in its strings and streams. A PDF that needs a user password raises PasswordError
+            # and is left to PDFEncryptionAnalyzer
+            if pdf.is_encrypted:
+                self.save_decrypted_copy(pdf, _file, analysis)
 
             # extract URIs from PDF annotations
             # this handles AES-encrypted PDFs that ghostscript may not fully decrypt
@@ -240,6 +237,87 @@ class PDFAnalyzer(AnalysisModule):
             logging.warning(f"pikepdf failed to open {local_file_path}: {e}")
 
         return AnalysisExecutionResult.COMPLETED
+
+    def run_pdfparser(self, _file: FileObservable, output_path: str, analysis: PDFAnalysis, redirection: FileObservable):
+        """Adds pdfparser's dump of the objects in _file, with its stream filters decoded, as a file to scan."""
+        # a pdfparser that is stopped still leaves what it wrote in output_path, which is scanned
+        with open(output_path, 'wb') as fp:
+            result = self.run_tool(['python3', self.pdfparser_path, '-f', '-w', '-v', '-c', '--debug', _file.full_path],
+                                   _file.full_path, timeout=PDFPARSER_TIMEOUT_SECONDS, stdout=fp, stderr=PIPE)
+
+        if result and result.stderr:
+            logging.warning("pdfparser returned errors for {}".format(_file.full_path))
+
+        # add the output file as a new file to scan
+        # the FILE type indicators are relative to the alert storage directory
+        file_observable = analysis.add_file_observable(output_path, volatile=True)
+
+        if file_observable:
+            # point actions back at the source pdf
+            file_observable.redirection = redirection
+            file_observable.add_relationship(R_EXTRACTED_FROM, _file)
+            # extract URLs from this file
+            file_observable.add_directive(DIRECTIVE_EXTRACT_URLS)
+            file_observable.add_yara_meta("type", "document.pdf.object")
+
+    def save_decrypted_copy(self, pdf, _file: FileObservable, analysis: PDFAnalysis):
+        """Adds an unencrypted copy of the opened, encrypted pdf and pdfparser's dump of it, so the
+        type=document.pdf.object output holds the plaintext objects."""
+        # imported here for the same reason as in execute_analysis, which has already loaded it
+        import pikepdf
+
+        encryption = pdf.encryption
+        analysis.details[KEY_ENCRYPTION] = {
+            "filter": str(pdf.trailer.Encrypt.get("/Filter", "")),
+            "V": encryption.V,
+            "R": encryption.R,
+            "P": encryption.P,
+            "bits": encryption.bits,
+            # RC4 before V4 has no crypt filters, which pikepdf reports as a stream method of none
+            "method": "rc4" if encryption.V < 4 else encryption.stream_method.name,
+            "owner_password_empty": pdf.owner_password_matched,
+            "permissions": pdf.allow._asdict(),
+        }
+        _file.add_tag("encrypted_pdf_empty_password")
+
+        output_file = self.get_root().create_output_file(f"{_file.file_name}.decrypted.pdf")
+        try:
+            # saved through the file create_output_file made: given a path, pikepdf writes a temporary file beside
+            # it with a longer name, which a long attachment name pushes past NAME_MAX. Saving without encryption=
+            # drops the encryption. The streams are copied as they are, still filtered: decoding them here would run
+            # in this process with no time limit, and a nested-Flate stream of a few KB inflates to gigabytes.
+            # pdfparser decodes them under its timeout. A deterministic /ID gives the copy the same sha256 every
+            # time, so results cached on it are reused
+            with open(output_file, "wb") as fp:
+                pdf.save(fp, stream_decode_level=pikepdf.StreamDecodeLevel.none, compress_streams=False,
+                         deterministic_id=True)
+        except Exception as e:
+            # WARNING, as for every other pikepdf failure here: a damaged PDF is the sender's doing, not something
+            # an operator can fix. The original's own pdfparser output is still scanned
+            logging.warning(f"cannot save a decrypted copy of {_file.full_path}: {e}", exc_info=True,
+                            extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
+            os.remove(output_file)
+            return
+
+        decrypted_file = analysis.add_file_observable(output_file, volatile=True)
+        if decrypted_file:
+            decrypted_file.redirection = _file
+            decrypted_file.add_relationship(R_EXTRACTED_FROM, _file)
+            decrypted_file.add_tag("decrypted_pdf")
+            decrypted_file.add_yara_meta("type", "document.pdf")
+
+            # only pdfparser needs the plaintext. Ghostscript, poppler and pikepdf open the original with its empty
+            # password, so on the copy they, and this module's own extraction, would only repeat their work.
+            # Imported here: qrcode imports PIL, and the search indexer and the GUI import this module only to read
+            # PDFTextAnalysis
+            from saq.modules.file_analysis.qrcode import QRCodeAnalyzer
+            for module in (self, PDFTextAnalyzer, ExifAnalyzer, QRCodeAnalyzer):
+                decrypted_file.exclude_analysis(module)
+
+            # named through create_output_file, which keeps it within NAME_MAX after a long attachment name
+            self.run_pdfparser(decrypted_file,
+                               self.get_root().create_output_file(f"{decrypted_file.file_name}.pdfparser"),
+                               analysis, redirection=_file)
 
 KEY_STDOUT = 'stdout'
 KEY_STDERR = 'stderr'
