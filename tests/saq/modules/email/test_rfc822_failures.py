@@ -76,15 +76,12 @@ def failing_attachment(monkeypatch):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("file_path", [
-    "email.rfc822",
-    # an email extracted from an archive lives in a subdirectory of the storage directory
-    "attachments.zip.extracted/email.rfc822",
-])
-def test_a_part_that_cannot_be_extracted_is_recorded(root_analysis, failing_attachment, caplog, file_path):
+def test_a_part_that_cannot_be_extracted_is_recorded(root_analysis, failing_attachment, caplog):
     before = _review_files()
 
-    observable, analysis = _analyze(root_analysis, file_path)
+    # an email extracted from an archive lives in a subdirectory of the storage directory, which
+    # the review directory does not have
+    observable, analysis = _analyze(root_analysis, "attachments.zip.extracted/email.rfc822")
 
     assert isinstance(analysis, EmailAnalysis)
     analysis.load_details()

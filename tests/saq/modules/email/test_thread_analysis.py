@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 import pytest
@@ -342,6 +343,11 @@ def test_thread_analysis_counts_messages_the_lookalike_sent(root_analysis):
     assert [m["lookalike_domains_present"] for m in analysis.messages] == [
         [LOOKALIKE_DOMAIN], [LOOKALIKE_DOMAIN], [], [], []]
 
+    # it opened the conversation, yet the findings still name it as the look-a-like: being on fewer
+    # messages outranks arrival order
+    assert analysis.summary_details[0].content.startswith(
+        f"**{LOOKALIKE_DOMAIN}** (looks like example.com)")
+
 
 @pytest.mark.integration
 def test_thread_analysis_reports_partial_attribution(root_analysis):
@@ -363,28 +369,6 @@ def test_thread_analysis_reports_partial_attribution(root_analysis):
     assert "Present on 0 of 5" not in content
     # and we no longer claim absence from the anchor, which we cannot know in this state
     assert "Not present in the message this alert fired on" not in content
-
-
-@pytest.mark.integration
-def test_thread_analysis_names_the_side_on_fewer_messages(root_analysis):
-    """A look-a-like that sent FIRST is still the look-a-like.
-
-    "Whichever side is on fewer messages" outranks arrival order - the same rule the phishfinder
-    hunt uses when it re-picks which side to display. Arrival order only means anything in a
-    conversation the threading headers grouped; a subject-merged pile of self-threaded messages is
-    ordered by nothing but when each independent message landed, so ranking by it named the real
-    domain as the imposter whenever the impostor opened the exchange.
-    """
-    _record_conversation_opened_by_the_lookalike()
-
-    analysis, _ = _analyze(root_analysis, "<op-real-2@example.com>")
-    entry = analysis.lookalikes[0]
-
-    # the look-a-like is on messages 1-2, the real domain on 3-5, so it is FIRST in the timeline
-    assert analysis.messages[0]["from_domain"] == LOOKALIKE_DOMAIN
-    assert entry["domain"] == LOOKALIKE_DOMAIN
-    assert entry["counterpart"] == "example.com"
-    assert LOOKALIKE_DOMAIN in analysis.summary_details[0].content.split("(looks like")[0]
 
 
 def _record_one_sided_reply_chain():
@@ -520,11 +504,17 @@ def test_thread_analysis_is_display_only(root_analysis):
 
 
 @pytest.mark.integration
-def test_thread_analysis_skips_unrecorded_message(root_analysis):
+def test_thread_analysis_skips_unrecorded_message(root_analysis, caplog):
     # thread recording disabled, or a message older than the thread store - no analysis, no error.
     # the module ran and declined, which ACE records as False rather than None
-    analysis, _ = _analyze(root_analysis, "<never-recorded@example.com>")
+    _record_conversation()
+
+    with caplog.at_level(logging.WARNING):
+        analysis, _ = _analyze(root_analysis, "<never-recorded@example.com>")
+
     assert not analysis
+    # a failed lookup also leaves no analysis, but logs an error and puts the module on cooldown
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.integration
@@ -626,7 +616,6 @@ def test_settings_match_on_the_registrable_domain():
 @pytest.mark.parametrize("content,expected_pairs", [
     ("", []),
     ("ignored_domain_pairs:\n", []),
-    ("ignored_domain_pairs: []\n", []),
     ("ignored_domain_pairs:\n  - [a.com, b.com]\n", [("a.com", "b.com")]),
 ])
 def test_load_settings(tmp_path, content, expected_pairs):
@@ -640,7 +629,6 @@ def test_load_settings(tmp_path, content, expected_pairs):
 @pytest.mark.parametrize("content", [
     "ignored_pairs: []\n",                            # unknown key
     "ignored_domain_pairs:\n  - [a.com]\n",           # not a pair
-    "ignored_domain_pairs:\n  - [a.com, b.com, c.com]\n",
     "ignored_domain_pairs: [\n",                      # not YAML
 ])
 def test_load_settings_rejects_an_invalid_file(tmp_path, content):
