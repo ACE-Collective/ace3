@@ -21,7 +21,7 @@ from saq.constants import (
     F_FQDN,
     F_IP,
 )
-from saq.environment import get_base_dir
+from saq.environment import get_global_runtime_settings
 from saq.modules.tag import SiteTagAnalysis, SiteTagAnalyzer
 from tests.saq.helpers import create_root_analysis
 
@@ -181,20 +181,6 @@ def test_extended_version_returns_csv_version_string(site_tags_csv, test_context
     assert int(size_str) > 0
 
 
-def test_extended_version_empty_when_csv_missing(tmp_path, monkeypatch, test_context):
-    monkeypatch.setattr(
-        SiteTagAnalyzer,
-        "csv_file",
-        property(lambda _self: str(tmp_path / "no-such.csv")),
-    )
-
-    # __init__ calls watch_file → check_watched_files which silently no-ops
-    # on missing files, so the analyzer constructs fine even without the CSV.
-    analyzer = _build_analyzer(test_context)
-
-    assert analyzer.extended_version == {}
-
-
 def test_extended_version_changes_when_csv_rotated(site_tags_csv, test_context):
     csv_path = site_tags_csv(["ip,cidr,false,10.0.0.0/8,internal-network"])
 
@@ -296,11 +282,14 @@ def test_invalid_rows_are_skipped(site_tags_csv, test_context, caplog):
 
 
 def test_csv_file_path(monkeypatch, test_context, tmp_path):
+    # a SAQ_HOME other than the working directory, so a path resolved against the wrong one shows
+    saq_home = tmp_path / "saq_home"
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(saq_home))
     config = get_analysis_module_config(ANALYSIS_MODULE_SITE_TAGGER)
     monkeypatch.setattr(config, "csv_file", "etc/missing_site_tags.csv")
     analyzer = SiteTagAnalyzer(context=test_context, config=config)
 
-    assert analyzer.csv_file == os.path.join(get_base_dir(), "etc/missing_site_tags.csv")
+    assert analyzer.csv_file == f"{saq_home}/etc/missing_site_tags.csv"
     assert analyzer.tag_mapping == {}
     assert analyzer.extended_version == {}
     with pytest.raises(RuntimeError, match="missing"):
