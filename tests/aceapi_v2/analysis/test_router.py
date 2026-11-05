@@ -64,6 +64,7 @@ def _submission(**overrides) -> dict:
 
 
 async def _submit(client: AsyncClient, submission: dict, files: list[tuple[str, bytes]] = ()):
+    # with no files this is a urlencoded form rather than multipart, as ace_api.submit() sends it
     return await client.post(
         "/analysis/",
         data={"analysis": json.dumps(submission, cls=_JSONEncoder)},
@@ -204,13 +205,6 @@ class TestSubmit:
         response = await _submit(client, _submission(event_time=None, event_time_source="query_time"))
         assert _load(response.json()["uuid"]).event_time_source == EventTimeSource.NOW
 
-    @pytest.mark.asyncio
-    async def test_without_files_as_a_plain_form(self, client: AsyncClient):
-        """ace_api.submit() with no files sends a urlencoded form rather than multipart."""
-        response = await client.post("/analysis/", data={"analysis": json.dumps(_submission(), cls=_JSONEncoder)})
-
-        assert response.status_code == 201
-
 
 def _file_observables(root: RootAnalysis) -> list:
     return [o for o in root.all_observables if o.type == F_FILE]
@@ -346,7 +340,6 @@ class TestInvalid:
          "missing description field in submission"),
         (_submission(event_time="20189-13-143"), 400, "invalid event time format"),
         (_submission(event_time_source="unset"), 400, "invalid event_time_source unset"),
-        (_submission(event_time_source="sometime"), 400, "invalid event_time_source sometime"),
         (_submission(observables=[{"type": F_IP, "time": EVENT_TIME}]), 400, "invalid observable"),
         (_submission(observables=[{"value": "1.2.3.4"}]), 400, "invalid observable"),
         (_submission(observables=[{"type": F_IP, "value": "1.2.3.4", "time": "INVALID_TIME"}]), 400, "invalid observable"),

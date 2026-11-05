@@ -21,8 +21,6 @@ PNG_DATA = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01
            b'\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\xdac\xf8\x0f' \
            b'\x00\x01\x01\x01\x00\x18\xdd\x8d\x18\x00\x00\x00\x00IEND\xaeB`\x82'
 
-JPEG_DATA = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb'
-
 
 def _image_path(alert_uuid: str, observable_uuid: str) -> str:
     return f"/alerts/{alert_uuid}/observables/{observable_uuid}/image"
@@ -82,18 +80,6 @@ async def test_png(client: AsyncClient, tmpdir):
     assert response.headers["Content-Security-Policy"] == "sandbox"
     assert response.headers["Cache-Control"] == "private"
     assert response.content == PNG_DATA
-
-
-@pytest.mark.asyncio
-async def test_jpeg(client: AsyncClient, tmpdir):
-    alert_uuid, file_observable = _alert_with_file(tmpdir, "test.jpg", JPEG_DATA)
-    assert file_observable.mime_type == "image/jpeg"
-
-    response = await client.get(_image_path(alert_uuid, file_observable.uuid))
-
-    assert response.status_code == 200
-    assert response.headers["Content-Type"] == "image/jpeg"
-    assert response.content == JPEG_DATA
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,7 @@ class TestList:
     @pytest.mark.asyncio
     async def test_rows(self, client: AsyncClient):
         alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
+        insert_alert_with_detections(MULTI, disposition="DELIVERY")  # its rows stay out
 
         rows = await _rows(client, alert)
 
@@ -90,6 +91,7 @@ class TestVerdicts:
     @pytest.mark.asyncio
     async def test_set_and_clear(self, client: AsyncClient, client_actor, caplog):
         caplog.set_level(logging.INFO)
+        insert_alert_with_detections(MULTI, disposition="DELIVERY")  # the same detections on another alert
         alert = insert_alert_with_detections(MULTI, disposition="DELIVERY")
         content_hash = (await _rows(client, alert))[0]["content_hash"]
 

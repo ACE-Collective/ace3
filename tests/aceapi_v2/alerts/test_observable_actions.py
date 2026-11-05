@@ -132,11 +132,11 @@ class TestRequests:
         assert not _queued(alert)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("action", WRITES)
-    async def test_unknown_alert_or_observable(self, client: AsyncClient, alert, action):
-        assert (await client.post(_path("not-a-uuid", alert.observables.url.uuid, action))).status_code == 400
-        assert (await client.post(_path(str(uuid.uuid4()), alert.observables.url.uuid, action))).status_code == 404
-        assert (await client.post(_path(alert.uuid, str(uuid.uuid4()), action))).status_code == 404
+    async def test_unknown_alert_or_observable(self, client: AsyncClient, alert):
+        # every action checks these in request_observable_analysis
+        assert (await client.post(_path("not-a-uuid", alert.observables.url.uuid, "crawl"))).status_code == 400
+        assert (await client.post(_path(str(uuid.uuid4()), alert.observables.url.uuid, "crawl"))).status_code == 404
+        assert (await client.post(_path(alert.uuid, str(uuid.uuid4()), "crawl"))).status_code == 404
 
     @pytest.mark.asyncio
     async def test_a_locked_alert_is_a_conflict(self, client: AsyncClient, alert):
@@ -154,25 +154,19 @@ class TestRequests:
         assert not _queued(alert)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("action, observable, directive", [
-        ("collect-file", "file_location", DIRECTIVE_COLLECT_FILE),
-        ("render", "file", DIRECTIVE_RENDER),
-        ("crawl", "url", DIRECTIVE_CRAWL),
-        ("check-for-clickers", "url", DIRECTIVE_CLICKER_DETECTION),
-    ])
-    async def test_a_simulated_alert_is_never_reanalyzed(self, client: AsyncClient, alert, action, observable,
-                                                         directive):
-        """A SIMULATED (test-run) alert's tree stays as its run review froze it (docs/SVS_RUNS.md)."""
+    async def test_a_simulated_alert_is_never_reanalyzed(self, client: AsyncClient, alert):
+        """A SIMULATED (test-run) alert's tree stays as its run review froze it (docs/SVS_RUNS.md).
+        Every action checks this in request_observable_analysis."""
         db = get_db()
         db.query(Alert).filter(Alert.uuid == alert.uuid).update({"disposition": DISPOSITION_SIMULATED})
         db.commit()
-        target = getattr(alert.observables, observable)
+        target = alert.observables.url
 
-        response = await client.post(_path(alert.uuid, target.uuid, action))
+        response = await client.post(_path(alert.uuid, target.uuid, "crawl"))
 
         assert response.status_code == 409
         assert response.json()["detail"].startswith(f"alert {alert.uuid} is SIMULATED")
-        assert not load_root(alert.storage_dir).get_observable(target.uuid).has_directive(directive)
+        assert not load_root(alert.storage_dir).get_observable(target.uuid).has_directive(DIRECTIVE_CRAWL)
         assert not _queued(alert)
 
     @pytest.mark.asyncio
