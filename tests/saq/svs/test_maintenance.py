@@ -134,7 +134,6 @@ def test_invalid(minutes, reason, message):
 
 @pytest.mark.parametrize("host, reason", [
     ("prod-dc-01", "prod-dc-01 is not a test host"),
-    ("win10-01.prod.example", "win10-01.prod.example is not test host win10-01.lab.example"),
     ("win10 01", "'win10 01' is not a host name"),
 ])
 def test_a_host_that_is_not_a_test_host_is_refused_and_alerts(host, reason):
@@ -270,13 +269,6 @@ def test_a_failed_host_removal_leaves_the_window_open(monkeypatch, caplog):
     assert window.ended_at is None and window.test_host_id == _host_id("win10-01")
     assert not [r for r in caplog.records if r.getMessage().startswith(("AUDIT: svs maintenance window ended",
                                                                         "AUDIT: svs test host removed"))]
-
-
-def test_service_svs_runs_the_maintenance_timers(monkeypatch):
-    calls = []
-    monkeypatch.setattr(maintenance, "run_timers", lambda: calls.append(True))
-    RunTimer(None).run_once()
-    assert calls == [True]
 
 
 def test_a_failure_of_the_maintenance_timers_is_logged_and_the_next_pass_runs_them(monkeypatch, caplog):

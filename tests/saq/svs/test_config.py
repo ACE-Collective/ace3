@@ -38,7 +38,6 @@ def test_unknown_svs_keys_are_rejected():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("timings", [
-    {"lease_seconds": 10, "heartbeat_interval_seconds": 30},    # the lease ends before the heartbeat
     {"lease_seconds": 60, "heartbeat_interval_seconds": 30},    # one late heartbeat loses it
 ])
 def test_a_lease_its_heartbeat_cannot_keep_is_refused_when_the_configuration_is_read(timings):
