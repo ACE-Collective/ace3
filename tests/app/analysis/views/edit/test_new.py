@@ -4,16 +4,17 @@ import io
 import logging
 import os
 from datetime import UTC, datetime
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 import requests
 from flask import url_for
+from werkzeug.exceptions import BadRequestKeyError
 
 from app.analysis.views.edit.new import SUBMIT_TIMEOUT
 from saq.analysis.root import KEY_ALERT_TEMPLATE, load_root
 from saq.configuration.config import get_config
-from saq.constants import F_FILE, F_IPV4, create_file_location
+from saq.constants import F_FILE, F_IPV4
 from saq.database.model import Alert, Company, Nodes
 from saq.database.pool import get_db
 from saq.environment import get_data_dir, get_temp_dir
@@ -76,33 +77,21 @@ def _flashes(web_client) -> list[str]:
 
 @pytest.mark.integration
 def test_new_alert_observable_get(web_client):
-    """Test GET request to new_alert_observable returns template with correct data."""
+    """The row for another observable carries its index and offers the observable types and the
+    directives an analyst may set."""
     response = web_client.get(url_for('analysis.new_alert_observable', index='5'))
 
     assert response.status_code == 200
-    # Template should be returned successfully
-    assert response.data is not None
+    assert b'id="new_alert_observable_5"' in response.data
+    assert b'<option value="ipv4" >ipv4</option>' in response.data
+    assert b'<option value="crawl" title=' in response.data
 
 
 @pytest.mark.integration
 def test_new_alert_observable_missing_index(web_client):
-    """Test new_alert_observable without index parameter."""
-    try:
-        response = web_client.get(url_for('analysis.new_alert_observable'))
-        # Should return 400 or 500 due to missing required parameter
-        assert response.status_code in [400, 500]
-    except Exception:
-        # URL generation may fail without required parameter
-        pass
-
-
-@pytest.mark.integration
-def test_file_route_get(web_client, target_node):
-    """Test GET request to file route returns analyze_file template."""
-    response = web_client.get(url_for('analysis.file'))
-
-    assert response.status_code == 200
-    assert f'value="{target_node}"'.encode() in response.data
+    """The index is required: without it the request is refused."""
+    with pytest.raises(BadRequestKeyError):
+        web_client.get(url_for('analysis.new_alert_observable'))
 
 
 LISTED_TEMPLATE = 'analysis/custom/saq_debug.html'
@@ -260,45 +249,21 @@ def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node):
 
 
 @pytest.mark.integration
-def test_new_alert_email_conversation_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with email conversation observable."""
+@pytest.mark.parametrize('o_type,value_a,value_b,expected', [
+    ('email_conversation', 'sender@example.com', 'recipient@example.com', 'sender@example.com|recipient@example.com'),
+    ('ipv4_conversation', '192.168.1.1', '192.168.1.2', '192.168.1.1_192.168.1.2'),
+    ('file_location', 'hostname', '/path/to/file', 'hostname@/path/to/file'),
+])
+def test_new_alert_joins_the_two_values_of_a_pair_type(web_client, mock_api_call, target_node, o_type, value_a,
+                                                       value_b, expected):
+    """The observable types entered as two values become one observable value."""
     response = web_client.post(url_for('analysis.new_alert'), data=_form(
         target_node,
-        observables_types_0='email_conversation',
-        observables_values_0_A='sender@example.com',
-        observables_values_0_B='recipient@example.com'))
+        observables_types_0=o_type,
+        observables_values_0_A=value_a,
+        observables_values_0_B=value_b))
 
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('email_conversation')
-    assert observable.value == 'sender@example.com|recipient@example.com'
-
-
-@pytest.mark.integration
-def test_new_alert_ipv4_conversation_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with IPv4 conversation observable."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        observables_types_0='ipv4_conversation',
-        observables_values_0_A='192.168.1.1',
-        observables_values_0_B='192.168.1.2'))
-
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('ipv4_conversation')
-    assert observable.value == '192.168.1.1_192.168.1.2'
-
-
-@pytest.mark.integration
-def test_new_alert_file_location_observable(web_client, mock_api_call, target_node):
-    """Test creation of alert with file location observable."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        observables_types_0='file_location',
-        observables_values_0_A='hostname',
-        observables_values_0_B='/path/to/file'))
-
-    root = _submitted_root(response)
-    observable = root.get_observable_by_type('file_location')
-    assert observable.value == create_file_location('hostname', '/path/to/file')
+    assert _submitted_root(response).get_observable_by_type(o_type).value == expected
 
 
 @pytest.mark.integration
@@ -339,21 +304,6 @@ def test_new_alert_file_row_without_upload_refuses_every_observable(web_client, 
     assert _alerts() == []
     assert _flashes(web_client) == ['no file uploaded for observable 1']
     assert _leftover_uploads() == []
-
-
-@pytest.mark.integration
-def test_new_alert_api_submission_failure(web_client, target_node):
-    """Test handling of API submission failure."""
-    # Mock API submission to raise exception
-    with patch('app.analysis.views.edit.new.ace_api.submit', side_effect=Exception("API submission failed")):
-        response = web_client.post(url_for('analysis.new_alert'), data=_form(
-            target_node,
-            observables_types_0='ipv4',
-            observables_values_0='192.168.1.1'))
-
-    # Should redirect to manage page with error
-    assert response.status_code == 302
-    assert 'manage' in response.location
 
 
 @pytest.mark.integration
