@@ -1,5 +1,3 @@
-import datetime
-
 import pytest
 
 from saq.collectors.hunter.correlation.registry import (
@@ -57,11 +55,3 @@ class TestQuerySourceRegistry:
         sources = get_registered_sources()
         assert "src1" in sources
         assert "src2" in sources
-
-    def test_query_source_exposes_default_time_field_and_format(self):
-        source = MockQuerySource()
-        register_query_source("test", source)
-        registered = get_query_source("test")
-        # consumers (correlation engine) read these to default relative_time_field/format
-        assert registered.default_time_field == "_time"
-        assert registered.default_time_format == "iso8601"

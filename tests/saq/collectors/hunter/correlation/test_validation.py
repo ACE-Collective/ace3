@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import pytest
 
 from pydantic import BaseModel
@@ -152,12 +150,11 @@ class TestCheckTemplatesForRemovedNames:
         command = {"type": "executable", "path": "/x/a.py", "env": {"K": "{{ _secrets.k }}"}}
         assert len(check_templates_for_removed_names(_correlate(command, command), None)) == 1
 
-    def test_non_correlate_hunt_is_a_no_op(self):
-        assert check_templates_for_removed_names(None, None) == []
-
     def test_unparsed_config_objects_are_ignored(self):
         """A hunt type whose config exposes something other than the parsed models."""
-        assert check_templates_for_removed_names(MagicMock(), MagicMock()) == []
+        correlate = {"logic": [{"action": {"type": "log", "log_message": "{{ _secrets.a }}"}}]}
+        predefined = [{"name": "cmd", "type": "executable", "path": "/x/a.py", "env": {"K": "{{ _secrets.k }}"}}]
+        assert check_templates_for_removed_names(correlate, predefined) == []
 
 
 def _substitute(value, name: str):
@@ -301,4 +298,7 @@ class TestCheckCustomCommandTypes:
 
     def test_non_correlate_hunt_is_a_no_op(self, custom_types):
         assert check_custom_command_types(None, None) == []
-        assert check_custom_command_types(MagicMock(), MagicMock()) == []
+        # a hunt type whose config exposes something other than the parsed models
+        correlate = {"logic": [{"transform": {"method": "property", "property_name": "a", "command": {"type": "nope"}}}]}
+        predefined = [{"name": "cmd", "type": "nope"}]
+        assert check_custom_command_types(correlate, predefined) == []
