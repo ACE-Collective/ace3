@@ -28,6 +28,23 @@
                                 </td>
                             </tr>
                         {% endfor %}
+                        {# seen_in_queue: the other alerts holding the observable, and why it mattered #}
+                        {% for observable, seen in rule.sightings %}
+                            {% set more = seen.alert_count - seen.alerts | length %}
+                            <tr>
+                                <td></td>
+                                <td colspan="3" class="ps-3" style="word-break: break-all;">
+                                    <span class="text-muted">{{ observable.type }}</span>
+                                    <span title="{{ observable.value }}">{{ detection_chain_observable_display_value(observable) }}</span>
+                                    <span class="text-muted">seen in {{ seen.queue }}:</span>
+                                    {% for sighted in seen.alerts %}<a href="{{ url_for('analysis.index', direct=sighted.uuid) }}" title="{{ sighted.uuid }}">{{ sighted.uuid[:8] }}</a>{% if sighted.reasons %} <span class="text-muted">({{ sighted.reasons | join(', ') }})</span>{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+                                    {% if more > 0 %}<span class="text-muted">and {{ more }}{{ '+' if seen.truncated }} more</span>{% endif %}
+                                    {% if seen.current_reasons or seen.global_reasons %}
+                                        <span class="text-muted">&middot; important here: {{ (seen.current_reasons + seen.global_reasons) | join(', ') }}</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
                     {% endfor %}
                 </table>
 {% endcall %}

@@ -251,7 +251,11 @@ class TreeCondition:
             value = getattr(obs, attr, None)
             if value is None:
                 return False
-            if not pattern.search(str(value)):
+            # a collection (tags, directives) matches when any element does, so `^tag$` is exact
+            if isinstance(value, (list, tuple, set, frozenset)):
+                if not any(pattern.search(str(element)) for element in value):
+                    return False
+            elif not pattern.search(str(value)):
                 return False
         return True
 
@@ -356,6 +360,106 @@ def _get_descendant_observables(observable: Observable) -> Generator[Observable,
             stack.extend(analysis.observables)
 
 
+def _type_family(observable_type: str) -> set[str]:
+    """The observable's type, its root type and every subtype of that root, so an email_from
+    in one alert is the same address as an email_address in another."""
+    hierarchy = get_type_hierarchy()
+    ancestors = hierarchy.ancestors(observable_type)
+    base = ancestors[-1] if ancestors else observable_type
+    family = {t for t in hierarchy.all_known_types() if hierarchy.is_subtype(t, base)}
+    family.update((observable_type, base))
+    return family
+
+
+SEEN_IN_QUEUE_KEYS = {"queue", "require_important", "indicator_tags"}
+
+# a key the parser does not know rejects the rule: ignored, a misspelled condition (or one an older
+# ACE does not support yet) would make the rule match more than its author wrote
+CONDITION_KEYS = {
+    "alert_tags", "alert_type", "queue", "observable_types", "value_pattern", "file_name_pattern",
+    "display_type_pattern", "display_value_pattern", "has_tags", "has_directives", "has_yara_meta_tags",
+    "tree_conditions", "root_observable", "seen_in_queue",
+}
+TREE_CONDITION_KEYS = {
+    "analysis_type", "scope", "match_count", "negate", "details_match", "observable_match",
+    "produces_observable",
+}
+
+
+@dataclass
+class SeenInQueueCondition:
+    """Matches an observable that also appears in another alert in ``queue``: the same value
+    in the same type family (see _type_family).
+
+    With require_important (the default), the shared observable must also matter, not
+    just co-occur: in this alert (one of indicator_tags on it, or a detection point on it
+    or on one of its analyses), in a sighted alert (the same evidence, from that alert's
+    index), or globally (enabled for detection, or marked interesting by an analyst).
+    Whitelisted observables never match.
+    """
+    queue: str
+    require_important: bool = True
+    indicator_tags: list[str] = field(default_factory=list)
+    # how many sighted alerts to keep in the match evidence
+    max_evidence_alerts: int = 10
+
+    def evaluate(self, observable: Observable, root: RootAnalysis,
+                 cache: Optional[dict] = None) -> Optional[dict]:
+        """Returns the match evidence, or None when the condition does not match."""
+        if observable.whitelisted:
+            return None
+
+        key = (self.queue, tuple(self.indicator_tags), observable.type, observable.sha256_hash)
+        sightings = cache.get(key) if cache is not None else None
+        if sightings is None:
+            from saq.database.pool import get_db
+            from saq.database.util.queue_sighting import find_queue_sightings
+            try:
+                sightings = find_queue_sightings(
+                    _type_family(observable.type), observable.sha256_bytes, self.queue, root.uuid,
+                    self.indicator_tags)
+            except Exception as e:
+                # the rule does not match rather than failing the module, whose other rules
+                # (ignores among them) must still apply; the session is shared with them
+                logging.error(f"seen_in_queue lookup failed for {observable} in queue {self.queue}: {e}")
+                try:
+                    get_db().rollback()
+                except Exception as rollback_error:
+                    logging.error(f"unable to roll back after the seen_in_queue lookup failed: {rollback_error}")
+                return None
+            if cache is not None:
+                cache[key] = sightings
+
+        if not sightings.alerts:
+            return None
+
+        current_reasons = self._current_reasons(observable)
+        if not self.require_important or current_reasons or sightings.global_reasons:
+            matched = sightings.alerts
+        else:
+            matched = sightings.important_alerts
+        if not matched:
+            return None
+
+        evidence = {
+            "queue": self.queue,
+            "alert_count": len(matched),
+            "alerts": [{"uuid": a.alert_uuid, "reasons": a.reasons} for a in matched[:self.max_evidence_alerts]],
+            "current_reasons": current_reasons,
+            "global_reasons": sightings.global_reasons,
+        }
+        # alert_count is then a lower bound
+        if sightings.truncated:
+            evidence["truncated"] = True
+        return evidence
+
+    def _current_reasons(self, observable: Observable) -> list[str]:
+        reasons = [f"tag:{tag}" for tag in self.indicator_tags if observable.has_tag(tag)]
+        if observable.has_detection_points() or any(a.has_detection_points() for a in observable.all_analysis):
+            reasons.append("detection_point")
+        return reasons
+
+
 @dataclass
 class RuleConditions:
     alert_tags: list[str] = field(default_factory=list)
@@ -370,6 +474,11 @@ class RuleConditions:
     display_type_pattern: Optional[re.Pattern] = None
     display_value_pattern: Optional[re.Pattern] = None
     tree_conditions: list[TreeCondition] = field(default_factory=list)
+    # True: only observables the alert was submitted with (directly under the root); False: only
+    # observables analysis found. The root is not usable as a `parent` tree condition for this,
+    # because it holds every observable in the tree.
+    root_observable: Optional[bool] = None
+    seen_in_queue: Optional[SeenInQueueCondition] = None
 
     def evaluate_early(self, observable: Observable, root: RootAnalysis) -> bool:
         """Check only immutable conditions known at analysis start.
@@ -410,6 +519,8 @@ class RuleConditions:
         cannot -- once False for an observable snapshot, always False. Note
         rules with tree_conditions are never immutable, so the verdict memo
         never skips a rule the analysis-type presence gate accelerates.
+        seen_in_queue reads the database and the observable's tags and
+        detections, all of which change over time.
         """
         return not (
             self.alert_tags
@@ -417,10 +528,15 @@ class RuleConditions:
             or self.has_directives
             or self.has_yara_meta_tags
             or self.tree_conditions
+            or self.root_observable is not None
+            or self.seen_in_queue
         )
 
     def evaluate(self, observable: Observable, root: RootAnalysis, details_cache: Optional[dict] = None,
-                 type_index: Optional[_AnalysisTypeIndex] = None) -> bool:
+                 type_index: Optional[_AnalysisTypeIndex] = None, sightings_cache: Optional[dict] = None,
+                 evidence: Optional[dict] = None) -> bool:
+        """Returns True when every condition matches. When it does and evidence is given,
+        conditions that explain their match (seen_in_queue) add that explanation to it."""
         # Cheapest checks first for short-circuit efficiency
 
         # Observable type check (subtype-aware: a rule targeting "email_address"
@@ -481,10 +597,23 @@ class RuleConditions:
             if not self.display_value_pattern.search(str(observable.display_value)):
                 return False
 
+        if self.root_observable is not None:
+            is_root_observable = any(o.uuid == observable.uuid for o in root.observables)
+            if is_root_observable != self.root_observable:
+                return False
+
         # Tree conditions (most expensive — disk I/O)
         for tc in self.tree_conditions:
             if not tc.evaluate(observable, root, details_cache, type_index):
                 return False
+
+        # Cross-alert history (database queries) -- last, so cheaper conditions gate it
+        if self.seen_in_queue is not None:
+            seen = self.seen_in_queue.evaluate(observable, root, sightings_cache)
+            if seen is None:
+                return False
+            if evidence is not None:
+                evidence["seen_in_queue"] = seen
 
         return True
 
@@ -598,6 +727,10 @@ class ObservableModifierAnalyzer(AnalysisModule):
         # outer key = root.uuid, value = (real_analysis_count, set[module_path]).
         # Count-invalidated -- see _AnalysisTypeIndex for the reasoning.
         self._type_index_cache: dict[str, tuple[int, set[str]]] = {}
+        # per-root seen_in_queue database lookups, so every rule (and every pass) asking about
+        # the same observable and queue shares one set of queries.
+        # outer key = root.uuid, inner key = (queue, indicator_tags, type, sha256).
+        self._sightings_cache: dict[str, dict] = {}
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
@@ -667,6 +800,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
         conditions_data = rule_data.get("conditions", {}) or {}
         actions_data = rule_data.get("actions", {}) or {}
 
+        unknown = set(conditions_data) - CONDITION_KEYS
+        if unknown:
+            logging.error(
+                f"observable modifier rule '{name}' has unknown conditions: {', '.join(sorted(unknown))} -- "
+                f"refusing to load this rule"
+            )
+            return None
+
         # Parse conditions
         value_pattern = None
         raw_pattern = conditions_data.get("value_pattern")
@@ -711,6 +852,12 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 return None
             tree_conditions.append(tc)
 
+        seen_in_queue = None
+        if "seen_in_queue" in conditions_data:
+            seen_in_queue = self._parse_seen_in_queue(conditions_data["seen_in_queue"], name)
+            if seen_in_queue is None:
+                return None
+
         conditions = RuleConditions(
             alert_tags=conditions_data.get("alert_tags", []) or [],
             alert_type=conditions_data.get("alert_type"),
@@ -724,6 +871,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
             has_directives=conditions_data.get("has_directives", []) or [],
             has_yara_meta_tags=conditions_data.get("has_yara_meta_tags", []) or [],
             tree_conditions=tree_conditions,
+            root_observable=None if conditions_data.get("root_observable") is None else bool(conditions_data["root_observable"]),
+            seen_in_queue=seen_in_queue,
         )
 
         actions = RuleActions(
@@ -749,7 +898,43 @@ class ObservableModifierAnalyzer(AnalysisModule):
             is_immutable=conditions.is_immutable,
         )
 
+    def _parse_seen_in_queue(self, raw, rule_name: str) -> Optional[SeenInQueueCondition]:
+        """Returns None, so the rule is skipped, for anything malformed: a misspelled key or a
+        quoted "false" would otherwise quietly widen what the rule tags."""
+        # shorthand: `seen_in_queue: default`
+        if isinstance(raw, str):
+            raw = {"queue": raw}
+        if not isinstance(raw, dict) or not isinstance(raw.get("queue"), str) or not raw["queue"]:
+            logging.warning(f"seen_in_queue in rule '{rule_name}' requires a queue")
+            return None
+        unknown = set(raw) - SEEN_IN_QUEUE_KEYS
+        if unknown:
+            logging.warning(f"seen_in_queue in rule '{rule_name}' has unknown keys: {', '.join(sorted(unknown))}")
+            return None
+        require_important = raw.get("require_important", True)
+        if not isinstance(require_important, bool):
+            logging.warning(f"seen_in_queue.require_important in rule '{rule_name}' must be true or false")
+            return None
+        indicator_tags = raw.get("indicator_tags", []) or []
+        if isinstance(indicator_tags, str):
+            indicator_tags = [indicator_tags]
+        if not isinstance(indicator_tags, list) or not all(isinstance(t, str) and t for t in indicator_tags):
+            logging.warning(f"seen_in_queue.indicator_tags in rule '{rule_name}' must be a list of tag names")
+            return None
+        return SeenInQueueCondition(
+            queue=raw["queue"],
+            require_important=require_important,
+            indicator_tags=indicator_tags,
+        )
+
     def _parse_tree_condition(self, tc_data: dict, rule_name: str) -> Optional[TreeCondition]:
+        unknown = set(tc_data) - TREE_CONDITION_KEYS
+        if unknown:
+            logging.error(
+                f"tree_condition in observable modifier rule '{rule_name}' has unknown keys: "
+                f"{', '.join(sorted(unknown))} -- refusing to load this rule"
+            )
+            return None
         analysis_type = tc_data.get("analysis_type", "")
         scope = tc_data.get("scope", "ancestors")
         if scope not in ("ancestors", "descendants", "global", "self", "parent", "siblings"):
@@ -844,7 +1029,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
 
     def _evaluate_rule(self, rule: "Rule", observable: Observable, root: RootAnalysis,
                        type_index: Optional[_AnalysisTypeIndex] = None,
-                       final_phase: bool = False) -> bool:
+                       final_phase: bool = False, evidence: Optional[dict] = None) -> bool:
         """Evaluate a rule's conditions, recording the elapsed time as a cost metric.
 
         The timing is captured in a finally block so the cost is recorded even
@@ -857,6 +1042,8 @@ class ObservableModifierAnalyzer(AnalysisModule):
                 observable, root,
                 details_cache=self._details_cache.setdefault(root.uuid, {}),
                 type_index=type_index,
+                sightings_cache=self._sightings_cache.setdefault(root.uuid, {}),
+                evidence=evidence,
             )
         finally:
             elapsed = time.perf_counter() - start
@@ -903,6 +1090,18 @@ class ObservableModifierAnalyzer(AnalysisModule):
         per_root[observable.uuid] = (snapshot, fresh)
         return fresh
 
+    @staticmethod
+    def _match_entry(rule: "Rule", applied: dict, evidence: dict) -> dict:
+        entry = {
+            "name": rule.name,
+            "uuid": rule.uuid,
+            "actions_applied": applied,
+        }
+        # why a history-based condition matched (e.g. which alerts in the other queue)
+        if evidence:
+            entry["evidence"] = evidence
+        return entry
+
     def execute_analysis(self, observable: Observable) -> AnalysisExecutionResult:
         self._ensure_initialized()
 
@@ -944,17 +1143,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
             if rule.is_immutable and rule.uuid in false_set:
                 continue
 
-            if not self._evaluate_rule(rule, observable, root, type_index):
+            evidence: dict = {}
+            if not self._evaluate_rule(rule, observable, root, type_index, evidence=evidence):
                 if rule.is_immutable:
                     false_set.add(rule.uuid)
             else:
                 applied = rule.actions.apply(
                     observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
-                matched_rules.append({
-                    "name": rule.name,
-                    "uuid": rule.uuid,
-                    "actions_applied": applied,
-                })
+                matched_rules.append(self._match_entry(rule, applied, evidence))
                 logging.info(f"observable modifier pre-phase rule '{rule.name}' matched {observable}")
 
                 if applied.get("ignore"):
@@ -1030,17 +1226,14 @@ class ObservableModifierAnalyzer(AnalysisModule):
             if rule.is_immutable and rule.uuid in false_set:
                 continue
 
-            if not self._evaluate_rule(rule, observable, root, type_index, final_phase=True):
+            evidence: dict = {}
+            if not self._evaluate_rule(rule, observable, root, type_index, final_phase=True, evidence=evidence):
                 if rule.is_immutable:
                     false_set.add(rule.uuid)
             else:
                 applied = rule.actions.apply(
                     observable, signature_uuid=rule.uuid, signature_version=self._rules_signature_version)
-                matched_rules.append({
-                    "name": rule.name,
-                    "uuid": rule.uuid,
-                    "actions_applied": applied,
-                })
+                matched_rules.append(self._match_entry(rule, applied, evidence))
                 logging.info(f"observable modifier rule '{rule.name}' matched {observable}")
 
                 if applied.get("ignore"):
@@ -1085,6 +1278,7 @@ class ObservableModifierAnalyzer(AnalysisModule):
             self._details_cache.pop(root.uuid, None)
             self._immutable_false_cache.pop(root.uuid, None)
             self._type_index_cache.pop(root.uuid, None)
+            self._sightings_cache.pop(root.uuid, None)
             stats = self._rule_eval_stats.pop(root.uuid, {})
             for rule_uuid, s in stats.items():
                 count = s["count"]
@@ -1189,6 +1383,8 @@ class ModifierRuleMatches:
     # the observables its ignore action removed. One whose .ignored is still False was taken
     # only from the parent analyses the rule matched it under and is shown elsewhere in the tree.
     ignored: list[Observable] = field(default_factory=list)
+    # the observables a seen_in_queue condition matched, each with that condition's evidence
+    sightings: list[tuple[Observable, dict]] = field(default_factory=list)
 
 
 def build_modifier_rule_matches(root: RootAnalysis) -> list[ModifierRuleMatches]:
@@ -1207,5 +1403,8 @@ def build_modifier_rule_matches(root: RootAnalysis) -> list[ModifierRuleMatches]
                     rule.actions.append(action)
             if match["actions_applied"].get("ignore"):
                 rule.ignored.append(analysis.observable)
+            seen = match.get("evidence", {}).get("seen_in_queue")
+            if seen:
+                rule.sightings.append((analysis.observable, seen))
 
     return sorted(rules.values(), key=lambda rule: (not rule.ignored, rule.name.lower()))
