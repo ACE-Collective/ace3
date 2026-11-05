@@ -3,24 +3,35 @@ import shutil
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
-from saq.analysis.root import RootAnalysis
+from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_QRCODE, F_FILE
+from saq.engine.core import Engine
+from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer, QRCodeFilter, _rendered_pages
 from saq.sandbox.runner import SandboxResult
+from saq.util.uuid import get_storage_dir
 from tests.saq.test_util import create_test_context
 
 DATA_DIR = Path(__file__).parent.parent / "test_file_analysis"
 QR_IMAGE = DATA_DIR / "2910293944.gif"
 QR_URL = "https://qrco.de/be1uHX"
+# a version 8, level H code with a made-up mail icon on a white plate over its center. zbarimg finds no symbol in it
+# and OpenCV reads it, as with the logo codes in real quishing PDFs. Generated, so no alert data.
+LOGO_QR_IMAGE = DATA_DIR / "qr_with_logo.png"
+LOGO_QR_URL = "https://qr-logo.example.com/landing?id=synthetic-fixture&email=user@example.com"
+# the same code with concentric squares for an icon, shaped like a code's finder patterns
+RINGS_QR_IMAGE = DATA_DIR / "qr_with_logo_rings.png"
+LOGO_QR_IMAGE_2 = DATA_DIR / "qr_with_logo_2.png"
+LOGO_QR_URL_2 = "https://qr-logo-two.example.com/?id=fixture-two&email=user@example.com"
 
 
-def _pdf(path: Path, pages: int, qr_page: int) -> Path:
+def _pdf(path: Path, pages: int, qr_page: int, image: Path = QR_IMAGE) -> Path:
     """A PDF of blank pages with the QR code on page qr_page (1-based)."""
-    with Image.open(QR_IMAGE) as qr:
+    with Image.open(image) as qr:
         qr = qr.convert("RGB")
         blank = Image.new("RGB", qr.size, "white")
         images = [qr if page == qr_page else blank for page in range(1, pages + 1)]
@@ -177,3 +188,168 @@ def test_pdf_page_count_that_cannot_be_read(tmp_path, monkeypatch, caplog, resul
     if logged:
         [record] = [r for r in caplog.records if logged in r.getMessage()]
         assert record.path == str(tmp_path / "document.pdf")
+
+
+@pytest.mark.unit
+def test_logo_qr_code_zbar_cannot_read(tmp_path):
+    _, observable, analysis = _analyze(tmp_path, LOGO_QR_IMAGE)
+
+    assert analysis.extracted_text == LOGO_QR_URL
+    assert analysis.inverted is False
+    extracted = [o for o in analysis.observables if o.type == F_FILE]
+    assert len(extracted) == 1
+    assert extracted[0].has_tag("qr-code")
+    assert Path(extracted[0].full_path).read_text() == f"{LOGO_QR_URL}\n"
+
+
+@pytest.mark.unit
+def test_qr_code_with_finder_shaped_icon(tmp_path):
+    _, _, analysis = _analyze(tmp_path, RINGS_QR_IMAGE)
+
+    assert analysis.extracted_text == LOGO_QR_URL
+
+
+@pytest.mark.integration
+def test_logo_qr_code_through_the_engine(root_analysis, tmp_path):
+    root_analysis.analysis_mode = "test_groups"
+    target = Path(root_analysis.create_file_path("lure.png"))
+    shutil.copy(LOGO_QR_IMAGE, target)
+    observable = root_analysis.add_file_observable(str(target))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module(ANALYSIS_MODULE_QRCODE, "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root.get_observable(observable.uuid).get_and_load_analysis(QRCodeAnalysis)
+    assert analysis.extracted_text == LOGO_QR_URL
+    [extracted] = [o for o in analysis.observables if o.type == F_FILE]
+    assert extracted.has_tag("qr-code")
+
+
+@pytest.mark.unit
+def test_logo_qr_code_on_pdf_page(tmp_path):
+    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "lure.pdf", pages=2, qr_page=2, image=LOGO_QR_IMAGE))
+
+    assert analysis.extracted_text == LOGO_QR_URL
+
+
+@pytest.mark.unit
+def test_inverted_logo_qr_code(tmp_path):
+    inverted = tmp_path / "inverted.png"
+    with Image.open(LOGO_QR_IMAGE) as qr:
+        ImageOps.invert(qr.convert("RGB")).save(inverted)
+
+    _, _, analysis = _analyze(tmp_path, inverted)
+
+    assert analysis.extracted_text == LOGO_QR_URL
+    assert analysis.inverted is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("second,expected", [
+    (LOGO_QR_IMAGE, LOGO_QR_URL),
+    (LOGO_QR_IMAGE_2, f"{LOGO_QR_URL}, {LOGO_QR_URL_2}"),
+])
+def test_two_logo_qr_codes_in_one_image(tmp_path, second, expected):
+    with Image.open(LOGO_QR_IMAGE) as qr, Image.open(second) as other:
+        both = Image.new("RGB", (qr.width + other.width + 40, qr.height + 40), "white")
+        both.paste(qr.convert("RGB"), (10, 20))
+        both.paste(other.convert("RGB"), (qr.width + 30, 20))
+    both.save(tmp_path / "both.png")
+
+    _, _, analysis = _analyze(tmp_path, tmp_path / "both.png")
+
+    assert sorted(analysis.extracted_text.split(", ")) == sorted(expected.split(", "))
+
+
+@pytest.mark.unit
+def test_filter_applies_to_codes_opencv_reads(tmp_path, monkeypatch):
+    filters = tmp_path / "qrcode_filters.txt"
+    filters.write_text("qr-logo\\.example\\.com/\n")
+    monkeypatch.setattr(QRCodeAnalyzer, "qrcode_filter_path", property(lambda self: str(filters)))
+
+    _, _, analysis = _analyze(tmp_path, LOGO_QR_IMAGE)
+
+    assert isinstance(analysis, QRCodeAnalysis)
+    assert analysis.extracted_text is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", ["blank.png", "blank.ico"])
+def test_image_without_a_code_is_a_negative_result(tmp_path, name):
+    # OpenCV cannot load an .ico, which is not the same as the scan failing
+    Image.new("RGB", (64, 64), "white").save(tmp_path / name)
+
+    _, _, analysis = _analyze(tmp_path, tmp_path / name)
+
+    assert isinstance(analysis, QRCodeAnalysis)
+    assert analysis.extracted_text is None
+
+
+def _running_opencv(monkeypatch, fake_result=None):
+    """Records the sandboxed OpenCV runs; with fake_result, they return that instead of running."""
+    runs = []
+    run_sandboxed_tool = QRCodeAnalyzer.run_sandboxed_tool
+
+    def recording(self, args, target, **kwargs):
+        if not any(arg.endswith("qr_decode_opencv.py") for arg in args):
+            return run_sandboxed_tool(self, args, target, **kwargs)
+        runs.append(target)
+        return fake_result or run_sandboxed_tool(self, args, target, **kwargs)
+
+    monkeypatch.setattr(QRCodeAnalyzer, "run_sandboxed_tool", recording)
+    return runs
+
+
+@pytest.mark.unit
+def test_opencv_only_runs_when_zbar_finds_nothing(tmp_path, monkeypatch):
+    runs = _running_opencv(monkeypatch)
+
+    _, _, analysis = _analyze(tmp_path, QR_IMAGE)
+
+    assert analysis.extracted_text == QR_URL
+    assert runs == []
+
+
+@pytest.mark.unit
+def test_opencv_timeout_is_not_a_negative_result(tmp_path, monkeypatch):
+    # run_sandboxed_tool returns None for a tool it stopped, which it has already logged
+    def stopped(self, args, target, **kwargs):
+        if any(arg.endswith("qr_decode_opencv.py") for arg in args):
+            return None
+        return real(self, args, target, **kwargs)
+
+    real = QRCodeAnalyzer.run_sandboxed_tool
+    monkeypatch.setattr(QRCodeAnalyzer, "run_sandboxed_tool", stopped)
+    Image.new("RGB", (64, 64), "white").save(tmp_path / "blank.png")
+
+    _, _, analysis = _analyze(tmp_path, tmp_path / "blank.png")
+
+    assert analysis is None
+
+
+@pytest.mark.unit
+def test_opencv_failure_is_not_a_negative_result(tmp_path, monkeypatch, caplog):
+    runs = _running_opencv(monkeypatch, SandboxResult(1, "", "Traceback: cv2.error: bad image"))
+    Image.new("RGB", (64, 64), "white").save(tmp_path / "blank.png")
+
+    _, _, analysis = _analyze(tmp_path, tmp_path / "blank.png")
+
+    assert runs
+    assert analysis is None
+    records = [r for r in caplog.records if "opencv qr decoding failed" in r.getMessage()]
+    assert records and "cv2.error: bad image" in records[0].getMessage()
+    assert records[0].path in runs
+
+
+@pytest.mark.unit
+def test_code_opencv_reads_is_logged(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+
+    _, observable, _ = _analyze(tmp_path, LOGO_QR_IMAGE)
+
+    [record] = [r for r in caplog.records if "opencv read a QR code" in r.getMessage()]
+    assert record.path == observable.full_path

@@ -1,4 +1,5 @@
 import glob
+from importlib.metadata import PackageNotFoundError, version as package_version
 import logging
 import os
 import re
@@ -7,13 +8,14 @@ from typing import Optional, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.environment import get_global_runtime_settings, get_temp_dir
+from saq.environment import get_base_dir, get_global_runtime_settings, get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.hash import FileHashAnalyzer
 from saq.modules.file_analysis.is_file_type import is_image, is_pdf_file
 from saq.modules.tool_version import file_content_version, probe_binary_version
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import sandbox_python
 
 from PIL import Image, ImageOps
 
@@ -151,14 +153,20 @@ class QRCodeAnalyzer(AnalysisModule):
         """Mix the external tools' versions and the URL filter file's
         identity into the cache key.
 
-        zbarimg / gs / pdfinfo each affect what this module extracts, so a
-        package upgrade must invalidate cached results.
+        zbarimg / gs / pdfinfo / OpenCV each affect what this module extracts,
+        so a package upgrade must invalidate cached results.
         """
         result = {}
         for tool, args in (("zbarimg", None), ("gs", None), ("pdfinfo", ["-v"])):
             version = probe_binary_version(tool, args=args)
             if version is not None:
                 result[tool] = version
+
+        try:
+            result["opencv"] = package_version("opencv-python")
+        except PackageNotFoundError:
+            # no version to key on; the scan itself fails and logs that it could not run
+            pass
 
         filter_path = self.qrcode_filter_path
         if filter_path is not None:
@@ -220,6 +228,28 @@ class QRCodeAnalyzer(AnalysisModule):
         if result.returncode not in self._ZBARIMG_TRUSTED_RETURNCODES:
             logging.warning(f"zbarimg failed on {image_path} with exit code {result.returncode}")
             return None
+
+        return result.stdout or self._scan_image_with_opencv(image_path)
+
+    def _scan_image_with_opencv(self, image_path: str) -> Optional[str]:
+        """Scans an image zbarimg found no symbol in: an icon over the center of a code can hide it
+        from zbarimg. Same return semantics as _scan_image, so a failure here is never recorded (or
+        cached) as a negative result either."""
+        script = os.path.join(get_base_dir(), "bin", "qr_decode_opencv.py")
+        # OpenBLAS, which numpy loads, starts a thread per core and each reserves address space under the sandbox's memory limit
+        result = self.run_sandboxed_tool([sandbox_python(), "-I", script, image_path], image_path,
+                                         timeout=self.timeout, read_files=[script],
+                                         env={"OPENBLAS_NUM_THREADS": "1"})
+        if result is None:
+            return None
+
+        if result.returncode != 0:
+            logging.warning(f"opencv qr decoding failed on {image_path} with exit code {result.returncode}: "
+                            f"{result.stderr[-500:]}", extra={"path": image_path})
+            return None
+
+        if result.stdout:
+            logging.info(f"opencv read a QR code zbarimg could not in {image_path}", extra={"path": image_path})
 
         return result.stdout
 

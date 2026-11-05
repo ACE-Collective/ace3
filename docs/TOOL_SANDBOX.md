@@ -88,6 +88,7 @@ On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails.
 ## Which tools
 
 Sandboxed: `gs` (PDF rewriting, QR page rendering), `exiftool`, `pdftotext`, `pdfinfo`, `zbarimg`,
+`bin/qr_decode_opencv.py` (OpenCV, on what `zbarimg` finds no QR code in),
 `7z`, `unrar`, `unzip`, `unace`, `bin/unjar`, `dmg2img`, `upx`, `de4dot`, `ilspycmd`, the CFR
 decompiler, `zip2john`, `rar2john`, `pdf2john.pl`, `office2john.py` and `john`
 (`saq/cracking.py`). The encrypted-rar module extracts with a sandboxed `unrar` instead of
