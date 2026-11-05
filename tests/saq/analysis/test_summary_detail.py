@@ -16,6 +16,8 @@ def test_summary_detail_conversion():
     restored = SummaryDetail.from_dict(dict(stored))
     assert (restored.id, restored.header, restored.content, restored.format) == \
         ("d1", "test_header", "test_content", "pre")
+    assert restored == detail
+    assert restored != SummaryDetail('test_header', 'test_content', SUMMARY_DETAIL_FORMAT_PRE, id="d2")
 
 @pytest.mark.integration
 def test_add_summary_detail():
