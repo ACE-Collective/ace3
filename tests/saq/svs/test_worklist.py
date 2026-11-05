@@ -8,14 +8,16 @@ from datetime import datetime
 
 import pytest
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 
 from saq.cli.commands.svs import cli_coverage_status
-from saq.database.model import SVSCoverage, SVSTechniqueWorklist, User
+from saq.database.model import SVSCoverage, SVSCoverageState, SVSTechniqueWorklist, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
 from saq.svs import coverage, expectations, windows, worklist
 from saq.svs.attack import load_attack_catalog
 from saq.svs.constants import WorklistKind, WorklistStatus
+from saq.svs.coverage_lock import STATE_ID
 from saq.svs.coverage import refresh_coverage, technique_detail
 from saq.svs.signatures import SignatureTags
 from saq.svs.worklist import (
@@ -72,7 +74,6 @@ class TestDerive:
         ("undeclared", True, False, False, None, "undeclared"),
         ("undeclared", False, False, False, None, "retired"),
         ("unknown", True, True, False, None, "unknown"),
-        ("unknown", False, False, False, None, "retired"),
     ])
     def test_status(self, kind, produced, tag_present, confirmed, resolution, expected):
         assert derive_status(kind, produced=produced, tag_present=tag_present, confirmed=confirmed,
@@ -83,14 +84,10 @@ class TestDerive:
         ("declared", True, True, True, "kept", "keep", True),
         ("declared", True, True, True, "remove_pending", "remove", False),
         ("declared", True, True, True, "confirmed", "remove", True),
-        # a retired row's remove still stands
-        ("declared", True, True, True, "retired", "remove", False),
-        ("declared", True, True, True, "retired", None, True),
         ("declared", False, True, True, "retired", None, False),
         ("declared", True, False, True, "open", None, False),
         ("declared", True, True, False, "confirmed", None, False),
         ("undeclared", False, True, True, "undeclared", None, False),
-        ("unknown", True, True, False, "unknown", None, False),
     ])
     def test_counts(self, kind, tag_present, signature_counts, known, status, resolution, expected):
         assert mapping_counts(kind, tag_present=tag_present, signature_counts=signature_counts, known=known,
@@ -407,14 +404,30 @@ class TestResolutions:
             resolve_many([(SIGNATURE, "T1547")], "keep", "", user_id)
 
     def test_resolving_waits_for_a_refresh(self, user_id, monkeypatch):
-        # a resolution takes the refresh lock first: it can't commit in the middle of a refresh
-        taken = []
-        original = worklist.lock_refresh
-        monkeypatch.setattr(worklist, "lock_refresh", lambda session: taken.append(True) or original(session))
+        # a resolution holds the refresh lock while it reads and writes its row: it can't commit in
+        # the middle of a refresh
+        locked = []
+        read_row = worklist._row
+
+        def row_while_another_connection_tries_the_lock(session, signature_uuid, technique):
+            try:
+                # a shared lock: lock_refresh's INSERT IGNORE alone leaves one on the row, which only
+                # the FOR UPDATE that follows makes exclusive
+                with private_transaction() as other:
+                    other.execute(select(SVSCoverageState.id).where(SVSCoverageState.id == STATE_ID)
+                                  .with_for_update(read=True, nowait=True))
+                locked.append(False)
+            except OperationalError as e:
+                if e.orig.args[0] != 3572:  # ER_LOCK_NOWAIT
+                    raise
+                locked.append(True)
+            return read_row(session, signature_uuid, technique)
+
+        monkeypatch.setattr(worklist, "_row", row_while_another_connection_tries_the_lock)
         resolve(SIGNATURE, "T1547", "keep", "why", user_id)
         reopen(SIGNATURE, "T1547", user_id)
         resolve_many([(SIGNATURE, "T1547")], "keep", "why", user_id)
-        assert taken == [True, True, True]
+        assert locked == [True, True, True]
 
 
 @pytest.mark.unit

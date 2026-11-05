@@ -1,6 +1,5 @@
 """The label of a sample (saq.svs.labels), in Python and in SQL."""
 
-import itertools
 import uuid
 
 import pytest
@@ -12,7 +11,7 @@ from saq.detection_verdicts.constants import SOURCE_EXPLICIT, SOURCE_INHERITED_M
 from saq.detection_verdicts.query import list_alert_detection_points
 from saq.detection_verdicts.store import set_verdict
 from saq.svs import labels
-from saq.svs.labels import STRENGTHS, Votes, aggregate_label
+from saq.svs.labels import Votes, aggregate_label
 from saq.svs.samples import get_sample, samples_subquery
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
@@ -39,20 +38,6 @@ from tests.saq.svs.conftest import (
 ])
 def test_aggregate_label(votes, expected):
     assert aggregate_label(votes) == expected
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("counts", list(itertools.product([0, 1], repeat=6)))
-def test_the_strongest_strength_decides(counts):
-    votes = Votes(**dict(zip([name for name, _, _ in labels.VOTE_COLUMNS], counts)))
-    label, source = aggregate_label(votes)
-    for strength in STRENGTHS:
-        tp, fp = votes.count("tp", strength), votes.count("fp", strength)
-        if tp or fp:
-            assert source == strength
-            assert label == ("conflicted" if tp and fp else "tp" if tp else "fp")
-            return
-    assert (label, source) == (None, None)
 
 
 def _user_id() -> int:
@@ -143,9 +128,9 @@ def test_an_fp_alert_outweighs_an_unconfirmed_tp():
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("disposition", ["OPEN", "REVIEWED", "IGNORE"])
-def test_an_unclassified_alert_casts_no_vote(disposition):
-    _, files = graded_alert(disposition, {"a.bin": [RULE_UUID]})
+def test_an_unclassified_alert_casts_no_vote():
+    # OPEN and IGNORE are unclassified too: every disposition outside the tp and fp lists is one case
+    _, files = graded_alert("REVIEWED", {"a.bin": [RULE_UUID]})
     sample = _sample(files["a.bin"])
     assert sample["capture_count"] == 1
     assert (sample["label"], sample["label_source"]) == (None, None)

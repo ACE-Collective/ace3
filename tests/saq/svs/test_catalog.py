@@ -135,7 +135,9 @@ def test_parse_atomics(tmp_path):
 
 @pytest.mark.unit
 def test_the_content_hash_follows_the_test_only():
-    assert content_hash({"a": 1, "b": [1, 2]}) == content_hash({"b": [1, 2], "a": 1})
+    # stored on every catalog test and run, and compared on later refreshes: the sha256 of the
+    # compact, key-sorted JSON (printf '{"a":1,"b":[1,2]}' | sha256sum)
+    assert content_hash({"b": [1, 2], "a": 1}) == "8baa73198470c7bb4c3ce142a8fd651affc0310d878bb9bd159e37a573fb4874"
     assert content_hash({"a": 1}) != content_hash({"a": 2})
 
 
@@ -333,8 +335,8 @@ def test_an_error_keeps_the_tests_and_clears_on_the_next_success(checkout, monke
         raise RuntimeError("disk on fire")
 
     monkeypatch.setattr(catalog, "parse_atomics", broken)
-    checkout.commit({"atomics/T1003/T1003.yaml": _atomic("T1003", "OS Credential Dumping", _test("Dump", GUID_A, command="id"))})
-    result = refresh_repository(REPOSITORY)
+    # a forced read of the commit already stored fails, so the row keeps that commit
+    result = refresh_repository(REPOSITORY, force=True)
     assert result.error == "refresh failed: disk on fire"
     assert _repository().error == "refresh failed: disk on fire"
     assert GUID_A in _tests()
