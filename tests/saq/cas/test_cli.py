@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 from sqlalchemy import select
 
-from saq.cas import Hold, get_cas
+from saq.cas import Hold
 from saq.cli.commands.cas import (
     cli_gc,
     cli_get,
@@ -171,7 +171,8 @@ def test_hold_and_purge(plain_pool, capsys, monkeypatch):
     plain_pool.put(PAYLOAD, hold=Hold("k", "1"))
 
     assert cli_hold_add(Namespace(pool="test_plain", digest=DIGEST, id="case-1", actor="counsel")) == 0
-    assert plain_pool.holds(DIGEST) == [Hold("k", "1"), Hold.legal("case-1")]
+    # the holder kind is stored in cas_holds, so it is pinned here as the literal value
+    assert plain_pool.holds(DIGEST) == [Hold("k", "1"), Hold("legal_hold", "case-1")]
 
     purge = Namespace(pool="test_plain", digest=DIGEST, reason="mistake", actor="admin", yes=True)
     assert cli_purge(purge) == 1

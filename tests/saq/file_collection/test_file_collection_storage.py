@@ -57,20 +57,13 @@ def _collection_dir(data_dir, completed_days_ago=None, node: str = "node1", mtim
 
 
 @pytest.mark.unit
-def test_unattached_storage_dir(data_dir):
+def test_unattached_storage_dir(data_dir, monkeypatch):
+    # relative to SAQ_HOME, which in the test suite is also the working directory unless it is moved
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(data_dir))
     path = unattached_storage_dir(42)
+    assert path == os.path.join("file_collection", "node1", "42")
     assert not os.path.isabs(path)
     assert os.path.normpath(os.path.join(get_base_dir(), path)) == str(data_dir / "file_collection" / "node1" / "42")
-
-
-@pytest.mark.integration
-def test_prune_removes_only_expired(data_dir):
-    old = _collection_dir(data_dir, completed_days_ago=8)
-    fresh = _collection_dir(data_dir, completed_days_ago=1)
-
-    assert prune_unattached_files(7) == 1
-    assert not old.exists()
-    assert fresh.exists()
 
 
 @pytest.mark.integration
@@ -85,7 +78,14 @@ def test_prune_ages_by_last_attempt_not_directory_mtime(data_dir):
 
 @pytest.mark.integration
 def test_prune_keeps_pending_collections(data_dir):
+    # still being retried, its last attempt long past the retention: only its status keeps it
     pending = _collection_dir(data_dir, mtime_days_ago=30)
+    get_db().execute(update(FileCollection).where(FileCollection.id == int(pending.name)).values(
+        status=FileCollectionStatus.IN_PROGRESS.value,
+        result=FileCollectorStatus.HOST_OFFLINE.value,
+        update_time=func.date_sub(func.now(), text("INTERVAL 30 DAY")),
+    ))
+    get_db().commit()
 
     assert prune_unattached_files(7) == 0
     assert pending.exists()

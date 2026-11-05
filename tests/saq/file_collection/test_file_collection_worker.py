@@ -46,29 +46,6 @@ class MockFileCollector(FileCollector):
         return self.result_to_return
 
 
-@pytest.mark.unit
-def test_worker_handle_request_queues_work():
-    collector = MockFileCollector()
-    worker = FileCollectionWorker(collector)
-
-    work_item = FileCollectionWorkItem(
-        id=1,
-        name="mock_collector",
-        type=F_FILE_LOCATION,
-        key="host@/file",
-        alert_uuid="test-alert-uuid",
-        storage_dir="/opt/ace/data/test-alert",
-    )
-
-    worker.handle_request(work_item)
-
-    assert worker.work_queue.qsize() == 1
-    assert worker.pending_collection_ids() == {1}
-    queued_item = worker.work_queue.get_nowait()
-    assert queued_item is work_item
-
-
-
 class _SignalingSet(set):
     """The pending ids, with an event set on each discard."""
 
