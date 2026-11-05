@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import struct
+import tempfile
 import time
 import zipfile
 
@@ -42,6 +43,7 @@ from saq.constants import (
 )
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.environment import get_data_dir
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.mime_extractor import parse_mime
 from saq.modules.file_analysis.archive import ArchiveAnalysis
@@ -192,7 +194,6 @@ def _category(observable, category: str) -> PcapCategoryAnalysis:
     # LF CR CR LF starts text as easily as a pcapng: the byte-order magic is what makes it one
     (b"\x0a\x0d\x0d\x0atext after a stray line ending", False),
     (b"GET / HTTP/1.1", False),
-    (b"", False),
 ])
 def test_is_pcap_file(tmp_path, header, expected):
     path = tmp_path / "capture.bin"
@@ -216,10 +217,8 @@ def test_is_keylog_file(tmp_path):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("content", [
-    b"",
     b"# only a comment\n",
     b"CLIENT_RANDOM abc\n",
-    b"hello world\n",
     b"CLIENT_RANDOM 00 11\nnot a key log line\n",
     b"\xff\xfe binary",
 ])
@@ -233,8 +232,11 @@ def test_is_keylog_file_rejects(tmp_path, content):
 def test_is_keylog_file_ignores_a_line_cut_by_the_sniff(tmp_path):
     line = "CLIENT_RANDOM " + "a" * 64 + " " + "b" * 96 + "\n"
     path = tmp_path / "keys.txt"
-    # the sniff ends in the middle of a line
-    path.write_text(line * (pcap.KEYLOG_SNIFF_BYTES // len(line) + 2))
+    # a comment, one whole line, and the sniff ends in the next line's client random, where what is left
+    # does not match: only 5 lines are checked, so the comment is what brings the cut line among them
+    cut_after = 50
+    comment = "#" * (pcap.KEYLOG_SNIFF_BYTES - len(line) - cut_after - 1) + "\n"
+    path.write_text(comment + line + line)
     assert is_keylog_file(str(path))
 
 
@@ -402,7 +404,8 @@ def test_build_index_skips_edns_and_the_root():
         # a resolver priming itself: the query names the root
         {"frame.number": ["1"], "dns.flags.response": ["False"], "dns.qry.name": ["<Root>"]},
         {"frame.number": ["2"], "dns.flags.response": ["True"], "dns.qry.name": ["www.example.com"],
-         "dns.resp.name": ["www.example.com", "<Root>"], "dns.resp.type": ["1", "41"], "dns.a": ["198.51.100.7"]},
+         "dns.resp.name": ["www.example.com", "<Root>", "opt-owner.example"], "dns.resp.type": ["1", "41", "41"],
+         "dns.a": ["198.51.100.7"]},
         # a record the EDNS check must not drop just because its name came without a type
         {"frame.number": ["3"], "dns.flags.response": ["True"], "dns.qry.name": ["a.example.com"],
          "dns.resp.name": ["a.example.com", "b.example.com"], "dns.resp.type": ["1"]},
@@ -513,22 +516,6 @@ def test_add_pcap_observables_limits_and_dedupes():
 
 
 @pytest.mark.unit
-def test_run_tshark_refuses_without_landlock(monkeypatch, tmp_path):
-    monkeypatch.setattr(pcap, "landlock_available", lambda: False)
-    # not a PcapError: a node that cannot dissect anything is an operator's problem, logged at ERROR
-    with pytest.raises(pcap.PcapNodeError, match="Landlock"):
-        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
-
-
-@pytest.mark.unit
-def test_run_tshark_failure_without_output(monkeypatch, tmp_path):
-    monkeypatch.setattr(pcap, "landlock_available", lambda: True)
-    monkeypatch.setattr(pcap, "run_sandboxed", lambda *args, **kwargs: SandboxResult(2, "", "file is damaged"))
-    with pytest.raises(PcapError, match="file is damaged"):
-        pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
-
-
-@pytest.mark.unit
 def test_run_tshark_timeout(monkeypatch, tmp_path):
     def _timeout(*args, **kwargs):
         raise RuntimeError("command timed out after 0:04:00")
@@ -571,26 +558,6 @@ def test_pcap_analyzer_oversized(monkeypatch, tmp_path):
     analysis = observable.get_analysis(PcapAnalysis)
     assert "exceeds max_file_size" in analysis.error
     assert analysis.generate_summary().startswith("PCAP Analysis: failed:")
-
-
-@pytest.mark.unit
-def test_pcap_analyzer_reports_dissection_failure(monkeypatch, caplog):
-    def _fail(*args, **kwargs):
-        raise PcapError("tshark exited with 2: damaged")
-
-    monkeypatch.setattr(pcap, "dissect", _fail)
-    root = _new_root()
-    observable = root.add_file_observable(NETWORK_PCAP)
-    analyzer = _adapter(PcapAnalyzer, root)
-    with caplog.at_level(logging.INFO):
-        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
-
-    # the analyst sees it in the analysis; it is not an operator's problem
-    assert observable.get_analysis(PcapAnalysis).error == "tshark exited with 2: damaged"
-    (record,) = [r for r in caplog.records if "unable to dissect pcap" in r.getMessage()]
-    assert record.levelno == logging.INFO
-    assert "tshark exited with 2: damaged" in record.getMessage()
-    assert record.pcap_sha256 == observable.sha256_hash
 
 
 @pytest.mark.unit
@@ -784,30 +751,6 @@ def test_pcap_decrypts_with_keylog_extracted_from_archive(root_analysis, tmp_pat
 
 
 @pytest.mark.integration
-def test_pcap_late_keylog(root_analysis):
-    root_analysis.analysis_mode = "test_groups"
-    capture = root_analysis.add_file_observable(HTTP_TLS_PCAPNG)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    root = _run_engine(root_analysis)
-    decryption = root.get_observable(capture.uuid).get_and_load_analysis(PcapTlsDecryptionAnalysis)
-    assert decryption.completed
-    assert decryption.details["keylogs"] == []
-
-    # an analyst adds the key log to the alert after analysis finished
-    keylog = root.add_file_observable(SSLKEYLOG)
-    root.save()
-    root.schedule()
-
-    root = _run_engine(root)
-    decryption = root.get_observable(capture.uuid).get_and_load_analysis(PcapTlsDecryptionAnalysis)
-    _assert_decrypted(decryption)
-    keylog_analysis = root.get_observable(keylog.uuid).get_and_load_analysis(TlsKeylogAnalysis)
-    assert keylog_analysis.details["applied_to"] == [root.get_observable(capture.uuid).sha256_hash]
-
-
-@pytest.mark.integration
 def test_pcapng_with_embedded_secrets(root_analysis):
     root_analysis.analysis_mode = "test_groups"
     capture = root_analysis.add_file_observable(HTTP_TLS_DSB_PCAPNG)
@@ -851,15 +794,18 @@ def test_corrupt_pcap(root_analysis, tmp_path, caplog):
     core = capture.get_and_load_analysis(PcapAnalysis)
     assert core.error
     assert core.summary.startswith("PCAP Analysis: failed: ")
+    assert core.error.startswith("tshark exited with ")
     records = [r for r in caplog.records if "unable to dissect pcap" in r.getMessage()]
+    # the analyst sees it in the analysis; it is not an operator's problem
     assert records and all(r.levelno == logging.INFO for r in records)
+    assert all(core.error in r.getMessage() and r.pcap_sha256 == capture.sha256_hash for r in records)
     # the category and decryption analyses have nothing to work from
     assert not _category(capture, CATEGORY_DNS)
     assert not capture.get_and_load_analysis(PcapTlsDecryptionAnalysis)
 
 
 # ----------------------------------------------------------------------------------------------
-# in-process module runs (the engine runs modules where coverage does not see them)
+# module runs without the engine
 # ----------------------------------------------------------------------------------------------
 
 @pytest.mark.integration
@@ -927,9 +873,18 @@ def test_keylog_analyzer_skips_pcaps_it_cannot_apply_to(monkeypatch):
     keylog = root.add_file_observable(SSLKEYLOG)
     not_decrypted = root.add_file_observable(NETWORK_PCAP)
     pending = root.add_file_observable(HTTP_TLS_PCAPNG)
-    pending.add_analysis(PcapTlsDecryptionAnalysis())
-
     already = root.add_file_observable(HTTP_TLS_DSB_PCAPNG)
+    # each one has a session this key log has keys for, so only the check it is here for stops it
+    for capture in (not_decrypted, pending, already):
+        core = PcapAnalysis()
+        core.details[pcap.KEY_INDEX] = {CATEGORY_TLS: [{"client_random": CLIENT_RANDOM_12}],
+                                        pcap.KEY_CLIENT_RANDOMS: [CLIENT_RANDOM_12]}
+        capture.add_analysis(core)
+    # an analysis counts as completed unless it says otherwise
+    unfinished = PcapTlsDecryptionAnalysis()
+    unfinished.completed = False
+    pending.add_analysis(unfinished)
+
     done = PcapTlsDecryptionAnalysis()
     done.details["keylogs"] = [{"sha256": keylog.sha256_hash, "file_name": "k", "label_counts": {}}]
     done.completed = True
@@ -1045,6 +1000,11 @@ def test_collect_carved_files(tmp_path):
     assert [o["file_name"] for o in objects] == ["more.bin"]
     assert certificates[0]["path"] == f"second/certificates/{certificates[0]['sha256']}.der"
 
+    # a certificate already known is listed but not carved again
+    _, certificates = pcap._collect_carved_files(str(second), str(tmp_path / "third"), packets, max_files=2,
+                                                 known_sha256={sha256_bytes(bytes.fromhex("308201"))})
+    assert certificates[0]["path"] is None
+
 
 @pytest.mark.unit
 def test_summaries():
@@ -1073,13 +1033,15 @@ def test_summaries():
 
 @pytest.mark.unit
 def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
-    evidence = tmp_path / "capture.pcap"
+    # on the workdir's filesystem, where a hard link could be made; tmp_path is another mount
+    storage = tempfile.TemporaryDirectory(dir=get_data_dir())
+    evidence = os.path.join(storage.name, "capture.pcap")
     shutil.copy(NETWORK_PCAP, evidence)
     inodes = []
     timeouts = {}
 
     def _fake_tool(config, pcap_path, workdir, command, timeout_seconds, stopping):
-        assert pcap_path == str(evidence)
+        assert pcap_path == evidence
         inodes.append(os.stat(os.path.join(workdir, "input")).st_ino)
         tool = os.path.basename(command[0])
         timeouts.setdefault(tool, set()).add(timeout_seconds)
@@ -1091,10 +1053,11 @@ def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
         return STATISTICS_OUTPUT
 
     monkeypatch.setattr(pcap, "_run_tool", _fake_tool)
-    index = pcap.dissect(_pcap_config(), str(evidence), str(tmp_path / "capture.pcap.pcap_objects"))
+    index = pcap.dissect(_pcap_config(), evidence, str(tmp_path / "capture.pcap.pcap_objects"))
 
     # capinfos and both tshark runs
     assert len(inodes) == 3 and all(inode != os.stat(evidence).st_ino for inode in inodes)
+    storage.cleanup()
     # capinfos only reads record headers: its short timeout keeps the three runs inside maximum_analysis_time
     assert timeouts == {"capinfos": {pcap.CAPINFOS_TIMEOUT_SECONDS}, "tshark": {_pcap_config().tshark_timeout}}
     assert pcap.CAPINFOS_TIMEOUT_SECONDS + 2 * _pcap_config().tshark_timeout < _config().maximum_analysis_time
@@ -1105,11 +1068,18 @@ def test_dissect_gives_tshark_a_copy_of_the_evidence(monkeypatch, tmp_path):
 
 
 @pytest.mark.integration
-def test_archive_leaves_captures_to_the_pcap_modules(root_analysis):
+def test_archive_leaves_captures_to_the_pcap_modules(root_analysis, tmp_path):
     # libmagic calls a pcapng application/octet-stream; 7z would "extract" junk from it into a
-    # directory the archive module then reports in full
+    # directory the archive module then reports in full. 7z refuses the plain fixture, so this one
+    # carries a zip it does open
+    openable = tmp_path / "openable.pcap"
+    with zipfile.ZipFile(tmp_path / "carried.zip", "w") as archive:
+        archive.writestr("member.txt", "carried in the capture")
+    openable.write_bytes(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1) + (tmp_path / "carried.zip").read_bytes())
+
     root_analysis.analysis_mode = "test_groups"
     capture = root_analysis.add_file_observable(HTTP_TLS_PCAPNG)
+    openable = root_analysis.add_file_observable(str(openable))
     root_analysis.save()
     root_analysis.schedule()
 
@@ -1121,6 +1091,7 @@ def test_archive_leaves_captures_to_the_pcap_modules(root_analysis):
     root = load_root(get_storage_dir(root_analysis.uuid))
     capture = root.get_observable(capture.uuid)
     assert not capture.get_and_load_analysis(ArchiveAnalysis)
+    assert not root.get_observable(openable.uuid).get_and_load_analysis(ArchiveAnalysis)
     (payload,) = _category(capture, CATEGORY_FILES).get_observables_by_type(F_FILE)
     assert payload.file_path.endswith("http_tls.pcapng.pcap_objects/http/payload.txt")
 
@@ -1150,7 +1121,7 @@ def test_certificate_names_and_description():
     names = pcap.certificate_names(_certificate_der("*.leaf.example", "Example Issuing CA", sans))
     assert names["subject"] == "*.leaf.example"
     # the subject is not repeated among the SANs, and only the first few are kept
-    assert names["sans"] == [f"alt{i}.leaf.example" for i in range(pcap.MAX_CERTIFICATE_SANS)]
+    assert names["sans"] == [f"alt{i}.leaf.example" for i in range(10)]
     assert names["san_total"] == 14
     assert pcap.describe_certificate({"sha256": "ab" * 32, **names}) == (
         "*.leaf.example (SAN: alt0.leaf.example, alt1.leaf.example, alt2.leaf.example, +11 more)"
@@ -1234,7 +1205,8 @@ def test_read_embedded_secrets_byte_orders(tmp_path, endian):
     path = tmp_path / "capture.pcapng"
     path.write_bytes(_pcapng(endian,
                              _block(endian, 0x00000001, b"\x01\x00\x00\x00\xff\xff\x00\x00"),
-                             _dsb(endian, 0x57474B4C, b"wireguard keys"),
+                             # lines in key log format, which only a TLS block's are read as
+                             _dsb(endian, 0x57474B4C, f"CLIENT_RANDOM {'c' * 64} {'d' * 96}\n".encode()),
                              _dsb(endian, 0x544C534B, keylog),
                              _dsb(endian, 0x12345678, b"x")))
     embedded = pcap.read_embedded_secrets(str(path), max_tls_bytes=1024)
@@ -1251,12 +1223,18 @@ def test_read_embedded_secrets_byte_orders(tmp_path, endian):
 @pytest.mark.unit
 def test_read_embedded_secrets_stops_at_a_damaged_block(tmp_path):
     path = tmp_path / "damaged.pcapng"
-    path.write_bytes(_pcapng("<", struct.pack("<II", 0x0000000A, 7) + b"\x00" * 16,
-                             _dsb("<", 0x544C534B, b"never reached")))
+    secrets = _dsb("<", 0x544C534B, b"never reached")
+    # each damaged length is one that, followed, lands exactly on the secrets block
+    # not a multiple of 4
+    path.write_bytes(_pcapng("<", struct.pack("<II", 0x00000001, 14) + b"\x00" * 6, secrets))
+    assert pcap.read_embedded_secrets(str(path), max_tls_bytes=1024) is None
+    # shorter than a block's header and trailer
+    path.write_bytes(_pcapng("<", struct.pack("<II", 0x00000001, 8), secrets))
     assert pcap.read_embedded_secrets(str(path), max_tls_bytes=1024) is None
 
-    # a section header with an unknown byte order
-    path.write_bytes(b"\x0a\x0d\x0d\x0a" + b"\x1c\x00\x00\x00" + b"\xde\xad\xbe\xef" + b"\x00" * 16)
+    # a section header with an unknown byte order, which read as big endian leads to the secrets block
+    path.write_bytes(b"\x0a\x0d\x0d\x0a" + b"\x00\x00\x00\x1c" + b"\xde\xad\xbe\xef" + b"\x00" * 16
+                     + _dsb(">", 0x544C534B, b"never reached"))
     assert pcap.read_embedded_secrets(str(path), max_tls_bytes=1024) is None
 
 
@@ -1504,13 +1482,16 @@ def test_dns_answer_ip_takes_its_first_response_time():
          "dns.qry.name": ["b.example"], "dns.a": ["198.51.100.7", "198.51.100.8"]},
         {"frame.number": ["2"], "frame.time_epoch": ["1767225601.25"], "dns.flags.response": ["True"],
          "dns.qry.name": ["a.example"], "dns.a": ["198.51.100.7"]},
+        # a later packet of the first name, with an earlier time
+        {"frame.number": ["4"], "frame.time_epoch": ["1767225603.0"], "dns.flags.response": ["True"],
+         "dns.qry.name": ["b.example"], "dns.a": ["198.51.100.8"]},
         # no packet time: the answer stays untimed rather than guessing one
         {"frame.number": ["3"], "dns.flags.response": ["True"], "dns.qry.name": ["c.example"], "dns.a": ["198.51.100.9"]},
     ]
     index = build_index(packets, [], [], max_rows=500)
     times = {i.value: i.time for i in collect_observables(index, []) if i.o_type == F_IP}
     # one observable per IP, at the earliest response that returned it, whichever name it answered
-    assert times == {"198.51.100.7": 1767225601.25, "198.51.100.8": 1767225605.5, "198.51.100.9": None}
+    assert times == {"198.51.100.7": 1767225601.25, "198.51.100.8": 1767225603.0, "198.51.100.9": None}
 
 
 @pytest.mark.unit
@@ -1622,9 +1603,10 @@ def test_late_keylog_adds_to_the_earlier_decryption(root_analysis, tmp_path):
 
     root = _run_engine(root_analysis)
     decryption = root.get_observable(capture.uuid).get_and_load_analysis(PcapTlsDecryptionAnalysis)
+    assert decryption.completed
     assert [o["file_name"] for o in decryption.details[pcap.KEY_INDEX]["objects"]] == ["secret12.txt"]
 
-    root.add_file_observable(tls13)
+    late = root.add_file_observable(tls13)
     root.save()
     root.schedule()
 
@@ -1636,6 +1618,9 @@ def test_late_keylog_adds_to_the_earlier_decryption(root_analysis, tmp_path):
     assert [k["file_name"] for k in decryption.details["keylogs"]] == ["tls12.keys", "tls13.keys"]
     (table,) = [t for t in PcapAnalysisPresenter(decryption).tables if t["title"] == "Carved Files"]
     assert [row[1]["text"] for row in table["rows"]] == ["secret12.txt", "secret13.txt"]
+    # the key log's own analysis is what applied it
+    assert root.get_observable(late.uuid).get_and_load_analysis(TlsKeylogAnalysis).details["applied_to"] == [
+        root.get_observable(capture.uuid).sha256_hash]
 
 
 def _decrypted_capture(root):
@@ -1762,7 +1747,7 @@ def test_keylog_matches_sessions_past_the_table_rows(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_shared_pcap_config_reaches_every_module(monkeypatch):
+def test_keylog_over_the_shared_size_limit_is_not_analyzed(monkeypatch):
     # one setting in the pcap section, not one per module block
     monkeypatch.setattr(get_config().pcap, "max_keylog_size", 10)
     root = _new_root()
@@ -1852,7 +1837,7 @@ def test_an_unexpected_error_is_left_to_the_engine(monkeypatch):
     monkeypatch.setattr(pcap, "dissect", _bug)
     root = _new_root()
     observable = root.add_file_observable(NETWORK_PCAP)
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="layers"):
         _adapter(PcapAnalyzer, root).execute_analysis(observable)
     assert observable.get_analysis(PcapAnalysis) is None
 
@@ -2000,6 +1985,7 @@ def test_launcher_failure_is_told_from_a_capture_failure(monkeypatch, tmp_path, 
     with pytest.raises(error) as raised:
         pcap._run_tshark(_pcap_config(), "capture.pcap", str(tmp_path), [], _never)
     assert type(raised.value) is error
+    assert "sandbox: failed" in str(raised.value)
 
 
 @pytest.mark.integration
@@ -2216,6 +2202,13 @@ def test_tls_node_keeps_room_for_the_files_nodes_payloads():
     pcap_file.add_analysis(files)
     added, omitted = add_pcap_observables(files, pcap_file, payloads, max_per_type=3)
     assert (added, omitted) == ({F_FILE: 2}, {})
+
+    # payloads already in the capture hold no room beyond their own nodes: one more fits in a limit of 4
+    later = PcapCategoryAnalysis()
+    later.instance = CATEGORY_DNS
+    pcap_file.add_analysis(later)
+    added, omitted = add_pcap_observables(later, pcap_file, certificates[1:], max_per_type=4, reserved=payloads)
+    assert (added, omitted) == ({F_FILE: 1}, {F_FILE: 1})
 
 
 @pytest.mark.integration

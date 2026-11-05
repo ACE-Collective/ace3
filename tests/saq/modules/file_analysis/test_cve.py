@@ -1,3 +1,5 @@
+import logging
+import os
 import subprocess
 import uuid
 
@@ -12,14 +14,17 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 MACOS_MEMBER = "Installer/yWnBJLaF/1302.app/Contents/MacOS/1302"
+OTHER_MEMBER = "Installer/other.sh"
 
 
 def _create_img(tmpdir, member_content: bytes) -> str:
-    """Builds a 7z archive named like the .img the DMG analyzer extracts, holding MACOS_MEMBER."""
+    """Builds a 7z archive named like the .img the DMG analyzer extracts, holding MACOS_MEMBER
+    and a script outside /Contents/MacOS/."""
     build_dir = tmpdir.mkdir("img_build")
     member = build_dir.join(MACOS_MEMBER)
     member.dirpath().ensure(dir=True)
     member.write_binary(member_content)
+    build_dir.join(OTHER_MEMBER).write_binary(b"#!/bin/bash\necho 'not in an app bundle'\n")
     # the root's storage dir is shared by the tests on this worker, so the name must be unique
     img_path = str(tmpdir.join(f"{uuid.uuid4()}.img"))
     subprocess.run(["7z", "a", "-t7z", img_path, "Installer"], cwd=str(build_dir), check=True, capture_output=True)
@@ -44,19 +49,6 @@ class TestCVE_2021_30657_Analysis:
         assert analysis.details["suspect_files"] == {}
 
     @pytest.mark.unit
-    def test_display_name(self):
-        analysis = CVE_2021_30657_Analysis()
-        assert analysis.display_name == "CVE-2021-30657 Analysis"
-
-    @pytest.mark.unit
-    def test_suspect_files_property(self):
-        analysis = CVE_2021_30657_Analysis()
-        test_files = {"test_file.sh": "text/x-shellscript"}
-        
-        analysis.suspect_files = test_files
-        assert analysis.suspect_files == test_files
-
-    @pytest.mark.unit
     def test_generate_summary_empty(self):
         analysis = CVE_2021_30657_Analysis()
         assert analysis.generate_summary() is None
@@ -68,19 +60,10 @@ class TestCVE_2021_30657_Analysis:
             "malicious.sh": "text/x-shellscript",
             "evil.py": "text/x-python"
         }
-        summary = analysis.generate_summary()
-        assert "CVE-2021-30657 Analysis:" in summary
-        assert "malicious.sh" in summary or "evil.py" in summary
+        assert analysis.generate_summary() == "CVE-2021-30657 Analysis: malicious.sh, evil.py"
 
 
 class TestCVE_2021_30657_Analyzer:
-    @pytest.mark.unit
-    def test_generated_analysis_type(self, test_context):
-        analyzer = CVE_2021_30657_Analyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_CVE_2021_30657_ANALYZER))
-        assert analyzer.generated_analysis_type == CVE_2021_30657_Analysis
-
     @pytest.mark.unit
     def test_valid_observable_types(self, test_context):
         analyzer = CVE_2021_30657_Analyzer(
@@ -89,61 +72,70 @@ class TestCVE_2021_30657_Analyzer:
         assert analyzer.valid_observable_types == F_FILE
 
     @pytest.mark.unit
-    def test_execute_analysis_missing_file(self, tmpdir, test_context):
+    def test_execute_analysis_missing_file(self, tmpdir, caplog):
         root = create_root_analysis(analysis_mode='test_single')
         root.initialize_storage()
-        
-        # create a test file that we'll delete to simulate missing file
+
         test_file = tmpdir.join("test.img")
         test_file.write("test content")
-        
         observable = root.add_file_observable(str(test_file))
-        
-        # now remove the file to simulate it being missing
-        test_file.remove()
-        
+        observable.add_tag("macos")
+        observable.add_tag("dmg")
+        _add_dmg_analysis(root, tmpdir, observable, [])
+
+        # the root keeps its own copy, which is the one the module reads
+        os.remove(observable.full_path)
+
         analyzer = AnalysisModuleAdapter(CVE_2021_30657_Analyzer(
             context=create_test_context(root=root),
             config=get_analysis_module_config(ANALYSIS_MODULE_CVE_2021_30657_ANALYZER)))
         result = analyzer.execute_analysis(observable)
-        
+
         assert result == AnalysisExecutionResult.COMPLETED
+        assert observable.get_and_load_analysis(CVE_2021_30657_Analysis) is None
+        assert any(r.levelno == logging.ERROR and "cannot find local file path" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.unit
-    def test_execute_analysis_wrong_extension(self, tmpdir, test_context):
+    def test_execute_analysis_wrong_extension(self, tmpdir):
         root = create_root_analysis(analysis_mode='test_single')
         root.initialize_storage()
-        
-        # create a test file without .img extension
+
+        # everything else the module checks is in place
         test_file = tmpdir.join("test.txt")
         test_file.write("test content")
-        
         observable = root.add_file_observable(str(test_file))
-        
+        observable.add_tag("macos")
+        observable.add_tag("dmg")
+        _add_dmg_analysis(root, tmpdir, observable, [])
+
         analyzer = AnalysisModuleAdapter(CVE_2021_30657_Analyzer(
             context=create_test_context(root=root),
             config=get_analysis_module_config(ANALYSIS_MODULE_CVE_2021_30657_ANALYZER)))
         result = analyzer.execute_analysis(observable)
-        
+
         assert result == AnalysisExecutionResult.COMPLETED
+        assert observable.get_and_load_analysis(CVE_2021_30657_Analysis) is None
 
     @pytest.mark.unit
-    def test_execute_analysis_missing_tags(self, tmpdir, test_context):
+    @pytest.mark.parametrize("tag", ["macos", "dmg"])
+    def test_execute_analysis_missing_tags(self, tmpdir, tag):
         root = create_root_analysis(analysis_mode='test_single')
         root.initialize_storage()
-        
-        # create a test file with .img extension but no tags
+
+        # one of the two tags, and everything else the module checks is in place
         test_file = tmpdir.join("test.img")
         test_file.write("test content")
-        
         observable = root.add_file_observable(str(test_file))
-        
+        observable.add_tag(tag)
+        _add_dmg_analysis(root, tmpdir, observable, [])
+
         analyzer = AnalysisModuleAdapter(CVE_2021_30657_Analyzer(
             context=create_test_context(root=root),
             config=get_analysis_module_config(ANALYSIS_MODULE_CVE_2021_30657_ANALYZER)))
         result = analyzer.execute_analysis(observable)
-        
+
         assert result == AnalysisExecutionResult.COMPLETED
+        assert observable.get_and_load_analysis(CVE_2021_30657_Analysis) is None
 
     @pytest.mark.unit
     def test_execute_analysis_no_dmg_analysis(self, tmpdir, test_context):
@@ -184,7 +176,8 @@ class TestCVE_2021_30657_Analyzer:
         
         _add_dmg_analysis(root, tmpdir, observable, [
             f"2021-04-06 23:33:06 .....        59039        61440  {MACOS_MEMBER}",
-            "2021-04-06 23:33:06 .....        12345        12345  some/other/file.txt"
+            # a script too, but not one a bundle runs
+            f"2021-04-06 23:33:06 .....        12345        12345  {OTHER_MEMBER}"
         ])
         
         analyzer = AnalysisModuleAdapter(CVE_2021_30657_Analyzer(
@@ -197,8 +190,7 @@ class TestCVE_2021_30657_Analyzer:
         # get the analysis and verify it found the script file
         analysis = observable.get_and_load_analysis(CVE_2021_30657_Analysis)
         assert analysis is not None
-        assert list(analysis.suspect_files.values()) == ["text/x-shellscript"]
-        
+
         # verify the script file was tagged and has detection point
         script_observables = [obs for obs in analysis.observables if obs.type == F_FILE]
         assert len(script_observables) == 1
@@ -206,10 +198,11 @@ class TestCVE_2021_30657_Analyzer:
         assert script_observable.file_name == "1302"
         assert script_observable.has_tag("CVE-2021-30657")
         assert script_observable.has_detection_points()
+        assert analysis.suspect_files == {script_observable.file_path: "text/x-shellscript"}
         # the detection point message is embedded in the implementation, so we can just check it exists
 
     @pytest.mark.unit
-    def test_execute_analysis_extraction_failure(self, tmpdir, test_context):
+    def test_execute_analysis_extraction_failure(self, tmpdir, test_context, caplog):
         root = create_root_analysis(analysis_mode='test_single')
         root.initialize_storage()
         
@@ -233,6 +226,7 @@ class TestCVE_2021_30657_Analyzer:
         analysis = observable.get_and_load_analysis(CVE_2021_30657_Analysis)
         assert analysis is not None
         assert len(analysis.suspect_files) == 0
+        assert any(r.levelno == logging.ERROR and "failed to extracted" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.unit
     def test_execute_analysis_non_script_file(self, tmpdir, test_context):

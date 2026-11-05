@@ -9,7 +9,7 @@ from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_QRCODE, F_FILE
 from saq.modules.adapter import AnalysisModuleAdapter
-from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer, QRCodeFilter
+from saq.modules.file_analysis.qrcode import QRCodeAnalysis, QRCodeAnalyzer, QRCodeFilter, _rendered_pages
 from saq.sandbox.runner import SandboxResult
 from tests.saq.test_util import create_test_context
 
@@ -43,39 +43,44 @@ def _analyze(tmp_path, source: Path, file_name: str = None, **config):
 
 @pytest.mark.unit
 def test_pdf_name_with_glob_characters(tmp_path):
-    # the rendered pages are found by globbing the attachment's path, so "[1]" matched nothing
-    _, observable, analysis = _analyze(tmp_path, _pdf(tmp_path / "source.pdf", pages=2, qr_page=2), "scan[1].pdf")
+    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "source.pdf", pages=2, qr_page=2), "scan[1].pdf")
 
     assert analysis.extracted_text == QR_URL
-    # the rendered pages are removed
-    assert sorted(p.name for p in Path(observable.full_path).parent.glob("*.png")) == []
+
+    # the rendered pages are found by globbing a path, in page order, so "[1]" in it must match itself
+    pages = tmp_path / "pages[1]"
+    pages.mkdir()
+    for name in ("page-10.png", "page-2.png", "page-x.png"):
+        (pages / name).touch()
+    assert _rendered_pages(str(pages / "page-")) == [str(pages / "page-2.png"), str(pages / "page-10.png")]
 
 
 @pytest.mark.unit
 def test_long_pdf_scans_first_and_last_pages(tmp_path):
-    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=11))
+    # the first of the last three pages
+    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=10))
 
     assert analysis.extracted_text == QR_URL
 
 
 @pytest.mark.unit
 def test_long_pdf_skips_middle_pages(tmp_path):
-    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=6))
+    # the page before the last three
+    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=9))
 
     assert analysis.extracted_text is None
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("qr_page", [2, 11])
-def test_long_pdf_fallback_render_keeps_page_order(tmp_path, monkeypatch, qr_page):
+@pytest.mark.parametrize("qr_page,expected", [(2, QR_URL), (6, None), (11, QR_URL)])
+def test_long_pdf_fallback_render_keeps_page_order(tmp_path, monkeypatch, qr_page, expected):
     # without a page count every page is rendered and the first and last ones kept. page files used to be
     # sorted as strings (1, 10, 11, 12, 2, ...), which kept pages 1, 10, 11 and 7, 8, 9 of a 12 page PDF
     monkeypatch.setattr(QRCodeAnalyzer, "_get_pdf_page_count", lambda self, path: None)
 
-    _, observable, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=qr_page))
+    _, _, analysis = _analyze(tmp_path, _pdf(tmp_path / "long.pdf", pages=12, qr_page=qr_page))
 
-    assert analysis.extracted_text == QR_URL
-    assert list(Path(observable.full_path).parent.glob("*.png")) == []
+    assert analysis.extracted_text == expected
 
 
 @pytest.mark.unit
@@ -102,7 +107,7 @@ def test_pdf_that_cannot_be_rendered(tmp_path, caplog):
 @pytest.mark.unit
 def test_filtered_url(tmp_path, monkeypatch, caplog):
     filters = tmp_path / "qrcode_filters.txt"
-    filters.write_text("\n[unclosed\nqrco\\.de/\n")
+    filters.write_text("\n[unclosed\nQRCO\\.DE/\n")
     monkeypatch.setattr(QRCodeAnalyzer, "qrcode_filter_path", property(lambda self: str(filters)))
 
     _, _, analysis = _analyze(tmp_path, QR_IMAGE)

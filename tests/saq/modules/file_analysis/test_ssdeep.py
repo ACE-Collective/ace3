@@ -1,6 +1,6 @@
+import hashlib
 import logging
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,6 +14,9 @@ from saq.modules.file_analysis.ssdeep import SsdeepAnalysis
 from saq.util.uuid import get_storage_dir
 
 MODULE = "ssdeep"
+# what the ssdeep binary prints for _known_sample_bytes(), and the score it gives _variant_of() against it
+KNOWN_SAMPLE_HASH = "192:QR5v46+ftzkszIVlmW82ziEEHnwSzIzVM7/QPcY:QR521zAwQauq74PF"
+VARIANT_SCORE = 99
 
 
 def _analyze(root_analysis, path: Path):
@@ -30,13 +33,17 @@ def _analyze(root_analysis, path: Path):
     return root.get_observable(file_observable.uuid)
 
 
+def _known_sample_bytes() -> bytes:
+    return b"".join(hashlib.sha256(str(i).encode()).digest() for i in range(256))
+
+
 @pytest.fixture
 def known_sample(tmp_path):
     """A known sample, and a hashes file holding its fuzzy hash."""
     sample = tmp_path / "known.sample"
-    sample.write_bytes(os.urandom(8192))
+    sample.write_bytes(_known_sample_bytes())
     hashes = tmp_path / "hashes.ssdeep"
-    hashes.write_text(subprocess.run(["ssdeep", str(sample)], capture_output=True, text=True, check=True).stdout)
+    hashes.write_text(f'ssdeep,1.1--blocksize:hash:hash,filename\n{KNOWN_SAMPLE_HASH},"{sample}"\n')
     get_analysis_module_config(MODULE).ssdeep_hashes = str(hashes)
     return sample, hashes
 
@@ -51,23 +58,22 @@ def _variant_of(sample: Path, tmp_path: Path) -> Path:
 @pytest.mark.integration
 def test_similar_file_is_tagged_and_sent_to_the_sandbox(root_analysis, tmp_path, known_sample):
     sample, _ = known_sample
+    # a score at the threshold counts
+    get_analysis_module_config(MODULE).ssdeep_match_threshold = VARIANT_SCORE
 
     target = _analyze(root_analysis, _variant_of(sample, tmp_path))
 
     assert target.has_tag("ssdeep")
     assert target.has_directive(DIRECTIVE_SANDBOX)
     analysis = target.get_and_load_analysis(SsdeepAnalysis)
-    assert len(analysis.details["matches"]) == 1
-    match = analysis.details["matches"][0]
-    assert match["file"] == str(sample)
-    assert 90 <= match["score"] < 100
-    assert analysis.generate_summary() == f"Ssdeep Analysis (1 matches {match['score']}% highest match)"
+    assert analysis.details["matches"] == [{"file": str(sample), "score": VARIANT_SCORE}]
+    assert analysis.generate_summary() == f"Ssdeep Analysis (1 matches {VARIANT_SCORE}% highest match)"
 
 
 @pytest.mark.integration
 def test_match_below_the_threshold_is_ignored(root_analysis, tmp_path, known_sample):
     sample, _ = known_sample
-    get_analysis_module_config(MODULE).ssdeep_match_threshold = 100
+    get_analysis_module_config(MODULE).ssdeep_match_threshold = VARIANT_SCORE + 1
 
     target = _analyze(root_analysis, _variant_of(sample, tmp_path))
 
@@ -109,7 +115,7 @@ def test_unreadable_hashes_file_is_logged_as_an_error(root_analysis, tmp_path, k
 
 @pytest.mark.integration
 @pytest.mark.parametrize("size", [1023, 4097])
-def test_files_outside_the_size_limits_are_skipped(root_analysis, tmp_path, known_sample, size):
+def test_files_outside_the_size_limits_are_skipped(root_analysis, tmp_path, known_sample, caplog, size):
     _, hashes = known_sample
     get_analysis_module_config(MODULE).maximum_size = 4096
     # an unreadable hashes file would fail any file that reached ssdeep
@@ -120,3 +126,4 @@ def test_files_outside_the_size_limits_are_skipped(root_analysis, tmp_path, know
     target = _analyze(root_analysis, path)
 
     assert target.get_analysis(SsdeepAnalysis) is False
+    assert "ssdeep failed" not in caplog.text
