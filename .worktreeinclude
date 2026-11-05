@@ -1,4 +1,5 @@
-# gitignored files Claude Code copies from the main checkout into each worktree it creates
+# gitignored paths copied from the main checkout into each worktree, by Claude Code when it creates
+# one and by bin/setup-worktree.sh otherwise. The script takes plain paths, not gitignore patterns.
 
 # the stack's certificates: nothing, the test suite included, reaches the database without them
 ssl/

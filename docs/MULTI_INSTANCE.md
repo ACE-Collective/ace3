@@ -118,6 +118,25 @@ A git worktree under a checkout has no stack of its own. In a worktree, `get-dev
 `exec-in-container.sh` runs its command from the worktree's own path in the container, with
 `SAQ_HOME` set to that path.
 
+A worktree outside its checkout (T3 Code keeps them under `~/.t3/worktrees/<repo>/`) is not visible
+in the container until you mount it. In the checkout's `docker-compose.override.yml`, mount the
+directory that holds the worktrees, and `local/` at its host path, because such a worktree's `local`
+link is absolute:
+
+```yaml
+services:
+  dev:
+    volumes:
+      - ./.git:/absolute/host/path/to/the/checkout/.git
+      - ./local:/absolute/host/path/to/the/checkout/local
+      - /absolute/host/path/to/the/worktrees:/opt/ace-worktrees
+```
+
+Recreate `dev` with `docker compose up -d --no-deps dev`. `exec-in-container.sh` asks `docker inspect`
+for the bind mounts and uses the deepest one above the worktree, so the destination can be any path.
+Keep it short: a long path can push a unix socket under the data directory past the 108-byte
+`AF_UNIX` limit, and a `.` in it makes SVS replay refuse the `work_dir`.
+
 They find the stack by asking compose (`docker compose ps -q <service>`), which means they
 resolve whichever compose file that checkout would use by default. A deployment that runs its
 own compose file rather than the one at the repo root — `integrations/bv_ace/docker-compose.yml`,

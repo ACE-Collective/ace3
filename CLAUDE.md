@@ -24,12 +24,13 @@ bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in d
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
 
-**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From a worktree, `bin/exec-in-container.sh` and the Makefile targets run there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code. `docker compose exec dev` runs the main checkout's code.
+**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From a worktree, `bin/exec-in-container.sh` and the Makefile targets run there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code. `docker compose exec dev` runs the main checkout's code. A worktree outside the checkout, like the ones T3 Code keeps under `~/.t3/worktrees/`, needs a mount of its own for the `dev` service; `bin/exec-in-container.sh` finds it with `docker inspect` (`docs/MULTI_INSTANCE.md`).
 
 The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, which adds what git does not track:
 
 - `integrations/<name>`: a detached worktree of each integration repository in the main checkout. Create a branch in it before committing. Its changes do not show in this checkout's `git status`, so check it before deleting the worktree.
 - the `tests/test_external_integration_*` links into those repositories
+- each path in `.worktreeinclude` (`ssl/`), copied from the main checkout
 - `local`: a link to the main checkout's `local/`, so PR descriptions written there outlive the worktree. A write through it lands outside the worktree, so auto mode asks about every one unless the main checkout's `local/` is a working directory of the session: add its absolute path to `permissions.additionalDirectories` in the main checkout's `.claude/settings.local.json`. A relative path, or the path of the link, does not count.
 
 Run it by hand in a worktree made with `git worktree add`. For `git` to work on a worktree inside `dev`, which `diff-cover` needs, mount the main checkout's `.git` at its host path in `docker-compose.override.yml` and recreate `dev`:
@@ -96,7 +97,7 @@ the message prints. Holding the checkout's marker is also what makes it safe for
 the databases an earlier, killed run of that checkout left behind: the holder sweeps the
 checkout's registry in `pytest_configure`, before any of its workers provision.
 
-**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` has Claude Code copy into each worktree it creates (copy it by hand into one made with `git worktree add`). Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read it inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read it inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
 
 ### The standard analysis-module test
 

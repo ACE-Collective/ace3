@@ -1,10 +1,11 @@
 """Tests for bin/setup-worktree.sh, which gives a git worktree the integration repositories,
-integration test links and local/ that the main checkout has outside of git.
+integration test links, local/ and .worktreeinclude files that the main checkout has outside of git.
 
 Each test builds a throwaway main checkout with one integration repository and runs the real
 script from a worktree of it.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -98,6 +99,59 @@ def test_a_second_run_changes_nothing_and_prints_nothing(main):
     assert result.stdout == ""
 
 
+def test_by_hand_does_not_wait_for_stdin(main):
+    # a background shell or another tool can leave stdin open with nothing ever written to it
+    worktree = _add_worktree(main, "wt")
+    read_end, write_end = os.pipe()
+    process = subprocess.Popen(["bash", str(worktree / "bin" / "setup-worktree.sh")], stdin=read_end,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        assert process.wait(timeout=30) == 0
+    except subprocess.TimeoutExpired:
+        pytest.fail("the script is still waiting for stdin")
+    finally:
+        process.kill()
+        process.wait(timeout=10)
+        os.close(read_end)
+        os.close(write_end)
+
+    assert (worktree / "local").is_symlink()
+
+
+def _run_hook(script_checkout: Path, hook_input: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", str(script_checkout / "bin" / "setup-worktree.sh"), "--hook"],
+                          input=hook_input, capture_output=True, text=True, timeout=60)
+
+
+def test_hook_sets_up_the_directory_its_input_names(main):
+    # the desktop app runs a worktree session's hooks from the main checkout
+    worktree = _add_worktree(main, "wt")
+
+    result = _run_hook(main, json.dumps({"cwd": str(worktree)}))
+
+    assert result.returncode == 0, result.stderr
+    assert (worktree / "local").is_symlink()
+
+
+@pytest.mark.parametrize("hook_input", ["", "not json", "{}"])
+def test_hook_without_a_usable_cwd_sets_up_its_own_checkout(main, hook_input):
+    worktree = _add_worktree(main, "wt")
+
+    result = _run_hook(worktree, hook_input)
+
+    assert result.returncode == 0, result.stderr
+    assert (worktree / "local").is_symlink()
+
+
+def test_the_session_start_hook_runs_in_hook_mode():
+    settings = json.loads((SCRIPT.parents[1] / ".claude" / "settings.json").read_text())
+    commands = [hook["command"] for group in settings["hooks"]["SessionStart"] for hook in group["hooks"]
+                if "setup-worktree.sh" in hook["command"]]
+
+    assert len(commands) == 1
+    assert commands[0].endswith("--hook")
+
+
 def test_does_nothing_in_the_main_checkout(main):
     result = _run(main)
 
@@ -159,3 +213,68 @@ def test_refuses_an_absolute_test_link(main):
     assert result.returncode == 1
     assert "absolute" in result.stderr
     assert not (worktree / "tests" / LINK).exists()
+
+
+def _with_worktree_include(main: Path, *entries: str):
+    (main / ".worktreeinclude").write_text("# a comment\n\n" + "".join(f"{entry}\n" for entry in entries))
+    _git(main, "add", ".worktreeinclude")
+    _git(main, "commit", "--quiet", "-m", "worktreeinclude")
+
+
+@pytest.mark.parametrize("location", ["inside", "outside"])
+def test_copies_what_worktreeinclude_names(main, tmp_path, location):
+    (main / "ssl").mkdir()
+    (main / "ssl" / "ca.pem").write_text("the certificate")
+    (main / "ssl" / "key.pem").write_text("the key")
+    (main / "ssl" / "key.pem").chmod(0o600)
+    _with_worktree_include(main, "ssl/")
+    worktree = _add_worktree(main, "wt") if location == "inside" else tmp_path / "elsewhere" / "wt"
+    if location == "outside":
+        _git(main, "worktree", "add", "--quiet", "--detach", str(worktree))
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert (worktree / "ssl" / "ca.pem").read_text() == "the certificate"
+    assert (worktree / "ssl" / "key.pem").stat().st_mode & 0o777 == 0o600
+    assert not (worktree / "ssl").is_symlink()
+    assert "ssl: copied" in result.stdout
+
+
+def test_leaves_a_worktreeinclude_path_the_worktree_already_has(main):
+    (main / "ssl").mkdir()
+    (main / "ssl" / "new.pem").touch()
+    _with_worktree_include(main, "ssl/")
+    worktree = _add_worktree(main, "wt")
+    (worktree / "ssl").mkdir()
+    (worktree / "ssl" / "existing.pem").touch()
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in (worktree / "ssl").iterdir()) == ["existing.pem"]
+    assert "ssl: copied" not in result.stdout
+
+
+def test_skips_a_worktreeinclude_path_the_main_checkout_lacks(main):
+    _with_worktree_include(main, "ssl/")
+    worktree = _add_worktree(main, "wt")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert not (worktree / "ssl").exists()
+
+
+def test_reports_a_worktreeinclude_path_it_cannot_copy(main):
+    (main / "ssl").mkdir()
+    (main / "ssl" / "ca.pem").touch()
+    _with_worktree_include(main, "ssl/")
+    worktree = _add_worktree(main, "wt")
+    (main / "ssl" / "ca.pem").chmod(0o000)
+
+    result = _run(worktree)
+
+    assert result.returncode == 1
+    assert "ssl: copied" not in result.stdout
+    assert "ca.pem" in result.stderr
