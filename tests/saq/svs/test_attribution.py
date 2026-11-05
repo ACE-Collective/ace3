@@ -21,7 +21,7 @@ from saq.database import private_session
 from saq.database.model import SVSAttribution, SVSRun, SVSRunEvent, SVSRunResultState, SVSSuppressedMatch, User
 from saq.database.pool import get_db
 from saq.database.private_session import private_transaction
-from saq.environment import get_local_timezone
+from saq.environment import get_global_runtime_settings
 from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 from saq.svs import attribution
 from saq.svs.attribution import (
@@ -191,7 +191,6 @@ class TestHosts:
         assert hosts.ips == {"10.0.0.5"}
 
     @pytest.mark.parametrize("names,ips,target,expected", [
-        ({("win10-01", None)}, set(), TargetSnapshot("win10-01", None), True),
         ({("win10-01", None)}, set(), TargetSnapshot("win10-01", "win10-01.lab.example"), True),
         ({("win10-01", "win10-01.lab.example")}, set(), TargetSnapshot("win10-01", "win10-01.lab.example"), True),
         # a production host that shares the short name in another domain
@@ -204,13 +203,14 @@ class TestHosts:
     def test_involvement(self, names, ips, target, expected):
         assert AlertHosts(names, ips).involves(target) is expected
 
-    def test_event_time(self):
+    def test_event_time(self, monkeypatch):
+        # a local timezone other than the event's, so that dropping the timezone is not converting it
+        monkeypatch.setattr(get_global_runtime_settings(), "local_timezone_str", "America/New_York")
         root = RootAnalysis(uuid=str(uuid.uuid4()))
         assert alert_event_time(root, T0) == (T0, AttributionTimeSource.INSERT_TIME)
-        aware = datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc)
-        root.event_time = aware
-        assert alert_event_time(root, T0) == (
-            aware.astimezone(get_local_timezone()).replace(tzinfo=None), AttributionTimeSource.EVENT)
+        root.event_time = datetime(2026, 10, 14, 16, 0, 0, tzinfo=timezone.utc)
+        # 16:00 UTC is noon EDT
+        assert alert_event_time(root, T0) == (datetime(2026, 10, 14, 12, 0, 0), AttributionTimeSource.EVENT)
 
     @pytest.mark.parametrize("source", [s for s in EventTimeSource if s != EventTimeSource.UNSET])
     def test_every_source_of_a_root_event_time_is_one_an_attribution_records(self, source):
@@ -248,12 +248,16 @@ class TestEvaluate:
         assert {a.scan_point for a in evaluation.attributions} == {ScanPoint.ROOT_DETAILS}
 
     def test_a_marker_attributes_its_own_branch(self):
-        """Up (the parent and the root's own detections) and down, not the sibling URL."""
+        """Up (the parent and the root's own detections) and down (the grandchild), not the sibling URL."""
         run = _run()
         root, parent, child, url = _tree()
+        analysis = ChildAnalysis()
+        child.add_analysis(analysis)
+        grandchild = analysis.add_observable_by_spec(F_TEST, "grandchild")
         root.add_detection_point("hunt hit")
         parent.add_detection_point("parent hit")
         child.add_detection_point("child hit")
+        grandchild.add_detection_point("grandchild hit")
         url.add_detection_point("bad url")
         save_sightings(root, [Sighting(run.marker, child.uuid, ScanPoint.FILE_CONTENTS, "yara")])
 
@@ -262,7 +266,8 @@ class TestEvaluate:
         assert not evaluation.routed
         attributed = {a.content_hash for a in evaluation.attributions}
         by_description = {dp.description: h for h, dp in _hashes(root).items()}
-        assert attributed == {by_description["hunt hit"], by_description["parent hit"], by_description["child hit"]}
+        assert attributed == {by_description["hunt hit"], by_description["parent hit"], by_description["child hit"],
+                              by_description["grandchild hit"]}
 
     def test_a_marker_beneath_a_detection_attributes_it(self):
         run = _run()
@@ -340,18 +345,6 @@ class TestEvaluate:
         assert evaluation.status is None
         assert evaluation.attributions == []
 
-    @pytest.mark.usefixtures("overlapping_runs")
-    def test_context_with_two_overlapping_candidates_attributes_nothing(self):
-        # runs registered before one run per host was enforced
-        root, parent, child, url = _tree()
-        root.add_detection_point("hunt hit")
-        first, second = _run(), _run()
-
-        evaluation = evaluate(root, T0)
-        assert evaluation.status is None
-        assert evaluation.attributions == []
-        assert [r.id for r in evaluation.candidate_runs] == [first.id, second.id]
-
     def test_context_goes_to_the_run_on_the_host_after_the_one_before_released_it(self):
         first = _run()
         # the first run's claim ended with its observation window, at T0 + 1h
@@ -379,6 +372,7 @@ class TestEvaluate:
         root, parent, child, url = _tree()
         root.add_detection_point("hunt hit")
         evaluation = evaluate(root, T0 + timedelta(hours=2, minutes=30))
+        assert evaluation.status is None
         assert evaluation.attributions == []
         assert [r.id for r in evaluation.candidate_runs] == [first.id, second.id]
 

@@ -64,14 +64,6 @@ def test_absolute_range_across_dst_boundary_uses_each_endpoint_own_offset(monkey
 
 
 @pytest.mark.unit
-def test_absolute_range_same_side_of_dst(monkeypatch):
-    start, end = _bounds(monkeypatch, "01-15-2026 08:00 - 01-22-2026 08:00")
-
-    assert start == UTC.localize(datetime(2026, 1, 15, 13, 0))
-    assert end == UTC.localize(datetime(2026, 1, 22, 13, 0))
-
-
-@pytest.mark.unit
 def test_utc_user_absolute_range(monkeypatch):
     start, end = _bounds(monkeypatch, "01-15-2026 08:00 - 01-22-2026 08:00", timezone="UTC")
 

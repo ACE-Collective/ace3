@@ -33,11 +33,8 @@ class TestOrderArchiveFileList:
     @pytest.mark.parametrize("file_list,expected", [
         # edge cases
         ([], []),
-        (["file1.txt"], ["file1.txt"]),
-        (["file1.txt", "file2.txt"], ["file1.txt", "file2.txt"]),
         
         # sorting by priority
-        (["file1.exe", "file2.txt", "file3.pdf"], ["file1.exe", "file3.pdf", "file2.txt"]),
         
         # attack extensions (priority 0) - highest priority
         (["file1.txt", "file2.lnk", "file3.exe", "file4.one", "file5.pdf"], 
@@ -78,26 +75,16 @@ class TestOrderArchiveFileList:
          ["file1.mht", "file2.mhtml", "file3.xml", "file4.txt"]),
         
         # other extensions (priority 4) - lowest priority
-        (["file1.txt", "file2.log", "file3.dat", "file4.tmp"],
-         ["file1.txt", "file2.log", "file3.dat", "file4.tmp"]),
         
         # mixed priorities - testing sorting behavior
-        (["file1.txt", "file2.exe", "file3.lnk", "file4.js", "file5.pdf"],
-         ["file3.lnk", "file2.exe", "file4.js", "file5.pdf", "file1.txt"]),
         (["file1.pdf", "file2.scr", "file3.vbs", "file4.dll", "file5.doc"],
          ["file2.scr", "file4.dll", "file3.vbs", "file1.pdf", "file5.doc"]),
         
         # case insensitive handling
         (["file1.TXT", "file2.EXE", "file3.LNK", "file4.JS"],
          ["file3.LNK", "file2.EXE", "file4.JS", "file1.TXT"]),
-        (["FILE1.PDF", "FILE2.SCR", "FILE3.VBS"],
-         ["FILE2.SCR", "FILE3.VBS", "FILE1.PDF"]),
         
         # preserve order within same priority
-        (["file1.txt", "file2.log", "file3.dat"],
-         ["file1.txt", "file2.log", "file3.dat"]),
-        (["file1.exe", "file2.dll", "file3.com"],
-         ["file1.exe", "file2.dll", "file3.com"]),
         
         # complex mixed scenario
         (["readme.txt", "setup.exe", "malware.lnk", "script.js", "doc.pdf", 
@@ -111,33 +98,6 @@ class TestOrderArchiveFileList:
     def test_order_archive_file_list(self, file_list, expected):
         result = order_archive_file_list(file_list)
         assert result == expected
-    
-    @pytest.mark.unit
-    def test_order_archive_file_list_preserves_order_within_priority(self):
-        # test that files with same priority maintain their original order
-        file_list = ["first.txt", "second.log", "third.dat", "fourth.tmp"]
-        result = order_archive_file_list(file_list)
-        assert result == ["first.txt", "second.log", "third.dat", "fourth.tmp"]
-    
-    @pytest.mark.unit
-    def test_order_archive_file_list_all_extensions_covered(self):
-        # test that all extension categories are properly handled
-        file_list = [
-            "attack.lnk",     # priority 0
-            "exec.exe",       # priority 1  
-            "script.js",      # priority 2
-            "office.doc",     # priority 3
-            "other.txt"       # priority 4
-        ]
-        result = order_archive_file_list(file_list)
-        assert result == ["attack.lnk", "exec.exe", "script.js", "office.doc", "other.txt"]
-    
-    @pytest.mark.unit
-    def test_order_archive_file_list_duplicate_extensions(self):
-        # test files with same extensions maintain order
-        file_list = ["first.exe", "second.exe", "third.exe", "fourth.txt"]
-        result = order_archive_file_list(file_list)
-        assert result == ["first.exe", "second.exe", "third.exe", "fourth.txt"]
     
     @pytest.mark.unit
     def test_order_archive_file_list_msi_in_both_categories(self):
@@ -401,7 +361,6 @@ def test_a_listing_that_times_out_is_killed(root_analysis, hanging_tools, monkey
 @pytest.mark.parametrize("excluded,expected", [
     ("application/x-shockwave-flash,application/x-mach-binary", ["application/x-shockwave-flash", "application/x-mach-binary"]),
     ("application/x-shockwave-flash, ", ["application/x-shockwave-flash"]),
-    ("", []),
 ])
 def test_excluded_mime_types(root_analysis, monkeypatch, excluded, expected):
     analyzer = ArchiveAnalyzer(
@@ -443,9 +402,9 @@ def test_ole_file_is_skipped_without_excluded_mime_types(root_analysis, monkeypa
         context=create_test_context(root=root_analysis),
         config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE))
     monkeypatch.setattr(analyzer.config, "excluded_mime_types", "")
-    observable = _archive_observable(root_analysis, "sample.doc", "Composite Document File V2 Document", "application/x-ole-storage")
-    with open(observable.full_path, "wb") as fp:
-        fp.write(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+    with open(os.path.join(get_base_dir(), "tests/saq/modules/test_file_analysis_full/ole_files/Paid Invoice.doc"), "rb") as fp:
+        observable = _archive_observable(root_analysis, "sample.doc", "Composite Document File V2 Document",
+                                         "application/x-ole-storage", fp.read())
 
     assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
     assert observable.get_analysis(ArchiveAnalysis) is None

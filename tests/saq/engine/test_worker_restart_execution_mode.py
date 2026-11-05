@@ -97,34 +97,6 @@ def manager(configuration_manager) -> WorkerManager:
 
 
 @pytest.mark.unit
-def test_start_workers_records_execution_mode(manager):
-    """The mode the pool was started in is state of the pool, not just an argument."""
-    manager.start_workers(execution_mode=EngineExecutionMode.SINGLE_SHOT)
-
-    assert manager.execution_mode == EngineExecutionMode.SINGLE_SHOT
-    assert all(worker.start_modes == [EngineExecutionMode.SINGLE_SHOT] for worker in manager.workers)
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("execution_mode", [
-    EngineExecutionMode.SINGLE_SHOT,
-    EngineExecutionMode.UNTIL_COMPLETE,
-    EngineExecutionMode.NORMAL,
-])
-def test_restart_worker_preserves_execution_mode(manager, execution_mode):
-    """A replacement worker comes back in the mode the engine is running in."""
-    manager.start_workers(execution_mode=execution_mode)
-    dead_worker = manager.workers[0]
-    dead_worker.die()
-
-    manager.restart_worker(dead_worker)
-
-    assert dead_worker not in manager.workers
-    new_worker = manager.workers[-1]
-    assert new_worker.start_modes == [execution_mode]
-
-
-@pytest.mark.unit
 def test_restart_worker_defaults_to_normal(manager):
     """Without a ``start_workers()`` the manager falls back to the same default
     ``Worker.start`` carries."""

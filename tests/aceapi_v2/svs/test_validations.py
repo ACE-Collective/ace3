@@ -112,6 +112,8 @@ class TestRequest:
             _row(Category.REGRESSION, sha256s[1]),
             _row(Category.NEW_FP_OTHER_RULE, sha256s[2], OTHER_RULE_UUID, "other_rule"),
         ])
+        # another validation's rows are not this one's
+        _completed([_row(Category.REGRESSION, "44" * 32)], head="c" * 40)
 
         response = await client.get(f"/svs/yara/validations/{validation_uuid}/status")
 
@@ -157,11 +159,6 @@ class TestAccess:
             assert (await client.get(f"/svs/yara/validations/{validation_uuid}/status")).status_code == 403
             assert (await client.get("/svs/yara/validations/")).status_code == 200
             assert (await client.get(f"/svs/yara/validations/{validation_uuid}/download")).status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_no_permission(self, noperm_client: AsyncClient):
-        assert (await noperm_client.post("/svs/yara/validations/", json=_body())).status_code == 403
-        assert (await noperm_client.get("/svs/yara/validations/")).status_code == 403
 
 
 #
@@ -223,6 +220,8 @@ class TestResults:
             _row(Category.REGRESSION, "22" * 32),
             _row(Category.NEW_FP, "33" * 32, OTHER_RULE_UUID),
         ])
+        # another validation's rows are not this one's
+        _completed([_row(Category.REGRESSION, "44" * 32)], head="c" * 40)
         path = f"/svs/yara/validations/{validation_uuid}/results"
 
         rows = (await client.get(path)).json()["data"]

@@ -21,7 +21,7 @@ from aceapi_v2.dependencies import check_permission, require_self_service
 from aceapi_v2.users.service import create_user_api_key, list_user_api_keys
 from saq.configuration import get_config
 from saq.configuration.schema import ConfigApiKey
-from saq.database.model import AuthApiKey, AuthGroup, AuthGroupUser, AuthUserPermission, User
+from saq.database.model import AuthApiKey, AuthGroup, AuthGroupUser, AuthPermissionCatalog, AuthUserPermission, User
 from saq.util import sha256_str
 from tests.aceapi_v2.conftest import (
     add_analyst_group,
@@ -99,10 +99,20 @@ class TestHappyPath:
         assert set(body) >= {"users", "permissions", "groups", "group_permissions", "catalog"}
 
     @pytest.mark.asyncio
-    async def test_catalog(self, client: AsyncClient):
+    async def test_catalog(self, client: AsyncClient, session: AsyncSession):
+        # the table is the catalog's read-model, which the integration reset leaves empty
+        session.add_all([
+            AuthPermissionCatalog(major="user", minor="write", description="change users"),
+            AuthPermissionCatalog(major="alert", minor="read", description="read alerts"),
+        ])
+        await session.flush()
+
         r = await client.get("/users/catalog")
         assert r.status_code == 200
-        assert isinstance(r.json(), list)
+        assert r.json() == [
+            {"major": "alert", "minor": "read", "description": "read alerts"},
+            {"major": "user", "minor": "write", "description": "change users"},
+        ]
 
     @pytest.mark.asyncio
     async def test_create_and_details(self, client: AsyncClient, session: AsyncSession):
@@ -128,6 +138,7 @@ class TestHappyPath:
 
     @pytest.mark.asyncio
     async def test_update_users(self, client: AsyncClient, session: AsyncSession):
+        # another user than the caller, so the self-disable guard lets the disable through
         user = await _make_user(session, "rtr_update", perms=[])
         r = await client.patch("/users/", json={str(user.id): {"queue": "high", "enabled": False}})
         assert r.status_code == 200
@@ -150,31 +161,6 @@ class TestHappyPath:
         assert test_user.enabled is True
 
     @pytest.mark.asyncio
-    async def test_self_disable_guard_does_not_apply_partial_changes(
-        self, client: AsyncClient, session: AsyncSession, test_user: User
-    ):
-        """The guard is a pre-scan, so the other user in the same request is untouched too."""
-        other = await _make_user(session, "rtr_self_disable_other", perms=[])
-        r = await client.patch("/users/", json={
-            str(other.id): {"queue": "high"},
-            str(test_user.id): {"enabled": False},
-        })
-        assert r.status_code == 400
-
-        session.expire_all()
-        await session.refresh(other)
-        assert other.queue != "high"
-
-    @pytest.mark.asyncio
-    async def test_can_still_disable_another_account(self, client: AsyncClient, session: AsyncSession):
-        user = await _make_user(session, "rtr_disable_other", perms=[])
-        r = await client.patch("/users/", json={str(user.id): {"enabled": False}})
-        assert r.status_code == 200
-        session.expire_all()
-        await session.refresh(user)
-        assert user.enabled is False
-
-    @pytest.mark.asyncio
     async def test_can_still_enable_own_account(
         self, client: AsyncClient, session: AsyncSession, test_user: User
     ):
@@ -193,7 +179,7 @@ class TestHappyPath:
 
     @pytest.mark.asyncio
     async def test_create_rejects_blank_email(self, client: AsyncClient):
-        r = await client.post("/users/", json={"username": "rtr_blank_email", "email": ""})
+        r = await client.post("/users/", json={"username": "rtr_blank_email", "email": "   "})
         assert r.status_code == 400
 
     @pytest.mark.asyncio

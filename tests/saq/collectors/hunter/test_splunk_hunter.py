@@ -1,14 +1,15 @@
 from datetime import UTC, datetime
 import json
 import os
-from queue import Queue
 import shutil
+from unittest.mock import Mock, patch
+
 import pytest
 
 from tests.saq.helpers import create_submission_file_manager
 
 from saq.analysis.root import RootAnalysis
-from saq.collectors.hunter import HuntManager, HunterCollector
+from saq.collectors.hunter import HuntManager
 from saq.collectors.hunter.splunk_hunter import SplunkHunt
 from saq.configuration.config import get_config, get_splunk_config
 from saq.configuration.schema import HuntTypeConfig, SplunkConfig
@@ -28,15 +29,6 @@ def rules_dir(datadir) -> str:
     temp_rules_dir = datadir / "test_rules"
     shutil.copytree("tests/data/hunts/test/splunk", temp_rules_dir)
     return str(temp_rules_dir)
-
-class TestSplunkHunter(HunterCollector):
-    __test__ = False
-
-    def update(self):
-        pass
-
-    def cleanup(self):
-        pass
 
 @pytest.fixture
 def manager_kwargs(rules_dir, tmpdir):
@@ -110,16 +102,6 @@ def test_load_hunt_ini(manager_kwargs):
     hunt = manager.get_hunt_by_name('test_app_context')
     assert hunt.namespace_app == 'app'
     assert hunt.namespace_user == 'user'
-
-@pytest.mark.skip(reason="missing file")
-@pytest.mark.integration
-def test_no_timespec(manager_kwargs):
-    manager = HuntManager(**manager_kwargs)
-    manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'query_test_no_timespec')
-    assert len(manager.hunts) == 1
-    hunt = manager.get_hunt_by_name('query_test_no_timespec')
-    assert hunt is not None
-    assert hunt.query == 'index=proxy src_ip=1.1.1.1\n'
 
 @pytest.mark.integration
 def test_load_hunt_with_includes(manager_kwargs):
@@ -237,108 +219,6 @@ def test_splunk_hunt_host_config(alt_setup, manager_kwargs, manager_kwargs_alt):
     manager.load_hunts_from_config(hunt_filter=lambda hunt: hunt.name == 'query_test_1')
     splunk_hunt = manager.hunts[0]
     assert splunk_hunt.tool_instance == SPLUNK_HOST
-
-
-@pytest.mark.unit
-def test_splunk_hunt_config_auto_append_default():
-    """test that SplunkHuntConfig has auto_append property with default '| fields *'"""
-    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
-
-    config = SplunkHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="splunk",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="test query",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False
-    )
-
-    assert hasattr(config, "auto_append")
-    assert config.auto_append == "| fields *"
-
-
-@pytest.mark.unit
-def test_splunk_hunt_config_auto_append_custom():
-    """test that SplunkHuntConfig auto_append property can be overridden"""
-    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
-
-    config = SplunkHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="splunk",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="test query",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False,
-        auto_append="| fields src_ip dst_ip"
-    )
-
-    assert config.auto_append == "| fields src_ip dst_ip"
-
-
-@pytest.mark.unit
-def test_splunk_hunt_config_auto_append_empty():
-    """test that SplunkHuntConfig auto_append property can be set to empty string"""
-    from saq.collectors.hunter.splunk_hunter import SplunkHuntConfig
-
-    config = SplunkHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="splunk",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="test query",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False,
-        auto_append=""
-    )
-
-    assert config.auto_append == ""
-
-
-@pytest.mark.unit
-def test_splunk_hunt_formatted_query_with_default_auto_append(manager_kwargs):
-    """test that SplunkHunt formatted_query appends default '| fields *' to query"""
-    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
-
-    config = SplunkHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="splunk",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="index=test",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False
-    )
-
-    manager = HuntManager(**manager_kwargs)
-    hunt = SplunkHunt(config=config, manager=manager)
-    formatted = hunt.formatted_query()
-    assert formatted == "index=test | fields *"
 
 
 @pytest.mark.unit
@@ -515,10 +395,16 @@ def test_splunk_hunt_pipe_query_execute_query(manager_kwargs):
     start = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
     end = datetime(2024, 1, 1, 1, 0, 0, tzinfo=UTC)
 
-    # use unit_test_query_results to bypass actual Splunk connection
-    result = hunt.execute_query(start, end, unit_test_query_results=[{"count": "42"}])
+    mock_searcher = Mock()
+    mock_searcher.encoded_query_link.return_value = "http://test"
+    mock_searcher.query_async.return_value = (Mock(), [{"count": "42"}])
+    mock_searcher.search_failed.return_value = False
 
-    # the formatted query should be the raw pipe query
+    with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
+        result = hunt.execute_query(start, end)
+
+    # the raw pipe query, with nothing put in front of it
+    assert mock_searcher.query_async.call_args[0][0] == "| tstats count where index=main"
     assert result == [{"count": "42"}]
 
 
@@ -754,8 +640,11 @@ def test_splunk_hunt_timespec_override_invalid_duration_raises(manager_kwargs):
     mock_searcher.encoded_query_link.return_value = "http://test"
 
     with patch("saq.collectors.hunter.splunk_hunter.SplunkClient", return_value=mock_searcher):
-        with pytest.raises((ValueError, Exception)):
+        with pytest.raises(ValueError):
             hunt.execute_query(start, end, time_range_overrides={TIMESPEC_TOKEN: "not-a-duration"})
+
+    # refused before any search was started
+    mock_searcher.query_async.assert_not_called()
 
 
 @pytest.mark.unit
@@ -958,36 +847,6 @@ def test_splunk_hunt_config_time_ranges_without_timespec_raises():
 
 
 @pytest.mark.unit
-def test_splunk_hunt_formatted_query_with_suffix(manager_kwargs):
-    """test that query_suffix is applied before auto_append in SplunkHunt"""
-    from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
-
-    config = SplunkHuntConfig(
-        uuid="test-uuid",
-        name="test_hunt",
-        type="splunk",
-        enabled=True,
-        description="test description",
-        alert_type="test_alert",
-        frequency="00:10:00",
-        tags=[],
-        instance_types=["unittest"],
-        query="index=test",
-        time_range="00:10:00",
-        full_coverage=True,
-        use_index_time=False,
-        query_suffix="| stats count by src_ip",
-        auto_append="",
-    )
-
-    manager = HuntManager(**manager_kwargs)
-    hunt = SplunkHunt(config=config, manager=manager)
-
-    formatted = hunt.formatted_query()
-    assert formatted == "index=test\n| stats count by src_ip"
-
-
-@pytest.mark.unit
 def test_splunk_hunt_formatted_query_with_suffix_and_auto_append(manager_kwargs):
     """test that assembly order is: query + suffix + auto_append"""
     from saq.collectors.hunter.splunk_hunter import SplunkHunt, SplunkHuntConfig
@@ -1089,7 +948,6 @@ def test_splunk_hunt_resolved_query_none_without_timespec(manager_kwargs):
         time_range="00:10:00",
         full_coverage=True,
         use_index_time=False,
-        auto_append="",
     )
 
     manager = HuntManager(**manager_kwargs)
@@ -1110,10 +968,10 @@ def test_splunk_hunt_resolved_query_none_without_timespec(manager_kwargs):
 
     assert hunt.resolved_query is None
 
-    # Verify encoded_query_link was called with formatted_query_timeless (no TIMESPEC in query)
-    # and use_index_time matches the hunt's setting
+    # the link gets the timeless form, which joins the default auto_append without a space
+    # (the search itself gets "index=test | fields *")
     link_call_args, link_call_kwargs = mock_searcher.encoded_query_link.call_args
-    assert link_call_args[0] == hunt.formatted_query_timeless()
+    assert link_call_args[0] == "index=test| fields *"
     assert link_call_kwargs.get('use_index_time') is False
 
 

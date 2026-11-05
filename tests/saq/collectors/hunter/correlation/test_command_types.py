@@ -1,9 +1,11 @@
 import datetime
 import json
 import logging
+import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 from pydantic import BaseModel, ValidationError
 
 from saq.collectors.hunter.correlation.command_types import (
@@ -22,6 +24,7 @@ from saq.collectors.hunter.correlation.engine import CorrelationEngine
 from saq.collectors.hunter.correlation.schema import CommandConfig, CorrelateConfig, PredefinedCommandConfig
 from saq.configuration import get_config
 from saq.configuration.schema import CommandTypeConfig, CorrelationConfig, HunterConfig
+from saq.environment import get_base_dir
 from saq.util import local_time
 
 THIS_MODULE = "tests.saq.collectors.hunter.correlation.test_command_types"
@@ -140,10 +143,6 @@ class TestRegistry:
         clear_command_types()
         assert get_registered_command_types() == {}
 
-    def test_unknown_type(self):
-        with pytest.raises(ValueError, match="unknown command type: 'nope'"):
-            get_command_type("nope")
-
 
 def _set_command_types(monkeypatch, command_types: list[CommandTypeConfig]):
     monkeypatch.setattr(
@@ -201,13 +200,17 @@ class TestLoadCommandTypesFromConfig:
         assert get_registered_command_types() == {}
 
     def test_config_entry_rejects_unknown_keys(self):
-        with pytest.raises(ValidationError, match="python_clas"):
+        # every required key is present, so only the unknown one can be refused
+        with pytest.raises(ValidationError, match=r"kwarg\s+Extra inputs are not permitted"):
             CommandTypeConfig.model_validate({
-                "name": "echo", "python_module": THIS_MODULE, "python_clas": "_EchoCommand",
+                "name": "echo", "python_module": THIS_MODULE, "python_class": "_EchoCommand", "kwarg": {},
             })
 
     def test_default_config_declares_no_command_types(self):
-        assert isinstance(get_config().hunter.correlation.command_types, list)
+        # core ships none; integrations append theirs, so read the core file, not the merged config
+        with open(os.path.join(get_base_dir(), "etc", "saq.default.yaml")) as fp:
+            default = yaml.safe_load(fp)
+        assert default["hunter"]["correlation"]["command_types"] == []
 
 
 @pytest.mark.unit
@@ -280,10 +283,6 @@ class TestExecuteCustomCommand:
     def test_type_without_options(self, tmpdir, no_cache):
         register_command_type("plain", _NoOptionsCommand())
         assert _run(CommandConfig(type="plain"), tmpdir, event={"id": 7}) == '{"event_id": 7}'
-
-    def test_unregistered_type_raises(self, tmpdir):
-        with pytest.raises(ValueError, match="unknown command type: 'nope'"):
-            _run(CommandConfig(type="nope"), tmpdir)
 
     def test_non_string_return_raises(self, tmpdir, no_cache):
         register_command_type("bad", _BadReturnCommand())

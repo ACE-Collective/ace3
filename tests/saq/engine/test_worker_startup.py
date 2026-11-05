@@ -95,13 +95,19 @@ def test_a_worker_that_does_not_start_in_time_is_killed(started_workers, caplog)
 
 
 @pytest.mark.unit
-def test_shutdown_stops_the_wait_for_a_worker_to_start(started_workers):
+def test_shutdown_stops_the_wait_for_a_worker_to_start(started_workers, caplog):
     worker = _worker(_hanging_load_modules)
     started_workers.append(worker)
     worker.start(execution_mode=EngineExecutionMode.NORMAL)
     worker.immediate_shutdown()
 
-    assert _wait_for_start(worker) is False
+    # the timeout is what ends the wait without the shutdown check, and kills the worker
+    with caplog.at_level(logging.INFO):
+        assert _wait_for_start(worker, timeout=10) is False
+
+    assert any("shutdown requested while worker any-0 was starting" in r.getMessage() for r in caplog.records)
+    # a shutdown is not a failure to start, so the worker is left to exit on its own
+    assert worker.is_alive()
 
 
 class _StartingWorker:

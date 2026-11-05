@@ -256,6 +256,9 @@ class TestUpdateEventStatus:
         )
         assert response.status_code == 200
         assert response.json()["status"] == "CLOSED"
+        # stored, not only reported: a new transaction reads it back
+        get_db().close()
+        assert get_db().get(Event, event.id).status.value == "CLOSED"
 
     @pytest.mark.asyncio
     async def test_unknown_event_returns_404(self, client: AsyncClient):
@@ -289,6 +292,7 @@ class TestExportEvents:
     async def test_exports_csv(self, client: AsyncClient):
         lookups = _make_lookups()
         event = _make_event("export-event", lookups, lookups["open_status"])
+        _make_event("unchecked-event", lookups, lookups["open_status"])
 
         response = await client.get(
             "/events/export",
@@ -301,6 +305,8 @@ class TestExportEvents:
         # header row + the seeded event's data row
         assert '"id","uuid","creation_date"' in body
         assert '"export-event"' in body
+        # only the checked events are exported
+        assert '"unchecked-event"' not in body
 
     @pytest.mark.asyncio
     async def test_query_count_does_not_grow_with_events(self, client: AsyncClient):
@@ -386,6 +392,8 @@ class TestGetEventByReferenceAndAlertDetails:
     @pytest.mark.asyncio
     async def test_lookup_by_uuid_matches_lookup_by_id(self, client: AsyncClient):
         lookups = _make_lookups()
+        # created first, so a uuid lookup that ignores the uuid finds it instead
+        _make_event("another-event", lookups, lookups["open_status"])
         event = _make_event("by-uuid", lookups, lookups["open_status"])
         by_id = (await client.get(f"/events/{event.id}")).json()
         response = await client.get(f"/events/{event.uuid}")

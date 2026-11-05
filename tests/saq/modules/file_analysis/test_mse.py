@@ -97,10 +97,9 @@ def test_decoded_file_not_added(root_analysis, tmp_path, decoder, monkeypatch, c
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("content", [b"WScript.Echo 1", b""])
-def test_not_encoded(root_analysis, tmp_path, content):
+def test_not_encoded(root_analysis, tmp_path):
     path = tmp_path / "script.vbs"
-    path.write_bytes(content)
+    path.write_bytes(b"WScript.Echo 1")
 
     target = _analyze(root_analysis, path)
 
@@ -117,4 +116,6 @@ def test_real_decoder(root_analysis, tmp_path):
     target = _analyze(root_analysis, path)
 
     assert target.get_and_load_analysis(MicrosoftScriptEncodingAnalysis)
-    assert os.path.exists(f"{target.full_path}.decrypted.vbs")
+    # the module creates this file before the decoder runs, so only its content shows the decoder ran
+    with open(f"{target.full_path}.decrypted.vbs") as fp:
+        assert fp.read() == "ale_hRJ,,"

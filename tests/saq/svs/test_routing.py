@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import select
 
-from saq.alert_routing import get_alert_routers, load_alert_routers, reset_alert_routers
+from saq.alert_routing import reset_alert_routers
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import (
@@ -87,12 +87,6 @@ def _attributions(alert_uuid: str) -> list[tuple]:
         return [(row.confidence, row.removed_at is not None) for row in session.execute(
             select(SVSAttribution).where(SVSAttribution.alert_uuid == alert_uuid).order_by(SVSAttribution.id))
             .scalars()]
-
-
-def test_the_router_is_configured_ahead_of_the_detection_queue_router():
-    load_alert_routers()
-    names = [router.name for router in get_alert_routers()]
-    assert names.index("svs_marker") < names.index("detection_queue")
 
 
 class TestFallbackEventTime:
@@ -218,8 +212,11 @@ class TestPreInsert:
         assert _attributions(root.uuid) == [("marker", False)]
 
     def test_it_wins_over_a_detection_queue(self, run):
+        """The marker router runs first: every detection requests a queue, which the detection queue
+        router would route the alert to."""
         root = _root(marker=run.marker)
-        root.add_detection_point("yara rule with a queue meta", queue="experimental")
+        for detection in root.all_detection_points:
+            detection.queue = "experimental"
         root.save()
         ALERT(root)
         assert _queue(root.uuid) == get_config().svs.queue
@@ -262,11 +259,14 @@ class TestPreInsert:
         assert _queue(alert_uuid) == QUEUE_DEFAULT
         assert _attributions(alert_uuid) == []
 
-    def test_nothing_happens_without_runs(self):
+    def test_nothing_happens_without_runs(self, caplog):
+        """The gate is closed: the alert's marker is not even judged, which would make it a mismatch."""
         root = _root(marker="svs-" + "a" * 26)
+        caplog.set_level(logging.INFO)
         ALERT(root)
         assert _queue(root.uuid) == QUEUE_DEFAULT
         assert _attributions(root.uuid) == []
+        assert not [r for r in caplog.records if r.getMessage().startswith("svs ")]
 
     def test_a_failing_router_never_breaks_the_insert(self, run, monkeypatch):
         monkeypatch.setattr("saq.error.reporting.write_error_report", lambda *a, **k: None)

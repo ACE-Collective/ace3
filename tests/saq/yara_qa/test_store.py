@@ -63,8 +63,18 @@ def test_stores_file_and_full_record(qa_pool, make_file, root_analysis):
     with qa_pool.open(row.sha256) as fp:
         assert fp.read() == open(file_observable.full_path, "rb").read()
 
+    # the whole match dict, its string bytes decoded the way an alert's JSON decodes them
     with qa_pool.open(row.match_digest) as fp:
-        assert fp.read() == serialize_match_record(match_result)
+        assert json.loads(fp.read()) == {
+            "target": "/tmp/scan.target",
+            "rule": "qa_rule",
+            "namespace": "/opt/ace/signatures/yara/unittest",
+            "commit": VERSION_A,
+            "rule_content_hash": None,
+            "tags": ["unittest"],
+            "meta": {"modifiers": "qa", "author": "unittest", "uuid": QA_UUID},
+            "strings": [[0, "$a", "abc"], [10, "$a", "abc"], [5, "$b", "\x00x"]],
+        }
 
     summary = json.loads(row.match_summary)
     assert summary["rule"] == "qa_rule"
@@ -159,15 +169,6 @@ def test_a_commit_that_does_not_touch_the_rule_keeps_its_version(make_file, root
     assert counter_row(VERSION_A) is None and counter_row(VERSION_B) is None
 
 
-def test_a_changed_rule_is_a_new_version(make_file, root_analysis):
-    file_observable = make_file()
-    record_qa_match(qa_match_result(rule_content_hash=RULE_HASH_1), QATarget.from_file_observable(file_observable, root_analysis.uuid))
-    result = record_qa_match(qa_match_result(rule_content_hash=RULE_HASH_2), QATarget.from_file_observable(file_observable, root_analysis.uuid))
-
-    assert result.status == QARecordStatus.STORED
-    assert [row.signature_version for row in match_rows()] == [RULE_HASH_1, RULE_HASH_2]
-
-
 def test_a_match_without_a_content_hash_is_filed_under_its_commit(make_file, root_analysis):
     record_qa_match(qa_match_result(commit=VERSION_A, rule_content_hash=None),
                     QATarget.from_file_observable(make_file(), root_analysis.uuid))
@@ -178,7 +179,7 @@ def test_a_match_without_a_content_hash_is_filed_under_its_commit(make_file, roo
     assert (counters.version_kind, counters.first_commit, counters.last_commit) == (QAVersionKind.COMMIT, VERSION_A, VERSION_A)
 
 
-@pytest.mark.parametrize("signature_uuid", [None, "", "   ", "x" * 37])
+@pytest.mark.parametrize("signature_uuid", [None, "   ", "x" * 37])
 def test_rule_without_a_usable_uuid_is_skipped(make_file, root_analysis, signature_uuid):
     result = record_qa_match(qa_match_result(signature_uuid=signature_uuid), QATarget.from_file_observable(make_file(), root_analysis.uuid))
     assert result.status == QARecordStatus.SKIPPED

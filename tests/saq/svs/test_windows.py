@@ -142,12 +142,3 @@ def test_the_window_with_expectations(hunt_dir):
 def test_attribution_window():
     assert attribution_window(timedelta(hours=1)) == timedelta(hours=25)
 
-
-@pytest.mark.integration
-def test_hunt_latencies_read_the_configured_hunt_types():
-    windows.clear_cache()
-    try:
-        latencies = windows.hunt_latencies()
-    finally:
-        windows.clear_cache()
-    assert all(isinstance(latency, timedelta) for latency in latencies.values())

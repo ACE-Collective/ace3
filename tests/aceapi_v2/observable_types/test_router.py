@@ -30,16 +30,6 @@ class TestObservableTypes:
         assert response.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_list_observable_types_empty(self, client: AsyncClient):
-        """Test listing observable types returns proper structure."""
-        response = await client.get("/observable-types/")
-        assert response.status_code == 200
-        data = response.json()
-        # Should have the wrapped response format
-        assert "data" in data
-        assert isinstance(data["data"], list)
-
-    @pytest.mark.asyncio
     async def test_list_observable_types_matches_registry(self, client: AsyncClient):
         """The endpoint returns exactly the configured valid types, sorted."""
         response = await client.get("/observable-types/")
@@ -76,15 +66,6 @@ class TestObservableTypes:
 
         type_names = [t["name"] for t in response.json()["data"]]
         assert db_only_type not in type_names
-
-    @pytest.mark.asyncio
-    async def test_list_observable_types_sorted(self, client: AsyncClient):
-        """Test that observable types are returned in sorted order."""
-        response = await client.get("/observable-types/")
-        assert response.status_code == 200
-
-        type_names = [t["name"] for t in response.json()["data"]]
-        assert type_names == sorted(type_names)
 
     @pytest.mark.asyncio
     async def test_list_observable_types_response_format(self, client: AsyncClient):

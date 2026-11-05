@@ -88,10 +88,9 @@ def test_extracted_files_in_subdirectories(root_analysis, tmp_path, monkeypatch)
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("name, content", [("notes.txt", b"just text"), ("empty.rtf", b"")])
-def test_ignores_files_that_are_not_rtf(root_analysis, tmp_path, name, content):
-    path = tmp_path / name
-    path.write_bytes(content)
+def test_ignores_files_that_are_not_rtf(root_analysis, tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_bytes(b"just text")
 
     target = _analyze(root_analysis, path, ("rtfole", "nowhitespace_analyzer"))
 

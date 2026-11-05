@@ -144,12 +144,13 @@ def test_hash_is_carried_over_verbatim_so_the_join_back_still_works(migration):
     """observables.sha256 becomes value_sha256 unchanged, which is what makes the LEFT JOIN back to
     the index line up -- including for file observables, whose hash is of the file's content rather
     than of the value string."""
-    value = "join.example.com"
-    _seed_observable("fqdn", value, for_detection=1)
+    # not the hash of the value, as a file observable's is not, so a backfill that hashed the value would differ
+    content_sha256 = hashlib.sha256(b"the file's content").digest()
+    _seed_observable("file", "invoice.pdf", for_detection=1, sha256=content_sha256)
 
     _run_backfill(migration)
 
-    assert _migrated()[0].value_sha256 == hashlib.sha256(value.encode()).digest()
+    assert _migrated()[0].value_sha256 == content_sha256
 
 
 @pytest.mark.integration

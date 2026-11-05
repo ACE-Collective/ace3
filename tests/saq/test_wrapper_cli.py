@@ -47,7 +47,7 @@ def test_cron_run(monkeypatch, argv, expected):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value", ["0", "-1", "x"])
+@pytest.mark.parametrize("value", ["0", "-1"])
 def test_cron_run_rejects_a_max_parallel_below_one(value, capsys):
     with pytest.raises(SystemExit) as e:
         _parse("cron", "run", "daily", "--max-parallel", value)

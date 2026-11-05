@@ -99,11 +99,10 @@ def test_decompiler_keeps_an_empty_analysis_when_decompiling_fails(root_analysis
     assert analysis.get_observables_by_type(F_FILE) == []
 
 
-@pytest.mark.parametrize("content", [b'', b'not a class file'])
 @pytest.mark.integration
-def test_decompiler_skips_other_files(root_analysis, tmp_path, content):
+def test_decompiler_skips_other_files(root_analysis, tmp_path):
     path = tmp_path / 'other.class'
-    path.write_bytes(content)
+    path.write_bytes(b'not a class file')
 
     assert _analyze_with_decompiler(root_analysis, path) is False
 

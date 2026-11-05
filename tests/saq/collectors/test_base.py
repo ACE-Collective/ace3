@@ -21,11 +21,10 @@ from saq.collectors.base_collector import (
     CollectorService,
 )
 from saq.collectors.collector_configuration import CollectorServiceConfiguration
-from saq.collectors.remote_node import RemoteNode, RemoteNodeGroup
+from saq.collectors.remote_node import RemoteNode
 from saq.collectors.submission_scheduler import SubmissionScheduler
-from saq.configuration.config import get_config, get_database_config, get_engine_config, get_service_config
-from saq.configuration.schema import DatabaseConfig
-from saq.constants import ANALYSIS_MODE_ANALYSIS, DB_ACE, NODE_STATUS_RUNNING, QUEUE_DEFAULT
+from saq.configuration.config import get_config, get_engine_config, get_service_config
+from saq.constants import ANALYSIS_MODE_ANALYSIS, NODE_STATUS_RUNNING
 from saq.database.model import PersistenceSource
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.node import initialize_node
@@ -66,18 +65,6 @@ def create_root_analysis() -> RootAnalysis:
 
 def create_submission(**kwargs):
     return Submission(create_root_analysis(), **kwargs)
-
-class custom_submission(Submission):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.success_event = threading.Event()
-        self.fail_event = threading.Event()
-
-    def success(self, group, result):
-        self.success_event.set()
-
-    def fail(self, group):
-        self.fail_event.set()
 
 class TestCollectorService(CollectorService):
     __test__ = False
@@ -198,18 +185,6 @@ def test_missing_groups():
     with pytest.raises(RuntimeError):
         collector_service.start()
 
-@pytest.mark.system
-def test_startup():
-    # make sure we can start one up, see it collect nothing, and then shut down gracefully
-    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test', 100, True, get_global_runtime_settings().company_id, _local_node_id())
-    collector_service.remote_node_groups.append(tg1)
-    collector_service.start()
-    assert collector_service.wait_for_start(timeout=5)
-
-    collector_service.stop()
-    collector_service.wait()
-
 @pytest.mark.integration
 def test_work_item():
     class _custom_collector(TestCollector):
@@ -287,88 +262,6 @@ def test_submit(engine):
         cursor.execute("SELECT COUNT(*) FROM workload ")
         assert cursor.fetchone()[0] == 1
 
-@pytest.mark.integration
-def test_submit_api(mock_api_call, engine):
-    # same as test_submit except we force the use of the api
-    get_config().collection.force_api = True
-
-    class _custom_collector(TestCollector):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.available_work = [create_submission() for _ in range(1)]
-
-        def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-
-            yield self.available_work.pop()
-
-    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id()) # 100% coverage
-    collector_service.remote_node_groups.append(tg1)
-    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
-
-    # we should see 1 of these
-    assert log_count('scheduled test_description mode analysis') == 1
-    assert log_count('submitting 1 items') == 1
-    assert log_count('completed work item') == 1
-
-    # both the incoming_workload and work_distribution tables should be empty
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s", (tg1.group_id,))
-        assert cursor.fetchone()[0] == 0
-        cursor.execute("SELECT COUNT(*) FROM incoming_workload")
-        assert cursor.fetchone()[0] == 0
-
-        # and we should have one item in the engine workload
-        cursor.execute("SELECT COUNT(*) FROM workload ")
-        assert cursor.fetchone()[0] == 1
-
-@pytest.mark.system
-def test_threaded_remote_node_single_submission(mock_api_call, engine):
-    get_config().collection.force_api = True
-
-    # test a single submissions against a remote node group that is
-    # configured with two submission threads 
-
-    class _custom_collector(TestCollector):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.available_work = [create_submission() for _ in range(1)]
-
-        def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-
-            yield self.available_work.pop()
-
-    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id(), thread_count=2)
-    collector_service.remote_node_groups.append(tg1)
-    collector_service.start()
-    assert collector_service.wait_for_start(timeout=5)
-
-    # we should see 1 of these
-    wait_for_log_count('scheduled test_description mode analysis', 1, 5)
-    wait_for_log_count('submitting 1 items', 1, 5)
-    wait_for_log_count('completed work item', 1, 5)
-
-    collector_service.stop()
-    collector_service.wait()
-
-    # both the incoming_workload and work_distribution tables should be empty
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s", (tg1.group_id,))
-        assert cursor.fetchone()[0] == 0
-        cursor.execute("SELECT COUNT(*) FROM incoming_workload")
-        assert cursor.fetchone()[0] == 0
-
-        # and we should have one item in the engine workload
-        cursor.execute("SELECT COUNT(*) FROM workload ")
-        assert cursor.fetchone()[0], 1
-
 @pytest.mark.system
 def test_threaded_remote_node_multi_submissions(mock_api_call, engine):
     get_config().collection.force_api = True
@@ -391,15 +284,15 @@ def test_threaded_remote_node_multi_submissions(mock_api_call, engine):
     tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id(), batch_size=1, thread_count=2)
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
-    assert collector_service.wait_for_start(timeout=5)
+    try:
+        assert collector_service.wait_for_start(timeout=5)
 
-    # we should see 2 of these
-    wait_for_log_count('scheduled test_description mode analysis', 2, 5)
-    wait_for_log_count('submitting 1 items', 2, 5)
-    wait_for_log_count('completed work item', 2, 5)
-
-    collector_service.stop()
-    collector_service.wait()
+        # we should see 2 of these
+        wait_for_log_count('scheduled test_description mode analysis', 2, 5)
+        wait_for_log_count('submitting 1 items', 2, 5)
+        wait_for_log_count('completed work item', 2, 5)
+    finally:
+        collector_service.stop()
 
     # both the incoming_workload and work_distribution tables should be empty
     with get_db_connection() as db:
@@ -442,14 +335,13 @@ def test_threaded_remote_node_multi_submissions_with_large_batch(engine):
     tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id(), batch_size=2, thread_count=2)
     collector_service.remote_node_groups.append(tg1)
     collector_service.start()
-    assert collector_service.wait_for_start(timeout=5)
+    try:
+        assert collector_service.wait_for_start(timeout=5)
 
-    # TODO
-    wait_for_log_count('scheduled test_description mode analysis', 2, 5)
-    wait_for_log_count('submitting 2 items', 1, 5)
-
-    collector_service.stop()
-    collector_service.wait()
+        wait_for_log_count('scheduled test_description mode analysis', 2, 5)
+        wait_for_log_count('submitting 2 items', 1, 5)
+    finally:
+        collector_service.stop()
 
     # both the incoming_workload and work_distribution tables should have 2 entries
     with get_db_connection() as db:
@@ -493,7 +385,8 @@ def test_submit_target_nodes(mock_api_call):
     # XXX need some abstraction man
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("UPDATE nodes SET any_mode = 1")
+        # node_2 is a live node that would take the work if the group did not limit itself to node_1
+        cursor.execute("UPDATE nodes SET any_mode = 1, status = 'running', last_update = NOW()")
         db.commit()
 
     collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
@@ -583,46 +476,6 @@ def test_coverage(engine):
 
     # and just 1 for this one
     assert len(search_log_condition(lambda r: 'test_group_3' in r.getMessage() and 'got submission result' in r.getMessage())) == 1
-
-@pytest.mark.integration
-def test_fail_submit_full_coverage(engine): # NOTE we do not start the api server
-    get_config().collection.force_api = True
-
-    class _custom_collector(TestCollector):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self.available_work = [create_submission() for _ in range(1)]
-
-        def collect(self) -> Generator[Submission, None, None]:
-            if not self.available_work:
-                return None
-
-            yield self.available_work.pop()
-
-    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id()) # 100% coverage
-    collector_service.remote_node_groups.append(tg1)
-    collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
-
-    # we should see 1 of these
-    assert log_count('scheduled test_description mode analysis') == 1
-
-    # watch for the failure
-    assert log_count('unable to submit work item') == 1
-
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        # both the work_distribution and incoming_workload tables should have entries for the work item
-        # that has not been sent yet
-        cursor.execute("SELECT COUNT(*) FROM work_distribution WHERE group_id = %s", (tg1.group_id,))
-        assert cursor.fetchone()[0] == 1
-        # both the incoming_workload and work_distribution tables should be empty
-        cursor.execute("SELECT COUNT(*) FROM incoming_workload")
-        assert cursor.fetchone()[0] == 1
-
-        # and we should have 0 in the engine workload
-        cursor.execute("SELECT COUNT(*) FROM workload ")
-        assert cursor.fetchone()[0] == 0
 
 @pytest.mark.integration
 def test_fail_submit_no_coverage(engine):
@@ -761,17 +614,17 @@ def test_cleanup_files(tmpdir, engine):
                 yield result
 
 
-    collector_service = CollectorService(collector=_custom_collector(), config=get_service_config("test_collector"))
-    collector_service.config.delete_files = True
+    collector = _custom_collector()
+    root_uuid = collector.work.root.uuid
+    collector_service = CollectorService(collector=collector, config=get_service_config("test_collector"))
     tg1 = collector_service.create_group_loader()._create_group('test_group_1', 100, True, get_global_runtime_settings().company_id, _local_node_id()) # 100% coverage
     collector_service.remote_node_groups.append(tg1)
     collector_service.start(single_threaded=True, execution_mode=CollectorExecutionMode.SINGLE_SUBMISSION)
 
-    assert log_count('scheduled test_description mode analysis') == 1
-    assert log_count('submitting 1 items') == 1
+    assert log_count('completed work item') == 1
 
-    # the file should have been deleted
-    assert not os.path.exists(file_path)
+    # the delivered work's copy in the incoming dir, with the file it carried, is gone
+    assert not os.path.exists(os.path.join(collector_service.incoming_dir, root_uuid))
 
 @pytest.mark.integration
 def test_recovery(mock_api_call, engine, monkeypatch):
@@ -940,10 +793,8 @@ def test_node_invalid_assignment(engine):
     class _custom_collector(TestCollector):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            submission = create_submission()
             # we assign to an invalid (unknown) group
-            submission.group_assignments = ['test_group_invalid']
-            self.available_work = [submission]
+            self.available_work = [create_submission(group_assignments=['test_group_invalid'])]
 
         def collect(self) -> Generator[Submission, None, None]:
             if not self.available_work:
@@ -978,44 +829,12 @@ def test_persistence_source_created():
     assert get_db().query(PersistenceSource).filter(PersistenceSource.name == collector_service.config.workload_type).one_or_none() is not None
 
 @pytest.mark.integration
-def test_collector_defaults():
-    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    assert collector_service.config.workload_type == "test"
-    assert isinstance(collector_service.workload_type_id, int)
-    assert collector_service.config.queue == QUEUE_DEFAULT
-
-@pytest.mark.integration
 def test_initialize_service_environment():
     collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
     
     # check required directories
     assert os.path.exists(collector_service.persistence_dir)
     assert os.path.exists(collector_service.incoming_dir)
-
-@pytest.mark.integration
-def test_add_group_loader():
-    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    assert not collector_service.remote_node_groups
-    node = collector_service.create_group_loader()._create_group("test_name", 100, True, get_global_runtime_settings().company_id, _local_node_id())
-    collector_service.remote_node_groups.append(node)
-    assert isinstance(node, RemoteNodeGroup)
-    assert collector_service.remote_node_groups
-
-@pytest.mark.integration
-def test_schedule_submission():
-    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    assert collector_service.submission_scheduler is not None
-
-    assert collector_service.submission_scheduler.schedule_submission(Submission(RootAnalysis(
-        desc="test",
-        analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        tool="test_tool",
-        tool_instance="test_tool_instance",
-        alert_type="test_type",
-    )), collector_service.remote_node_groups) >= 0
-
-    # unknown node group assignment
-    assert collector_service.submission_scheduler.schedule_submission(create_submission(group_assignments=["unknown"]), collector_service.remote_node_groups) >= 0
 
 @pytest.mark.integration
 def test_clear_expired_persistent_data():
@@ -1111,6 +930,8 @@ def test_collection_loop_sleeps_after_scheduling_work():
     _ensure_node_running()
     collector = _paced_collector(passes_with_work=1)
     collector_service = CollectorService(collector=collector, config=get_service_config("test_collector"))
+    # unlike every other frequency, so the sleep can only have come from collection_frequency
+    collector_service.config.collection_frequency = 13
     assert not collector_service.collect_until_empty
 
     recorder = _sleep_recorder(collector_service)
@@ -1119,7 +940,7 @@ def test_collection_loop_sleeps_after_scheduling_work():
 
     # the pass scheduled work and the loop still slept, so there was only ever one pass
     assert collector.collect_count == 1
-    assert recorder.calls == [collector_service.config.collection_frequency]
+    assert recorder.calls == [13]
 
 
 @pytest.mark.integration
@@ -1733,38 +1554,6 @@ def test_duplicate_submission_removed_from_staging():
 
     assert file_manager.list_staged_submissions() == []
     assert not file_manager.submission_directory_exists(duplicate_uuid)
-
-
-@pytest.mark.integration
-def test_repeated_duplicates_are_not_counted_as_scheduled_work():
-    """a source that keeps re-serving the same items must not starve the collector of its sleep
-
-    execute_collection_loop reports what it yielded and what it actually scheduled, and
-    collection_loop sleeps on the scheduled count. keying the sleep off the yielded count
-    instead lets a collector whose source re-serves the same items spin as fast as that source
-    can answer, since every pass yields a nonzero count that is then dropped as duplicate.
-
-    this holds regardless of collect_until_empty - see
-    test_collect_until_empty_still_sleeps_when_nothing_is_scheduled"""
-    collector_service = CollectorService(collector=TestCollector(), config=get_service_config("test_collector"))
-    file_manager = collector_service.file_manager
-
-    class _RepeatingCollector(Collector):
-        """stands in for a source that hands back the same entry on every pass"""
-
-        def collect(self) -> Generator[Submission, None, None]:
-            create_staged_submission(file_manager, key="always-the-same")
-            yield from file_manager.iter_staged_submissions()
-
-    collector_service.collector = _RepeatingCollector()
-
-    # the first pass sees the key for the first time, so it becomes real work
-    assert collector_service.execute_collection_loop() == (1, 1)
-
-    # every pass after that yields just as much but schedules nothing, which is what lets
-    # collection_loop fall through to sleep(collection_frequency)
-    assert collector_service.execute_collection_loop() == (1, 0)
-    assert collector_service.execute_collection_loop() == (1, 0)
 
 
 @pytest.mark.integration

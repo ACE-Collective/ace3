@@ -47,11 +47,20 @@ def test_status(capsys):
     assert 'key: "<new@example.com>|user@example.com"' in output
     assert 'key: "<done@example.com>|user@example.com"' in output
 
-    assert _ace("status", "-s", "COMPLETED", "-t", F_EMAIL_DELIVERY, "-k", "done", "-u", "automation",
-                "--user-id", str(get_config().global_settings.automation_user_id)) == 0
+    # each filter alone leaves out the other remediation
+    assert _ace("status", "-s", "COMPLETED") == 0
     output = capsys.readouterr().out
     assert "done@example.com" in output
     assert "new@example.com" not in output
+
+    assert _ace("status", "-k", "done") == 0
+    output = capsys.readouterr().out
+    assert "done@example.com" in output
+    assert "new@example.com" not in output
+
+    assert _ace("status", "-s", "COMPLETED", "-t", F_EMAIL_DELIVERY, "-k", "done", "-u", "automation",
+                "--user-id", str(get_config().global_settings.automation_user_id)) == 0
+    assert "done@example.com" in capsys.readouterr().out
 
 
 @pytest.mark.integration

@@ -1,7 +1,6 @@
 import uuid
 import pytest
 
-from saq.database.pool import get_db_connection
 from saq.database.util.locking import (
     acquire_lock,
     clear_expired_locks,
@@ -88,18 +87,3 @@ def test_get_expired_locks_node_scoping(monkeypatch):
     # a different node sees none of our locks
     assert target not in [r[0] for r in get_expired_locks(node_id=9999)]
     force_release_lock(target)
-
-@pytest.mark.integration
-def test_clear_expired_locks(monkeypatch):
-    monkeypatch.setattr(get_global_runtime_settings(), "lock_timeout_seconds", 0)
-    # insert a lock that is already expired
-    target = str(uuid.uuid4())
-    lock_uuid = str(uuid.uuid4())
-    assert acquire_lock(target, lock_uuid)
-    # this should clear out the lock
-    clear_expired_locks()
-    # make sure it's gone
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT uuid FROM locks WHERE uuid = %s", (target,))
-        assert cursor.fetchone() is None

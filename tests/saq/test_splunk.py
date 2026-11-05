@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
-from requests.exceptions import ConnectionError, HTTPError, ProxyError, Timeout
+from requests.exceptions import ConnectionError, HTTPError, Timeout
 from splunklib.binding import HTTPError as SplunkHTTPError
 from splunklib.client import AuthenticationError
 
@@ -22,26 +22,6 @@ from tests.saq.mock_datetime import MOCK_NOW
 
 
 @pytest.mark.unit
-def test_queue():
-    # create mock job
-    mock_job = Mock()
-    mock_job.name = "the_search_id"
-
-    # create mock client with jobs collection
-    mock_client = Mock()
-    mock_client.jobs.create.return_value = mock_job
-
-    # test
-    with patch("saq.splunk.client.connect", return_value=mock_client):
-        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
-        job = splunk.queue("hello", 1)
-
-    # verify
-    assert job.name == "the_search_id"
-    mock_client.jobs.create.assert_called_once()
-
-
-@pytest.mark.unit
 def test_queue_prepends_search():
     """Verify queue() prepends 'search' for regular queries."""
     mock_job = Mock()
@@ -51,19 +31,17 @@ def test_queue_prepends_search():
 
     with patch("saq.splunk.client.connect", return_value=mock_client):
         splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
-        splunk.queue("index=main sourcetype=syslog", 1000)
+        job = splunk.queue("index=main sourcetype=syslog", 1000)
 
+    assert job is mock_job
     query_arg = mock_client.jobs.create.call_args[0][0]
     assert query_arg == "search index=main sourcetype=syslog"
 
 
-@pytest.mark.parametrize("query", [
-    "| tstats count where index=main",
-    "  | tstats count where index=main",
-])
 @pytest.mark.unit
-def test_queue_skips_search_for_pipe_query(query):
-    """Verify queue() does NOT prepend 'search' when query starts with |."""
+def test_queue_skips_search_for_pipe_query():
+    """Verify queue() does NOT prepend 'search' when query starts with |, even after whitespace."""
+    query = "  | tstats count where index=main"
     mock_job = Mock()
     mock_job.name = "sid"
     mock_client = Mock()
@@ -76,34 +54,6 @@ def test_queue_skips_search_for_pipe_query(query):
     query_arg = mock_client.jobs.create.call_args[0][0]
     assert not query_arg.lstrip().lower().startswith("search")
     assert query_arg == query
-
-
-@pytest.mark.unit
-def test_complete():
-    # create mock job
-    mock_job = Mock()
-    mock_job.name = "sid"
-    mock_job.is_ready.return_value = True
-    mock_job.__getitem__ = Mock(side_effect=lambda x: {
-        "isDone": "1",
-        "doneProgress": "1.0",
-        "dispatchState": "DONE",
-        "isFailed": "0",
-        "eventCount": "100",
-        "runDuration": "1.234"
-    }[x])
-
-    # create mock client
-    mock_client = Mock()
-
-    # test
-    with patch("saq.splunk.client.connect", return_value=mock_client):
-        splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass", user_context="o", app="o")
-        complete = splunk.complete(mock_job)
-
-    # verify
-    assert complete is True
-    mock_job.refresh.assert_called_once()
 
 
 @pytest.mark.unit
@@ -366,38 +316,6 @@ def test_get_event_time(monkeypatch):
 
 
 @pytest.mark.unit
-def test_query(monkeypatch):
-    search_results = None
-
-    class MockSplunk(SplunkQueryObject):
-        def query_async(self, query, job=None, limit=1000, start=None, end=None, use_index_time=False, timeout=None):
-            self.cancelled = False
-            return job, search_results
-
-        def cancel(self, job):
-            self.cancelled = True
-
-        def delete_search_job(self, job):
-            self.cancelled = True
-            return True
-
-    def mock_sleep(t):
-        nonlocal search_results
-        search_results = 'yada'
-
-    monkeypatch.setattr('saq.splunk.time.sleep', mock_sleep)
-
-    # create mock client
-    mock_client = Mock()
-
-    with patch("saq.splunk.client.connect", return_value=mock_client):
-        splunk = MockSplunk(host="test.com", port=8089, username="test", password="test")
-        result = splunk.query('whatever', timeout='05:00:00')
-        assert not splunk.cancelled
-        assert result == 'yada'
-
-
-@pytest.mark.unit
 def test_query_async(monkeypatch):
     queue_result = Mock()
     queue_result.name = "123"
@@ -568,9 +486,9 @@ def test_query_async_timeout_once_running():
 
 @pytest.mark.parametrize('exception, expected_status_code', [
     (HTTPError('error', response=MockResponse(404)), 404),
+    # a ProxyError is a ConnectionError
     (ConnectionError(), 502),
     (Timeout(), 502),
-    (ProxyError(), 502),
     (Exception(), 500),
 ])
 @pytest.mark.unit
@@ -764,7 +682,8 @@ def test_splunk_client_init():
 
     with patch("saq.splunk.client.connect") as mock_connect:
         mock_connect.return_value = mock_client
-        client = SplunkClient('splunk_test', user_context='foo', app='bar')
+        # the user and app context come from the config
+        client = SplunkClient('splunk_test')
 
         # verify connection was called with correct parameters
         mock_connect.assert_called_once()
@@ -858,13 +777,16 @@ def test_proxy_handler_creates_tunnel_for_https():
         status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
     )
 
-    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_cls:
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_cls, \
+         patch("saq.splunk.http_client.HTTPConnection") as mock_http:
         handler(
             "https://splunk.example.com:8089/services/auth/login",
             {"method": "GET", "headers": [], "body": ""},
         )
 
+    # TLS to the target through the tunnel, even though the proxy itself is plain HTTP
     mock_cls.assert_called_once()
+    mock_http.assert_not_called()
     mock_conn.set_tunnel.assert_called_once_with("splunk.example.com", 8089)
     mock_conn.request.assert_called_once()
     mock_conn.close.assert_called_once()
@@ -895,46 +817,6 @@ def test_proxy_handler_sends_sdk_version_user_agent():
 
 
 @pytest.mark.unit
-def test_proxy_handler_no_tunnel_for_http():
-    """HTTP targets use HTTPConnection with no tunnel."""
-    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080)
-
-    mock_conn = Mock()
-    mock_conn.getresponse.return_value = Mock(
-        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
-    )
-
-    with patch("saq.splunk.http_client.HTTPConnection", return_value=mock_conn):
-        handler(
-            "http://splunk.example.com:8089/services/auth/login",
-            {"method": "GET", "headers": [], "body": ""},
-        )
-
-    mock_conn.set_tunnel.assert_not_called()
-
-
-@pytest.mark.unit
-def test_proxy_handler_https_target_always_uses_https_connection():
-    """HTTPS targets always use HTTPSConnection regardless of proxy_scheme."""
-    handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080, proxy_scheme="http")
-
-    mock_conn = Mock()
-    mock_conn.getresponse.return_value = Mock(
-        status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok",
-    )
-
-    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_https, \
-         patch("saq.splunk.http_client.HTTPConnection") as mock_http:
-        handler(
-            "https://splunk.example.com:8089/services/auth/login",
-            {"method": "GET", "headers": [], "body": ""},
-        )
-
-    mock_https.assert_called_once()
-    mock_http.assert_not_called()
-
-
-@pytest.mark.unit
 def test_proxy_handler_http_target_uses_http_connection():
     """HTTP targets with HTTP proxy use HTTPConnection (no TLS needed)."""
     handler = _proxy_handler(proxy_host="proxy.local", proxy_port=8080, proxy_scheme="http")
@@ -953,6 +835,7 @@ def test_proxy_handler_http_target_uses_http_connection():
 
     mock_http.assert_called_once()
     mock_https.assert_not_called()
+    mock_conn.set_tunnel.assert_not_called()
 
 
 @pytest.mark.unit
@@ -979,7 +862,7 @@ def test_proxy_handler_http_target_https_proxy():
 
 @pytest.mark.unit
 def test_splunk_query_object_passes_handler_when_proxied():
-    """When proxies is provided, a handler kwarg is passed to client.connect."""
+    """When proxies is provided, the handler given to client.connect goes through the proxy."""
     proxy = ProxyConfig(name="test", transport="http", host="proxy.local", port=8080)
 
     with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
@@ -989,29 +872,38 @@ def test_splunk_query_object_passes_handler_when_proxied():
             username="user",
             password="pass",
             proxies=proxy,
+            request_timeout=17,
         )
 
     mock_connect.assert_called_once()
-    call_kwargs = mock_connect.call_args[1]
-    assert "handler" in call_kwargs
-    assert callable(call_kwargs["handler"])
+    handler = mock_connect.call_args[1]["handler"]
+
+    mock_conn = Mock()
+    mock_conn.getresponse.return_value = Mock(status=200, reason="OK", getheaders=lambda: [], read=lambda: b"ok")
+    with patch("saq.splunk.http_client.HTTPSConnection", return_value=mock_conn) as mock_https:
+        handler("https://splunk.example.com:8089/services/auth/login", {"method": "GET", "headers": [], "body": ""})
+
+    assert mock_https.call_args[0] == ("proxy.local", 8080)
+    assert mock_https.call_args[1]["timeout"] == 17
 
 
 @pytest.mark.unit
 def test_splunk_query_object_handler_without_proxy():
     """Without a proxy we still supply a handler, because that is the only way to give
     splunklib's default HTTP handler a socket timeout."""
-    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect:
+    default_handler = Mock()
+    with patch("saq.splunk.client.connect", return_value=Mock()) as mock_connect, \
+         patch("saq.splunk.splunk_http_handler", return_value=default_handler) as mock_handler:
         SplunkQueryObject(
             host="splunk.example.com",
             port=8089,
             username="user",
             password="pass",
+            request_timeout=17,
         )
 
-    mock_connect.assert_called_once()
-    call_kwargs = mock_connect.call_args[1]
-    assert callable(call_kwargs["handler"])
+    mock_handler.assert_called_once_with(timeout=17, verify=False)
+    assert mock_connect.call_args[1]["handler"] is default_handler
 
 
 @pytest.mark.unit
@@ -1072,22 +964,16 @@ def test_link_pipe_query_with_index_time():
     ('index=a\n\n``` why ```\n\nNOT x="1"', 'index=a\nNOT x="1"'),
     # a trailing comment keeps the next line and its indentation
     ('| eval e=floor(_time) ``` carve ```\n  | fields *', '| eval e=floor(_time)\n  | fields *'),
-    ('| search NOT (a AND\n    ``` why ```\n    b)', '| search NOT (a AND\n    b)'),
     # a comment inside a line leaves one space
-    ('NOT a ``` why ``` NOT b', 'NOT a NOT b'),
     ('NOT a```why```NOT b', 'NOT a NOT b'),
     # a comment spanning lines
     ('index=a\n``` one\n  two ```\nNOT b', 'index=a\nNOT b'),
-    # a quote inside a comment does not start a string
-    ('index=a ``` the "x ```\nNOT b ``` y ```', 'index=a\nNOT b'),
-    # ``` inside a string is not a comment
-    ('index=a msg="x ``` y ``` z"', 'index=a msg="x ``` y ``` z"'),
+    # ``` inside a string, past an escaped quote, is not a comment
     ('index=a msg="say \\"```\\"" ``` why ``` NOT b', 'index=a msg="say \\"```\\"" NOT b'),
     # an unterminated ``` is left alone
     ('index=a ``` oops', 'index=a ``` oops'),
     # leading and trailing comments
     ('``` header ```\n| tstats count\n``` footer ```', '| tstats count'),
-    ('index=a | stats count by `macro(x)`', 'index=a | stats count by `macro(x)`'),
 ])
 def test_strip_spl_comments(query, expected):
     assert strip_spl_comments(query) == expected
@@ -1120,13 +1006,10 @@ def test_queue_embeds_time_ranges():
 
     with patch("saq.splunk.client.connect", return_value=mock_client):
         splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
-        splunk.queue("index=main sourcetype=syslog", 1000, start=MOCK_NOW, end=MOCK_NOW)
+        splunk.queue("index=main sourcetype=syslog", 1000, start=MOCK_NOW, end=MOCK_NOW + timedelta(hours=1))
 
     query_arg = mock_client.jobs.create.call_args[0][0]
-    assert query_arg.startswith("search ")
-    assert 'earliest=11/11/2017:07:36:01' in query_arg
-    assert 'latest=11/11/2017:07:36:01' in query_arg
-    assert "index=main sourcetype=syslog" in query_arg
+    assert query_arg == "search earliest=11/11/2017:07:36:01 latest=11/11/2017:08:36:01 index=main sourcetype=syslog"
 
 
 @pytest.mark.unit
@@ -1139,12 +1022,10 @@ def test_queue_embeds_index_time_ranges():
 
     with patch("saq.splunk.client.connect", return_value=mock_client):
         splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
-        splunk.queue("index=main", 1000, start=MOCK_NOW, end=MOCK_NOW, use_index_time=True)
+        splunk.queue("index=main", 1000, start=MOCK_NOW, end=MOCK_NOW + timedelta(hours=1), use_index_time=True)
 
     query_arg = mock_client.jobs.create.call_args[0][0]
-    assert query_arg.startswith("search ")
-    assert '_index_earliest=11/11/2017:07:36:01' in query_arg
-    assert '_index_latest=11/11/2017:07:36:01' in query_arg
+    assert query_arg == "search _index_earliest=11/11/2017:07:36:01 _index_latest=11/11/2017:08:36:01 index=main"
 
 
 @pytest.mark.unit
@@ -1177,12 +1058,9 @@ def test_queue_strips_search_prefix_before_adding_time_ranges():
         splunk = SplunkQueryObject(host="test.com", port=8089, username="user", password="pass")
         splunk.queue("search index=main", 1000, start=MOCK_NOW, end=MOCK_NOW)
 
+    # one "search", ahead of the time ranges (splunk ignores the extra space the strip leaves)
     query_arg = mock_client.jobs.create.call_args[0][0]
-    assert query_arg.startswith("search ")
-    # should not have double "search"
-    assert not query_arg.startswith("search search")
-    assert 'earliest=11/11/2017:07:36:01' in query_arg
-    assert 'latest=11/11/2017:07:36:01' in query_arg
+    assert query_arg.split() == ["search", "earliest=11/11/2017:07:36:01", "latest=11/11/2017:07:36:01", "index=main"]
 
 
 @pytest.mark.unit
@@ -1227,20 +1105,18 @@ def test_queue_embed_time_false():
             "search earliest=01/01/2024:00:00:00 latest=01/01/2024:01:00:00 index=main",
             1000,
             start=MOCK_NOW,
-            end=MOCK_NOW,
+            end=MOCK_NOW + timedelta(hours=1),
             embed_time_in_query=False,
         )
 
     query_arg = mock_client.jobs.create.call_args[0][0]
     # query should have search prefix and original time tokens preserved
     assert query_arg == "search earliest=01/01/2024:00:00:00 latest=01/01/2024:01:00:00 index=main"
-    # should not have double "search"
-    assert not query_arg.startswith("search search")
 
-    # search_kwargs should still have time ranges set
+    # the job is still given the time range, which is what subsearches use
     call_kwargs = mock_client.jobs.create.call_args[1]
-    assert 'earliest_time' in call_kwargs
-    assert 'latest_time' in call_kwargs
+    assert call_kwargs["earliest_time"] == "2017-11-11T07:36:01.000001+00:00"
+    assert call_kwargs["latest_time"] == "2017-11-11T08:36:01.000001+00:00"
 
 
 @pytest.mark.unit

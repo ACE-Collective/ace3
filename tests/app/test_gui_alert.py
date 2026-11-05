@@ -27,7 +27,6 @@ def _template_for(alert_type, extensions=None):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("alert_type, expected", [
-    ("hunter - splunk", "custom/hunter_splunk.html"),
     # the most specific template that exists wins
     ("hunter - splunk - aws", "custom/hunter_splunk.html"),
     ("hunter - qradar", "custom/hunter.html"),

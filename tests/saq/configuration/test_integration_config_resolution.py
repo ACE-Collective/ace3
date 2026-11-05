@@ -28,31 +28,17 @@ class FakeIntegrationConfig(BaseModel):
 
 
 @pytest.mark.unit
-def test_integration_registered_after_resolve_configuration_still_resolves():
-    """An integration imported after resolve_configuration() must still be readable.
-
-    This is the shape of the v3.0.101 vt_hash_downloader failure: lazy analysis module resolution
-    means the integration package is not imported until the engine constructs the module, which is
-    after resolve_configuration() has already run.
-    """
-    resolve_configuration(get_config())
-
-    # the integration package gets imported here -- after the snapshot
-    register_integration_configuration("fake_late_integration", FakeIntegrationConfig)
-
-    integration_config = get_config("fake_late_integration")
-
-    assert isinstance(integration_config, FakeIntegrationConfig)
-
-
-@pytest.mark.unit
-def test_integration_registered_before_resolve_configuration_still_resolves():
+def test_integration_registered_before_resolve_configuration_still_resolves(monkeypatch):
     """The eager path keeps working: registration before the snapshot resolves as it always did."""
+    # an integration package imported before the configuration is resolved: the registration only
+    # records the class, and resolve_configuration() builds it
+    monkeypatch.setattr(config_module, "CONFIG_RESOLVED", False)
     register_integration_configuration("fake_early_integration", FakeIntegrationConfig)
+    assert "fake_early_integration" not in config_module.INTEGRATION_CONFIGURATIONS
 
     resolve_configuration(get_config())
 
-    assert isinstance(get_config("fake_early_integration"), FakeIntegrationConfig)
+    assert isinstance(config_module.INTEGRATION_CONFIGURATIONS["fake_early_integration"], FakeIntegrationConfig)
 
 
 @pytest.mark.unit

@@ -241,7 +241,9 @@ def _rules_file(root: str) -> str:
 def test_load_yara_signatures(signature_repo):
     signatures = load_yara_signatures(_yara_dir(signature_repo))
 
-    # the rule with no uuid meta is skipped, the other two still load
+    # the rule with no uuid meta is skipped, the other two still load. The traversal is the
+    # scanner's, signature_dir/<rule set>/*.yar: the loose .yar, the nested rule directory, the
+    # generated observable_export rules and the svs_marker rule are not in the list.
     assert [s.name for s in signatures] == ["second_tracked_rule", "tracked_rule"]
 
     tracked = [s for s in signatures if s.name == "tracked_rule"][0]
@@ -253,20 +255,6 @@ def test_load_yara_signatures(signature_repo):
 
     # native rule tags merged with mitre_attack, sorted and deduplicated
     assert tracked.tags == ("mitre:T1566.003", "mitre:T1566.004", "phishing", "smishing")
-
-
-@pytest.mark.unit
-def test_yara_traversal_matches_the_scanner(signature_repo):
-    """The scanner loads signature_dir/<rule set>/*.yar and nothing else."""
-    names = [s.name for s in load_yara_signatures(_yara_dir(signature_repo))]
-
-    # a .yar loose in the signature_dir is not in any rule set
-    assert "loose_rule" not in names
-    # the scanner does not recurse into a rule directory
-    assert "nested_rule" not in names
-    # generated observable export rules and the svs marker rule are not authored signatures
-    assert "generated_rule" not in names
-    assert "marker_dir_rule" not in names
 
 
 @pytest.mark.unit
@@ -473,6 +461,12 @@ def test_observable_modifier_hash_ignores_other_rules(signature_repo):
 
     after = load_observable_modifier_signatures(_rules_file(signature_repo))[0]
     assert after.content_hash == before.content_hash
+
+    # while a change to the rule itself is a new hash
+    _write(_rules_file(signature_repo),
+           OBSERVABLE_MODIFIER_RULES.replace('["suspect url observed"]', '["suspect url seen"]'))
+    edited = load_observable_modifier_signatures(_rules_file(signature_repo))[0]
+    assert edited.content_hash != before.content_hash
 
 
 @pytest.mark.unit

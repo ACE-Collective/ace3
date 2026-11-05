@@ -143,9 +143,9 @@ def test_sender_identity_headers(root_analysis):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("file_name", ["email.rfc822", "message.eml"])
-def test_body_and_attachments(root_analysis, file_name):
-    _, analysis = _analyze(root_analysis, MULTIPART_EMAIL, file_name=file_name)
+def test_body_and_attachments(root_analysis):
+    # not named email.rfc822, which the attachments list skips by name as well
+    _, analysis = _analyze(root_analysis, MULTIPART_EMAIL, file_name="message.eml")
     assert isinstance(analysis, EmailAnalysis)
 
     assert analysis.body_text.strip() == "the plain text body"

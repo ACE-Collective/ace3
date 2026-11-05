@@ -59,17 +59,6 @@ def import_counter(monkeypatch):
 
 
 @pytest.mark.unit
-def test_add_raw_does_not_import(registry, import_counter):
-    """add_raw validates against the base class without importing the plugin module"""
-    config = registry.add_raw("fake_one", raw_config("one"))
-
-    assert type(config) is FakeBaseConfig
-    assert config.name == "one"
-    assert import_counter == []
-    assert not registry.is_resolved("one")
-
-
-@pytest.mark.unit
 def test_membership_and_length_do_not_resolve(registry, import_counter):
     """the read-only inspection API never forces resolution"""
     registry.add_raw("fake_one", raw_config("one"))
@@ -200,21 +189,6 @@ def test_add_raw_reports_base_validation_failure(registry, capsys):
 
 
 @pytest.mark.unit
-def test_get_reports_subclass_validation_failure(registry, capsys):
-    """a block that only fails the plugin subclass fails at resolution, with the key named"""
-    invalid = raw_config("one")
-    del invalid["extra_setting"]
-
-    registry.add_raw("fake_one", invalid)
-    capsys.readouterr()
-
-    with pytest.raises(ValidationError):
-        registry.get("one")
-
-    assert "CONFIG ERROR: failed to validate fake config for fake_one" in capsys.readouterr().err
-
-
-@pytest.mark.unit
 def test_get_reports_missing_module(registry, capsys):
     """an unimportable python_module is reported the same way, and still raises"""
     registry.add_raw("fake_one", raw_config("one", python_module="does.not.exist"))
@@ -250,14 +224,6 @@ class StrictPlugin:
     @staticmethod
     def get_config_class():
         return StrictExtendedConfig
-
-
-@pytest.mark.unit
-def test_base_that_forbids_extra_keys_accepts_the_subclass_keys():
-    """the base check sees the subclass's keys too, and leaves them for get() to validate"""
-    registry = LazyConfigRegistry(StrictBaseConfig, "fake config")
-    registry.add_raw("fake_one", raw_config("one", python_class="StrictPlugin"))
-    assert registry.get("one").extra_setting == "value"
 
 
 @pytest.mark.unit

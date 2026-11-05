@@ -45,13 +45,6 @@ def _log_exception():
         logging.exception("division failed")
 
 
-def _log_error_exc_info():
-    try:
-        1 / 0
-    except ZeroDivisionError:
-        logging.error("division failed", exc_info=True)
-
-
 def _log_critical_after_except():
     try:
         1 / 0
@@ -62,7 +55,7 @@ def _log_critical_after_except():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("log", [_log_exception, _log_error_exc_info, _log_critical_after_except])
+@pytest.mark.parametrize("log", [_log_exception, _log_critical_after_except])
 def test_traceback_at_error_writes_report(log, reports):
     log()
 
@@ -266,10 +259,9 @@ def test_log_peer_unavailable_follows_the_cause_chain(reports, caplog):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("error", [ConnectionResetError("reset"), TimeoutError("timed out")])
-def test_log_peer_unavailable_accepts_connection_errors(error, reports, caplog):
+def test_log_peer_unavailable_accepts_connection_errors(reports, caplog):
     caplog.set_level(logging.INFO)
-    assert log_peer_unavailable(error, "reading x")
+    assert log_peer_unavailable(ConnectionResetError("reset"), "reading x")
 
     assert reports == []
     records = [r for r in caplog.records if r.getMessage().startswith("reading x")]

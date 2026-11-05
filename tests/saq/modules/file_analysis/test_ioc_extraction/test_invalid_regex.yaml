@@ -1,7 +1,10 @@
-# Test file with an invalid regex pattern and a valid one.
-# The invalid pattern should log a warning but not crash the module.
+# An invalid pattern, a valid one, and an invalid ignore pattern.
+# Each invalid regex should be logged without costing the valid pattern or crashing the module.
 
 patterns:
+  - pattern: "BAD-(("
+    type: indicator
+
   - pattern: "GOOD-(\\d+)"
     type: indicator
 

@@ -288,9 +288,16 @@ class TestTcpPorts:
         result = _launch(PYTHON, "-c", _CONNECT, str(allowed), str(other))
         assert result.stdout.split() == [f"{allowed}:connected", f"{other}:connected"]
 
-    @pytest.mark.skipif(landlock_abi() >= NET_ABI, reason="checks the refusal on a kernel without TCP port rules")
     def test_refused_where_the_kernel_cannot_enforce_it(self, listeners):
-        result = _launch(PYTHON, "-c", _CONNECT, str(listeners[0]), tcp_ports=str(listeners[0]))
+        # run on any kernel: the launcher is told its kernel has no TCP port rules
+        older_kernel = ("import sys\n"
+                        "sys.path.insert(0, sys.argv.pop(1))\n"
+                        "import launcher\n"
+                        "launcher.landlock_abi = lambda: launcher.NET_ABI - 1\n"
+                        "sys.exit(launcher.main(sys.argv[1:]))")
+        result = subprocess.run([sandbox_python(), "-I", "-S", "-c", older_kernel, os.path.dirname(LAUNCHER),
+                                 "--deadline=60", f"--tcp-ports={listeners[0]}", "--", PYTHON, "-c", _CONNECT,
+                                 str(listeners[0])], capture_output=True, text=True, timeout=30)
         assert result.returncode == EXIT_SANDBOX_FAILURE
         assert "cannot restrict TCP ports" in result.stderr
         assert result.stdout == ""

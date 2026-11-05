@@ -1,7 +1,6 @@
 """Static URLs carry a hash of the file, so a release that changes a file changes its URL and
 the browser never runs a stale copy (add_static_version in app/application.py)."""
 
-import hashlib
 import os
 import pathlib
 import re
@@ -16,13 +15,14 @@ pytestmark = pytest.mark.integration
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
-def _version_of(path: pathlib.Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+# the expected versions are the first 12 hex digits of each content's sha256, from sha256sum
 
 
-def test_static_url_carries_the_file_hash(app):
-    url = url_for("static", filename="css/saq.css")
-    assert url.endswith(f"/static/css/saq.css?v={_version_of(ROOT / 'app/static/css/saq.css')}")
+def test_static_url_carries_the_file_hash(app, tmp_path):
+    app.static_folder = str(tmp_path)
+    (tmp_path / "css").mkdir()
+    (tmp_path / "css" / "saq.css").write_text("body {}")
+    assert url_for("static", filename="css/saq.css").endswith("/static/css/saq.css?v=62368a1a2925")
 
 
 def test_missing_file_gets_no_version(app):
@@ -61,7 +61,7 @@ def test_debug_rehashes_a_changed_file(app, tmp_path):
 
     second = url_for("static", filename="a.js")
     assert second != first
-    assert second.endswith(f"?v={_version_of(path)}")
+    assert second.endswith("?v=f6c4cfe13010")
 
 
 def test_debug_missing_file_gets_no_version(app, tmp_path):
@@ -74,7 +74,7 @@ def test_blueprint_static_url_carries_the_file_hash(app, tmp_path):
     (tmp_path / "x.js").write_text("integration")
     app.register_blueprint(Blueprint("versioned_bp", __name__, static_folder=str(tmp_path),
                                      static_url_path="/versioned_bp/static"))
-    assert url_for("versioned_bp.static", filename="x.js").endswith(f"?v={_version_of(tmp_path / 'x.js')}")
+    assert url_for("versioned_bp.static", filename="x.js").endswith("?v=eb92cc52a766")
 
 
 def test_every_static_reference_on_a_page_is_versioned(web_client):

@@ -79,26 +79,6 @@ def test_existing_renames_preserved():
 
 
 @pytest.mark.unit
-def test_extras_appear_as_top_level_fields():
-    """``extra={"k": v}`` keys must land in the output dict so Splunk's
-    JSON-mode auto-KV extraction can break them out as searchable fields.
-    """
-    formatter = _make_formatter()
-    record = _make_record(
-        msg="cache_stats summary",
-        total_rows=121,
-        expired_rows=0,
-        modules=1,
-        module_name="rdap_analyzer",
-    )
-    data = formatter.format(record)
-    assert data["total_rows"] == 121
-    assert data["expired_rows"] == 0
-    assert data["modules"] == 1
-    assert data["module_name"] == "rdap_analyzer"
-
-
-@pytest.mark.unit
 def test_standard_logrecord_attrs_excluded():
     """Walking record.__dict__ would otherwise dump noisy built-ins
     (msecs, pathname, args, etc.) into every log event. Confirm those
@@ -153,6 +133,7 @@ def test_via_logging_call_extra_flows_through():
             "op": "insert",
             "module_name": "rdap_analyzer",
             "compressed_bytes": 187,
+            "expired_rows": 0,
         },
     )
 
@@ -162,6 +143,8 @@ def test_via_logging_call_extra_flows_through():
     assert rec["op"] == "insert"
     assert rec["module_name"] == "rdap_analyzer"
     assert rec["compressed_bytes"] == 187
+    # a falsy value is a field too
+    assert rec["expired_rows"] == 0
 
 
 @pytest.mark.unit
@@ -241,14 +224,6 @@ def test_text_formatter_keeps_traceback_after_fields():
 
 
 @pytest.mark.unit
-def test_text_formatter_no_extras_leaves_line_untouched():
-    """Most log calls pass no extras at all; they must not gain a trailing space."""
-    formatter = ExtraAwareTextFormatter("[%(levelname)s] %(message)s")
-    record = _make_record(msg="starting engine")
-    assert formatter.format(record) == "[INFO] starting engine"
-
-
-@pytest.mark.unit
 def test_text_formatter_configurable_via_dictconfig():
     """The shipped YAML configs declare the formatter with a ``format:`` key,
     but logging.Formatter's parameter is ``fmt``. dictConfig bridges that, and
@@ -281,15 +256,17 @@ def test_transaction_id_per_thread_isolation():
     """a transaction id set on another thread must not change this thread's value
     (confirms the ContextVar gives per-thread isolation)"""
     with transaction_id("main-thread"):
+        seen = []
 
         def _worker():
             set_transaction_id("child-thread")
-            assert get_transaction_id() == "child-thread"
+            seen.append(get_transaction_id())
 
         thread = threading.Thread(target=_worker)
         thread.start()
-        thread.join()
+        thread.join(timeout=5)
 
+        assert seen == ["child-thread"]
         # the child's set did not leak into this thread
         assert get_transaction_id() == "main-thread"
 

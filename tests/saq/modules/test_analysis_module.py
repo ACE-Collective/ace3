@@ -1,16 +1,10 @@
-import configparser
 import pytest
 
 from saq.analysis import Analysis, RootAnalysis
-from saq.configuration import get_config
 from saq.constants import F_TEST
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from tests.saq.test_util import create_test_context
-
-def get_mock_config(config_data: dict):
-    config = configparser.ConfigParser()
-    return config.read_dict(config_data)
 
 @pytest.mark.unit
 def test_accepts(monkeypatch, test_context):
@@ -113,3 +107,11 @@ def test_invalid_alert_type(monkeypatch, test_context):
         config=module_config
     )
     assert not module.accepts(obs)
+
+    # invalid alert types that are not this alert's
+    module_config.invalid_alert_types = ["blah", "other"]
+    module = MockAnalysisModule(
+        context=create_test_context(root=root),
+        config=module_config
+    )
+    assert module.accepts(obs)

@@ -71,11 +71,6 @@ def _client(fastapi_app, api_key: str | None = None) -> AsyncClient:
 
 
 class TestRegistration:
-    def test_served_under_the_integration_name(self):
-        integrations.register_integration_router("vendor", _router())
-
-        assert {"/integrations/vendor/gated", "/integrations/vendor/ungated"} <= set(_paths(create_app()))
-
     @pytest.mark.asyncio
     async def test_registered_after_the_app_was_built(self, _override_db_session, valid_api_key):
         """Integrations are imported during initialize_environment(), after importing aceapi_v2

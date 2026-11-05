@@ -96,11 +96,11 @@ def test_set_sort_filter_get_method_rejected(web_client):
 
 @pytest.mark.integration
 def test_new_filter_option(web_client):
-    """Test rendering new filter option template."""
+    """A new filter row starts on the Description filter."""
     response = web_client.get(url_for("analysis.new_filter_option"))
-    
+
     assert response.status_code == 200
-    assert b'alert_filter_input.html' in response.data or b'Description' in response.data
+    assert b'<option value="Description" SELECTED>Description</option>' in response.data
 
 
 @pytest.mark.integration
@@ -150,23 +150,15 @@ def test_apply_sets_dirty_but_does_not_persist_a_named_filter(web_client):
 
 
 @pytest.mark.integration
-def test_apply_rejects_an_unparseable_date(web_client):
-    """A bad date must not reach storage. It used to, and then raised on EVERY subsequent
-    /manage load -- the analyst's queue stayed broken until someone reset it by hand."""
-    response = _apply(web_client, [{"name": "Alert Date", "inverted": False, "values": ["-7dd"]}])
-    assert response.status_code == 400
-
-
-@pytest.mark.integration
-def test_apply_rejects_an_analysis_value_that_is_not_a_module_path(web_client):
-    response = _apply(web_client, [{"name": "Analysis", "inverted": False, "values": ["QRCodeAnalysis"]}])
-    assert response.status_code == 400
-
-
-@pytest.mark.integration
-def test_apply_rejects_an_unknown_filter_name(web_client):
-    response = _apply(web_client, [{"name": "Nonexistent", "inverted": False, "values": ["x"]}])
-    assert response.status_code == 400
+@pytest.mark.parametrize("filters", [
+    BAD_DATE,
+    [{"name": "Analysis", "inverted": False, "values": ["QRCodeAnalysis"]}],
+    [{"name": "Nonexistent", "inverted": False, "values": ["x"]}],
+], ids=["unparseable-date", "analysis-value-not-a-module-path", "unknown-filter-name"])
+def test_apply_rejects_an_invalid_filter(web_client, filters):
+    """A bad filter must not reach storage. An unparseable date used to, and then raised on EVERY
+    subsequent /manage load -- the analyst's queue stayed broken until someone reset it by hand."""
+    assert _apply(web_client, filters).status_code == 400
 
 
 #
@@ -343,17 +335,6 @@ def test_overlay_that_changes_nothing_leaves_the_filter_alone(web_client):
 
 
 @pytest.mark.integration
-def test_a_pivot_without_overlay_still_replaces_the_filter(web_client):
-    """A pivot from inside an alert (or from an event page) has no list to narrow."""
-    _apply(web_client, QUEUE)
-
-    web_client.post(url_for("analysis.apply_temp_filter"),
-                    data={"filters": json.dumps(OBSERVABLE), "label": "Observable ipv4"})
-
-    assert _effective(web_client) == OBSERVABLE
-
-
-@pytest.mark.integration
 def test_overlay_rejects_an_invalid_filter(web_client):
     _apply(web_client, QUEUE)
     before = _state(web_client)
@@ -443,16 +424,6 @@ def test_save_shows_what_was_saved(web_client, analyst):
 
 
 @pytest.mark.integration
-def test_a_save_never_leaves_the_session_dirty(web_client, analyst):
-    """The * marker has to mean what it says: after a save there are no unsaved changes."""
-    _apply(web_client, TAG)
-    assert _state(web_client)["filter_state"] == "dirty"
-
-    _save_as(web_client, analyst, "Clean", QUEUE)
-    assert _state(web_client)["filter_state"] == "clean"
-
-
-@pytest.mark.integration
 def test_save_a_copy_of_a_pivot_ends_the_temporary_filter(web_client, analyst):
     """The temp banner's Save a copy saves the filter in effect (the bar carries it as
     data-effective-filters) and selects it, so the banner and its Revert are gone."""
@@ -468,18 +439,6 @@ def test_save_a_copy_of_a_pivot_ends_the_temporary_filter(web_client, analyst):
     assert state["filter_restore_uuid"] is None
 
 
-@pytest.mark.integration
-def test_save_as_from_the_editor_while_a_temp_is_active_saves_the_editors_rows(web_client, analyst):
-    _apply(web_client, QUEUE)
-    web_client.post(url_for("analysis.apply_temp_filter"),
-                    data={"filters": json.dumps(TAG), "label": "Tag"})
-
-    filter_uuid = _save_as(web_client, analyst, "Refined", QUEUE + TAG)
-
-    assert _names(_stored(filter_uuid)) == ["Queue", "Tag"]
-    assert _state(web_client)["filter_state"] == "clean"
-
-
 #
 # durable share links
 #
@@ -491,19 +450,13 @@ def test_share_link_applies_as_a_temporary_filter(web_client):
     before = _state(web_client)
 
     response = web_client.get(url_for("analysis.manage"), query_string={"f": ["tag:needs_research"]})
+    # a durable link stays in the address bar to be copied, bookmarked and reached with the back
+    # button: a redirect to a bare /manage would strip it
     assert response.status_code == 200
 
     after = _state(web_client)
     assert after["filter_state"] == "temp"
     assert after["filter_base_uuid"] == before["filter_base_uuid"]
-
-
-@pytest.mark.integration
-def test_share_link_keeps_its_params_in_the_url(web_client):
-    """A durable link has to stay visible to be copied, bookmarked, and reachable with the
-    back button -- so this deliberately does NOT redirect to a bare /manage."""
-    response = web_client.get(url_for("analysis.manage"), query_string={"f": ["tag:x"]})
-    assert response.status_code == 200, "a redirect here would strip the canonical URL"
 
 
 @pytest.mark.integration
@@ -580,7 +533,10 @@ def test_legacy_get_no_longer_mutates_state(web_client):
     web_client.get(url_for("analysis.set_filters"),
                    query_string={"redirect": "1", "filters": json.dumps(TAG)})
 
+    # the working filter is rewritten in place, under the same uuid, so the session alone
+    # cannot show a write
     assert _state(web_client) == before
+    assert _effective(web_client) == QUEUE
 
 
 @pytest.mark.integration
@@ -619,7 +575,12 @@ def test_removing_a_filter_category(web_client):
 
 @pytest.mark.integration
 def test_removing_a_single_value_drops_the_empty_filter(web_client):
-    _apply(web_client, TAG)
-    web_client.post(url_for("analysis.remove_filter"), data={"name": "Tag", "index": 0})
+    """Only the named filter loses the value at that index, and a filter left with no value goes."""
+    two_tags = [{"name": "Tag", "inverted": False, "values": ["needs_research", "phish"]}]
+    _apply(web_client, QUEUE + two_tags)
 
-    assert _effective(web_client) == []
+    web_client.post(url_for("analysis.remove_filter"), data={"name": "Tag", "index": 0})
+    assert _effective(web_client) == QUEUE + [{"name": "Tag", "inverted": False, "values": ["phish"]}]
+
+    web_client.post(url_for("analysis.remove_filter"), data={"name": "Tag", "index": 0})
+    assert _effective(web_client) == QUEUE

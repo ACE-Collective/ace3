@@ -538,15 +538,15 @@ def test_kill_adopted_gives_up_on_a_process_that_survives(adopting, started, mon
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("method", ["kill_adopted", "reap_adopted"])
-def test_a_failed_sweep_is_logged_and_does_not_raise(adopting, monkeypatch, caplog, method):
+def test_a_failed_reap_is_logged_and_does_not_raise(adopting, monkeypatch, caplog):
+    # kill_adopted's failure is test_a_failed_sweep_at_shutdown_keeps_its_traceback
     adopting.become_subreaper()
 
     def broken():
         raise RuntimeError("no /proc")
 
     monkeypatch.setattr(adopting, "_adopted_children", broken)
-    getattr(adopting, method)()
+    adopting.reap_adopted()
 
     [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert "unable to " in record.getMessage() and "the engine controller adopted" in record.getMessage()

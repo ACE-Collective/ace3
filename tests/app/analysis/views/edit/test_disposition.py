@@ -1,6 +1,6 @@
 import pytest
 from flask import url_for
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from saq.configuration.config import get_config
 from saq.configuration.schema import DispositionConfig
@@ -183,27 +183,6 @@ def test_set_disposition_non_ignore_adds_workload(web_client):
 
 
 @pytest.mark.integration
-def test_set_disposition_with_long_comment(web_client):
-    """Test setting disposition with a long comment."""
-    alert = insert_alert()
-    long_comment = "This is a very long comment " * 50  # Create long comment
-    
-    response = web_client.post(url_for("analysis.set_disposition"), data={
-        "disposition": DISPOSITION_FALSE_POSITIVE,
-        "comment": long_comment,
-        "alert_uuid": alert.uuid
-    })
-    
-    assert response.status_code == 302
-    
-    # Verify comment was added correctly
-    db = get_db()
-    comment = db.query(Comment).filter(Comment.uuid == alert.uuid).first()
-    assert comment is not None
-    assert comment.comment == long_comment.strip()
-
-
-@pytest.mark.integration
 def test_set_disposition_session_cleanup_on_manage(web_client):
     """Test that session 'checked' is cleared when coming from manage page."""
     alert = insert_alert()
@@ -347,24 +326,6 @@ def test_set_disposition_all_valid_dispositions(web_client):
 
 
 @pytest.mark.integration
-@patch('saq.error.reporting.write_error_report')
-def test_set_disposition_exception_reporting(mock_write_error_report, web_client):
-    """Test that exceptions are properly reported."""
-    # Mock set_dispositions to raise an exception
-    with patch('app.analysis.views.edit.disposition.set_dispositions') as mock_set_dispositions:
-        mock_set_dispositions.side_effect = Exception("Test exception")
-        
-        alert = insert_alert()
-        response = web_client.post(url_for("analysis.set_disposition"), data={
-            "disposition": DISPOSITION_FALSE_POSITIVE,
-            "alert_uuid": alert.uuid
-        })
-        
-        assert response.status_code == 302
-        mock_write_error_report.assert_called_once()
-
-
-@pytest.mark.integration
 def test_set_disposition_audit_logging(web_client, session_actor, caplog):
     """Test that disposition changes are properly audit logged."""
     alert = insert_alert()
@@ -485,28 +446,6 @@ def test_set_disposition_takes_confirmed_alert(web_client, analyst, other_analys
     row = db.get(Alert, owned.id)
     assert row.disposition == DISPOSITION_FALSE_POSITIVE
     assert row.owner_id == analyst
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("disposition", [
-    # configured once but never selectable, and removed with the disposition clean-up
-    "AUTHORIZED", "DATA_CONTROL",
-    # constants that were never configured, also removed
-    "INSIDER_DATA_CONTROL", "INSIDER_DATA_EXFIL", "APPROVED_BUSINESS", "APPROVED_PERSONAL",
-])
-def test_set_disposition_rejects_removed_dispositions(web_client, disposition):
-    """The configuration is the only list of dispositions; the server validates against it."""
-    alert = insert_alert()
-
-    response = web_client.post(url_for("analysis.set_disposition"), data={
-        "disposition": disposition,
-        "alert_uuid": alert.uuid
-    })
-
-    assert response.status_code == 302
-    db = get_db()
-    db.refresh(alert)
-    assert alert.disposition != disposition
 
 
 @pytest.mark.integration

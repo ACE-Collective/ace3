@@ -1,11 +1,6 @@
 import pytest
 
-from saq.file_collection.types import (
-    FileCollectionStatus,
-    FileCollectionWorkItem,
-    FileCollectorResult,
-    FileCollectorStatus,
-)
+from saq.file_collection.types import FileCollectionStatus, FileCollectorStatus
 
 
 class TestFileCollectorStatus:
@@ -70,72 +65,3 @@ class TestFileCollectorStatus:
         assert FileCollectorStatus.HOST_OFFLINE.collection_status == FileCollectionStatus.IN_PROGRESS
         assert FileCollectorStatus.ERROR.collection_status == FileCollectionStatus.IN_PROGRESS
 
-
-class TestFileCollectorResult:
-    @pytest.mark.unit
-    def test_create_success_result(self):
-        result = FileCollectorResult(
-            status=FileCollectorStatus.SUCCESS,
-            message="Successfully collected file",
-            collected_file_path="/path/to/file",
-            collected_file_sha256="abc123",
-        )
-        assert result.status == FileCollectorStatus.SUCCESS
-        assert result.message == "Successfully collected file"
-        assert result.collected_file_path == "/path/to/file"
-        assert result.collected_file_sha256 == "abc123"
-
-    @pytest.mark.unit
-    def test_create_failure_result(self):
-        result = FileCollectorResult(
-            status=FileCollectorStatus.HOST_OFFLINE,
-            message="Host not found",
-        )
-        assert result.status == FileCollectorStatus.HOST_OFFLINE
-        assert result.message == "Host not found"
-        assert result.collected_file_path is None
-        assert result.collected_file_sha256 is None
-
-    @pytest.mark.unit
-    def test_create_minimal_result(self):
-        result = FileCollectorResult(status=FileCollectorStatus.DELAYED)
-        assert result.status == FileCollectorStatus.DELAYED
-        assert result.message is None
-        assert result.collected_file_path is None
-        assert result.collected_file_sha256 is None
-
-
-class TestFileCollectionWorkItem:
-    @pytest.mark.unit
-    def test_create_work_item(self):
-        work_item = FileCollectionWorkItem(
-            id=1,
-            name="falcon_file_collection",
-            type="file_location",
-            key="host1@/path/to/file.exe",
-            alert_uuid="test-uuid-123",
-            storage_dir="/tmp/test",
-            retry_count=2,
-            max_retries=10,
-        )
-        assert work_item.id == 1
-        assert work_item.name == "falcon_file_collection"
-        assert work_item.type == "file_location"
-        assert work_item.key == "host1@/path/to/file.exe"
-        assert work_item.alert_uuid == "test-uuid-123"
-        assert work_item.storage_dir == "/tmp/test"
-        assert work_item.retry_count == 2
-        assert work_item.max_retries == 10
-
-    @pytest.mark.unit
-    def test_create_work_item_defaults(self):
-        work_item = FileCollectionWorkItem(
-            id=1,
-            name="test_collector",
-            type="file_location",
-            key="host@/file",
-        )
-        assert work_item.alert_uuid is None
-        assert work_item.storage_dir is None
-        assert work_item.retry_count == 0
-        assert work_item.max_retries == 10

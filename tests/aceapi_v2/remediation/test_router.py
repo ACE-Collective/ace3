@@ -107,10 +107,6 @@ class TestAccess:
         assert (await unauth_client.post("/remediation/remediations/1/cancel")).status_code == 401
 
     @pytest.mark.asyncio
-    async def test_lookup_requires_remediation_read(self, noperm_client: AsyncClient):
-        assert (await noperm_client.post("/remediation/targets/lookup", json={"alert_uuids": ["x"]})).status_code == 403
-
-    @pytest.mark.asyncio
     async def test_writes_require_remediation_write(self, _override_db_session, session: AsyncSession, test_user, remediable):
         """remediation:read lists targets but cannot remediate them."""
         alert_uuid = _alert_with("evil")
@@ -132,7 +128,8 @@ class TestAccess:
         assert get_db().query(Remediation).count() == 1
 
     @pytest.mark.asyncio
-    async def test_the_list_requires_remediation_read(self, noperm_client: AsyncClient):
+    async def test_reads_require_remediation_read(self, noperm_client: AsyncClient):
+        assert (await noperm_client.post("/remediation/targets/lookup", json={"alert_uuids": ["x"]})).status_code == 403
         assert (await noperm_client.get("/remediation/remediations")).status_code == 403
         assert (await noperm_client.get("/remediation/remediations/export/csv")).status_code == 403
         assert (await noperm_client.get("/remediation/remediations/1/history")).status_code == 403
@@ -317,6 +314,9 @@ class TestRetry:
 
         assert response.status_code == 200
         assert response.json() == {"id": remediation_id, "action": "remove", "status": "NEW", "result": None}
+        # stored, not only in the response: the request ran on a session of its own
+        stored = _remediation(remediation_id)
+        assert (stored.status, stored.result) == ("NEW", None)
         audit = next(record for record in caplog.records
                      if record.getMessage() == f"AUDIT: user unittest retried remediation {remediation_id}")
         assert (audit.actor_user_id, audit.remediation_id) == (_caller_id(), remediation_id)

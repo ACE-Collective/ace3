@@ -60,25 +60,17 @@ def _spec(python_class: str = "SampleBackend", **config) -> StorageBackendSpec:
 
 
 def test_custom_backend_is_loaded_and_wrapped(monkeypatch):
-    """The class named in config is constructed and handed back inside a StorageAdapter."""
+    """The class named in config is constructed and handed back inside a StorageAdapter, with
+    the `config:` sub-dict validated by the backend's own get_config_class(), not the base."""
     spec = _spec(required_setting="value")
     _configure(monkeypatch, backend=spec)
     adapter = StorageFactory.get_storage_system()
 
     assert isinstance(adapter, StorageAdapter)
     assert isinstance(adapter._storage, SampleBackend)
+    # only SampleBackendConfig has these fields; the base model would drop them
     assert adapter._storage.config.required_setting == "value"
     assert adapter._storage.config.optional_setting is None
-
-
-def test_backend_config_is_validated_by_its_own_model(monkeypatch):
-    """The `config:` sub-dict goes through the backend's get_config_class(), not the base."""
-    spec = _spec(required_setting="a", optional_setting="b")
-    _configure(monkeypatch, backend=spec)
-    adapter = StorageFactory.get_storage_system()
-
-    assert isinstance(adapter._storage.config, SampleBackendConfig)
-    assert adapter._storage.config.optional_setting == "b"
 
 
 def test_invalid_backend_config_is_a_storage_error(monkeypatch):
@@ -128,7 +120,6 @@ def test_backend_without_get_config_class_is_rejected(monkeypatch):
 
 
 @pytest.mark.parametrize("secure, cert_check, scheme", [
-    (True, True, "https"),
     (True, False, "https"),
     (False, True, "http"),
 ])

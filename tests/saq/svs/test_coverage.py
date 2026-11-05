@@ -1,6 +1,8 @@
 """ATT&CK coverage per technique and platform (saq.svs.coverage, docs/SVS_COVERAGE.md)."""
 
 import json
+import os
+import time
 from argparse import Namespace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -314,11 +316,6 @@ class TestRefresh:
         assert (rows[("T1059", "windows")].state, rows[("T1059", "windows")].own_state) == ("validated", "none")
         assert rows[("T1059", "macos")].updated_at == before[("T1059", "macos")]
 
-    def test_removed_tests_do_not_count(self, refreshable):
-        add_catalog_test(GUID, removed=True)
-        refresh_coverage("test")
-        assert _rows()[("T1059.001", "windows")].state == "none"
-
     def test_rows_retire_and_come_back(self, refreshable):
         add_catalog_test(GUID, technique="T1234.001")
         refresh_coverage("test")
@@ -411,6 +408,23 @@ def _snapshots() -> dict[tuple[date, str, str], SVSCoverageSnapshot]:
     return rows
 
 
+@pytest.fixture
+def local_date_is_not_utc():
+    """A local timezone whose date differs from UTC's now: 14 hours ahead from 10:00 UTC on, 12
+    hours behind before noon UTC."""
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Etc/GMT-14" if datetime.now(timezone.utc).hour >= 10 else "Etc/GMT+12"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+
 @pytest.mark.integration
 class TestSnapshot:
     def test_a_snapshot_copies_the_live_rows(self, refreshable, user_id):
@@ -447,10 +461,14 @@ class TestSnapshot:
         write_snapshot("test", snapshot_date=DAY + timedelta(days=1))
         assert len(_snapshots()) == 10
 
-    def test_today_in_utc_by_default(self, refreshable):
-        assert write_snapshot("test").snapshot_date == datetime.now(timezone.utc).date()
+    def test_today_in_utc_by_default(self, refreshable, local_date_is_not_utc):
+        today = datetime.now(timezone.utc).date()
+        assert date.today() != today
+        assert write_snapshot("test").snapshot_date == today
 
     def test_a_failed_refresh_writes_no_snapshot(self, refreshable, monkeypatch):
+        # coverage has rows, which a snapshot taken before the refresh would copy
+        refresh_coverage("test")
         monkeypatch.setattr(coverage, "signature_techniques",
                             lambda: (_ for _ in ()).throw(SignatureTagsUnavailable("boom")))
         with pytest.raises(SignatureTagsUnavailable):

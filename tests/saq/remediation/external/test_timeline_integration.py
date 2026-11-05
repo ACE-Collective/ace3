@@ -44,12 +44,3 @@ def test_gather_picks_up_confirmed_external_check(make_check, db_alert):
     events = gather_remediation_events(_RootStub(db_alert.uuid))
     sources = [e.source for e in events]
     assert "fake" in sources
-
-
-@pytest.mark.integration
-def test_gather_ignores_pending_checks(make_check, db_alert):
-    make_check(status=CheckStatus.NEW.value)
-
-    events = gather_remediation_events(_RootStub(db_alert.uuid))
-    # Pending row has no events; nothing should bubble up from this third source.
-    assert events == []

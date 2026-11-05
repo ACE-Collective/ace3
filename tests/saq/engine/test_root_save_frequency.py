@@ -50,14 +50,11 @@ def _spy_on_save(root: RootAnalysis) -> Mock:
 
 @pytest.mark.unit
 @pytest.mark.parametrize("mode_value, global_value, expected", [
-    # the mode's own value always wins when it is set...
+    # the mode's own value always wins when it is set, 0 included...
     (5, None, 5),
     (0, 5, 0),
-    (30, 0, 30),
     # ...and falls back to global_settings when it is not
     (None, 5, 5),
-    (None, 0, 0),
-    (None, None, None),
 ])
 def test_get_root_save_frequency_resolution(monkeypatch, mode_value, global_value, expected):
     executor = _make_executor()
@@ -227,46 +224,7 @@ def test_no_mid_pass_writes_when_unset(root_analysis):
 
 
 @pytest.mark.integration
-def test_writes_every_invocation_when_zero(root_analysis):
-    """0 reproduces the pre-throttle behavior: every request produces a write."""
-    root_analysis.analysis_mode = "test_groups"
-    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
-    root_analysis.save()
-    root_analysis.schedule()
-
-    tally = _run_one_pass(root_analysis, ["basic_test", "low_priority", "high_priority"], 0)
-
-    assert tally.calls > 1
-    assert tally.writes == tally.calls
-
-    from saq.modules.test import BasicTestAnalysis
-    reloaded = load_root(get_storage_dir(root_analysis.uuid))
-    analysis = reloaded.get_observable(observable.uuid).get_and_load_analysis(BasicTestAnalysis)
-    assert analysis is not None
-
-
-@pytest.mark.integration
-def test_throttle_collapses_a_burst_of_invocations(root_analysis):
-    """With a window far longer than the pass, the whole burst collapses to no writes --
-    every module invocation lands inside the window opened when the pass started."""
-    root_analysis.analysis_mode = "test_groups"
-    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
-    root_analysis.save()
-    root_analysis.schedule()
-
-    tally = _run_one_pass(root_analysis, ["basic_test", "low_priority", "high_priority"], 3600)
-
-    assert tally.calls > 1
-    assert tally.writes == 0
-
-    from saq.modules.test import BasicTestAnalysis
-    reloaded = load_root(get_storage_dir(root_analysis.uuid))
-    analysis = reloaded.get_observable(observable.uuid).get_and_load_analysis(BasicTestAnalysis)
-    assert analysis is not None
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("frequency", [None, 0, 3600])
+@pytest.mark.parametrize("frequency", [None, 0])
 def test_delayed_analysis_suspension_is_on_disk(root_analysis, frequency):
     """A module that requests delayed analysis suspends the pass. Whatever the policy, the
     in-flight analysis must be on disk before the DelayedAnalysisRequest can be resumed --

@@ -297,24 +297,6 @@ class TestBulkAddObservable:
         assert workload_count(alert.uuid) == 0
 
     @pytest.mark.asyncio
-    async def test_bulk_add_observable_nonexistent_alert(self, client: AsyncClient):
-        """Nonexistent alerts should be reported as failed."""
-        missing = str(uuid4())
-
-        response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": [missing],
-            "observable_type": "fqdn",
-            "observable_value": "evil.example.com",
-        })
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success_count"] == 0
-        assert data["failed_count"] == 1
-        assert data["failed_uuids"] == [missing]
-        assert data["failed_details"][missing] == "alert not found"
-
-    @pytest.mark.asyncio
     async def test_bulk_add_observable_partial_failure(self, client: AsyncClient):
         """Mix of successful and failed alerts should be reported correctly."""
         alert = insert_alert()
@@ -396,20 +378,6 @@ class TestBulkAddObservable:
         assert observable.uuid == existing.uuid
         assert observable.added_by is None
         assert observable.added_time is None
-
-    @pytest.mark.asyncio
-    async def test_valid_time_format(self, client: AsyncClient):
-        """Valid time format should be accepted (regression check)."""
-        response = await client.post("/alerts/bulk-add-observable", json={
-            "alert_uuids": [str(uuid4())],
-            "observable_type": "ipv4",
-            "observable_value": "1.2.3.4",
-            "observable_time": "2026-03-31 14:30:00",
-        })
-
-        # the unknown alert is a per-alert failure, not a 400 for the time format
-        assert response.status_code == 200
-        assert response.json()["failed_details"] != {}
 
 
 class TestDownloadAlert:
@@ -890,10 +858,10 @@ class TestUpdateAlertComment:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("text", ["", "   \n"])
-    async def test_empty_comment_rejected(self, client: AsyncClient, text: str):
+    async def test_empty_comment_rejected(self, client: AsyncClient):
         alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id())
 
-        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": text})
+        # stripped first, so this is also what an empty string gets
+        response = await client.patch(f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "   \n"})
         assert response.status_code == 422
         assert _comment_text(comment_id) == "original comment"

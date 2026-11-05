@@ -49,10 +49,17 @@ class TestPut:
 
     @pytest.mark.unit
     def test_put_is_idempotent(self, blob_store):
+        """A second put of stored content, as bytes or as a stream, leaves
+        the stored file alone: same inode, so links already materialized
+        from it keep pointing at the stored blob."""
         data = b"hello world"
-        sha1 = blob_store.put(data)
-        sha2 = blob_store.put(data)
-        assert sha1 == sha2
+        sha = blob_store.put(data)
+        inode = os.stat(blob_store.path_for(sha)).st_ino
+        assert blob_store.put(data) == sha
+        assert blob_store.put(io.BytesIO(data)) == sha
+        assert os.stat(blob_store.path_for(sha)).st_ino == inode
+        # and the stream put's tempfile is gone
+        assert sorted(os.listdir(blob_store.root_dir)) == [sha[:3]]
 
     @pytest.mark.unit
     def test_put_stream(self, blob_store):

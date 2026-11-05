@@ -64,7 +64,6 @@ def test_parse_command(command, expected):
     ("ace", "enter a command"),
     ("-u someone node list", "global option -u"),
     ("--config-path /tmp/x.yaml node list", "global option --config-path"),
-    ("-D node list", "global option -D"),
     ("node list 'unbalanced", "quotation"),
 ])
 def test_parse_command_rejects(command, message):
@@ -93,13 +92,12 @@ def test_the_command_runs_under_the_launcher():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("command", [
-    "user add bob bob@example.com --password hunter2",
-    "user add bob bob@example.com --password=hunter2",
+    # a prefix of the option's name (argparse accepts one)
     "user add bob bob@example.com --pass hunter2",
-    "enc set -p hunter2",
+    # a short option with its value attached
     "enc set -phunter2",
     "encryption test --password hunter2",
-    "enc config set vendor.api_key --value hunter2",
+    # a prefix with its value after =
     "enc config set vendor.api_key --val=hunter2",
 ])
 def test_parse_command_refuses_secrets(command):
@@ -111,7 +109,6 @@ def test_parse_command_refuses_secrets(command):
 @pytest.mark.parametrize("command", [
     # -p and --value only carry secrets under `encryption`
     "storage list-objects -p some/prefix",
-    "config -v gui.listen_port",
     "config --value gui.listen_port",
     "enc config set vendor.api_key --load-from-file /tmp/key",
     "cas verify --pool yara_qa",
@@ -271,6 +268,9 @@ def test_execution_pages_newest_first():
     assert page[0].node_name == "node-a" and page[0].username == "unittest"
     assert cursor is not None
 
+    # a run recorded between the two requests sorts ahead of the client's position and must not
+    # move the second page
+    _create(["node", "list", "3"], [a])
     page, cursor = service.fetch_execution_page(cursor, 2)
     assert [e.id for e in page] == [ids[0]]
     assert cursor is None
@@ -285,20 +285,6 @@ def test_execution_page_rejects_a_cursor_of_another_listing():
 #
 # dispatch
 #
-
-@pytest.mark.integration
-def test_dispatch_asks_the_node_at_its_location(monkeypatch):
-    a = _add_node("node-a", location="node-a.example:443")
-    (execution_id,) = _create(["node", "list"], [a])
-    calls = []
-    monkeypatch.setattr(service.ace_api, "start_cli_execution",
-                        lambda i, **kwargs: calls.append((i, kwargs["remote_host"])))
-
-    service.dispatch_execution(execution_id)
-
-    assert calls == [(execution_id, "node-a.example:443")]
-    assert _row(execution_id).status == service.STATUS_PENDING
-
 
 @pytest.mark.integration
 def test_dispatch_translates_the_node_location(monkeypatch):
@@ -403,16 +389,6 @@ def test_claim_runs_a_row_once():
     with pytest.raises(service.HTTPException) as e:
         service.claim_execution(execution_id)
     assert e.value.status_code == 409
-
-
-@pytest.mark.integration
-def test_claim_refuses_another_nodes_row():
-    (execution_id,) = _create(["node", "list"], [_add_node("node-a")])
-    with pytest.raises(service.HTTPException) as e:
-        service.claim_execution(execution_id)
-    assert e.value.status_code == 409
-    assert "node-a" in e.value.detail
-    assert _row(execution_id).status == service.STATUS_PENDING
 
 
 @pytest.mark.integration

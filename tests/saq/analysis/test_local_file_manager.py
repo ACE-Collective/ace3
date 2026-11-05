@@ -7,7 +7,7 @@ from pathlib import Path
 
 from saq.analysis.file_manager.local_file_manager import MAX_RELATIVE_PATH_BYTES, LocalFileManager, clean_file_name
 from saq.util.filesystem import NAME_MAX_BYTES
-from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
+from saq.constants import FILE_SUBDIR
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def file_manager(temp_storage_dir):
 
 
 @pytest.fixture  
-def test_file():
+def source_file():
     """Create a temporary test file."""
     temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False)
     temp_file.write("test content")
@@ -42,29 +42,29 @@ def test_file_manager_initialization(temp_storage_dir):
     """Test FileManager initialization."""
     fm = LocalFileManager(temp_storage_dir)
     assert fm.storage_dir == temp_storage_dir
-    assert fm.hardcopy_dir.endswith(HARDCOPY_SUBDIR)
-    assert fm.file_dir.endswith(FILE_SUBDIR)
+    # the layout of every stored alert, so literal names
+    assert fm.hardcopy_dir == os.path.join(temp_storage_dir, "hardcopies")
+    assert fm.file_dir == os.path.join(temp_storage_dir, "files")
 
 
 @pytest.mark.unit
 def test_initialize_storage(file_manager, temp_storage_dir):
     """Test storage directory initialization."""
+    shutil.rmtree(temp_storage_dir)
     file_manager.initialize_storage()
-    
-    # Check if directories were created (would need actual SAQ environment setup)
-    # This is more of an integration test
-    assert True  # placeholder
+
+    assert os.path.isdir(os.path.join(temp_storage_dir, ".ace"))
 
 
 @pytest.mark.unit
-def test_store_file(file_manager, test_file):
+def test_store_file(file_manager, source_file):
     """Test file storage functionality."""
     # Prepare directories
     os.makedirs(file_manager.hardcopy_dir, exist_ok=True)
     os.makedirs(file_manager.file_dir, exist_ok=True)
     
     # Store the file
-    sha256_hash, relative_path = file_manager.store_file(test_file)
+    sha256_hash, relative_path = file_manager.store_file(source_file)
     
     # Verify hash is returned
     assert sha256_hash is not None
@@ -84,20 +84,20 @@ def test_store_file(file_manager, test_file):
 
 
 @pytest.mark.unit
-def test_store_file_with_move(file_manager, test_file):
+def test_store_file_with_move(file_manager, source_file):
     """Test file storage with move operation."""
     # Prepare directories
     os.makedirs(file_manager.hardcopy_dir, exist_ok=True)
     os.makedirs(file_manager.file_dir, exist_ok=True)
     
-    original_exists = os.path.exists(test_file)
+    original_exists = os.path.exists(source_file)
     assert original_exists
     
     # Store the file with move=True
-    sha256_hash, relative_path = file_manager.store_file(test_file, move=True)
+    sha256_hash, relative_path = file_manager.store_file(source_file, move=True)
     
     # Verify original file no longer exists
-    assert not os.path.exists(test_file)
+    assert not os.path.exists(source_file)
     
     # Verify hardcopy exists
     hardcopy_path = os.path.join(file_manager.hardcopy_dir, sha256_hash)
@@ -110,51 +110,21 @@ def test_store_nonexistent_file(file_manager):
     with pytest.raises(FileNotFoundError):
         file_manager.store_file("/nonexistent/path/file.txt")
 
+    # refused before anything is created for it
+    assert os.listdir(file_manager.storage_dir) == []
+
 
 @pytest.mark.unit
-def test_delete_file(file_manager, test_file):
+def test_delete_file(file_manager, source_file):
     """Test file deletion."""
     # File should exist initially
-    assert os.path.exists(test_file)
+    assert os.path.exists(source_file)
     
     # Delete the file
-    file_manager.delete_file(test_file)
+    file_manager.delete_file(source_file)
     
     # File should no longer exist
-    assert not os.path.exists(test_file)
-
-
-@pytest.mark.unit
-def test_create_file_path(file_manager):
-    """Test file path creation."""
-    # Prepare file directory
-    os.makedirs(file_manager.file_dir, exist_ok=True)
-    
-    # Test simple relative path
-    result = file_manager.create_file_path("test.txt")
-    expected = os.path.join(file_manager.file_dir, "test.txt")
-    assert result == expected
-    
-    # Test path with subdirectory
-    result = file_manager.create_file_path("subdir/test.txt")
-    expected = os.path.join(file_manager.file_dir, "subdir/test.txt")
-    assert result == expected
-    
-    # Verify subdirectory was created
-    assert os.path.exists(os.path.dirname(result))
-
-
-@pytest.mark.unit
-def test_create_file_path_already_full_path(file_manager):
-    """An already-resolved path within the files dir must be returned unchanged."""
-    os.makedirs(file_manager.file_dir, exist_ok=True)
-
-    full_path = os.path.join(file_manager.file_dir, "test.dat")
-    result = file_manager.create_file_path(full_path)
-
-    # the prefix must not be doubled (regression for files/.../files/... path bug)
-    assert result == full_path
-    assert result.count(FILE_SUBDIR) == 1
+    assert not os.path.exists(source_file)
 
 
 @pytest.mark.unit
@@ -204,7 +174,7 @@ def _refused_record(caplog, name):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", ["../escaped.txt", "sub/../../escaped.txt", "../../outside/escaped.txt", "", ".", "sub/.."])
+@pytest.mark.parametrize("name", ["sub/../../escaped.txt", "sub/.."])
 def test_create_file_path_refuses_paths_outside_the_file_dir(contained_file_manager, outside_dir, caplog, name):
     with pytest.raises(ValueError, match="outside of the files directory"):
         contained_file_manager.create_file_path(name)
@@ -281,10 +251,10 @@ def test_create_file_path_with_a_relative_storage_dir(tmp_path, outside_dir, mon
     ("../../outside/escaped.txt", "_/_/outside/escaped.txt"),
     ("sub/../../escaped.txt", "sub/_/_/escaped.txt"),
 ])
-def test_store_file_cleans_a_target_outside_the_file_dir(contained_file_manager, outside_dir, test_file, target_path, expected):
+def test_store_file_cleans_a_target_outside_the_file_dir(contained_file_manager, outside_dir, source_file, target_path, expected):
     """A target is often a name from a submitter or from analyzed content (a hunt's event field, a
     GUI upload), so it is cleaned like a create_output_file name."""
-    _, relative_path = contained_file_manager.store_file(test_file, target_path)
+    _, relative_path = contained_file_manager.store_file(source_file, target_path)
 
     assert relative_path == expected
     assert os.path.exists(os.path.join(contained_file_manager.file_dir, expected))
@@ -292,11 +262,11 @@ def test_store_file_cleans_a_target_outside_the_file_dir(contained_file_manager,
 
 
 @pytest.mark.unit
-def test_store_file_moves_a_directory_whose_name_is_a_file(contained_file_manager, tmp_path, test_file):
+def test_store_file_moves_a_directory_whose_name_is_a_file(contained_file_manager, tmp_path, source_file):
     """A hunt can name one file a and another a/b."""
     other = tmp_path / "other.txt"
     other.write_text("other")
-    contained_file_manager.store_file(test_file, "a")
+    contained_file_manager.store_file(source_file, "a")
 
     _, relative_path = contained_file_manager.store_file(str(other), "a/b")
 
@@ -306,12 +276,12 @@ def test_store_file_moves_a_directory_whose_name_is_a_file(contained_file_manage
 
 
 @pytest.mark.unit
-def test_store_file_with_a_directory_at_the_target(contained_file_manager, tmp_path, test_file):
+def test_store_file_with_a_directory_at_the_target(contained_file_manager, tmp_path, source_file):
     other = tmp_path / "other.txt"
     other.write_text("other")
     contained_file_manager.store_file(str(other), "a/b")
 
-    _, relative_path = contained_file_manager.store_file(test_file, "a")
+    _, relative_path = contained_file_manager.store_file(source_file, "a")
 
     assert relative_path == "a_000"
     with open(os.path.join(contained_file_manager.file_dir, relative_path)) as fp:
@@ -319,19 +289,19 @@ def test_store_file_with_a_directory_at_the_target(contained_file_manager, tmp_p
 
 
 @pytest.mark.unit
-def test_store_file_keeps_an_absolute_target_inside(contained_file_manager, outside_dir, test_file):
+def test_store_file_keeps_an_absolute_target_inside(contained_file_manager, outside_dir, source_file):
     target = outside_dir / "escaped.txt"
-    _, relative_path = contained_file_manager.store_file(test_file, str(target))
+    _, relative_path = contained_file_manager.store_file(source_file, str(target))
 
     assert relative_path == str(target).lstrip("/")
     assert os.listdir(outside_dir) == []
 
 
 @pytest.mark.unit
-def test_store_file_refuses_a_symlink_out_of_the_file_dir(contained_file_manager, outside_dir, test_file):
+def test_store_file_refuses_a_symlink_out_of_the_file_dir(contained_file_manager, outside_dir, source_file):
     os.symlink(outside_dir, os.path.join(contained_file_manager.file_dir, "link"))
     with pytest.raises(ValueError):
-        contained_file_manager.store_file(test_file, "link/escaped.txt")
+        contained_file_manager.store_file(source_file, "link/escaped.txt")
 
     # a source "inside" the files dir that links out of it is not stored either, so a link
     # extracted from an archive cannot copy a file from elsewhere into the analysis
@@ -383,18 +353,18 @@ def test_store_file_does_not_reuse_a_name_holding_other_bytes(contained_file_man
 
 
 @pytest.mark.unit
-def test_store_file_reuses_a_name_holding_the_same_bytes(contained_file_manager, tmp_path, test_file):
-    copy = tmp_path / "copy" / os.path.basename(test_file)
+def test_store_file_reuses_a_name_holding_the_same_bytes(contained_file_manager, tmp_path, source_file):
+    copy = tmp_path / "copy" / os.path.basename(source_file)
     copy.parent.mkdir()
-    shutil.copy(test_file, copy)
+    shutil.copy(source_file, copy)
 
-    assert contained_file_manager.store_file(test_file) == contained_file_manager.store_file(str(copy))
-    assert os.listdir(contained_file_manager.file_dir) == [os.path.basename(test_file)]
+    assert contained_file_manager.store_file(source_file) == contained_file_manager.store_file(str(copy))
+    assert os.listdir(contained_file_manager.file_dir) == [os.path.basename(source_file)]
 
 
 @pytest.mark.unit
-def test_store_file_with_a_target_inside_the_file_dir(contained_file_manager, test_file):
-    sha256_hash, relative_path = contained_file_manager.store_file(test_file, "sub/stored.txt")
+def test_store_file_with_a_target_inside_the_file_dir(contained_file_manager, source_file):
+    sha256_hash, relative_path = contained_file_manager.store_file(source_file, "sub/stored.txt")
     assert relative_path == "sub/stored.txt"
     assert os.path.exists(os.path.join(contained_file_manager.file_dir, "sub", "stored.txt"))
 

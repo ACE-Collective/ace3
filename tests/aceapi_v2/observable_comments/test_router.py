@@ -85,10 +85,12 @@ class TestObservableComments:
     async def test_list_comments(
         self, session: AsyncSession, client: AsyncClient, test_user: User
     ):
-        """Listing comments for an observable should return all its comments."""
+        """Listing comments for an observable should return all its comments, and only its own."""
         obs = Observable(type="ipv4", sha256=_sha256("10.0.0.1"), value=b"10.0.0.1")
-        session.add(obs)
+        other = Observable(type="ipv4", sha256=_sha256("10.0.0.2"), value=b"10.0.0.2")
+        session.add_all([obs, other])
         await session.commit()
+        session.add(ObservableComment(user_id=test_user.id, observable_id=other.id, comment="another observable's"))
 
         # Add two comments
         for text in ["first comment", "second comment"]:
@@ -107,20 +109,6 @@ class TestObservableComments:
         comments = [c["comment"] for c in data["data"]]
         assert "first comment" in comments
         assert "second comment" in comments
-
-    @pytest.mark.asyncio
-    async def test_list_comments_empty(
-        self, session: AsyncSession, client: AsyncClient
-    ):
-        """Listing comments for an observable with none should return empty list."""
-        obs = Observable(type="ipv4", sha256=_sha256("10.0.0.2"), value=b"10.0.0.2")
-        session.add(obs)
-        await session.commit()
-
-        response = await client.get(f"/observable-comments/{obs.id}")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["data"] == []
 
     @pytest.mark.asyncio
     async def test_update_comment(
@@ -246,27 +234,6 @@ class TestObservableComments:
         """Deleting a non-existent comment should return 404."""
         response = await client.delete("/observable-comments/999999")
         assert response.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_comments_follow_observable(
-        self, session: AsyncSession, client: AsyncClient, test_user: User
-    ):
-        """Comments should be tied to the observable, not a specific alert context."""
-        # Create a comment via API
-        response = await client.post("/observable-comments/", json={
-            "observable_type": "ipv4",
-            "observable_value": "192.168.100.1",
-            "comment": "shared comment",
-        })
-        assert response.status_code == 201
-        observable_id = response.json()["observable_id"]
-
-        # Listing comments by observable ID should show the comment
-        response = await client.get(f"/observable-comments/{observable_id}")
-        assert response.status_code == 200
-        data = response.json()
-        assert len(data["data"]) == 1
-        assert data["data"][0]["comment"] == "shared comment"
 
     @pytest.mark.asyncio
     async def test_create_comment_on_file_uses_content_hash_identity(

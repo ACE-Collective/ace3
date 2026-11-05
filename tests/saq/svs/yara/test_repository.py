@@ -128,12 +128,14 @@ def test_the_export_is_capped(rule_repo, tmp_path):
 
 @pytest.mark.unit
 def test_a_failing_fetch_does_not_show_the_url(rule_repo, tmp_path):
-    secret_url = "https://user:token@127.0.0.1:1/rules.git"
+    # git itself hides the user and password of a URL in its errors, but not a token in its path
+    secret_url = "https://127.0.0.1:1/s3cret-token/rules.git"
     mirror = _mirror(rule_repo, tmp_path, url=secret_url)
     with pytest.raises(RepositoryError) as error:
         mirror.ensure(["main"])
 
-    assert "token" not in str(error.value)
+    assert "s3cret" not in str(error.value)
+    assert "<url>" in str(error.value)
 
 
 @pytest.mark.unit

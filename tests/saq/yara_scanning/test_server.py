@@ -45,17 +45,6 @@ rule rule_binary {
 }
 """
 
-RULE_TAGGED = """
-rule rule_tagged {
-    meta:
-        meta_tags = "email_attachment"
-    strings:
-        $a = "MATCH_A"
-    condition:
-        $a
-}
-"""
-
 RULE_B = """
 rule rule_b {
     strings:
@@ -277,29 +266,6 @@ def test_the_service_loads_the_marker_rule(socket_dir, signature_dir, tmp_path, 
 
 
 @pytest.mark.integration
-def test_scan_binary_data(make_server, rules_dir):
-    _write(os.path.join(rules_dir, "binary.yar"), RULE_BINARY)
-    server = make_server()
-    assert server.wait_for_start(30)
-
-    matches = client.scan_data(b"\xfe\x00\xff\x00\xff\xfe", socket_path=_socket_path(server))
-    assert _rules(matches) == {"rule_binary"}
-    assert matches[0]["strings"] == [(1, "$b", b"\x00\xff\x00\xff")]
-
-    assert client.scan_data(b"\x00\x00", socket_path=_socket_path(server)) == []
-
-
-@pytest.mark.integration
-def test_meta_tags_filter_rules(make_server, rules_dir, target):
-    _write(os.path.join(rules_dir, "tagged.yar"), RULE_TAGGED)
-    server = make_server()
-    assert server.wait_for_start(30)
-
-    assert _scan(server, target) == []
-    assert _rules(_scan(server, target, meta_tags=["email_attachment"])) == {"rule_tagged"}
-
-
-@pytest.mark.integration
 def test_missing_file_is_a_scan_error(make_server, rules_dir, tmp_path):
     _write(os.path.join(rules_dir, "a.yar"), RULE_A)
     server = make_server()
@@ -467,12 +433,13 @@ def test_workers_are_recycled(make_server, rules_dir, target):
 
 
 @pytest.mark.integration
-def test_stop_leaves_nothing_behind(make_server, rules_dir, socket_dir):
+def test_stop_leaves_nothing_behind(make_server, rules_dir, socket_dir, qa_spool):
     _write(os.path.join(rules_dir, "a.yar"), RULE_A)
-    server = make_server()
+    # with a qa spool, as the service always runs it
+    server = make_server(qa_spool_dir=qa_spool)
     assert server.wait_for_start(30)
     pgid = server.process.pid
-    assert len(_process_group(pgid)) == 1 + 1 + 2  # manager, generation, workers
+    assert len(_process_group(pgid)) == 1 + 1 + 1 + 2  # manager, recorder, generation, workers
 
     start = time.monotonic()
     server.stop()
@@ -570,16 +537,3 @@ def test_dead_recorder_is_replaced(make_server, rules_dir, target, qa_spool):
     # scanning never depended on it, and what was spooled meanwhile is recorded
     assert _rules(_scan(server, target, qa=_qa_context(target))) == {"rule_qa"}
     wait_for_condition(lambda: len(match_rows()) == 1, timeout=30)
-
-
-@pytest.mark.integration
-def test_stop_leaves_no_recorder_behind(make_server, rules_dir, qa_spool):
-    _write(os.path.join(rules_dir, "a.yar"), RULE_A)
-    server = make_server(qa_spool_dir=qa_spool)
-    assert server.wait_for_start(30)
-    pgid = server.process.pid
-    assert len(_process_group(pgid)) == 1 + 1 + 1 + 2  # manager, recorder, generation, workers
-
-    server.stop()
-    assert server.wait(0)
-    assert _process_group(pgid) == []

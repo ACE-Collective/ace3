@@ -13,6 +13,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
 from saq.modules.file_analysis.dotnet import De4dotAnalysis
+from saq.modules.file_analysis.exif import ExifAnalysis
 from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -20,16 +21,6 @@ from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
 
 
-
-
-
-class MockAnalysis(object):
-    def __init__(self):
-        self.details = {}
-        self.observables = []
-
-    def add_observable(self, *args, **kwargs):
-        self.observables.append(args)
 
 
 class TestUrlExtraction:
@@ -387,27 +378,6 @@ def test_lnk_parser(caplog, datadir, monkeypatch, test_context):
     assert analysis.icon_location == 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
     assert analysis.working_directory == 'C:\\Program Files\\Google\\Chrome\\Application'
 
-class MockYaraAnalysis(object):
-    def __init__(self, rule):
-        self.rule = rule
-        pass
-
-    def has_observable(self, _type, val):
-        print(f'MockYaraAnalysis checking for observable {val} against mocked result {self.rule}')
-        if val == self.rule:
-            return True
-        else:
-            return False
-
-class MockYaraAnalysisModule(object):
-    def __init__(self):
-        pass
-
-    def wait_for_analysis(self):
-        return MockYaraAnalysis()
-
-
-
 @pytest.mark.integration
 def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
     # Create a test alert with file observable
@@ -482,20 +452,16 @@ def test_exif_analysis(caplog, datadir, monkeypatch, test_context):
     assert analysis == AnalysisExecutionResult.COMPLETED
     assert 'Exif data collection completed.' in caplog.text
 
-    # Create a second test alert with a non document file observable
-    # This should fail because it's not an office document
+    # an executable is neither an office document nor a pdf, so it is not analyzed
     root = create_root_analysis(analysis_mode='test-single')
     root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'hello_world.exe')
-    if observable:
+    observable = root.add_file_observable(datadir / 'hello_autoit.exe')
 
-        # Execute the analysis
-        analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-            context=create_test_context(root=root),
-            config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-        analysis = analyzer.execute_analysis(observable)
-
-        assert analysis is False
+    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(ExifAnalysis) is None
 
     # Create a third test alert with an ole
     root = create_root_analysis(analysis_mode='test-single')
@@ -870,7 +836,9 @@ def test_empty_file_hash(datadir, test_context):
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
     observable = root.add_file_observable(datadir / "empty")
-    
+    # the hash analyzer needs a FileTypeAnalysis, and without one it records nothing whatever the size
+    _run_file_type_analyzer(root, observable)
+
     analyzer = AnalysisModuleAdapter(FileHashAnalyzer(
         context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_FILE_HASH_ANALYZER)))
@@ -1007,16 +975,22 @@ def test_qrcode_negative_records_empty_analysis(tmp_path, test_context):
 
 
 @pytest.mark.unit
-def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context, monkeypatch):
+def test_qrcode_scan_failure_records_no_analysis(tmp_path, test_context):
     """A failed scan (timeout / zbarimg error) means 'unknown', not 'no QR
     code' — nothing is recorded, so the failure can never be cached as a
     negative result."""
-    monkeypatch.setattr(QRCodeAnalyzer, "_scan_image", lambda self, path: None)
-    monkeypatch.setattr(QRCodeAnalyzer, "_scan_inverted_image", lambda self, path: None)
+    # a truncated png still opens as an image, but zbarimg exits with an error on it and PIL cannot
+    # load it to invert it, so both scans fail
+    blank = _make_blank_png(tmp_path)
+    with open(blank, "rb") as fp:
+        data = fp.read()
+    truncated = os.path.join(str(tmp_path), "truncated.png")
+    with open(truncated, "wb") as fp:
+        fp.write(data[:len(data) // 2])
 
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
-    observable = root.add_file_observable(_make_blank_png(tmp_path))
+    observable = root.add_file_observable(truncated)
 
     analyzer = AnalysisModuleAdapter(QRCodeAnalyzer(
         context=create_test_context(root=root),
@@ -1125,7 +1099,12 @@ def test_file_type_persists_mime_type_on_observable(datadir, monkeypatch):
     def _no_fork(*args, **kwargs):
         raise AssertionError("mime_type forked `file` for an already-analyzed observable")
 
+    # the FileTypeAnalysis fallback also answers without a fork, but loads the analysis from disk
+    def _no_analysis_read(*args, **kwargs):
+        raise AssertionError("mime_type read the FileTypeAnalysis instead of the value stored on the observable")
+
     monkeypatch.setattr(file_module, "Popen", _no_fork)
+    monkeypatch.setattr(file_module.FileObservable, "_mime_type_from_file_type_analysis", _no_analysis_read)
     assert reloaded.mime_type == "image/gif"
     assert reloaded.is_image is True
 

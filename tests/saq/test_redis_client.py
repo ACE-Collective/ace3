@@ -33,10 +33,9 @@ def test_timeouts_default_when_not_configured():
     assert redis_config.socket_timeout == 10
 
 
-@pytest.mark.parametrize("socket_timeout", [0, 1])
-def test_socket_timeout_must_outlast_the_indexer_blpop(socket_timeout):
-    with pytest.raises(ValidationError):
-        RedisConfig.model_validate({**REQUIRED, "socket_timeout": socket_timeout})
+def test_socket_timeout_must_outlast_the_indexer_blpop():
+    with pytest.raises(ValidationError, match="socket_timeout"):
+        RedisConfig.model_validate({**REQUIRED, "socket_timeout": 1})
 
 
 def test_timed_out_command_is_not_sent_again(monkeypatch):

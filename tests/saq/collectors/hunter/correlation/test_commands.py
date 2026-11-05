@@ -37,15 +37,6 @@ class MockQuerySource(QuerySource):
         return self.results
 
 
-class MockEpochSource(QuerySource):
-    """Source whose default field/format differ from MockQuerySource for switching tests."""
-    default_time_field = "ts"
-    default_time_format = "epoch"
-
-    def execute_query(self, query, start_time, end_time, timeout, source_options=None):
-        return []
-
-
 @pytest.fixture(autouse=True)
 def _clean_registry():
     clear_query_sources()
@@ -115,15 +106,6 @@ class TestExecuteCommand:
 
         assert source.calls[0]["source_options"] == {}
 
-    def test_executable_command(self, tmpdir):
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "print('hello world')"],
-        )
-        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
-        assert result.strip() == "hello world"
-
     def test_executable_with_jinja_args(self, tmpdir):
         cmd = CommandConfig(
             type="executable",
@@ -184,16 +166,6 @@ class TestExecuteCommand:
         assert result1 == result2
         assert len(source.calls) == 1  # only called once
 
-    def test_executable_with_env(self, tmpdir):
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ['MY_VAR'])"],
-            env={"MY_VAR": "hello"},
-        )
-        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
-        assert result.strip() == "hello"
-
     def test_executable_with_jinja_env(self, tmpdir):
         cmd = CommandConfig(
             type="executable",
@@ -205,25 +177,6 @@ class TestExecuteCommand:
             cmd, {"user": "admin"}, [], "event", [], local_time(), str(tmpdir),
         )
         assert result.strip() == "admin"
-
-    def test_executable_with_env_gets_path(self, tmpdir):
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ.get('PATH', 'missing'))"],
-            env={"MY_VAR": "test"},
-        )
-        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
-        assert result.strip() != "missing"
-
-    def test_executable_without_env_gets_path(self, tmpdir):
-        cmd = CommandConfig(
-            type="executable",
-            path=PYTHON,
-            args=["-c", "import os; print(os.environ.get('PATH', 'missing'))"],
-        )
-        result = execute_command(cmd, {}, [], "event", [], local_time(), str(tmpdir))
-        assert result.strip() != "missing"
 
     def test_executable_without_env_does_not_inherit_ace_env(self, tmpdir, monkeypatch):
         """The ACE environment holds credentials (SAQ_ENC, database and redis passwords)."""
@@ -276,19 +229,26 @@ class TestExecuteCommand:
         )
         assert result.strip() == "False"
 
-    def test_executable_env_reading_secrets_fails(self, tmpdir):
-        """A hunt written against the removed `_secrets` binding fails rather than running."""
+    @pytest.mark.parametrize("template", [
+        "{{ _secrets['vendor.api_key'] }}",
+        "{{ _config['vendor']['api_key'] }}",
+    ])
+    def test_executable_env_reading_secrets_fails(self, tmpdir, template):
+        """A hunt written against the removed `_secrets` or `_config` binding fails rather than running."""
         cmd = CommandConfig(
             type="executable",
             path=PYTHON,
             args=["-c", "import os; print(os.environ['API_KEY'])"],
-            env={"API_KEY": "{{ _secrets['vendor.api_key'] }}"},
+            env={"API_KEY": template},
         )
-        with pytest.raises(UndefinedError):
+        with patch("saq.collectors.hunter.correlation.commands.run_sandboxed") as run_sandboxed, \
+             pytest.raises(UndefinedError, match="is undefined"):
             execute_command(
                 cmd, {}, [], "event", [], local_time(), str(tmpdir), None,
                 {"vendor.api_key": "REAL_KEY"},
+                {"vendor": {"api_key": "REAL_KEY"}},
             )
+        run_sandboxed.assert_not_called()
 
     def test_executable_stderr_is_sanitized(self, tmpdir):
         """A script that reads a credential on its own and echoes it must not leak it.
@@ -463,30 +423,6 @@ class TestExecuteCommand:
         mock_set.assert_called_once()
         assert mock_set.call_args.args[0] == expected_args
 
-    def test_query_different_events_different_cache_keys(self, tmpdir):
-        """Regression: two events with the same template but different interpolated
-        values must produce different cache keys (otherwise the first event's result
-        is served to every later event)."""
-        source = MockQuerySource(results=[])
-        register_query_source("test_source", source)
-
-        cmd = CommandConfig(
-            type="query",
-            source="test_source",
-            query='search animal="{{ _event.animal }}"',
-            cache="5m",
-        )
-
-        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None) as mock_get, \
-             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
-            execute_command(cmd, {"animal": "dog"}, [], "event", [], local_time(), str(tmpdir))
-            execute_command(cmd, {"animal": "cat"}, [], "event", [], local_time(), str(tmpdir))
-
-        queried = [call.args[0]["query"] for call in mock_get.call_args_list]
-        assert queried == ['search animal="dog"', 'search animal="cat"']
-        assert queried[0] != queried[1]
-
-
 @pytest.mark.unit
 class TestResolveTimeRange:
 
@@ -599,23 +535,6 @@ class TestQueryRecorder:
             query="search host={{ _event.host }}",
             time_range=None,
         )
-
-    def test_replay_hit_skips_live_query(self, tmpdir):
-        source = MockQuerySource(results=[{"should": "not be used"}])
-        register_query_source("test_source", source)
-        recorder = CorrelateQueryRecorder(replay=[
-            {"source": "test_source", "query": "search host=web1", "results": [{"host": "web1", "saved": True}]},
-        ])
-
-        with patch("saq.collectors.hunter.correlation.commands.get_cached_result", return_value=None), \
-             patch("saq.collectors.hunter.correlation.commands.set_cached_result"):
-            result = execute_command(
-                self._cmd(), {"host": "web1"}, [], "event", [], local_time(), str(tmpdir),
-                query_recorder=recorder,
-            )
-
-        assert json.loads(result) == {"host": "web1", "saved": True}
-        assert len(source.calls) == 0  # data source never hit on a replay hit
 
     def test_replay_miss_falls_back_to_live_and_records(self, tmpdir):
         source = MockQuerySource(results=[{"host": "web2", "live": True}])

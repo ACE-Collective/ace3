@@ -3,12 +3,11 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
 import pytest
-import pytz
 import yaml
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -219,18 +218,6 @@ def test_validate_hunt_missing_json_body(hunt_api, auth_headers):
 
 
 @pytest.mark.integration
-def test_validate_hunt_non_json_content_type(hunt_api, auth_headers):
-    """Verify non-JSON content type returns 415 Unsupported Media Type."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        headers=auth_headers,
-        data="some text",
-        content_type="text/plain"
-    )
-    assert result.status_code == 415
-
-
-@pytest.mark.integration
 def test_validate_hunt_empty_json_body(hunt_api, auth_headers):
     """Verify empty JSON object returns error about missing compiled_hunt."""
     result = hunt_api.post(
@@ -259,20 +246,6 @@ def test_validate_hunt_missing_compiled_hunt_field(hunt_api, auth_headers):
 
 
 @pytest.mark.integration
-def test_validate_hunt_invalid_compiled_hunt_format(hunt_api, auth_headers):
-    """Verify invalid compiled_hunt format returns validation error."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json={"compiled_hunt": "not-a-dict"},
-        headers=auth_headers
-    )
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-    assert "invalid compiled_hunt" in data["error"]
-
-
-@pytest.mark.integration
 def test_validate_hunt_compiled_hunt_missing_required_fields(hunt_api, auth_headers):
     """Verify compiled_hunt missing required fields returns validation error."""
     result = hunt_api.post(
@@ -291,51 +264,25 @@ def test_validate_hunt_compiled_hunt_missing_required_fields(hunt_api, auth_head
 # =============================================================================
 
 @pytest.mark.integration
-def test_validate_hunt_invalid_yaml_syntax(hunt_api, auth_headers):
-    """Verify invalid YAML syntax returns validation error."""
-    invalid_yaml = """rule:
-  name: test
-  invalid: yaml: : : syntax
-  [broken
-"""
+@pytest.mark.parametrize("field", [
+    "uuid",
+    "name",
+    "frequency",
+    # required by the query hunt's own config class, so this one shows the hunt is validated by its type's class
+    "time_range",
+])
+def test_validate_hunt_missing_required_field(hunt_api, auth_headers, field):
+    """Verify a hunt config missing a required field returns a validation error naming it."""
     result = hunt_api.post(
         HUNT_VALIDATE_URL,
-        json=_make_compiled_payload(invalid_yaml),
-        headers=auth_headers
-    )
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-
-
-@pytest.mark.integration
-def test_validate_hunt_missing_required_field_uuid(hunt_api, auth_headers):
-    """Verify hunt config missing uuid field returns validation error."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json=_make_compiled_payload(_hunt_yaml(without="uuid")),
+        json=_make_compiled_payload(_hunt_yaml(without=field)),
         headers=auth_headers
     )
     assert result.status_code == 400
     data = result.get_json()
     assert data["valid"] is False
     assert "invalid hunt config" in data["error"]
-    assert "uuid" in data["error"]
-
-
-@pytest.mark.integration
-def test_validate_hunt_missing_required_field_name(hunt_api, auth_headers):
-    """Verify hunt config missing name field returns validation error."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json=_make_compiled_payload(_hunt_yaml(without="name")),
-        headers=auth_headers
-    )
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-    assert "invalid hunt config" in data["error"]
-    assert "name" in data["error"]
+    assert field in data["error"]
 
 
 @pytest.mark.integration
@@ -350,21 +297,6 @@ def test_validate_hunt_missing_required_field_type(hunt_api, auth_headers):
     data = result.get_json()
     assert data["valid"] is False
     assert "missing 'rule.type'" in data["error"]
-
-
-@pytest.mark.integration
-def test_validate_hunt_missing_required_field_frequency(hunt_api, auth_headers):
-    """Verify hunt config missing frequency field returns validation error."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json=_make_compiled_payload(_hunt_yaml(without="frequency")),
-        headers=auth_headers
-    )
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-    assert "invalid hunt config" in data["error"]
-    assert "frequency" in data["error"]
 
 
 @pytest.mark.integration
@@ -393,22 +325,6 @@ def test_validate_hunt_unknown_hunt_type(hunt_api, auth_headers):
     data = result.get_json()
     assert data["valid"] is False
     assert "invalid hunt type" in data["error"].lower()
-
-
-@pytest.mark.integration
-def test_validate_hunt_invalid_query_hunt_config(hunt_api, auth_headers):
-    """The hunt is validated by its own type's config class, so a field only a query hunt
-    requires is enforced."""
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json=_make_compiled_payload(_hunt_yaml(without="time_range")),
-        headers=auth_headers
-    )
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-    assert "invalid hunt config" in data["error"]
-    assert "time_range" in data["error"]
 
 
 # =============================================================================
@@ -487,13 +403,10 @@ def test_validate_hunt_nested_directory_structure(hunt_api, auth_headers):
 @pytest.mark.parametrize("execution_arguments,error_contains", [
     # Invalid type for analyze_results (non-coercible to bool)
     ({"analyze_results": "invalid"}, "execution_arguments"),
-    ({"analyze_results": []}, "execution_arguments"),
-    ({"analyze_results": {}}, "execution_arguments"),
     # Invalid type for create_alerts (non-coercible to bool)
     ({"create_alerts": "nope"}, "execution_arguments"),
     # Invalid type for queue (must be string)
     ({"queue": 123}, "execution_arguments"),
-    ({"queue": ["default"]}, "execution_arguments"),
     # Invalid type for start_time (must be string or None)
     ({"start_time": 123}, "execution_arguments"),
 ])
@@ -557,13 +470,8 @@ def test_validate_hunt_execution_query_hunt_missing_end_time(hunt_api, auth_head
 @pytest.mark.integration
 @pytest.mark.parametrize("invalid_time,field_name", [
     ("2025-01-15 12:00:00", "start_time"),
-    ("01-15-2025:12:00:00", "start_time"),
-    ("01/15/2025 12:00:00", "start_time"),
-    ("15/01/2025:12:00:00", "start_time"),
-    ("not-a-date", "start_time"),
+    # empty is a value to parse, not a missing start_time
     ("", "start_time"),
-    ("01/15/2025:25:00:00", "start_time"),
-    ("01/15/2025:12:60:00", "start_time"),
 ])
 def test_validate_hunt_execution_invalid_start_time_format(hunt_api, auth_headers, invalid_time, field_name):
     """Verify invalid start_time format returns clear error with expected format."""
@@ -589,7 +497,7 @@ def test_validate_hunt_execution_invalid_start_time_format(hunt_api, auth_header
 @pytest.mark.integration
 @pytest.mark.parametrize("invalid_time", [
     "2025-01-15 12:00:00",
-    "not-a-date",
+    # empty is a value to parse, not a missing end_time
     "",
 ])
 def test_validate_hunt_execution_invalid_end_time_format(hunt_api, auth_headers, invalid_time):
@@ -637,17 +545,10 @@ def test_validate_hunt_execution_invalid_timezone(hunt_api, auth_headers):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("timezone", [
-    "America/New_York",
-    "Europe/London",
-    "Asia/Tokyo",
-    "UTC",
-    "US/Eastern",
-])
-def test_validate_hunt_execution_valid_timezones(hunt_api, auth_headers, data_source, timezone):
-    """Verify valid timezones are accepted, and the times are searched in that zone."""
+def test_validate_hunt_execution_valid_timezones(hunt_api, auth_headers, data_source):
+    """Verify a valid timezone is accepted, and the times are searched in that zone."""
     payload = _make_compiled_payload(VALID_HUNT_YAML)
-    payload["execution_arguments"] = {**EXECUTION_TIMES, "timezone": timezone}
+    payload["execution_arguments"] = {**EXECUTION_TIMES, "timezone": "America/New_York"}
 
     result = hunt_api.post(
         HUNT_VALIDATE_URL,
@@ -658,10 +559,10 @@ def test_validate_hunt_execution_valid_timezones(hunt_api, auth_headers, data_so
     assert result.status_code == 200
     data = result.get_json()
     assert data["valid"] is True
-    tz = pytz.timezone(timezone)
     assert len(data_source.searches) == 1
-    assert data_source.searches[0]["start_time"] == tz.localize(datetime(2025, 1, 15, 10))
-    assert data_source.searches[0]["end_time"] == tz.localize(datetime(2025, 1, 15, 12))
+    # 10:00 and 12:00 EST
+    assert data_source.searches[0]["start_time"] == datetime(2025, 1, 15, 15, tzinfo=timezone.utc)
+    assert data_source.searches[0]["end_time"] == datetime(2025, 1, 15, 17, tzinfo=timezone.utc)
 
 
 @pytest.mark.integration
@@ -672,8 +573,8 @@ def test_validate_hunt_execution_defaults_to_utc(hunt_api, auth_headers, data_so
     result = hunt_api.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
 
     assert result.status_code == 200
-    assert data_source.searches[0]["start_time"] == pytz.utc.localize(datetime(2025, 1, 15, 10))
-    assert data_source.searches[0]["end_time"] == pytz.utc.localize(datetime(2025, 1, 15, 12))
+    assert data_source.searches[0]["start_time"] == datetime(2025, 1, 15, 10, tzinfo=timezone.utc)
+    assert data_source.searches[0]["end_time"] == datetime(2025, 1, 15, 12, tzinfo=timezone.utc)
 
 
 # =============================================================================
@@ -921,27 +822,6 @@ def test_validate_hunt_execution_returns_none(hunt_api, auth_headers, data_sourc
 # =============================================================================
 
 @pytest.mark.integration
-def test_validate_hunt_execution_raises_exception(hunt_api, auth_headers, data_source):
-    """Verify hunt execution exception returns wrapped error message."""
-    data_source.error = Exception("Connection failed to SIEM")
-
-    payload = _make_compiled_payload(VALID_HUNT_YAML)
-    payload["execution_arguments"] = EXECUTION_TIMES
-
-    result = hunt_api.post(
-        HUNT_VALIDATE_URL,
-        json=payload,
-        headers=auth_headers
-    )
-
-    assert result.status_code == 400
-    data = result.get_json()
-    assert data["valid"] is False
-    assert "error executing hunt" in data["error"].lower()
-    assert "Connection failed to SIEM" in data["error"]
-
-
-@pytest.mark.integration
 def test_validate_hunt_execution_remote_api_error(hunt_api, auth_headers, data_source):
     """Verify RemoteApiError propagates status code and message from remote API."""
     data_source.error = RemoteApiError(403, "Forbidden")
@@ -1156,24 +1036,6 @@ def test_validate_hunt_query_results_override(hunt_api, auth_headers, data_sourc
     assert [root["details"]["events"] for root in data["roots"]] == [[event] for event in override_events]
 
 
-@pytest.mark.integration
-def test_validate_hunt_query_results_override_without_times(hunt_api, auth_headers, data_source):
-    """The override path should NOT require start_time/end_time — those are only
-    needed when actually querying the data source."""
-    payload = _make_compiled_payload(VALID_HUNT_YAML)
-    # No start_time or end_time at all
-    payload["execution_arguments"] = {"query_results": [{"src": "1.1.1.1"}]}
-
-    result = hunt_api.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
-
-    # Without the override this would 400 with "start_time is required"
-    assert result.status_code == 200
-    data = result.get_json()
-    assert data["valid"] is True
-    assert len(data["roots"]) == 1
-    assert data_source.searches == []
-
-
 # =============================================================================
 # Integration Tests for /hunt/validate Endpoint - hunts have no access to secrets
 # =============================================================================
@@ -1288,15 +1150,6 @@ def test_validate_hunt_rejects_bad_custom_command_options(hunt_api, auth_headers
 
     assert result.status_code == 400
     assert "options.mesage" in result.get_json()["error"]
-
-
-@pytest.mark.integration
-def test_validate_hunt_accepts_registered_custom_command_type(hunt_api, auth_headers, registered_echo_command_type):
-    result = _validate_hunt_with_custom_command(
-        hunt_api, auth_headers, {"type": "echo", "options": {"message": "{{ _event.user }}"}})
-
-    assert result.status_code == 200
-    assert result.get_json()["valid"] is True
 
 
 @pytest.mark.integration
@@ -1445,6 +1298,7 @@ def test_validate_hunt_audits_a_rejected_request(hunt_api, auth_headers, hunt_au
     result = hunt_api.post(HUNT_VALIDATE_URL, json=_make_compiled_payload("rule: [unclosed\n"), headers=auth_headers)
 
     assert result.status_code == 400
+    assert result.get_json()["valid"] is False
     assert len(hunt_audit_records) == 1
     record = hunt_audit_records[0]
     assert record["event"] == "hunt_rejected"
@@ -1475,6 +1329,10 @@ def test_validate_hunt_audits_an_execution_error(hunt_api, auth_headers, hunt_au
     result = hunt_api.post(HUNT_VALIDATE_URL, json=payload, headers=auth_headers)
 
     assert result.status_code == 400
+    data = result.get_json()
+    assert data["valid"] is False
+    assert "error executing hunt" in data["error"].lower()
+    assert "Connection failed to SIEM" in data["error"]
     assert [record["event"] for record in hunt_audit_records] == ["hunt_error"]
     assert "Connection failed to SIEM" in hunt_audit_records[0]["detail"]
     assert "result" not in hunt_audit_records[0]

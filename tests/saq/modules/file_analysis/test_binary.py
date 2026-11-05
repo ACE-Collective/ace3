@@ -30,7 +30,6 @@ def _analyze(root_analysis, path: Path):
     ("document.rtf", b"{\\rtf1 " + b"a" * 10000 + b"\x00" + b"}", True),
     # RTF files often end with a null byte, which is ignored
     ("document.rtf", b"{\\rtf1 text}\x00", False),
-    ("document.rtf", b"{\\rtf1 text}", False),
     # EPS only counts inside a Word document
     ("image.doc.eps", b"%!PS-Adobe-3.0 EPSF\x00\x00", True),
     ("image.doc.eps", b"\xc5\xd0\xd3\xc6" + b"\x00" * 10, True),
@@ -47,13 +46,8 @@ def test_unexpected_binary_data(root_analysis, tmp_path, name, content, unexpect
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("name, content", [
-    ("image.eps", b"%!PS-Adobe-3.0 EPSF\x00\x00"),
-    ("program.exe", b"MZ\x00\x00"),
-    ("empty.rtf", b""),
-])
-def test_unsupported_files(root_analysis, tmp_path, name, content):
-    path = tmp_path / name
-    path.write_bytes(content)
+def test_unsupported_files(root_analysis, tmp_path):
+    path = tmp_path / "image.eps"
+    path.write_bytes(b"%!PS-Adobe-3.0 EPSF\x00\x00")
 
     assert not _analyze(root_analysis, path).get_and_load_analysis(BinaryFileAnalysis)

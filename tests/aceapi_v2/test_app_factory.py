@@ -41,15 +41,14 @@ async def test_shutdown_disposes_the_engines_and_stops_the_loop(factory, shutdow
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory", APP_FACTORIES)
-async def test_a_failed_dispose_is_logged_and_the_loop_still_stops(factory, shutdown_calls, monkeypatch, caplog):
+async def test_a_failed_dispose_is_logged_and_the_loop_still_stops(shutdown_calls, monkeypatch, caplog):
     async def dispose():
         _raise("dispose")
 
     monkeypatch.setattr(app_factory, "dispose_engines_for_current_loop", dispose)
     caplog.set_level(logging.DEBUG, logger=app_factory.__name__)
 
-    app = factory()
+    app = create_app()
     async with app.router.lifespan_context(app):
         pass
 
@@ -62,12 +61,11 @@ async def test_a_failed_dispose_is_logged_and_the_loop_still_stops(factory, shut
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("factory", APP_FACTORIES)
-async def test_a_failed_loop_shutdown_is_logged(factory, shutdown_calls, monkeypatch, caplog):
+async def test_a_failed_loop_shutdown_is_logged(shutdown_calls, monkeypatch, caplog):
     monkeypatch.setattr(app_factory, "shutdown_loop", lambda: _raise("shutdown_loop"))
     caplog.set_level(logging.DEBUG, logger=app_factory.__name__)
 
-    app = factory()
+    app = create_app()
     async with app.router.lifespan_context(app):
         pass
 

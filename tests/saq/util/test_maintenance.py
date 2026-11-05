@@ -3,6 +3,7 @@ import logging
 import os.path
 import time
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from saq.analysis import RootAnalysis
 from saq.analysis.blob_store import (
@@ -36,7 +37,6 @@ from sqlalchemy import func, text
     #days  target   insrt  age event  raise  fail   n-succ cnt isdir  dry
     (0,   "target", False, 0,  False, True,  False, False, 0,  True,  False), # invalid days
     (1,   "",       False, 0,  False, True,  False, False, 0,  True,  False), # invalid target
-    (1,   "target", False, 0,  False, False, False, False, 0,  True,  False), # no alerts
     (30,  "target", True,  3,  False, False, False, False, 0,  True,  False), # alert to new to distribute
     (1,   "target", True,  3,  False, False, False, False, 1,  False, False), # alert distributed
     (1,   "target", True,  3,  True,  False, False, False, 0,  True,  False), # alert added to event
@@ -110,7 +110,7 @@ def test_distribute_old_alerts(days, target, insert_alert, alert_age_days, add_t
 
     if expected_raises:
         with pytest.raises(AssertionError):
-            assert distribute_old_alerts(days, dry_run, target) == expected_count
+            distribute_old_alerts(days, dry_run, target)
     else:
         assert distribute_old_alerts(days, dry_run, target) == expected_count
 
@@ -135,9 +135,11 @@ def test_gc_durable_blobs_skips_when_not_primary(monkeypatch):
     """Durable blob GC is global maintenance — non-primary nodes must skip it."""
     import saq.util.maintenance as maintenance
     monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
+    store = Mock()
+    monkeypatch.setattr(maintenance, "get_blob_store", lambda: store)
     stats = maintenance.gc_durable_blobs()
-    assert stats.blobs_scanned == 0
-    assert stats.blobs_deleted == 0
+    store.maintain_global.assert_not_called()
+    assert stats == GlobalMaintenanceStats()
 
 
 @pytest.mark.integration

@@ -31,37 +31,6 @@ def test_configuration_manager_initialization():
 
 
 @pytest.mark.unit
-def test_analysis_mode_support_logic():
-    """Test the analysis mode support logic."""
-    # Test with no restrictions (supports all modes)
-    config_manager = ConfigurationManager(config=EngineConfiguration(
-        default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        local_analysis_modes=[],
-        excluded_analysis_modes=[],
-    ))
-    assert config_manager.is_analysis_mode_supported("any_mode") is True
-    
-    # Test with local modes specified
-    config_manager = ConfigurationManager(config=EngineConfiguration(
-        default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        local_analysis_modes=["test_mode", "analysis"],
-        excluded_analysis_modes=[],
-    ))
-    assert config_manager.is_analysis_mode_supported("test_mode") is True
-    assert config_manager.is_analysis_mode_supported("analysis") is True
-    assert config_manager.is_analysis_mode_supported("other_mode") is False
-    
-    # Test with excluded modes
-    config_manager = ConfigurationManager(config=EngineConfiguration(
-        default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        local_analysis_modes=[],
-        excluded_analysis_modes=["excluded_mode"],
-    ))
-    assert config_manager.is_analysis_mode_supported("any_mode") is True
-    assert config_manager.is_analysis_mode_supported("excluded_mode") is False
-
-
-@pytest.mark.unit
 def test_enable_module_for_testing():
     """Test enabling modules for local testing."""
 
@@ -80,25 +49,6 @@ def test_enable_module_for_testing():
     assert "test_module2" in config_manager.locally_enabled_modules
     assert "test_mode" in config_manager.locally_mapped_analysis_modes
     assert "test_module2" in config_manager.locally_mapped_analysis_modes["test_mode"]
-
-
-@pytest.mark.unit 
-def test_add_analysis_module():
-    """Test adding analysis modules."""
-    
-    config_manager = ConfigurationManager(config=EngineConfiguration(
-        default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        local_analysis_modes=[],
-        excluded_analysis_modes=[],
-    ))
-    
-    analysis_module = BasicTestAnalyzer(get_analysis_module_config("basic_test"))
-    config_manager.add_analysis_module(analysis_module)
-    
-    assert len(config_manager.analysis_modules) == 1
-    assert analysis_module in config_manager.analysis_modules
-    assert ANALYSIS_MODE_ANALYSIS in config_manager.analysis_mode_mapping
-    assert analysis_module in config_manager.analysis_mode_mapping[ANALYSIS_MODE_ANALYSIS]
 
 
 @pytest.mark.unit
@@ -137,140 +87,72 @@ def test_get_analysis_module_by_name():
     analysis_module = BasicTestAnalyzer(get_analysis_module_config("basic_test"))
     config_manager.add_analysis_module(analysis_module)
     
-    # Test with valid name
-    if analysis_module.name:
-        found_module = config_manager.get_analysis_module_by_name(analysis_module.name)
-        assert found_module == analysis_module
-    
-    # Test with invalid name
-    found_module = config_manager.get_analysis_module_by_name("nonexistent_name")
-    assert found_module is None
+    assert config_manager.get_analysis_module_by_name("basic_test") is analysis_module
+    assert config_manager.is_module_enabled("basic_test") is True
 
-
-@pytest.mark.unit
-def test_is_module_enabled():
-    """Test checking if module is enabled."""
-    
-    config_manager = ConfigurationManager(config=EngineConfiguration(
-        default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
-        local_analysis_modes=[],
-        excluded_analysis_modes=[],
-    ))
-    
-    analysis_module = BasicTestAnalyzer(get_analysis_module_config("basic_test"))
-    config_manager.add_analysis_module(analysis_module)
-    
-    # Test with valid name
-    if analysis_module.name:
-        assert config_manager.is_module_enabled(analysis_module.name) is True
-    
-    # Test with invalid name
+    assert config_manager.get_analysis_module_by_name("nonexistent_name") is None
     assert config_manager.is_module_enabled("nonexistent_name") is False
 
 
 @pytest.mark.integration
 def test_load_modules_integration():
-    """Test the full module loading process."""
+    """Every enabled module is loaded and mapped to the modes that name it, and a supported
+    mode that names no module still gets an (empty) entry."""
     config_manager = ConfigurationManager(config=EngineConfiguration(
         default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
         local_analysis_modes=[],
         excluded_analysis_modes=[],
     ))
 
-    # Enable one module to be loaded
-    analysis_module = BasicTestAnalyzer(get_analysis_module_config("basic_test"))
-    module_config = get_analysis_module_config(analysis_module.name)
-    if module_config:
-        module_config.enabled = True
+    get_analysis_module_config("basic_test").enabled = True
 
     config_manager.load_modules()
 
-    # Should load the enabled module
-    assert len(config_manager.analysis_modules) >= 0  # May be 0 if config not found
+    basic_test = config_manager.get_analysis_module_by_name("basic_test")
+    assert basic_test is not None
+    # test_single enables it, test_groups and test_queues name it through a module group, and
+    # test_disabled names it through a group but disables it
+    assert sorted(
+        mode for mode, modules in config_manager.analysis_mode_mapping.items() if basic_test in modules
+    ) == ["test_groups", "test_queues", "test_single"]
+    assert config_manager.analysis_mode_mapping["test_empty"] == []
 
 
 @pytest.mark.unit
-def test_engine_configuration_loads_from_config():
-    """Test that EngineConfiguration loads all properties correctly from configuration."""
+def test_engine_configuration_loads_from_config(monkeypatch):
+    """With no arguments, EngineConfiguration reads the engine section of the configuration."""
+    engine_config = get_engine_config()
+    monkeypatch.setattr(engine_config, "default_analysis_mode", "test_single")
+    # the default mode is added to a non-empty list of local modes
+    monkeypatch.setattr(engine_config, "local_analysis_modes", ["test_groups"])
+    monkeypatch.setattr(engine_config, "excluded_analysis_modes", [])
+    monkeypatch.setattr(engine_config, "non_detectable_modes", ["test_empty"])
+    monkeypatch.setattr(engine_config, "pool_size_limit", 7)
+    monkeypatch.setattr(engine_config, "alerting_enabled", False)
+    monkeypatch.setattr(engine_config, "work_dir", "/opt/work")
+    monkeypatch.setattr(engine_config, "alert_disposition_check_frequency", 11)
+    monkeypatch.setattr(engine_config, "auto_refresh_frequency", 13)
+    # LOCAL stands for this node
+    monkeypatch.setattr(engine_config, "target_nodes", ["LOCAL", "node-2"])
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_node", "node-1")
+    monkeypatch.setattr(get_config().global_settings, "memory_limit_kill", 3)
+    monkeypatch.setattr(get_config().global_settings, "memory_limit_warning", 2)
 
-    # Create an EngineConfiguration without passing any parameters
-    # This should load everything from the configuration
     config = EngineConfiguration()
 
-    # Test default_analysis_mode
-    expected_default_mode = get_engine_config().default_analysis_mode
-    assert config.default_analysis_mode == expected_default_mode
-
-    # Test local_analysis_modes
-    expected_local_modes = get_engine_config().local_analysis_modes
-
-    # Note: the implementation adds default_analysis_mode to the list if not empty
-    if expected_local_modes and config.default_analysis_mode not in expected_local_modes:
-        expected_local_modes.append(config.default_analysis_mode)
-
-    assert config.local_analysis_modes == expected_local_modes
-
-    # Test excluded_analysis_modes
-    expected_excluded_modes = get_engine_config().excluded_analysis_modes
-    assert config.excluded_analysis_modes == expected_excluded_modes
-
-    # Test non_detectable_modes
-    expected_non_detectable = get_engine_config().non_detectable_modes
-    assert config.non_detectable_modes == expected_non_detectable
-
-    # Test pool_size_limit
-    expected_pool_size_limit = get_engine_config().pool_size_limit
-    assert config.pool_size_limit == expected_pool_size_limit
-
-    # Test alerting_enabled
-    expected_alerting_enabled = get_engine_config().alerting_enabled
-    assert config.alerting_enabled == expected_alerting_enabled
-
-    # Test work_dir
-    expected_work_dir = get_engine_config().work_dir
-    assert config.work_dir == expected_work_dir
-
-    # Test alert_disposition_check_frequency
-    expected_alert_disp_freq = get_engine_config().alert_disposition_check_frequency
-    assert config.alert_disposition_check_frequency == expected_alert_disp_freq
-
-    # Test auto_refresh_frequency
-    expected_auto_refresh = get_engine_config().auto_refresh_frequency
-    assert config.auto_refresh_frequency == expected_auto_refresh
-
-    # Test maximum_cumulative_analysis_warning_time
-    #expected_max_warning_time = get_engine_config().maximum_cumulative_analysis_warning_time
-    #assert config.maximum_cumulative_analysis_warning_time == expected_max_warning_time
-
-    # Test maximum_cumulative_analysis_fail_time
-    #expected_max_fail_time = get_engine_config().maximum_cumulative_analysis_fail_time
-    #assert config.maximum_cumulative_analysis_fail_time == expected_max_fail_time
-
-    # Test maximum_analysis_time
-    #expected_max_analysis_time = get_engine_config().maximum_analysis_time
-    #assert config.maximum_analysis_time == expected_max_analysis_time
-
-    # Test target_nodes
-    expected_target_nodes = get_engine_config().target_nodes
-    # Note: target_nodes may have LOCAL translated to actual node name
-    expected_target_nodes = [
-        get_global_runtime_settings().saq_node if node == "LOCAL" else node for node in expected_target_nodes
-    ]
-    assert config.target_nodes == expected_target_nodes
-
-    # Test memory limits
-    expected_memory_kill = get_config().global_settings.memory_limit_kill * 1024 * 1024
-    expected_memory_warning = get_config().global_settings.memory_limit_warning * 1024 * 1024
-    assert config.memory_limit_kill == expected_memory_kill
-    assert config.memory_limit_warning == expected_memory_warning
-
-    # Test that stats_dir, runtime_dir, and observable_exclusions are initialized
-    assert config.stats_dir is not None
-    assert config.runtime_dir is not None
-    assert isinstance(config.observable_exclusions, dict)
-    # the observable_exclusions: section of etc/saq.default.yaml is parsed into
-    # {o_type: [o_value]} -- see test_engine_configuration_observable_exclusions
-    assert config.observable_exclusions
+    assert config.default_analysis_mode == "test_single"
+    assert config.local_analysis_modes == ["test_groups", "test_single"]
+    assert config.excluded_analysis_modes == []
+    assert config.non_detectable_modes == ["test_empty"]
+    assert config.pool_size_limit == 7
+    assert config.alerting_enabled is False
+    assert config.work_dir == "/opt/work"
+    assert config.alert_disposition_check_frequency == 11
+    assert config.auto_refresh_frequency == 13
+    assert config.target_nodes == ["node-1", "node-2"]
+    # megabytes in the configuration, bytes on the engine
+    assert config.memory_limit_kill == 3145728
+    assert config.memory_limit_warning == 2097152
 
 
 @pytest.mark.unit
@@ -349,48 +231,35 @@ def test_engine_configuration_shipped_observable_exclusions_are_live():
 
 
 @pytest.mark.unit
-def test_engine_configuration_analysis_pools_loaded_from_config():
+def test_engine_configuration_analysis_pools_loaded_from_config(monkeypatch):
     """Test that analysis_pools are loaded automatically from configuration."""
-    from saq.engine.engine_configuration import compute_pool_size
+    # the unittest configuration defines no pools
+    monkeypatch.setattr(get_engine_config(), "analysis_pools", {"analysis": 3, "correlation": "2"})
 
-    # Create config without passing analysis_pools - should load from configuration
     # Use local_analysis_modes=[] to avoid filtering
     config = EngineConfiguration(local_analysis_modes=[])
 
-    # Get the analysis_pools from configuration
-    config_analysis_pools = get_engine_config().analysis_pools
-
-    # Compute expected pools using the compute_pool_size function
-    expected_pools = {}
-    for analysis_mode, value in config_analysis_pools.items():
-        expected_pools[analysis_mode] = compute_pool_size(value)
-
-    # Verify the pools were loaded
-    assert isinstance(config.analysis_pools, dict)
-    for analysis_mode, count in expected_pools.items():
-        assert analysis_mode in config.analysis_pools
-        assert config.analysis_pools[analysis_mode] == count
+    assert config.analysis_pools == {"analysis": 3, "correlation": 2}
 
 
 @pytest.mark.unit
-def test_engine_configuration_analysis_pools_empty_when_none_defined():
-    """Test that analysis_pools is empty when no pools are defined in config and none passed."""
-    # Create config with explicit empty pools to override any config values
+def test_engine_configuration_analysis_pools_empty_when_none_defined(monkeypatch):
+    """An explicitly empty analysis_pools wins over the pools the configuration defines."""
+    monkeypatch.setattr(get_engine_config(), "analysis_pools", {"analysis": 3})
+
     config = EngineConfiguration(
         analysis_pools={},
         local_analysis_modes=[],
         default_analysis_mode=ANALYSIS_MODE_ANALYSIS,
     )
 
-    # Should have empty pools since we explicitly passed an empty dict
     assert config.analysis_pools == {}
-    assert isinstance(config.analysis_pools, dict)
 
 
 @pytest.mark.unit
-def test_engine_configuration_analysis_pools_explicit():
+def test_engine_configuration_analysis_pools_explicit(monkeypatch):
     """Test that explicitly passed analysis_pools are used correctly."""
-    from multiprocessing import cpu_count
+    monkeypatch.setattr("saq.engine.engine_configuration.cpu_count", lambda: 6)
 
     test_pools = {
         "analysis": 4,
@@ -407,7 +276,7 @@ def test_engine_configuration_analysis_pools_explicit():
 
     # Should use the explicitly provided pools with computed values
     assert config.analysis_pools["analysis"] == 4
-    assert config.analysis_pools["correlation"] == int(cpu_count() * 50 / 100)
+    assert config.analysis_pools["correlation"] == 3
     assert config.analysis_pools["email"] == 8
 
 
@@ -544,28 +413,6 @@ def test_compute_pool_size_with_integer():
 
 
 @pytest.mark.unit
-def test_compute_pool_size_with_percentage():
-    """Test compute_pool_size with percentage string."""
-    from saq.engine.engine_configuration import compute_pool_size
-    from multiprocessing import cpu_count
-
-    # Test with 50%
-    result = compute_pool_size("50%")
-    expected = int(cpu_count() * 50 / 100)
-    assert result == expected
-
-    # Test with 100%
-    result = compute_pool_size("100%")
-    expected = int(cpu_count() * 100 / 100)
-    assert result == expected
-
-    # Test with 25%
-    result = compute_pool_size("25%")
-    expected = int(cpu_count() * 25 / 100)
-    assert result == expected
-
-
-@pytest.mark.unit
 def test_compute_pool_size_with_string_number():
     """Test compute_pool_size with string number input."""
     from saq.engine.engine_configuration import compute_pool_size
@@ -613,59 +460,19 @@ def test_compute_pool_size_percentage_rounding():
 
 @pytest.mark.unit
 def test_compute_pool_size_percentage_edge_cases():
-    """Test compute_pool_size with edge case percentages."""
-    from saq.engine.engine_configuration import compute_pool_size
-    from multiprocessing import cpu_count
-
-    # Test with 0%
-    assert compute_pool_size("0%") == 0
-
-    # Test with 1% - should return at least 1 for non-zero percentages
-    result = compute_pool_size("1%")
-    expected = max(1, int(cpu_count() * 1 / 100))
-    assert result == expected
-
-    # Test with high percentage (200%)
-    result = compute_pool_size("200%")
-    expected = max(1, int(cpu_count() * 200 / 100))
-    assert result == expected
-
-    # Test with very high percentage (500%)
-    result = compute_pool_size("500%")
-    expected = max(1, int(cpu_count() * 500 / 100))
-    assert result == expected
-
-
-@pytest.mark.unit
-def test_compute_pool_size_zero_values():
-    """Test compute_pool_size with zero values."""
+    """0% is the one percentage that does not get the minimum of 1 worker."""
     from saq.engine.engine_configuration import compute_pool_size
 
-    # Integer zero
-    assert compute_pool_size(0) == 0
-
-    # String zero
-    assert compute_pool_size("0") == 0
-
-    # 0 percent
     assert compute_pool_size("0%") == 0
 
 
 @pytest.mark.unit
-def test_engine_configuration_directories():
+def test_engine_configuration_directories(monkeypatch):
     """Test that directory properties are set correctly."""
-    from saq.environment import get_data_dir
-    import os
+    monkeypatch.setattr(get_global_runtime_settings(), "module_stats_dir", "/opt/stats")
+    monkeypatch.setattr(get_global_runtime_settings(), "data_dir", "/opt/data")
 
     config = EngineConfiguration()
 
-    # Check stats_dir
-    expected_stats_dir = os.path.join(get_global_runtime_settings().module_stats_dir, "ace")
-    assert config.stats_dir == expected_stats_dir
-
-    # Check runtime_dir
-    expected_runtime_dir = os.path.join(get_data_dir(), "var", "engine", "ace")
-    assert config.runtime_dir == expected_runtime_dir
-
-    # Check that work_dir is loaded from config
-    assert config.work_dir is not None
+    assert config.stats_dir == "/opt/stats/ace"
+    assert config.runtime_dir == "/opt/data/var/engine/ace"

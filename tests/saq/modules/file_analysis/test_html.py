@@ -90,13 +90,15 @@ def test_data_url_max_bytes(root_analysis, tmp_path, monkeypatch):
 
 @pytest.mark.integration
 @pytest.mark.parametrize("content", [b"", b"<html>no data urls here</html>"])
-def test_data_url_nothing_to_extract(root_analysis, tmp_path, content):
+def test_data_url_nothing_to_extract(root_analysis, tmp_path, caplog, content):
     path = tmp_path / "page.html"
     path.write_bytes(content)
 
     observable = _analyze(root_analysis, path, "html_data_url_extraction")
 
     assert not observable.get_and_load_analysis(HTMLDataURLAnalysis)
+    # an empty file cannot be mapped: the module must not get that far
+    assert not [r for r in caplog.records if "failed on" in r.getMessage()]
 
 
 MHTML = (b"From: <Saved by Blink>\r\n"

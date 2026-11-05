@@ -14,7 +14,9 @@ from aceapi_v2.serving import serve_under
 async def test_serves_the_path_nginx_forwards():
     application = serve_under("/api/v2", create_engine_app())
     async with AsyncClient(transport=ASGITransport(app=application), base_url="http://test") as client:
-        assert (await client.get("/api/v2/health/ping")).status_code == 200
+        response = await client.get("/api/v2/health/ping")
+        assert response.status_code == 200
+        assert response.json() == {"result": "pong"}
         assert (await client.get("/health/ping")).status_code == 404
         # what the docs page builds its URLs from
         assert (await client.get("/api/v2/openapi.json")).json()["servers"] == [{"url": "/api/v2"}]

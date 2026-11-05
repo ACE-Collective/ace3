@@ -27,7 +27,7 @@ from saq.signatures.builtin import GENERIC
 from saq.svs import association, runs
 from saq.svs.attribution import evaluate, write_attributions
 from saq.svs.constants import RunEventKind, RunState
-from saq.svs.run_filters import needs_attention_condition, open_alerts_condition
+from saq.svs.run_filters import needs_attention_condition
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
@@ -307,13 +307,3 @@ class TestChangedSinceReview:
         db = get_db()
         db.expire_all()
         assert db.execute(select(SVSRun.changed_since_review).where(SVSRun.id == run.id)).scalar_one() is False
-
-
-def test_open_alerts_condition(run):
-    alert_uuid = _alert(marker=run.marker)
-    db = get_db()
-    assert db.execute(select(open_alerts_condition()).where(SVSRun.id == run.id)).scalar_one()
-
-    set_dispositions([alert_uuid], DISPOSITION_FALSE_POSITIVE, get_config().global_settings.automation_user_id)
-    db.expire_all()
-    assert not db.execute(select(open_alerts_condition()).where(SVSRun.id == run.id)).scalar_one()

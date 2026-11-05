@@ -5,18 +5,13 @@ from pydantic import BaseModel
 from aceapi_v2.common.listing import InvalidCursor, decode_cursor, encode_cursor, parse_timezone, rows_to_csv
 
 
-# cursors already handed out must keep working, so the encoding of each listing's cursor is pinned
+# cursors already handed out must keep working, so the encoding is pinned: every listing's
+# cursor goes through the same encode_cursor, so one cursor with each kind of value pins them all
 @pytest.mark.unit
 @pytest.mark.parametrize("fields, expected", [
-    # alerts, by id and by (updated_at, id)
-    ({"o": "id", "k": [42]}, "eyJ2IjoxLCJvIjoiaWQiLCJrIjpbNDJdfQ"),
-    ({"o": "updated_at", "k": ["2026-10-13T12:00:00", 42]},
-     "eyJ2IjoxLCJvIjoidXBkYXRlZF9hdCIsImsiOlsiMjAyNi0xMC0xM1QxMjowMDowMCIsNDJdfQ"),
     # samples, with their sort and direction
     ({"o": "last_captured", "d": True, "k": ["2026-10-13T12:00:00", "ab", "cd"]},
      "eyJ2IjoxLCJvIjoibGFzdF9jYXB0dXJlZCIsImQiOnRydWUsImsiOlsiMjAyNi0xMC0xM1QxMjowMDowMCIsImFiIiwiY2QiXX0"),
-    # detection points
-    ({"k": 7}, "eyJ2IjoxLCJrIjo3fQ"),
 ])
 def test_cursor_encoding_is_stable(fields, expected):
     assert encode_cursor(**fields) == expected

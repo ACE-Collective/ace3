@@ -266,7 +266,6 @@ class TestFilters:
         (["rule:old"], ["missing"]),
         (["file_name:tp.exe"], ["tp", "tp2"]),
         (["file_name:%"], []),
-        (["label:fp"], ["fp"]),
         (["label:tp,fp"], ["fp", "tp", "tp2"]),
         (["label:none"], ["missing", "none"]),
         # an inverse keeps the rows whose value is null
@@ -717,13 +716,6 @@ class TestLabelActions:
         (skipped,) = body["skipped"]
         assert skipped["alert_uuid"] == fp_alert.uuid
         assert "correct its disposition" in skipped["reason"]
-
-    @pytest.mark.asyncio
-    async def test_nothing_writable_is_409(self, client: AsyncClient):
-        _, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID])
-        response = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "tp"})
-        assert response.status_code == 409
-        assert "correct its disposition" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):

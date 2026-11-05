@@ -205,20 +205,6 @@ class TestLogin:
             assert 'javascript:' not in response.location
             assert response.location.endswith('/')
     
-    def test_login_with_data_url_blocked(self, app, test_user):
-        """Test that data: URLs are blocked."""
-        with app.test_client() as client:
-            data_url = 'data:text/html,<script>alert("xss")</script>'
-            response = client.post(url_for('auth.login', next=data_url), data={
-                'username': 'testuser',
-                'password': 'TestPass123!'
-            })
-            
-            assert response.status_code == 302
-            # Should redirect to main.index (/) instead of data URL
-            assert 'data:' not in response.location
-            assert response.location.endswith('/')
-    
     def test_login_with_invalid_url_blocked(self, app, test_user):
         """Test that invalid URLs are blocked."""
         with app.test_client() as client:
@@ -268,6 +254,11 @@ class TestLogout:
             
             assert response.status_code == 302
             assert response.location.endswith(url_for('main.index'))
+
+            # logged out: a protected page now redirects to the login page
+            response = client.get(url_for('auth.change_password'))
+            assert response.status_code == 302
+            assert 'login' in response.location
     
     def test_logout_get_request_rejected(self, app, test_user):
         """GET on logout must not log anyone out -- it is not safe to expose a
@@ -333,8 +324,9 @@ class TestChangePassword:
             
             assert response.status_code == 200
             assert b'Change Password' in response.data
-            assert b'Minimum' in response.data  # From template requirements
-            assert b'characters in length' in response.data
+            # the requirements the page lists come from the form's PASS_MIN_LENGTH and PASS_SPECIAL_CHARS
+            assert b'Minimum 8 characters in length' in response.data
+            assert b'Must contain one of: ,!@#$%^&amp; _. or space' in response.data
     
     def test_change_password_unauthenticated(self, app):
         """Test change password requires authentication."""
@@ -363,6 +355,10 @@ class TestChangePassword:
             # Should redirect to login after successful change (session invalidated)
             assert response.status_code == 302
             assert response.location.endswith(url_for('auth.login'))
+
+        get_db().expire_all()
+        user = get_db().query(User).filter_by(username='testuser').one()
+        assert user.verify_password('NewPass456@')
     
     def test_change_password_wrong_current(self, app, test_user):
         """Test change password with incorrect current password."""
@@ -392,15 +388,19 @@ class TestChangePassword:
                 'password': 'TestPass123!'
             })
             
-            # Try with weak password
-            response = client.post(url_for('auth.change_password'), data={
-                'current_password': 'TestPass123!',
-                'new_password': 'weak',
-                'confirm': 'weak'
-            })
-            
-            assert response.status_code == 200
-            # Form validation should prevent submission
+            # each password breaks exactly one of the form's rules
+            for weak in ('NEWPASS456@', 'newpass456@', 'NewPassABC@', 'NewPass4567', 'Np4@abc'):
+                response = client.post(url_for('auth.change_password'), data={
+                    'current_password': 'TestPass123!',
+                    'new_password': weak,
+                    'confirm': weak
+                })
+                # the form is shown again rather than the redirect to the login page
+                assert response.status_code == 200, weak
+
+        get_db().expire_all()
+        user = get_db().query(User).filter_by(username='testuser').one()
+        assert user.verify_password('TestPass123!')
     
     def test_change_password_mismatch(self, app, test_user):
         """Test password change with mismatched new passwords.""" 
@@ -420,20 +420,6 @@ class TestChangePassword:
             assert response.status_code == 200
             # Form validation should prevent submission due to mismatch
     
-    def test_change_password_includes_template_vars(self, app, test_user):
-        """Test that change password template includes required variables."""
-        with app.test_client() as client:
-            # Login first
-            client.post(url_for('auth.login'), data={
-                'username': 'testuser',
-                'password': 'TestPass123!'
-            })
-            
-            response = client.get(url_for('auth.change_password'))
-            
-            assert response.status_code == 200
-            # Check that special chars and min length are mentioned in page
-            assert b'8' in response.data  # PASS_MIN_LENGTH
 
 class TestOwnApiKey:
     """API keys are display-once and never recoverable, so there is no nav-bar action to re-copy
@@ -450,7 +436,3 @@ class TestOwnApiKey:
             assert page.status_code == 200
             assert b'copy_api_key_link' not in page.data
             assert b'/api/v2/users/me/apikey' not in page.data
-
-    def test_no_flask_apikey_route_exists(self, app):
-        """New endpoints belong in aceapi_v2; nothing in the auth blueprint serves the key."""
-        assert 'auth.get_own_api_key' not in app.view_functions

@@ -1,11 +1,10 @@
 import base64
-import logging
 
 import pytest
 
 from saq.analysis.analysis import Analysis
 from saq.analysis.root import RootAnalysis
-from saq.constants import DIRECTIVE_NO_SANDBOX, DIRECTIVE_SANDBOX_FORCE, F_MD5, F_SHA256
+from saq.constants import DIRECTIVE_NO_SANDBOX, DIRECTIVE_SANDBOX_FORCE
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.sandbox import *
 from saq.modules.sandbox import SandboxAnalysisModule, SandboxAnalysisModuleConfig
@@ -102,7 +101,8 @@ def test_is_sandboxable_file_supported_extension():
 
 
 @pytest.mark.unit
-def test_proxies_empty_when_proxy_disabled():
+def test_proxies_empty_when_proxy_disabled(monkeypatch):
+    monkeypatch.setattr("saq.modules.sandbox.proxies", lambda: {"https": "http://proxy:3128"})
     module = _make_configured_module(use_proxy=False)
 
     assert module.proxies == {}
@@ -121,20 +121,6 @@ def test_contacted_host():
         'location': '',
         'associated_domains': []
     }
-
-
-@pytest.mark.unit
-def test_contacted_host_list():
-    c1 = ContactedHost(ip='192.168.1.1', port='80')
-    c2 = ContactedHost(ip='192.168.1.1', port='80', protocol='TCP', associated_domains=['localhost.localdomain'])
-
-    c_list = ContactedHostList()
-    c_list.append(c1)
-    c_list.append(c2)
-
-    assert len(c_list) == 1
-    assert c_list[0].protocol == 'TCP'
-    assert c_list[0].associated_domains == ['localhost.localdomain']
 
 
 @pytest.mark.unit
@@ -387,9 +373,9 @@ def test_proxies_uses_configured_proxy(monkeypatch):
     # is_pdf_file wants "%PDF-", the header check takes "%PDF" anywhere in the first 1024 bytes
     ("sample.bin", b"junk %PDF without a version", True),
     ("sample.bin", b"just some text", False),
-    # a sandbox gains nothing from an image
+    # a sandbox gains nothing from an image, even one with a PDF header in it
     ("sample.gif", b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00"
-                   b",\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;", False),
+                   b",\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;%PDF-1.7", False),
 ])
 def test_is_sandboxable_file_by_content(tmp_path, file_name, content, expected):
     path = tmp_path / file_name
@@ -406,41 +392,6 @@ class _HashTestModule(SandboxAnalysisModule):
     @property
     def generated_analysis_type(self):
         return _SandboxTestAnalysis
-
-
-@pytest.mark.unit
-def test_hash_has_been_analyzed(tmp_path, monkeypatch):
-    from saq.modules.file_analysis import FileHashAnalysis
-
-    root = RootAnalysis(storage_dir=str(tmp_path / "root"))
-    root.initialize_storage()
-    path = root.create_file_path("analyzed.exe")
-    with open(path, "w") as fp:
-        fp.write("MZ")
-    analyzed = root.add_file_observable(path)
-    hash_analysis = FileHashAnalysis()
-    hash_analysis.md5 = "a" * 32
-    hash_analysis.sha256 = "b" * 64
-    analyzed.add_analysis(hash_analysis)
-    analyzed.add_analysis(_SandboxTestAnalysis())
-
-    # same hash, but this file was never sent to the sandbox
-    path = root.create_file_path("not_analyzed.exe")
-    with open(path, "w") as fp:
-        fp.write("MZ!")
-    not_analyzed = root.add_file_observable(path)
-    other_hash = FileHashAnalysis()
-    other_hash.md5 = "c" * 32
-    other_hash.sha256 = "d" * 64
-    not_analyzed.add_analysis(other_hash)
-
-    module = object.__new__(_HashTestModule)
-    monkeypatch.setattr(module, "get_root", lambda: root, raising=False)
-
-    assert module.hash_has_been_analyzed(F_MD5, "a" * 32)
-    assert module.hash_has_been_analyzed(F_SHA256, "b" * 64)
-    assert not module.hash_has_been_analyzed(F_MD5, "c" * 32)
-    assert not module.hash_has_been_analyzed(F_SHA256, "e" * 64)
 
 
 @pytest.mark.unit
@@ -463,22 +414,6 @@ def test_contacted_host_list_merges_domains_and_accepts_dicts():
     assert h_list[0].protocol == 'TCP'
     assert h_list[0].location == 'US'
     assert sorted(h_list[0].associated_domains) == ['a.example', 'b.example']
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("list_class,entry,message", [
-    (ContactedHostList, {'ip': '192.168.1.1'}, 'invalid contacted host'),
-    (DnsRequestList, {'request': 'a.example'}, 'invalid DNS request'),
-    (DroppedFileList, {'filename': 'a.exe'}, 'invalid dropped file'),
-    (HttpRequestList, {'host': 'a.example'}, 'invalid HTTP request'),
-    (ProcessList, {'command': 'a.exe'}, 'invalid process'),
-])
-def test_report_lists_skip_incomplete_dicts(caplog, list_class, entry, message):
-    entries = list_class()
-    entries.append(entry)
-
-    assert len(entries) == 0
-    assert any(r.levelno == logging.ERROR and message in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit

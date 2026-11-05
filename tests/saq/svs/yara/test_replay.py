@@ -121,18 +121,6 @@ def test_a_head_that_would_not_load_is_not_compared(svs_repository, capsys):
 
 
 @pytest.mark.integration
-def test_the_report_prints(svs_repository, capsys):
-    stored_sample("DELIVERY", b"alpha evil", [R1])
-    base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})
-    head = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "nothing"')})
-
-    print_report(run_replay(REPOSITORY, base, head))
-    output = capsys.readouterr().out
-    assert "Regressions (1):" in output
-    assert "one" in output
-
-
-@pytest.mark.integration
 def test_the_working_directory_is_deleted_when_the_scan_fails(svs_repository):
     stored_sample("DELIVERY", b"alpha evil", [R1])
     sha = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})

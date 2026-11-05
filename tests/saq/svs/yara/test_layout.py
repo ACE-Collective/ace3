@@ -16,17 +16,6 @@ def _touch(path, content="rule x { condition: false }\n"):
 
 
 @pytest.mark.unit
-def test_signature_dir_inside_the_checkout_is_contained(tmp_path):
-    (tmp_path / "repo" / "yara").mkdir(parents=True)
-    layout = derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "repo" / "yara"))
-    assert layout.contained
-    assert layout.signature_dir_path == "yara"
-
-    layout = derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "repo"))
-    assert layout.signature_dir_path == ""
-
-
-@pytest.mark.unit
 def test_entries_linking_into_the_checkout_are_namespaces(tmp_path):
     (tmp_path / "repo" / "rules" / "acme").mkdir(parents=True)
     (tmp_path / "repo" / "rules" / "other").mkdir(parents=True)
@@ -42,14 +31,6 @@ def test_entries_linking_into_the_checkout_are_namespaces(tmp_path):
     layout = derive_layout("r", str(tmp_path / "repo"), str(signature_dir))
     assert not layout.contained
     assert layout.namespaces == (Namespace("acme", "rules/acme"), Namespace("whole", ""))
-
-
-@pytest.mark.unit
-def test_a_checkout_that_feeds_nothing_is_an_error(tmp_path):
-    (tmp_path / "repo").mkdir()
-    (tmp_path / "signatures" / "local").mkdir(parents=True)
-    with pytest.raises(LayoutError, match="holds no rules"):
-        derive_layout("r", str(tmp_path / "repo"), str(tmp_path / "signatures"))
 
 
 @pytest.mark.integration

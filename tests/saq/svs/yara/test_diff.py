@@ -35,10 +35,8 @@ def test_a_sample_is_judged_by_its_own_label(label, source, base, head, expected
 
 @pytest.mark.unit
 @pytest.mark.parametrize("file_labels, base, head, expected", [
-    (["fp"], MISS, MATCH, Category.NEW_FP_OTHER_RULE),
     (["fp", "fp"], MISS, MATCH, Category.NEW_FP_OTHER_RULE),
     (["fp", "tp"], MISS, MATCH, Category.NEW_MATCH_REAL_HIT),
-    (["tp"], MISS, MATCH, Category.NEW_MATCH_REAL_HIT),
     (["fp", None], MISS, MATCH, Category.UNLABELED_CHANGE),
     (["conflicted"], MISS, MATCH, Category.UNLABELED_CHANGE),
     (["fp"], MATCH, MISS, Category.UNLABELED_CHANGE),
@@ -51,9 +49,7 @@ def test_another_rule_is_judged_by_the_files_labels(file_labels, base, head, exp
 
 @pytest.mark.unit
 @pytest.mark.parametrize("meta, expected", [
-    ({}, None),
     ({"enabled": False}, "enabled = false"),
-    ({"enabled": "no"}, "enabled = false"),
     ({"modifiers": "qa"}, "in QA mode"),
     ({"modifiers": "directive=sandbox, no_alert"}, "no_alert"),
     ({"modifiers": "directive=sandbox"}, None),

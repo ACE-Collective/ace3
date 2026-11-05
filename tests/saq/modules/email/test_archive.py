@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import pytest
@@ -40,7 +41,7 @@ def test_encrypted_archive_analysis(tmpdir):
     assert analysis.generate_summary()
 
 @pytest.mark.unit
-def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, tmpdir):
+def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, tmpdir, caplog):
     analyzer = EncryptedArchiveAnalyzer(
         context=create_test_context(root=root_analysis),
         config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
@@ -55,8 +56,9 @@ def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, 
 
     with monkeypatch.context() as mp:
         mp.setattr(get_global_runtime_settings(), "encryption_initialized", False)
-        # returns False if encryption is not initialized
+        # nothing is decrypted if encryption is not initialized
         assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+        assert observable.get_analysis(EncryptedArchiveAnalysis) is None
 
     # skip files that do not end with .gz.e
     target_path = tmpdir / "invalid"
@@ -65,7 +67,12 @@ def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, 
 
     invalid_observable = root_analysis.add_file_observable(target_path)
     assert isinstance(invalid_observable, Observable)
-    assert analyzer.execute_analysis(invalid_observable) == AnalysisExecutionResult.COMPLETED
+    with caplog.at_level(logging.WARNING):
+        assert analyzer.execute_analysis(invalid_observable) == AnalysisExecutionResult.COMPLETED
+
+    assert invalid_observable.get_analysis(EncryptedArchiveAnalysis) is None
+    # skipped, not tried and failed
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     # handle corrupt file
     invalid_path = tmpdir / "invalid.gz.e"
@@ -73,7 +80,10 @@ def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, 
 
     corrupt_file = root_analysis.add_file_observable(str(invalid_path))
     assert isinstance(corrupt_file, Observable)
-    assert analyzer.execute_analysis(corrupt_file) == AnalysisExecutionResult.COMPLETED
+    with caplog.at_level(logging.ERROR):
+        assert analyzer.execute_analysis(corrupt_file) == AnalysisExecutionResult.COMPLETED
+    assert corrupt_file.get_analysis(EncryptedArchiveAnalysis) is None
+    assert any(r.levelno == logging.ERROR and r.getMessage().startswith("unable to decrypt") for r in caplog.records)
 
     # hand valid file
     analysis_result = analyzer.execute_analysis(observable)

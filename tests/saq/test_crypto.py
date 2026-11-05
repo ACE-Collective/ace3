@@ -1,18 +1,15 @@
 import pytest
 
-from saq.crypto import InvalidPasswordError, PasswordNotSetError, decrypt_chunk, encrypt_chunk, encryption_key_set, get_aes_key, set_encryption_password
-
-@pytest.mark.integration
-def test_set_password():
-    assert encryption_key_set()
-    # verify the password
-    aes_key = get_aes_key('test')
-    assert isinstance(aes_key, bytes)
-    assert len(aes_key) == 32
-
-    # encrypt and decrypt something with this password
-    encrypted_chunk = encrypt_chunk('Hello, World!'.encode(), password=aes_key)
-    assert decrypt_chunk(encrypted_chunk, password=get_aes_key('test')) == 'Hello, World!'.encode()
+from saq.crypto import (
+    CONFIG_KEY_ENCRYPTION_KEY,
+    InvalidPasswordError,
+    PasswordNotSetError,
+    decrypt_chunk,
+    encrypt_chunk,
+    encryption_key_set,
+    get_aes_key,
+    set_encryption_password,
+)
 
 @pytest.mark.integration
 def test_change_password():
@@ -29,22 +26,6 @@ def test_invalid_password():
     assert encryption_key_set()
     with pytest.raises(InvalidPasswordError):
         aes_key = get_aes_key('invalid_password')
-
-@pytest.mark.integration
-def test_encrypt_chunk():
-    chunk = b'1234567890'
-    encrypted_chunk = encrypt_chunk(chunk)
-    assert chunk != encrypted_chunk
-    decrypted_chunk = decrypt_chunk(encrypted_chunk)
-    assert chunk == decrypted_chunk
-
-@pytest.mark.integration
-def test_encrypt_empty_chunk():
-    chunk = b''
-    encrypted_chunk = encrypt_chunk(chunk)
-    assert chunk != encrypted_chunk
-    decrypted_chunk = decrypt_chunk(encrypted_chunk)
-    assert chunk == decrypted_chunk
 
 #
 # file formats (v0 and v1) and the stream API
@@ -93,6 +74,36 @@ def _frozen_v0_decrypt(data: bytes, key: bytes) -> bytes:
     cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag))
     decryptor = cipher.decryptor()
     return (decryptor.update(data[20:-16]) + decryptor.finalize())[:original_size]
+
+
+def _frozen_v1_decrypt(data: bytes, key: bytes) -> bytes:
+    """The v1 layout as the module docstring of saq/crypto.py specifies it, written out here so that a
+    change to the layout fails a test instead of changing the encoder and the decoder together."""
+    header = data[:36]
+    assert header[:7] == b"ACE-GCM"
+    nonce = header[24:36]
+    cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, data[-16:]))
+    decryptor = cipher.decryptor()
+    decryptor.authenticate_additional_data(header)
+    return decryptor.update(data[36:-16]) + decryptor.finalize()
+
+
+# a raw 32-byte key and its key id, sha256(b"ace-key-id:" + key)[:8] computed outside ACE. Key ids
+# are stored (cas_objects.key_id) and every node computes its own, so they are pinned as literals.
+FIXED_KEY = bytes(range(32))
+FIXED_KEY_ID = "a6caee7affc8dd1d"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("chunk", [b"", b"1234567890"])
+def test_encrypt_chunk_uses_the_v0_layout(chunk):
+    # the wrapped data key in `config` and every row of encrypted_passwords are stored in it
+    key = _get_password()
+    encrypted = encrypt_chunk(chunk)
+    assert len(encrypted) == 8 + 12 + len(chunk) + 16
+    assert _frozen_v0_decrypt(encrypted, key) == chunk
+    assert decrypt_chunk(_frozen_v0_encrypt(chunk, key)) == chunk
+    assert decrypt_chunk(encrypted) == chunk
 
 
 class _NonSeekable(io.RawIOBase):
@@ -147,43 +158,51 @@ def test_encrypt_still_writes_v0_for_existing_callers(tmp_path):
 
 
 @pytest.mark.unit
-def test_v1_round_trip_and_header_layout(tmp_path):
+def test_v1_round_trip_and_header_layout():
     plaintext = os.urandom(2 * CHUNK_SIZE + 3)
     encrypted = io.BytesIO()
-    result = encrypt_stream(io.BytesIO(plaintext), encrypted, size=len(plaintext))
+    result = encrypt_stream(io.BytesIO(plaintext), encrypted, size=len(plaintext), password=FIXED_KEY)
     data = encrypted.getvalue()
 
-    assert result.format_version == FORMAT_V1
-    assert result.key_id == get_key_id()
-    assert len(result.key_id) == 16
+    assert result.format_version == 1
+    assert result.key_id == FIXED_KEY_ID
     assert result.size == len(plaintext)
-    assert result.stored_size == len(data) == V1_HEADER_SIZE + len(plaintext) + 16
+    assert result.stored_size == len(data) == 36 + len(plaintext) + 16
 
-    assert data[:7] == MAGIC
-    assert data[7] == FORMAT_V1
-    assert data[8:16].hex() == get_key_id()
+    assert data[:7] == b"ACE-GCM"
+    assert data[7] == 1
+    assert data[8:16].hex() == FIXED_KEY_ID
     assert struct.unpack('<Q', data[16:24])[0] == len(plaintext)
+    assert _frozen_v1_decrypt(data, FIXED_KEY) == plaintext
 
     decrypted = io.BytesIO()
-    result = decrypt_stream(io.BytesIO(data), decrypted)
+    result = decrypt_stream(io.BytesIO(data), decrypted, password=FIXED_KEY)
     assert decrypted.getvalue() == plaintext
-    assert result.format_version == FORMAT_V1
-    assert result.key_id == get_key_id()
+    assert result.format_version == 1
+    assert result.key_id == FIXED_KEY_ID
     assert result.size == len(plaintext)
 
 
 @pytest.mark.unit
 def test_encrypt_stream_defaults_to_v1_and_infers_size_from_seekable_source():
-    plaintext = b"hello"
+    # the size is what is left from the current position, not the whole stream
+    source = io.BytesIO(b"skip:hello")
+    source.seek(5)
     encrypted = io.BytesIO()
-    result = encrypt_stream(io.BytesIO(plaintext), encrypted)
+    result = encrypt_stream(source, encrypted)
     assert result.format_version == FORMAT_V1
-    assert encrypted.getvalue().startswith(MAGIC)
+    assert result.size == 5
+    assert encrypted.getvalue().startswith(b"ACE-GCM")
+
+    decrypted = io.BytesIO()
+    decrypt_stream(io.BytesIO(encrypted.getvalue()), decrypted)
+    assert decrypted.getvalue() == b"hello"
 
 
 @pytest.mark.unit
 def test_encrypt_stream_requires_size_for_non_seekable_source():
-    with pytest.raises(ValueError):
+    # match: tell() on a stream that cannot seek raises io.UnsupportedOperation, a ValueError too
+    with pytest.raises(ValueError, match="size is required"):
         encrypt_stream(_NonSeekable(b"hello"), io.BytesIO())
 
 
@@ -339,12 +358,11 @@ def test_encrypt_with_explicit_password_uses_that_key():
 
 
 @pytest.mark.unit
-def test_key_id_is_stable_and_key_specific():
-    assert get_key_id() == get_key_id()
-    assert get_key_id("a") == get_key_id("a")
-    assert get_key_id("a") != get_key_id("b")
-    assert len(get_key_id()) == 16
-    int(get_key_id(), 16)
+def test_key_id_is_a_fixed_fingerprint_of_the_key():
+    assert get_key_id(FIXED_KEY) == FIXED_KEY_ID
+    # a string password is hashed into the key first; computed outside ACE the same way
+    assert get_key_id("a") == "6e9b87c7735c3bf5"
+    assert get_key_id("b") == "cd471495427846b0"
 
 
 #
@@ -354,6 +372,7 @@ def test_key_id_is_stable_and_key_specific():
 import logging
 
 import saq.crypto
+from saq.configuration.database import delete_database_config_value
 from saq.constants import INSTANCE_TYPE_DEV
 from saq.crypto import get_decryption_key, initialize_encryption
 from saq.environment import get_global_runtime_settings
@@ -446,8 +465,8 @@ def test_initialize_encryption_raises_what_it_cannot_handle(unloaded_key, monkey
 
 
 @pytest.mark.integration
-def test_the_decryption_key_needs_a_password_set(monkeypatch):
-    monkeypatch.setattr(saq.crypto, "encryption_key_set", lambda: False)
+def test_the_decryption_key_needs_a_password_set():
+    delete_database_config_value(CONFIG_KEY_ENCRYPTION_KEY)
 
     with pytest.raises(PasswordNotSetError):
         get_decryption_key("test")

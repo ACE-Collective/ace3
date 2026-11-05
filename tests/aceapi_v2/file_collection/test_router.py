@@ -128,6 +128,11 @@ class TestList:
         done = _queue("server@/fine.txt", FileCollectionStatus.COMPLETED, FileCollectorStatus.SUCCESS)
         old = _queue("server@/old.txt", FileCollectionStatus.COMPLETED, FileCollectorStatus.FAILED,
                      insert_date=_utcnow() - timedelta(days=30))
+        # one has another collector and one another type; every query but those two leaves both out
+        other_collector, other_type = (
+            _queue(f"server@/{value}.txt", FileCollectionStatus.COMPLETED, FileCollectorStatus.SUCCESS,
+                   insert_date=_utcnow() - timedelta(days=30), **{column: value})
+            for column, value in (("name", "other_collector"), ("type", "ipv4")))
 
         assert await _ids(client, "value:evil") == [offline, new]
         assert await _ids(client, f"alert:{alert_uuid.upper()}") == [new]
@@ -136,6 +141,8 @@ class TestList:
         # inverted, a filter also keeps the rows that have no value, such as no result yet
         assert await _ids(client, "!result:SUCCESS,FAILED") == [offline, new]
         assert await _ids(client, "created:-7d", "collector:test", "type:file_loc") == [done, offline, new]
+        assert await _ids(client, "collector:test") == [other_type, old, done, offline, new]
+        assert await _ids(client, "type:file_loc") == [other_collector, old, done, offline, new]
         assert await _ids(client, f"id:{done}") == [done]
 
     @pytest.mark.asyncio
@@ -166,8 +173,9 @@ class TestHistory:
     async def test_newest_first(self, client: AsyncClient):
         collection_id = _queue("host@/evil.exe")
         now = _utcnow().replace(microsecond=0)
-        _history(collection_id, "host offline", now - timedelta(minutes=1))
+        # recorded out of order, so the attempt times and the row ids sort them differently
         _history(collection_id, "collected", now, FileCollectorStatus.SUCCESS)
+        _history(collection_id, "host offline", now - timedelta(minutes=1))
 
         response = await client.get(f"/file-collections/{collection_id}/history")
 
@@ -183,16 +191,18 @@ class TestHistory:
 
 class TestCancel:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("status", [FileCollectionStatus.NEW, FileCollectionStatus.IN_PROGRESS])
-    async def test_stops_a_request_that_has_not_completed(self, client: AsyncClient, client_actor, status,
+    async def test_stops_a_request_that_has_not_completed(self, client: AsyncClient, client_actor,
                                                           caplog: pytest.LogCaptureFixture):
         caplog.set_level(logging.INFO)
-        collection_id = _queue("host@/evil.exe", status)
+        collection_id = _queue("host@/evil.exe", FileCollectionStatus.IN_PROGRESS)
 
         response = await client.post(f"/file-collections/{collection_id}/cancel")
 
         assert response.status_code == 200
         assert response.json() == {"id": collection_id, "status": "COMPLETED", "result": "CANCELLED", "retry_count": 0}
+        # read back on this session: the response comes from the session that made the change
+        stored = _collection(collection_id)
+        assert (stored.status, stored.result) == ("COMPLETED", "CANCELLED")
         audit = audit_record(caplog, f"user unittest cancelled file collection {collection_id}")
         assert (*audit_actor_of(audit), audit.file_collection_id) == (*client_actor, collection_id)
 
@@ -213,13 +223,14 @@ class TestRetry:
     async def test_starts_a_request_over(self, client: AsyncClient, client_actor, caplog: pytest.LogCaptureFixture):
         caplog.set_level(logging.INFO)
         collection_id = _queue("host@/evil.exe", FileCollectionStatus.COMPLETED, FileCollectorStatus.HOST_OFFLINE,
-                               retry_count=10, result_message="gave up")
+                               retry_count=10, result_message="gave up", lock=str(uuid.uuid4()), lock_time=_utcnow())
 
         response = await client.post(f"/file-collections/{collection_id}/retry")
 
         assert response.status_code == 200
         assert response.json() == {"id": collection_id, "status": "NEW", "result": None, "retry_count": 0}
-        assert _collection(collection_id).result_message is None
+        stored = _collection(collection_id)
+        assert (stored.result_message, stored.lock, stored.lock_time) == (None, None, None)
         audit = audit_record(caplog, f"user unittest retried file collection {collection_id}")
         assert (*audit_actor_of(audit), audit.file_collection_id) == (*client_actor, collection_id)
 

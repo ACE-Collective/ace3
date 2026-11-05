@@ -8,7 +8,6 @@ TODO: Remove this file when the Flask GUI (and with it cookie auth) is retired.
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.database.model import User
 from tests.aceapi_v2.conftest import make_flask_session_cookie
@@ -23,45 +22,26 @@ READ_PATH = "/observable-types/"
 
 class TestCookieWriteRequiresSameOrigin:
     @pytest.mark.asyncio
-    async def test_same_origin_sec_fetch_site_is_allowed(self, unauth_client: AsyncClient, test_user: User):
-        unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers={"sec-fetch-site": "same-origin"})
-        assert r.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_user_initiated_navigation_is_allowed(self, unauth_client: AsyncClient, test_user: User):
-        """sec-fetch-site: none means a typed URL or bookmark, not a cross-site request."""
-        unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers={"sec-fetch-site": "none"})
-        assert r.status_code == 200
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("fetch_site", ["cross-site", "same-site"])
-    async def test_cross_site_sec_fetch_site_is_rejected(self, unauth_client: AsyncClient, test_user: User, fetch_site):
-        unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers={"sec-fetch-site": fetch_site})
-        assert r.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_matching_origin_is_allowed(self, unauth_client: AsyncClient, test_user: User):
-        unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
+    @pytest.mark.parametrize("headers, status", [
+        ({"sec-fetch-site": "same-origin"}, 200),
+        # a typed URL or a bookmark, not a cross-site request
+        ({"sec-fetch-site": "none"}, 200),
+        ({"sec-fetch-site": "cross-site"}, 403),
+        ({"sec-fetch-site": "same-site"}, 403),
         # the test client's base_url is http://test, so Host is "test"
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers={"origin": "http://test"})
-        assert r.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_foreign_origin_is_rejected(self, unauth_client: AsyncClient, test_user: User):
+        ({"origin": "http://test"}, 200),
+        ({"origin": "https://evil.example.com"}, 403),
+        # cookie auth exists only for the browser GUI, and a write with neither signal is not a
+        # request shape we recognise
+        ({}, 403),
+    ], ids=["same-origin", "user-navigation", "cross-site", "same-site", "matching-origin", "foreign-origin",
+            "no-browser-signal"])
+    async def test_a_cookie_write_needs_a_same_origin_signal(
+        self, unauth_client: AsyncClient, test_user: User, headers, status
+    ):
         unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers={"origin": "https://evil.example.com"})
-        assert r.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_write_without_any_browser_signal_is_rejected(self, unauth_client: AsyncClient, test_user: User):
-        """Cookie auth exists only for the browser GUI; a cookie write with no Origin and no
-        Sec-Fetch-Site is not a request shape we recognise."""
-        unauth_client.cookies.set("session", make_flask_session_cookie(test_user.id))
-        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY)
-        assert r.status_code == 403
+        r = await unauth_client.patch(WRITE_PATH, json=WRITE_BODY, headers=headers)
+        assert r.status_code == status
 
 
 class TestUnaffectedPaths:
@@ -71,13 +51,8 @@ class TestUnaffectedPaths:
         assert (await unauth_client.get(READ_PATH)).status_code == 200
 
     @pytest.mark.asyncio
-    async def test_bearer_token_writes_are_exempt(self, client: AsyncClient):
-        """Header auth cannot be triggered cross-site, so it skips the check entirely -- no Origin,
-        no Sec-Fetch-Site, still allowed."""
-        r = await client.patch(WRITE_PATH, json=WRITE_BODY)
-        assert r.status_code == 200
-
-    @pytest.mark.asyncio
     async def test_bearer_token_write_allowed_even_from_foreign_origin(self, client: AsyncClient):
+        """Header auth cannot be triggered cross-site, so it skips the check entirely: even an
+        Origin the check would refuse is allowed."""
         r = await client.patch(WRITE_PATH, json=WRITE_BODY, headers={"origin": "https://evil.example.com"})
         assert r.status_code == 200

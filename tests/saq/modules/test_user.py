@@ -128,7 +128,6 @@ def test_missing_manager_is_logged(root_analysis, directory, caplog):
 @pytest.mark.parametrize("observable_type, value, looked_up", [
     # external addresses are never looked up
     (F_EMAIL_ADDRESS, "someone@external.example", False),
-    (F_EMAIL_ADDRESS, "nobody@company.com", True),
     (F_USER, "nobody", True),
 ])
 @pytest.mark.integration

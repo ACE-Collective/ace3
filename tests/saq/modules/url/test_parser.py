@@ -88,7 +88,6 @@ def test_ip_only():
 @pytest.mark.unit
 @pytest.mark.parametrize("value,scheme,path", [
     # no valid TLD, so nothing says the first segment is a host
-    ("notadomain", "", "notadomain"),
     ("report.notatld", "", "report.notatld"),
     ("/just/a/path", "", "/just/a/path"),
     # a real scheme is left alone

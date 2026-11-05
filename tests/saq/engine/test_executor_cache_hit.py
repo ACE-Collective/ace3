@@ -313,24 +313,6 @@ class TestMaybeWriteCacheDelta:
         put_mock.assert_not_called()
 
     @pytest.mark.unit
-    def test_completed_result_writes(self, tmp_path, monkeypatch):
-        put_mock = MagicMock(return_value=None)
-        monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
-        executor = _make_executor()
-        root = _make_root(tmp_path)
-        context = _make_context(root)
-        obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        module = _make_cacheable_module()
-        delta = self._delta(obs)
-
-        executor._maybe_write_cache_delta(
-            context, root, obs, module, delta,
-            AnalysisExecutionResult.COMPLETED, [],
-        )
-        put_mock.assert_called_once()
-        assert put_mock.call_args[0][0] is delta
-
-    @pytest.mark.unit
     def test_not_opted_in_blocks_cache_write(self, tmp_path, monkeypatch):
         put_mock = MagicMock()
         monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
@@ -406,8 +388,9 @@ class TestMaybeWriteCacheDelta:
 
     @pytest.mark.unit
     def test_completed_analysis_without_timeout_marker_writes(self, tmp_path, monkeypatch):
-        """Control for the timeout gate: an attached analysis WITHOUT the
-        marker (a genuine post-delay completion) still gets cached."""
+        """A COMPLETED result is written, and it is the control for the timeout gate:
+        an attached analysis WITHOUT the marker (a genuine post-delay completion)
+        still gets cached."""
         put_mock = MagicMock(return_value=None)
         monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
         executor = _make_executor()
@@ -423,6 +406,7 @@ class TestMaybeWriteCacheDelta:
             AnalysisExecutionResult.COMPLETED, [],
         )
         put_mock.assert_called_once()
+        assert put_mock.call_args[0][0] is delta
 
 
 class TestDelayAnalysisTimeoutMarker:
