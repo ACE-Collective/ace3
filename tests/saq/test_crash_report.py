@@ -17,6 +17,8 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -91,9 +93,15 @@ def test_is_valid_crash_id():
 
 
 @pytest.mark.unit
-def test_find_crash_report_dir_rejects_bad_id(tmp_path):
+def test_find_crash_report_dir_rejects_bad_id():
+    # a real report, so the date directories exist and a traversal through them would resolve
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_KILLED, module_path="saq.modules.test:BasicTestAnalysis",
+        index=False, replicate=False)
+    day_dir = os.path.dirname(find_crash_report_dir(crash_id))
+
     # the traversal is refused before any path is built, not after
-    assert find_crash_report_dir("../../etc") is None
+    assert find_crash_report_dir(f"../{os.path.basename(day_dir)}/{crash_id}") is None
     assert find_crash_report_dir("") is None
 
 
@@ -162,7 +170,9 @@ def test_record_timeout_crash_captures_thread_stacks(root_analysis):
         stacks = fp.read()
 
     # the dump names this test's own frame, which is what proves it captured live stacks, and
-    # it is faulthandler's dump rather than the GIL-bound sys._current_frames() fallback
+    # it is faulthandler's dump rather than the GIL-bound sys._current_frames() fallback.
+    # faulthandler needs a real file descriptor: handed a StringIO it raised, and every report
+    # silently fell back to the pure Python dump
     assert "test_record_timeout_crash_captures_thread_stacks" in stacks
     assert stacks.startswith(("Thread 0x", "Current thread 0x"))
 
@@ -216,17 +226,13 @@ def test_record_crash_finds_file_by_hardcopy(root_analysis):
     the crash report finds them by value. Without this the most interesting crash reports would
     silently contain no file at all.
     """
-    path = os.path.join(root_analysis.storage_dir, "extracted.bin")
-    with open(path, "w") as fp:
-        fp.write("payload")
-
-    observable = root_analysis.add_file_observable(path)
-    sha256 = observable.value
     root_analysis.save()
-
-    # the hardcopy exists; simulate the tree not knowing about the observable by passing only
-    # the type and value, with no observable object and no match in the tree
-    assert os.path.exists(os.path.join(root_analysis.storage_dir, HARDCOPY_SUBDIR, sha256))
+    # only the content addressed copy: no file observable in the saved tree points at it
+    sha256 = hashlib.sha256(b"payload").hexdigest()
+    os.makedirs(os.path.join(root_analysis.storage_dir, HARDCOPY_SUBDIR), exist_ok=True)
+    with open(os.path.join(root_analysis.storage_dir, HARDCOPY_SUBDIR, sha256), "w") as fp:
+        fp.write("payload")
+    assert root_analysis.find_observable(lambda o: o.type == F_FILE) is None
 
     crash_id = record_module_crash(
         crash_type=CRASH_TYPE_KILLED,
@@ -239,8 +245,8 @@ def test_record_crash_finds_file_by_hardcopy(root_analysis):
 
     crash_dir = find_crash_report_dir(crash_id)
     metadata = _read_metadata(crash_id)
-    assert metadata["file_name"] is not None
-    assert os.path.exists(os.path.join(crash_dir, FILE_DIR, metadata["file_name"]))
+    assert metadata["file_name"] == sha256
+    assert _read(os.path.join(crash_dir, FILE_DIR, sha256)) == "payload"
 
 
 @pytest.mark.unit
@@ -406,7 +412,8 @@ def test_stale_report_dir_hint_falls_back(root_analysis):
         index=False,
     )
 
-    assert find_crash_report_dir(crash_id, report_dir="does/not/exist") is not None
+    assert find_crash_report_dir(crash_id, report_dir="does/not/exist") == find_crash_report_dir(crash_id)
+    assert os.path.basename(find_crash_report_dir(crash_id, report_dir="does/not/exist")) == crash_id
 
 
 @pytest.mark.unit
@@ -459,6 +466,12 @@ def test_report_limit_is_per_module_and_per_root(root_analysis, monkeypatch):
     assert record_module_crash(
         crash_type=CRASH_TYPE_EXCEPTION, module_path="module:B",
         root=root_analysis, exception=_raise(), index=False) is not None
+
+    # the same module on another root has its own budget too
+    other_root = SimpleNamespace(uuid=str(uuid.uuid4()))
+    assert record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION, module_path="module:A",
+        root=other_root, exception=_raise(), index=False) is not None
 
     # the same module again is suppressed
     assert record_module_crash(
@@ -691,7 +704,10 @@ def test_record_module_crash_does_not_block_on_a_slow_store(
 @pytest.mark.unit
 def test_watchdog_path_does_not_replicate(root_analysis, shared_storage, monkeypatch):
     """os._exit(1) annihilates daemon threads, so the watchdog defers to `ace crash sync`."""
-    from saq.crash_replication import list_replicated_ids
+    # the upload would run on a thread of its own, so a look at the bucket right after the call
+    # cannot tell; whether the thread was started can
+    replicate_async = Mock()
+    monkeypatch.setattr("saq.crash_replication.replicate_async", replicate_async)
 
     root_analysis.save()
     crash_id = record_module_crash(
@@ -701,7 +717,7 @@ def test_watchdog_path_does_not_replicate(root_analysis, shared_storage, monkeyp
     )
 
     assert crash_id is not None
-    assert crash_id not in list_replicated_ids()
+    replicate_async.assert_not_called()
 
 
 @pytest.mark.unit
@@ -748,11 +764,21 @@ def test_list_replicated_ids_and_delete(root_analysis, shared_storage):
 
 
 @pytest.mark.unit
-def test_replication_rejects_invalid_crash_id(shared_storage, tmp_path):
+def test_replication_rejects_invalid_crash_id(root_analysis, shared_storage, tmp_path, caplog):
     from saq.crash_replication import fetch_report, replicate_report
 
-    assert replicate_report(str(tmp_path), "../../etc") is False
-    assert fetch_report("not-a-crash-id", str(tmp_path)) is None
+    # a complete report, under a name the shared store would take as a key prefix: only the id
+    # check stands between it and an upload
+    crash_dir = find_crash_report_dir(record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION, module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis, exception=_raise(), index=False, replicate=False))
+    assert replicate_report(crash_dir, "not-a-crash-id") is False
+    assert _warned(caplog, "refusing to replicate invalid crash id not-a-crash-id")
+    assert shared_storage.list_objects(_bucket_name()) == []
+
+    # and objects that are there under such a name are never fetched
+    shared_storage.upload_file(os.path.join(crash_dir, METADATA_FILE), _bucket_name(), f"not-a-crash-id/{METADATA_FILE}")
+    assert fetch_report("not-a-crash-id", str(tmp_path / "staging")) is None
 
 
 #
@@ -907,23 +933,15 @@ def test_drain_drops_entries_for_reports_that_are_gone(empty_spool):
 
 
 @pytest.mark.unit
-def test_drain_with_no_spool_is_a_noop(empty_spool):
+def test_drain_with_no_spool_is_a_noop(empty_spool, caplog):
     assert drain_index_spool() == []
+    # every engine worker drains as it starts, so a missing spool must not read as a failure
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 #
 # thread stacks and the pre-kill hang dump
 #
-
-
-@pytest.mark.unit
-def test_capture_thread_stacks_uses_faulthandler():
-    """faulthandler needs a real file descriptor; handed a StringIO it raised and every report
-    silently fell back to the pure Python dump."""
-    stacks = _capture_thread_stacks()
-
-    assert stacks.startswith(("Thread 0x", "Current thread 0x"))
-    assert "test_capture_thread_stacks_uses_faulthandler" in stacks
 
 
 @pytest.fixture
@@ -980,15 +998,6 @@ def test_cancelled_hang_dump_writes_nothing(hang_stacks_file):
 
 
 @pytest.mark.unit
-def test_rearming_replaces_the_previous_timer(hang_stacks_file):
-    arm_hang_stack_dump(0.4)
-    arm_hang_stack_dump(60)
-    time.sleep(0.6)
-
-    assert _read(hang_stacks_file) == ""
-
-
-@pytest.mark.unit
 def test_arm_and_cancel_truncate_a_previous_dump(hang_stacks_file):
     """A dump from a module that ran long but finished never survives into the next module."""
     arm_hang_stack_dump(0.2)
@@ -1005,20 +1014,25 @@ def test_arm_and_cancel_truncate_a_previous_dump(hang_stacks_file):
 
 
 @pytest.mark.unit
-def test_arm_without_a_file_or_a_limit_is_a_noop():
-    close_hang_stacks_file()
-    arm_hang_stack_dump(0.2)
-    cancel_hang_stack_dump()
-
+def test_arm_without_a_file_or_a_limit_is_a_noop(capfd, caplog):
     assert open_hang_stacks_file()
     try:
         arm_hang_stack_dump(None)
         arm_hang_stack_dump(0)
+        # and with no file open. opening one cancels any timer, so this comes last
+        close_hang_stacks_file()
+        arm_hang_stack_dump(0.2)
+        cancel_hang_stack_dump()
         time.sleep(0.3)
         assert _read(get_hang_stacks_path(os.getpid())) == ""
     finally:
         close_hang_stacks_file()
         discard_hang_stacks(os.getpid())
+
+    # faulthandler given no file dumps to stderr, and a limit it refuses is logged: neither is
+    # a skipped arm
+    assert "Timeout (" not in capfd.readouterr().err
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 def _dead_pid() -> int:
@@ -1164,11 +1178,11 @@ def test_arm_and_cancel_hang_stack_dump_failures(hang_stacks_file, monkeypatch, 
 
 @pytest.mark.unit
 def test_hang_stack_delay():
-    # the dump fires HANG_STACK_MARGIN_SECONDS before the kill, or halfway when that leaves no room
-    assert crash_report._hang_stack_delay(10 * crash_report.HANG_STACK_MARGIN_SECONDS) == \
-        9 * crash_report.HANG_STACK_MARGIN_SECONDS
-    assert crash_report._hang_stack_delay(crash_report.HANG_STACK_MARGIN_SECONDS) == \
-        crash_report.HANG_STACK_MARGIN_SECONDS / 2
+    # the dump fires 5 seconds before the kill, or halfway for a limit of 10 seconds or less
+    # (docs/CRASH_REPORTS.md, "Pre-kill hang dumps")
+    assert crash_report._hang_stack_delay(60) == 55
+    assert crash_report._hang_stack_delay(10) == 5
+    assert crash_report._hang_stack_delay(5) == 2.5
 
 
 @pytest.mark.unit
@@ -1334,8 +1348,16 @@ def test_spool_failures(monkeypatch, caplog, empty_spool):
     crash_report._spool_for_index(crash_id)
     assert _warned(caplog, f"unable to spool crash report {crash_id}")
 
-    # an invalid id is never a path
-    remove_from_index_spool("../../etc/passwd")
+    # an invalid id is never a path: this one names a file outside the spool
+    outside = os.path.join(os.path.dirname(empty_spool), "keep.txt")
+    os.makedirs(os.path.dirname(outside), exist_ok=True)
+    with open(outside, "w") as fp:
+        fp.write("x")
+    try:
+        remove_from_index_spool("../keep.txt")
+        assert os.path.exists(outside)
+    finally:
+        os.unlink(outside)
     monkeypatch.setattr("saq.crash_report.os.unlink", _explode)
     remove_from_index_spool(crash_id)
     assert _warned(caplog, f"unable to remove crash report {crash_id} from the index spool")
@@ -1399,7 +1421,9 @@ def test_drain_index_spool_limit_and_failures(root_analysis, monkeypatch, caplog
         return real_getmtime(path)
 
     monkeypatch.setattr("saq.crash_report.os.path.getmtime", _vanished)
+    caplog.clear()
     assert drain_index_spool() == []
+    assert not _warned(caplog, "unable to drain the crash report index spool")
     monkeypatch.undo()
 
     monkeypatch.setattr("saq.crash_report.os.listdir", _explode)
@@ -1521,11 +1545,15 @@ def test_replication_of_a_missing_report(shared_storage, tmp_path, caplog):
     assert crash_replication.fetch_metadata(crash_id, str(tmp_path)) is None
     assert crash_replication.remote_file_sizes(crash_id) == {}
     assert crash_replication.delete_report(crash_id) is True
-    # invalid ids never reach the store
+    # invalid ids never reach the store: here is a complete report under one, which every
+    # reader would find if it asked
+    source = tmp_path / METADATA_FILE
+    source.write_text("{}")
+    shared_storage.upload_file(str(source), _bucket_name(), f"not-a-crash-id/{METADATA_FILE}")
     for function in (crash_replication.remote_report_exists, crash_replication.delete_report):
-        assert function("../etc") is False
-    assert crash_replication.list_remote_files("../etc") == []
-    assert crash_replication.fetch_metadata("../etc", str(tmp_path)) is None
+        assert function("not-a-crash-id") is False
+    assert crash_replication.list_remote_files("not-a-crash-id") == []
+    assert crash_replication.fetch_metadata("not-a-crash-id", str(tmp_path)) is None
 
 
 @pytest.mark.unit

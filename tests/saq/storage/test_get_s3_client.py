@@ -58,7 +58,8 @@ class TestGetS3ClientAWSNative:
         assert mock_boto3.client.call_args.args == ("s3",)
         call_kwargs = mock_boto3.client.call_args.kwargs
         assert call_kwargs["region_name"] == "us-east-2"
-        # every construction path, including AWS-native, must pass the shared bounded config
+        # every construction path, including AWS-native, must pass the shared bounded config.
+        # with no s3 config to read, these are S3Config's own defaults (10, 60, 3)
         assert_bounded(call_kwargs["config"])
         assert result is mock_client
 
@@ -118,19 +119,15 @@ class TestGetS3ClientSelfHosted:
         assert_bounded(call_kwargs["config"])
         assert result is mock_client
 
-    @pytest.mark.parametrize("secure,expected_protocol", [
-        (True, "https"),
-        (False, "http"),
-    ])
     @patch("saq.storage.s3.boto3")
-    def test_uses_correct_protocol(self, mock_boto3, secure, expected_protocol, monkeypatch):
-        """Endpoint URL protocol should match the secure setting."""
-        monkeypatch.setattr(get_config(), "s3", _s3_config(secure=secure, cert_check=True))
+    def test_uses_https_when_secure(self, mock_boto3, monkeypatch):
+        """Endpoint URL protocol should match the secure setting (plain http is the test above)."""
+        monkeypatch.setattr(get_config(), "s3", _s3_config(secure=True, cert_check=True))
 
         get_s3_client()
 
         call_kwargs = mock_boto3.client.call_args.kwargs
-        assert call_kwargs["endpoint_url"] == f"{expected_protocol}://s3.local:9000"
+        assert call_kwargs["endpoint_url"] == "https://s3.local:9000"
 
     @patch("saq.storage.s3.boto3")
     def test_region_parameter_ignored_when_self_hosted(self, mock_boto3, monkeypatch):
@@ -146,24 +143,11 @@ class TestGetS3ClientSelfHosted:
 class TestBotoConfigDefaults:
     """The values themselves, and that they survive the trip into botocore."""
 
-    def test_falls_back_to_schema_defaults_when_no_s3_config(self, monkeypatch):
-        """The AWS-native branch is taken exactly BECAUSE get_config().s3 is None, so there is no
-        S3Config to read. It must still be bounded, from the schema's own defaults rather than a
-        second set of literals."""
-        monkeypatch.setattr(get_config(), "s3", None)
-        assert_bounded(build_boto_config())
-
     def test_honors_configured_values(self, monkeypatch):
         monkeypatch.setattr(get_config(), "s3", _s3_config(
             connect_timeout=3, read_timeout=15, max_attempts=7
         ))
         assert_bounded(build_boto_config(), connect=3, read=15, attempts=7)
-
-    def test_schema_defaults_are_the_documented_values(self):
-        fields = S3Config.model_fields
-        assert fields["connect_timeout"].default == 10
-        assert fields["read_timeout"].default == 60
-        assert fields["max_attempts"].default == 3
 
     def test_read_timeout_default_matches_botocore(self):
         """read_timeout is deliberately left at botocore's own default.
