@@ -261,9 +261,11 @@ async def create_detection(
     detection_context: str | None = None,
     expires_on: datetime | None = None,
     batch_id: str | None = None,
+    use_default_expiration: bool = True,
 ) -> ObservableDetectionRead:
     """Adds a detection.
 
+    None uses the configured lifetime unless use_default_expiration is False (never expire).
     Raises InvalidDetectionValue if the value is not valid for the type (which also normalizes it),
     and DetectionAlreadyExists if one is already present. The observable does not need to exist in
     the observables index -- that is the point of this table.
@@ -285,9 +287,8 @@ async def create_detection(
         value=identity.value,
         value_sha256=identity.value_sha256,
         detection_context=detection_context,
-        # no explicit expiration falls back to the per-type default from
-        # observable_expiration_mappings, which is None (never expires) unless configured
-        expires_on=expires_on if expires_on is not None else default_detection_expiration(identity.type),
+        expires_on=(default_detection_expiration(identity.type)
+                    if expires_on is None and use_default_expiration else expires_on),
         batch_id=batch_id,
         created_by=created_by_user_id,
         modified_by=created_by_user_id,

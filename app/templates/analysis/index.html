@@ -203,7 +203,8 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <label class="form-label" for="detection_expiration_current">Current expiration (UTC)</label>
+                <p id="detection_expiration_observable" class="text-break"></p>
+                <label class="form-label" id="detection_expiration_current_label" for="detection_expiration_current">Current expiration (UTC)</label>
                 <input type="text" class="form-control mb-3" id="detection_expiration_current" readonly/>
                 <label class="form-label" for="detection_expiration_new">New expiration (UTC)</label>
                 <input type="text" class="form-control mb-3" id="detection_expiration_new" name="observable_expiration_time" placeholder="YYYY-MM-DD HH:MM:SS"/>

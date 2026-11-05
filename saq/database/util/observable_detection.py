@@ -23,6 +23,7 @@ from saq.database.model import ObservableDetection as DBObservableDetection
 from saq.database.pool import get_db
 from saq.observables.generator import create_observable
 from saq.observables.type_hierarchy import get_all_valid_types
+from saq.util.time import local_time
 
 
 class InvalidDetectionValue(ValueError):
@@ -139,9 +140,9 @@ def _identity_from_observable(observable: Observable) -> DetectionIdentity:
 
 
 def default_detection_expiration(observable_type: str) -> Optional[datetime]:
-    """How long a new detection of this type should live, per `observable_expiration_mappings`.
+    """Expiration for a new detection, using a type override or the global default lifetime.
 
-    Returns None -- never expires -- for a type with no mapping, which is the default configuration.
+    Returns None -- never expires -- when the configured lifetime is null.
     """
     return get_observable_type_expiration_time(observable_type)
 
@@ -248,6 +249,8 @@ class ObservableDetectionSummary:
     detection_context: Optional[str]
     detection_id: int
     expires_on: Optional[datetime]
+    # an expired row no longer fires but still exists, so the page offers adjust, not enable
+    expired: bool = False
 
 
 def get_all_observable_detections(alert: RootAnalysis) -> dict[str, ObservableDetectionSummary]:
@@ -274,6 +277,8 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
     ).all()
 
     by_identity = {(d.type, d.value_sha256): d for d in db_detections}
+    # the clock get_active_detections_by_type matches against
+    now = local_time().replace(tzinfo=None)
 
     # Every observable with the detection's identity gets it, not just the first: two file
     # observables with the same content at different paths are different observables in one alert.
@@ -288,6 +293,7 @@ def get_observable_detections(observables: list[Observable]) -> dict[str, Observ
             detection_modified_by=db_detection.modified_by_user.display_name if db_detection.modified_by_user else "unknown",
             detection_context=db_detection.detection_context,
             detection_id=db_detection.id,
-            expires_on=db_detection.expires_on)
+            expires_on=db_detection.expires_on,
+            expired=db_detection.expires_on is not None and db_detection.expires_on <= now)
 
     return detections

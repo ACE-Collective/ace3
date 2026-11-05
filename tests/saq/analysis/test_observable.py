@@ -3,9 +3,10 @@ import datetime
 import pytest
 
 from saq.analysis.analysis import Analysis
+from saq.analysis.observable import get_observable_type_expiration_time
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration import get_config
-from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
+from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
 from saq.observables import create_observable
 from tests.saq.helpers import create_root_analysis
@@ -73,12 +74,52 @@ def test_ingest_does_not_stamp_observable_expiration(db_event):
         del get_config().observable_expiration_mappings[F_TEST]
 
 
+@pytest.mark.unit
+def test_hash_detections_never_expire_by_default():
+    """A sha256 or md5 names the same content forever, so the shipped config keeps those detections;
+    other types still get the global lifetime."""
+    assert get_observable_type_expiration_time(F_SHA256) is None
+    assert get_observable_type_expiration_time(F_MD5) is None
+    assert get_observable_type_expiration_time(F_FQDN) is not None
+
+
+@pytest.mark.unit
+def test_observable_type_expiration_time_inherits_from_the_parent_type(monkeypatch):
+    """email_from extends email_address, so it takes email_address's lifetime unless it has its own."""
+    def days_until(expires_on):
+        return round((expires_on - datetime.datetime.now(datetime.UTC)) / datetime.timedelta(days=1))
+
+    config = get_config()
+    monkeypatch.setattr(config, "observable_expiration_default", "90:00:00:00")
+
+    monkeypatch.setattr(config, "observable_expiration_mappings", {F_EMAIL_ADDRESS: "07:00:00:00"})
+    assert days_until(get_observable_type_expiration_time(F_EMAIL_FROM)) == 7
+
+    monkeypatch.setattr(config, "observable_expiration_mappings",
+                        {F_EMAIL_ADDRESS: "07:00:00:00", F_EMAIL_FROM: "01:00:00:00"})
+    assert days_until(get_observable_type_expiration_time(F_EMAIL_FROM)) == 1
+    assert days_until(get_observable_type_expiration_time(F_EMAIL_ADDRESS)) == 7
+
+    # a null on the parent is inherited too: never expire
+    monkeypatch.setattr(config, "observable_expiration_mappings", {F_EMAIL_ADDRESS: None})
+    assert get_observable_type_expiration_time(F_EMAIL_FROM) is None
+
+    # and a child's own setting wins over the parent's null
+    monkeypatch.setattr(config, "observable_expiration_mappings",
+                        {F_EMAIL_ADDRESS: None, F_EMAIL_FROM: "01:00:00:00"})
+    assert days_until(get_observable_type_expiration_time(F_EMAIL_FROM)) == 1
+
+
 @pytest.mark.integration
-def test_observable_type_expiration_time_is_the_detection_default():
+def test_observable_type_expiration_time_is_the_detection_default(monkeypatch):
     """observable_expiration_mappings is a detection's default lifetime."""
     from saq.analysis.observable import get_observable_type_expiration_time
 
-    assert get_observable_type_expiration_time(F_TEST) is None
+    config = get_config()
+    monkeypatch.setattr(config, "observable_expiration_default", "90:00:00:00")
+    expires_on = get_observable_type_expiration_time(F_TEST)
+    delta = expires_on - datetime.datetime.now(datetime.UTC)
+    assert datetime.timedelta(days=89, hours=23) < delta <= datetime.timedelta(days=90)
 
     get_config().observable_expiration_mappings[F_TEST] = '01:00:00:00'
     try:
@@ -89,6 +130,14 @@ def test_observable_type_expiration_time_is_the_detection_default():
         assert datetime.timedelta(hours=23) < delta < datetime.timedelta(hours=25)
     finally:
         del get_config().observable_expiration_mappings[F_TEST]
+
+    # a type mapped to null never expires, whatever the global default
+    monkeypatch.setitem(config.observable_expiration_mappings, F_TEST, None)
+    assert get_observable_type_expiration_time(F_TEST) is None
+    monkeypatch.delitem(config.observable_expiration_mappings, F_TEST)
+
+    monkeypatch.setattr(config, "observable_expiration_default", None)
+    assert get_observable_type_expiration_time(F_TEST) is None
 
 
 @pytest.mark.unit

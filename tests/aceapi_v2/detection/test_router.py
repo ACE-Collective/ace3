@@ -2,7 +2,7 @@
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aceapi_v2.application import app
 from aceapi_v2.users.service import create_user_api_key
 from saq.database.model import AuthUserPermission, ObservableDetection, User
+from saq.configuration.config import get_config
 from tests.saq.helpers import audit_actor_of
 
 pytestmark = pytest.mark.integration
@@ -98,6 +99,34 @@ class TestPermissionGates:
 
 
 class TestCreate:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("observable_type,value,global_days,override,days", [
+        ("ipv4", "6.6.6.8", 90, None, 90),
+        ("fqdn", "expiry.example.com", 90, None, 90),
+        ("fqdn", "custom-expiry.example.com", 30, None, 30),
+        ("ipv4", "6.6.6.9", 90, "14:00:00:00", 14),
+    ])
+    async def test_configured_expiration(
+        self, client: AsyncClient, monkeypatch, observable_type, value, global_days, override, days,
+    ):
+        monkeypatch.setattr(get_config(), "observable_expiration_default", f"{global_days}:00:00:00")
+        monkeypatch.setattr(get_config(), "observable_expiration_mappings",
+                            {observable_type: override} if override else {})
+        before = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+        r = await client.post("/detection/", json={"type": observable_type, "value": value})
+        after = datetime.now(UTC).replace(tzinfo=None)
+        assert r.status_code == 201
+        expires_on = datetime.fromisoformat(r.json()["expires_on"])
+        assert before + timedelta(days=days) <= expires_on <= after + timedelta(days=days, seconds=1)
+
+    @pytest.mark.asyncio
+    async def test_explicit_null_means_never_expire(self, client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(get_config(), "observable_expiration_default", "90:00:00:00")
+        r = await client.post("/detection/", json={
+            "type": "ipv4", "value": "6.6.6.10", "expires_on": None})
+        assert r.status_code == 201
+        assert r.json()["expires_on"] is None
+
     @pytest.mark.asyncio
     async def test_create_for_a_never_seen_observable(self, client: AsyncClient):
         """A detection can be created for a value that has never appeared in an alert."""
@@ -210,7 +239,8 @@ class TestAudit:
         caplog.set_level(logging.INFO)
 
         created = await client.post("/detection/", json={
-            "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert"})
+            "type": "fqdn", "value": "audited.example.com", "detection_context": "from an alert",
+            "expires_on": "2099-01-02T03:04:05"})
         detection_id = created.json()["id"]
         await client.patch(f"/detection/{detection_id}/expiration", json={"expires_on": None})
         await client.delete(f"/detection/{detection_id}")
@@ -220,7 +250,8 @@ class TestAudit:
             (*client_actor, detection_id, "fqdn", "audited.example.com")] * 3
         audit = [r.getMessage() for r in records]
         assert audit == [
-            f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com': from an alert",
+            f"AUDIT: user unittest added detection {detection_id} for fqdn 'audited.example.com' "
+            f"expiring 2099-01-02 03:04:05: from an alert",
             f"AUDIT: user unittest set the expiration of detection {detection_id} for fqdn 'audited.example.com' to never",
             f"AUDIT: user unittest removed detection {detection_id} for fqdn 'audited.example.com'",
         ]

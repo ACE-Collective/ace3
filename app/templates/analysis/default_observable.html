@@ -9,7 +9,7 @@
         class="observable_display"
         style="font-size: 70%; font-weight: bold; color: darkred"
         onmousedown="alert(decodeURI(decodeURI(atob('{{observable_detections[_observable.uuid].detection_context | b64escape}}'))))"
-        alt="{{observable_detections[_observable.uuid].detection_context | e}}"> (detect enabled 👀)
+        alt="{{observable_detections[_observable.uuid].detection_context | e}}">{% if observable_detections[_observable.uuid].expired %} (detection expired){% else %} (detect enabled 👀){% endif %}
     </span>
 {% endif %}
 <span id="interesting_badge_{{_observable.uuid}}" class="observable_display" style="font-size: 70%; font-weight: bold; color: goldenrod;{% if _observable.uuid not in interesting_observables %} display: none;{% endif %}">

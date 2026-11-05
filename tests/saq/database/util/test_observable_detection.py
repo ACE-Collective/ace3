@@ -200,8 +200,18 @@ def test_new_detection_gets_the_configured_per_type_default_expiration(detection
 
 
 @pytest.mark.integration
-def test_new_detection_of_an_unmapped_type_never_expires(detection_user):
-    """The default configuration maps nothing, so detections never expire unless told to."""
+def test_new_detection_of_an_unmapped_type_uses_global_default(detection_user, monkeypatch):
+    monkeypatch.setattr(get_config(), "observable_expiration_default", "90:00:00:00")
+    before = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
+    detection = create_observable_detection("fqdn", "unmapped.example.com", detection_user.id)
+    after = datetime.now(UTC).replace(tzinfo=None)
+    # MySQL rounds this column to whole seconds.
+    assert before + timedelta(days=90) <= detection.expires_on <= after + timedelta(days=90, seconds=1)
+
+
+@pytest.mark.integration
+def test_new_detection_can_have_no_global_expiration(detection_user, monkeypatch):
+    monkeypatch.setattr(get_config(), "observable_expiration_default", None)
     detection = create_observable_detection("fqdn", "unmapped.example.com", detection_user.id)
     assert detection.expires_on is None
 
