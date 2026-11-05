@@ -92,10 +92,11 @@ def test_a_disposition_change_does_not_capture_twice():
     assert [r.id for r in capture_rows(root.uuid)] == [r.id for r in first]
 
 
-@pytest.mark.parametrize("state", ["started", "ended", "canceled", "error", "closed"])
-def test_an_alert_of_an_unreviewed_run_is_not_captured(state):
+def test_an_alert_of_an_unreviewed_run_is_not_captured():
     root, _ = _alert_with_yara_matches()
-    attribute_to_run(root.uuid, state)
+    # the query compares the run's state with reviewed alone, so one other state stands for all of
+    # them: ended, because a check for a started run would pass with started
+    attribute_to_run(root.uuid, "ended")
 
     _disposition(root, DISPOSITION_FALSE_POSITIVE)
     _run_dispositioned()

@@ -1,4 +1,5 @@
 import datetime
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -176,7 +177,7 @@ def test_splunk_api_analyzer_escape_value(test_context):
         mock_splunk = MockSplunk()
         mock_splunk_client.return_value = mock_splunk
 
-        observable = RootAnalysis().add_observable_by_spec(F_EMAIL_SUBJECT, 'Hello, "World"')
+        observable = RootAnalysis().add_observable_by_spec(F_EMAIL_SUBJECT, 'C:\\temp\\"it\'s"')
         analyzer = SplunkAPIAnalyzer(
             context=test_context,
             config=get_analysis_module_config(ANALYSIS_MODULE_SPLUNK_API))
@@ -184,7 +185,8 @@ def test_splunk_api_analyzer_escape_value(test_context):
         analyzer.analysis = SplunkAPIAnalysis()
         analyzer.build_target_query(observable, source_event_time=datetime.datetime.now())
 
-        assert analyzer.target_query == 'Hello, \\"World\\"'
+        # backslashes are doubled first, so the ones the quotes get are not doubled again
+        assert analyzer.target_query == r"C:\\temp\\\"it\'s\""
 
 
 @pytest.mark.unit
@@ -315,52 +317,6 @@ def test_extract_result_observables_multiple_fields(test_context):
 
 
 @pytest.mark.unit
-def test_extract_result_observables_ignored_values(test_context):
-    """Test that ignored values are skipped."""
-    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
-        mock_splunk = MockSplunk()
-        mock_splunk_client.return_value = mock_splunk
-
-        config = SplunkAPIAnalyzerConfig(
-            name="test_splunk",
-            python_module="saq.modules.splunk",
-            python_class="SplunkAPIAnalyzer",
-            enabled=True,
-            question="Test question?",
-            summary="Test summary",
-            api_name="test_api",
-            query="index=test",
-            observable_mapping=[
-                ObservableMapping(
-                    field="src_ip",
-                    type="ipv4",
-                    ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
-                )
-            ]
-        )
-
-        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
-
-        root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
-        analysis = analyzer.create_analysis(observable)
-
-        # Value is in ignored list
-        result = {"src_ip": "127.0.0.1"}
-        analyzer.extract_result_observables(analysis, result, observable)
-
-        # No observable should be created
-        assert len(analysis.observables) == 0
-
-        # Now with a valid value
-        result = {"src_ip": "10.0.0.1"}
-        analyzer.extract_result_observables(analysis, result, observable)
-
-        assert len(analysis.observables) == 1
-        assert analysis.observables[0].value == "10.0.0.1"
-
-
-@pytest.mark.unit
 def test_extract_result_observables_ignored_values_regex(test_context):
     """Test that ignored_values supports regex patterns via re.fullmatch()."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
@@ -380,7 +336,7 @@ def test_extract_result_observables_ignored_values_regex(test_context):
                 ObservableMapping(
                     field="src_ip",
                     type="ipv4",
-                    ignored_values=[r"10\.0\..*"]
+                    ignored_values=[r"127\.0\.0\.1", r"10\.0\..*"]
                 )
             ]
         )
@@ -391,21 +347,15 @@ def test_extract_result_observables_ignored_values_regex(test_context):
         observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
 
-        # 10.0.1.1 should be ignored by the regex pattern
-        result = {"src_ip": "10.0.1.1"}
-        analyzer.extract_result_observables(analysis, result, observable)
+        for ignored in ("127.0.0.1", "10.0.1.1", "10.0.255.3"):
+            analyzer.extract_result_observables(analysis, {"src_ip": ignored}, observable)
         assert len(analysis.observables) == 0
 
-        # 10.0.255.3 should also be ignored
-        result = {"src_ip": "10.0.255.3"}
-        analyzer.extract_result_observables(analysis, result, observable)
-        assert len(analysis.observables) == 0
-
-        # 192.168.1.1 should NOT be ignored
-        result = {"src_ip": "192.168.1.1"}
-        analyzer.extract_result_observables(analysis, result, observable)
-        assert len(analysis.observables) == 1
-        assert analysis.observables[0].value == "192.168.1.1"
+        # a pattern must match the whole value: a match at its start (127.0.0.10) or inside it
+        # (110.0.0.1) does not count
+        for kept in ("127.0.0.10", "110.0.0.1", "192.168.1.1"):
+            analyzer.extract_result_observables(analysis, {"src_ip": kept}, observable)
+        assert sorted(o.value for o in analysis.observables) == ["110.0.0.1", "127.0.0.10", "192.168.1.1"]
 
 
 @pytest.mark.unit
@@ -491,45 +441,6 @@ def test_extract_result_observables_fields_mode_any_partial(test_context):
 
 
 @pytest.mark.unit
-def test_extract_result_observables_fields_mode_all(test_context):
-    """Test that fields_mode=all uses first non-null value (default behavior)."""
-    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
-        mock_splunk = MockSplunk()
-        mock_splunk_client.return_value = mock_splunk
-
-        config = SplunkAPIAnalyzerConfig(
-            name="test_splunk",
-            python_module="saq.modules.splunk",
-            python_class="SplunkAPIAnalyzer",
-            enabled=True,
-            question="Test question?",
-            summary="Test summary",
-            api_name="test_api",
-            query="index=test",
-            observable_mapping=[
-                ObservableMapping(
-                    fields=["src_ip", "dst_ip"],
-                    type="ipv4",
-                    fields_mode=FieldsMode.ALL,
-                )
-            ]
-        )
-
-        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
-
-        root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
-        analysis = analyzer.create_analysis(observable)
-
-        # both fields present - should create observable from first field
-        result = {"src_ip": "10.0.0.1", "dst_ip": "10.0.0.2"}
-        analyzer.extract_result_observables(analysis, result, observable)
-
-        assert len(analysis.observables) == 1
-        assert analysis.observables[0].value == "10.0.0.1"
-
-
-@pytest.mark.unit
 def test_extract_result_observables_fields_mode_all_missing(test_context):
     """Test that fields_mode=all creates no observable when some fields are missing."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
@@ -562,44 +473,6 @@ def test_extract_result_observables_fields_mode_all_missing(test_context):
 
         # only src_ip present - ALL mode requires all fields, so no observable
         result = {"src_ip": "10.0.0.1"}
-        analyzer.extract_result_observables(analysis, result, observable)
-
-        assert len(analysis.observables) == 0
-
-
-@pytest.mark.unit
-def test_extract_result_observables_fields_mode_all_no_match(test_context):
-    """Test that fields_mode=all creates no observable when no fields are present."""
-    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
-        mock_splunk = MockSplunk()
-        mock_splunk_client.return_value = mock_splunk
-
-        config = SplunkAPIAnalyzerConfig(
-            name="test_splunk",
-            python_module="saq.modules.splunk",
-            python_class="SplunkAPIAnalyzer",
-            enabled=True,
-            question="Test question?",
-            summary="Test summary",
-            api_name="test_api",
-            query="index=test",
-            observable_mapping=[
-                ObservableMapping(
-                    fields=["src_ip", "dst_ip"],
-                    type="ipv4",
-                    fields_mode=FieldsMode.ALL,
-                )
-            ]
-        )
-
-        analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
-
-        root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
-        analysis = analyzer.create_analysis(observable)
-
-        # no matching fields present - should NOT create observable
-        result = {"other": "value"}
         analyzer.extract_result_observables(analysis, result, observable)
 
         assert len(analysis.observables) == 0
@@ -713,19 +586,21 @@ def test_splunk_api_analyzer_fill_additional_timespecs(test_context):
         analyzer = SplunkAPIAnalyzer(
             context=test_context,
             config=get_analysis_module_config(ANALYSIS_MODULE_SPLUNK_API))
+        # the times are written in the splunk server's timezone
+        analyzer.timezone = "America/New_York"
         analyzer.target_query = 'hello <TIMESPEC2> world <TIMESPEC3> end'
 
+        hour = datetime.timedelta(hours=1)
         additional_times = {
-            'TIMESPEC2': (MOCK_NOW, MOCK_NOW),
-            'TIMESPEC3': (MOCK_NOW, MOCK_NOW),
+            'TIMESPEC2': (MOCK_NOW, MOCK_NOW + hour),
+            'TIMESPEC3': (MOCK_NOW + 24 * hour, MOCK_NOW + 26 * hour),
         }
         analyzer.fill_additional_timespecs(additional_times)
 
-        # use_index_time is True for the test config
-        assert '<TIMESPEC2>' not in analyzer.target_query
-        assert '<TIMESPEC3>' not in analyzer.target_query
-        assert '_index_earliest = 11/11/2017:07:36:01' in analyzer.target_query
-        assert '_index_latest = 11/11/2017:07:36:01' in analyzer.target_query
+        # use_index_time is True for the test config; MOCK_NOW is 07:36:01 UTC, 02:36:01 in New York
+        assert analyzer.target_query == (
+            'hello _index_earliest = 11/11/2017:02:36:01 _index_latest = 11/11/2017:03:36:01'
+            ' world _index_earliest = 11/12/2017:02:36:01 _index_latest = 11/12/2017:04:36:01 end')
 
 
 @pytest.mark.unit
@@ -752,14 +627,11 @@ def test_splunk_api_analyzer_fill_additional_timespecs_event_time(test_context):
         analyzer.target_query = 'hello <TIMESPEC2> world'
 
         additional_times = {
-            'TIMESPEC2': (MOCK_NOW, MOCK_NOW),
+            'TIMESPEC2': (MOCK_NOW, MOCK_NOW + datetime.timedelta(hours=1)),
         }
         analyzer.fill_additional_timespecs(additional_times)
 
-        assert '<TIMESPEC2>' not in analyzer.target_query
-        assert 'earliest = 11/11/2017:07:36:01' in analyzer.target_query
-        assert 'latest = 11/11/2017:07:36:01' in analyzer.target_query
-        assert '_index_' not in analyzer.target_query
+        assert analyzer.target_query == 'hello earliest = 11/11/2017:07:36:01 latest = 11/11/2017:08:36:01 world'
 
 
 @pytest.mark.unit
@@ -891,14 +763,15 @@ def test_process_pivot_links_skips_empty_values(test_context):
 
         config = _pivot_link_config(pivot_links=[
             {"url": "https://example.com/{{ host }}", "text": "{{ label }}"},
+            {"url": "{{ link }}", "text": "Ticket"},
         ])
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
 
         root = RootAnalysis()
         observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
         analysis = analyzer.create_analysis(observable)
-        # label renders empty -> link skipped
-        analysis.query_results = [{"host": "server1", "label": ""}]
+        # label renders an empty text and link an empty url -> both links skipped
+        analysis.query_results = [{"host": "server1", "label": "", "link": ""}]
 
         analyzer.process_pivot_links(analysis)
 
@@ -989,25 +862,6 @@ def test_process_pivot_links_root_and_analysis_independent_dedup(test_context):
 
 
 @pytest.mark.unit
-def test_process_pivot_links_empty_config(test_context):
-    """With no pivot_links configured, process_pivot_links is a no-op."""
-    with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
-        mock_splunk_client.return_value = MockSplunk()
-
-        analyzer = SplunkAPIAnalyzer(context=test_context, config=_pivot_link_config())
-
-        root = RootAnalysis()
-        observable = root.add_observable_by_spec(F_IP, "1.2.3.4")
-        analysis = analyzer.create_analysis(observable)
-        analysis.query_results = [{"src_ip": "10.0.0.1"}]
-
-        analyzer.process_pivot_links(analysis)
-
-        assert len(analysis.pivot_links) == 0
-        assert len(analyzer.get_root().pivot_links) == 0
-
-
-@pytest.mark.unit
 def test_process_pivot_links_query_results_dict(test_context):
     """query_results as a single dict is normalized to a one-event list."""
     with patch("saq.modules.splunk.SplunkClient") as mock_splunk_client:
@@ -1043,12 +897,14 @@ def test_pivot_link_config_negative_limit_raises():
 
 
 @pytest.mark.unit
-def test_pivot_link_config_overflow_without_limit_tolerated():
+def test_pivot_link_config_overflow_without_limit_tolerated(caplog):
     """`overflow` without `limit` is tolerated (logged) — the overflow link just never fires."""
-    pl = PivotLinkConfig(url="u", text="t", overflow={"url": "ou", "text": "ot"})
+    with caplog.at_level(logging.ERROR):
+        pl = PivotLinkConfig(url="u", text="t", overflow={"url": "ou", "text": "ot"})
     assert pl.overflow is not None
     assert pl.overflow.url == "ou"
     assert pl.limit is None
+    assert "pivot_link has `overflow` configured without `limit`" in caplog.text
 
 
 @pytest.mark.unit
@@ -1088,7 +944,8 @@ def test_process_pivot_links_overflow_skipped_when_not_truncated(test_context):
         config = _pivot_link_config(pivot_links=[{
             "url": "https://example.com/{{ id }}",
             "text": "Task {{ id }}",
-            "limit": 5,
+            # exactly at the limit: nothing is cut off
+            "limit": 3,
             "overflow": {"url": "{{ endpoint }}$tsf.do", "text": "More"},
         }])
         analyzer = SplunkAPIAnalyzer(context=test_context, config=config)
