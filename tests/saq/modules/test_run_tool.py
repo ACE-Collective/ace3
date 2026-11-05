@@ -24,6 +24,7 @@ from saq.modules.file_analysis.cve import CVE_2021_30657_Analysis, CVE_2021_3065
 from saq.modules.file_analysis.dmg import DMGAnalysis, DMGAnalyzer
 from saq.modules.file_analysis.file_type import FileTypeAnalysis, FileTypeAnalyzer
 from saq.modules.file_analysis.mse import MicrosoftScriptEncodingAnalysis, MicrosoftScriptEncodingAnalyzer
+from saq.modules.file_analysis.pdf import PDFPARSER_TIMEOUT_SECONDS, PDFAnalysis, PDFAnalyzer
 from saq.modules.file_analysis.rtf import RTFOLEObjectAnalysis, RTFOLEObjectAnalyzer
 from saq.modules.file_analysis.ssdeep import SsdeepAnalysis, SsdeepAnalyzer
 from saq.modules.file_analysis.upx import UPXAnalysis, UPXAnalyzer
@@ -101,6 +102,23 @@ def test_run_tool_timeout_is_what_the_call_has_left(root_analysis, monkeypatch, 
     module.run_tool(["true"], "target")
 
     assert run.call_args.kwargs["timeout"] == pytest.approx(expected, abs=1)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("timeout,left,expected", [
+    (10, 100, 10),
+    (10, TOOL_TIMEOUT_MARGIN_SECONDS + 3, 3),
+    (0.1, 100, 1),
+])
+def test_run_tool_timeout_is_at_most_the_one_given(root_analysis, monkeypatch, timeout, left, expected):
+    module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+    module.set_analysis_deadline(time.monotonic() + left)
+
+    run = Mock()
+    monkeypatch.setattr("saq.modules.base_module.subprocess.run", run)
+    module.run_tool(["true"], "target", timeout=timeout)
+
+    assert run.call_args.kwargs["timeout"] == pytest.approx(expected, abs=0.5)
 
 
 @pytest.mark.integration
@@ -246,6 +264,26 @@ def test_rtfobj(root_analysis, data_dir_tool, monkeypatch):
         assert not psutil.pid_exists(int(fp.read()))
     analysis = observable.get_analysis(RTFOLEObjectAnalysis)
     assert analysis.extracted_files == []
+
+
+@pytest.mark.integration
+def test_pdfparser(root_analysis, data_dir_tool, monkeypatch, caplog):
+    pdfparser, pid_file = data_dir_tool
+    module = _module(PDFAnalyzer, "pdf_analyzer", root_analysis)
+    monkeypatch.setattr(module.config, "pdfparser_path", pdfparser)
+    _out_of_time(module)
+    observable = _file(root_analysis, "document.pdf", b"%PDF-1.7\nnot much of a document")
+
+    with caplog.at_level(logging.WARNING):
+        # stopped when the call runs out of time, before its own PDFPARSER_TIMEOUT_SECONDS
+        assert _run(module, observable) < PDFPARSER_TIMEOUT_SECONDS
+    with open(pid_file) as fp:
+        assert not psutil.pid_exists(int(fp.read()))
+    assert any(r.getMessage() == f"PDFAnalyzer stopped python3 on {observable.full_path} after 1 seconds"
+               for r in caplog.records)
+    # what it wrote before it was stopped is still scanned
+    assert [o.file_name for o in observable.get_analysis(PDFAnalysis).observables
+            if o.file_name.endswith(".pdfparser")] == ["document.pdf.pdfparser"]
 
 
 @pytest.fixture
