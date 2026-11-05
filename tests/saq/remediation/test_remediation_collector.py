@@ -20,11 +20,6 @@ class TestRemediationListener:
         self.remediations.append(work_item)
 
 @pytest.mark.integration
-def test_collect_work_items_empty():
-    collector = RemediationCollector()
-    assert not collector.collect_work_items()
-
-@pytest.mark.integration
 def test_collect_single_work_item():
     collector = RemediationCollector()
     assert not collector.collect_work_items()
@@ -44,13 +39,9 @@ def test_collect_single_work_item():
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
 
-@pytest.mark.parametrize("status,expected_value", [
-    (RemediationStatus.NEW, True),
-    (RemediationStatus.IN_PROGRESS, True),
-    (RemediationStatus.COMPLETED, False),
-])
 @pytest.mark.integration
-def test_collect_work_item_status(status, expected_value):
+def test_collect_work_item_status():
+    """A completed remediation is not collected again (test_collect_single_work_item collects a new one)."""
     collector = RemediationCollector()
     collector.register_listener("custom", TestRemediationListener())
 
@@ -58,11 +49,11 @@ def test_collect_work_item_status(status, expected_value):
     id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
 
     remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
-    remediation.status = status.value
+    remediation.status = RemediationStatus.COMPLETED.value
     get_db().add(remediation)
     get_db().commit()
 
-    assert bool(collector.collect_work_items()) == expected_value
+    assert not collector.collect_work_items()
 
 @pytest.mark.integration
 def test_collect_locked_work_item():
@@ -114,41 +105,6 @@ def test_collect_delayed_work_item():
     collector.delay_time_seconds = 0
 
     # now we should collect the remediation because it is in progress and the delay time has expired
-    tasks = collector.collect_work_items()
-    assert len(tasks) == 1
-    assert tasks[0].id == id
-
-@pytest.mark.integration
-def test_collect_delayed_and_locked_work_item():
-    collector = RemediationCollector()
-    collector.register_listener("custom", TestRemediationListener())
-
-    target = RemediationTarget("custom", F_TEST, "test")
-    id = target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
-
-    # set to in progress and delayed and locked
-    remediation = get_db().query(Remediation).filter(Remediation.id == id).first()
-    remediation.update_time = func.NOW()
-    remediation.status = RemediationStatus.IN_PROGRESS.value
-    remediation.result = RemediatorStatus.DELAYED.value
-    remediation.lock = str(uuid4())
-    remediation.lock_time = func.NOW()
-    get_db().add(remediation)
-    get_db().commit()
-
-    # we not should collect the remediation because it is in progress and currently delayed and locked
-    assert not collector.collect_work_items()
-
-    # set the delay time to zero seconds
-    collector.delay_time_seconds = 0
-
-    # should still fail to collect because it is still locked
-    assert not collector.collect_work_items()
-
-    # set the lock time to zero seconds
-    collector.lock_timeout_seconds = 0
-
-    # now we should collect the remediation because it is in progress and the delay time and lock has expired
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == id

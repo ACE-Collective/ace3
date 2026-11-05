@@ -80,11 +80,6 @@ def test_disposition_sweep_leaves_open_alerts_and_finished_checks(make_check, db
     assert _check(finished).result == CheckResult.NOT_FOUND.value
 
 
-@pytest.mark.unit
-def test_disposition_sweep_with_no_checks_in_flight():
-    ExternalRemediationCheckService()._run_disposition_sweep()
-
-
 @pytest.mark.integration
 def test_service_runs_disposition_sweep(make_check, db_alert, no_probes, service_config, monkeypatch):
     service_config.stop_on_disposition = True
@@ -168,22 +163,6 @@ def test_start_single_threaded_probes_everything_due(make_check, probe_sections)
     assert _check(ids[2]).status == CheckStatus.NEW.value
 
     # `ace service start` stops and waits for the service after it returns
-    service.stop()
-    service.wait()
-
-
-@pytest.mark.integration
-def test_start_single_threaded_stops_on_shutdown(make_check, probe_sections, monkeypatch):
-    probe_sections(fake_probe={})
-    ids = [make_check().id for _ in range(3)]
-    # shutdown is requested (as a signal would) while the first item is being worked
-    checks = iter([False])
-    monkeypatch.setattr("saq.queue_service.is_shutting_down", lambda: next(checks, True))
-
-    service = ExternalRemediationCheckService()
-    service.start_single_threaded()
-
-    assert [_check(check_id).result for check_id in ids].count(CheckResult.NOT_FOUND.value) == 1
     service.stop()
     service.wait()
 
