@@ -230,22 +230,28 @@ def test_collect_refuses_malformed_dismissals(bundle):
 
 def test_an_overturned_dismissal_joins_the_survivors_and_an_upheld_one_does_not(bundle):
     # no findings at all: the dismissals alone make tally read the batch verifier's file
-    write_json(bundle / "dismissed-performance.json", [dismissal(title="upheld one"), dismissal()])
+    write_json(bundle / "dismissed-performance.json", [dismissal(title="upheld one"), dismissal(), dismissal(title="upheld two"), dismissal(title="unsure"), dismissal(title="upheld three")])
     findings.collect(str(bundle))
     write_json(bundle / "verify" / "batch.json", {"dismissed": [
         {"did": "D1", "verdict": "UPHELD", "reason": "the cost is real"},
         {"did": "D2", "verdict": "CONFIRMED", "reason": "the 1d was chosen for a slow search",
          "finding": finding(dimension="correctness", title="a stale trusted answer filters events")},
+        {"did": "D3", "verdict": "UPHELD", "reason": "the cost is real"},
+        {"did": "D4", "verdict": "PLAUSIBLE", "reason": "it may be worse", "finding": finding(severity="nit", title="a plausible one")},
+        {"did": "D5", "verdict": "UPHELD", "reason": "the cost is real"},
     ]})
 
     result = findings.tally(str(bundle))
 
-    assert result["dismissals"] == {"upheld": 1, "overturned": 1}
-    assert result["survivors"] == 1
-    survivor = read_json(bundle / "survivors.json")[0]
+    assert result["dismissals"] == {"upheld": 3, "overturned": 2}
+    assert result["survivors"] == 2
+    survivor, plausible = read_json(bundle / "survivors.json")
+    assert (plausible["cid"], plausible["verdict"]) == ("D4", "PLAUSIBLE")
     assert (survivor["cid"], survivor["title"], survivor["verdict"]) == ("D2", "a stale trusted answer filters events", "CONFIRMED")
     assert survivor["dismissal"] == {"dimension": "performance", "title": "a day-old answer can filter an event", "why_not": "the hunt chose 1d"}
-    assert [(d["did"], d["outcome"]) for d in read_json(bundle / "dismissals.json")] == [("D1", "upheld"), ("D2", "overturned")]
+    assert [(d["did"], d["outcome"]) for d in read_json(bundle / "dismissals.json")] == [
+        ("D1", "upheld"), ("D2", "overturned"), ("D3", "upheld"), ("D4", "overturned"), ("D5", "upheld"),
+    ]
 
 
 def test_an_overturned_dismissal_tops_out_at_fix_first(bundle):
@@ -302,32 +308,35 @@ def test_survivors_are_ranked_by_origin_severity_and_dimension(bundle):
 
 
 def test_finish_drops_repeats_numbers_the_rest_and_counts_what_is_still_open(bundle):
-    write_json(bundle / "previous.json", [earlier("R1-1", "open", severity="blocker"), earlier("R1-2", "seen", severity="nit")])
-    write_json(bundle / "carried.json", [{"id": "R1-1", "status": "open"}])
+    write_json(bundle / "previous.json", [earlier("R1-1", "open", severity="blocker"), earlier("R1-2", "seen", severity="nit"),
+                                           earlier("R1-3", "open")])
+    write_json(bundle / "carried.json", [{"id": "R1-1", "status": "open"}, {"id": "R1-3", "status": "fixed"}])
     write_json(bundle / "rejected.json", [{"cid": "C9"}])
     write_json(bundle / "ranked.json", [
         judged(title="new one", cid="C1"),
         finding(title="the old nit again", severity="nit", repeats="R1-2"),
         finding(title="old code", origin="pre-existing", severity="nit"),
         judged(title="another new one", severity="nit"),
+        # an id no earlier round has is not a repeat, and the field is not kept
+        judged(title="a third new one", severity="nit", repeats="R0-9"),
     ])
 
     summary = findings.finish(str(bundle))
 
     verified = read_json(bundle / "verified.json")
     # a pre-existing finding is numbered apart, so "fix the R findings" never reaches it
-    assert [(f["id"], f["title"]) for f in verified] == [("R2-1", "new one"), ("P2-1", "old code"), ("R2-2", "another new one")]
+    assert [(f["id"], f["title"]) for f in verified] == [("R2-1", "new one"), ("P2-1", "old code"), ("R2-2", "another new one"), ("R2-3", "a third new one")]
     assert all("repeats" not in f for f in verified)
     assert read_json(bundle / "summary.json") == summary
     assert datetime.datetime.fromisoformat(summary.pop("finished_at")).tzinfo is not None
     assert summary == {
         "round": 2,
-        "new": {"blocker": 0, "fix-first": 1, "nit": 1},
-        "buckets": {"act on": 1, "consider": 0, "noted": 1},
+        "new": {"blocker": 0, "fix-first": 1, "nit": 2},
+        "buckets": {"act on": 1, "consider": 0, "noted": 2},
         "chains": [],
         "pre_existing": 1,
         "still_open": [{"id": "R1-1", "severity": "blocker", "file": "saq/x.py", "line": 1, "title": "a claim"}],
-        "fixed": [],
+        "fixed": ["R1-3"],
         "not_repeated": 1,
         "rejected": 1,
         "verdict_floor": "rework",
@@ -675,6 +684,22 @@ def test_gh_turns_every_failure_into_one_error(monkeypatch, outcome, message):
         REAL_GH("issue", "list")
 
 
+def test_gh_runs_in_core_with_a_timeout_and_returns_what_it_printed(tmp_path, monkeypatch):
+    real_run = subprocess.run
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(argv=argv, cwd=kwargs["cwd"], timeout=kwargs["timeout"])
+        # cat stands in for gh, so stdin and the capture go through a real process
+        return real_run(["cat"], **kwargs)
+    monkeypatch.setattr(findings.subprocess, "run", run)
+    monkeypatch.setattr(findings, "SAQ_HOME", str(tmp_path))
+
+    assert REAL_GH("issue", "create", stdin="the body\n") == "the body\n"
+
+    assert seen == {"argv": ["gh", "issue", "create"], "cwd": str(tmp_path), "timeout": 60}
+
+
 @pytest.mark.parametrize("step, message", [(findings.tally, "run collect first"), (findings.finish, "no ranked.json")])
 def test_a_step_run_out_of_order_says_what_comes_first(bundle, step, message):
     with pytest.raises(SystemExit, match=message):
@@ -695,7 +720,7 @@ def git(repo, *args):
 
 @pytest.fixture
 def history(tmp_path):
-    """A branch at two commits: forty lines, then line 10 rewritten. Returns (repo, trees)."""
+    """A branch at two commits: forty lines, then lines 10 and 20 to 22 rewritten. Returns (repo, trees)."""
     repo = tmp_path / "ace"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "mw/topic")
@@ -705,6 +730,7 @@ def history(tmp_path):
     git(repo, "commit", "-q", "-m", "one")
     first = git(repo, "rev-parse", "HEAD^{tree}")
     lines[9] = "line 10, rewritten"
+    lines[19:22] = ["line 20, rewritten", "line 21, rewritten", "line 22, rewritten"]
     (repo / "w.py").write_text("\n".join(lines) + "\n")
     git(repo, "commit", "-q", "-am", "two")
     return repo, first, git(repo, "rev-parse", "HEAD^{tree}")
@@ -731,10 +757,10 @@ def state(tmp_path, history):
     state = tmp_path / "state"
     branch = {"repo": str(repo), "branch": "mw/topic", "includes_uncommitted": True}
     reviewed(state, "ace-mw-topic", 1, {**branch, "tree": first},
-             [at("R1-1", 3), at("R1-2", 10, dimension="design", severity="nit"), at("R1-3", 20),
-              at("R1-4", 30, severity="nit"), at("R1-5", 5, origin="pre-existing")],
+             [at("R1-5", 5, origin="pre-existing"), at("R1-1", 3), at("R1-2", 10, dimension="design", severity="nit"), at("R1-3", 20),
+              at("R1-4", 30, severity="nit")],
              leads=[{"file": "w.py", "line": 3, "check": "bare-except"}, {"file": "w.py", "line": 30, "check": "local-import"}],
-             rejected=[{"dimension": "uptime", "severity": "blocker"}, {"dimension": "design", "severity": "nit"}],
+             rejected=[{"dimension": "uptime", "severity": "blocker"}, {"dimension": "design", "severity": "nit"}, {"dimension": "design", "severity": "nit"}],
              answers=[{"id": "R1-1", "answer": "wrong"}])
     reviewed(state, "ace-mw-topic", 2, {**branch, "tree": second}, [at("R2-1", 12)], finished_at="2026-10-20T09:00:00+00:00",
              carried=[{"id": "R1-3", "status": "fixed"}])
@@ -750,12 +776,12 @@ def test_stats_gives_each_new_finding_its_first_known_outcome(state):
     result = findings.stats(str(state))
 
     assert {k: result[k] for k in ("reviews", "rounds", "new_findings", "pre_existing", "rejected_by_verifiers", "blockers_rejected_by_vote")} == {
-        "reviews": 2, "rounds": 3, "new_findings": 6, "pre_existing": 1, "rejected_by_verifiers": 2, "blockers_rejected_by_vote": 1,
+        "reviews": 2, "rounds": 3, "new_findings": 6, "pre_existing": 1, "rejected_by_verifiers": 3, "blockers_rejected_by_vote": 1,
     }
     # R1-1 answered, R1-3 rechecked, R1-2's line rewritten, R1-4's line never touched; R2-1 has
     # nothing after it yet and the pruned branch nothing at all
     assert result["outcomes"] == {"fixed (rechecked)": 1, "lines changed": 1, "unchanged": 1, "unknown": 2, "wrong": 1, "acted_on": "2 of 4"}
-    assert result["by_dimension"]["design"] == {"lines changed": 1, "rejected": 1, "acted_on": "1 of 1"}
+    assert result["by_dimension"]["design"] == {"lines changed": 1, "rejected": 2, "acted_on": "1 of 1"}
     assert result["by_dimension"]["uptime"] == {
         "fixed (rechecked)": 1, "rejected": 1, "unchanged": 1, "unknown": 2, "wrong": 1, "acted_on": "1 of 3"
     }
@@ -798,10 +824,14 @@ def test_stats_on_no_reviews_counts_nothing(tmp_path):
 
 
 @pytest.mark.parametrize("path, line, expected", [
+    ("w.py", 7, False),
+    ("w.py", 8, True),
     ("w.py", 10, True),
     ("w.py", 12, True),
     ("w.py", 13, False),
-    ("w.py", 30, False),
+    # the far end of a hunk of three lines
+    ("w.py", 24, True),
+    ("w.py", 25, False),
     ("w.py", None, True),
     ("other.py", 10, False),
 ])
