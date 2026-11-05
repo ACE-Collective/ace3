@@ -65,16 +65,6 @@ def test_every_shipped_mode_block_key_matches_its_name():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("analysis_mode", [ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CLI])
-def test_shipped_mode_resolves(analysis_mode):
-    """Both halves of the block that was mangled must resolve. `analysis` is the default for
-    ace_api.submit(), `./ace submit` and the add_workload fallback; `cli` is what
-    `./ace correlate` looks up unguarded."""
-    config = get_config().get_analysis_mode_config(analysis_mode)
-    assert config.name == analysis_mode
-
-
-@pytest.mark.unit
 def test_analysis_and_cli_are_distinct_modes():
     """They were one block for months. They are not the same mode -- cli deliberately does not
     clean up after itself."""

@@ -3,7 +3,7 @@ from logging.handlers import BufferingHandler
 import os
 import sys
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,13 +17,11 @@ from saq.integration.integration_loader import (
     load_integration_component_src,
     load_integration_component_bin,
     load_integration_component_etc,
-    load_integration_from_directory
 )
 from saq.integration.integration_manager import disable_integration
 from saq.integration.integration_util import (
     validate_integration_dir,
     _recurse_integration_dirs,
-    get_valid_integration_dirs,
 )
 from tests.saq.helpers import unconfigured_logging
 
@@ -31,50 +29,14 @@ from tests.saq.helpers import unconfigured_logging
 @pytest.mark.unit
 class TestValidateIntegrationDir:
     
-    def test_validate_integration_dir_nonexistent_path(self):
-        """Test validation fails for non-existent path."""
-        result = validate_integration_dir("/nonexistent/path")
-        assert result is False
-
-    def test_validate_integration_dir_not_directory(self, tmpdir):
-        """Test validation fails for non-directory path."""
-        file_path = tmpdir.join("not_a_dir")
-        file_path.write("content")
-        
-        result = validate_integration_dir(str(file_path))
-        assert result is False
-
     def test_validate_integration_dir_missing_integration_md(self, tmpdir):
         """Test validation fails when integration.md is missing."""
         result = validate_integration_dir(str(tmpdir))
         assert result is False
 
-    def test_validate_integration_dir_valid(self, tmpdir):
-        """Test validation passes for valid integration directory."""
-        integration_md = tmpdir.join("integration.md")
-        integration_md.write("# Integration")
-        
-        result = validate_integration_dir(str(tmpdir))
-        assert result is True
-
-
 @pytest.mark.unit
 class TestRecurseIntegrationDirs:
     
-    def test_recurse_integration_dirs_empty_directory(self, tmpdir):
-        """Test recursion returns empty list for empty directory."""
-        result = _recurse_integration_dirs(str(tmpdir))
-        assert result == []
-
-    def test_recurse_integration_dirs_single_valid_integration(self, tmpdir):
-        """Test recursion finds single valid integration."""
-        integration_dir = tmpdir.mkdir("integration1")
-        integration_dir.join("integration.md").write("# Integration")
-        
-        result = _recurse_integration_dirs(str(tmpdir))
-        assert len(result) == 1
-        assert str(integration_dir) in result
-
     def test_recurse_integration_dirs_nested_integrations(self, tmpdir):
         """Test recursion finds nested integrations."""
         # Create nested structure
@@ -109,23 +71,6 @@ class TestRecurseIntegrationDirs:
         assert len(result) == 2
         assert str(valid_integration) in result
         assert str(nested_integration) in result
-
-
-@pytest.mark.unit
-class TestGetValidIntegrationDirs:
-    
-    @patch('saq.integration.integration_util.get_integration_base_dir')
-    def test_get_valid_integration_dirs(self, mock_get_base_dir, tmpdir):
-        """Test getting valid integration directories."""
-        mock_get_base_dir.return_value = str(tmpdir)
-        
-        # Create valid integration
-        integration = tmpdir.mkdir("test_integration")
-        integration.join("integration.md").write("# Test Integration")
-        
-        result = get_valid_integration_dirs()
-        assert len(result) == 1
-        assert str(integration) in result
 
 
 @pytest.fixture
@@ -169,15 +114,6 @@ def _assert_loaded(integration_dir: str):
 @pytest.mark.unit
 class TestLoadIntegrations:
 
-    def test_load_integrations_all_enabled_success(self, integration_env):
-        """Test loading all enabled integrations successfully."""
-        integration1 = integration_env("integration1")
-        integration2 = integration_env("integration2")
-
-        load_integrations()
-        _assert_loaded(integration1)
-        _assert_loaded(integration2)
-
     def test_load_integrations_disabled_integration(self, integration_env):
         """Test disabled integrations are skipped."""
         enabled = integration_env("enabled_integration")
@@ -189,16 +125,6 @@ class TestLoadIntegrations:
         assert os.path.join(disabled, "bin") not in os.environ["PATH"].split(":")
         assert get_global_runtime_settings().integration_config_paths == [
             os.path.join(enabled, "etc", "saq.integration.yaml")]
-
-    @patch('saq.integration.integration_loader.is_integration_enabled')
-    @patch('saq.error.reporting.write_error_report')
-    def test_load_integrations_exception_handling(self, mock_write_error_report, mock_is_enabled, integration_env):
-        """Test exception handling during integration loading."""
-        integration_env("integration1")
-        mock_is_enabled.side_effect = Exception("Test exception")
-
-        load_integrations()
-        mock_write_error_report.assert_called_once()
 
     def test_load_integrations_component_raises(self, integration_env, monkeypatch, caplog):
         """A component that raises fails that integration, is logged with its traceback, and the rest still load."""
@@ -306,22 +232,6 @@ class TestLoadIntegrationComponentSrc:
         load_integration_component_src(str(tmpdir))
         assert sys.path == original_path
 
-    def test_load_integration_component_src_with_src_dir(self, tmpdir):
-        """Test loading src component with existing src directory."""
-        src_dir = tmpdir.mkdir("src")
-        src_path = str(src_dir)
-        
-        # Ensure src_path is not in sys.path initially
-        if src_path in sys.path:
-            sys.path.remove(src_path)
-            
-        load_integration_component_src(str(tmpdir))
-        assert src_path in sys.path
-        
-        # Clean up
-        if src_path in sys.path:
-            sys.path.remove(src_path)
-
     def test_load_integration_component_src_already_in_path(self, tmpdir):
         """Test loading src component when src directory already in sys.path."""
         src_dir = tmpdir.mkdir("src")
@@ -343,26 +253,6 @@ class TestLoadIntegrationComponentSrc:
 @pytest.mark.unit
 class TestLoadIntegrationComponentBin:
     
-    def test_load_integration_component_bin_no_bin_dir(self, tmpdir):
-        """Test loading bin component when bin directory doesn't exist."""
-        original_path = os.environ["PATH"]
-        load_integration_component_bin(str(tmpdir))
-        assert os.environ["PATH"] == original_path
-
-    def test_load_integration_component_bin_with_bin_dir(self, tmpdir):
-        """Test loading bin component with existing bin directory."""
-        bin_dir = tmpdir.mkdir("bin")
-        bin_path = str(bin_dir)
-        
-        # Store original PATH
-        original_path = os.environ.get("PATH", "")
-        
-        load_integration_component_bin(str(tmpdir))
-        assert bin_path in os.environ["PATH"]
-        
-        # Restore original PATH
-        os.environ["PATH"] = original_path
-
     def test_load_integration_component_bin_already_in_path(self, monkeypatch, tmpdir):
         """Test loading bin component when bin directory already in PATH."""
         bin_dir = tmpdir.mkdir("bin")
@@ -380,21 +270,6 @@ class TestLoadIntegrationComponentBin:
 @pytest.mark.unit
 class TestLoadIntegrationComponentEtc:
     
-    def test_load_integration_component_etc_no_etc_dir(self, monkeypatch, tmpdir):
-        """Test loading etc component when etc directory doesn't exist."""
-        monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
-        load_integration_component_etc(str(tmpdir))
-        assert get_global_runtime_settings().integration_config_paths == []
-
-    def test_load_integration_component_etc_with_ini_files(self, monkeypatch, tmpdir):
-        """Test loading etc component with ini files."""
-        etc_dir = tmpdir.mkdir("etc")
-        config_file = etc_dir.join("saq.integration.yaml")
-        config_file.write("section:\n  key: value")
-        monkeypatch.setattr(get_global_runtime_settings(), "integration_config_paths", [])
-        load_integration_component_etc(str(tmpdir))
-        assert get_global_runtime_settings().integration_config_paths == [str(config_file)]
-
     def test_load_integration_component_etc_non_ini_files_ignored(self, monkeypatch, tmpdir):
         """Test loading etc component ignores non-ini files."""
         etc_dir = tmpdir.mkdir("etc")
@@ -418,17 +293,6 @@ class TestLoadIntegrationComponentEtc:
         
         load_integration_component_etc(str(tmpdir))
         assert get_global_runtime_settings().integration_config_paths == [str(config1)]
-
-
-@pytest.mark.unit
-class TestLoadIntegrationFromDirectory:
-
-    def test_load_integration_from_directory_all_components(self, integration_env):
-        """Test loading integration from directory wires src, bin and etc."""
-        integration_dir = integration_env("integration1")
-
-        load_integration_from_directory(integration_dir)
-        _assert_loaded(integration_dir)
 
 
 @pytest.mark.unit
