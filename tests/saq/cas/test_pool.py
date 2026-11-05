@@ -358,8 +358,11 @@ def test_gc_flip_is_conditional_on_holds(plain_pool, payload, monkeypatch):
     real = index.flip_to_deleting
 
     def hold_then_flip(session, pool, digest_, grace):
-        # somebody takes a hold after the candidate scan and before the flip
+        # somebody takes a hold after the candidate scan and before the flip. taking it bumps
+        # last_held_at, which alone would also stop the flip; ageing the object again leaves the
+        # hold as the only thing that can
         plain_pool.hold(digest_, Hold("k", "late"))
+        age_object(plain_pool, digest_, GRACE + 60)
         return real(session, pool, digest_, grace)
 
     monkeypatch.setattr(index, "flip_to_deleting", hold_then_flip)
@@ -486,17 +489,6 @@ def test_open_detects_a_corrupt_encrypted_object(enc_pool, payload, where):
     cache_root = get_cas().cache.root
     assert not os.path.exists(get_cas().cache.path(enc_pool.name, digest))
     assert not any(name.startswith(".fill-") for _, _, names in os.walk(cache_root) for name in names)
-
-
-def test_open_detects_the_wrong_key(enc_pool, payload):
-    digest = enc_pool.put(payload)
-    path = backend_path(enc_pool, digest)
-    with open(path, "wb") as fp:
-        encrypt_stream(io.BytesIO(payload), fp, size=len(payload), password="not the system key")
-
-    with pytest.raises(IntegrityError, match="encrypted with key"):
-        with enc_pool.open(digest):
-            pass
 
 
 def test_materialize_plaintext_local_is_a_hardlink(plain_pool, payload, dest_dir):

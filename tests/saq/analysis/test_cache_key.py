@@ -34,17 +34,20 @@ class TestCacheKeyBasics:
         assert key is None
 
     @pytest.mark.unit
-    def test_returns_sha256_hex_when_cache_ttl_set(self):
-        key = generate_cache_key(_make_observable(), _make_module())
-        assert isinstance(key, str)
-        assert len(key) == 64
-        int(key, 16)  # hex
-
-    @pytest.mark.unit
-    def test_deterministic(self):
-        obs = _make_observable()
-        mod = _make_module()
-        assert generate_cache_key(obs, mod) == generate_cache_key(obs, mod)
+    def test_key_is_the_v2_digest_of_its_labelled_fields(self):
+        """The key is stored in every cache row and looked up by later
+        processes and releases, so it is pinned to a digest computed outside
+        ACE: sha256 over ``label:length:value`` for format, type, value,
+        module, version, config ("none" for a config without model_dump) and
+        each extended_version pair in key order, e.g.
+        ``f() { printf '%s:%s:%s' "$1" "${#2}" "$2"; }; { f format ace-analysis-cache-key-v2;
+        f type url; f value https://example.com/; f module test_module; f version 1;
+        f config none; f ext:rules_sha aaa; f ext:tool 1.0; } | shasum -a 256``."""
+        key = generate_cache_key(
+            _make_observable(),
+            _make_module(extended_version={"tool": "1.0", "rules_sha": "aaa"}),
+        )
+        assert key == "81103554a7e911cdf1c44bdc2b6edf8949550131a017458f5696b1a3233991ea"
 
 
 class TestCacheKeySensitivity:
@@ -105,13 +108,6 @@ class TestCacheKeySensitivity:
         obs = _make_observable()
         k1 = generate_cache_key(obs, _make_module(extended_version={"a": "1", "b": "2"}))
         k2 = generate_cache_key(obs, _make_module(extended_version={"b": "2", "a": "1"}))
-        assert k1 == k2
-
-    @pytest.mark.unit
-    def test_empty_extended_version_equals_unset(self):
-        obs = _make_observable()
-        k1 = generate_cache_key(obs, _make_module(extended_version={}))
-        k2 = generate_cache_key(obs, _make_module())
         assert k1 == k2
 
     @pytest.mark.unit

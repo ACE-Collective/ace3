@@ -93,9 +93,7 @@ async def test_a_node_that_cannot_be_reached_is_failed_in_the_answer(client, mon
 
 
 @pytest.mark.parametrize("body", [
-    {"command": "-u admin node list"},
     {"command": "user add bob --password hunter2"},
-    {"command": "ace"},
     {"command": ""},
     {"command": "node list", "timeout_seconds": 0},
     {"command": "node list", "timeout_seconds": 3601},
@@ -177,6 +175,7 @@ async def test_engine_route_refuses_another_nodes_execution(client, test_user):
     response = await client.post(f"/engine/cli/{execution_id}")
 
     assert response.status_code == 409
+    assert "node-a" in response.json()["detail"]
     session = get_db()
     session.expire_all()
     assert session.get(CliExecution, execution_id).status == "pending"

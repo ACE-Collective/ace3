@@ -1,4 +1,3 @@
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -35,9 +34,10 @@ def test_hashes(root_analysis, tmp_path):
     target = _analyze(root_analysis, path)
 
     analysis = target.get_and_load_analysis(FileHashAnalysis)
-    assert analysis.md5 == hashlib.md5(content).hexdigest()
-    assert analysis.sha1 == hashlib.sha1(content).hexdigest()
-    assert analysis.sha256 == hashlib.sha256(content).hexdigest()
+    # from md5sum, sha1sum and sha256sum
+    assert analysis.md5 == "dfc68509cd474c687c85b7ae9c1f499f"
+    assert analysis.sha1 == "3c761670cc3fe4d1964cbe3cc4958095d1aa5715"
+    assert analysis.sha256 == "941c9b65dcacd49212714be88ea1f699ca9125fea43702f22547c0a1e1e6cfc0"
 
     observables = {o.type: o for o in analysis.observables}
     assert observables[F_MD5].value == analysis.md5
@@ -62,8 +62,10 @@ def test_skipped_files(root_analysis, tmp_path, name, content):
 
 
 @pytest.mark.integration
-def test_needs_file_type_analysis(root_analysis, tmp_path):
+def test_needs_file_type_analysis(root_analysis, tmp_path, caplog):
     path = tmp_path / "document.bin"
     path.write_bytes(b"content\n")
 
     assert not _analyze(root_analysis, path, modules=("file_hash_analyzer",)).get_and_load_analysis(FileHashAnalysis)
+    # the engine catches a module's exception, which would leave no analysis either
+    assert not [r for r in caplog.records if "FileHashAnalyzer) failed on" in r.getMessage()]

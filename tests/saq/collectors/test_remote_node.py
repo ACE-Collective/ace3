@@ -25,12 +25,6 @@ def remote_node() -> RemoteNode:
         1, get_global_runtime_settings().saq_node, "location", 1, local_time(), ANALYSIS_MODE_ANALYSIS, 1)
 
 @pytest.mark.unit
-def test_remote_node_is_local(remote_node):
-    assert remote_node.is_local
-    remote_node.name = "remote"
-    assert not remote_node.is_local
-
-@pytest.mark.unit
 def test_remote_local_selection_logic(monkeypatch, remote_node):
     submit_local = False
     submit_remote = False
@@ -58,15 +52,6 @@ def test_remote_local_selection_logic(monkeypatch, remote_node):
     assert not submit_local
     assert submit_remote
     
-@pytest.mark.integration
-def test_submit_local(root_analysis, remote_node):
-    result = remote_node.submit_local(root_analysis.create_submission())
-    new_uuid = result["result"]
-    assert new_uuid != root_analysis.uuid
-    root = RootAnalysis(storage_dir=get_storage_dir(new_uuid))
-    root.load()
-    assert root.description == root_analysis.description
-
 @pytest.mark.integration
 def test_submit_local_alert(root_analysis, remote_node):
     root_analysis.analysis_mode = ANALYSIS_MODE_CORRELATION
@@ -170,290 +155,6 @@ def priority_cleanup():
         db.commit()
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    "case_id, priorities",
-    [
-        ("explicit_priorities", [("mode_high", 10), ("mode_low", 1)]),
-        ("unlisted_mode_defaults_to_zero", [("mode_listed", 5)]),
-    ],
-)
-def test_fetch_query_orders_by_priority_then_id(
-    remote_node_group, priority_cleanup, case_id, priorities
-):
-    with get_db_connection() as db:
-        cursor = db.cursor()
-
-        for mode, priority in priorities:
-            priority_cleanup(cursor, mode, priority)
-        db.commit()
-
-        lock_uuid = str(uuid_module.uuid4())
-
-        if case_id == "explicit_priorities":
-            # Insert low-priority items first (lower IDs)
-            low_ids = []
-            for _ in range(2):
-                wid, _ = insert_workload_item(
-                    cursor, remote_node_group.workload_type_id, "mode_low",
-                    remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-                )
-                low_ids.append(wid)
-
-            high_ids = []
-            for _ in range(2):
-                wid, _ = insert_workload_item(
-                    cursor, remote_node_group.workload_type_id, "mode_high",
-                    remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-                )
-                high_ids.append(wid)
-            db.commit()
-
-            # Run the fetch query
-            cursor.execute(
-                """
-                SELECT
-                    incoming_workload.id,
-                    incoming_workload.mode,
-                    incoming_workload.work
-                FROM
-                    incoming_workload
-                    JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
-                    LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
-                WHERE
-                    work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
-                ORDER BY
-                    COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
-                """,
-                (lock_uuid,),
-            )
-            rows = cursor.fetchall()
-
-            result_ids = [r[0] for r in rows]
-            assert result_ids == sorted(high_ids) + sorted(low_ids)
-
-        else:  # unlisted_mode_defaults_to_zero
-            # Insert unlisted mode items first (lower IDs, will default to priority 0)
-            unlisted_ids = []
-            for _ in range(2):
-                wid, _ = insert_workload_item(
-                    cursor, remote_node_group.workload_type_id, "mode_unlisted",
-                    remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-                )
-                unlisted_ids.append(wid)
-
-            listed_ids = []
-            for _ in range(2):
-                wid, _ = insert_workload_item(
-                    cursor, remote_node_group.workload_type_id, "mode_listed",
-                    remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-                )
-                listed_ids.append(wid)
-            db.commit()
-
-            cursor.execute(
-                """
-                SELECT
-                    incoming_workload.id,
-                    incoming_workload.mode,
-                    incoming_workload.work
-                FROM
-                    incoming_workload
-                    JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
-                    LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
-                WHERE
-                    work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
-                ORDER BY
-                    COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
-                """,
-                (lock_uuid,),
-            )
-            rows = cursor.fetchall()
-
-            result_ids = [r[0] for r in rows]
-            assert result_ids == sorted(listed_ids) + sorted(unlisted_ids)
-
-
-@pytest.mark.integration
-def test_fetch_query_same_priority_orders_by_id_ascending(remote_node_group):
-    with get_db_connection() as db:
-        cursor = db.cursor()
-
-        lock_uuid = str(uuid_module.uuid4())
-        inserted_ids = []
-        for _ in range(5):
-            wid, _ = insert_workload_item(
-                cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
-                remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-            )
-            inserted_ids.append(wid)
-        db.commit()
-
-        cursor.execute(
-            """
-            SELECT
-                incoming_workload.id,
-                incoming_workload.mode,
-                incoming_workload.work
-            FROM
-                incoming_workload
-                JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
-                LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
-            WHERE
-                work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
-            ORDER BY
-                COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
-            """,
-            (lock_uuid,),
-        )
-        rows = cursor.fetchall()
-
-        result_ids = [r[0] for r in rows]
-        assert result_ids == sorted(inserted_ids)
-
-
-@pytest.mark.integration
-def test_lock_query_prioritizes_higher_priority_modes(
-    remote_node_group, priority_cleanup
-):
-    with get_db_connection() as db:
-        cursor = db.cursor()
-
-        priority_cleanup(cursor, "mode_low_pri", 1)
-        priority_cleanup(cursor, "mode_high_pri", 10)
-        db.commit()
-
-        # Insert low-priority items first (they get lower IDs)
-        low_ids = []
-        for _ in range(3):
-            wid, _ = insert_workload_item(
-                cursor, remote_node_group.workload_type_id, "mode_low_pri",
-                remote_node_group.group_id, status="READY",
-            )
-            low_ids.append(wid)
-
-        # Insert high-priority items second (they get higher IDs)
-        high_ids = []
-        for _ in range(3):
-            wid, _ = insert_workload_item(
-                cursor, remote_node_group.workload_type_id, "mode_high_pri",
-                remote_node_group.group_id, status="READY",
-            )
-            high_ids.append(wid)
-        db.commit()
-
-        lock_uuid = str(uuid_module.uuid4())
-        batch_size = 3
-        available_modes = ["mode_low_pri", "mode_high_pri"]
-
-        sql = """
-UPDATE work_distribution
-SET
-    status = 'LOCKED',
-    lock_time = NOW(),
-    lock_uuid = %s
-WHERE
-    group_id = %s
-    AND work_id IN ( SELECT * FROM (
-        SELECT
-            incoming_workload.id
-        FROM
-            incoming_workload
-            JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
-            LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
-        WHERE
-            incoming_workload.type_id = %s
-            AND work_distribution.group_id = %s
-            AND incoming_workload.mode IN ( {} )
-            AND (
-                work_distribution.status = 'READY'
-                OR ( work_distribution.status = 'LOCKED' AND TIMESTAMPDIFF(minute, work_distribution.lock_time, NOW()) >= 10 )
-            )
-        ORDER BY
-            COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
-        LIMIT %s ) AS t1 )
-""".format(",".join(["%s" for _ in available_modes]))
-
-        params = [
-            lock_uuid,
-            remote_node_group.group_id,
-            remote_node_group.workload_type_id,
-            remote_node_group.group_id,
-        ]
-        params.extend(available_modes)
-        params.append(batch_size)
-
-        cursor.execute(sql, tuple(params))
-        db.commit()
-
-        # Verify only high-priority items were locked
-        cursor.execute(
-            "SELECT work_id FROM work_distribution WHERE lock_uuid = %s AND status = 'LOCKED' ORDER BY work_id",
-            (lock_uuid,),
-        )
-        locked_ids = [r[0] for r in cursor.fetchall()]
-        assert locked_ids == sorted(high_ids)
-
-        # Verify low-priority items are still READY
-        for wid in low_ids:
-            cursor.execute(
-                "SELECT status FROM work_distribution WHERE work_id = %s AND group_id = %s",
-                (wid, remote_node_group.group_id),
-            )
-            assert cursor.fetchone()[0] == "READY"
-
-
-@pytest.mark.integration
-def test_default_seed_correlation_before_analysis(remote_node_group):
-    """Verify that the seed data (correlation=1) causes correlation items to be fetched before analysis items."""
-    with get_db_connection() as db:
-        cursor = db.cursor()
-
-        lock_uuid = str(uuid_module.uuid4())
-
-        # Insert analysis items first (lower IDs, priority defaults to 0)
-        analysis_ids = []
-        for _ in range(3):
-            wid, _ = insert_workload_item(
-                cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
-                remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-            )
-            analysis_ids.append(wid)
-
-        # Insert correlation items second (higher IDs, priority 1 from seed)
-        correlation_ids = []
-        for _ in range(3):
-            wid, _ = insert_workload_item(
-                cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_CORRELATION,
-                remote_node_group.group_id, status="LOCKED", lock_uuid=lock_uuid,
-            )
-            correlation_ids.append(wid)
-        db.commit()
-
-        cursor.execute(
-            """
-            SELECT
-                incoming_workload.id,
-                incoming_workload.mode,
-                incoming_workload.work
-            FROM
-                incoming_workload
-                JOIN work_distribution ON incoming_workload.id = work_distribution.work_id
-                LEFT JOIN analysis_mode_priority ON incoming_workload.mode = analysis_mode_priority.analysis_mode
-            WHERE
-                work_distribution.lock_uuid = %s AND work_distribution.status = 'LOCKED'
-            ORDER BY
-                COALESCE(analysis_mode_priority.priority, 0) DESC, incoming_workload.id ASC
-            """,
-            (lock_uuid,),
-        )
-        rows = cursor.fetchall()
-
-        result_ids = [r[0] for r in rows]
-        # Correlation (priority 1) should come before analysis (priority 0)
-        assert result_ids == sorted(correlation_ids) + sorted(analysis_ids)
-
-
 #
 # delivery retry bounding / dead-lettering
 #
@@ -515,20 +216,64 @@ def _work_distribution_row(group, work_id):
         return cursor.fetchone()
 
 
+#
+# delivery order
+#
+
+def _delivery_order(monkeypatch, group) -> list[str]:
+    """Runs one delivery pass for the group and returns the root uuids it submitted, in order."""
+    submitted = []
+
+    def _record(self, submission):
+        submitted.append(submission.root.uuid)
+        return {"result": submission.root.uuid}
+
+    monkeypatch.setattr(RemoteNode, "submit", _record)
+    execute_with_db_cursor(DB_ACE, group.execute, str(uuid_module.uuid4()))
+    return submitted
+
+
 @pytest.mark.integration
-def test_record_delivery_attempt_increments(remote_node_group):
-    """each recorded failure bumps the persisted attempt counter"""
+@pytest.mark.parametrize("priorities, queued, expected", [
+    # the higher priority goes first, though it was queued last
+    ({"mode_low": 1, "mode_high": 10}, ["mode_low", "mode_low", "mode_high", "mode_high"], [2, 3, 0, 1]),
+    # a mode with no priority row counts as 0, which is above a negative priority
+    ({"mode_listed": -5}, ["mode_listed", "mode_listed", "mode_unlisted", "mode_unlisted"], [2, 3, 0, 1]),
+    # the seeded priority puts correlation ahead of analysis
+    ({}, [ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_CORRELATION], [2, 3, 0, 1]),
+    # within one priority, oldest first
+    ({}, [ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_ANALYSIS], [0, 1, 2]),
+], ids=["explicit_priorities", "unlisted_mode_defaults_to_zero", "seeded_correlation_before_analysis", "same_priority_by_id"])
+def test_fetch_query_orders_by_priority_then_id(monkeypatch, remote_node_group, priority_cleanup, priorities, queued, expected):
+    """a delivery pass submits its batch highest mode priority first, then by id"""
+    _ensure_live_any_mode_node()
     with get_db_connection() as db:
         cursor = db.cursor()
-        work_id, _ = insert_workload_item(
-            cursor, remote_node_group.workload_type_id, ANALYSIS_MODE_ANALYSIS,
-            remote_node_group.group_id)
+        for mode, priority in priorities.items():
+            priority_cleanup(cursor, mode, priority)
+
+        uuids = [insert_deliverable_work_item(cursor, remote_node_group, mode=mode)[1] for mode in queued]
         db.commit()
 
-        assert remote_node_group.record_delivery_attempt(db, cursor, work_id) == 1
-        assert remote_node_group.record_delivery_attempt(db, cursor, work_id) == 2
+    assert _delivery_order(monkeypatch, remote_node_group) == [uuids[index] for index in expected]
 
-    assert _work_distribution_row(remote_node_group, work_id)[1] == 2
+
+@pytest.mark.integration
+def test_lock_query_prioritizes_higher_priority_modes(monkeypatch, remote_node_group, priority_cleanup):
+    """a batch smaller than the queue claims the higher priority work, though it was queued last"""
+    _ensure_live_any_mode_node()
+    remote_node_group.batch_size = 3
+    with get_db_connection() as db:
+        cursor = db.cursor()
+        priority_cleanup(cursor, "mode_low_pri", 1)
+        priority_cleanup(cursor, "mode_high_pri", 10)
+        for _ in range(3):
+            insert_deliverable_work_item(cursor, remote_node_group, mode="mode_low_pri")
+
+        high = [insert_deliverable_work_item(cursor, remote_node_group, mode="mode_high_pri")[1] for _ in range(3)]
+        db.commit()
+
+    assert _delivery_order(monkeypatch, remote_node_group) == high
 
 
 @pytest.mark.integration

@@ -172,10 +172,23 @@ def _waiting(service: SVSService) -> threading.Thread:
     return waiter
 
 
-@pytest.mark.integration
-def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch):
-    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
+@pytest.fixture
+def service():
+    """An SVSService a test starts; stopped in teardown, so a failing assertion never leaves its
+    threads polling the queue for the tests after it."""
     service = SVSService()
+    yield service
+    service.stop()
+    threads = [worker.thread for worker in service.workers]
+    threads += [component.thread for component in (service.catalog, service.runs, service.coverage) if component]
+    for thread in threads:
+        if thread is not None:
+            thread.join(timeout=30)
+
+
+@pytest.mark.integration
+def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch, service):
+    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service.start()
     assert service.workers == []
     waiter = _waiting(service)
@@ -185,9 +198,8 @@ def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch
 
 
 @pytest.mark.integration
-def test_the_service_starts_its_workers_and_stops_them(svs_repository, monkeypatch):
+def test_the_service_starts_its_workers_and_stops_them(svs_repository, monkeypatch, service):
     monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "1")
-    service = SVSService()
     service.start()
     assert [worker.thread.is_alive() for worker in service.workers] == [True]
     waiter = _waiting(service)

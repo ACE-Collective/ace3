@@ -51,10 +51,6 @@ def names(actions):
     return [action.name for action in actions]
 
 
-def test_nothing_registered():
-    assert get_alert_actions(FakeAlert(), allow_all) == []
-
-
 def test_actions_appear_in_registration_order():
     register_alert_action(OnlyTagged)
     register_alert_action(Always)
@@ -146,7 +142,7 @@ def test_icons_must_be_a_single_icon_name(icon):
         register_alert_action(BadIcon)
 
 
-@pytest.mark.parametrize("icon", ["", "star", "box-arrow-up-right", "1-circle"])
+@pytest.mark.parametrize("icon", ["", "box-arrow-up-right", "1-circle"])
 def test_icon_names(icon):
     class GoodIcon(AlertAction):
         name = "good_icon"

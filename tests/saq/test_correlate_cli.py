@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from datetime import datetime, timezone
 
 import pytest
 
@@ -34,7 +35,7 @@ def out(tmp_path):
 def test_correlate_observables(out):
     assert _correlate("--disable-all", "-d", str(out), "--description", "manual check", "--comment", "from a ticket",
                       "--add-tag", "suspect", "--add-directive", "sandbox", "--alert-type", "manual",
-                      "--company-name", "default", "--instructions", "look at it", "-t", "2026-01-02 03:04:05 +0000",
+                      "--company-name", "another company", "--instructions", "look at it", "-t", "2026-01-02 03:04:05 +0000",
                       F_IPV4, "10.0.0.1", F_TEST, "test_1") == 0
 
     root = _load(out)
@@ -42,10 +43,13 @@ def test_correlate_observables(out):
     assert root.details == {"comment": "from a ticket"}
     assert root.alert_type == "manual"
     assert root.instructions == "look at it"
-    # the reference time is the event's
-    assert (root.event_time.year, root.event_time_source) == (2026, EventTimeSource.EVENT)
+    assert root.company_name == "another company"
+    # the reference time is the event's, and the observables'
+    reference_time = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    assert (root.event_time, root.event_time_source) == (reference_time, EventTimeSource.EVENT)
     (ip,) = root.get_observables_by_type(F_IPV4)
     assert ip.value == "10.0.0.1"
+    assert ip.time == reference_time
     assert ip.has_tag("suspect")
     assert ip.has_directive("sandbox")
     assert [o.value for o in root.get_observables_by_type(F_TEST)] == ["test_1"]

@@ -12,7 +12,7 @@ import pytest
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
 from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
-from saq.environment import get_base_dir
+from saq.environment import get_global_runtime_settings
 from saq.signatures.locations import (
     CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
     get_all_signature_locations,
@@ -83,12 +83,18 @@ def test_yara_location(tmp_path, monkeypatch):
     assert locations[0].exists()
 
 
+@pytest.fixture
+def saq_home(monkeypatch) -> str:
+    """A SAQ_HOME that is not the working directory, which the test suite's is."""
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", "/srv/ace")
+    return "/srv/ace"
+
+
 @pytest.mark.unit
-def test_yara_signature_dir_is_resolved_against_saq_home(monkeypatch):
+def test_yara_signature_dir_is_resolved_against_saq_home(monkeypatch, saq_home):
     _set_yara_config(monkeypatch, "signatures/yara", [])
 
-    assert get_signature_locations(SignatureType.YARA)[0].path == os.path.join(
-        get_base_dir(), "signatures", "yara")
+    assert get_signature_locations(SignatureType.YARA)[0].path == "/srv/ace/signatures/yara"
 
 
 @pytest.mark.unit
@@ -165,13 +171,13 @@ def test_hunt_locations(tmp_path):
 
 
 @pytest.mark.unit
-def test_hunt_rule_dirs_are_resolved_against_saq_home():
+def test_hunt_rule_dirs_are_resolved_against_saq_home(saq_home):
     _set_hunt_types(_hunt_type("splunk", [
         HuntRuleDirConfig(rule_dir="signatures/hunts/splunk", git_dir="signatures")]))
 
     location = get_signature_locations(SignatureType.HUNT)[0]
-    assert location.path == os.path.join(get_base_dir(), "signatures", "hunts", "splunk")
-    assert location.git_dirs == (os.path.join(get_base_dir(), "signatures"),)
+    assert location.path == "/srv/ace/signatures/hunts/splunk"
+    assert location.git_dirs == ("/srv/ace/signatures",)
 
 
 @pytest.mark.unit
@@ -221,13 +227,13 @@ def test_observable_modifier_location(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_observable_modifier_paths_are_resolved_against_saq_home(monkeypatch):
+def test_observable_modifier_paths_are_resolved_against_saq_home(monkeypatch, saq_home):
     config = _observable_modifier_config()
     monkeypatch.setattr(config, "rules_config_path", "etc/observable_modifier_rules.yaml")
     monkeypatch.setattr(config, "git_dir", None)
 
     location = get_signature_locations(SignatureType.OBSERVABLE_MODIFIER)[0]
-    assert location.path == os.path.join(get_base_dir(), "etc", "observable_modifier_rules.yaml")
+    assert location.path == "/srv/ace/etc/observable_modifier_rules.yaml"
     assert location.git_dirs == ()
 
 
@@ -273,12 +279,8 @@ def test_invalid_observable_modifier_config_is_reported(caplog):
 #
 
 @pytest.mark.unit
-def test_builtin_signatures_have_no_location():
-    assert get_signature_locations(SignatureType.BUILTIN) == []
-
-
-@pytest.mark.unit
 def test_get_all_signature_locations(tmp_path, monkeypatch):
+    # built-in signatures are a table in code, so they have no location
     _set_yara_config(monkeypatch, str(tmp_path / "yara"), [])
     _set_hunt_types(_hunt_type("splunk", [HuntRuleDirConfig(rule_dir=str(tmp_path / "hunts"))]))
     monkeypatch.setattr(_observable_modifier_config(), "rules_config_path", str(tmp_path / "rules.yaml"))

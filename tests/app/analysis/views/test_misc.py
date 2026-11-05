@@ -12,7 +12,7 @@ from flask import url_for
 from saq.analysis.file_manager.local_file_manager import clean_file_name
 from saq.analysis.root import RootAnalysis
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS, EventTimeSource
-from saq.database.model import Alert, ObservableComment
+from saq.database.model import ObservableComment
 from saq.database.pool import get_db
 from saq.database.util.alert import get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
@@ -389,7 +389,8 @@ class TestAnalyzeAlert:
         assert '/analysis' in result.location
         assert f'direct={alert_uuid}' in result.location
         
-        # Verify the alert still exists and was scheduled for processing
+        # the alert is still there; test_frozen_alerts.py::test_analyze_alert_still_analyzes_other_alerts
+        # checks that it was scheduled
         alert = get_alert_by_uuid(alert_uuid)
         assert alert is not None
     
@@ -402,61 +403,6 @@ class TestAnalyzeAlert:
         # Should redirect to analysis.index with flash message about alert not found
         assert result.status_code == 302
         assert result.location == url_for('analysis.index')
-    
-    def test_analyze_alert_schedule_functionality(self, web_client):
-        """Test that analyze_alert properly schedules the alert for reanalysis."""
-        from saq.database.util.alert import get_alert_by_uuid
-        from urllib.parse import parse_qs, urlparse
-        
-        # Create an alert first
-        test_content = b'test file for scheduling'
-        data = {
-            'file_path': (BytesIO(test_content), 'schedule_test.txt'),
-            'comment': 'test scheduling',
-            'alert_uuid': ''
-        }
-        
-        upload_result = web_client.post(url_for('analysis.upload_file'), 
-                                      data=data, content_type='multipart/form-data')
-        
-        # Extract alert UUID
-        parsed_url = urlparse(upload_result.location)
-        query_params = parse_qs(parsed_url.query)
-        alert_uuid = query_params['direct'][0]
-        
-        # Get the alert before scheduling
-        alert_before = get_alert_by_uuid(alert_uuid)
-        assert alert_before is not None
-        
-        # Call analyze_alert with alert_uuid form parameter
-        analyze_data = {'alert_uuid': alert_uuid}
-        result = web_client.post(url_for('analysis.analyze_alert'), data=analyze_data)
-        
-        # Should redirect successfully
-        assert result.status_code == 302
-        assert f'direct={alert_uuid}' in result.location
-        
-        # Verify the alert still exists after scheduling
-        alert_after = get_alert_by_uuid(alert_uuid)
-        assert alert_after is not None
-        assert alert_after.uuid == alert_uuid
-
-
-@pytest.mark.unit
-class TestMiscHelperFunctions:
-    """Test any helper functions or utilities in misc.py if they exist."""
-    
-    def test_imports_and_module_structure(self):
-        """Test that the module imports correctly and has expected structure."""
-        import app.analysis.views.misc as misc_module
-        
-        # Verify expected functions exist
-        assert hasattr(misc_module, 'upload_file')
-        assert hasattr(misc_module, 'analyze_alert')
-        
-        # Verify they are callable
-        assert callable(misc_module.upload_file)
-        assert callable(misc_module.analyze_alert)
 
 
 @pytest.mark.integration

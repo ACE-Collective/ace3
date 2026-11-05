@@ -76,18 +76,23 @@ def test_office_document_by_extension(root_analysis):
 
 
 @pytest.mark.integration
-def test_ole_document(root_analysis):
-    analysis = _analyze(root_analysis, SAMPLES / "doc.doc")
+def test_ole_document(root_analysis, tmp_path):
+    # no office extension: only the OLE header says what it is
+    path = tmp_path / "renamed.bin"
+    shutil.copy(SAMPLES / "doc.doc", path)
+
+    analysis = _analyze(root_analysis, path)
 
     assert isinstance(analysis, ExifAnalysis)
     assert analysis.exifdata["File:FileType"] == "DOC"
 
 
-@pytest.mark.parametrize("name", ["report.pdf.pdfparser", "report.gs.pdf"])
+# is_pdf_file already refuses a .pdfparser file, so that case is one the OLE check would accept
+@pytest.mark.parametrize("name,sample", [("report.pdf.pdfparser", "doc.doc"), ("report.gs.pdf", "sample_pdf_with_qr_code.pdf")])
 @pytest.mark.integration
-def test_tool_output_is_skipped(root_analysis, tmp_path, name):
+def test_tool_output_is_skipped(root_analysis, tmp_path, name, sample):
     path = tmp_path / name
-    shutil.copy(SAMPLES / "sample_pdf_with_qr_code.pdf", path)
+    shutil.copy(SAMPLES / sample, path)
 
     assert _analyze(root_analysis, path) is False
 
@@ -285,7 +290,7 @@ def test_exiftool_timeout_is_recorded(root_analysis, monkeypatch, recording_pope
                for r in caplog.records)
 
 
-@pytest.mark.parametrize("stdout", ["not json", "[]", "{}", "[1]"])
+@pytest.mark.parametrize("stdout", ["not json", "[]", '{"File:FileType": "PDF"}', "[1]"])
 @pytest.mark.integration
 def test_unreadable_exiftool_output_is_an_error(root_analysis, monkeypatch, caplog, stdout):
     _exiftool_returns(monkeypatch, (0, stdout, ""))

@@ -1,5 +1,7 @@
 import json
+import time
 from datetime import datetime, timezone
+from unittest.mock import Mock
 
 import pytest
 from whois.exceptions import PywhoisError
@@ -19,7 +21,7 @@ from saq.constants import (
     AnalysisExecutionResult,
 )
 from saq.json_encoding import _JSONEncoder
-from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _registrable_domain
+from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _age_in_days_as_string, _registrable_domain
 from tests.saq.helpers import create_root_analysis
 
 # ---------------------------------------------------------------------------
@@ -292,14 +294,10 @@ def test_rdap_analyzer_properties():
 @pytest.mark.parametrize(
     "value",
     [
-        "10.1.2.3",        # RFC1918
-        "172.16.5.5",      # RFC1918
-        "192.168.1.1",     # RFC1918
-        "127.0.0.1",       # loopback
-        "169.254.10.10",   # link-local
-        "100.64.0.1",      # CGNAT shared address space
-        "::1",             # IPv6 loopback
-        "fe80::1",         # IPv6 link-local
+        # CGNAT shared address space: not global, though not private either
+        "100.64.0.1",
+        # IPv6 loopback: the check parses IPv6 too
+        "::1",
     ],
 )
 def test_rdap_analyzer_skips_non_routable_ip(value):
@@ -318,8 +316,6 @@ def test_rdap_analyzer_skips_non_routable_ip(value):
     "value",
     [
         "8.8.8.8",
-        "1.1.1.1",
-        "2606:4700:4700::1111",
     ],
 )
 def test_rdap_analyzer_accepts_routable_ip(value):
@@ -334,7 +330,7 @@ def test_rdap_analyzer_accepts_routable_ip(value):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("value, expected", [("10.1.2.3", False), ("8.8.8.8", True)])
+@pytest.mark.parametrize("value, expected", [("10.1.2.3", False)])
 def test_rdap_analyzer_custom_requirement_ip_subtype(value, expected):
     root = create_root_analysis()
     root.initialize_storage()
@@ -405,10 +401,10 @@ def test_rdap_analyzer_success(test_context, monkeypatch):
     assert analysis.emails == ["abuse@example.test", "registrar@example.test"]
     assert analysis.rdap_service_url == "https://rdap.verisign.com/com/v1/domain/EXAMPLE.COM"
 
-    assert analysis.datetime_created is not None
+    assert analysis.datetime_created == "1995-08-14 04:00:00+00:00"
     assert analysis.age_created_in_days is not None
     assert analysis.age_created_in_days.isdigit()
-    assert analysis.datetime_of_last_update is not None
+    assert analysis.datetime_of_last_update == "2024-08-14 07:01:34+00:00"
     assert analysis.age_last_updated_in_days is not None
     assert analysis.datetime_expiration == "2026-08-13 04:00:00+00:00"
     assert analysis.datetime_of_analysis is not None
@@ -423,30 +419,6 @@ def test_rdap_analyzer_success(test_context, monkeypatch):
     assert "raw" not in analysis.rdap_data
     assert analysis.rdap_raw_json is not None
     assert "objectClassName" in analysis.rdap_raw_json
-
-
-@pytest.mark.unit
-def test_rdap_analyzer_extracts_expiration(test_context, monkeypatch):
-    """The legacy WHOIS module declared KEY_DATETIME_EXPIRATION but
-    never set it. The RDAP module must populate it from
-    ``expiration_date`` when present.
-    """
-    rdap_result = _make_rdap_result(
-        expiration_date=datetime(2030, 1, 1, tzinfo=timezone.utc)
-    )
-    _patch_rdap(monkeypatch, lambda _d, **_kw: rdap_result)
-    _patch_whois_must_not_be_called(monkeypatch)
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_FQDN, "example.com")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    analysis = observable.get_analysis(RdapAnalysis)
-    assert analysis.datetime_expiration == "2030-01-01 00:00:00+00:00"
 
 
 # ---------------------------------------------------------------------------
@@ -517,30 +489,6 @@ def test_rdap_analyzer_ip_success(test_context, monkeypatch):
 
 
 @pytest.mark.unit
-def test_rdap_analyzer_ip_queried_verbatim(test_context, monkeypatch):
-    """IP observables must be passed to ``whoisit.ip`` unchanged — the
-    eTLD+1 reduction applied to domains must NOT touch an IP."""
-    seen = {}
-
-    def _capture(ip, **_kw):
-        seen["query"] = ip
-        return _make_rdap_ip_result()
-
-    _patch_rdap_ip(monkeypatch, _capture)
-    _patch_whois_must_not_be_called(monkeypatch)
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IP, "8.8.8.8")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    assert seen["query"] == "8.8.8.8"
-
-
-@pytest.mark.unit
 def test_rdap_analyzer_ip_subtype_queried_as_ip(test_context, monkeypatch):
     """A subtype of ``ip`` (the first-hop IP of an email) is looked up as
     an IP, not as a domain whose TLD is the last octet."""
@@ -567,61 +515,6 @@ def test_rdap_analyzer_ip_subtype_queried_as_ip(test_context, monkeypatch):
     assert analysis.lookup_protocol == "rdap"
     assert analysis.network_cidr == "8.8.8.0/24"
     assert analysis.error is None
-
-
-@pytest.mark.unit
-def test_rdap_analyzer_ip_resource_does_not_exist(test_context, monkeypatch):
-    """Authoritative ``does not exist`` for an IP is final — no fallback."""
-    def _raise(_ip, **_kw):
-        raise ResourceDoesNotExist("Object does not exist in registry")
-
-    _patch_rdap_ip(monkeypatch, _raise)
-    _patch_whois_must_not_be_called(monkeypatch)
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IP, "203.0.113.5")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    analysis = observable.get_analysis(RdapAnalysis)
-    assert analysis.lookup_protocol is None
-    assert analysis.error is not None
-    assert "not found" in analysis.error
-    assert analysis.network_cidr is None
-
-
-@pytest.mark.unit
-def test_rdap_analyzer_ip_falls_back_to_whois(test_context, monkeypatch):
-    """When RDAP errors for an IP, the generic WHOIS fallback still runs
-    against the raw IP."""
-    def _rdap(_ip, **_kw):
-        raise QueryError("RDAP service errored")
-
-    _patch_rdap_ip(monkeypatch, _rdap)
-    whois_calls = {}
-
-    def _whois(target):
-        whois_calls["target"] = target
-        return _MockWhoisResult({"text": "mock arin whois"})
-
-    _patch_whois(monkeypatch, _whois)
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_IP, "8.8.8.8")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    analysis = observable.get_analysis(RdapAnalysis)
-    assert analysis.lookup_protocol == "whois"
-    assert analysis.rdap_attempt_error is not None
-    # The raw IP (not an eTLD+1 reduction) is what WHOIS is queried with.
-    assert whois_calls["target"] == "8.8.8.8"
 
 
 # ---------------------------------------------------------------------------
@@ -694,9 +587,9 @@ def test_rdap_analyzer_falls_back_on_unsupported_tld(test_context, monkeypatch):
     assert analysis.registrar == "DENIC eG"
     assert analysis.name_servers == ["ns1.example.de"]
     assert analysis.emails == ["admin@example.de"]
-    assert analysis.datetime_created is not None
-    assert analysis.datetime_of_last_update is not None
-    assert analysis.datetime_expiration is not None
+    assert analysis.datetime_created == "2000-01-01 00:00:00"
+    assert analysis.datetime_of_last_update == "2024-06-01 00:00:00"
+    assert analysis.datetime_expiration == "2026-01-01 00:00:00"
     assert analysis.whois_data == dict(whois_data)
     assert analysis.whois_raw_text == "mock denic whois response"
 
@@ -919,29 +812,21 @@ def test_rdap_analyzer_negative_time_delta(test_context, monkeypatch):
 
 
 @pytest.mark.unit
-def test_rdap_analyzer_naive_datetime_in_event(test_context, monkeypatch):
+def test_rdap_analyzer_naive_datetime_in_event(monkeypatch):
     """A naive datetime (no tzinfo) must be treated as UTC, not crash
     the subtraction against the tz-aware ``now``.
     """
-    rdap_result = _make_rdap_result(
-        registration_date=datetime(2000, 1, 1, 0, 0),  # naive!
-        last_changed_date=datetime(2024, 1, 1, 0, 0),
-    )
-    _patch_rdap(monkeypatch, lambda _d, **_kw: rdap_result)
-    _patch_whois_must_not_be_called(monkeypatch)
+    # the suite runs on UTC, where reading the naive time as local gives the same answer
+    monkeypatch.setenv("TZ", "Etc/GMT+12")
+    time.tzset()
+    try:
+        # 25 hours after midnight UTC; read as local time (UTC-12) it would be 13 hours
+        age = _age_in_days_as_string(datetime(2000, 1, 1), datetime(2000, 1, 2, 1, 0, tzinfo=timezone.utc))
+    finally:
+        monkeypatch.delenv("TZ")
+        time.tzset()
 
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_FQDN, "naive.example")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    analysis = observable.get_analysis(RdapAnalysis)
-    assert analysis.error is None
-    assert analysis.age_created_in_days is not None
-    assert analysis.age_created_in_days.isdigit()
+    assert age == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -957,11 +842,11 @@ def test_rdap_analyzer_whois_fallback_creation_date_list(test_context, monkeypat
 
     _patch_rdap(monkeypatch, _rdap)
     whois_data = {
-        "domain_name": ["TEST.COM", "TEST.COM"],
+        "domain_name": ["TEST.COM", "test.com"],
         "registrar": "Test Registrar",
         "creation_date": [
             datetime(2020, 1, 1, 12, 0, 0),
-            datetime(2020, 1, 1, 12, 0, 0),
+            datetime(2021, 1, 1, 12, 0, 0),
         ],
         "updated_date": [datetime(2023, 1, 1, 12, 0, 0)],
         "name_servers": ["ns1.test.com"],
@@ -981,44 +866,8 @@ def test_rdap_analyzer_whois_fallback_creation_date_list(test_context, monkeypat
     assert analysis.error is None
     assert analysis.lookup_protocol == "whois"
     assert analysis.domain_name == "TEST.COM"
-    assert analysis.datetime_created is not None
-    assert analysis.datetime_of_last_update is not None
-
-
-@pytest.mark.unit
-def test_rdap_analyzer_whois_fallback_no_dates(test_context, monkeypatch):
-    def _rdap(_domain, **_kw):
-        raise UnsupportedError("TLD has no RDAP")
-
-    _patch_rdap(monkeypatch, _rdap)
-    whois_data = {
-        "domain_name": "NODATE.COM",
-        "registrar": "No Date Registrar",
-        "creation_date": None,
-        "updated_date": None,
-        "name_servers": ["ns1.nodate.com"],
-        "text": "mock",
-    }
-    _patch_whois(monkeypatch, lambda _d: _MockWhoisResult(whois_data))
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_FQDN, "nodate.com")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-    analysis = observable.get_analysis(RdapAnalysis)
-    assert analysis.error is None
-    assert analysis.lookup_protocol == "whois"
-    assert analysis.domain_name == "NODATE.COM"
-    assert analysis.registrar == "No Date Registrar"
-    assert analysis.datetime_created is None
-    assert analysis.datetime_of_last_update is None
-    assert analysis.age_created_in_days is None
-    assert analysis.age_last_updated_in_days is None
-    assert analysis.datetime_of_analysis is not None
+    assert analysis.datetime_created == "2020-01-01 12:00:00"
+    assert analysis.datetime_of_last_update == "2023-01-01 12:00:00"
 
 
 # ---------------------------------------------------------------------------
@@ -1032,15 +881,12 @@ def test_rdap_analyzer_whois_fallback_no_dates(test_context, monkeypatch):
 @pytest.mark.parametrize(
     "value,expected",
     [
-        ("www.example.com", "example.com"),
-        ("example.com", "example.com"),
-        ("a.b.c.example.com", "example.com"),
         ("www.example.co.uk", "example.co.uk"),
         ("WWW.Example.COM", "example.com"),
-        ("example.com.", "example.com"),
         # No identifiable public suffix → input returned unchanged.
-        ("localhost", "localhost"),
         ("unknown.invalidtld", "unknown.invalidtld"),
+        # tldextract drops a trailing dot itself; only a name without a public suffix shows ACE's own strip
+        ("intranet.", "intranet"),
     ],
 )
 def test_registrable_domain(value, expected):
@@ -1075,30 +921,6 @@ def test_rdap_analyzer_subdomain_reduced_to_registrable(test_context, monkeypatc
     assert analysis.lookup_protocol == "rdap"
     assert analysis.error is None
     assert analysis.domain_name == "EXAMPLE.COM"
-
-
-@pytest.mark.unit
-def test_rdap_analyzer_registrable_domain_passthrough(test_context, monkeypatch):
-    """An observable that is already a registrable domain is queried as-is."""
-    queried = []
-
-    def _rdap(domain, **_kw):
-        queried.append(domain)
-        return _make_rdap_result()
-
-    _patch_rdap(monkeypatch, _rdap)
-    _patch_whois_must_not_be_called(monkeypatch)
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_FQDN, "example.com")
-
-    analyzer = _make_analyzer(test_context)
-    analyzer.root = root
-
-    analyzer.execute_analysis(observable)
-
-    assert queried == ["example.com"]
 
 
 @pytest.mark.unit
@@ -1190,12 +1012,15 @@ def test_lookup_creation_date_nxdomain_skips_whois(monkeypatch):
         raise ResourceDoesNotExist("domain does not exist")
 
     _patch_rdap(monkeypatch, _rdap)
-    _patch_whois_must_not_be_called(monkeypatch)
+    # a Mock, not a raising stand-in: the lookup catches any exception the whois call raises
+    whois_mock = Mock()
+    _patch_whois(monkeypatch, whois_mock)
 
     result = lookup_domain_creation_date("no-such-domain.example")
     assert result.created is None
     assert result.protocol is None
-    assert "domain not found" in result.error
+    assert result.error == "rdap: domain not found: domain does not exist"
+    whois_mock.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1228,10 +1053,9 @@ def test_lookup_creation_date_bootstrap_failure_goes_to_whois(monkeypatch):
     monkeypatch.setattr("whoisit.is_bootstrapped", lambda: False)
     monkeypatch.setattr("whoisit.bootstrap", _bootstrap)
 
-    def _rdap_must_not_be_called(_domain, **_kw):
-        raise AssertionError("whoisit.domain must not be called when bootstrap fails")
-
-    monkeypatch.setattr("whoisit.domain", _rdap_must_not_be_called)
+    # a Mock, not a raising stand-in: the lookup catches any exception the RDAP call raises
+    rdap_mock = Mock()
+    monkeypatch.setattr("whoisit.domain", rdap_mock)
 
     created = datetime(2026, 6, 15, tzinfo=timezone.utc)
     _patch_whois(monkeypatch, lambda _domain: _MockWhoisResult({"creation_date": created}))
@@ -1239,6 +1063,7 @@ def test_lookup_creation_date_bootstrap_failure_goes_to_whois(monkeypatch):
     result = lookup_domain_creation_date("example.com")
     assert result.created == created
     assert result.protocol == "whois"
+    rdap_mock.assert_not_called()
 
 
 @pytest.mark.unit

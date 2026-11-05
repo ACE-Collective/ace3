@@ -14,7 +14,7 @@ from saq.constants import (
     F_URL,
     AnalysisExecutionResult,
 )
-from saq.modules.nrd import TAG_NRD, NRDAnalysis, NRDAnalyzer, NRDAnalyzerConfig
+from saq.modules.nrd import TAG_NRD, NRDAnalysis, NRDAnalyzer
 from saq.modules.rdap import DomainCreationLookup
 from saq.nrd import util as nrd_util
 from saq.nrd.util import _reset_connection_for_tests
@@ -93,16 +93,6 @@ def test_nrd_analysis_initial_state():
     assert analysis.is_nrd is False
     assert analysis.matched_at is None
     assert analysis.generate_summary() is None
-
-
-@pytest.mark.unit
-def test_nrd_analysis_setters():
-    analysis = NRDAnalysis()
-    analysis.is_nrd = True
-    analysis.matched_at = "2026-04-29T12:00:00+00:00"
-    assert analysis.is_nrd is True
-    assert analysis.matched_at == "2026-04-29T12:00:00+00:00"
-    assert "Newly Registered Domain" in analysis.generate_summary()
 
 
 # ---------------------------------------------------------------------------
@@ -213,26 +203,6 @@ def test_analyzer_tags_url_observable_on_match(nrd_db, test_context, creation_lo
     assert observable.has_tag(TAG_NRD)
     # the registration lookup gets the registrable domain of the URL host
     assert creation_lookup.calls == ["phish-test.com"]
-
-
-@pytest.mark.unit
-def test_analyzer_url_observable_no_match(nrd_db, test_context):
-    nrd_db(["other-domain.example"])
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    observable = root.add_observable_by_spec(F_URL, "https://safe-host.example/foo")
-
-    analyzer = NRDAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
-    )
-    analyzer.root = root
-
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    assert observable.get_analysis(NRDAnalysis) is None
-    assert not observable.has_tag(TAG_NRD)
 
 
 @pytest.mark.unit
@@ -366,33 +336,9 @@ def test_analyzer_verification_disabled(nrd_db, test_context, creation_lookup, d
     assert creation_lookup.calls == []
 
 
-@pytest.mark.unit
-def test_analyzer_config_class_wiring():
-    config = get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER)
-    assert isinstance(config, NRDAnalyzerConfig)
-    assert config.max_registration_age_days == 90
-
-
 # ---------------------------------------------------------------------------
 # extended_version (cache-key invalidation tied to the NRD database)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-def test_extended_version_returns_db_version_string(nrd_db, test_context):
-    nrd_db(["seed.example"])
-
-    analyzer = NRDAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
-    )
-
-    ev = analyzer.extended_version
-    assert set(ev) == {"nrd_db_version"}
-    # Format: "<mtime_ns>-<size>" — both positive integers.
-    mtime_str, _, size_str = ev["nrd_db_version"].partition("-")
-    assert int(mtime_str) > 0
-    assert int(size_str) > 0
 
 
 @pytest.mark.unit

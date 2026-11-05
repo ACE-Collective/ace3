@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 import pytest
 import yaml
@@ -8,6 +9,8 @@ from saq.cli.cli_main import get_cli_parser
 from saq.configuration import get_config
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import F_TEST
+from saq.database.model import Company, DelayedAnalysis, Nodes, Workload
+from saq.database.pool import get_db
 from saq.database.util.delayed_analysis import add_delayed_analysis_request
 from saq.database.util.locking import acquire_lock
 from saq.environment import get_global_runtime_settings
@@ -105,9 +108,27 @@ def test_workload_display(root_analysis, capsys):
     lock_uuid = str(uuid.uuid4())
     assert acquire_lock(root_analysis.uuid, lock_uuid, f"{get_global_runtime_settings().saq_node}-1234")
 
+    # what another company or node has is not this node's workload
+    other_company = Company(name="other-company")
+    get_db().add(other_company)
+    get_db().flush()
+    other_node = Nodes(name="other-node", location="other-node", company_id=other_company.id, last_update=datetime.now())
+    get_db().add(other_node)
+    get_db().flush()
+    get_db().add(Workload(uuid=str(uuid.uuid4()), node_id=other_node.id, analysis_mode="other_company_mode",
+                          company_id=other_company.id, storage_dir="other"))
+    get_db().add(DelayedAnalysis(uuid=str(uuid.uuid4()), observable_uuid=str(uuid.uuid4()), analysis_module="other_node_module",
+                                 insert_date=datetime.now(), node_id=other_node.id, storage_dir="other"))
+    get_db().commit()
+    assert acquire_lock(str(uuid.uuid4()), str(uuid.uuid4()), "other-node-1234")
+
     assert _run("workload", "display") == 0
 
-    lines = capsys.readouterr().out.splitlines()
+    output = capsys.readouterr().out
+    assert "other_company_mode" not in output
+    assert "other_node_module" not in output
+    assert "other-node-1234" not in output
+    lines = output.splitlines()
     assert ["test_groups", "1"] in [line.split() for line in lines]
     # the module name used to lose its first 16 characters
     assert [root_analysis.uuid, "basic_test", "1"] in [line.split() for line in lines]

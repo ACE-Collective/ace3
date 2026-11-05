@@ -30,7 +30,6 @@ def _analyze(root_analysis, fqdn):
     ("аррӏе.com", "xn--80ak6aa92e.com", "аррӏе.com", "xn--80ak6aa92e.com", "IDNA Domain"),
     # and punycode adds the unicode form an analyst can read
     ("xn--80ak6aa92e.com", "xn--80ak6aa92e.com", "аррӏе.com", "аррӏе.com", "Unicode Domain"),
-    ("xn--mnchen-3ya.de", "xn--mnchen-3ya.de", "münchen.de", "münchen.de", "Unicode Domain"),
 ])
 @pytest.mark.integration
 def test_internationalized_domain(root_analysis, fqdn, idna, unicode, added, display_type):

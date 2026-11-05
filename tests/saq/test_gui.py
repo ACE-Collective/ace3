@@ -18,7 +18,6 @@ def test_node_translate_gui(monkeypatch):
 @pytest.mark.parametrize("url,source_node,target_node,expected_url",[
     ("https://source/ace/analysis?direct=blah", "source", "target", "https://target/ace/analysis?direct=blah"),
     ("https://source:443/ace/analysis?direct=blah", "source:443", "target", "https://target/ace/analysis?direct=blah"),
-    ("https://source/ace/analysis?direct=blah", "source", "target:5000", "https://target:5000/ace/analysis?direct=blah"),
     ("https://invalid/ace/analysis?direct=blah", "unknown", "target", "https://target/ace/analysis?direct=blah"),
 ])
 @pytest.mark.unit

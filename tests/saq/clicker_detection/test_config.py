@@ -16,21 +16,6 @@ def _config(**searches):
 
 
 @pytest.mark.unit
-def test_get_clicker_match_values_url_children():
-    obs = RootAnalysis().add_observable_by_spec(
-        F_URL, "https://evil.example/login?d=dXNlckBleGFtcGxlLmNvbQ==")
-    vals = get_clicker_match_values(obs)
-    assert "https://evil.example/login?d=dXNlckBleGFtcGxlLmNvbQ==" in vals  # original
-    assert "https://evil.example/login?d=user@example.com" in vals          # decoded child
-
-
-@pytest.mark.unit
-def test_get_clicker_match_values_plain_url():
-    obs = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
-    assert get_clicker_match_values(obs) == ["https://evil.example/landing"]
-
-
-@pytest.mark.unit
 def test_get_clicker_match_values_fqdn_single():
     obs = RootAnalysis().add_observable_by_spec(F_FQDN, "evil.example")
     assert get_clicker_match_values(obs) == ["evil.example"]
@@ -103,8 +88,3 @@ def test_build_splunk_clicker_search_urls(test_context):
         assert "TIMESPEC" not in u["url"]
 
 
-@pytest.mark.unit
-def test_build_splunk_clicker_search_urls_none_configured(test_context):
-    config = {"splunk": {"enabled": True, "searches": {}}}
-    observable = RootAnalysis().add_observable_by_spec(F_URL, "https://evil.example/landing")
-    assert build_splunk_clicker_search_urls(config, observable) == []

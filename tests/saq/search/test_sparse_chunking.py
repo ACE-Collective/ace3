@@ -32,10 +32,12 @@ class TestSparse:
         assert digest in identifiers(f"sha256 {digest} seen")
 
     def test_token_index_is_deterministic_u32(self):
+        # blake2b-32 of "example", written out: the indexer and every process that queries must
+        # agree, and a second call in one process would also agree with the per-process hash()
         index = token_index("example")
-        assert index == token_index("example")
+        assert index == 228589973
         assert 0 <= index < 2**32
-        assert index != token_index("Example".lower() + "x")
+        assert index != token_index("examplex")
 
     def test_weights_saturate(self):
         once = term_weights("alpha")[token_index("alpha")]

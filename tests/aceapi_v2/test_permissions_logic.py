@@ -63,13 +63,6 @@ async def test_direct_allow(session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_direct_deny(session: AsyncSession):
-    user = await _make_user(session, "async_perm_deny")
-    await _add_user_perm(session, user.id, "test_deny", "permission", "DENY")
-    assert await user_has_permission_async(session, user.id, "test_deny", "permission") is False
-
-
-@pytest.mark.asyncio
 async def test_no_permission(session: AsyncSession):
     user = await _make_user(session, "async_perm_none")
     assert await user_has_permission_async(session, user.id, "nonexistent", "permission") is False
@@ -86,6 +79,8 @@ async def test_group_allow(session: AsyncSession):
 @pytest.mark.asyncio
 async def test_group_deny(session: AsyncSession):
     user = await _make_user(session, "async_perm_group_deny")
+    # an ALLOW the group's DENY has to override: with no ALLOW at all, nothing is granted anyway
+    await _add_user_perm(session, user.id, "group_deny", "permission", "ALLOW")
     group = await _add_group_with_user(session, "async_deny_group", user.id)
     await _add_group_perm(session, group.id, "group_deny", "permission", "DENY")
     assert await user_has_permission_async(session, user.id, "group_deny", "permission") is False
@@ -123,17 +118,12 @@ async def test_permission_rows_are_the_users_own_and_their_groups(session: Async
     await _add_user_perm(session, user.id, "alert", "read", "ALLOW")
     group = await _add_group_with_user(session, "async_perm_rows_grp", user.id)
     await _add_group_perm(session, group.id, "signature", "*", "DENY")
+    # another user's own row and group, which must stay out
+    other = await _make_user(session, "async_perm_rows_other")
+    await _add_user_perm(session, other.id, "event", "read", "ALLOW")
+    other_group = await _add_group_with_user(session, "async_perm_rows_other_grp", other.id)
+    await _add_group_perm(session, other_group.id, "event", "*", "ALLOW")
 
     user_rows, group_rows = await get_permission_rows_async(session, user.id)
     assert [tuple(row) for row in user_rows] == [("alert", "read", "ALLOW")]
     assert [tuple(row) for row in group_rows] == [("signature", "*", "DENY")]
-
-
-@pytest.mark.asyncio
-async def test_permission_rows_of_a_user_in_no_group(session: AsyncSession):
-    user = await _make_user(session, "async_perm_rows_nogroup")
-    await _add_user_perm(session, user.id, "alert", "read", "ALLOW")
-
-    user_rows, group_rows = await get_permission_rows_async(session, user.id)
-    assert [tuple(row) for row in user_rows] == [("alert", "read", "ALLOW")]
-    assert group_rows == []

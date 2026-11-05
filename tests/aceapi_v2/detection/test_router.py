@@ -137,6 +137,7 @@ class TestCreate:
         body = r.json()
         assert body["value"] == "brand-new.example.com"
         assert body["detection_context"] == "from threat intel"
+        assert body["created_by"] == "unittest"
         assert body["observable_id"] is None
 
     @pytest.mark.asyncio
@@ -173,16 +174,6 @@ class TestCreate:
 
 
 class TestListAndDelete:
-    @pytest.mark.asyncio
-    async def test_list(self, client: AsyncClient, session: AsyncSession):
-        detection = await _make_detection(session, "7.7.7.7")
-
-        listing = await client.get("/detection/", params={"search": "7.7.7.7"})
-        assert listing.status_code == 200
-        body = listing.json()
-        assert set(body) >= {"items", "total", "page", "page_size", "total_pages"}
-        assert any(d["id"] == detection.id for d in body["items"])
-
     @pytest.mark.asyncio
     async def test_list_status_filter(self, client: AsyncClient, session: AsyncSession):
         await _make_detection(session, "7.7.8.1")

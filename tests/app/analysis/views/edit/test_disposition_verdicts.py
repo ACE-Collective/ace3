@@ -75,6 +75,9 @@ def test_no_verdict_step_for_an_fp_disposition(web_client):
     _post(web_client, alert, disposition="FALSE_POSITIVE", verdict_listed="1", verdict_fp=[noise])
 
     assert {row["override"] for row in _rows(alert).values()} == {None}
+    # the step is not tried at all: the store would refuse it, and the analyst would be told so
+    with web_client.session_transaction() as sess:
+        assert [message for _category, message in sess["_flashes"]] == ["disposition set for 1 alerts"]
 
 
 def test_no_verdict_step_from_the_manage_page(web_client):

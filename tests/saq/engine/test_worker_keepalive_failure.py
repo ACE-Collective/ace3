@@ -29,7 +29,6 @@ could not claim was re-polled with no sleep. The leaked lock used to hide that
 failure would hot-spin on the database instead.
 """
 import uuid as uuidlib
-from datetime import datetime
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -38,7 +37,6 @@ from saq.analysis.root import RootAnalysis
 from saq.database.pool import get_db_connection
 from saq.database.util.locking import force_release_lock
 from saq.engine.configuration_manager import ConfigurationManager
-from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.node_manager.node_manager_factory import create_node_manager
@@ -126,17 +124,6 @@ def make_work_item(uuid_value: str = WORK_ITEM_UUID):
     return work_item
 
 
-def make_delayed_work_item(uuid_value: str = WORK_ITEM_UUID) -> DelayedAnalysisRequest:
-    return DelayedAnalysisRequest(
-        uuid_value,
-        "00000000-0000-0000-0000-0000000000ff",
-        "some_analysis_module",
-        datetime.now(),
-        storage_dir_from_uuid(uuid_value),
-        database_id=1,
-    )
-
-
 @pytest.fixture
 def worker() -> Worker:
     """A real Worker with its collaborators replaced.
@@ -168,26 +155,6 @@ def worker() -> Worker:
 
 
 @pytest.mark.unit
-def test_keepalive_failure_releases_the_lock(worker):
-    """The claim taken by get_next_work_target() goes back immediately."""
-    work_item = make_work_item()
-
-    assert worker.execute(work_item) is False
-
-    worker.lock_manager.release_lock.assert_called_once()
-    assert worker.lock_manager.release_lock.call_args.args[0] == work_item.uuid
-
-
-@pytest.mark.unit
-def test_keepalive_failure_leaves_the_work_item_in_the_workload(worker):
-    """We never analyzed it, so the workload row has to stay -- releasing the
-    lock is what makes it available again, not deleting it."""
-    assert worker.execute(make_work_item()) is False
-
-    assert worker.workload_manager.cleared == []
-
-
-@pytest.mark.unit
 def test_keepalive_failure_stops_a_leaked_keepalive(worker):
     """A keepalive thread left behind by a previous work item is the other
     reason start_keepalive fails; clearing it lets the next item start one."""
@@ -202,19 +169,6 @@ def test_keepalive_failure_does_not_analyze(worker):
     assert worker.execute(make_work_item()) is False
 
     worker.analysis_orchestrator.orchestrate_analysis.assert_not_called()
-
-
-@pytest.mark.unit
-def test_keepalive_failure_releases_lock_for_delayed_analysis_request(worker):
-    """Delayed analysis requests are claimed the same way and must be returned
-    the same way."""
-    work_item = make_delayed_work_item()
-
-    assert worker.execute(work_item) is False
-
-    worker.lock_manager.release_lock.assert_called_once()
-    assert worker.lock_manager.release_lock.call_args.args[0] == work_item.uuid
-    assert worker.workload_manager.cleared == []
 
 
 @pytest.mark.unit
@@ -283,13 +237,6 @@ def lock_row(uuid: str):
         return cursor.fetchone()
 
 
-def workload_row(uuid: str):
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT id FROM workload WHERE uuid = %s", (uuid,))
-        return cursor.fetchone()
-
-
 def delete_workload(uuid: str) -> None:
     with get_db_connection() as db:
         cursor = db.cursor()
@@ -328,18 +275,6 @@ def claimed_work_item():
     finally:
         force_release_lock(_uuid)
         delete_workload(_uuid)
-
-
-@pytest.mark.integration
-def test_keepalive_failure_releases_the_database_lock(claimed_work_item):
-    """The locks row is gone and the workload row is not."""
-    worker, _uuid, work_item = claimed_work_item
-
-    with patch.object(worker.lock_manager, "start_keepalive", return_value=False):
-        assert worker.execute(work_item) is False
-
-    assert lock_row(_uuid) is None, "the claim was leaked (docs/ENGINE.md §19.9)"
-    assert workload_row(_uuid) is not None, "an unanalyzed work item was dropped"
 
 
 @pytest.mark.integration

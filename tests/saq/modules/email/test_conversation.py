@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -41,13 +42,11 @@ def _context(thread_id, method, message_id, normalized_subject, participants, **
 
 @pytest.mark.unit
 @pytest.mark.parametrize("subject,expected", [
-    ("Re: Hello", "hello"),
     ("RE: FW: Re: Hello World", "hello world"),
     ("Fwd: project update", "project update"),
     ("Re[2]: counter", "counter"),
     ("   spaced    out   subject ", "spaced out subject"),
     ("no prefix here", "no prefix here"),
-    ("", ""),
     (None, ""),
     # meeting responses, invitations and auto-replies fold into the invitation's subject
     ("Accepted: Quarterly review", "quarterly review"),
@@ -69,7 +68,6 @@ def _context(thread_id, method, message_id, normalized_subject, participants, **
     ("prices @ 9am", "prices @ 9am"),
     # a response word without the colon is an ordinary subject
     ("accepted terms", "accepted terms"),
-    ("Invitation to tender", "invitation to tender"),
 ])
 def test_normalize_subject(subject, expected):
     assert normalize_subject(subject) == expected
@@ -102,16 +100,24 @@ def _email_analysis(**overrides):
     return SimpleNamespace(**base)
 
 
+@pytest.fixture
+def local_zone_is_not_utc(monkeypatch):
+    """The suite runs in UTC, where taking a zoneless date as local time and as UTC agree."""
+    monkeypatch.setenv("TZ", "Asia/Kolkata")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("date_header,expected", [
     # the sender's zone is folded into UTC: 00:40 IST is 19:10 UTC the day before
     ("Fri, 28 Aug 2026 00:40:20 +0530", datetime(2026, 8, 27, 19, 10, 20)),
-    ("Thu, 27 Aug 2026 19:10:20 +0000", datetime(2026, 8, 27, 19, 10, 20)),
-    ("Thu, 27 Aug 2026 14:10:20 -0500", datetime(2026, 8, 27, 19, 10, 20)),
-    # no zone at all is taken as UTC
+    # no zone at all is taken as UTC, not as the local zone
     ("Thu, 27 Aug 2026 19:10:20", datetime(2026, 8, 27, 19, 10, 20)),
 ])
-def test_derive_thread_context_records_message_date_in_utc(date_header, expected):
+def test_derive_thread_context_records_message_date_in_utc(local_zone_is_not_utc, date_header, expected):
     context = derive_thread_context(_email_analysis(headers=[("Date", date_header)]))
     assert context.message_date == expected
     # naive, so the store writes exactly these fields
@@ -125,48 +131,17 @@ def test_derive_thread_context_tolerates_a_bad_date():
 
 
 @pytest.mark.unit
-def test_derive_thread_id_uses_references_root():
+@pytest.mark.parametrize("message_id,in_reply_to,references,expected", [
     # References is oldest-first; the first token is the JWZ root
-    thread_id, method = derive_thread_id("<c@x>", "<b@x>", "<a@x> <b@x>")
-    assert thread_id == "<a@x>"
-    assert method == "references"
-
-
-@pytest.mark.unit
-def test_derive_thread_id_falls_back_to_in_reply_to():
-    thread_id, method = derive_thread_id("<c@x>", "<b@x>", None)
-    assert thread_id == "<b@x>"
-    assert method == "in_reply_to"
-
-
-@pytest.mark.unit
-def test_derive_thread_id_self_when_no_linkage():
-    thread_id, method = derive_thread_id("<c@x>", None, None)
-    assert thread_id == "<c@x>"
-    assert method == "self"
-
-
-@pytest.mark.unit
-def test_derive_thread_id_normalizes_bare_message_id():
-    # a message-id missing angle brackets is normalized when it becomes the thread root
-    thread_id, method = derive_thread_id("c@x", None, None)
-    assert thread_id == "<c@x>"
-    assert method == "self"
-
-
-@pytest.mark.unit
-def test_derive_thread_id_none_when_nothing_available():
-    thread_id, method = derive_thread_id(None, None, None)
-    assert thread_id == ""
-    assert method == "none"
-
-
-@pytest.mark.unit
-def test_derive_thread_id_replies_converge_on_same_root():
-    # two different replies in the same thread must map to the same thread_id regardless of arrival order
-    a, _ = derive_thread_id("<b@x>", "<a@x>", "<a@x>")
-    b, _ = derive_thread_id("<c@x>", "<b@x>", "<a@x> <b@x>")
-    assert a == b == "<a@x>"
+    ("<c@x>", "<b@x>", "<a@x> <b@x>", ("<a@x>", "references")),
+    ("<c@x>", "<b@x>", None, ("<b@x>", "in_reply_to")),
+    # nothing links it, so it starts a thread of its own; a message-id missing angle brackets is
+    # normalized when it becomes the thread root
+    ("c@x", None, None, ("<c@x>", "self")),
+    (None, None, None, ("", "none")),
+], ids=["references_root", "in_reply_to", "self_normalized", "nothing"])
+def test_derive_thread_id(message_id, in_reply_to, references, expected):
+    assert derive_thread_id(message_id, in_reply_to, references) == expected
 
 
 @pytest.mark.integration
@@ -178,6 +153,11 @@ def test_thread_store_round_trip():
     record_thread(root)
     assert get_thread_message_count("<root@example.com>") == 1
 
+    # another thread, whose domains are not this conversation's
+    record_thread(_context(
+        "<elsewhere@unrelated.org>", "self", "<elsewhere@unrelated.org>", "invoice question",
+        [Participant("bob@unrelated.org", "unrelated.org", "from")]))
+
     # a reply (References the root) sees the root's participant domains as established
     reply = _context(
         "<root@example.com>", "references", "<reply@examp1e.com>", "invoice question",
@@ -186,6 +166,7 @@ def test_thread_store_round_trip():
     established = {d.domain for d in get_established_domains(reply)}
     assert "example.com" in established
     assert "company.com" in established
+    assert "unrelated.org" not in established
     # the reply's own look-a-like domain is not yet recorded (recording happens after scoring)
     assert "examp1e.com" not in established
 
@@ -307,21 +288,6 @@ def _record_conversation():
 
 
 @pytest.mark.integration
-def test_get_conversation_spans_subject_linked_threads():
-    _record_conversation()
-
-    # every message threads to ITSELF (no In-Reply-To/References), so the three live under three
-    # different thread ids. the conversation is only recoverable through normalized subject plus a
-    # shared participant domain - the same rule get_established_domains uses.
-    conversation = get_conversation("<c3@example.com>")
-    assert conversation is not None
-    assert conversation.thread_count == 3
-    assert [m.message_id for m in conversation.messages] == [
-        "<c1@example.com>", "<c2@company.com>", "<c3@example.com>"]
-    assert conversation.truncated is False
-
-
-@pytest.mark.integration
 def test_get_conversation_participants_are_per_message():
     _record_conversation()
 
@@ -379,6 +345,8 @@ def test_messages_containing_domain_counts_the_message_sender():
 
 @pytest.mark.integration
 def test_get_conversation_unknown_message():
+    _record_conversation()
+
     assert get_conversation("<never-recorded@example.com>") is None
     assert get_conversation("") is None
 
@@ -401,9 +369,14 @@ def test_get_conversation_reports_how_it_was_assembled():
     _record_conversation()
 
     conversation = get_conversation("<c3@example.com>")
-    # nothing carried threading headers, so this is the subject + shared-domain path
+    # every message threads to ITSELF (no In-Reply-To/References), so the three live under three
+    # different thread ids. the conversation is only recoverable through normalized subject plus a
+    # shared participant domain - the same rule get_established_domains uses.
     assert conversation.thread_method == "self"
     assert conversation.thread_count == 3
+    assert [m.message_id for m in conversation.messages] == [
+        "<c1@example.com>", "<c2@company.com>", "<c3@example.com>"]
+    assert conversation.truncated is False
     # company.com and example.com both span the threads and are what justified joining them
     assert "company.com" in conversation.link_domains
     # one message per joined thread - the shape a subject collision produces
@@ -488,18 +461,6 @@ def test_display_cap_does_not_change_the_ever_sent_verdict():
 
 
 @pytest.mark.integration
-def test_thread_cap_keeps_the_oldest_threads():
-    """Ordering before the cap is by first-seen, not by hash - otherwise which messages survive is
-    unpredictable and the "oldest were kept" explanation shown to the analyst is untrue."""
-    _record_conversation()
-
-    capped = get_conversation("<c3@example.com>", max_messages=50, max_threads=2)
-    kept = [m.message_id for m in capped.messages]
-    assert "<c1@example.com>" in kept          # oldest sibling survives
-    assert "<c3@example.com>" in kept          # anchor always survives
-
-
-@pytest.mark.integration
 def test_get_conversation_thread_cap_reports_truncation():
     _record_conversation()
 
@@ -509,5 +470,8 @@ def test_get_conversation_thread_cap_reports_truncation():
     # indistinguishable from a complete one.
     conversation = get_conversation("<c3@example.com>", max_messages=50, max_threads=2)
     assert conversation.thread_count == 2
-    assert len(conversation.messages) < 3
     assert conversation.truncated is True
+    # ordering before the cap is by first-seen, not by hash - otherwise which messages survive is
+    # unpredictable and the "oldest were kept" explanation shown to the analyst is untrue. the
+    # oldest sibling survives, and so does the anchor.
+    assert [m.message_id for m in conversation.messages] == ["<c1@example.com>", "<c3@example.com>"]

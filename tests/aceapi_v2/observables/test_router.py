@@ -230,7 +230,7 @@ class TestSetInteresting:
 
     @pytest.mark.asyncio
     async def test_unmark_nonexistent_observable_is_noop(
-        self, client: AsyncClient
+        self, session: AsyncSession, client: AsyncClient
     ):
         """Unmarking a nonexistent observable should succeed without creating it."""
         response = await client.patch(
@@ -242,6 +242,14 @@ class TestSetInteresting:
             },
         )
         assert response.status_code == 200
+
+        result = await session.execute(
+            select(Observable).where(
+                Observable.type == "ipv4",
+                Observable.sha256 == _sha256("10.0.0.1"),
+            )
+        )
+        assert result.scalar_one_or_none() is None
 
     @pytest.mark.asyncio
     async def test_toggle_interesting_idempotent(

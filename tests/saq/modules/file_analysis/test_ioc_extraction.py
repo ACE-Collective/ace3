@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
@@ -52,11 +54,7 @@ def test_generate_summary_with_iocs():
     }
     analysis.details['total_count'] = 3
 
-    summary = analysis.generate_summary()
-    assert summary is not None
-    assert "Extracted 3 IOCs" in summary
-    assert F_URL in summary
-    assert F_EMAIL_ADDRESS in summary
+    assert analysis.generate_summary() == f"Extracted 3 IOCs ({F_URL}: 2, {F_EMAIL_ADDRESS}: 1)"
 
 
 @pytest.mark.unit
@@ -103,31 +101,28 @@ def test_empty_file(test_context):
 
 
 @pytest.mark.unit
-def test_file_too_large(test_context):
+def test_file_too_large(test_context, caplog):
     """Test that files exceeding max_file_size are skipped."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 
-    # Create a file that would be skipped by a 1KB limit
-    # We can't easily test the actual size limit without modifying config
-    # But we can verify the module completes without creating analysis for large files
-    content = "https://example.com " * 1000  # ~20KB of content
-
+    # over a limit of 0 MB, with an IOC in it that would be extracted
     target_path = root.create_file_path("large.txt")
     with open(target_path, "w") as fp:
-        fp.write(content)
+        fp.write("https://example.com ")
 
     observable = root.add_file_observable(target_path)
     observable.add_directive(DIRECTIVE_EXTRACT_IOCS)
 
-    analyzer = AnalysisModuleAdapter(IOCExtractionAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_IOC_EXTRACTION)))
+    config = get_analysis_module_config(ANALYSIS_MODULE_IOC_EXTRACTION).model_copy(update={"max_file_size": 0})
+    analyzer = AnalysisModuleAdapter(IOCExtractionAnalyzer(context=test_context, config=config))
     analyzer.root = root
 
-    # With default config (10MB), this should process fine
-    result = analyzer.execute_analysis(observable)
+    with caplog.at_level(logging.INFO):
+        result = analyzer.execute_analysis(observable)
     assert result == AnalysisExecutionResult.COMPLETED
+    assert observable.get_and_load_analysis(IOCExtractionAnalysis) is None
+    assert "is too large for IOC extraction" in caplog.text
 
 
 def _create_analyzer(test_context, datadir, yaml_filename):
@@ -146,7 +141,7 @@ def _create_analyzer(test_context, datadir, yaml_filename):
 
 @pytest.mark.unit
 def test_invalid_regex_logs_warning(test_context, datadir, caplog):
-    """Test that invalid regex in YAML logs a warning but doesn't crash."""
+    """Test that an invalid regex in the YAML is logged and costs only that pattern."""
     root = create_root_analysis(analysis_mode='test_single')
     root.initialize_storage()
 
@@ -162,7 +157,6 @@ def test_invalid_regex_logs_warning(test_context, datadir, caplog):
     adapter, _ = _create_analyzer(test_context, datadir, "test_invalid_regex.yaml")
     adapter.root = root
 
-    import logging
     with caplog.at_level(logging.WARNING):
         result = adapter.execute_analysis(observable)
 
@@ -174,9 +168,8 @@ def test_invalid_regex_logs_warning(test_context, datadir, caplog):
     assert "indicator" in analysis.details["iocs"]
     assert "42" in analysis.details["iocs"]["indicator"]
 
-    # Should have logged warnings about invalid patterns
-    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("invalid regex" in msg.lower() or "invalid" in msg.lower() for msg in warning_messages)
+    assert any(r.levelno == logging.ERROR and "invalid regex 'BAD-(('" in r.getMessage() for r in caplog.records)
+    assert any(r.levelno == logging.WARNING and "invalid ignore regex '[also bad(('" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -202,7 +195,9 @@ def test_empty_yaml_works_gracefully(test_context, datadir):
 
     analysis = observable.get_and_load_analysis(IOCExtractionAnalysis)
     assert analysis is not None
-    assert analysis.details["total_count"] > 0
+    # no patterns, and the URL extraction every config gets
+    assert analysis.details["iocs"] == {F_URL: ["https://example.com"]}
+    assert analysis.details["total_count"] == 1
     assert len(analysis.details["ignored"]) == 0
 
 
@@ -488,6 +483,8 @@ def test_refang_creates_file_observable(test_context, datadir):
 
     # Verify the re-fanged file observable has R_EXTRACTED_FROM relationship
     assert refang_obs.has_relationship(R_EXTRACTED_FROM)
+    with open(refang_obs.full_path) as fp:
+        assert fp.read() == "Visit https://example.com/path for info"
 
     # Verify the refanged URL was extracted (proving the refanging worked)
     assert F_URL in analysis.details["iocs"]

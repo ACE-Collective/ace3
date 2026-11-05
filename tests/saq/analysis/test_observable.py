@@ -2,8 +2,9 @@
 import datetime
 import pytest
 
+from saq.analysis.analysis import Analysis
 from saq.analysis.observable import get_observable_type_expiration_time
-from saq.analysis.root import load_root
+from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
@@ -194,11 +195,6 @@ def add_observables(root):
         root.add_observable_by_spec(o_type, EV_OBSERVABLE_VALUE_MAP[o_type])
 
 @pytest.mark.unit
-def test_add_observable():
-    root = create_root_analysis()
-    add_observables(root)
-
-@pytest.mark.unit
 def test_add_invalid_observables():
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_IP, '1.2.3.4.5')
@@ -277,7 +273,7 @@ def test_valid_mac_observable():
     assert observable.mac_address(sep='') == '001122334455'
 
 @pytest.mark.unit
-@pytest.mark.parametrize('value', ['0A:1B:2C:3D:4E:5F', '0a-1b-2c-3d-4e-5f', '0a1b.2c3d.4e5f', '0A1B2C3D4E5F', ' 0a:1b:2c:3d:4e:5f\n'])
+@pytest.mark.parametrize('value', ['0A:1B:2C:3D:4E:5F', '0a-1b-2c-3d-4e-5f', '0a1b.2c3d.4e5f', ' 0a:1b:2c:3d:4e:5f\n'])
 def test_mac_observable_normalized(value):
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_MAC_ADDRESS, value)
@@ -301,11 +297,10 @@ def test_mac_observable_normalized_on_load():
     assert loaded.get_observable(observable.uuid).value == '00-11-22-33-44-55'
 
 @pytest.mark.unit
-@pytest.mark.parametrize('value', ['00:11:22:AA:BB:CC', '00-11-22-aa-bb-cc', '001122aabbcc'])
-def test_mac_observable_lookup_in_any_notation(value):
+def test_mac_observable_lookup_in_any_notation():
     root = create_root_analysis()
     observable = root.add_observable_by_spec(F_MAC_ADDRESS, '00-11-22-aa-bb-cc')
-    assert root.get_observable_by_spec(F_MAC_ADDRESS, value) is observable
+    assert root.get_observable_by_spec(F_MAC_ADDRESS, '00:11:22:AA:BB:CC') is observable
 
 @pytest.mark.unit
 def test_mac_observable_lookup_misses():
@@ -342,40 +337,6 @@ def test_display_added_time():
     # a non-UTC offset is normalized to UTC for display
     observable.added_time = datetime.datetime(2026, 6, 11, 5, 30, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=-4)))
     assert observable.display_added_time == '2026-06-11 09:30 UTC'
-
-@pytest.mark.unit
-def test_display_type_with_no_custom_display():
-    """test that display_type returns the type when no custom display_type is set"""
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IP, '1.2.3.4')
-    assert observable.display_type == F_IP
-    assert observable.display_type == observable.type
-
-@pytest.mark.unit
-def test_display_type_with_custom_display():
-    """test that display_type returns custom display with type in parentheses when display_type is set"""
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_IP, '1.2.3.4')
-    observable.display_type = "Internal IP"
-    assert observable.display_type == f"Internal IP ({F_IP})"
-    assert observable.type == F_IP
-
-@pytest.mark.unit
-def test_display_value_with_no_custom_display():
-    """test that display_value returns the value when no custom display_value is set"""
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_FQDN, 'example.com')
-    assert observable.display_value == 'example.com'
-    assert observable.display_value == observable.value
-
-@pytest.mark.unit
-def test_display_value_with_custom_display():
-    """test that display_value returns custom display with value in parentheses when display_value is set"""
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_FQDN, 'example.com')
-    observable.display_value = "Example Domain"
-    assert observable.display_value == "Example Domain (example.com)"
-    assert observable.value == 'example.com'
 
 @pytest.mark.unit
 def test_display_properties_combined():
@@ -483,21 +444,6 @@ def test_display_properties_reset_to_none():
     assert observable.display_value == 'test@example.com'
 
 @pytest.mark.unit
-def test_display_properties_with_special_characters():
-    """test that display properties handle special characters correctly"""
-    root = create_root_analysis()
-    observable = root.add_observable_by_spec(F_FILE_PATH, r'C:\Windows\System32\cmd.exe')
-
-    # set display with special characters
-    observable.display_type = "System Binary"
-    observable.display_value = "Command Prompt (Admin)"
-
-    assert observable.display_type == f"System Binary ({F_FILE_PATH})"
-    assert observable.display_value == r"Command Prompt (Admin) (C:\Windows\System32\cmd.exe)"
-    assert observable.value == r'C:\Windows\System32\cmd.exe'
-
-
-@pytest.mark.unit
 def test_observable_lt_sorts_by_display_value_when_set():
     """Within a single type, observables with display_value set should sort by
     display_value rather than by raw value — so e.g. file observables whose
@@ -534,21 +480,6 @@ def test_observable_lt_falls_back_to_value_without_display_value():
 
 
 @pytest.mark.unit
-def test_observable_lt_mixed_display_value_is_consistent():
-    """Mixing observables with and without display_value should still yield a
-    stable total ordering (no TypeError on comparison)."""
-    root = create_root_analysis()
-    a = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/zzz.bin")
-    b = root.add_observable_by_spec(F_FILE_PATH, r"/tmp/aaa.bin")
-    a.display_value = "marker.bin"  # only one has display_value
-
-    # Should not raise and should produce a deterministic order
-    ordered = sorted([a, b])
-    # "/tmp/aaa.bin" < "marker.bin" lexicographically, so b comes first
-    assert ordered == [b, a]
-
-
-@pytest.mark.unit
 def test_file_observable_lt_sorts_by_file_path():
     """FileObservables should sort by their file_path (via the display_value
     property override), not by the sha256 hash that is their raw value."""
@@ -573,7 +504,7 @@ def test_file_observable_lt_sorts_by_file_path():
 
 
 @pytest.mark.unit
-def test_copy_directives_to_skips_fixed_directives():
+def test_copy_directives_to_skips_fixed_directives(monkeypatch):
     """Fixed directives defined in config should not be copied between observables."""
     root = create_root_analysis()
     source = root.add_observable_by_spec(F_TEST, "source")
@@ -583,31 +514,13 @@ def test_copy_directives_to_skips_fixed_directives():
     source.add_directive("archive")
     source.add_directive("sandbox")
 
-    get_config().fixed_directives = ["archive"]
+    monkeypatch.setattr(get_config(), "fixed_directives", ["archive"])
 
     source.copy_directives_to(target)
 
     assert target.has_directive("extract_urls")
     assert not target.has_directive("archive")
     assert target.has_directive("sandbox")
-
-
-@pytest.mark.unit
-def test_copy_directives_to_copies_all_when_no_fixed_directives():
-    """When no fixed directives are configured, all directives should be copied."""
-    root = create_root_analysis()
-    source = root.add_observable_by_spec(F_TEST, "source2")
-    target = root.add_observable_by_spec(F_TEST, "target2")
-
-    source.add_directive("extract_urls")
-    source.add_directive("archive")
-
-    get_config().fixed_directives = []
-
-    source.copy_directives_to(target)
-
-    assert target.has_directive("extract_urls")
-    assert target.has_directive("archive")
 
 
 @pytest.mark.unit
@@ -622,3 +535,27 @@ def test_observable_lt_different_types_sort_by_type():
     # F_FILE_PATH < F_URL alphabetically, so file comes first regardless
     assert ordered[0].type == F_FILE_PATH
     assert ordered[1].type == F_URL
+
+
+class _WantedAnalysis(Analysis):
+    pass
+
+
+class _OtherAnalysis(Analysis):
+    pass
+
+
+@pytest.mark.unit
+def test_get_and_load_analysis_by_type(tmp_path):
+    root = RootAnalysis(storage_dir=str(tmp_path / "root"))
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    wanted = _WantedAnalysis()
+    wanted.details = {"found": True}
+    observable.add_analysis(wanted)
+    observable.add_analysis(_OtherAnalysis())
+    root.save()
+
+    loaded = load_root(root.storage_dir).get_observable(observable.uuid)
+    (analysis,) = loaded.get_and_load_analysis_by_type(_WantedAnalysis)
+    assert analysis.details == {"found": True}

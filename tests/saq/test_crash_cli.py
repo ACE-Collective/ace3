@@ -16,7 +16,6 @@ from saq.crash_replication import list_replicated_ids, remote_report_exists
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     find_crash_report_dir,
-    get_crash_report_root_dir,
     get_hang_stacks_dir,
     get_index_pending_dir,
     record_module_crash,
@@ -213,16 +212,6 @@ def test_prune_drops_spool_entries(root_analysis, empty_spool):
     assert crash_id not in _spooled(empty_spool)
 
 
-@pytest.mark.unit
-def test_report_iteration_never_walks_the_spool(root_analysis, empty_spool):
-    crash_id = _make_crash(root_analysis)
-    assert crash_id in _spooled(empty_spool)
-
-    walked = [path for path, _ in _iter_report_dirs(get_crash_report_root_dir())]
-    assert walked
-    assert not any(path.startswith(empty_spool) for path in walked)
-
-
 #
 # a crash report directory of its own, for the tests that look at everything under it
 #
@@ -287,6 +276,8 @@ def test_list_honors_the_limit(private_root, root_analysis, capsys):
 def test_report_iteration_skips_stray_files(private_root, root_analysis):
     crash_id = _make_crash(root_analysis)
     crash_dir = find_crash_report_dir(crash_id)
+    # the report is in the index spool too, which the walk must never yield
+    assert crash_id in _spooled(get_index_pending_dir())
     day_dir = os.path.dirname(crash_dir)
     month_dir = os.path.dirname(day_dir)
     year_dir = os.path.dirname(month_dir)

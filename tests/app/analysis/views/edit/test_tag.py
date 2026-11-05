@@ -92,7 +92,8 @@ def test_add_tag_empty_tag(web_client):
     })
     
     assert response.status_code == 302
-    
+    assert _flashes(web_client) == ["you must specify one or more tags to add"]
+
     # Verify no tag was added
     db = get_db()
     gui_alert = db.query(GUIAlert).filter(GUIAlert.uuid == alert.uuid).one()
@@ -144,45 +145,20 @@ def test_add_tag_invalid_redirect(web_client):
 
 @pytest.mark.integration
 def test_add_tag_manage_redirect(web_client):
-    """Test adding tag with manage redirect sets session."""
+    """Tagging from the manage page goes back to it with the tagged alerts still selected."""
     alert = insert_alert()
-    
+
     response = web_client.post(url_for("analysis.add_tag"), data={
         "tag": "manage_tag",
         "uuids": str(alert.uuid),
         "redirect": "management"
     })
-    
-    assert response.status_code == 302
 
-
-@pytest.mark.integration
-def test_remove_tag_success(web_client):
-    """Test successfully removing a tag from an alert."""
-    alert = insert_alert()
-    
-    # First add a tag
-    db = get_db()
-    gui_alert = db.query(GUIAlert).filter(GUIAlert.uuid == alert.uuid).one()
-    gui_alert.load()
-    gui_alert.root_analysis.add_tag("remove_me")
-    gui_alert.sync()
-    db.commit()
-    
-    # Now remove the tag
-    response = web_client.post(url_for("analysis.remove_tag"), data={
-        "tag": "remove_me",
-        "uuids": str(alert.uuid),
-        "redirect": "analysis"
-    })
-    
     assert response.status_code == 302
-    assert "analysis" in response.location
-    
-    # Verify tag was removed
-    gui_alert = db.query(GUIAlert).filter(GUIAlert.uuid == alert.uuid).one()
-    gui_alert.load()
-    assert not gui_alert.root_analysis.has_tag("remove_me")
+    assert response.location.endswith(url_for("analysis.manage"))
+    assert _has_tag(alert, "manage_tag")
+    with web_client.session_transaction() as sess:
+        assert sess["checked"] == [str(alert.uuid)]
 
 
 @pytest.mark.integration
@@ -258,8 +234,9 @@ def test_remove_tag_empty_tag(web_client):
         "uuids": str(alert.uuid),
         "redirect": "analysis"
     })
-    
+
     assert response.status_code == 302
+    assert _flashes(web_client) == ["you must specify one or more tags to remove"]
 
 
 @pytest.mark.integration
@@ -306,32 +283,38 @@ def test_remove_tag_invalid_redirect(web_client):
 
 @pytest.mark.integration
 def test_remove_tag_manage_redirect(web_client):
-    """Test removing tag with manage redirect sets session."""
+    """Removing a tag from the manage page goes back to it with the alerts still selected."""
     alert = insert_alert()
-    
+
     response = web_client.post(url_for("analysis.remove_tag"), data={
         "tag": "manage_tag",
         "uuids": str(alert.uuid),
         "redirect": "management"
     })
-    
+
     assert response.status_code == 302
+    assert response.location.endswith(url_for("analysis.manage"))
+    with web_client.session_transaction() as sess:
+        assert sess["checked"] == [str(alert.uuid)]
 
 
 @pytest.mark.integration
 def test_remove_tag_nonexistent_tag(web_client):
-    """Test removing a tag that doesn't exist on the alert."""
+    """A tag the alert does not have is skipped, and the tags named with it are still removed."""
     alert = insert_alert()
-    
+    web_client.post(url_for("analysis.add_tag"), data={"tag": "present", "uuids": alert.uuid, "redirect": "analysis"})
+    assert _has_tag(alert, "present")
+
     response = web_client.post(url_for("analysis.remove_tag"), data={
-        "tag": "nonexistent_tag",
+        "tag": "nonexistent_tag present",
         "uuids": str(alert.uuid),
         "redirect": "analysis"
     })
-    
-    # Should handle gracefully and redirect
+
     assert response.status_code == 302
     assert "analysis" in response.location
+    assert not _has_tag(alert, "present")
+    assert _flashes(web_client) == []
 
 def _has_tag(alert, tag: str) -> bool:
     gui_alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == alert.uuid).one()
@@ -364,6 +347,11 @@ def test_tag_change_skips_an_alert_that_no_longer_exists(web_client, endpoint):
 @pytest.mark.parametrize("endpoint", ["analysis.add_tag", "analysis.remove_tag"])
 def test_tag_change_skips_an_alert_being_analyzed(web_client, endpoint):
     alert = insert_alert()
+    if endpoint == "analysis.remove_tag":
+        # tagged first, so that leaving the alert alone shows
+        web_client.post(url_for("analysis.add_tag"), data={"tag": "malware", "uuids": alert.uuid, "redirect": "analysis"})
+        assert _has_tag(alert, "malware")
+
     engine_lock = str(uuid.uuid4())
     assert acquire_lock(alert.uuid, engine_lock)
     try:
@@ -372,7 +360,7 @@ def test_tag_change_skips_an_alert_being_analyzed(web_client, endpoint):
         release_lock(alert.uuid, engine_lock)
 
     assert _flashes(web_client) == ["unable to modify alert: alert is currently being analyzed"]
-    assert not _has_tag(alert, "malware")
+    assert _has_tag(alert, "malware") is (endpoint == "analysis.remove_tag")
 
 
 @pytest.mark.integration

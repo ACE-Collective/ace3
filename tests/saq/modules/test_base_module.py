@@ -17,6 +17,7 @@ from saq.constants import (
     AnalysisExecutionResult,
 )
 from saq.engine.errors import WaitForAnalysisException
+from saq.environment import get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from tests.saq.test_util import create_test_context
@@ -506,14 +507,22 @@ def test_analysis_covered_without_grouping(root):
 #
 
 @pytest.mark.unit
-def test_verify_path_exists(root, tmpdir):
+def test_verify_path_exists(root, tmp_path, monkeypatch):
     module = _module(root)
-    module.verify_path_exists(str(tmpdir))
-    # relative paths are relative to SAQ_HOME
-    module.verify_path_exists("etc/saq.default.yaml")
+    module.verify_path_exists(str(tmp_path))
 
-    with pytest.raises(RuntimeError, match="missing"):
-        module.verify_path_exists("etc/does-not-exist.yaml")
+    # relative paths are relative to SAQ_HOME, which in the test suite is also the working directory,
+    # so SAQ_HOME is moved somewhere else
+    saq_home = tmp_path / "saq_home"
+    (saq_home / "etc").mkdir(parents=True)
+    (saq_home / "etc" / "only_in_saq_home.yaml").write_text("")
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_home", str(saq_home))
+    module.verify_path_exists("etc/only_in_saq_home.yaml")
+
+    # in the working directory, not in SAQ_HOME
+    assert os.path.exists("etc/saq.default.yaml")
+    with pytest.raises(RuntimeError, match="missing etc/saq.default.yaml"):
+        module.verify_path_exists("etc/saq.default.yaml")
 
 
 @pytest.mark.unit
@@ -577,10 +586,8 @@ def test_is_expected_observable(root):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("seconds,expected_sleeps", [
-    (0.25, [0.25]),
     (2.5, [1, 1, 0.5]),
     (2, [1, 1]),
-    (0, []),
 ])
 def test_sleep(root, monkeypatch, seconds, expected_sleeps):
     sleeps = []

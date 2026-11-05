@@ -49,6 +49,8 @@ async def test_unknown_filter_is_422(client: AsyncClient):
 async def test_counts_what_the_listing_lists(client: AsyncClient):
     for _ in range(3):
         insert_alert()
+    # scoped to this node's alerts, as the listing is
+    _set(insert_alert(), location="some-other-node")
 
     response = await client.get("/alerts/count")
 

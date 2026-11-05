@@ -50,12 +50,22 @@ from saq.constants import (
 )
 from saq.util.hashing import is_sha256_hex
 from tests.saq.helpers import create_root_analysis
+from tests.saq.test_util import create_test_context
 
 # ----------------------------------------------------------------------
 # Per-module contract runners
 # ----------------------------------------------------------------------
 
-def _check_rdap_analyzer(test_context, monkeypatch):
+def _contract_root():
+    """The root a module runs on, with an observable it was not given, so that a relationship to the
+    rest of the tree has something to point at."""
+    root = create_root_analysis()
+    root.initialize_storage()
+    root.add_observable_by_spec(F_FQDN, "bystander.example.com")
+    return root
+
+
+def _check_rdap_analyzer(monkeypatch):
     """Runs RdapAnalyzer with a mocked ``whoisit.domain()`` (and a
     failing ``whois.whois()`` to guard against the fallback firing).
     Returns the delta produced. Mirrors the mock pattern in
@@ -86,15 +96,13 @@ def _check_rdap_analyzer(test_context, monkeypatch):
 
     monkeypatch.setattr("whois.whois", _whois_must_not_be_called)
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
     analyzer = RdapAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER),
     )
-    analyzer.root = root
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     result = analyzer.execute_analysis(obs)
@@ -104,7 +112,7 @@ def _check_rdap_analyzer(test_context, monkeypatch):
     return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
 
 
-def _check_nrd_analyzer(test_context, monkeypatch):
+def _check_nrd_analyzer(monkeypatch):
     """Runs NRDAnalyzer against a real on-disk SQLite NRD DB containing
     a single hit row. Mirrors the ``nrd_db`` fixture in test_nrd.py.
     """
@@ -144,15 +152,13 @@ def _check_nrd_analyzer(test_context, monkeypatch):
     monkeypatch.setattr(nrd_util, "get_database_path", lambda: db_path)
     _reset_connection_for_tests()
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_observable_by_spec(F_FQDN, "example.com")
 
     analyzer = NRDAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_NRD_ANALYZER),
     )
-    analyzer.root = root
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     result = analyzer.execute_analysis(obs)
@@ -164,7 +170,7 @@ def _check_nrd_analyzer(test_context, monkeypatch):
     return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
 
 
-def _check_site_tagger(test_context, monkeypatch):
+def _check_site_tagger(monkeypatch):
     """Runs SiteTagAnalyzer against a temp CSV containing one CIDR rule
     that matches an F_IP observable. Verifies the live analyzer's
     delta is contract-clean — single tag added to the target observable,
@@ -177,7 +183,7 @@ def _check_site_tagger(test_context, monkeypatch):
 
     tmp_dir = Path(tempfile.mkdtemp())
     csv_path = tmp_dir / "site_tags.csv"
-    csv_path.write_text("ipv4,cidr,false,10.0.0.0/8,internal-network\n")
+    csv_path.write_text(f"{F_IP},cidr,false,10.0.0.0/8,internal-network\n")
 
     # Override the CSV path via the analyzer's csv_file property so we don't
     # touch the real shipped file.
@@ -187,22 +193,24 @@ def _check_site_tagger(test_context, monkeypatch):
         property(lambda _self: str(csv_path)),
     )
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_observable_by_spec(F_IP, "10.1.2.3")
 
     analyzer = SiteTagAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_SITE_TAGGER),
     )
-    analyzer.root = root
+    # analyze() loads the CSV before it calls execute_analysis()
+    analyzer.check_watched_files()
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     result = analyzer.execute_analysis(obs)
     after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
 
     assert result == AnalysisExecutionResult.COMPLETED
-    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
+    delta = ModuleExecutionSnapshot.diff(before, after, analyzer, obs)
+    assert delta.target_observable_diff.added_tags == ["internal-network"], "site tagger contract check matched no rule"
+    return delta, root
 
 
 def _make_png(directory) -> str:
@@ -216,7 +224,7 @@ def _make_png(directory) -> str:
     return path
 
 
-def _check_ocr(test_context, monkeypatch):
+def _check_ocr(monkeypatch):
     """Runs OCRAnalyzer against a synthetic PNG with the tesseract call
     (``get_image_text``) mocked to fixed text — the delta shape (output
     file write, add_file_observable, relationship, redirection) is real,
@@ -231,16 +239,14 @@ def _check_ocr(test_context, monkeypatch):
         lambda _image: "EXTRACTED TEXT https://example.com/",
     )
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_file_observable(_make_png(tempfile.mkdtemp()))
     obs.add_directive(DIRECTIVE_OCR)
 
     analyzer = OCRAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_OCR),
     )
-    analyzer.root = root
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     result = analyzer.execute_analysis(obs)
@@ -252,7 +258,7 @@ def _check_ocr(test_context, monkeypatch):
     return delta, root
 
 
-def _check_qrcode(test_context, monkeypatch):
+def _check_qrcode(monkeypatch):
     """Runs QRCodeAnalyzer against a synthetic PNG with the zbarimg call
     (``_scan_image``) mocked to return a URL — the delta shape (output
     file write, add_file_observable, relationship, tags) is real.
@@ -266,15 +272,13 @@ def _check_qrcode(test_context, monkeypatch):
         lambda _self, _path: "https://example.com/qr-target\n",
     )
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_file_observable(_make_png(tempfile.mkdtemp()))
 
     analyzer = QRCodeAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_QRCODE),
     )
-    analyzer.root = root
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
     result = analyzer.execute_analysis(obs)
@@ -286,7 +290,7 @@ def _check_qrcode(test_context, monkeypatch):
     return delta, root
 
 
-def _check_phishkit(test_context, monkeypatch):
+def _check_phishkit(monkeypatch):
     """Drives PhishkitAnalyzer through its REAL delayed lifecycle with the celery
     scan mocked: cycle 1 (execute_analysis) dispatches and delays (INCOMPLETE);
     the orchestrator's delayed-flag reset is simulated; cycle 2
@@ -334,16 +338,14 @@ def _check_phishkit(test_context, monkeypatch):
         lambda: out_dir,
     )
 
-    root = create_root_analysis()
-    root.initialize_storage()
+    root = _contract_root()
     obs = root.add_observable_by_spec(F_URL, "https://example.com/phish")
     obs.add_directive(DIRECTIVE_CRAWL)
 
     analyzer = PhishkitAnalyzer(
-        context=test_context,
+        context=create_test_context(root=root),
         config=get_analysis_module_config(ANALYSIS_MODULE_PHISHKIT_ANALYZER),
     )
-    analyzer.root = root
 
     # cycle 1: dispatch + delay
     before1 = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
@@ -376,7 +378,7 @@ def _check_phishkit(test_context, monkeypatch):
 
 
 class ContractCheck(NamedTuple):
-    runner: Callable  # callable(test_context, monkeypatch) -> (delta, root)
+    runner: Callable  # callable(monkeypatch) -> (delta, root)
     file_capable: bool  # True: module may spawn file observables (Phase 4)
 
 
@@ -462,14 +464,14 @@ def test_yaml_cache_ttl_modules_have_contract_check():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("module_key", sorted(CONTRACT_CHECKERS.keys()))
-def test_module_contract(module_key, test_context, monkeypatch):
+def test_module_contract(module_key, monkeypatch):
     """For each registered cacheable module, run execute_analysis with
     mocked external dependencies and assert the delta is contract-clean.
     """
     import os
 
     check = CONTRACT_CHECKERS[module_key]
-    delta, root = check.runner(test_context, monkeypatch)
+    delta, root = check.runner(monkeypatch)
 
     assert not delta.has_removals, (
         f"{module_key}: delta has removals — the cacheability contract "

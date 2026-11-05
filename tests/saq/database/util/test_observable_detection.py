@@ -9,7 +9,6 @@ from saq.database.model import Observable as DBObservable, ObservableDetection a
 from saq.database.pool import get_db
 from saq.database.util.observable_detection import (
     InvalidDetectionValue,
-    ObservableDetectionSummary,
     UnknownObservableType,
     create_observable_detection,
     delete_observable_detection,
@@ -17,7 +16,6 @@ from saq.database.util.observable_detection import (
     get_observable_detection,
     get_observable_detections,
     resolve_detection_identity,
-    validate_observable_type,
 )
 from saq.database.util.sync import sync_observable
 from saq.observables.generator import create_observable
@@ -27,7 +25,7 @@ from saq.permissions.user import add_user_permission
 
 
 @pytest.fixture
-def test_user() -> User:
+def detection_user() -> User:
     """Create a test user for observable detection tests."""
     username = "detection_test_user"
     email = "detection_test@example.com"
@@ -45,12 +43,12 @@ def test_user() -> User:
 
 
 @pytest.fixture
-def test_observable():
+def detection_observable():
     return Observable(type="ipv4", value="192.168.1.1")
 
 
 @pytest.fixture
-def test_observables():
+def detection_observables():
     return [
         Observable(type="ipv4", value="192.168.1.1"),
         Observable(type="fqdn", value="example.com"),
@@ -60,9 +58,9 @@ def test_observables():
 
 
 @pytest.fixture
-def test_root_analysis(test_observables):
+def root_with_observables(detection_observables):
     root = RootAnalysis()
-    for observable in test_observables:
+    for observable in detection_observables:
         root.add_observable(observable)
     return root
 
@@ -83,22 +81,6 @@ def clean_detections():
 
 
 @pytest.mark.integration
-def test_resolve_detection_identity_matches_the_real_observable_class():
-    """The stored value and hash are exactly what the analysis engine will produce.
-
-    This is what makes a detection actually fire: the analyzer looks observables up in redis under
-    f"{type}:{value}" built from the in-memory observable, so anything that resolved differently
-    here would produce a detection that silently never matches.
-    """
-    identity = resolve_detection_identity("ipv4", "1.2.3.4")
-    engine_view = create_observable("ipv4", "1.2.3.4")
-
-    assert identity.type == engine_view.type
-    assert identity.value == engine_view.value
-    assert identity.value_sha256 == engine_view.sha256_bytes
-
-
-@pytest.mark.integration
 def test_resolve_detection_identity_normalizes():
     """Types whose value setter normalizes are stored normalized."""
     identity = resolve_detection_identity("ipv4_conversation", " 1.2.3.4_5.6.7.8 ")
@@ -109,17 +91,6 @@ def test_resolve_detection_identity_normalizes():
 def test_resolve_detection_identity_rejects_invalid_value_for_type():
     with pytest.raises(InvalidDetectionValue):
         resolve_detection_identity("ipv4", "notanip")
-
-
-@pytest.mark.unit
-def test_validate_observable_type_accepts_a_registry_type():
-    validate_observable_type("ipv4")
-
-
-@pytest.mark.unit
-def test_validate_observable_type_rejects_an_unknown_type():
-    with pytest.raises(UnknownObservableType):
-        validate_observable_type("not_a_real_type")
 
 
 @pytest.mark.unit
@@ -137,9 +108,9 @@ def test_resolve_detection_identity_rejects_unknown_type():
 
 
 @pytest.mark.integration
-def test_create_detection_rejects_unknown_type(test_user):
+def test_create_detection_rejects_unknown_type(detection_user):
     with pytest.raises(UnknownObservableType):
-        create_observable_detection("not_a_real_type", "anything", test_user.id)
+        create_observable_detection("not_a_real_type", "anything", detection_user.id)
 
 
 @pytest.mark.integration
@@ -180,14 +151,18 @@ def test_resolve_detection_identity_rejects_bad_file_value(bad_value):
 
 
 @pytest.mark.integration
-def test_create_detection_for_never_seen_observable(test_user):
+def test_create_detection_for_never_seen_observable(detection_user):
     """The point of the separate table: a detection needs no observables index row."""
-    detection = create_observable_detection(
-        "fqdn", "never-seen.example.com", test_user.id, detection_context="added ahead of time")
+    user_id = detection_user.id
+    detection_id = create_observable_detection(
+        "fqdn", "never-seen.example.com", user_id, detection_context="added ahead of time").id
 
-    assert detection.id is not None
+    # read in a new transaction, so an uncommitted detection fails
+    get_db().close()
+    detection = get_db().get(DBObservableDetection, detection_id)
+    assert detection is not None
     assert detection.value == "never-seen.example.com"
-    assert detection.created_by == test_user.id
+    assert detection.created_by == user_id
     assert detection.detection_context == "added ahead of time"
 
     # nothing was written to the observables index
@@ -196,9 +171,9 @@ def test_create_detection_for_never_seen_observable(test_user):
 
 
 @pytest.mark.integration
-def test_create_detection_is_idempotent_on_type_and_value(test_user):
-    first = create_observable_detection("ipv4", "1.2.3.4", test_user.id, detection_context="one")
-    second = create_observable_detection("ipv4", "1.2.3.4", test_user.id, detection_context="two")
+def test_create_detection_is_idempotent_on_type_and_value(detection_user):
+    first = create_observable_detection("ipv4", "1.2.3.4", detection_user.id, detection_context="one")
+    second = create_observable_detection("ipv4", "1.2.3.4", detection_user.id, detection_context="two")
 
     assert first.id == second.id
     assert second.detection_context == "two"
@@ -206,89 +181,86 @@ def test_create_detection_is_idempotent_on_type_and_value(test_user):
 
 
 @pytest.mark.integration
-def test_create_detection_same_value_different_type_are_distinct(test_user):
-    create_observable_detection("fqdn", "example.com", test_user.id)
-    create_observable_detection("hostname", "example.com", test_user.id)
+def test_create_detection_same_value_different_type_are_distinct(detection_user):
+    create_observable_detection("fqdn", "example.com", detection_user.id)
+    create_observable_detection("hostname", "example.com", detection_user.id)
     assert get_db().query(DBObservableDetection).count() == 2
 
 
 @pytest.mark.integration
-def test_create_detection_rejects_invalid_value(test_user):
-    with pytest.raises(InvalidDetectionValue):
-        create_observable_detection("ipv4", "notanip", test_user.id)
-
-
-@pytest.mark.integration
-def test_new_detection_gets_the_configured_per_type_default_expiration(test_user):
+def test_new_detection_gets_the_configured_per_type_default_expiration(detection_user):
     """observable_expiration_mappings is how long a new detection of this type lives."""
-    get_config().observable_expiration_mappings["ipv4"] = "01:00:00:00"
-    try:
-        detection = create_observable_detection("ipv4", "10.10.10.10", test_user.id)
-        assert detection.expires_on is not None
-    finally:
-        del get_config().observable_expiration_mappings["ipv4"]
+    get_config().observable_expiration_mappings["ipv4"] = "01:00:00:00"  # one day
+    before = datetime.now(UTC).replace(tzinfo=None)
+    detection = create_observable_detection("ipv4", "10.10.10.10", detection_user.id)
+    after = datetime.now(UTC).replace(tzinfo=None)
+
+    # expires_on is stored without a timezone, in UTC; MySQL DATETIME rounds to the second
+    assert before - timedelta(seconds=1) <= detection.expires_on - timedelta(days=1) <= after + timedelta(seconds=1)
 
 
 @pytest.mark.integration
-def test_new_detection_of_an_unmapped_type_uses_global_default(test_user, monkeypatch):
+def test_new_detection_of_an_unmapped_type_uses_global_default(detection_user, monkeypatch):
     monkeypatch.setattr(get_config(), "observable_expiration_default", "90:00:00:00")
     before = datetime.now(UTC).replace(tzinfo=None, microsecond=0)
-    detection = create_observable_detection("fqdn", "unmapped.example.com", test_user.id)
+    detection = create_observable_detection("fqdn", "unmapped.example.com", detection_user.id)
     after = datetime.now(UTC).replace(tzinfo=None)
     # MySQL rounds this column to whole seconds.
     assert before + timedelta(days=90) <= detection.expires_on <= after + timedelta(days=90, seconds=1)
 
 
 @pytest.mark.integration
-def test_new_detection_can_have_no_global_expiration(test_user, monkeypatch):
+def test_new_detection_can_have_no_global_expiration(detection_user, monkeypatch):
     monkeypatch.setattr(get_config(), "observable_expiration_default", None)
-    detection = create_observable_detection("fqdn", "unmapped.example.com", test_user.id)
+    detection = create_observable_detection("fqdn", "unmapped.example.com", detection_user.id)
     assert detection.expires_on is None
 
 
 @pytest.mark.integration
-def test_explicit_expiration_beats_the_default(test_user):
+def test_explicit_expiration_beats_the_default(detection_user):
     get_config().observable_expiration_mappings["ipv4"] = "01:00:00:00"
     try:
         explicit = datetime(2099, 6, 1, 0, 0, 0)
         detection = create_observable_detection(
-            "ipv4", "10.10.10.11", test_user.id, expires_on=explicit)
+            "ipv4", "10.10.10.11", detection_user.id, expires_on=explicit)
         assert detection.expires_on == explicit
     finally:
         del get_config().observable_expiration_mappings["ipv4"]
 
 
 @pytest.mark.integration
-def test_re_creating_does_not_reset_an_analyst_chosen_expiration(test_user, test_observable):
+def test_re_creating_does_not_reset_an_analyst_chosen_expiration(detection_user, detection_observable):
     """The per-type default applies on insert only."""
-    get_config().observable_expiration_mappings[test_observable.type] = "01:00:00:00"
+    get_config().observable_expiration_mappings[detection_observable.type] = "01:00:00:00"
     try:
-        detection = create_observable_detection(test_observable.type, test_observable.value, test_user.id)
+        detection = create_observable_detection(detection_observable.type, detection_observable.value, detection_user.id)
         chosen = datetime(2099, 6, 1, 0, 0, 0)
         detection.expires_on = chosen
         get_db().commit()
 
-        again = create_observable_detection(test_observable.type, test_observable.value, test_user.id)
+        again = create_observable_detection(detection_observable.type, detection_observable.value, detection_user.id)
         assert again.expires_on == chosen
     finally:
-        del get_config().observable_expiration_mappings[test_observable.type]
+        del get_config().observable_expiration_mappings[detection_observable.type]
 
 
 @pytest.mark.integration
-def test_delete_observable_detection(test_user):
-    detection = create_observable_detection("ipv4", "5.5.5.5", test_user.id)
-    assert delete_observable_detection(detection.id) is True
+def test_delete_observable_detection(detection_user):
+    detection_id = create_observable_detection("ipv4", "5.5.5.5", detection_user.id).id
+    assert delete_observable_detection(detection_id) is True
+    # read in a new transaction, so an uncommitted delete fails
+    get_db().close()
     assert get_db().query(DBObservableDetection).count() == 0
-    assert delete_observable_detection(detection.id) is False
+    assert delete_observable_detection(detection_id) is False
 
 
 @pytest.mark.integration
-def test_get_observable_detection_by_type_and_hash(test_user, test_observable):
-    create_observable_detection(test_observable.type, test_observable.value, test_user.id)
+def test_get_observable_detection_by_type_and_hash(detection_user, detection_observable):
+    create_observable_detection(detection_observable.type, detection_observable.value, detection_user.id)
 
-    assert get_observable_detection(test_observable.type, test_observable.sha256_bytes) is not None
+    assert get_observable_detection(detection_observable.type, detection_observable.sha256_bytes) is not None
     # a matching hash under a different type is a different detection
-    assert get_observable_detection("fqdn", test_observable.sha256_bytes) is None
+    assert get_observable_detection("fqdn", detection_observable.sha256_bytes) is None
 
 
 #
@@ -303,29 +275,22 @@ def _detect(observable: Observable, user: User, context: str) -> DBObservableDet
 
 
 @pytest.mark.integration
-def test_get_observable_detections(test_user, test_observables):
-    first = _detect(test_observables[0], test_user, "context one")
+def test_get_observable_detections(detection_user, detection_observables):
+    first = _detect(detection_observables[0], detection_user, "context one")
     first.expires_on = datetime(2099, 1, 1, 12, 0, 0)
     get_db().commit()
-    _detect(test_observables[1], test_user, "context two")
+    _detect(detection_observables[1], detection_user, "context two")
 
-    detections = get_observable_detections(test_observables)
+    detections = get_observable_detections(detection_observables)
 
-    assert set(detections) == {test_observables[0].uuid, test_observables[1].uuid}
-    summary = detections[test_observables[0].uuid]
+    assert set(detections) == {detection_observables[0].uuid, detection_observables[1].uuid}
+    summary = detections[detection_observables[0].uuid]
     assert summary.for_detection is True
     assert summary.detection_context == "context one"
-    assert summary.detection_modified_by == test_user.display_name
+    assert summary.detection_modified_by == detection_user.display_name
     # what the alert page's disable and adjust-expiration actions send to /api/v2/detection
     assert summary.detection_id == first.id
     assert summary.expires_on == datetime(2099, 1, 1, 12, 0, 0)
-
-
-@pytest.mark.integration
-def test_get_observable_detections_omits_observables_without_one(test_user, test_observables):
-    _detect(test_observables[0], test_user, "context")
-    detections = get_observable_detections(test_observables)
-    assert test_observables[1].uuid not in detections
 
 
 @pytest.mark.integration
@@ -334,26 +299,26 @@ def test_get_observable_detections_empty_input():
 
 
 @pytest.mark.integration
-def test_get_all_observable_detections(test_user, test_root_analysis, test_observables):
-    _detect(test_observables[0], test_user, "context")
-    detections = get_all_observable_detections(test_root_analysis)
-    assert test_observables[0].uuid in detections
+def test_get_all_observable_detections(detection_user, root_with_observables, detection_observables):
+    _detect(detection_observables[0], detection_user, "context")
+    detections = get_all_observable_detections(root_with_observables)
+    assert detection_observables[0].uuid in detections
 
 
 @pytest.mark.integration
-def test_get_observable_detections_requires_a_matching_type(test_user):
+def test_get_observable_detections_requires_a_matching_type(detection_user):
     """A detection whose hash matches under another type is not this observable's detection."""
-    create_observable_detection("hostname", "example.com", test_user.id)
+    create_observable_detection("hostname", "example.com", detection_user.id)
     assert get_observable_detections([Observable(type="fqdn", value="example.com")]) == {}
 
 
 @pytest.mark.integration
-def test_get_observable_detections_gives_every_matching_observable_the_detection(test_user):
+def test_get_observable_detections_gives_every_matching_observable_the_detection(detection_user):
     """Two file observables with the same content at different paths are two observables in one
     alert. Both show the detection, or the second offers "enable" for a detection that exists."""
     first = FileObservable(value=FILE_CONTENT_SHA256, file_path="a/malicious.exe")
     second = FileObservable(value=FILE_CONTENT_SHA256, file_path="b/malicious.exe")
-    detection = create_observable_detection("file", FILE_CONTENT_SHA256, test_user.id)
+    detection = create_observable_detection("file", FILE_CONTENT_SHA256, detection_user.id)
 
     detections = get_observable_detections([first, second])
 
@@ -371,12 +336,12 @@ def test_get_observable_detections_gives_every_matching_observable_the_detection
     ("email_address", "attacker@evil.example.com"),
     ("user", "jdoe"),
 ])
-def test_detection_from_an_alert_observable_is_found_by_the_alert_view(test_user, observable_type, value):
+def test_detection_from_an_alert_observable_is_found_by_the_alert_view(detection_user, observable_type, value):
     """The alert page enables a detection by posting the observable's type and value to the API,
     which resolves them again. That must land on the identity the alert view looks the observable
     up by, or the action creates a detection the page never shows as enabled."""
     observable = create_observable(observable_type, value)
-    _detect(observable, test_user, "enabled from the alert page")
+    _detect(observable, detection_user, "enabled from the alert page")
 
     assert observable.uuid in get_observable_detections([observable])
 
@@ -409,26 +374,7 @@ def test_file_observable_sha256_bytes_matches_sha256_hash():
 
 
 @pytest.mark.integration
-def test_get_observable_detections_file_observable(test_user):
-    """A FILE observable's detection is keyed by the file's content sha256.
-
-    Regression for FILE observables never showing the "(detect enabled)" marker. Uses a real
-    FileObservable, not the base-Observable "file" fixture, which is why the original tests did not
-    catch this.
-    """
-    file_obs = FileObservable(value=FILE_CONTENT_SHA256, file_path="malicious.exe")
-
-    detection = _detect(file_obs, test_user, "file detection context")
-    assert detection.value_sha256 == bytes.fromhex(FILE_CONTENT_SHA256)
-
-    detections = get_observable_detections([file_obs])
-    assert file_obs.uuid in detections
-    assert detections[file_obs.uuid].for_detection is True
-    assert detections[file_obs.uuid].detection_context == "file detection context"
-
-
-@pytest.mark.integration
-def test_file_detection_joins_to_the_observables_index(test_user):
+def test_file_detection_joins_to_the_observables_index(detection_user):
     """The detection's hash matches what sync_observable writes, so the LEFT JOIN back lines up."""
     file_obs = FileObservable(value=FILE_CONTENT_SHA256, file_path="malicious.exe")
 
@@ -446,7 +392,7 @@ def test_file_detection_joins_to_the_observables_index(test_user):
         synced = sync_observable(file_obs)
         db.commit()
 
-        detection = _detect(file_obs, test_user, "file detection context")
+        detection = _detect(file_obs, detection_user, "file detection context")
         assert synced.sha256 == detection.value_sha256
         assert synced.type == detection.type
     finally:
@@ -457,22 +403,3 @@ def test_file_detection_joins_to_the_observables_index(test_user):
         if row:
             db.delete(row)
             db.commit()
-
-
-@pytest.mark.integration
-def test_observable_detection_summary_dataclass():
-    summary = ObservableDetectionSummary(
-        observable_uuid="test-uuid-123",
-        for_detection=True,
-        detection_modified_by="Test User",
-        detection_context="test context",
-        detection_id=42,
-        expires_on=None,
-    )
-
-    assert summary.observable_uuid == "test-uuid-123"
-    assert summary.for_detection is True
-    assert summary.detection_modified_by == "Test User"
-    assert summary.detection_context == "test context"
-    assert summary.detection_id == 42
-    assert summary.expires_on is None

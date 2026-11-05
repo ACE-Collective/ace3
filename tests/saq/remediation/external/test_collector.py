@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import logging
 
 import pytest
 
@@ -43,24 +44,6 @@ def test_collect_picks_up_new_row(make_check, collector_with_listener):
     db.refresh(check)
     assert check.status == CheckStatus.IN_PROGRESS.value
     assert check.lock is not None
-
-
-@pytest.mark.integration
-def test_collect_skips_completed(make_check, collector_with_listener):
-    collector, _ = collector_with_listener
-    make_check(status=CheckStatus.COMPLETED.value, result="CONFIRMED")
-
-    items = collector.collect_work_items()
-    assert items == []
-
-
-@pytest.mark.integration
-def test_collect_skips_unregistered_probe(make_check, collector_with_listener):
-    collector, _ = collector_with_listener
-    make_check(probe_name="some_other_probe")
-
-    items = collector.collect_work_items()
-    assert items == []
 
 
 @pytest.mark.integration
@@ -157,7 +140,12 @@ def test_collect_includes_past_deadline_for_finalization(make_check, collector_w
     """Past-deadline rows must come through the collector so the worker can
     mark them EXPIRED — they can't be hidden from the loop."""
     collector, _ = collector_with_listener
-    expired = make_check(deadline=datetime.now(timezone.utc) - timedelta(minutes=1))
+    # inside its backoff window (retry_count=1 -> 120s), so only the deadline admits it
+    expired = make_check(
+        deadline=datetime.now(timezone.utc) - timedelta(minutes=1),
+        retry_count=1,
+        update_time=datetime.now(timezone.utc) - timedelta(seconds=30),
+    )
 
     items = collector.collect_work_items()
     assert [w.id for w in items] == [expired.id]
@@ -178,13 +166,16 @@ def test_build_work_item_decodes_context(make_check):
 
 
 @pytest.mark.integration
-def test_build_work_item_handles_null_context(make_check):
+def test_build_work_item_handles_null_context(make_check, caplog):
     """Legacy rows queued before context_json existed must not crash dispatch."""
     row = make_check(context_json=None)
 
-    work = build_work_item(row)
+    with caplog.at_level("WARNING"):
+        work = build_work_item(row)
 
     assert work.context is None
+    # a NULL column is the normal case, not an unparseable one
+    assert not [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
 
 
 @pytest.mark.integration

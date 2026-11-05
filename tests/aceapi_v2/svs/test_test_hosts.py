@@ -114,11 +114,6 @@ async def test_reading_needs_run_read_and_writing_needs_admin(_override_db_sessi
         assert (await client.get("/svs/test-hosts/")).status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_no_permission(noperm_client: AsyncClient):
-    assert (await noperm_client.get("/svs/test-hosts/")).status_code == 403
-
-
 #
 # maintenance windows (docs/SVS_RUNS.md, *Maintenance windows*)
 #

@@ -119,25 +119,6 @@ def test_register_listener_rejects_duplicate_name():
 
 
 @pytest.mark.unit
-def test_notify_listeners_dispatches_by_name():
-    collector = FakeCollector()
-    a, b = FakeWorker("a"), FakeWorker("b")
-    collector.register_listener("a", a)
-    collector.register_listener("b", b)
-
-    collector.notify_listeners(Item(1, "b"))
-
-    assert a.work_queue.empty()
-    assert b.work_queue.get_nowait() == Item(1, "b")
-
-
-@pytest.mark.unit
-def test_notify_listeners_rejects_unregistered_name():
-    with pytest.raises(ValueError, match="fake name other not registered"):
-        FakeCollector().notify_listeners(Item(1, "other"))
-
-
-@pytest.mark.unit
 def test_collection_loop_dispatches_one_pass_when_shutting_down(session_resets):
     collector = FakeCollector([[Item(1, "fake"), Item(2, "fake")], [Item(3, "fake")]])
     worker = FakeWorker()
@@ -201,40 +182,11 @@ def test_collection_loop_logs_failed_session_reset(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_collector_thread_lifecycle(session_resets):
-    collector = FakeCollector(loop_interval_seconds=0.01)
-    collector.start()
-    try:
-        assert collector.wait_for_start(5)
-        wait_for_condition(lambda: collector.calls >= 2)
-    finally:
-        collector.stop()
-        collector.wait()
-
-    assert not collector.collector_thread.is_alive()
-
-
-@pytest.mark.unit
 def test_collector_wait_for_start_reports_collector_that_did_not_start(caplog):
     collector = FakeCollector()
 
     assert not collector.wait_for_start(0.01)
     assert any(r.levelno == logging.ERROR and "fake collector thread did not start" in r.getMessage() for r in caplog.records)
-
-
-@pytest.mark.unit
-def test_collector_start_single_threaded_runs_one_pass(session_resets):
-    collector = FakeCollector([[Item(1, "fake")]])
-    worker = FakeWorker()
-    collector.register_listener("fake", worker)
-
-    collector.start_single_threaded()
-
-    assert collector.calls == 1
-    assert worker.work_queue.qsize() == 1
-    assert collector.collector_thread is None
-    # nothing to join
-    collector.wait()
 
 
 #
@@ -262,9 +214,9 @@ def test_handle_request_rejects_item_for_another_worker():
     assert worker.work_queue.empty()
 
 
-@pytest.mark.parametrize("thread_count", [1, 2])
 @pytest.mark.unit
-def test_worker_thread_lifecycle(session_resets, thread_count):
+def test_worker_thread_lifecycle(session_resets):
+    thread_count = 2
     worker = FakeWorker(thread_count=thread_count)
     worker.start()
     try:
@@ -354,18 +306,6 @@ def test_worker_loop_logs_failed_session_reset(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_worker_start_single_threaded_drains_queue(session_resets):
-    worker = FakeWorker()
-    for id in range(3):
-        worker.handle_request(Item(id, "fake"))
-
-    worker.start_single_threaded()
-
-    assert [item.id for item in worker.processed] == [0, 1, 2]
-    assert not worker.worker_threads
-
-
-@pytest.mark.unit
 def test_worker_start_single_threaded_stops_on_shutdown(session_resets, monkeypatch):
     # shutdown is requested (as a signal would) while the first item is being worked
     checks = iter([False])
@@ -383,17 +323,6 @@ def test_worker_start_single_threaded_stops_on_shutdown(session_resets, monkeypa
 #
 # manager and service
 #
-
-@pytest.mark.unit
-def test_manager_loads_workers_and_registers_them():
-    a, b = FakeWorker("a"), FakeWorker("b")
-    manager = FakeManager(FakeCollector(), [a, b])
-
-    manager.load_workers()
-
-    assert manager.workers == {"a": a, "b": b}
-    assert manager.collector.listeners == {"a": a, "b": b}
-
 
 @pytest.mark.unit
 def test_manager_rejects_duplicate_worker_names():

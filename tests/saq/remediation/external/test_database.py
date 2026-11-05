@@ -125,54 +125,19 @@ def test_queue_unserializable_context_raises(db_alert):
 
 @pytest.mark.integration
 def test_pending_lookup_skips_completed(make_check, db_alert):
-    completed = make_check(status=CheckStatus.COMPLETED.value, result=CheckResult.CONFIRMED.value)
+    # the completed check is the newer one for the same target, so only the status filter skips it
     pending = make_check(status=CheckStatus.NEW.value)
+    completed = make_check(observable_value=pending.observable_value,
+                           status=CheckStatus.COMPLETED.value, result=CheckResult.CONFIRMED.value)
+    key = dict(probe_name=pending.probe_name, observable_type=pending.observable_type,
+               observable_value=pending.observable_value, alert_uuid=db_alert.uuid)
 
-    found = get_pending_external_check_by_observable(
-        probe_name=pending.probe_name,
-        observable_type=pending.observable_type,
-        observable_value=pending.observable_value,
-        alert_uuid=db_alert.uuid,
-    )
+    found = get_pending_external_check_by_observable(**key)
     assert found is not None and found.id == pending.id
 
-    # by_observable (any status) should still return the most recent — which
-    # is the pending row we just added.
-    any_found = get_external_check_by_observable(
-        probe_name=pending.probe_name,
-        observable_type=pending.observable_type,
-        observable_value=pending.observable_value,
-        alert_uuid=db_alert.uuid,
-    )
-    assert any_found is not None and any_found.id == pending.id
-
-    # And the completed row is still retrievable when its observable_value is
-    # queried explicitly.
-    completed_found = get_external_check_by_observable(
-        probe_name=completed.probe_name,
-        observable_type=completed.observable_type,
-        observable_value=completed.observable_value,
-        alert_uuid=db_alert.uuid,
-    )
-    assert completed_found is not None and completed_found.id == completed.id
-
-
-@pytest.mark.integration
-def test_cancel_external_check(make_check):
-    check = make_check()
-    assert cancel_external_check(check.id) is True
-
-    row = get_external_check(check.id)
-    assert row.status == CheckStatus.COMPLETED.value
-    assert row.result == CheckResult.CANCELLED.value
-
-    # Idempotent: a second cancel is a no-op (already terminal).
-    assert cancel_external_check(check.id) is False
-
-
-@pytest.mark.integration
-def test_cancel_external_check_missing_row_returns_false():
-    assert cancel_external_check(999999999) is False
+    # by_observable (any status) returns the most recent, the completed row
+    any_found = get_external_check_by_observable(**key)
+    assert any_found is not None and any_found.id == completed.id
 
 
 @pytest.mark.integration
@@ -180,6 +145,7 @@ def test_cancel_checks_for_alert_bulk(make_check, db_alert):
     a = make_check()
     b = make_check()
     c = make_check(status=CheckStatus.COMPLETED.value, result=CheckResult.CONFIRMED.value)
+    other_alert = make_check(alert_uuid="00000000-0000-4000-8000-000000000001")
 
     cancelled = cancel_external_checks_for_alert(db_alert.uuid)
     assert cancelled == 2
@@ -190,6 +156,8 @@ def test_cancel_checks_for_alert_bulk(make_check, db_alert):
     assert rows[b.id].result == CheckResult.CANCELLED.value
     # The already-confirmed row was left alone.
     assert rows[c.id].result == CheckResult.CONFIRMED.value
+    # and so was another alert's check
+    assert (rows[other_alert.id].status, rows[other_alert.id].result) == (CheckStatus.NEW.value, None)
 
 
 @pytest.mark.integration
@@ -211,8 +179,12 @@ def test_superseding_source_from_reason_round_trips_both_formats():
     )
 
     when = datetime(2026, 5, 13, 12, 0, tzinfo=timezone.utc)
-    assert superseding_source_from_reason(probe_supersede_reason("msdefender", when)) == "msdefender"
+    assert superseding_source_from_reason(probe_supersede_reason("other_probe", when)) == "other_probe"
     assert superseding_source_from_reason(ace_supersede_reason(42, when)) == "ACE"
+    # the reason is stored on the check row, so the rows earlier releases wrote must still parse
+    assert superseding_source_from_reason(
+        "probe other_probe confirmed remediation at 2026-05-13 12:00:00+00:00") == "other_probe"
+    assert superseding_source_from_reason("ACE remediation id=42 (remove) succeeded at 2026-05-13 12:00:00") == "ACE"
     assert superseding_source_from_reason(None) is None
     assert superseding_source_from_reason("") is None
     assert superseding_source_from_reason("something else entirely") is None

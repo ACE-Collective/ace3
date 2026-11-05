@@ -1,32 +1,33 @@
-import io
 import logging
 import pytest
 
-from saq.configuration import get_config
-from saq.configuration.schema import ACEConfig
 from saq.environment import get_global_runtime_settings, set_node
 from saq.logging import CustomFileHandler
 
 @pytest.mark.unit
-def test_custom_file_handler(tmpdir, monkeypatch):
-    handler = CustomFileHandler(str(tmpdir))
-    assert isinstance(handler.filename_format, str) # should default
-    assert isinstance(handler.current_filename, str) # should reference a file name after init
-    assert isinstance(handler.stream, io.TextIOBase) # should be open file handle
+def test_custom_file_handler(tmp_path, monkeypatch, capsys):
+    handler = CustomFileHandler(str(tmp_path), filename_format="first.log")
+    handler.setFormatter(logging.Formatter("%(message)s"))
     record = logging.LogRecord("name", logging.DEBUG, "path", 1, "msg", None, None)
     handler.emit(record)
+    assert (tmp_path / "first.log").read_text() == "msg\n"
 
-    # fake rotation
-    handler.current_filename = None
+    # once the format gives a new name, records go to the new file
+    handler.filename_format = "second.log"
     handler.emit(record)
+    assert (tmp_path / "second.log").read_text() == "msg\n"
+    assert (tmp_path / "first.log").read_text() == "msg\n"
 
-    # force error
+    # a stream that fails to close is reported, and the handler still moves on
     def _fail():
-        raise OSError()
+        raise OSError("close failed")
 
-    handler.current_filename = None
-    monkeypatch.setattr(handler.stream, "close", lambda: _fail())
+    monkeypatch.setattr(handler.stream, "close", _fail)
+    handler.filename_format = "third.log"
     handler.emit(record)
+    assert "error closing stream for second.log: close failed" in capsys.readouterr().err
+    assert (tmp_path / "third.log").read_text() == "msg\n"
+    handler.close()
 
 @pytest.mark.integration
 def test_set_node():
@@ -115,7 +116,3 @@ def test_install_suppression_filter_idempotent():
     finally:
         root_logger.removeHandler(handler)
 
-
-@pytest.mark.unit
-def test_get_config():
-    assert isinstance(get_config(), ACEConfig)

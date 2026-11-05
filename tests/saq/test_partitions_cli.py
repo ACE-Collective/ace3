@@ -84,9 +84,13 @@ def test_maintain_reports_each_table(monkeypatch, capsys, dry_run):
 @pytest.mark.unit
 def test_maintain_on_a_secondary_node_with_force(monkeypatch):
     monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "0")
-    monkeypatch.setattr(partitions, "maintain_all", lambda dry_run: [TableResult("db.healthy")])
+    calls = []
+    monkeypatch.setattr(partitions, "maintain_all", lambda dry_run: calls.append(dry_run) or [TableResult("db.healthy")])
 
     assert _ace("maintain", "--force") == 0
+
+    # exit 0 is also what skipping the maintenance on this node looks like
+    assert calls == [False]
 
 
 @pytest.mark.unit

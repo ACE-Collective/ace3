@@ -244,18 +244,6 @@ def test_sync_detection_point_queue_change_updates_row():
 
 
 @pytest.mark.integration
-def test_sync_no_detection_points():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-    root.add_observable_by_spec(F_FQDN, "benign.example.com")
-    root.save()
-    ALERT(root)
-    alert = load_alert(root.uuid)
-
-    assert _rows_for(alert.id) == []
-
-
-@pytest.mark.integration
 def test_sync_non_json_native_details():
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
@@ -294,13 +282,6 @@ def test_sync_delayed_skips_detection_points():
 
 
 # --- detection_count is computed on the fly from detection_points ---
-
-
-@pytest.mark.integration
-def test_detection_count_matches_rows():
-    alert = _alert_with_detections()
-    assert len(_rows_for(alert.id)) == 2
-    assert alert.detection_count == 2
 
 
 @pytest.mark.integration

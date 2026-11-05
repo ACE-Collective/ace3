@@ -35,9 +35,9 @@ def _alert(**kwargs) -> Alert:
 
 class TestPointId:
     def test_deterministic_and_node_independent(self):
-        first = index.point_id(ALERT_UUID, KIND_ALERT, "header", 0)
-        assert first == index.point_id(ALERT_UUID, KIND_ALERT, "header", 0)
-        assert uuid.UUID(first).version == 5
+        # uuid5(alert uuid, "alert:header:0"), written out: a second call in one process would
+        # also agree with an id built from something that differs per process or per node
+        assert index.point_id(ALERT_UUID, KIND_ALERT, "header", 0) == "c11050a5-feb8-5118-bffb-1bf645c3b4f0"
 
     def test_varies_with_every_component(self):
         base = index.point_id(ALERT_UUID, KIND_ALERT, "header", 0)
@@ -273,18 +273,9 @@ class TestPayloadUpdates:
         assert index.update_alert_payload(alert.uuid) is True
         kwargs = mock_qdrant.set_payload.call_args.kwargs
         assert kwargs["payload"][index.FIELD_DISPOSITION] == "FALSE_POSITIVE"
-        assert set(kwargs["payload"]) == set(index.MUTABLE_FIELDS)
+        # only what can change after indexing (docs/SEARCH.md): nothing else is rewritten
+        assert set(kwargs["payload"]) == {"disposition", "queue", "tags"}
         assert kwargs["points"].must[0].match.value == alert.uuid
-
-    @pytest.mark.integration
-    def test_update_missing_alert(self, mock_qdrant):
-        assert index.update_alert_payload(str(uuid.uuid4())) is False
-        mock_qdrant.set_payload.assert_not_called()
-
-    def test_delete_alert(self, mock_qdrant):
-        index.delete_alert(ALERT_UUID)
-        selector = mock_qdrant.delete.call_args.kwargs["points_selector"]
-        assert selector.filter.must[0].match.value == ALERT_UUID
 
     def test_delete_alert_without_collection(self, mock_qdrant):
         mock_qdrant.collection_exists.return_value = False

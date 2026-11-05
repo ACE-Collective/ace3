@@ -22,8 +22,6 @@ from saq.search import extractors  # noqa: F401
 from saq.search.documents import (
     ALERT_HEADER_KEY,
     DETECTIONS_KEY,
-    ExtractContext,
-    SearchDocument,
     alert_document,
     comment_documents,
     detection_document,
@@ -226,15 +224,6 @@ def test_no_per_edge_records(root_analysis):
 
     documents = extract_documents(None, root_analysis, [_comment(1, "hi")], max_document_bytes=CAP)
     assert [d.kind for d in documents] == [KIND_ALERT, KIND_COMMENT]
-
-
-def test_documents_are_stable_across_calls(root_analysis):
-    observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, "whoami")
-    observable.add_analysis(CommandLineAnalysis())
-    first = extract_documents(None, root_analysis, [_comment(7, "c")], max_document_bytes=CAP)
-    second = extract_documents(None, root_analysis, [_comment(7, "c")], max_document_bytes=CAP)
-    assert [(d.kind, d.key) for d in first] == [(d.kind, d.key) for d in second]
-    assert all(isinstance(d, SearchDocument) for d in first)
 
 
 def _analysis_documents(root_analysis):

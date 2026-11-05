@@ -5,7 +5,7 @@ import os
 import pytest
 from sqlalchemy import update
 
-from saq.cas import CASPool
+from saq.cas import CASPool, Hold
 from saq.database.model import SVSYaraCapture
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 from saq.svs.capture import (
@@ -112,7 +112,7 @@ def _candidate(root_analysis, **kwargs):
 
 
 @pytest.mark.integration
-def test_capture_stores_the_file_and_the_record(root_analysis, svs_pool: CASPool):
+def test_capture_stores_the_file_and_the_record(root_analysis, svs_pool: CASPool, caplog):
     _file, candidate = _candidate(root_analysis, name="dir/invoice.doc")
 
     result = capture(svs_pool, root_analysis.uuid, candidate)
@@ -135,8 +135,11 @@ def test_capture_stores_the_file_and_the_record(root_analysis, svs_pool: CASPool
     assert row.stored_at is not None
     assert row.yara_python_version and row.yara_scanner_version
     assert json.loads(row.match_summary)["string_match_count"] == 3
+    # its signature version is known, so it is not reported
+    assert _extras(caplog, "unknown signature version") == []
 
-    hold = capture_hold(row.id)
+    # the hold is stored in cas_holds and released by later processes: its kind and id are fixed
+    hold = Hold("svs_capture", str(row.id))
     assert hold in svs_pool.holds(row.sha256)
     assert hold in svs_pool.holds(row.record_digest)
     with svs_pool.open(row.sha256) as fp:
@@ -310,13 +313,4 @@ def test_an_unknown_signature_version_is_reported(root_analysis, svs_pool, caplo
     # reported when it is stored, not on every pass
     caplog.clear()
     capture(svs_pool, root_analysis.uuid, candidate)
-    assert _extras(caplog, "unknown signature version") == []
-
-
-@pytest.mark.integration
-def test_a_known_signature_version_is_not_reported(root_analysis, svs_pool, caplog):
-    _, candidate = _candidate(root_analysis)
-
-    capture(svs_pool, root_analysis.uuid, candidate)
-
     assert _extras(caplog, "unknown signature version") == []

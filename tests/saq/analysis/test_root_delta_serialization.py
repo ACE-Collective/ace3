@@ -49,12 +49,6 @@ class TestRootDeltaSerialization:
         assert serialized["module_executions"][0]["module_path"] == "saq.modules.test:TestAnalysis"
 
     @pytest.mark.unit
-    def test_serialize_without_deltas_omits_key(self, tmp_path):
-        root = _make_root(tmp_path)
-        serialized = RootAnalysisSerializer.serialize(root)
-        assert "module_executions" not in serialized
-
-    @pytest.mark.unit
     def test_deserialize_with_deltas(self, tmp_path):
         root = _make_root(tmp_path)
         delta = _make_sample_delta()

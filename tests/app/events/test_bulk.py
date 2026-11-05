@@ -121,17 +121,6 @@ def test_bulk_remove_tag_success(web_client, session_actor, caplog):
     assert (*audit_actor_of(audit), audit.alert_uuids, audit.tags) == (*session_actor, [alert.uuid], ["bulk_tag"])
 
 
-def test_bulk_add_tag_no_alerts_selected(web_client):
-    response = web_client.post(url_for("events.bulk_add_tag"), data={
-        "event_id": EVENT_ID,
-        "alert_uuids": "",
-        "tag": "bulk_tag",
-    })
-
-    assert response.status_code == 302
-    assert f"direct={EVENT_ID}" in response.location
-
-
 def test_bulk_add_comment_success(web_client, session_actor, caplog):
     caplog.set_level(logging.INFO)
     alert1 = insert_alert()
@@ -437,6 +426,7 @@ def test_bulk_actions_need_selected_alerts(web_client, endpoint):
                                                         "tag": "bulk_tag", "comment": "a comment"})
 
     assert response.status_code == 302
+    assert f"direct={EVENT_ID}" in response.location
     assert _flashes(web_client) == ["you must select one or more alerts"]
 
 
@@ -454,7 +444,12 @@ def test_bulk_tag_actions_need_tags(web_client, endpoint, message):
 
 @pytest.mark.parametrize("endpoint", ["events.bulk_add_tag", "events.bulk_remove_tag"])
 def test_bulk_tag_skips_an_alert_being_analyzed(web_client, endpoint):
+    adding = endpoint == "events.bulk_add_tag"
     locked, unlocked = insert_alert(), insert_alert()
+    if not adding:
+        # a tag to remove, so that leaving the locked alert alone shows
+        web_client.post(url_for("events.bulk_add_tag"), data={
+            "event_id": EVENT_ID, "alert_uuids": f"{locked.uuid},{unlocked.uuid}", "tag": "bulk_tag"})
     engine_lock = str(uuid.uuid4())
     assert acquire_lock(locked.uuid, engine_lock)
     try:
@@ -468,9 +463,9 @@ def test_bulk_tag_skips_an_alert_being_analyzed(web_client, endpoint):
         release_lock(locked.uuid, engine_lock)
 
     assert _flashes(web_client) == ["unable to modify some alerts: alert is currently being analyzed"]
-    assert not _reloaded_root(locked).has_tag("bulk_tag")
-    if endpoint == "events.bulk_add_tag":
-        assert _reloaded_root(unlocked).has_tag("bulk_tag")
+    # the locked alert is left as it was, and the other one changed
+    assert _reloaded_root(locked).has_tag("bulk_tag") == (not adding)
+    assert _reloaded_root(unlocked).has_tag("bulk_tag") == adding
 
 
 def test_bulk_tag_failure_is_logged_with_its_traceback(web_client, monkeypatch, caplog):

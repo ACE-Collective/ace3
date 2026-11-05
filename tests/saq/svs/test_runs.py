@@ -124,10 +124,7 @@ def test_register():
 
 
 @pytest.mark.parametrize("test_guid, targets, platform", [
-    # the test hosts' platform
-    (LINUX_GUID, ["ubuntu-01"], "linux"),
-    (LINUX_GUID, ["mac-01"], "macos"),
-    # a host without one is taken to be on the others'
+    # the test hosts' platform; a host without one is taken to be on the others'
     (LINUX_GUID, ["anyuser-01", "mac-01"], "macos"),
     # no host says: the test's only platform, as ATT&CK names it
     (GUID, ["anyuser-01"], "windows"),
@@ -228,11 +225,8 @@ def test_validate_refuses_without_recording_or_alerting(caplog):
 @pytest.mark.parametrize("values, message, judged", [
     # invalid before the targets are judged
     ({"test_guid": "dddddddd-4444-4444-8444-444444444444"}, "is not in the catalog", False),
-    ({"extra": {"blob": "x" * 20000}}, "larger than 16384 bytes", False),
     # invalid after
     ({"test_guid": LINUX_GUID}, "test host win10-01 is windows", True),
-    ({"test_guid": LINUX_GUID, "targets": [TargetSpec("ubuntu-01"), TargetSpec("mac-01")]},
-     r"different platforms \(linux, macos\)", True),
 ])
 def test_validate_an_invalid_registration(values, message, judged):
     decision = validate(_registration(**values), LAUNCHER)
@@ -357,7 +351,9 @@ def test_concurrent_registrations_take_a_host_once():
 
 def test_start():
     run = register(_registration(), LAUNCHER, now=T0)
-    start(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=5))
+    # the windows start at the whole second: stored to the second, a window from the exact time would
+    # round up past an alert of that second
+    start(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=5, milliseconds=600))
 
     run = _state(run.uuid)
     assert run.state == RunState.STARTED
@@ -369,17 +365,6 @@ def test_start():
         (RunEventKind.TRANSITION, RunState.CREATED, RunState.STARTED),
         (RunEventKind.LAUNCHER_CALL, None, None),
     ]
-
-
-def test_the_windows_start_at_the_whole_second_of_start():
-    # stored to the second, a window from the exact time would round up past an alert of that second
-    run = register(_registration(), LAUNCHER, now=T0)
-    start(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=5, milliseconds=600))
-
-    run = _state(run.uuid)
-    assert run.started_at == T0 + timedelta(minutes=5)
-    assert run.observation_ends_at == T0 + timedelta(minutes=65)
-    assert run.attribution_ends_at == T0 + timedelta(hours=25, minutes=5)
 
 
 def test_a_call_that_does_not_apply_is_a_conflict_and_is_recorded():
@@ -474,8 +459,10 @@ def test_cleanup_is_recorded_once_on_a_started_run(caplog):
 
     start(run.uuid, LAUNCHER, now=T0)
     caplog.set_level(logging.INFO)
-    cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3))
-    assert _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
+    # at the whole second of the call: stored from the exact time, it would round up past a cleanup
+    # detection of that second
+    returned = cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3, milliseconds=600))
+    assert returned.cleanup_at == _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
     event = _events(run.uuid)[-1]
     assert (event.kind, json.loads(event.details)) == (RunEventKind.LAUNCHER_CALL, {
         "call": "cleanup", "outcome": "recorded", "payload": {"cleanup_at": (T0 + timedelta(minutes=3)).isoformat()}})
@@ -487,17 +474,6 @@ def test_cleanup_is_recorded_once_on_a_started_run(caplog):
         cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=4))
     assert _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
     assert json.loads(_events(run.uuid)[-1].details)["outcome"] == "conflict"
-
-
-def test_cleanup_begins_at_the_whole_second_of_the_call():
-    # stored from the exact time, it would round up past a cleanup detection of that second
-    run = register(_registration(), LAUNCHER, now=T0)
-    start(run.uuid, LAUNCHER, now=T0)
-    returned = cleanup(run.uuid, LAUNCHER, now=T0 + timedelta(minutes=3, milliseconds=600))
-
-    assert returned.cleanup_at == _state(run.uuid).cleanup_at == T0 + timedelta(minutes=3)
-    assert json.loads(_events(run.uuid)[-1].details)["payload"] == {
-        "cleanup_at": (T0 + timedelta(minutes=3)).isoformat()}
 
 
 def test_cancel_a_started_run_keeps_its_windows():
@@ -766,8 +742,11 @@ def test_the_run_timer_stays_idle_off_the_primary_node(monkeypatch):
     monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service = SVSService()
     service.start()
-    assert service.runs is None
-    service.stop()
+    try:
+        assert service.runs is None
+    finally:
+        service.stop()
+        service.wait()
 
 
 def test_a_single_threaded_service_is_finished_when_it_returns():

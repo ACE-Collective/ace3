@@ -20,9 +20,6 @@ from saq.permissions.user import add_user_permission
 
 pytestmark = pytest.mark.integration
 
-PAGE_VIEWS = ("signatures.signatures_hub", "signatures.yara_qa", "signatures.samples", "signatures.sample_detail",
-              "signatures.validations", "signatures.validation_detail")
-
 SHA256 = "a" * 64
 RULE_UUID = "00000000-0000-0000-0000-000000000001"
 VALIDATION_UUID = "00000000-0000-0000-0000-0000000000aa"
@@ -95,10 +92,6 @@ def signature_actor():
 
 
 class TestSignaturesIsPagesOnly:
-    def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS:
-            assert endpoint in app.view_functions, endpoint
-
     def test_signatures_blueprint_serves_only_get_pages(self, app):
         offenders = []
         for rule in app.url_map.iter_rules():

@@ -126,8 +126,11 @@ def test_get_har_responses_selects_decodes_and_dedupes():
 
 @pytest.mark.unit
 def test_get_har_responses_records_truncated_bodies():
-    har = _har([_entry(CHUNK_URL, "application/javascript", CHUNK, size=len(CHUNK) * 100)])
-    assert get_har_responses(har)[0].truncated
+    har = _har([_entry(CHUNK_URL, "application/javascript", CHUNK, size=len(CHUNK) * 100),
+                _entry(KIT_URL, "text/javascript", KIT, size=len(KIT))])
+    cut, whole = get_har_responses(har)
+    assert cut.truncated
+    assert not whole.truncated
 
 
 @pytest.mark.unit
@@ -150,10 +153,8 @@ def test_get_har_responses_tolerates_malformed_members():
     ("https://x.example.com/", "text/html", "007_x.example.com.html"),
     ("https://x.example.com/login.html?next=/a", "text/html", "007_login.html"),
     ("https://x.example.com/js/app.min.js", "application/javascript", "007_app.min.js"),
-    ("https://x.example.com/oauth2/v2.0/authorize", "text/html", "007_authorize.html"),
     ("https://x.example.com/a%2Fb%20c", "text/html", "007_a_b_c.html"),
     ("https://x.example.com/icon", "image/svg+xml", "007_icon.svg"),
-    ("file:///usr/share/web/homepage.html", "text/html", "007_homepage.html"),
 ])
 def test_har_response_file_name(url, mime_type, expected):
     assert HARResponse(7, url, mime_type, 200, b"", False).file_name == expected
@@ -225,13 +226,9 @@ def test_har_extraction_limit_keeps_pages_first():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("content", [
-    '{"data": [1, 2, 3]}',
-    "<!DOCTYPE html><html><body><script>alert(1)</script></body></html>",
-])
-def test_non_har_files_are_ignored(content):
+def test_non_har_files_are_ignored():
     root = _new_root()
-    obs = _add_har(root, content, name="not_a.har")
+    obs = _add_har(root, '{"data": [1, 2, 3]}', name="not_a.har")
 
     assert _extractor(root).execute_analysis(obs) == AnalysisExecutionResult.COMPLETED
     assert obs.get_analysis(HARAnalysis) is None

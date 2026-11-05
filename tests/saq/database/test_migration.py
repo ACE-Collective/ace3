@@ -49,10 +49,10 @@ def test_ordered_index_with_different_uniqueness_is_included():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("reflected", [False, True])
-def test_added_or_removed_index_is_included(reflected):
+def test_added_or_removed_index_is_included():
+    # compare_to is None for both; include_object does not read reflected
     index = _model_index("status", "name", desc("insert_date"))
-    assert include_object(index, "idx_test", "index", reflected, None) is True
+    assert include_object(index, "idx_test", "index", False, None) is True
 
 
 @pytest.mark.unit

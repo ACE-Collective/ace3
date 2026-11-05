@@ -6,7 +6,7 @@ import pytest
 import saq.cli.commands.encryption  # noqa: F401 -- registers the commands
 from saq.cli.cli_main import get_cli_parser
 from saq.configuration.encryption import decrypt_password, encrypt_password, export_encrypted_passwords
-from saq.crypto import InvalidPasswordError, get_aes_key, set_encryption_password
+from saq.crypto import InvalidPasswordError, decrypt, get_aes_key, set_encryption_password
 from saq.environment import get_global_runtime_settings
 
 
@@ -87,12 +87,15 @@ def test_encrypt_and_decrypt_file(tmp_path, prompts):
     assert _run("encrypt", str(source), str(tmp_path / "password.enc"), "--password", "hunter2") == 0
     assert _run("decrypt", str(tmp_path / "password.enc"), str(tmp_path / "password.txt"), "--password", "hunter2") == 0
     assert (tmp_path / "password.txt").read_bytes() == b"secret data"
+    # the file really is under that password: the round trip alone passes if both commands ignore it
+    decrypt(str(tmp_path / "password.enc"), str(tmp_path / "password-check.txt"), password="hunter2")
 
     prompts.extend(["hunter3", "hunter3", "hunter3"])
     assert _run("encrypt", str(source), str(tmp_path / "prompt.enc"), "--prompt") == 0
     # --prompt used to require a value
     assert _run("decrypt", str(tmp_path / "prompt.enc"), str(tmp_path / "prompt.txt"), "--prompt") == 0
     assert (tmp_path / "prompt.txt").read_bytes() == b"secret data"
+    decrypt(str(tmp_path / "prompt.enc"), str(tmp_path / "prompt-check.txt"), password="hunter3")
 
     prompts.extend(["hunter3", "typo"])
     assert _run("encrypt", str(source), str(tmp_path / "mismatch.enc"), "--prompt") == 1

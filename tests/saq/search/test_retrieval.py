@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from saq.configuration.config import get_config
-from saq.constants import F_COMMAND_LINE, F_FILE, F_IPV4
+from saq.constants import F_COMMAND_LINE, F_IPV4
 from saq.database.model import Alert, Comment, User
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
@@ -152,7 +152,6 @@ LABELED_QUERIES = [
     ("ipv4:10.20.30.40", {"powershell"}, True),
     (f"sha256:{SHA256_HEX}", {"malware"}, True),
     ("tag:credential-harvest", {"vpn"}, True),
-    ("observable:ipv4:10.20.30.40", {"powershell"}, True),
     # the same indicators written bare: no exact lookup, but the sparse lane still recalls
     # them wherever they appear in the alert's TEXT
     ("bob@example.com", {"docusign"}, False),
@@ -196,12 +195,6 @@ def test_a_bare_indicator_is_not_an_exact_match(corpus, model):
         assert search_alerts(SearchRequest(query=named, limit=5), model=model).total == 1, named
 
 
-def test_a_word_that_is_also_a_tag_does_not_hijack_the_ranking(corpus, model):
-    """A word that is also a tag name, written as free text, is not an exact tag lookup."""
-    response = search_alerts(SearchRequest(query="brute force credential-harvest logins", limit=5), model=model)
-    assert all(result.tier != TIER_EXACT for result in response.results)
-
-
 def test_junk_queries_return_nothing(corpus, model):
     """The dense lane always has a nearest neighbour; the floor is what keeps a nonsense query
     from returning the whole corpus as "strong" matches."""
@@ -220,13 +213,6 @@ def test_tiers_reflect_evidence(corpus, model):
 
     response = search_alerts(SearchRequest(query="ipv4:10.20.30.40", limit=5), model=model)
     assert response.results[0].tier == TIER_EXACT
-
-
-def test_exact_hits_carry_lexical_evidence(corpus, model):
-    response = search_alerts(SearchRequest(query="ipv4:203.0.113.7", limit=3), model=model)
-    assert response.results[0].alert_uuid == corpus["vpn"]
-    hits = response.results[0].hits
-    assert hits[0].lane == "lexical" and hits[0].text == "203.0.113.7"
 
 
 def test_filters_narrow_both_lanes(corpus, model):

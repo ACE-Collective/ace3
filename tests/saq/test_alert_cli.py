@@ -49,19 +49,22 @@ def test_delete_removes_the_row_and_the_storage_directory(root_analysis, monkeyp
         delete_alerts(Namespace(uuids=[root_analysis.uuid]))
 
     assert e.value.code == 0
-    get_db().expire_all()
+    # a new transaction: the delete must have been committed, not only flushed on this session
+    get_db().close()
     assert get_alert_by_uuid(root_analysis.uuid) is None
     assert not os.path.exists(storage_dir)
     assert deleted_from_search == [root_analysis.uuid]
 
 
 @pytest.mark.integration
-def test_delete_of_an_unknown_alert_is_not_an_error(monkeypatch):
-
+def test_delete_of_an_unknown_alert_is_not_an_error(caplog):
     with pytest.raises(SystemExit) as e:
         delete_alerts(Namespace(uuids=["00000000-0000-4000-8000-000000000000"]))
 
     assert e.value.code == 0
+    # delete_alerts exits 0 whatever happens: what shows this is no error is what it logged
+    assert "does not exist" in caplog.text
+    assert "unable to delete" not in caplog.text
 
 
 def _mapped_observable_count(alert_id: int) -> int:
@@ -121,7 +124,7 @@ def test_analyze_schedules_the_alert_in_correlation_mode(root_analysis):
 
 
 @pytest.mark.integration
-def test_reset_refuses_a_simulated_alert(root_analysis, caplog):
+def test_reset_refuses_a_simulated_alert(root_analysis, tmp_path, caplog):
     """A SIMULATED alert is never reset (docs/SVS_RUNS.md); the other directories still are."""
     root_analysis.add_observable_by_spec(F_TEST, "test")
     root_analysis.state = {"key": "value"}
@@ -129,11 +132,16 @@ def test_reset_refuses_a_simulated_alert(root_analysis, caplog):
     alert = ALERT(root_analysis)
     make_simulated(alert)
     storage_dir = get_storage_dir(root_analysis.uuid)
+    other = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=str(tmp_path / "other"))
+    other.initialize_storage()
+    other.state = {"key": "value"}
+    other.save()
 
-    reset_alerts(Namespace(dirs=[storage_dir]))
+    reset_alerts(Namespace(dirs=[storage_dir, other.storage_dir]))
 
     assert load_root(storage_dir).state == {"key": "value"}
     assert f"alert {alert.uuid} is SIMULATED" in caplog.text
+    assert not load_root(other.storage_dir).state
 
 
 @pytest.mark.integration
@@ -195,14 +203,15 @@ def _record_rebuilds(monkeypatch) -> list[str]:
 
 @pytest.mark.integration
 def test_rebuild_all_narrowed_by_insert_date(monkeypatch):
-    recent = _alert_inserted_days_ago(10)
-    old = _alert_inserted_days_ago(200)
+    inside = _alert_inserted_days_ago(10)
+    before = _alert_inserted_days_ago(200)
+    after = _alert_inserted_days_ago(1)
     # patched only now: ALERT() rebuilds the index of the alert it creates
     rebuilt = _record_rebuilds(monkeypatch)
 
-    assert _run(rebuild_index, insert_date="-90d") == 0
-    assert recent in rebuilt
-    assert old not in rebuilt
+    assert _run(rebuild_index, insert_date="-90d - -5d") == 0
+    assert rebuilt == [inside]
+    assert before not in rebuilt and after not in rebuilt
 
 
 @pytest.mark.integration
@@ -222,20 +231,11 @@ def test_rebuild_rejects_bad_arguments(overrides, monkeypatch):
 
 
 @pytest.mark.integration
-def test_rebuild_all_pages_through_every_alert(monkeypatch):
-    uuids = [_alert_inserted_days_ago(1) for _ in range(3)]
-    rebuilt = _record_rebuilds(monkeypatch)
-
-    # one alert per page: every page boundary is crossed
-    assert _run(rebuild_index, batch_size=1) == 0
-    assert rebuilt == uuids
-
-
-@pytest.mark.integration
 def test_rebuild_all_resumes_after_an_id(monkeypatch):
     first, second, third = [_alert_inserted_days_ago(1) for _ in range(3)]
     rebuilt = _record_rebuilds(monkeypatch)
 
+    # one alert per page: the page boundary is crossed as well
     assert _run(rebuild_index, after_id=_alert_id(first), batch_size=1) == 0
     assert rebuilt == [second, third]
 
@@ -350,20 +350,10 @@ def _ace(*argv) -> int:
     return 0
 
 
-@pytest.mark.integration
-def test_create_writes_a_blank_root(tmp_path):
-    storage_dir = str(tmp_path / "manual")
-
-    assert _ace("create", storage_dir) == 0
-
-    root = load_root(storage_dir)
-    assert root.description == "Manual Alert"
-    assert root.alert_type == "debug"
-    assert root.details == {"description": "manually created root"}
-
-
 def _exported_root(tmp_path, name="export") -> RootAnalysis:
-    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=str(tmp_path / name))
+    # from another node and company: the import has to replace both
+    root = create_root_analysis(uuid=str(uuid.uuid4()), storage_dir=str(tmp_path / name), location="another-node")
+    root.company_id = 12345
     root.initialize_storage()
     root.add_observable_by_spec(F_TEST, "imported")
     root.save()
@@ -405,14 +395,13 @@ def test_import_skips_what_it_cannot_import(tmp_path, caplog):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("absolute", [False, True])
-def test_archive_records_the_alert_as_archived(root_analysis, absolute):
+def test_archive_records_the_alert_as_archived(root_analysis):
     root_analysis.add_observable_by_spec(F_TEST, "test")
     root_analysis.save()
     alert = ALERT(root_analysis)
-    storage_dir = get_storage_dir(root_analysis.uuid)
 
-    assert _ace("archive", os.path.abspath(storage_dir) if absolute else storage_dir) == 0
+    # an absolute path names the same alert as the relative one recorded in the database
+    assert _ace("archive", os.path.abspath(get_storage_dir(root_analysis.uuid))) == 0
 
     get_db().expire_all()
     assert get_db().query(Alert.archived).filter(Alert.id == alert.id).scalar() is True
@@ -551,13 +540,15 @@ def test_cleanup_passes_its_options(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("argv, expected", [
-    ([], lambda settings: (settings.distribute_days_old, False, settings.distribution_target, 0)),
-    (["--days", "7", "--dry-run", "--target", "other-node", "--max", "2"], lambda settings: (7, True, "other-node", 2)),
+    ([], (30, False, "configured-node", 0)),
+    (["--days", "7", "--dry-run", "--target", "other-node", "--max", "2"], (7, True, "other-node", 2)),
 ])
 def test_distribute_defaults_to_the_configured_target(monkeypatch, argv, expected):
     calls = []
     monkeypatch.setattr("saq.util.maintenance.distribute_old_alerts", lambda *args: calls.append(args))
+    monkeypatch.setattr(get_config().global_settings, "distribute_days_old", 30)
+    monkeypatch.setattr(get_config().global_settings, "distribution_target", "configured-node")
 
     assert _ace("distribute", *argv) == 0
 
-    assert calls == [expected(get_config().global_settings)]
+    assert calls == [expected]

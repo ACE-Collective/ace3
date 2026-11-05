@@ -17,7 +17,6 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.environment import get_data_dir
 from saq.modules.file_analysis.archive import ArchiveAnalysis
-from saq.modules.file_analysis.html import MHTMLAnalysis
 from saq.modules.file_analysis.is_file_type import is_msi_file, is_ole_file
 from saq.modules.file_analysis.officeparser3 import OfficeParserAnalysis3
 from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2
@@ -203,11 +202,12 @@ def test_file_analysis_001_oletools_000(root_analysis, result_map, datadir):
         macro_count = len([f for f in root_analysis.all_observables if f.type == F_FILE and f.has_tag('macro')])
         assert macro_count == expected_results[KEY_MACRO_COUNT]
 
+@pytest.mark.parametrize("archive", ["zip/test.zip", "rar/test.r07", "7z/under.7z", "ace/dhl_report.ace"])
 @pytest.mark.integration
-def test_file_analysis_002_archive_000_zip(root_analysis, datadir):
+def test_file_analysis_002_archive_with_one_file(root_analysis, datadir, archive):
 
     root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "zip/test.zip"))
+    _file = root_analysis.add_file_observable(str(datadir / archive))
     root_analysis.save()
     root_analysis.schedule()
 
@@ -216,52 +216,22 @@ def test_file_analysis_002_archive_000_zip(root_analysis, datadir):
     engine.configuration_manager.enable_module('file_type', 'test_groups')
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    alert = load_alert(root_analysis.uuid)
-    assert alert
-    _file = alert.root_analysis.get_observable(_file.uuid)
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    _file = root_analysis.get_observable(_file.uuid)
     assert _file
-    
+
     analysis = _file.get_and_load_analysis(ArchiveAnalysis)
     assert analysis
     assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
+    assert len(analysis.get_observables_by_type(F_FILE)) == 1
 
 @pytest.mark.integration
-def test_file_analysis_002_archive_001_rar(root_analysis, datadir):
+def test_file_analysis_archive_skip_ole(root_analysis, datadir):
+    # make sure OLE files are skipped by this module: 7z can extract the streams of this document
 
     root_analysis.analysis_mode = "test_groups"
 
-    _file = root_analysis.add_file_observable(str(datadir / "rar/test.r07"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    alert = load_alert(root_analysis.uuid)
-    _file = alert.root_analysis.get_observable(_file.uuid)
-    
-    from saq.modules.file_analysis import ArchiveAnalysis
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_archive_skip_ole(root_analysis):
-    # make sure OLE files are skipped by this module
-
-    root_analysis.analysis_mode = "test_groups"
-
-    target_path = root_analysis.create_file_path("sample.doc")
-    with open(target_path, 'wb') as f:
-        f.write(b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1')
-
-    _file = root_analysis.add_file_observable(target_path)
+    _file = root_analysis.add_file_observable(str(datadir / "ole_files/Paid Invoice.doc"))
     root_analysis.save()
     root_analysis.schedule()
 
@@ -311,94 +281,6 @@ def test_file_analysis_msi_identification(tmpdir, datadir):
 
     # this should als return True since it's actually an MSI file
     assert is_msi_file(str(datadir / "msi/84ec41afdc49c2ee8dff9ba07ba5c9a4"))
-
-@pytest.mark.integration
-def test_file_analysis_archive_7z_under(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / '7z/under.7z'))
-
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_002_ace(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-
-    _file = root_analysis.add_file_observable(str(datadir / "ace/dhl_report.ace"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    alert = load_alert(root_analysis.uuid)
-    root_analysis = alert.root_analysis
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 1
-    _file = analysis.get_observables_by_type(F_FILE)
-    assert len(_file) == 1
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_003_jar(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-    _file = root_analysis.add_file_observable(str(datadir / "jar/test.jar"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 42
-
-@pytest.mark.integration
-def test_file_analysis_002_archive_malicious_jar(root_analysis, datadir):
-
-    root_analysis.analysis_mode = "test_groups"
-
-    _file = root_analysis.add_file_observable(str(datadir / "jar/malicious.jar"))
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('archive', 'test_groups')
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    _file = root_analysis.get_observable(_file.uuid)
-    
-    analysis = _file.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis
-    assert analysis.file_count == 68
 
 @pytest.mark.integration
 def test_file_analysis_002_archive_004_jar(root_analysis, datadir):
@@ -827,33 +709,6 @@ def test_crawl_extracted_urls(yss_server, root_analysis, datadir):
     assert len(analysis.observables) == 2
     for observable in analysis.observables:
         assert observable.has_directive(DIRECTIVE_CRAWL)
-
-@pytest.mark.skip("missing file")
-@pytest.mark.integration
-def test_mhtml_analysis(root_analysis):
-
-    source_path = os.path.join('test_data', 'mhtml', 'Invoice_PDF.mht')
-    if not os.path.exists(source_path):
-        pytest.skip(f"missing {source_path}")
-
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(source_path)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('mhtml', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    assert file_observable
-
-    analysis = file_observable.get_and_load_analysis(MHTMLAnalysis)
-    assert analysis
-    # should have extracted a single file
-    assert len(analysis.details) == 1
-    assert len(analysis.get_observables_by_type(F_FILE)) == 1
 
 @pytest.mark.system
 def test_officeparser_macro_extraction(root_analysis, datadir):

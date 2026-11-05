@@ -1,6 +1,5 @@
 import pytest
 
-from saq.configuration.config import get_config, resolve_configuration
 from saq.configuration.database import delete_database_config_value, get_database_config_value, set_database_config_value
 from saq.configuration.encryption import decrypt_password, delete_password, encrypt_password
 from saq.crypto import set_encryption_password

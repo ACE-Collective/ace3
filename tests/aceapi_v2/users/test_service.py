@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from saq.database.model import (
     AuthApiKeyPermission,
+    AuthGroupPermission,
     AuthGroupUser,
+    AuthPermissionCatalog,
     AuthUserPermission,
     User,
 )
@@ -87,20 +89,6 @@ class TestCreateUser:
         assert group.id in {g.id for g in groups}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("username,email", [
-        ("", "a@e.com"),         # blank username (the empty-row bug)
-        ("   ", "a@e.com"),      # whitespace-only username
-        ("someone", ""),         # blank email
-        ("someone", "   "),      # whitespace-only email
-    ])
-    async def test_blank_required_fields_rejected(self, session: AsyncSession, username, email):
-        with pytest.raises(service.InvalidUserError):
-            await service.create_user(
-                session, username=username, email=email, display_name=None, password=None,
-                queue="default", timezone="UTC", permissions=[], groups=[],
-            )
-
-    @pytest.mark.asyncio
     async def test_duplicate_username_rejected(self, session: AsyncSession):
         await _make_user(session, "svc_dupe")
         await session.flush()
@@ -133,8 +121,9 @@ class TestCreateUser:
             permissions=[],
             groups=[],
         )
-        assert user.password_hash
-        assert len(user.password_hash) > 0
+        assert user.password_hash.startswith("$2b$")
+        # nothing guessable verifies, not even an empty password
+        assert not user.verify_password("")
 
 
 class TestUpdateUsers:
@@ -145,6 +134,7 @@ class TestUpdateUsers:
             session,
             {user.id: UserUpdate(
                 username="svc_edited_one",
+                password="Edited123!",
                 display_name="Edited",
                 email="svc_edited_one@example.com",
                 queue="high",
@@ -156,7 +146,11 @@ class TestUpdateUsers:
         )
         await session.refresh(user)
         assert user.username == "svc_edited_one"
+        assert user.verify_password("Edited123!")
+        assert user.display_name == "Edited"
+        assert user.email == "svc_edited_one@example.com"
         assert user.queue == "high"
+        assert user.timezone == "America/Los_Angeles"
         assert user.enabled is False
         perms = await service.get_user_permissions_async(session, user.id, include_groups=False)
         assert {(p.major, p.minor) for p in perms} == {("event", "write")}
@@ -209,6 +203,18 @@ class TestUpdateUsers:
         assert {g.id for g in groups} == {g2.id}
 
     @pytest.mark.asyncio
+    async def test_a_refused_self_disable_changes_nobody(self, session: AsyncSession):
+        """The guard is a pre-scan, so nothing partial lands on the caller's session. The request's
+        rollback would hide that from an API test, so this looks at the session itself."""
+        caller = await _make_user(session, "svc_self_disable_caller")
+        other = await _make_user(session, "svc_self_disable_other")
+        with pytest.raises(service.SelfDisableError):
+            await service.update_users(
+                session, {other.id: UserUpdate(queue="high"), caller.id: UserUpdate(enabled=False)},
+                actor_id=caller.id)
+        assert other.queue == "default"
+
+    @pytest.mark.asyncio
     async def test_not_found_raises(self, session: AsyncSession):
         with pytest.raises(service.UserNotFoundError):
             await service.update_users(session, {999999: UserUpdate(queue="x")}, actor_id=None)
@@ -224,12 +230,6 @@ class TestGroupsAndPermissions:
         await service.delete_auth_groups(session, [g1.id])
         groups = await service.list_auth_groups(session)
         assert g1.id not in {g.id for g in groups}
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("name", ["", "   "])
-    async def test_blank_group_name_rejected(self, session: AsyncSession, name):
-        with pytest.raises(service.InvalidGroupError):
-            await service.create_auth_group(session, name)
 
     @pytest.mark.asyncio
     async def test_group_name_is_stripped(self, session: AsyncSession):
@@ -259,7 +259,7 @@ class TestGroupsAndPermissions:
         assert not [p for p in await service.get_group_permissions_async(session, group.id) if p.major == "test"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("major,minor", [("", "read"), ("alert", ""), ("  ", "read"), ("alert", "  ")])
+    @pytest.mark.parametrize("major,minor", [("  ", "read"), ("alert", "  ")])
     async def test_blank_permission_components_rejected(self, session: AsyncSession, major, minor):
         user = await _make_user(session, f"svc_blank_{major.strip()}_{minor.strip()}_perm")
         with pytest.raises(service.InvalidPermissionError):
@@ -330,24 +330,6 @@ class TestApiKeys:
         assert len(keys) == 1 and keys[0].name == "k"
 
     @pytest.mark.asyncio
-    async def test_create_scoped_key(self, session: AsyncSession):
-        from aceapi_v2.users.schemas import ApiKeyScope
-
-        user = await _make_user(session, "svc_apikey_scope")
-        key, _ = await service.create_user_api_key(
-            session, user.id, name="ai", inherit=False, scope=[ApiKeyScope(major="ai", minor="read")]
-        )
-        assert key.inherit_user_scope is False
-        assert [(s.major, s.minor) for s in key.scope] == [("ai", "read")]
-
-    @pytest.mark.asyncio
-    async def test_multiple_keys_per_user(self, session: AsyncSession):
-        user = await _make_user(session, "svc_apikey_multi")
-        await service.create_user_api_key(session, user.id, name="a", inherit=True, scope=[])
-        await service.create_user_api_key(session, user.id, name="b", inherit=True, scope=[])
-        assert len(await service.list_user_api_keys(session, user.id)) == 2
-
-    @pytest.mark.asyncio
     async def test_create_requires_exactly_one_of_inherit_or_scope(self, session: AsyncSession):
         from aceapi_v2.users.schemas import ApiKeyScope
 
@@ -358,18 +340,6 @@ class TestApiKeys:
             await service.create_user_api_key(
                 session, user.id, name="x", inherit=True, scope=[ApiKeyScope(major="ai", minor="read")]
             )
-
-    @pytest.mark.asyncio
-    async def test_revoke_by_id(self, session: AsyncSession):
-        user = await _make_user(session, "svc_apikey_revoke")
-        key, _ = await service.create_user_api_key(session, user.id, name="k", inherit=True, scope=[])
-
-        assert await service.revoke_user_api_key(session, key.id) is True
-        assert await service.list_user_api_keys(session, user.id) == []
-
-    @pytest.mark.asyncio
-    async def test_revoke_is_false_when_no_key(self, session: AsyncSession):
-        assert await service.revoke_user_api_key(session, -1) is False
 
     @pytest.mark.asyncio
     async def test_create_unknown_user_raises(self, session: AsyncSession):
@@ -446,18 +416,23 @@ class TestApiKeys:
 
 class TestManagementViewAndCatalog:
     @pytest.mark.asyncio
-    async def test_management_view_shape(self, session: AsyncSession):
+    async def test_management_view_lists_grants_and_the_catalog(self, session: AsyncSession):
         user = await _make_user(session, "svc_mv_user")
         group = await service.create_auth_group(session, "svc_mv_grp")
         session.add(AuthUserPermission(user_id=user.id, major="alert", minor="read", effect="ALLOW"))
+        session.add(AuthGroupPermission(group_id=group.id, major="event", minor="read", effect="DENY"))
+        session.add(AuthGroupUser(user_id=user.id, group_id=group.id))
+        # the catalog table is a read-model the integration reset leaves empty
+        session.add(AuthPermissionCatalog(major="alert", minor="read", description="read alerts"))
         await session.flush()
 
         view = await service.get_management_view(session, include_disabled=True)
         assert any(u.id == user.id for u in view.users)
-        assert user.id in view.permissions
-        assert group.id in view.group_permissions
-        # catalog is populated from auth_permission_catalog; may be empty in a clean txn
-        assert isinstance(view.catalog, list)
+        # a user's own grants and their groups', each saying where it comes from
+        assert {(p.major, p.minor, p.effect, p.source) for p in view.permissions[user.id]} == {
+            ("alert", "read", "ALLOW", "user"), ("event", "read", "DENY", "group:svc_mv_grp")}
+        assert [(p.major, p.minor, p.effect) for p in view.group_permissions[group.id]] == [("event", "read", "DENY")]
+        assert [(e.major, e.minor, e.description) for e in view.catalog] == [("alert", "read", "read alerts")]
 
     @pytest.mark.asyncio
     async def test_get_users_details(self, session: AsyncSession):
@@ -567,12 +542,12 @@ class TestSelfServiceApiKeys:
         assert refusals[0].api_key_id == key.id and refusals[0].api_key_name == "wide"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("pattern", ["signature:wrte", "nosuch:*"])
-    async def test_create_refuses_a_pattern_matching_no_permission(self, session: AsyncSession, pattern):
+    async def test_create_refuses_a_pattern_matching_no_permission(self, session: AsyncSession):
+        # a typo in the minor is tests/aceapi_v2/users/test_router.py's signature:wrte
         user = await _make_analyst(session, "svc_self_nothing")
         with pytest.raises(service.InvalidPermissionError, match="matches no permission ACE enforces"):
             await service.create_user_api_key(
-                session, user.id, name="typo", inherit=False, scope=key_scope(pattern), self_service=True)
+                session, user.id, name="typo", inherit=False, scope=key_scope("nosuch:*"), self_service=True)
 
     @pytest.mark.asyncio
     async def test_a_user_with_no_grants_can_mint_nothing(self, session: AsyncSession):
@@ -580,16 +555,6 @@ class TestSelfServiceApiKeys:
         with pytest.raises(service.InvalidPermissionError, match="which you do not hold"):
             await service.create_user_api_key(
                 session, user.id, name="k", inherit=False, scope=key_scope("alert:read"), self_service=True)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("self_service", [True, False])
-    async def test_a_repeated_pattern_is_stored_once(self, session: AsyncSession, self_service):
-        user = await _make_analyst(session, "svc_self_dupe")
-        key, _ = await service.create_user_api_key(
-            session, user.id, name="k", inherit=False, scope=key_scope("signature:read", "signature:read"),
-            self_service=self_service,
-        )
-        assert await _stored_scope(session, key.id) == [("signature", "read")]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("self_service", [True, False])

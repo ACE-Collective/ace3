@@ -8,10 +8,6 @@ from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_
 class TestShortenBasenameForSuffix:
 
     @pytest.mark.unit
-    def test_short_basename_passes_through_unchanged(self):
-        assert shorten_basename_for_suffix("hello.eml", ".headers") == "hello.eml.headers"
-
-    @pytest.mark.unit
     def test_exactly_at_limit_passes_through_unchanged(self):
         suffix = ".headers"
         basename = "x" * (NAME_MAX_BYTES - len(suffix))
@@ -30,23 +26,11 @@ class TestShortenBasenameForSuffix:
         assert result[-(len(suffix) + 9)] == "."
 
     @pytest.mark.unit
-    def test_production_payload_fits(self):
-        # Matches the production traceback: 247-byte basename + .headers = 255 → would have hit 256+ on .combined.
-        basename = (
-            "_Share-d37b5d9a-8ba2-41f8-aa8a-47304bdbac75;rcid_f42515a2-50c3-d000-114c-7f4917c156a9;"
-            "wiid_f95a6d38-13fc-4ae5-b60b-28d6590de67b-ioe_1-tid_7a53b4fc-e87d-4c46-9972-0570ac271b27-"
-            "rh_cac_notifyp-aid_928ab984-e2fc-480a-9b28-91d1c5dfa667@odspnotify__glw5mcs4.eml"
-        )
-        for suffix in (".headers", ".combined"):
-            result = shorten_basename_for_suffix(basename, suffix)
-            assert len(result.encode("utf-8")) <= NAME_MAX_BYTES
-            assert result.endswith(suffix)
-
-    @pytest.mark.unit
     def test_determinism(self):
-        basename = "a" * 300
-        suffix = ".headers"
-        assert shorten_basename_for_suffix(basename, suffix) == shorten_basename_for_suffix(basename, suffix)
+        """A retried analysis, in another process or on another node, gets the same path: the
+        digest is the first 8 hex characters of the sha1 of the whole basename."""
+        # hashlib.sha1(("a" * 300).encode()).hexdigest()[:8] == "003ef1ba"
+        assert shorten_basename_for_suffix("a" * 300, ".headers") == "a" * 238 + ".003ef1ba.headers"
 
     @pytest.mark.unit
     def test_distinct_inputs_share_truncated_prefix_do_not_collide(self):

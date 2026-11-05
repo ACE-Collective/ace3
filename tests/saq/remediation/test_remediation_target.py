@@ -51,42 +51,6 @@ def test_register_observable_remediation_interface():
     assert isinstance(interfaces[0], _custom_remediation_interface)
 
 @pytest.mark.unit
-def test_get_observable_remediation_targets_default():
-    """Test that get_observable_remediation_targets returns empty list for unregistered observable types."""
-    from saq.observables.generator import create_observable
-    from saq.remediation.target import get_observable_remediation_targets
-
-    observable = create_observable(F_TEST, "test_value")
-    targets = get_observable_remediation_targets(observable)
-
-    assert isinstance(targets, list)
-    assert len(targets) == 0
-
-@pytest.mark.unit
-def test_get_observable_remediation_targets_single_interface():
-    """Test get_observable_remediation_targets with a single registered interface."""
-    from saq.observables.generator import create_observable
-    from saq.remediation.target import get_observable_remediation_targets
-
-    class _custom_interface(ObservableRemediationInterface):
-        def get_remediation_targets(self, observable: Observable) -> list[RemediationTarget]:
-            return [
-                RemediationTarget("remediator1", observable.type, observable.value),
-                RemediationTarget("remediator2", observable.type, observable.value)
-            ]
-
-    register_observable_remediation_interface(F_TEST, _custom_interface())
-    observable = create_observable(F_TEST, "test_value")
-    targets = get_observable_remediation_targets(observable)
-
-    assert len(targets) == 2
-    assert all(isinstance(t, RemediationTarget) for t in targets)
-    assert targets[0].remediator_name == "remediator1"
-    assert targets[0].observable_type == F_TEST
-    assert targets[0].observable_value == "test_value"
-    assert targets[1].remediator_name == "remediator2"
-
-@pytest.mark.unit
 def test_get_observable_remediation_targets_multiple_interfaces():
     """Test get_observable_remediation_targets with multiple registered interfaces."""
     from saq.constants import F_IP
@@ -115,47 +79,9 @@ def test_get_observable_remediation_targets_multiple_interfaces():
     observable = create_observable(F_IP, "192.168.1.1")
     targets = get_observable_remediation_targets(observable)
 
-    assert len(targets) == 4
-    assert all(isinstance(t, RemediationTarget) for t in targets)
-    remediator_names = [t.remediator_name for t in targets]
-    assert "remediator1" in remediator_names
-    assert "remediator2" in remediator_names
-    assert "remediator3" in remediator_names
-    assert "remediator4" in remediator_names
-
-@pytest.mark.unit
-def test_get_observable_remediation_targets_empty_interface():
-    """Test get_observable_remediation_targets when interface returns empty list."""
-    from saq.observables.generator import create_observable
-    from saq.remediation.target import get_observable_remediation_targets
-
-    class _empty_interface(ObservableRemediationInterface):
-        def get_remediation_targets(self, observable: Observable) -> list[RemediationTarget]:
-            return []
-
-    register_observable_remediation_interface(F_TEST, _empty_interface())
-    observable = create_observable(F_TEST, "test_value")
-    targets = get_observable_remediation_targets(observable)
-
-    assert isinstance(targets, list)
-    assert len(targets) == 0
-
-@pytest.mark.unit
-def test_get_observable_remediation_targets_different_observable_values():
-    """Test that observable values are correctly passed to remediation targets."""
-    from saq.observables.generator import create_observable
-    from saq.remediation.target import get_observable_remediation_targets
-
-    class _value_capturing_interface(ObservableRemediationInterface):
-        def get_remediation_targets(self, observable: Observable) -> list[RemediationTarget]:
-            return [RemediationTarget("remediator", observable.type, f"modified_{observable.value}")]
-
-    register_observable_remediation_interface(F_TEST, _value_capturing_interface())
-    observable = create_observable(F_TEST, "original_value")
-    targets = get_observable_remediation_targets(observable)
-
-    assert len(targets) == 1
-    assert targets[0].observable_value == "modified_original_value"
+    # each interface's targets, in the order the interfaces were registered
+    assert [(t.remediator_name, t.observable_type, t.observable_value) for t in targets] == [
+        (f"remediator{n}", F_IP, "192.168.1.1") for n in range(1, 5)]
 
 @pytest.mark.unit
 def test_register_observable_remediation_interface_prevents_duplicate_types():

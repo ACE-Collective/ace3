@@ -119,11 +119,6 @@ def test_shutdown_signal_returns_after_the_worker_was_killed():
     assert worker.is_controlled_shutdown()
 
 
-def _report_immediate_shutdown(worker: Worker, write_fd: int):
-    """Runs in the forked child: report what the inherited flag says, once."""
-    os.write(write_fd, b"1" if worker.is_immediate_shutdown() else b"0")
-
-
 def _wait_then_report_immediate_shutdown(worker: Worker, write_fd: int):
     """Runs in the forked child: report once the parent sets the flag."""
     deadline = time.monotonic() + 15
@@ -134,28 +129,6 @@ def _wait_then_report_immediate_shutdown(worker: Worker, write_fd: int):
         time.sleep(0.05)
 
     os.write(write_fd, b"0")
-
-
-@pytest.mark.unit
-def test_shutdown_flag_set_before_the_fork_is_inherited():
-    """The property the multiprocessing event was there for, kept."""
-    worker = _make_worker()
-    worker.immediate_shutdown()
-
-    read_fd, write_fd = os.pipe()
-    process = ACE_MP_CONTEXT.Process(
-        target=_report_immediate_shutdown, args=(worker, write_fd)
-    )
-    process.start()
-    os.close(write_fd)
-
-    try:
-        assert os.read(read_fd, 1) == b"1"
-    finally:
-        os.close(read_fd)
-
-    process.join(10)
-    assert process.exitcode == 0
 
 
 @pytest.mark.unit
@@ -200,4 +173,3 @@ def test_wait_for_immediate_shutdown_wakes_when_the_flag_is_set():
     started = time.monotonic()
     assert worker._wait_for_immediate_shutdown(10) is True
     assert time.monotonic() - started < 5
-

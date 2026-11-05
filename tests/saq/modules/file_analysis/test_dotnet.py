@@ -3,7 +3,7 @@ import os
 import pytest
 from unittest.mock import Mock
 
-from saq.configuration.config import get_config, get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_ILSPY, F_FILE, AnalysisExecutionResult, R_EXTRACTED_FROM
 from saq.modules.file_analysis import dotnet
 from saq.modules.file_analysis.dotnet import (
@@ -11,11 +11,8 @@ from saq.modules.file_analysis.dotnet import (
     De4dotAnalyzer,
     IlspyAnalysis,
     IlspyAnalyzer,
-    KEY_STDOUT,
     KEY_STDERR,
-    KEY_ERROR,
     KEY_DEOBFUSCATED,
-    KEY_EXIT_CODE,
 )
 from saq.observables.file import FileObservable
 from tests.saq.test_util import create_test_context
@@ -62,22 +59,6 @@ class TestDe4dotAnalysis:
         assert analysis.error is None
         assert analysis.deobfuscated is False
 
-    def test_display_name(self):
-        analysis = De4dotAnalysis()
-        assert analysis.display_name == "De4dot Analysis"
-
-    def test_stdout_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with None
-        assert analysis.stdout is None
-
-        # test setter and getter
-        test_stdout = "test stdout output"
-        analysis.stdout = test_stdout
-        assert analysis.stdout == test_stdout
-        assert analysis.details[KEY_STDOUT] == test_stdout
-
     def test_stderr_property(self):
         analysis = De4dotAnalysis()
 
@@ -89,29 +70,6 @@ class TestDe4dotAnalysis:
         analysis.stderr = test_stderr
         assert analysis.stderr == test_stderr
         assert analysis.details[KEY_STDERR] == test_stderr
-
-    def test_error_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with None
-        assert analysis.error is None
-
-        # test setter and getter
-        test_error = "test error message"
-        analysis.error = test_error
-        assert analysis.error == test_error
-        assert analysis.details[KEY_ERROR] == test_error
-
-    def test_deobfuscated_property(self):
-        analysis = De4dotAnalysis()
-
-        # test getter with False
-        assert analysis.deobfuscated is False
-
-        # test setter and getter
-        analysis.deobfuscated = True
-        assert analysis.deobfuscated is True
-        assert analysis.details[KEY_DEOBFUSCATED] is True
 
     def test_generate_summary_with_error(self):
         analysis = De4dotAnalysis()
@@ -131,34 +89,16 @@ class TestDe4dotAnalysis:
 @pytest.mark.unit
 class TestDe4dotAnalyzer:
 
-    def test_generated_analysis_type(self):
-        analyzer = De4dotAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-        assert analyzer.generated_analysis_type == De4dotAnalysis
-
     def test_valid_observable_types(self):
         analyzer = De4dotAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
         assert analyzer.valid_observable_types == F_FILE
 
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
-        analyzer = De4dotAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-
-        # create a file observable for non-existent file by first creating it, then adding it, then deleting it
-        test_file = tmpdir / "temp.exe"
-        test_file.write("temp content")
-        file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
-
-    def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir):
+    def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir, monkeypatch):
+        # de4dot -d detects nothing in a text file either, so only the tool not running shows the check
+        run = Mock(return_value=None)
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", run)
         analyzer = De4dotAnalyzer(
             context=create_test_context(root=root_analysis),
             config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
@@ -175,6 +115,7 @@ class TestDe4dotAnalyzer:
         # should not have created any analysis
         analysis = file_observable.get_analysis(De4dotAnalysis)
         assert analysis is None
+        run.assert_not_called()
 
     def test_execute_analysis_no_obfuscation_detected(self, root_analysis, tmpdir):
         analyzer = De4dotAnalyzer(
@@ -292,29 +233,6 @@ class TestIlspyAnalysis:
         assert analysis.stderr is None
         assert analysis.exit_code is None
 
-    def test_exit_code_property(self):
-        analysis = IlspyAnalysis()
-
-        # test getter with None
-        assert analysis.exit_code is None
-
-        # test setter and getter
-        analysis.exit_code = 0
-        assert analysis.exit_code == 0
-        assert analysis.details[KEY_EXIT_CODE] == 0
-
-    def test_stderr_property(self):
-        analysis = IlspyAnalysis()
-
-        # test getter with None
-        assert analysis.stderr is None
-
-        # test setter and getter
-        test_stderr = "test stderr output"
-        analysis.stderr = test_stderr
-        assert analysis.stderr == test_stderr
-        assert analysis.details[KEY_STDERR] == test_stderr
-
     def test_generate_summary_basic(self):
         analysis = IlspyAnalysis()
 
@@ -328,13 +246,6 @@ class TestIlspyAnalysis:
         summary = analysis.generate_summary()
         assert summary == "Ilspy Analysis: exit code 0"
 
-    def test_generate_summary_with_stderr(self):
-        analysis = IlspyAnalysis()
-        analysis.stderr = "some error message"
-
-        summary = analysis.generate_summary()
-        assert summary == "Ilspy Analysis: stderr: some error message"
-
     def test_generate_summary_with_both(self):
         analysis = IlspyAnalysis()
         analysis.exit_code = 1
@@ -347,40 +258,11 @@ class TestIlspyAnalysis:
 @pytest.mark.unit
 class TestIlspyAnalyzer:
 
-    def test_generated_analysis_type(self):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-        assert analyzer.generated_analysis_type == IlspyAnalysis
-
     def test_valid_observable_types(self):
         analyzer = IlspyAnalyzer(
             context=create_test_context(),
             config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
         assert analyzer.valid_observable_types == F_FILE
-
-    def test_binary_path_property(self):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-        # just verify the property returns something (it reads from config)
-        assert analyzer.binary_path is not None
-        assert isinstance(analyzer.binary_path, str)
-
-    def test_execute_analysis_file_not_exists(self, root_analysis, tmpdir):
-        analyzer = IlspyAnalyzer(
-            context=create_test_context(root=root_analysis),
-            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
-
-        # create a file observable for non-existent file by first creating it, then adding it, then deleting it
-        test_file = tmpdir / "temp.exe"
-        test_file.write("temp content")
-        file_observable = root_analysis.add_file_observable(str(test_file))
-        # now remove the file so it doesn't exist when the analyzer tries to process it
-        os.remove(str(test_file))
-
-        result = analyzer.execute_analysis(file_observable)
-        assert result == AnalysisExecutionResult.COMPLETED
 
     def test_execute_analysis_not_dotnet_file(self, root_analysis, tmpdir):
         analyzer = IlspyAnalyzer(

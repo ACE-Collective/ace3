@@ -101,17 +101,21 @@ class TestRows:
 class TestKeysetPaging:
     @pytest.mark.asyncio
     async def test_no_skip_or_repeat_while_detections_arrive(self, client: AsyncClient):
-        for index in range(5):
-            insert_alert_with_detections([_detection(SIG_A, description=f"d{index}")])
+        """A detection that comes into the listing ahead of the page a client is on (here one of
+        an alert that moves to this node) would shift every later page by one under OFFSET."""
+        alerts = [insert_alert_with_detections([_detection(SIG_A, description=f"d{index}")]) for index in range(5)]
+        location = alerts[1].location
+        _set_alert(alerts[1], location="some-other-node")
 
         first = await client.get("/detection-points/", params={"limit": 2})
         body = first.json()
-        seen = [row["content_hash"] + row["alert_uuid"] for row in body["data"]]
+        seen = [row["description"] for row in body["data"]]
+        _set_alert(alerts[1], location=location)
         insert_alert_with_detections([_detection(SIG_A, description="late")])
 
         rest = await _all_pages(client, {"cursor": body["next_cursor"]}, 2)
-        seen += [row["content_hash"] + row["alert_uuid"] for row in rest]
-        assert len(seen) == len(set(seen)) == 6
+        seen += [row["description"] for row in rest]
+        assert seen == ["d0", "d2", "d3", "d4", "late"]
 
     @pytest.mark.asyncio
     async def test_bad_cursor_and_limits(self, client: AsyncClient):

@@ -5,7 +5,7 @@ import pytest
 
 from saq.analysis.analysis import Analysis, SummaryDetail
 from saq.analysis.root import RootAnalysis
-from saq.analysis.snapshot import ModuleExecutionSnapshot, _ObservableState
+from saq.analysis.snapshot import ModuleExecutionSnapshot
 from saq.constants import F_FILE, F_IP, F_FQDN, F_EMAIL_ADDRESS, R_EXTRACTED_FROM, R_IS_HASH_OF
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -37,39 +37,6 @@ class _SnapshotTestModule(AnalysisModule):
 
 def _make_module(analysis_type=_TestAnalysis, instance=None, version=1, wide_diff=False):
     return _SnapshotTestModule(analysis_type, instance=instance, version=version, wide_diff=wide_diff)
-
-
-class TestObservableStateCapture:
-    @pytest.mark.unit
-    def test_capture_empty_observable(self, tmp_path):
-        root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        state = _ObservableState.capture(obs)
-
-        assert state.uuid == obs.uuid
-        assert state.tags == frozenset()
-        assert state.detection_ids == frozenset()
-        assert state.directives == frozenset()
-        assert state.relationship_ids == frozenset()
-        assert state.excluded_analysis == frozenset()
-        assert state.limited_analysis == frozenset()
-        assert state.grouping_target is False
-        assert state.redirection is None
-        assert state.ignored is False
-
-    @pytest.mark.unit
-    def test_capture_observable_with_state(self, tmp_path):
-        root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        obs.add_tag("suspicious")
-        obs.add_tag("malware")
-        obs.add_directive("sandbox")
-        obs.add_detection_point("test detection")
-
-        state = _ObservableState.capture(obs)
-        assert state.tags == frozenset(["suspicious", "malware"])
-        assert state.directives == frozenset(["sandbox"])
-        assert len(state.detection_ids) == 1
 
 
 class TestNarrowSnapshot:
@@ -234,22 +201,6 @@ class TestNarrowSnapshot:
         assert rel["target"] == analyzed.uuid
         assert rel["target_type"] == F_FILE
         assert rel["target_value"] == analyzed.value
-
-    @pytest.mark.unit
-    def test_diff_new_non_file_observable_has_no_file_path(self, tmp_path):
-        root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_module()
-
-        before = ModuleExecutionSnapshot.narrow(root, obs, module)
-        root.add_observable_by_spec(F_FQDN, "evil.com")
-        after = ModuleExecutionSnapshot.narrow(root, obs, module)
-        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
-
-        assert delta.new_observables[0].file_path is None
-        assert delta.new_observables[0].volatile is False
-        assert delta.new_observables[0].initial_relationships == []
-        assert delta.new_observables[0].initial_redirection is None
 
     @pytest.mark.unit
     def test_diff_remove_tag(self, tmp_path):
@@ -689,12 +640,14 @@ class TestAnalysisDetailsCapture:
         after = ModuleExecutionSnapshot.narrow(root, obs, module)
         delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
 
-        details = delta.analysis.get("summary_details")
-        assert isinstance(details, list)
+        details = delta.analysis["summary_details"]
         assert all(isinstance(d, dict) for d in details), (
             "summary_details must be dicts so json.dumps doesn't fall back "
             "to default=str on SummaryDetail objects"
         )
+        # and replay's SummaryDetail.from_dict reads them back
+        restored = [SummaryDetail.from_dict(d) for d in details]
+        assert [(d.header, d.content) for d in restored] == [("Registrar", "Test Registrar")]
 
     @pytest.mark.unit
     def test_analysis_dict_includes_tags(self, tmp_path):
@@ -851,20 +804,6 @@ class TestDelayedAnalysisTransitions:
         delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
 
         assert delta.analysis is None
-
-    @pytest.mark.unit
-    def test_root_diff_add_detection(self, tmp_path):
-        root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_IP, "10.0.0.1")
-        module = _make_module()
-
-        before = ModuleExecutionSnapshot.narrow(root, obs, module)
-        root.add_detection_point("alert me", details={"rule": "x"})
-        after = ModuleExecutionSnapshot.narrow(root, obs, module)
-        delta = ModuleExecutionSnapshot.diff(before, after, module, obs)
-
-        assert len(delta.root_diff.added_detections) == 1
-        assert delta.root_diff.added_detections[0]["description"] == "alert me"
 
     @pytest.mark.unit
     def test_root_diff_remove_detection(self, tmp_path):

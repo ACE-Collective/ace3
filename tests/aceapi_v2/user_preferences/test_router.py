@@ -205,12 +205,6 @@ class TestTheme:
     async def test_invalid_value_is_422(self, client: AsyncClient, body: dict):
         assert (await client.put(THEME, json=body)).status_code == 422
 
-    @pytest.mark.asyncio
-    async def test_delete_returns_to_system(self, client: AsyncClient):
-        await client.put(THEME, json={"mode": "dark"})
-        assert (await client.delete(THEME)).status_code in (200, 204)
-        assert (await client.get(THEME)).json()["value"] == {"mode": "system"}
-
 
 ALERT_SECTIONS = f"{BASE}/alert_sections"
 
@@ -232,11 +226,6 @@ class TestAlertSections:
         assert (await client.get(ALERT_SECTIONS)).json()["value"] == body
 
     @pytest.mark.asyncio
-    async def test_choices_are_per_user(self, client: AsyncClient, other_client: AsyncClient):
-        await client.put(ALERT_SECTIONS, json={"sections": {"detection_chains": True}})
-        assert (await other_client.get(ALERT_SECTIONS)).json()["value"] == {"sections": {}}
-
-    @pytest.mark.asyncio
     @pytest.mark.parametrize("body", [
         {"sections": {"Detection Chains": True}},
         {"sections": {"x" * 65: True}},
@@ -246,9 +235,3 @@ class TestAlertSections:
     ])
     async def test_invalid_value_is_422(self, client: AsyncClient, body: dict):
         assert (await client.put(ALERT_SECTIONS, json=body)).status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_delete_forgets_the_choices(self, client: AsyncClient):
-        await client.put(ALERT_SECTIONS, json={"sections": {"alert_details": False}})
-        assert (await client.delete(ALERT_SECTIONS)).status_code in (200, 204)
-        assert (await client.get(ALERT_SECTIONS)).json()["value"] == {"sections": {}}

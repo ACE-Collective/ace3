@@ -35,12 +35,6 @@ class TestFileCollectionListener(FileCollectionListener):
 
 
 @pytest.mark.integration
-def test_collect_work_items_empty():
-    collector = FileCollectionCollector()
-    assert not collector.collect_work_items()
-
-
-@pytest.mark.integration
 def test_collect_single_work_item(db_alert):
     collector = FileCollectionCollector()
     assert not collector.collect_work_items()
@@ -77,23 +71,6 @@ def test_collect_single_work_item(db_alert):
         text("SELECT lock_time <= NOW() FROM file_collection WHERE id = :id"),
         {"id": collection_id},
     ).scalar() == 1
-
-
-@pytest.mark.integration
-def test_collect_work_item_without_alert():
-    """A collection no alert asked for gets this node's directory for it, not an alert's."""
-    collection_id = queue_file_collection(
-        collector_name="custom",
-        observable_type=F_FILE_LOCATION,
-        observable_value="host@/path/to/file",
-    )
-
-    collector = FileCollectionCollector()
-    collector.register_listener("custom", TestFileCollectionListener())
-    tasks = collector.collect_work_items()
-    assert len(tasks) == 1
-    assert tasks[0].alert_uuid is None
-    assert tasks[0].storage_dir == unattached_storage_dir(collection_id)
 
 
 @pytest.mark.integration
@@ -160,6 +137,8 @@ def test_collect_finishes_only_the_collection_whose_alert_is_gone(db_alert):
     tasks = {task.id: task for task in collector.collect_work_items()}
     assert sorted(tasks) == sorted([with_alert_id, without_alert_id])
     assert tasks[with_alert_id].storage_dir == db_alert.storage_dir
+    # a collection no alert asked for gets this node's directory for it, not an alert's
+    assert tasks[without_alert_id].alert_uuid is None
     assert tasks[without_alert_id].storage_dir == unattached_storage_dir(without_alert_id)
 
     # discards anything the collector did not commit
@@ -209,16 +188,8 @@ def test_collect_skips_items_held_by_listener(db_alert):
     assert tasks[0].id == collection_id
 
 
-@pytest.mark.parametrize(
-    "status,expected_value",
-    [
-        (FileCollectionStatus.NEW, True),
-        (FileCollectionStatus.IN_PROGRESS, True),
-        (FileCollectionStatus.COMPLETED, False),
-    ],
-)
 @pytest.mark.integration
-def test_collect_work_item_status(status, expected_value, db_alert):
+def test_collect_skips_completed_work_item(db_alert):
     collector = FileCollectionCollector()
     collector.register_listener("custom", TestFileCollectionListener())
 
@@ -230,11 +201,11 @@ def test_collect_work_item_status(status, expected_value, db_alert):
     )
 
     file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
-    file_collection.status = status.value
+    file_collection.status = FileCollectionStatus.COMPLETED.value
     get_db().add(file_collection)
     get_db().commit()
 
-    assert bool(collector.collect_work_items()) == expected_value
+    assert not collector.collect_work_items()
 
 
 @pytest.mark.integration
@@ -263,38 +234,6 @@ def test_collect_locked_work_item(db_alert):
     collector.lock_timeout_seconds = 0
 
     # now we should collect because lock has timed out
-    tasks = collector.collect_work_items()
-    assert len(tasks) == 1
-    assert tasks[0].id == collection_id
-
-
-@pytest.mark.integration
-def test_collect_delayed_work_item(db_alert):
-    collector = FileCollectionCollector()
-    collector.register_listener("custom", TestFileCollectionListener())
-
-    collection_id = queue_file_collection(
-        collector_name="custom",
-        observable_type=F_FILE_LOCATION,
-        observable_value="host@/path/to/file",
-        alert_uuid=db_alert.uuid,
-    )
-
-    # set to in progress and delayed
-    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
-    file_collection.update_time = func.NOW()
-    file_collection.status = FileCollectionStatus.IN_PROGRESS.value
-    file_collection.result = FileCollectorStatus.DELAYED.value
-    get_db().add(file_collection)
-    get_db().commit()
-
-    # we should not collect because it is currently delayed
-    assert not collector.collect_work_items()
-
-    # set the initial retry delay to zero seconds (exponential backoff)
-    collector.initial_retry_delay_seconds = 0
-
-    # now we should collect because delay time has expired
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id
@@ -333,22 +272,6 @@ def test_collect_high_retry_count_still_collected(db_alert):
 
 
 @pytest.mark.unit
-def test_collector_init_with_exponential_backoff_params():
-    """test FileCollectionCollector accepts exponential backoff parameters"""
-    collector = FileCollectionCollector(
-        lock_timeout_seconds=600,
-        initial_retry_delay_seconds=30,
-        max_retry_delay_seconds=1800,
-        max_collection_time_seconds=86400,
-    )
-
-    assert collector.lock_timeout_seconds == 600
-    assert collector.initial_retry_delay_seconds == 30
-    assert collector.max_retry_delay_seconds == 1800
-    assert collector.max_collection_time_seconds == 86400
-
-
-@pytest.mark.unit
 def test_collector_default_exponential_backoff_params():
     """test FileCollectionCollector default exponential backoff parameters"""
     collector = FileCollectionCollector()
@@ -384,6 +307,13 @@ def test_collect_exponential_backoff_respects_retry_count(db_alert):
     get_db().commit()
 
     # Should not collect because 240 seconds haven't passed
+    assert not collector.collect_work_items()
+
+    # 100 seconds is past the 60 seconds a first attempt waits, but not the 240 the third does
+    file_collection = get_db().query(FileCollection).filter(FileCollection.id == collection_id).first()
+    file_collection.update_time = datetime.now(UTC) - timedelta(seconds=100)
+    get_db().add(file_collection)
+    get_db().commit()
     assert not collector.collect_work_items()
 
     # Update the time to simulate 250 seconds in the past

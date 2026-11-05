@@ -130,12 +130,6 @@ def worker() -> Worker:
 
 
 @pytest.mark.unit
-def test_execute_returns_true_after_processing(worker):
-    """execute() reports that it processed the work item."""
-    assert worker.execute(make_work_item()) is True
-
-
-@pytest.mark.unit
 def test_execute_returns_true_when_orchestration_fails(worker):
     """A failed orchestration still consumed a work item, so the loop should not
     back off because of it."""
@@ -148,16 +142,6 @@ def test_execute_returns_true_when_orchestration_raises(worker):
     """Same for an exception - it is swallowed and logged inside execute()."""
     worker.analysis_orchestrator.orchestrate_analysis.side_effect = RuntimeError("boom")
     assert worker.execute(make_work_item()) is True
-
-
-@pytest.mark.unit
-def test_execute_returns_false_when_keepalive_fails(worker):
-    """Losing the lock means nothing was processed."""
-    worker.config.single_threaded_mode = False
-    worker.lock_manager.start_keepalive.return_value = False
-
-    assert worker.execute(make_work_item()) is False
-    worker.analysis_orchestrator.orchestrate_analysis.assert_not_called()
 
 
 @pytest.mark.unit

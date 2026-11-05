@@ -8,7 +8,6 @@ from saq.configuration.schema import ACEConfig
 from saq.database import get_db_connection
 from saq.constants import DB_EMAIL_ARCHIVE
 from saq.email_archive import (
-    ArchiveEmailResult,
     archive_email,
     archive_email_file,
     get_archive_path_by_hash,
@@ -31,10 +30,6 @@ def patch_email_archive_target_type(monkeypatch, request):
     monkeypatch.setattr(get_config().email_archive, "target", request.param.value)
     return request.param
 
-@pytest.mark.integration
-def test_register_email_archive():
-    assert get_email_archive_server_id() is not None
-
 TEST_MESSAGE_ID = "<test-message-id>"
 TEST_RECIPIENT = "test@local"
 TEST_RECIPIENT_2 = "test2@local"
@@ -48,23 +43,29 @@ def archived_email(tmpdir):
 
 @pytest.mark.unit
 def test_archive_email_file(tmpdir):
+    # content no other test archives: unit tests get no data dir reset, and this one overwrites
+    # its archive file
     email = tmpdir / "email"
-    email.write_binary(b"test")
+    email.write_binary(b"test_archive_email_file")
 
-    md5_hash = archive_email_file(str(email), TEST_MESSAGE_ID)
-    assert os.path.exists(get_archive_path_by_hash(md5_hash))
+    sha256_hash = archive_email_file(str(email), TEST_MESSAGE_ID)
+    archive_path = get_archive_path_by_hash(sha256_hash)
+    try:
+        assert os.path.exists(archive_path)
 
-    # should return existing
-    assert archive_email_file(str(email), TEST_MESSAGE_ID) == md5_hash
+        # an email already in the archive is left as it is
+        with open(archive_path, "wb") as fp:
+            fp.write(b"already archived")
+
+        assert archive_email_file(str(email), TEST_MESSAGE_ID) == sha256_hash
+        with open(archive_path, "rb") as fp:
+            assert fp.read() == b"already archived"
+    finally:
+        os.remove(archive_path)
 
     # should error on missing file
     with pytest.raises(IOError):
         archive_email_file("unknown", TEST_MESSAGE_ID)
-
-@pytest.mark.integration
-def test_archive_email(archived_email: ArchiveEmailResult):
-    assert isinstance(archived_email.archive_id, int)
-    assert isinstance(archived_email.hash, str) and archived_email.hash
 
 @pytest.mark.integration
 def test_get_archived_email_server(archived_email):

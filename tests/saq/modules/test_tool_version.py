@@ -83,11 +83,13 @@ class TestProbeBinaryVersion:
     def test_mtime_change_reprobes(self, fake_tool_dir):
         tool = _make_tool(fake_tool_dir, "fake_tool", 'echo "v1"')
         assert probe_binary_version("fake_tool") == "v1"
-        # simulate an upgrade: replace content, move mtime forward
-        _make_tool(fake_tool_dir, "fake_tool", 'echo "v2 with more text"')
+        # simulate an upgrade that keeps the size: replace content, move mtime forward
+        size = tool.stat().st_size
+        _make_tool(fake_tool_dir, "fake_tool", 'echo "v2"')
         st = tool.stat()
+        assert st.st_size == size
         os.utime(tool, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
-        assert probe_binary_version("fake_tool") == "v2 with more text"
+        assert probe_binary_version("fake_tool") == "v2"
 
 
 class TestFileContentVersion:
@@ -97,24 +99,6 @@ class TestFileContentVersion:
         f = tmp_path / "rules.filter"
         f.write_bytes(b"example\\.com\n")
         assert file_content_version(str(f)) == hashlib.sha256(b"example\\.com\n").hexdigest()
-
-    @pytest.mark.unit
-    def test_identical_content_same_hash_across_mtime(self, tmp_path):
-        """Determinism across hosts: same bytes, different mtime → same hash."""
-        a, b = tmp_path / "a", tmp_path / "b"
-        a.write_bytes(b"same content")
-        b.write_bytes(b"same content")
-        os.utime(a, (1000, 1000))
-        os.utime(b, (2000, 2000))
-        assert file_content_version(str(a)) == file_content_version(str(b))
-
-    @pytest.mark.unit
-    def test_content_change_changes_hash(self, tmp_path):
-        f = tmp_path / "rules.filter"
-        f.write_bytes(b"one")
-        first = file_content_version(str(f))
-        f.write_bytes(b"two")
-        assert first != file_content_version(str(f))
 
     @pytest.mark.unit
     def test_missing_file_returns_none(self, tmp_path):

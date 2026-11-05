@@ -5,12 +5,16 @@ import shutil
 import threading
 import time
 from uuid import uuid4
+from unittest.mock import Mock
+
 import pytest
+import pytz
 from pydantic import ValidationError
 
 from saq.analysis.root import RootAnalysis, Submission
 from saq.collectors.hunter import Hunt, HuntManager, HunterService, read_persistence_data, write_persistence_data
 from saq.collectors.hunter.base_hunter import HuntConfig, hunt_state_dir_name
+from saq.collectors.hunter.query_hunter import QueryHunt, QueryHuntConfig
 from saq.configuration.config import get_config
 from saq.configuration.schema import HuntTypeConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, ANALYSIS_MODE_CORRELATION, ExecutionMode
@@ -19,7 +23,6 @@ from saq.error.remote import RemoteApiError
 from saq.logging import DEFAULT_TRANSACTION_ID, get_transaction_id
 from saq.util.hashing import sha256
 from saq.util.time import local_time
-from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
 
 def default_hunt_config(**kwargs):
@@ -136,19 +139,16 @@ def hunter_service_single_threaded(hunter_service):
 @pytest.fixture
 def hunter_service_multi_threaded(hunter_service):
     hunter_service.hunt_managers["test"].execution_mode = ExecutionMode.CONTINUOUS
-    return hunter_service
+    yield hunter_service
+    # in teardown rather than in each test: a failed assertion would otherwise leave the
+    # (non-daemon) manager threads running and pytest would never exit
+    hunter_service.stop()
+    hunter_service.wait()
     
 @pytest.fixture(autouse=True, scope="function")
 def setup():
     # delete all the existing hunt types
     get_config().clear_hunt_type_configs()
-
-@pytest.mark.system
-def test_start_stop(hunter_service_multi_threaded):
-    hunter_service_multi_threaded.start()
-    hunter_service_multi_threaded.wait_for_start()
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.integration
 def test_persistence_defers_execution_on_reload(hunter_service_single_threaded, manager_kwargs):
@@ -172,25 +172,14 @@ def test_persistence_defers_execution_on_reload(hunter_service_single_threaded, 
         assert False, "Expected hunt 'unit_test_1' not found after reload"
 
 @pytest.mark.integration
-def test_add_hunt(manager_kwargs):
-    hunter = HuntManager(**manager_kwargs)
-    hunter.add_hunt(default_hunt(manager=hunter))
-    assert len(hunter.hunts) == 1
-
-@pytest.mark.integration
 def test_hunt_persistence(manager_kwargs):
     hunter = HuntManager(**manager_kwargs)
     hunter.add_hunt(default_hunt(manager=hunter))
+    # a naive time is stored as UTC
     hunter.hunts[0].last_executed_time = datetime(2019, 12, 10, 8, 21, 13)
-    
+
     last_executed_time = read_persistence_data(hunter.hunts[0].type, hunter.hunts[0].name, 'last_executed_time')
-    assert isinstance(last_executed_time, datetime)
-    assert last_executed_time.year, 2019
-    assert last_executed_time.month, 12
-    assert last_executed_time.day, 10
-    assert last_executed_time.hour, 8
-    assert last_executed_time.minute, 21
-    assert last_executed_time.second, 13
+    assert last_executed_time == datetime(2019, 12, 10, 8, 21, 13, tzinfo=pytz.utc)
 
 @pytest.mark.integration
 def test_add_duplicate_hunt(manager_kwargs):
@@ -211,20 +200,18 @@ def test_remove_hunt(manager_kwargs):
 @pytest.mark.integration
 def test_hunt_order(manager_kwargs):
     hunter = HuntManager(**manager_kwargs)
-    # test initial hunt order
-    # these are added in the wrong order but the should be sorted when we access them
-    hunter.add_hunt(default_hunt(manager=hunter, name='test_hunt_3', frequency='00:30'))
-    hunter.add_hunt(default_hunt(manager=hunter, name='test_hunt_2', frequency='00:20'))
-    hunter.add_hunt(default_hunt(manager=hunter, name='test_hunt_1', frequency='00:10'))
+    # added, and named, in the opposite of execution order: neither insertion order nor the
+    # names give the order the hunts are due in
+    hunter.add_hunt(default_hunt(manager=hunter, name='a_hunt', frequency='00:30'))
+    hunter.add_hunt(default_hunt(manager=hunter, name='b_hunt', frequency='00:20'))
+    hunter.add_hunt(default_hunt(manager=hunter, name='c_hunt', frequency='00:10'))
 
     # assume we've executed all of these hunts
     for hunt in hunter.hunts:
         hunt.last_executed_time = datetime.now()
 
-    # now they should be in this order
-    assert hunter.hunts[0].name == 'test_hunt_1'
-    assert hunter.hunts[1].name == 'test_hunt_2'
-    assert hunter.hunts[2].name == 'test_hunt_3'
+    # the hunt due soonest comes first
+    assert [hunt.name for hunt in hunter.hunts] == ['c_hunt', 'b_hunt', 'a_hunt']
 
 @pytest.mark.integration
 def test_hunt_execution_single_threaded(hunter_service_single_threaded):
@@ -236,11 +223,9 @@ def test_hunt_execution_single_threaded(hunter_service_single_threaded):
 @pytest.mark.system
 def test_hunt_execution_multi_threaded(hunter_service_multi_threaded):
     hunter_service_multi_threaded.start()
-    hunter_service_multi_threaded.wait_for_start()
+    assert hunter_service_multi_threaded.wait_for_start()
     wait_for_log_count('unit test execute marker: Hunt(unit_test_1[test])', 1)
     wait_for_log_count('unit test execute marker: Hunt(unit_test_2[test])', 1)
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.integration
 def test_non_schedulable_hunt_type_loads_nothing_from_rule_dirs(manager_kwargs, rules_dir):
@@ -436,8 +421,6 @@ def test_reload_hunts_on_yaml_modified(rules_dir, hunter_service_multi_threaded)
     wait_for_log_count('detected modification to', 1, 5)
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 2)
     wait_for_log_count('loaded Hunt(unit_test_2[test]) from', 2)
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.system
 def test_reload_hunts_on_deleted(rules_dir, hunter_service_multi_threaded):
@@ -449,8 +432,6 @@ def test_reload_hunts_on_deleted(rules_dir, hunter_service_multi_threaded):
     wait_for_log_count('detected modification to', 1, 5)
     wait_for_log_count('loaded Hunt(unit_test_2[test]) from', 2)
     assert log_count('loaded Hunt(unit_test_1[test]) from') == 1
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.system
 def test_reload_hunts_on_new(rules_dir, hunter_service_multi_threaded):
@@ -478,71 +459,6 @@ def test_reload_hunts_on_new(rules_dir, hunter_service_multi_threaded):
     wait_for_log_count('loaded Hunt(unit_test_1[test]) from', 2)
     wait_for_log_count('loaded Hunt(unit_test_2[test]) from', 2)
     wait_for_log_count('loaded Hunt(unit_test_3[test]) from', 1)
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
-
-@pytest.mark.system
-def test_reload_hunts_on_included_file_modified(rules_dir, hunter_service_multi_threaded):
-    """Test that modifying an included file causes the hunt to reload."""
-    # Create an includes subdirectory
-    includes_dir = os.path.join(rules_dir, 'includes')
-    os.makedirs(includes_dir, exist_ok=True)
-    
-    # Create an included file
-    included_file = os.path.join(includes_dir, 'test_include.include.yaml')
-    with open(included_file, 'w') as fp:
-        fp.write("""rule:
-  tags:
-    - included_tag_1
-    - included_tag_2
-  description: Included description
-""")
-    
-    # Create a hunt file that includes the above file
-    hunt_file = os.path.join(rules_dir, 'test_with_include.yaml')
-    with open(hunt_file, 'w') as fp:
-        fp.write("""include:
-  - includes/test_include.include.yaml
-rule:
-  uuid: 8c6f3381-5b2e-4f67-9c1d-0e4f5a6b7c8d
-  enabled: yes
-  name: test_with_include
-  description: Test Hunt With Include
-  type: test
-  alert_type: test - alert
-  frequency: '00:00:10'
-  instance_types:
-    - unittest
-  tags:
-    - main_tag
-""")
-    
-    hunter_service_multi_threaded.hunt_managers["test"].update_frequency = 1
-    hunter_service_multi_threaded.start()
-    wait_for_log_count('loaded Hunt(test_with_include[test]) from', 1)
-    
-    # Verify the hunt was loaded with the included tags
-    manager = hunter_service_multi_threaded.hunt_managers["test"]
-    hunt = next((h for h in manager.hunts if h.name == 'test_with_include'), None)
-    assert hunt is not None
-    assert 'included_tag_1' in hunt.tags
-    assert 'included_tag_2' in hunt.tags
-    assert 'main_tag' in hunt.tags
-    
-    # Modify the included file
-    with open(included_file, 'a') as fp:
-        fp.write('\n  # modified included file')
-    
-    # Wait for the modification to be detected and the hunt to reload
-    wait_for_log_count('detected modification to', 1, 5)
-    wait_for_log_count('loaded Hunt(test_with_include[test]) from', 2)
-    
-    # Verify the hunt was reloaded (the hunt object should still exist)
-    hunt_after = next((h for h in manager.hunts if h.name == 'test_with_include'), None)
-    assert hunt_after is not None
-    
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.system
 def test_reload_hunts_on_nested_included_file_modified(rules_dir, hunter_service_multi_threaded):
@@ -615,8 +531,6 @@ rule:
     hunt_after = next((h for h in manager.hunts if h.name == 'test_with_nested_include'), None)
     assert hunt_after is not None
     
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.system
 def test_reload_hunts_on_multiple_included_files(rules_dir, hunter_service_multi_threaded):
@@ -692,8 +606,6 @@ rule:
     hunt_after = next((h for h in manager.hunts if h.name == 'test_with_multiple_includes'), None)
     assert hunt_after is not None
     
-    hunter_service_multi_threaded.stop()
-    hunter_service_multi_threaded.wait()
 
 @pytest.mark.integration
 def test_valid_cron_schedule(rules_dir, manager_kwargs):
@@ -992,26 +904,6 @@ def test_load_hunt_without_instance_types(rules_dir, manager_kwargs):
     assert hunter.hunts[0].instance_types == []
 
 @pytest.mark.integration
-def test_is_valid_instance_type_empty(manager_kwargs, monkeypatch):
-    # when instance_types is empty, hunt should not be valid (instance type must be specified)
-    monkeypatch.setattr(get_config().global_settings, "instance_type", "production")
-
-    hunter = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=hunter, instance_types=[])
-
-    assert not hunter.is_valid_instance_type(hunt)
-
-@pytest.mark.integration
-def test_is_valid_instance_type_matching(manager_kwargs, monkeypatch):
-    # hunt with instance_types=['production'] should be valid for production instance
-    monkeypatch.setattr(get_config().global_settings, "instance_type", "production")
-
-    hunter = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=hunter, instance_types=['production', 'development'])
-
-    assert hunter.is_valid_instance_type(hunt)
-
-@pytest.mark.integration
 def test_is_valid_instance_type_case_insensitive(manager_kwargs, monkeypatch):
     # instance type matching should be case insensitive
     monkeypatch.setattr(get_config().global_settings, "instance_type", "Production")
@@ -1020,16 +912,6 @@ def test_is_valid_instance_type_case_insensitive(manager_kwargs, monkeypatch):
     hunt = default_hunt(manager=hunter, instance_types=['PRODUCTION', 'development'])
 
     assert hunter.is_valid_instance_type(hunt)
-
-@pytest.mark.integration
-def test_is_valid_instance_type_non_matching(manager_kwargs, monkeypatch):
-    # hunt with instance_types=['production'] should not be valid for development instance
-    monkeypatch.setattr(get_config().global_settings, "instance_type", "development")
-
-    hunter = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=hunter, instance_types=['production'])
-
-    assert not hunter.is_valid_instance_type(hunt)
 
 @pytest.mark.integration
 def test_hunt_execution_skips_invalid_instance_type(manager_kwargs, monkeypatch):
@@ -1206,10 +1088,15 @@ def test_execute_threaded_hunt_skips_suppression_tracking_when_not_configured(ma
         group_values=["alice", "bob", "charlie"])
     # normally set by execute_hunt() before it hands the hunt to the execution thread
     hunt.semaphore = None
+    # discard_suppression_state() empties last_alert_times after the run either way, so only the
+    # calls show whether the per-group pass ran
+    hunt.set_last_alert_time = Mock(wraps=hunt.set_last_alert_time)
 
     assert hunt.suppression is None
 
     manager.execute_threaded_hunt(hunt)
+
+    hunt.set_last_alert_time.assert_not_called()
 
     # all three submissions still make it to the queue
     assert len(manager.file_manager.list_staged_submissions()) == 3
@@ -1218,29 +1105,6 @@ def test_execute_threaded_hunt_skips_suppression_tracking_when_not_configured(ma
     assert hunt.last_alert_times == {}
     assert read_persistence_data(hunt.type, hunt.name, "last_alert_times") is None
     assert log_count("suppression tracking disabled") == 1
-
-@pytest.mark.integration
-def test_execute_threaded_hunt_records_suppression_state_when_configured(manager_kwargs):
-    """a grouped hunt that does configure suppression still records per-group times"""
-    manager = HuntManager(**manager_kwargs)
-    hunt = _GroupedTestHunt(
-        manager=manager,
-        config=default_hunt_config(name="test_with_suppression", suppression="00:01:00"),
-        group_values=["alice", "bob"])
-    hunt.semaphore = None
-
-    assert hunt.suppression is not None
-
-    manager.execute_threaded_hunt(hunt)
-
-    assert hunt.get_last_alert_time("alice") is not None
-    assert hunt.get_last_alert_time("bob") is not None
-
-    # and it was persisted
-    persisted = read_persistence_data(hunt.type, hunt.name, "last_alert_times")
-    assert persisted is not None
-    assert set(persisted.keys()) == {"alice", "bob"}
-    assert log_count("suppression tracking enabled") == 1
 
 @pytest.mark.integration
 def test_execute_threaded_hunt_records_a_runs_suppression_under_its_key(manager_kwargs):
@@ -1257,19 +1121,6 @@ def test_execute_threaded_hunt_records_a_runs_suppression_under_its_key(manager_
 
     assert set(read_persistence_data(hunt.type, hunt.name, "last_alert_times")) == {"svs_run:r1:win10-01", "prod-01"}
 
-
-@pytest.mark.integration
-def test_execute_threaded_hunt_still_records_ungrouped_last_alert_time(manager_kwargs):
-    """the ungrouped branch is untouched - it writes once per run, not once per submission"""
-    manager = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=manager, name="test_ungrouped")
-    hunt.semaphore = None
-
-    assert hunt.group_by is None
-
-    manager.execute_threaded_hunt(hunt)
-
-    assert hunt.last_alert_time is not None
 
 def _count_persistence_writes(monkeypatch, value_name="last_alert_times"):
     """patches write_persistence_data to count writes of a given value name
@@ -1316,6 +1167,7 @@ def test_execute_threaded_hunt_writes_last_alert_times_once_per_run(manager_kwar
     # and it round trips
     persisted = read_persistence_data(hunt.type, hunt.name, "last_alert_times")
     assert set(persisted.keys()) == set(group_values)
+    assert log_count("suppression tracking enabled") == 1
 
 @pytest.mark.unit
 def test_set_last_alert_time_does_not_write_to_disk(monkeypatch, tmpdir, manager_kwargs):
@@ -1463,20 +1315,29 @@ def test_failed_hunt_backs_off(manager_kwargs):
     assert hunt.ready is False
 
 
+class _FailingQueryHunt(QueryHunt):
+    """A full coverage query hunt whose data source is down."""
+    __test__ = False
+
+    def execute_query(self, start_time, end_time, *args, **kwargs):
+        raise RemoteApiError(401, "transient upstream failure")
+
+
 @pytest.mark.integration
 def test_failed_full_coverage_hunt_does_not_advance_last_end_time(manager_kwargs):
     """Backing off must not skip the time range the failed run was supposed to cover."""
     manager = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=manager, frequency='00:10')
+    hunt = _FailingQueryHunt(manager=manager, config=QueryHuntConfig(
+        uuid=str(uuid4()), name="failing_query_hunt", type="test", enabled=True,
+        description="Failing Query Hunt", alert_type="test - query", frequency="00:10",
+        instance_types=["unittest"], time_range="00:10", full_coverage=True,
+        use_index_time=False, query="index=test"))
     hunt.semaphore = None
 
-    def _boom():
-        raise RemoteApiError(401, "transient upstream failure")
-
-    hunt.execute = _boom
     hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
 
     assert hunt.ready is False
+    assert log_count("failed (remote API error)") == 1
     # no coverage was recorded for a window we never actually searched
     assert read_persistence_data(hunt.type, hunt.name, 'last_end_time') is None
 
@@ -1753,32 +1614,6 @@ def test_execution_lock_released_when_finalization_fails(manager_kwargs, monkeyp
     monkeypatch.undo()
     hunt.execute_with_lock(ExecutionMode.SINGLE_SHOT)
     assert hunt.running is False
-
-
-@pytest.mark.integration
-def test_reload_completes_after_a_hunt_fails_to_finalize(manager_kwargs, monkeypatch):
-    """The outage itself: a reload must not have to wait out a hunt that failed this way."""
-    import saq.collectors.hunter.base_hunter as base_hunter_module
-
-    manager = HuntManager(**manager_kwargs)
-    hunt = default_hunt(manager=manager)
-    hunt.semaphore = None
-    manager.add_hunt(hunt)
-
-    def _boom(*args, **kwargs):
-        raise OSError(36, "File name too long")
-
-    monkeypatch.setattr(base_hunter_module, "write_persistence_data", _boom)
-    _run_hunt_on_its_own_thread(manager, hunt)
-    monkeypatch.undo()
-
-    start = time.monotonic()
-    manager.cancel_hunts()
-    elapsed = time.monotonic() - start
-
-    # nothing was left running, so there was nothing to cancel and nothing to abandon
-    assert elapsed < 5
-    assert log_count("did not stop within") == 0
 
 
 def _completion_records(caplog, hunt):

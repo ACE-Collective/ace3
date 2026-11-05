@@ -140,8 +140,10 @@ def test_building_an_observable_imports_only_its_type():
 def test_initialization_does_not_import_what_only_some_processes_need(tmp_path):
     # a process that never looks at an observable or queries through the ORM (network semaphore, git,
     # monitoring, cron) must not pay for the observable types, the analysis framework, the engine, the
-    # models, the analysis tree or the GUI just by initializing. This runs with the integrations
-    # installed here, so it also catches one of them importing any of these at module level.
+    # models, the analysis tree or the GUI just by initializing. Initializing sets up the database
+    # connections (pool, retry, node registration), so this holds those modules to the same rule. This
+    # runs with the integrations installed here, so it also catches one of them importing any of these
+    # at module level.
     data_dir, temp_dir = tmp_path / "data", tmp_path / "temp"
     data_dir.mkdir()
     temp_dir.mkdir()
@@ -156,21 +158,11 @@ def test_initialization_does_not_import_what_only_some_processes_need(tmp_path):
                        timeout=180)
 
 
-def test_database_connections_do_not_import_the_models():
-    # every process sets up its connections (pool, retry, node registration); only the ones that query
-    # through the ORM need the models, the analysis tree they import, the GUI's Flask, or SQLAlchemy
-    _assert_loads_none("import saq.database, saq.database.pool, saq.database.retry, saq.database.util.node\n",
-                       ["saq.database.model", "saq.analysis.root", "flask", "werkzeug", "sqlalchemy"])
-
-
-def test_the_models_do_not_import_flask():
-    _assert_loads_none("import saq.database.model\n", ["flask", "flask_login", "werkzeug"])
-
-
-def test_the_url_helpers_do_not_import_urlfinderlib_or_requests():
-    # saq.util imports them in every process, and the models use them; only extracting a protected url needs
-    # urlfinderlib or requests
-    _assert_loads_none("import saq.util.url, saq.database.model\n", ["urlfinderlib", "requests"])
+def test_the_models_and_url_helpers_do_not_import_flask_urlfinderlib_or_requests():
+    # saq.util imports the url helpers in every process, and the models use them; only extracting a protected
+    # url needs urlfinderlib or requests, and only the GUI needs Flask
+    _assert_loads_none("import saq.util.url, saq.database.model\n",
+                       ["flask", "flask_login", "werkzeug", "urlfinderlib", "requests"])
 
 
 def test_saq_database_exports_load_on_first_use():

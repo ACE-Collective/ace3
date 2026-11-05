@@ -24,43 +24,15 @@ from saq.database.util.alert import ALERT
 from saq.database.util.observable_detection import create_observable_detection
 from saq.gui import alert_actions
 from saq.gui.alert_actions import AlertAction, register_alert_action
-from saq.observables.testing import TestObservable
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4
 
-@pytest.mark.skip(reason="skipping tests with api_server")
-@pytest.mark.system
-def test_index(web_client, root_analysis, api_server, test_context):
+@pytest.mark.integration
+def test_index_unknown_alert_redirects_to_manage(web_client):
     result = web_client.get(url_for("analysis.index"), query_string={"direct": str(uuid4())})
 
-    # unknown uuid should return redirect to manage
     assert result.status_code == 302
     assert result.location == url_for("analysis.manage")
-
-    test_observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
-    assert isinstance(test_observable, TestObservable)
-
-    from saq.modules.test import BasicTestAnalyzer, BasicTestAnalysis
-    from saq.modules.context import AnalysisModuleContext
-    analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-    context = AnalysisModuleContext(root=root_analysis)
-    analyzer.set_context(context)
-    analyzer.execute_analysis(test_observable)
-    analysis = test_observable.get_and_load_analysis(BasicTestAnalysis)
-    assert isinstance(analysis, BasicTestAnalysis)
-
-    root_analysis.save() # TODO ALERT should save()
-    alert = ALERT(root_analysis)
-    assert isinstance(alert, Alert)
-
-    result = web_client.get(url_for("analysis.index"), query_string={
-            "direct": root_analysis.uuid,
-            "observable_uuid": test_observable.uuid,
-            "module_path": MODULE_PATH(analysis),
-        })
-    assert result.status_code == 200
 
 @pytest.mark.integration
 def test_index_no_load(web_client, root_analysis):
@@ -225,43 +197,17 @@ class TestTreeNode:
         obs_node = TreeNode(test_observable)
         assert obs_node.should_render
 
+        # a volatile observable is hidden when volatile nodes are pruned, unless it leads to a detection
+        volatile = root_analysis.add_observable_by_spec(F_TEST, "volatile_test", volatile=True)
+        assert TreeNode(volatile).should_render
+        pruned_node = TreeNode(volatile, prune_volatile=True)
+        assert not pruned_node.should_render
+        pruned_node.visible = True
+        assert pruned_node.should_render
+
 @pytest.mark.integration
 class TestIndexHelperFunctions:
     """Test helper functions in index.py."""
-    
-    def test_recurse_function(self, root_analysis, test_context):
-        """Test the _recurse helper function."""
-        from app.analysis.views.index import TreeNode, _recurse
-        from saq.modules.test import BasicTestAnalyzer
-        from saq.modules.context import AnalysisModuleContext
-        
-        # Add test observable and analysis
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "recurse_test")
-        analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-        context = AnalysisModuleContext(root=root_analysis)
-        analyzer.set_context(context)
-        analyzer.execute_analysis(test_observable)
-        
-        # Create tree and recurse
-        root_node = TreeNode(root_analysis)
-        _recurse(root_node)
-        
-        # Should have children for observables
-        assert len(root_node.children) > 0
-        
-        # Find the test observable node
-        test_obs_node = None
-        for child in root_node.children:
-            if hasattr(child.obj, 'value') and child.obj.value == "recurse_test":
-                test_obs_node = child
-                break
-        
-        assert test_obs_node is not None
-        # Should have analysis children (if analysis was created)
-        # Note: analysis might not be created in test environment
-        # assert len(test_obs_node.children) > 0
     
     def test_sort_function(self, root_analysis):
         """Test the _sort helper function."""
@@ -283,81 +229,15 @@ class TestIndexHelperFunctions:
         parent_node.add_child(child2)
         parent_node.add_child(child3)
         
-        # Sort the tree
-        _sort(parent_node)
-        
-        # Children should be sorted
-        assert len(parent_node.children) == 3
-        # Note: actual sorting depends on sort_order property and object comparison
-    
-    def test_prune_function(self, root_analysis, test_context):
-        """Test the _prune helper function."""
-        from app.analysis.views.index import TreeNode, _recurse, _prune
-        from saq.modules.test import BasicTestAnalyzer
-        from saq.modules.context import AnalysisModuleContext
-        
-        # Create a tree with analysis
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "prune_test")
-        analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-            context=test_context,
-            config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-        context = AnalysisModuleContext(root=root_analysis)
-        analyzer.set_context(context)
-        analyzer.execute_analysis(test_observable)
-        
-        root_node = TreeNode(root_analysis)
-        _recurse(root_node)
-        
-        # Before pruning, some nodes may not be visible
-        def count_visible(node):
-            count = 1 if node.visible else 0
-            for child in node.children:
-                count += count_visible(child)
-            return count
-        
-        visible_before = count_visible(root_node)
-        
-        # Prune the tree
-        _prune(root_node)
-        # root node is visible (as done in the actual code)
-        root_node.visible = True
-        
-        # Root should be visible after pruning
-        assert root_node.visible
-        
-        # Some nodes should be visible now
-        visible_after = count_visible(root_node)
-        assert visible_after >= 1  # At least root should be visible
-    
-    def test_resolve_references_function(self, root_analysis):
-        """Test the _resolve_references helper function."""
-        from app.analysis.views.index import TreeNode, _resolve_references
-        
-        # Create nodes with references
-        test_observable = root_analysis.add_observable_by_spec(F_TEST, "resolve_test")
-        node1 = TreeNode(test_observable)
-        node2 = TreeNode(test_observable)
-        
-        # Create a child for node2
-        child_obs = root_analysis.add_observable_by_spec(F_TEST, "child_resolve")
-        child_node = TreeNode(child_obs)
-        node2.add_child(child_node)
-        
-        # Make node1 refer to node2
-        node1.refer_to(node2)
-        
-        # Make node1 visible but not node2
-        node1.visible = True
-        node2.visible = False
-        
-        # Resolve references
-        _resolve_references(node1)
-        
-        # node1 should now have node2's children and no reference
-        assert node1.reference_node is None
-        assert len(node1.children) == 1
-        assert node1.children[0].obj == child_obs
+        # and children of a child, to see the sort reach them
+        child1.add_child(TreeNode(root_analysis.add_observable_by_spec(F_TEST, "y_test")))
+        child1.add_child(TreeNode(root_analysis.add_observable_by_spec(F_TEST, "b_test")))
 
+        _sort(parent_node)
+
+        assert [child.obj.value for child in parent_node.children] == ["a_test", "m_test", "z_test"]
+        assert [child.obj.value for child in child1.children] == ["b_test", "y_test"]
+    
     def test_resolve_references_leaves_one_jump_target(self, root_analysis):
         """A node that is not visible is still rendered, so after a visible referent takes over its
         analysis it has to become a referent itself. Otherwise the observable is displayed twice
@@ -394,20 +274,6 @@ class TestIndexHelperFunctions:
 
 
 @pytest.mark.integration
-def test_index_with_session_variables(web_client, root_analysis, app):
-    """Test index view with different session variables."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    with web_client.session_transaction() as sess:
-        sess['prune'] = False
-        sess['prune_volatile'] = False
-    
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
-
-
-@pytest.mark.integration
 def test_index_with_observable_and_module_path(web_client, root_analysis, test_context):
     """Test index view with observable_uuid and module_path parameters."""
     from saq.modules.test import BasicTestAnalyzer, BasicTestAnalysis
@@ -431,8 +297,12 @@ def test_index_with_observable_and_module_path(web_client, root_analysis, test_c
         "observable_uuid": test_observable.uuid,
         "module_path": MODULE_PATH(analysis)
     })
-    
+
     assert result.status_code == 200
+    body = result.data.decode()
+    # the page shows that analysis's details instead of the alert's analysis tree
+    assert "{&#39;test_result&#39;: True}" in body
+    assert 'id="analysis-overview-card"' not in body
 
 
 @pytest.mark.integration
@@ -469,17 +339,6 @@ def test_index_has_no_email_file(web_client, root_analysis, tmp_path):
 
 
 @pytest.mark.integration
-def test_index_database_queries(web_client, root_analysis):
-    """Test that index view handles database queries correctly."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Test that the view handles database queries without errors
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
-
-
-@pytest.mark.integration
 def test_index_error_handling(web_client, root_analysis):
     """Test error handling in index view."""
     # Test with invalid observable_uuid
@@ -493,17 +352,6 @@ def test_index_error_handling(web_client, root_analysis):
     
     # Should handle gracefully with redirect
     assert result.status_code == 302
-
-
-@pytest.mark.integration
-def test_index_with_comments(web_client, root_analysis):
-    """Test index view handles comments correctly."""
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # The view should handle cases where comments query might fail
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
 
 
 def _run_basic_analyzer(root_analysis, test_context):
@@ -652,33 +500,6 @@ def test_index_no_added_by_subtext_for_engine_observables(
     body = result.data.decode("utf-8")
     assert 'class="observable-added-by"' not in body
     assert "added by <strong>" not in body
-
-
-@pytest.mark.integration
-def test_index_tree_display_logic(web_client, root_analysis, test_context):
-    """Test the tree display logic in index view."""
-    from saq.modules.test import BasicTestAnalyzer
-    from saq.modules.context import AnalysisModuleContext
-    
-    # Add some observables to create a tree
-    test_observable = root_analysis.add_observable_by_spec(F_TEST, "tree_test")
-    analyzer = AnalysisModuleAdapter(BasicTestAnalyzer(
-        context=test_context,
-        config=get_analysis_module_config(ANALYSIS_MODULE_BASIC_TEST)))
-    context = AnalysisModuleContext(root=root_analysis)
-    analyzer.set_context(context)
-    analyzer.execute_analysis(test_observable)
-    
-    root_analysis.save()
-    alert = ALERT(root_analysis)
-    
-    # Test with different prune settings
-    with web_client.session_transaction() as sess:
-        sess['prune'] = True
-        sess['prune_volatile'] = True
-    
-    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
-    assert result.status_code == 200
 
 
 #

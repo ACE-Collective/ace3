@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,25 +11,23 @@ from saq.collectors.hunter.correlation.cache import (
     set_cached_result,
 )
 
+# the key of {"query": "test"}: sha256 of '{"query": "test"}', computed with shasum
+QUERY_TEST_KEY = "hunt_cache:a59686a9a4c2e8ad9c1ab86ee13b8df3c661b6f11ed3af2a54a0168001b6d5eb"
+
 
 @pytest.mark.unit
 class TestCacheKeyGeneration:
 
-    def test_deterministic(self):
+    def test_key_is_the_sha256_of_the_sorted_arguments(self):
+        """The cache is shared across processes and restarts, so the key must not change between them."""
         args = {"type": "query", "source": "splunk", "query": "index=main"}
-        key1 = _make_cache_key(args)
-        key2 = _make_cache_key(args)
-        assert key1 == key2
+        # sha256 of '{"query": "index=main", "source": "splunk", "type": "query"}', computed with shasum
+        assert _make_cache_key(args) == "hunt_cache:f08b50321474848ec395e68bbdfdc27e50e3977f2a50d520083bcd8fc42a19da"
 
     def test_different_args_different_keys(self):
         key1 = _make_cache_key({"query": "a"})
         key2 = _make_cache_key({"query": "b"})
         assert key1 != key2
-
-    def test_key_format(self):
-        key = _make_cache_key({"test": "value"})
-        assert key.startswith("hunt_cache:")
-        assert len(key) == len("hunt_cache:") + 64  # sha256 hex digest
 
 
 @pytest.mark.unit
@@ -78,15 +77,18 @@ class TestCacheOperations:
 
         result = get_cached_result({"query": "test"})
         assert result == "cached_output"
+        mock_redis.get.assert_called_once_with(QUERY_TEST_KEY)
 
     @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
-    def test_get_cached_miss(self, mock_get_redis):
+    def test_get_cached_miss(self, mock_get_redis, caplog):
         mock_redis = MagicMock()
         mock_redis.get.return_value = None
         mock_get_redis.return_value = mock_redis
 
-        result = get_cached_result({"query": "test"})
+        with caplog.at_level(logging.INFO):
+            result = get_cached_result({"query": "test"})
         assert result is None
+        assert not [r for r in caplog.records if "cache hit" in r.getMessage()]
 
     @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
     def test_set_cached(self, mock_get_redis):
@@ -94,13 +96,12 @@ class TestCacheOperations:
         mock_get_redis.return_value = mock_redis
 
         set_cached_result({"query": "test"}, "output", 3600)
-        mock_redis.setex.assert_called_once()
+        mock_redis.setex.assert_called_once_with(QUERY_TEST_KEY, 3600, "output")
 
     @patch("saq.collectors.hunter.correlation.cache.get_redis_connection")
     def test_set_cached_logs_command_identity(self, mock_get_redis, caplog):
         mock_get_redis.return_value = MagicMock()
 
-        import logging
         with caplog.at_level(logging.INFO):
             set_cached_result(
                 {"type": "query", "source": "logscale", "query": "index=main"},
@@ -117,7 +118,6 @@ class TestCacheOperations:
     def test_set_cached_redacts_secrets(self, mock_get_redis, caplog):
         mock_get_redis.return_value = MagicMock()
 
-        import logging
         with caplog.at_level(logging.INFO):
             set_cached_result(
                 {"type": "query", "source": "splunk", "query": "token=SUPERSECRET index=main"},
@@ -135,7 +135,6 @@ class TestCacheOperations:
         mock_redis.get.return_value = "cached_output"
         mock_get_redis.return_value = mock_redis
 
-        import logging
         with caplog.at_level(logging.INFO):
             get_cached_result({"type": "query", "source": "logscale", "query": "index=main"})
 

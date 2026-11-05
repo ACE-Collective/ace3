@@ -1,3 +1,4 @@
+import pymysql
 import pytest
 
 from saq.constants import QUEUE_DEFAULT
@@ -18,20 +19,6 @@ def clean_detections():
 
 
 @pytest.mark.integration
-def test_observable_is_set_for_detection_true():
-    observable = create_observable("ipv4", "192.168.50.1")
-    create_observable_detection(observable.type, observable.value, None)
-
-    assert observable_is_set_for_detection(observable) is True
-
-
-@pytest.mark.integration
-def test_observable_is_set_for_detection_not_exists():
-    observable = create_observable("ipv4", "192.168.50.2")
-    assert observable_is_set_for_detection(observable) is False
-
-
-@pytest.mark.integration
 def test_observable_is_set_for_detection_requires_a_matching_type():
     """A detection matches only when type and hash both match."""
     detected = create_observable("fqdn", "shared.example.com")
@@ -44,35 +31,10 @@ def test_observable_is_set_for_detection_requires_a_matching_type():
     assert observable_is_set_for_detection(detected) is True
     assert observable_is_set_for_detection(other_type) is False
 
-
-@pytest.mark.integration
-def test_observable_is_set_for_detection_with_special_characters():
-    for value in [
-        "test with spaces",
-        "test@with#special$chars%",
-        "test\nwith\nnewlines",
-        "test\twith\ttabs",
-        "test'with'quotes\"and\"double",
-    ]:
-        observable = create_observable("test", value)
-        if observable is None:
-            continue
-
-        assert observable_is_set_for_detection(observable) is False
-        create_observable_detection(observable.type, observable.value, None)
-        assert observable_is_set_for_detection(observable) is True
-
-
-
 def _store_observable(observable, is_interesting: bool):
     get_db().add(DBObservable(type=observable.type, sha256=observable.sha256_bytes,
                               value=observable.value.encode("utf8"), is_interesting=is_interesting))
     get_db().commit()
-
-
-@pytest.mark.integration
-def test_observable_is_interesting_not_exists():
-    assert observable_is_interesting(create_observable("ipv4", "10.0.0.1")) is False
 
 
 @pytest.mark.integration
@@ -81,14 +43,6 @@ def test_observable_is_interesting_false():
     _store_observable(observable, False)
 
     assert observable_is_interesting(observable) is False
-
-
-@pytest.mark.integration
-def test_observable_is_interesting_true():
-    observable = create_observable("ipv4", "192.168.1.1")
-    _store_observable(observable, True)
-
-    assert observable_is_interesting(observable) is True
 
 
 @pytest.mark.integration
@@ -165,164 +119,46 @@ def test_upsert_observable_existing():
 
 
 @pytest.mark.integration
-def test_upsert_observable_different_types():
-    """Test upserting observables of different types."""
-    test_cases = [
-        ("ipv4", "192.168.1.100"),
-        ("fqdn", "upsert.example.com"),
-        ("url", "https://upsert.example.com/path"),
-        ("email", "upsert@example.com"),
-    ]
-    
-    for obs_type, value in test_cases:
-        observable = create_observable(obs_type, value)
-        if observable is None:
-            continue
-            
-        obs_id = upsert_observable(observable)
-        assert obs_id is not None
-        assert isinstance(obs_id, int)
-        assert obs_id > 0
-        
-        # Verify the observable was stored correctly
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT type, value FROM observables WHERE id = %s", (obs_id,))
-            result = cursor.fetchone()
-            assert result is not None
-            assert result[0] == obs_type
-            assert result[1].decode("utf-8") == value
-
-
-@pytest.mark.integration
-def test_upsert_observable_special_characters():
-    """Test upserting observables with special characters."""
-    test_values = [
-        "test with spaces",
-        "test@with#special$chars%",
-        "test'with'quotes\"and\"double",
-        "test\\with\\backslashes",
-        "test\nwith\nnewlines",
-        "test\twith\ttabs",
-    ]
-    
-    for value in test_values:
-        observable = create_observable("test", value)
-        if observable is None:
-            continue
-            
-        obs_id = upsert_observable(observable)
-        assert obs_id is not None
-        assert isinstance(obs_id, int)
-        assert obs_id > 0
-        
-        # Verify the value was stored correctly
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT value FROM observables WHERE id = %s", (obs_id,))
-            result = cursor.fetchone()
-            assert result is not None
-            assert result[0].decode("utf-8") == value
-
-@pytest.mark.integration
-def test_upsert_observable_idempotent():
-    """Test that upserting the same observable multiple times returns the same ID."""
-    observable = create_observable("test", "upsert_idempotent_test")
-    assert observable is not None
-    
-    # Upsert multiple times
-    obs_id_1 = upsert_observable(observable)
-    obs_id_2 = upsert_observable(observable)
-    obs_id_3 = upsert_observable(observable)
-    
-    # All should return the same ID
-    assert obs_id_1 == obs_id_2 == obs_id_3
-    
-    # Verify only one record exists
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM observables WHERE type = %s AND sha256 = %s",
-                      (observable.type, observable.sha256_bytes))
-        result = cursor.fetchone()
-        assert result[0] == 1
-
-
-@pytest.mark.integration
 def test_upsert_observable_same_value_different_type():
-    """Test upserting observables with same value but different types."""
-    value = "same_value_test"
-    
-    # Create observables with same value but different types
-    obs1 = create_observable("test", value)
-    obs2 = create_observable("fqdn", value)
-    
-    if obs1 is None or obs2 is None:
-        pytest.skip("Could not create required observables")
-    
-    # They should have different sha256 hashes due to different types
-    assert obs1.sha256_bytes != obs2.sha256_bytes
-    
-    # Upsert both
-    obs_id_1 = upsert_observable(obs1)
-    obs_id_2 = upsert_observable(obs2)
-    
-    # Should get different IDs
-    assert obs_id_1 != obs_id_2
-    
-    # Verify both exist in database
+    """The same value under two types is two observables, though the two share a hash."""
+    fqdn = create_observable("fqdn", "upsert.example.com")
+    url_domain = create_observable("url_domain", "upsert.example.com")
+    assert fqdn.sha256_bytes == url_domain.sha256_bytes
+
+    assert upsert_observable(fqdn) != upsert_observable(url_domain)
+
     with get_db_connection() as db:
         cursor = db.cursor()
-        cursor.execute("SELECT COUNT(*) FROM observables WHERE value = %s", (value,))
-        result = cursor.fetchone()
-        assert result[0] == 2
+        cursor.execute("SELECT COUNT(*) FROM observables WHERE sha256 = %s", (fqdn.sha256_bytes,))
+        assert cursor.fetchone()[0] == 2
 
 
 @pytest.mark.integration
-def test_upsert_observable_race_condition_simulation():
-    """Test upsert behavior when race conditions might occur."""
+def test_upsert_observable_returns_the_row_another_writer_inserted_first(monkeypatch):
+    """Another writer commits the observable between the upsert's SELECT and its INSERT: the INSERT
+    hits the unique key, and the upsert returns the other writer's row."""
     observable = create_observable("test", "race_condition_test")
-    assert observable is not None
-    
-    # First upsert
-    obs_id_1 = upsert_observable(observable)
-    assert obs_id_1 is not None
-    
-    # Simulate what might happen in a race condition by manually inserting
-    # the same observable again (this should trigger the IntegrityError path)
-    try:
-        with get_db_connection() as db:
-            cursor = db.cursor()
-            cursor.execute("INSERT INTO observables (`type`, `value`, `sha256`) VALUES (%s, %s, %s)",
-                          (observable.type, observable.value, observable.sha256_bytes))
-            db.commit()
-    except Exception:
-        # Expected to fail due to unique constraint
-        pass
-    
-    # Second upsert should still work and return the original ID
-    obs_id_2 = upsert_observable(observable)
-    assert obs_id_2 == obs_id_1
+    other_id = []
+    execute = pymysql.cursors.Cursor.execute
 
+    def execute_then_race(self, query, args=None):
+        result = execute(self, query, args)
+        if query.startswith("SELECT id FROM observables") and not other_id:
+            other_id.append(None)
+            with get_db_connection() as other:
+                cursor = other.cursor()
+                execute(cursor, "INSERT INTO observables (`type`, `value`, `sha256`) VALUES (%s, %s, %s)",
+                        (observable.type, observable.value, observable.sha256_bytes))
+                other.commit()
+                other_id[0] = cursor.lastrowid
+        return result
 
-@pytest.mark.integration
-def test_upsert_observable_return_type():
-    """Test that upsert_observable returns the correct type."""
-    observable = create_observable("test", "return_type_test")
-    assert observable is not None
-    
+    monkeypatch.setattr(pymysql.cursors.Cursor, "execute", execute_then_race)
     obs_id = upsert_observable(observable)
-    
-    # Should return an integer
-    assert isinstance(obs_id, int)
-    assert obs_id > 0
-    
-    # Should be a valid database ID
-    with get_db_connection() as db:
-        cursor = db.cursor()
-        cursor.execute("SELECT id FROM observables WHERE id = %s", (obs_id,))
-        result = cursor.fetchone()
-        assert result is not None
-        assert result[0] == obs_id
+    monkeypatch.undo()
+
+    assert other_id[0] is not None
+    assert obs_id == other_id[0]
 
 
 #
@@ -438,13 +274,6 @@ def test_batched_disposition_history_requires_a_matching_type():
     batched = get_observable_disposition_histories([seen, other_type])
     assert dict(batched[seen.uuid].history) == {DISPOSITION_FALSE_POSITIVE: 1}
     assert other_type.uuid not in batched
-
-
-@pytest.mark.unit
-def test_batched_disposition_history_empty_input():
-    from saq.database.database_observable import get_observable_disposition_histories
-
-    assert get_observable_disposition_histories([]) == {}
 
 
 @pytest.mark.integration

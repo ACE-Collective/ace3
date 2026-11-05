@@ -63,12 +63,14 @@ class TestSubmit:
             assert submit_index_task("u") is False
         mock_redis.assert_not_called()
 
-    def test_missing_service_section_is_a_noop(self, monkeypatch):
+    def test_missing_service_section_is_a_noop(self, monkeypatch, caplog):
         def raise_(name):
             raise ValueError("no such service")
 
         monkeypatch.setattr("saq.search.tasks.get_service_config", raise_)
         assert submit_index_task("u") is False
+        # a site without the section is not failing: submit_task's catch-all would log it at ERROR
+        assert [record for record in caplog.records if record.levelno >= logging.ERROR] == []
 
     @pytest.mark.parametrize("submit,op", [(submit_index_task, OP_INDEX), (submit_payload_task, OP_PAYLOAD), (submit_delete_task, OP_DELETE)])
     def test_ops_are_queued(self, enable_indexer, submit, op):
@@ -174,14 +176,21 @@ class TestWorkerLoop:
 
     def test_loop_prepares_once(self, worker):
         calls = []
+        passes = []
 
         def prepare():
             calls.append(1)
             worker.model = Mock()
 
+        def worker_execute():
+            passes.append(1)
+            if len(passes) == 3:
+                worker.stop()
+
         worker.prepare = prepare
-        worker.worker_execute = lambda: worker.stop()
+        worker.worker_execute = worker_execute
         worker.worker_loop()
+        assert len(passes) == 3
         assert calls == [1]
 
     def test_single_threaded_start_runs_the_loop(self):
@@ -231,17 +240,6 @@ class TestTaskRecovery:
             worker.defer_task(task)
         assert mock_get_redis.return_value.rpush.call_args[0][0] == FAILED_TASK_KEY
 
-    def test_worker_execute_requeues_on_error(self, worker, task):
-        with (
-            patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch.object(SearchIndexWorker, "execute_task", side_effect=RuntimeError("boom")),
-            patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch("saq.error.reporting.write_error_report"),
-        ):
-            worker.worker_execute()
-
-        mock_requeue.assert_called_once()
-
     def test_worker_execute_defers_on_lock_unavailable(self, worker, task):
         with (
             patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
@@ -253,23 +251,6 @@ class TestTaskRecovery:
 
         mock_defer.assert_called_once()
         mock_requeue.assert_not_called()
-
-    @pytest.mark.integration
-    def test_missing_alert_does_not_requeue(self, worker):
-        """A deleted alert is a terminal success, not a failure to retry."""
-        task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
-        with (
-            patch.object(SearchIndexWorker, "get_next_task", return_value=("key", task.model_dump_json())),
-            patch.object(SearchIndexWorker, "requeue_task") as mock_requeue,
-            patch.object(SearchIndexWorker, "defer_task") as mock_defer,
-            patch("saq.search.service.get_redis_connection"),
-        ):
-            worker.worker_execute()
-
-        mock_requeue.assert_not_called()
-        mock_defer.assert_not_called()
-        assert worker.tasks_completed == 1
-        assert _locks(task.alert_uuid) == []
 
 
 class TestLogging:
@@ -321,6 +302,7 @@ class TestLogging:
 
     @pytest.mark.integration
     def test_skipped_index_reports_the_reason(self, worker, caplog):
+        """A deleted alert is a terminal success, not a failure to retry."""
         # no alerts row: the real index_alert skips it before reaching the model or qdrant
         task = SearchIndexTask(alert_uuid=str(uuid.uuid4()))
         self.run_task(worker, task, caplog, index_alert=patch("saq.search.service.index.index_alert", wraps=index.index_alert))

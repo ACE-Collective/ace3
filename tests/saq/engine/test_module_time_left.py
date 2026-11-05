@@ -18,7 +18,6 @@ from saq.engine.enums import EngineExecutionMode
 from saq.engine.executor import AnalysisExecutor
 from saq.engine.tracking import NullTrackingWriter
 from saq.modules import AnalysisModule
-from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.test import TimeLeftTestAnalysis
 from saq.util.uuid import get_storage_dir
@@ -66,24 +65,6 @@ def test_time_left_counts_down_to_the_deadline(test_context):
 
     module.set_analysis_deadline(None)
     assert module.time_left() == 300
-
-
-@pytest.mark.unit
-def test_adapter_passes_the_deadline_to_the_module(test_context):
-    # the engine only ever holds the adapter, which inherits a do-nothing stub from the protocol
-    module = _module(test_context)
-    AnalysisModuleAdapter(module).set_analysis_deadline(time.monotonic() + 10)
-    assert 9 < module.time_left() <= 10
-
-
-@pytest.mark.unit
-def test_deadline_is_the_module_limit_when_it_is_tighter():
-    get_config().global_settings.maximum_cumulative_analysis_fail_time = 900
-    module = SimpleNamespace(maximum_analysis_time=60)
-
-    deadline = _executor()._get_analysis_deadline(module, "test_groups", current_total_time=100)
-
-    assert 59 < _seconds_left(deadline) <= 60
 
 
 @pytest.mark.unit

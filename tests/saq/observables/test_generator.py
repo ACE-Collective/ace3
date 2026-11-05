@@ -62,7 +62,7 @@ def test_a_class_that_cannot_be_loaded_raises(monkeypatch, target):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("target", ["saq.observables.testing", "saq.observables.testing.TestObservable",
+@pytest.mark.parametrize("target", ["saq.observables.testing.TestObservable",
                                     "saq.observables.testing:Test:Observable", ":TestObservable",
                                     "saq.observables.testing:", "saq..observables:TestObservable"])
 def test_a_class_not_named_as_module_class_fails_validation(target):

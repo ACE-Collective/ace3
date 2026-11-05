@@ -237,9 +237,12 @@ class TestShippedCronTasks:
 
         (the repo-wide "logs" pattern once swallowed a task named etc/cron/daily/logs)
         """
-        if shutil.which("git") is None or not (REPO_ROOT / ".git").exists():
-            pytest.skip("not a git checkout")
-
         tasks = [str(p.relative_to(REPO_ROOT)) for p in (REPO_ROOT / "etc" / "cron").glob("*/*")]
-        result = subprocess.run(["git", "check-ignore", *tasks], cwd=REPO_ROOT, capture_output=True, text=True)
+        # safe.directory: a git worktree in the dev container can belong to another user. Git failing
+        # (128) writes nothing to stdout, which must not read as "nothing is ignored"
+        result = subprocess.run(["git", "-c", "safe.directory=*", "check-ignore", *tasks], cwd=REPO_ROOT,
+                                capture_output=True, text=True)
+        if result.returncode == 128:
+            pytest.skip(f"git cannot read this checkout: {result.stderr}")
+
         assert result.stdout.split() == []
