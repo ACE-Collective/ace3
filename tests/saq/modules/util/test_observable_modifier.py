@@ -2315,6 +2315,38 @@ def test_tree_condition_observable_match_no_match():
 
 
 @pytest.mark.unit
+def test_tree_condition_observable_match_tags_match_per_tag():
+    """A collection property such as tags matches when any one element does, so ^tag$ is exact."""
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+
+    class UrlParseLikeAnalysis(Analysis):
+        pass
+
+    url = root.add_observable_by_spec(F_URL, "https://lure.example.org/login")
+    url.add_tag("suspect:nrd")
+    url.add_tag("intel_indicator")
+    analysis = UrlParseLikeAnalysis()
+    url.add_analysis(analysis)
+    fqdn = analysis.add_observable_by_spec(F_FQDN, "lure.example.org")
+    module_path = f"{UrlParseLikeAnalysis.__module__}:{UrlParseLikeAnalysis.__name__}"
+
+    def matches(pattern):
+        return TreeCondition(analysis_type=module_path, scope="parent",
+                             observable_match={"tags": re.compile(pattern)}).evaluate(fqdn, root)
+
+    assert matches(r"^intel_indicator$")
+    assert matches(r"^suspect:")
+    # unanchored, as rules have always written it
+    assert matches(r"intel_indicator")
+    assert not matches(r"^indicator$")
+    # elements are matched one at a time, never the list's text
+    assert not matches(r"nrd.*intel")
+    assert not matches(r"^\[")
+
+
+@pytest.mark.unit
 def test_tree_condition_observable_match_file_name():
     """observable_match should work with file_name attribute on FileObservable."""
 
@@ -5925,3 +5957,24 @@ def test_build_modifier_rule_matches_skips_analysis_without_matched_rules():
     root.add_observable_by_spec(F_URL, "https://example.com/").add_analysis(analysis)
 
     assert build_modifier_rule_matches(root) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("conditions", [
+    # misspelled: ignoring it would let the rule match every observable type
+    {"observable_type": ["url"]},
+    {"observable_types": ["url"], "tree_conditions": [{"analysis_type": "x:Y", "negated": True}]},
+])
+def test_rule_with_unknown_condition_is_not_loaded(conditions):
+    """A condition the parser does not know (a typo, or one this ACE predates) rejects the rule,
+    rather than being dropped and widening what the rule matches."""
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    adapter = _create_analyzer_with_rules(root, [
+        {"name": "unknown", "conditions": conditions, "actions": {"add_tags": ["x"]}},
+        {"name": "known", "conditions": {"observable_types": ["url"]}, "actions": {"add_tags": ["y"]}},
+    ])
+    analyzer = adapter._module
+    analyzer._ensure_initialized()
+    analyzer._load_config()
+    assert [rule.name for rule in analyzer._rules] == ["known"]

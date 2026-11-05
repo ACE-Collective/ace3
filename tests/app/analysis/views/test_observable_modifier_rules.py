@@ -1,7 +1,7 @@
 import pytest
 from flask import url_for
 
-from saq.constants import F_EMAIL_ADDRESS, F_URL
+from saq.constants import F_EMAIL_ADDRESS, F_FQDN, F_URL
 from saq.database.util.alert import ALERT
 from saq.modules.util.observable_modifier import ObservableModifierAnalysis
 
@@ -105,3 +105,32 @@ def test_alert_page_without_matches_has_no_card(web_client, root_analysis):
 
     assert result.status_code == 200
     assert 'data-section-id="observable_modifier_rules"' not in result.text
+
+
+@pytest.mark.integration
+def test_alert_page_links_the_alerts_a_seen_in_queue_rule_found(web_client, root_analysis):
+    fqdn = root_analysis.add_observable_by_spec(F_FQDN, "lure.example.org")
+    sighted = [{"uuid": f"{n:08x}-0000-0000-0000-000000000000", "reasons": ["tag:intel_indicator"] if n == 1 else []}
+               for n in range(1, 4)]
+    _record_matches(fqdn, [{
+        "name": "Seen in intel", "uuid": "rule-1", "actions_applied": {"add_tags": ["seen_in_intel_queue"]},
+        "evidence": {"seen_in_queue": {
+            "queue": "intel", "alert_count": 5, "alerts": sighted, "truncated": True,
+            "current_reasons": [], "global_reasons": ["is_interesting"],
+        }},
+    }])
+    root_analysis.save()
+    ALERT(root_analysis)
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+
+    assert result.status_code == 200
+    card = _card(result.text)
+    assert "lure.example.org" in card
+    assert "seen in intel:" in card
+    for alert in sighted:
+        assert url_for("analysis.index", direct=alert["uuid"]) in card
+    assert "(tag:intel_indicator)" in card
+    # 5 found, 3 listed, and the scan was capped so 5 is a lower bound
+    assert "and 2+ more" in card
+    assert "important here: is_interesting" in card

@@ -93,7 +93,10 @@ without changing any code.
 
 The file is **watched** — edits are picked up automatically without restarting ACE. A rule that
 fails to parse (bad regex, missing `uuid`, etc.) is logged and skipped; the rest of the file still
-loads.
+loads. That includes a rule with a condition or tree_condition key ACE does not recognize. Dropping
+a misspelled key, or one an older ACE does not support yet, would make the rule match more than its
+author wrote, so the whole rule is skipped instead. Deploy an ACE release that knows a new condition
+before you publish rules that use it.
 
 ### How a rule is structured
 
@@ -151,6 +154,7 @@ All condition fields are optional. Within a single rule, **every** specified con
 | `has_tags: [a, b]` | Observable must have **all** of these tags |
 | `has_directives: [a, b]` | Observable must have **all** of these directives |
 | `has_yara_meta_tags: ["type=..."]` | Observable must carry **all** of these yara-meta directives |
+| `root_observable: true` | `true`: the observable is one the alert was submitted with (directly under the root). `false`: analysis found it. Use this rather than a `parent` tree condition on `RootAnalysis`, which holds every observable in the tree. |
 
 > Regex values are standard Python `re` patterns. Remember YAML escaping — a literal `.` in a
 > pattern is `\\.` in the YAML file. Case-insensitive matching is done with an inline `(?i)` flag.
@@ -171,7 +175,7 @@ tree_conditions:
       email.from_address: "soc@third-party.com"   # dot-notation path, regex value
     observable_match:
       file_name: ".*\\.html$"   # regex against the matching analysis's observable
-                                # (supported props: type, value, file_name)
+                                # (supported props: type, value, file_name, tags, directives)
     produces_observable_type: "url"               # matched analysis must have PRODUCED this type
     produces_observable_value: ".*example\\.com"  # optional regex on the produced observable's value
 ```
@@ -199,7 +203,8 @@ PhishkitAnalysis".
 the remaining path is applied to each element and the condition matches if *any* element matches.
 
 `observable_match` regex-matches properties of the *matching analysis's* observable (e.g. `type`,
-`value`, `file_name`).
+`value`, `file_name`). A collection property (`tags`, `directives`) matches when any one element
+does, so `tags: "^phish$"` requires exactly that tag.
 
 > Careful when combining `observable_match` with `negate: true`. If the named property does not exist
 > on the observable at all — `file_name` on a `url`, say — the property check fails, the analysis is
@@ -216,6 +221,57 @@ an optional regex applied to that produced observable's value.
 > Note: when a `descendants`-scoped condition specifies only `observable_match` (no `analysis_type`
 > and no `details_match`), ACE matches against descendant *observables* directly rather than the
 > analyses on them — useful for "does any observable below me look like this?".
+
+#### Cross-alert history: `seen_in_queue`
+
+`seen_in_queue` matches an observable that also appears in **another alert** in the given queue. It
+queries the alert index, so it is evaluated after every other condition, and rules using it belong
+in `post` (the index of the earlier alert, and this alert's detections and tags, are complete by
+then).
+
+```yaml
+seen_in_queue:
+  queue: default                     # required; `seen_in_queue: default` is shorthand
+  require_important: true            # default true
+  indicator_tags: [intel_indicator]  # tags that mark an observable as an indicator
+```
+
+The same observable means the same value in the same type family: the type, its root type and
+every subtype of that root, so an `email_from` in one alert matches an `email_address` in another.
+Whitelisted observables never match, and the current alert never counts as a sighting.
+
+Any key other than the three above, a `require_important` that is not a YAML boolean, or an
+`indicator_tags` that is not a list of tag names makes the rule invalid, and it is skipped with a
+warning: a misspelled `indicator_tags` would otherwise quietly drop the evidence the rule relies on.
+
+With `require_important` (the default), sharing an observable is not enough: it must also matter
+somewhere, so incidental overlap (`login.microsoftonline.com`, a CDN address) is ignored. Any one of
+these is enough:
+
+| Where | Evidence |
+|-------|----------|
+| this alert | one of `indicator_tags` on the observable, or a detection point on the observable or on one of its analyses |
+| a sighted alert | the same, read from that alert's index (`observable_tag_index`, `detection_points` attributed to the observable's node) |
+| globally | the observable is enabled for detection, or an analyst marked it interesting |
+
+A detection on the alert's root does not count: it says the alert fired, not that this observable
+is why.
+
+An indicator tag is found in every alert in the queue. Everything else is read from the 200 newest
+alerts holding the observable, so a very common observable costs a bounded lookup; when there were
+more, the evidence is marked `truncated` and its count is a lower bound.
+
+When the rule matches, its entry in the Observable Modifier analysis carries the evidence: the
+sighted alerts (up to 10, each with its reasons), the count, `truncated` when the count is a lower
+bound, and the reasons from this alert and the global ones. The alert page's **Observable Modifier
+Rules** section lists each matched observable with links to the sighted alerts.
+
+Only the alert analyzed **later** is tagged. The earlier alert is not revisited unless it is
+analyzed again.
+
+Every observable the rule's other conditions let through costs a few indexed queries (two when
+nothing else holds it), so narrow the rule with `queue` and `observable_types`. If the lookup fails,
+the error is logged and the rule does not match; the module's other rules still apply.
 
 ### Actions
 
@@ -475,7 +531,70 @@ observable with this value appear *anywhere* in the alert?" — a general patter
 depends on that signature having fired." (Note the empty `analysis_type` on that condition: when it
 is omitted, ACE matches on `observable_match` alone.)
 
-#### 8. exclude_analysis — suppress noisy downstream work
+#### 8. seen_in_queue — call out overlap between queues
+
+Tag intel-queue observables that a phishing email in the default queue also carried, and the
+reverse. Separate rules decide which intel observables are indicators, so only the overlap that
+matters is called out. They come first: `post` rules run in file order, so the indicator tag is on
+the observable by the time the overlap rules look for it.
+
+```yaml
+- name: "Intel: matched entity is an intel indicator"
+  uuid: "88888888-8888-8888-8888-888888888881"
+  phase: pre
+  conditions:
+    queue: intel
+    alert_type: vti_livehunt
+    observable_types: [url, fqdn, ip, md5, sha1, sha256]
+    root_observable: true
+  actions:
+    add_tags: [intel_indicator]
+
+# a phish rarely carries the exact intel URL, so its domain is an indicator too
+- name: "Intel: domain of an indicator URL is an intel indicator"
+  uuid: "88888888-8888-8888-8888-888888888884"
+  phase: post
+  conditions:
+    queue: intel
+    alert_type: vti_livehunt
+    observable_types: [fqdn]
+    tree_conditions:
+      - analysis_type: "saq.modules.url.parser:ParseURLAnalysis"
+        scope: parent
+        observable_match:
+          tags: "^intel_indicator$"
+  actions:
+    add_tags: [intel_indicator]
+
+- name: "Intel observable seen in the default queue"
+  uuid: "88888888-8888-8888-8888-888888888882"
+  phase: post
+  conditions:
+    queue: intel
+    observable_types: [url, fqdn, ip, email_address, md5, sha1, sha256]
+    seen_in_queue:
+      queue: default
+      indicator_tags: [intel_indicator]
+  actions:
+    add_tags: [seen_in_default_queue]
+
+- name: "Default observable seen in the intel queue"
+  uuid: "88888888-8888-8888-8888-888888888883"
+  phase: post
+  conditions:
+    queue: default
+    observable_types: [url, fqdn, ip, email_address, md5, sha1, sha256]
+    seen_in_queue:
+      queue: intel
+      indicator_tags: [intel_indicator]
+  actions:
+    add_tags: [seen_in_intel_queue]
+```
+
+Observable tags roll up to the alert, so the alert list shows the tag. Give it a color in the
+site's `tags:` config (for example `seen_in_default_queue: interesting`).
+
+#### 9. exclude_analysis — suppress noisy downstream work
 
 Don't bother extracting and analyzing FQDNs from our own email addresses.
 
