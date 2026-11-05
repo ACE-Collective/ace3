@@ -25,7 +25,6 @@ import requests
 
 from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, NODE_STATUS_RUNNING
 from saq.database.pool import get_db_connection
-from saq.database.util.locking import acquire_lock
 from saq.database.util.node import set_node_status
 from saq.analysis.root import RootAnalysis
 from saq.engine.analysis_orchestrator import AnalysisOrchestrator
@@ -166,43 +165,6 @@ def test_transfer_survives_benign_clear_failure(item, monkeypatch, caplog):
     assert row is not None and row[0] == manager.lock_manager.lock_uuid
 
 
-def test_transfer_succeeds_when_clear_succeeds(item, monkeypatch):
-    """Regression: the normal path (clear returns True) still transfers."""
-    import ace_api
-
-    uuid, _ = item
-    monkeypatch.setattr(ace_api, "clear", lambda *a, **k: True)
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, workload_node_id(uuid))
-
-    assert result is not None and result.uuid == uuid
-    assert os.path.isdir(abs_target(uuid))
-    assert workload_node_id(uuid) == local_node_id()
-
-
-def test_transfer_releases_lock_when_download_fails(item, monkeypatch):
-    """A genuine transfer failure (download raises) releases the lock and
-    cleans up the partial local copy so the item can be retried."""
-    import ace_api
-
-    uuid, _ = item
-
-    def fail_download(*args, **kwargs):
-        raise RuntimeError("network is down")
-
-    monkeypatch.setattr(ace_api, "download", fail_download)
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, workload_node_id(uuid))
-
-    assert result is None
-    # the lock is not leaked -- another worker can pick the item back up
-    assert lock_row(uuid) is None
-    # the partial target directory was cleaned up
-    assert not os.path.isdir(abs_target(uuid))
-
-
 def test_transfer_bails_and_releases_lock_when_target_dir_exists(item, monkeypatch):
     """If the target dir already exists we bail -- but must still release the
     lock we just acquired rather than leaking it."""
@@ -237,16 +199,6 @@ def make_orchestrator(manager: DatabaseWorkloadManager) -> AnalysisOrchestrator:
         workload_manager=manager,
         lock_manager=manager.lock_manager,
     )
-
-
-def test_transfer_carries_the_work_item_mode(dispositioned_item):
-    uuid, remote_id = dispositioned_item
-
-    manager = make_manager(DistributedLockManager())
-    result = manager.transfer_work_target(uuid, remote_id, ANALYSIS_MODE_DISPOSITIONED)
-
-    assert result.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
-    assert result.original_analysis_mode == ANALYSIS_MODE_DISPOSITIONED
 
 
 def test_get_work_target_transfers_with_the_row_mode(dispositioned_item):

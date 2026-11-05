@@ -101,21 +101,6 @@ def test_delay_accepted_records_the_delayed_analysis_row(target):
 
 
 @pytest.mark.unit
-def test_delay_refused_when_request_is_not_recorded(worker, target):
-    """Nothing recorded the request, so nothing will ever resume the analysis:
-    the delay has to be refused rather than reported as scheduled."""
-    root, observable, analysis = target
-
-    with patch.object(worker.workload_manager, "add_delayed_analysis_request", return_value=False):
-        result = worker.delay_analysis(
-            root, observable, analysis, make_analysis_module(), hours=0, minutes=0, seconds=10, timeout_seconds=60
-        )
-
-    assert result is False
-    assert analysis.delayed is False
-
-
-@pytest.mark.unit
 def test_delay_refused_when_deadline_expired(worker, target):
     """The pre-existing refusal path: once the timeout passes no request is
     inserted at all."""

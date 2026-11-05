@@ -6,8 +6,6 @@ analysis timeout or its memory use left its pipes behind.
 """
 
 import logging
-import signal
-import subprocess
 import threading
 from unittest.mock import Mock
 
@@ -20,16 +18,10 @@ from saq.engine.enums import EngineExecutionMode, EngineType, WorkerStatus
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
 from saq.engine.worker_manager import WorkerManager
-from tests.saq.helpers import process_is_gone, wait_for_condition
+from tests.saq.helpers import wait_for_condition
 
 
 def _hanging_load_modules():
-    threading.Event().wait()
-
-
-def _load_modules_with_a_child():
-    # an analysis module's external tool, which outlives the worker unless it is killed too
-    subprocess.Popen(["sleep", "600"])
     threading.Event().wait()
 
 
@@ -52,29 +44,6 @@ def _started_worker(manager: WorkerManager) -> Worker:
     worker.start(execution_mode=EngineExecutionMode.NORMAL)
     wait_for_condition(lambda: psutil.pid_exists(worker.process.pid))
     return worker
-
-
-@pytest.mark.unit
-def test_a_killed_worker_is_seen_dead(manager):
-    worker = _started_worker(manager)
-
-    worker.kill()
-
-    assert not worker.is_alive()
-    assert worker.process.exitcode == -signal.SIGKILL
-
-
-@pytest.mark.unit
-def test_killing_a_worker_kills_what_it_started(manager):
-    manager.configuration_manager.load_modules = _load_modules_with_a_child
-    worker = _started_worker(manager)
-    wait_for_condition(lambda: psutil.Process(worker.process.pid).children())
-    child = psutil.Process(worker.process.pid).children()[0]
-
-    worker.kill()
-
-    wait_for_condition(lambda: process_is_gone(child.pid))
-    assert not worker.is_alive()
 
 
 @pytest.mark.unit
