@@ -56,7 +56,9 @@ async def _guids(client: AsyncClient, *filters: str) -> list[str]:
 
 @pytest.mark.asyncio
 async def test_ordered_by_technique_then_name(client: AsyncClient, catalog):
-    assert await _guids(client) == [_guid(3), _guid(2), _guid(1), _guid(4), _guid(5)]
+    # written after "Dump credentials" on the same technique, so only its name puts it first
+    _test(_guid(6), "T1003", "Archive credentials")
+    assert await _guids(client) == [_guid(6), _guid(3), _guid(2), _guid(1), _guid(4), _guid(5)]
 
 
 @pytest.mark.asyncio

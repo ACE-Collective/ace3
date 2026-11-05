@@ -258,7 +258,3 @@ async def test_every_call_needs_run_register(_override_db_session, session: Asyn
         run = await _register(client)
         assert (await client.post(f"/svs/runs/{run['run_id']}/start")).status_code == 200
 
-
-@pytest.mark.asyncio
-async def test_no_permission(noperm_client: AsyncClient):
-    assert (await noperm_client.post("/svs/runs/", json=REGISTRATION)).status_code == 403

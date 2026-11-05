@@ -105,6 +105,10 @@ class TestAlerts:
     @pytest.fixture
     def alerts(self, client: AsyncClient):
         run = started_run(GUID, now=datetime.now() - timedelta(minutes=5))
+        # another run's alert, on a host of its own so the context alert below stays this run's
+        add_test_host("win10-02")
+        _alert(marker=started_run(OTHER_GUID, "win10-02", now=datetime.now() - timedelta(minutes=5)).marker,
+               host="win10-02")
         return run, {
             "marked": _alert(marker=run.marker, description="marked hit"),
             "context": _alert(),
