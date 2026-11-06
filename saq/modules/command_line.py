@@ -1,7 +1,6 @@
 # vim: sw=4:ts=4:et:cc=120
 
-import logging
-import os
+import ntpath
 import re
 import shlex
 from typing import Type
@@ -23,6 +22,12 @@ KEY_FILE_PATH = "file_path"
 
 # a maximal run of base64 characters (standard or url-safe alphabet) with optional padding
 RE_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
+
+# program names whose -e abbreviates -EncodedCommand
+POWERSHELL_PROGRAMS = {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+
+# powershell reads the en dash, em dash and horizontal bar as a dash, which hides a flag from a match on "-"
+DASHES = ("-", "\u2013", "\u2014", "\u2015")
 
 class CommandLineAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
@@ -94,19 +99,7 @@ class CommandLineAnalyzer(AnalysisModule):
 
     def _add_base64_payload(self, analysis, encoded: str, decoded_data: bytes):
         """Write a decoded payload to a file and add it as a file observable."""
-        # find a unique file name
-        for file_name_index in range(1024 * 1024): # sanity check
-            file_name = f"command_line_base64_payload_{file_name_index}.bin"
-            target_file = self.get_root().create_file_path(file_name)
-            if not os.path.exists(target_file):
-                break
-            else:
-                target_file = None
-
-        if not target_file:
-            logging.error("unable to find a unique file name for command line base64 payload")
-            return
-
+        target_file = self.get_root().create_output_file("command_line_base64_payload.bin")
         with open(target_file, "wb") as fp:
             fp.write(decoded_data)
 
@@ -142,9 +135,12 @@ class CommandLineAnalyzer(AnalysisModule):
 
         # look for interesting things in the command line
         ignore_size_restriction = False
+        runs_powershell = False
         try:
             tokens = shlex.split(command_line.value, posix=False)
         except ValueError:
+            # an unbalanced quote, common in truncated or deliberately mangled command lines; the
+            # regex passes below still read the whole value, so only the token pass is skipped
             tokens = []
 
         for token in tokens:
@@ -152,14 +148,22 @@ class CommandLineAnalyzer(AnalysisModule):
             while token.startswith('"') and token.endswith('"'):
                 token = token[1:-1]
 
+            # ntpath splits on both \ and /, so this also finds /usr/bin/pwsh
+            if ntpath.basename(token).lower() in POWERSHELL_PROGRAMS:
+                runs_powershell = True
+
             # ignore flags and options when looking for interesting components
-            if token.startswith("-") or token.startswith("/"):
+            if token.startswith(DASHES + ("/",)):
                 # looking specifically for powershell's -EncodedCommand parameter
                 # if we see that then we can ignore the size restriction for the next token
                 # powershell takes any prefix of the name (-e, -enc) and -ec, but other flags start with e too
-                # (-ExecutionPolicy Bypass, -ErrorAction Stop) and the word after them is not base64
-                flag_name = token[1:].lower()
-                if flag_name == "ec" or (flag_name and "encodedcommand".startswith(flag_name)):
+                # (-ExecutionPolicy Bypass, -ErrorAction Stop) and the word after them is not base64,
+                # and in other programs -e is something else entirely (docker run -e KEY=value, xcopy /e)
+                flag_name = token[1:]
+                if flag_name.startswith(DASHES):
+                    flag_name = flag_name[1:]  # --EncodedCommand
+                flag_name = flag_name.lower()
+                if runs_powershell and (flag_name == "ec" or (flag_name and "encodedcommand".startswith(flag_name))):
                     ignore_size_restriction = True
                 continue
 
@@ -170,7 +174,7 @@ class CommandLineAnalyzer(AnalysisModule):
                 try:
                     decoded_data = decode_base64(token)
                 except Exception:
-                    continue
+                    continue  # a word made of base64 characters that does not decode is not a payload
                 if ignore_size_restriction or len(decoded_data) >= self.base64_minimum_length:
                     self._add_base64_payload(analysis, token, decoded_data)
 

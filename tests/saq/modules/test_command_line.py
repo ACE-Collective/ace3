@@ -188,7 +188,11 @@ def test_command_line_base64_minimum_length_respected(root_analysis):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("flag", ["-e", "-ec", "-enc", "-EncodedCommand", "/EncodedCommand"])
+@pytest.mark.parametrize("flag", [
+    "-e", "-ec", "-enc", "-EncodedCommand", "/EncodedCommand",
+    # powershell also takes a double dash and the en dash, em dash and horizontal bar
+    "--EncodedCommand", "\u2013enc", "\u2014e", "\u2015ec",
+])
 def test_command_line_base64_minimum_length_ignored_with_encoded_flag(root_analysis, flag):
     """test that minimum length restriction is bypassed for -EncodedCommand and its abbreviations"""
     root_analysis.analysis_mode = "test_groups"
@@ -428,3 +432,57 @@ def test_command_line_base64_minimum_length_kept_after_other_e_flags(root_analys
 
     assert analysis.base64_payloads == []
     assert r'C:\Scripts\test.ps1' in analysis.file_paths
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("command_line", [
+    "docker run -e KEY=value nginx",
+    "sed -e s/foo/bar/ input.txt",
+    "xcopy /e /i dist out",
+])
+def test_command_line_base64_minimum_length_kept_after_e_flag_of_other_programs(root_analysis, command_line):
+    """-e and /e lift the size limit only for powershell, where they abbreviate -EncodedCommand"""
+    root_analysis.analysis_mode = "test_groups"
+
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert analysis.load_details()
+
+    assert analysis.base64_payloads == []
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("program", [
+    "cmd.exe /c powershell",
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\PowerShell.exe",
+    "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\"",
+    "/usr/bin/pwsh",
+])
+def test_command_line_base64_minimum_length_ignored_with_encoded_flag_of_powershell(root_analysis, program):
+    """every way a command line names powershell lets -e lift the size limit"""
+    root_analysis.analysis_mode = "test_groups"
+
+    short_payload = base64.b64encode(b"short").decode('ascii')
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, f"{program} -e {short_payload}")
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert analysis.load_details()
+
+    assert [payload[KEY_BASE64] for payload in analysis.base64_payloads] == [short_payload]
