@@ -105,14 +105,14 @@ Reference: `aceapi_v2/common/router.py`, `aceapi_v2/observable_types/router.py`.
 
 ### Integration routes
 
-An integration's routes move into the integration, not into `aceapi_v2/`: a package `src/<package>/api/` with `router.py` and `service.py` (and `schemas.py` if it needs a model of its own), whose router module the package registers on import with `register_integration_router("<name>", "<package>.api.router")` (`aceapi_v2/integrations.py`, documented in `docs/INTEGRATIONS.md`). It is served under `/api/v2/integrations/<name>`, so it cannot collide with a core route.
+An integration's routes move into the integration, not into `aceapi_v2/`: a package `src/<package>/api/` with `router.py` and `service.py` (and `schemas.py` if it needs a model of its own), whose router module the integration names as `api_module: <package>.api.router` in its `integration_<name>:` block, so only the API imports it (`aceapi_v2/integrations.py`; see "Adding API routes" in `docs/INTEGRATIONS.md`). It is served under `/api/v2/integrations/<name>`, so it cannot collide with a core route.
 
 - **The blueprint stays** when it serves templates, static files or pages; only its data routes go. Drop the `import ...app.views` from the blueprint callback and delete the module.
 - **Reuse the core services.** An observable action that adds a directive and queues the alert is `request_observable_analysis()` with the integration's directive; one that only reads is `load_observable()` (both `aceapi_v2/alerts/service.py`). These give the integration the core actions' behavior: 409 on a locked alert, 422 for an observable of another type, correlation mode on a dispositioned alert.
 - **Permissions.** Keep the route's legacy pair. A route that had only `@login_required` gets the pair of the closest core route (`observable:write` for an action that changes the alert or sends its content somewhere, `observable:read` for one that reads).
 - **Callers** are the integration's templates: call the route through `aceApi`, as the core action templates do.
 - **Tests** import the `tests/aceapi_v2/conftest.py` client fixtures into the test module; see `docs/INTEGRATIONS.md`. Give the module a name no other test module has (`test_<integration>_api.py`): some integration test directories are not packages.
-- **Two repositories, two changes.** The integration's change needs a release of ACE that has `register_integration_router()`; merge it after that release, and write its PR description in its own repository.
+- **Two repositories, two changes.** The integration's change needs a release of ACE that reads `api_module` (or, for one that registers from its package init, has `register_integration_router()`); merge it after that release, and write its PR description in its own repository.
 
 ### Auth
 
@@ -600,4 +600,4 @@ This is the shape every GUI blueprint should converge on: Flask renders GET page
 
 Found while surveying the routes above. They are to be fixed separately, not as part of a migration, but a migration of one of these routes must not carry its defect over. "Verified" means reproduced against the dev instance; "code" means read from the source.
 
-1. **Unreachable action lists** (code). The `jinja_available_actions` properties in `saq/observables/` are referenced by no template: the alert page builds its menus in the presenters (`saq/analysis/presenter/observable_presenter.py`). An action listed only there never reaches a menu; URL crawl was one, until it was registered with `register_observable_action` (see the observable actions appendix entry).
+1. **Unreachable action lists** (code, removed). The `jinja_available_actions` properties in `saq/observables/` were referenced by no template: the alert page builds its menus in the presenters (`saq/gui/observable_presenters.py`). An action listed only there never reached a menu; URL crawl was one, until it was registered with `register_observable_action` (see the observable actions appendix entry). The properties were deleted when the presenters moved out of the observable types (issue #1032). Two actions were listed only there and are still in no menu: `ObservableActionUrlscan` on `url` and `ObservableActionAddLocalEmailDomain` on `email_address`.

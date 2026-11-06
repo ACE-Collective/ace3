@@ -435,6 +435,11 @@ class IntegrationConfig(BaseModel):
     description: str = Field(..., description="the description of the integration")
     enabled: bool = Field(..., description="whether the integration is enabled or disabled")
     python_module: str = Field(..., description="the python module of the integration")
+    gui_module: Optional[str] = Field(default=None, description="the module the GUI imports when it builds its app, "
+                                      "which registers the integration's observable and alert actions, presenters "
+                                      "and blueprints")
+    api_module: Optional[str] = Field(default=None, description="the module that defines the integration's API "
+                                      "router (`router`), served under /api/v2/integrations/<name>")
 
 class AnalysisModuleGroupConfig(BaseModel):
     name: str = Field(..., description="the name of the analysis module group")

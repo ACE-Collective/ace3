@@ -1,10 +1,8 @@
 import logging
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_EMAIL_ADDRESS, F_EMAIL_BODY, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_FIRST_HOP_IP, F_EMAIL_HEADER, F_EMAIL_SUBJECT, F_EMAIL_X_MAILER, F_MESSAGE_ID, create_email_delivery, parse_email_conversation, parse_email_delivery
 from saq.email import normalize_email_address, normalize_message_id
 from saq.configuration.config import get_config
-from saq.gui import ObservableActionAddLocalEmailDomain
 from saq.observables.base import CaselessObservable, ObservableValueError
 from saq.observables.network.ip import IPObservable
 from saq.util import is_subdomain
@@ -28,14 +26,6 @@ class EmailAddressObservable(CaselessObservable):
         else:
             self._value = normalized
 
-    @property
-    def jinja_available_actions(self):
-        result = [
-            ObservableActionAddLocalEmailDomain(),
-        ]
-        result.extend(super().jinja_available_actions)
-        return result
-
     def is_managed(self):
         """Returns True if this email address uses a managed domain."""
         email_domain = self.value.split('@')[1]
@@ -45,17 +35,6 @@ class EmailAddressObservable(CaselessObservable):
                 return True
 
         return False
-
-
-class EmailAddressObservablePresenter(ObservablePresenter):
-    """Presenter for EmailAddressObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/default_observable.html"
-
-
-register_observable_presenter(EmailAddressObservable, EmailAddressObservablePresenter)
 
 
 class EmailDeliveryObservable(CaselessObservable):
@@ -77,10 +56,6 @@ class EmailDeliveryObservable(CaselessObservable):
         self.message_id = normalize_message_id(self.message_id)
         self.email_address = normalize_email_address(self.email_address)
         self._value = create_email_delivery(self.message_id, self.email_address)
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/email_delivery_observable.html"
 
 class EmailSubjectObservable(Observable):
     def __init__(self, *args, **kwargs):
@@ -117,21 +92,6 @@ class EmailConversationObservable(Observable):
     @property
     def rcpt_to(self):
         return self._rcpt_to
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/email_conversation_observable.html"
-
-
-class EmailConversationObservablePresenter(ObservablePresenter):
-    """Presenter for EmailConversationObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/email_conversation_observable.html"
-
-
-register_observable_presenter(EmailConversationObservable, EmailConversationObservablePresenter)
 
 
 class MessageIDObservable(Observable):

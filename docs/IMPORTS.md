@@ -21,8 +21,8 @@ These rules come from the October 2026 import work:
    - The `__init__.py` of `aceapi_v2/`, `aceapi_ai/` and `app/` has nothing to re-export, and imports nothing at all.
 2. **Core does not import the web layer.**
    - Nothing under `saq/` imports Flask, FastAPI, `app/`, `aceapi_v2/` or `aceapi_ai/` at module level. `saq.gui.alert` uses `flask.url_for`, so only the apps import it.
-   - Integrations register their API routers by module path, `register_integration_router("name", "pkg.api.router")`, which the API imports when it builds its app.
-   - Integrations import Flask only under `TYPE_CHECKING`.
+   - Presentation is registered by the layer that presents. The core observable types' presenters and actions are registered by `saq/gui/observable_presenters.py`, which the alert view imports, not by the observable types. An integration names its GUI module (`gui_module`) and the module of its API router (`api_module`) in its `integration_<name>:` block, and only the GUI and the API import them.
+   - An integration's package init imports Flask only under `TYPE_CHECKING`.
    - The engine API's container imports `aceapi_v2.app_factory`, never `aceapi_v2.application`, which imports every router.
 3. **Initialization loads what every process needs, and nothing else.**
    - `initialize_environment()` runs in every process.

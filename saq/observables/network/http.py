@@ -1,16 +1,8 @@
 from urllib.parse import urlsplit
 
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import register_observable_action
 from saq.configuration.config import get_config
 from saq.constants import F_URI_PATH, F_URL, F_USER_AGENT
-from saq.gui import (
-    ObservableActionSeparator,
-    ObservableActionUrlCrawl,
-    ObservableActionUrlscan,
-    ObservableActionCheckForClickers,
-    ObservableActionOpenSplunkClickerSearch,
-)
 from saq.observables.base import ObservableValueError
 
 from saq.util import is_subdomain
@@ -73,16 +65,6 @@ class URLObservable(Observable):
 
         self._value = new_value
 
-    @property
-    def jinja_available_actions(self):
-        result = [
-            ObservableActionUrlscan(),
-            ObservableActionUrlCrawl(),
-            ObservableActionSeparator(),
-        ]
-        result.extend(super().jinja_available_actions)
-        return result
-
     def is_managed(self):
         """Returns True if this URL has a managed domain."""
         # imported here: every process that loads an alert with a url in it imports this module, and urlfinderlib
@@ -99,10 +81,3 @@ class URLObservable(Observable):
                 return True
 
         return False
-
-
-# crawl the URL with phishkit
-register_observable_action(F_URL, ObservableActionUrlCrawl)
-# "Check for clickers" (generic) and "Open clicker search in Splunk" (source-specific)
-register_observable_action(F_URL, ObservableActionCheckForClickers)
-register_observable_action(F_URL, ObservableActionOpenSplunkClickerSearch)

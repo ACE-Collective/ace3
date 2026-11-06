@@ -1,7 +1,8 @@
 from saq.lazy_exports import lazy_getattr
 
-# saq.gui imports nothing itself: the observable types and the integrations import their observable actions
-# from here in every process, and this init loaded saq.gui.alert with them (Flask, the database models).
+# saq.gui imports nothing itself: an integration that registers its observable actions from its package init,
+# rather than from its gui_module, imports them from here in every process, and this init loaded saq.gui.alert
+# with them (Flask, the database models).
 # saq.gui.alert registers the RootAnalysis presenter when it is imported, which the GUI views and the alerts
 # API do. These names stay importable from saq.gui, each loaded the first time it is asked for (PEP 562).
 _EXPORTS = {

@@ -91,14 +91,29 @@ integration_example:
   enabled: true
   # a brief description of what the integration provides
   description: "Example Integration"
-  # the python package to import
+  # the python package to import, in every ACE process
   python_module: example
+  # optional -- the module the GUI imports when it builds its app (see below)
+  gui_module: example.gui
+  # optional -- the module that defines your API router (see Adding API routes)
+  api_module: example.api.router
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration
 ```
 
 **The `integration_<name>:` block is mandatory.** 
+
+Every ACE process imports `python_module`, so its package init registers only what every process
+needs (`register_integration_configuration()`, `register_directive()`) and imports nothing heavier
+(`docs/IMPORTS.md`). Register what only the GUI uses from `gui_module`, which only the GUI imports,
+when it builds its app and before it registers the integrations' blueprints:
+`register_observable_action()` and `register_observable_presenter()`
+(`saq/analysis/presenter/observable_presenter.py`), `register_alert_action()`
+(`saq/gui/alert_actions.py`) and `register_integration_blueprint_callback()` (`app/integration.py`).
+That module can import Flask and your blueprint at module level. A `gui_module` that fails to
+import is logged at ERROR and the GUI starts without it.
+`integrations.example/example/src/example/gui.py` is a working example.
 
 ACE logs a warning at startup for any discovered integration directory that has no
 `integration_*:` block.
@@ -336,7 +351,7 @@ that carries one tag to one queue and does nothing to any other alert.
 
 An integration adds a button to the alert page's toolbar with an **alert action**
 (`saq/gui/alert_actions.py`), the alert-level counterpart of `register_observable_action()`.
-Subclass `AlertAction` and register the class when your package is imported:
+Subclass `AlertAction` and register the class from your `gui_module`:
 
 ```python
 from saq.gui.alert_actions import AlertAction, register_alert_action
@@ -419,9 +434,9 @@ stored in the alert's `alert_template` extension, which is how a hunt's `alert_t
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through
-the API (`aceapi_v2`), not through routes in its Flask blueprint. Register the module that defines
-your FastAPI router when your package is imported, and its routes are served under
-`/api/v2/integrations/<name>`:
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Name the module that defines your
+FastAPI router as `api_module` in your `integration_<name>:` block, and its routes are served under
+`/api/v2/integrations/<name>`, where `<name>` is the block's `name`:
 
 ```python
 # src/vendor/api/router.py
@@ -439,18 +454,23 @@ async def submit(
     log_audit("user %s requested a submission for observable %s in alert %s",
               auth.auth_name, observable, alert_uuid, auth=auth, alert_uuid=alert_uuid)
     return ObservableAnalysisRequested(message="Submission requested.")
-
-# src/vendor/__init__.py
-from aceapi_v2.integrations import register_integration_router
-
-register_integration_router("vendor", "vendor.api.router")
 ```
 
-- **Register the module's name, not the router.** Every ACE process imports your package, but only
-  the API serves the routes. `vendor.api.router` (which must define `router`) is imported when an
-  API app is built, so the other processes never load FastAPI or your router's service layer. A
-  router module that fails to import is logged at ERROR and left out, and the API starts without
-  it. Passing the router object still works, but it costs every process that import.
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  api_module: vendor.api.router
+```
+
+- **Only the API imports the module.** `vendor.api.router` (which must define `router`) is imported
+  when an API app is built, so the other processes never load FastAPI or your router's service
+  layer. A router module that fails to import, or a `name` that is not lowercase letters, digits
+  and dashes, is logged at ERROR and left out, and the API starts without it. Calling
+  `register_integration_router("vendor", "vendor.api.router")` (`aceapi_v2/integrations.py`) from
+  your package init does the same; passing it the router object instead costs every process that
+  import.
 
 - **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
   The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`

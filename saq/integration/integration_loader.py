@@ -80,21 +80,27 @@ def load_integration_component_etc(dir_path: str):
 def initialize_integrations():
     """Initializes all integrations. 
     This simply imports the module as defined by each integration, giving the module a chance to initialize itself."""
+    _warn_about_undeclared_integrations(import_integration_modules("python_module"))
+
+
+def import_integration_modules(field: str) -> set[str]:
+    """Imports the module each integration_<name>: block names in field (python_module, gui_module), which
+    is what runs the registrations in it, and returns the ones imported. One that fails to import is
+    logged and left out, so it cannot keep the process from starting."""
     imported: set[str] = set()
-
     for integration_config in get_config().integrations:
-
-        #
-        # this is what allows any hooks defined in the integration to execute
-        #
+        module = getattr(integration_config, field)
+        if not module:
+            continue
 
         try:
-            importlib.import_module(integration_config.python_module)
-            imported.add(integration_config.python_module)
-        except Exception as e:
-            logging.exception(f"failed to import integration module {integration_config.name}: {e}")
+            importlib.import_module(module)
+            imported.add(module)
+        except Exception:
+            logging.exception("unable to import the %s %s of integration %s", field, module, integration_config.name,
+                              extra={"integration": integration_config.name, "python_module": module})
 
-    _warn_about_undeclared_integrations(imported)
+    return imported
 
 
 def _warn_about_undeclared_integrations(imported: set[str]):
@@ -102,9 +108,9 @@ def _warn_about_undeclared_integrations(imported: set[str]):
 
     Such a directory is still discovered: its src/ goes on the path and its etc/saq.integration.yaml
     is merged, so its analysis modules and services look configured. But nothing ever imports the
-    package, so every module level register_integration_configuration(), register_directive(),
-    register_observable_action(), register_integration_blueprint_callback() and
-    register_integration_router() call in it silently never runs. The resulting failures are
+    package, its gui_module or its api_module, so every module level register_integration_configuration(),
+    register_directive(), register_observable_action(), register_integration_blueprint_callback() and
+    register_integration_router() call in them silently never runs. The resulting failures are
     invisible -- a missing integration config surfaces only as a swallowed constructor exception in
     saq/modules/adapter.py, a missing observable action or GUI blueprint as nothing at all, and a
     missing API router as a 404. This is what shipped broken in 3.0.101.

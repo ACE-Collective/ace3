@@ -2,7 +2,6 @@ import ipaddress
 
 import iptools
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_IPV4, F_IPV4_CONVERSATION, F_IPV4_FULL_CONVERSATION, parse_ipv4_conversation, parse_ipv4_full_conversation
 from saq.environment import get_global_runtime_settings
 from saq.observables.base import ObservableValueError
@@ -12,10 +11,6 @@ class IPv4Observable(Observable):
 
     def __init__(self, *args, **kwargs):
         super().__init__(F_IPV4, *args, **kwargs)
-
-    @property
-    def jinja_template_path(self):
-        return "analysis/ipv4_observable.html"
 
     @Observable.value.setter
     def value(self, new_value):
@@ -27,15 +22,6 @@ class IPv4Observable(Observable):
 
         self._value = new_value.strip()
     
-    @property
-    def jinja_available_actions(self):
-        result = []
-        if not self.is_managed():
-            result = [ ]
-            result.extend(super().jinja_available_actions)
-
-        return result
-
     def is_managed(self):
         """Returns True if this IP address is listed as part of a managed network, False otherwise."""
         # see [network_configuration]
@@ -59,17 +45,6 @@ class IPv4Observable(Observable):
 
         # otherwise it has to match exactly
         return self.value == value
-
-
-class IPv4ObservablePresenter(ObservablePresenter):
-    """Presenter for IPv4Observable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/ipv4_observable.html"
-
-
-register_observable_presenter(IPv4Observable, IPv4ObservablePresenter)
 
 
 class IPv4ConversationObservable(Observable):

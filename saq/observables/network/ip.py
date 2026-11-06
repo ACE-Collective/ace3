@@ -1,7 +1,6 @@
 from ipaddress import ip_address, ip_network
 
 from saq.analysis.observable import Observable
-from saq.analysis.presenter.observable_presenter import ObservablePresenter, register_observable_presenter
 from saq.constants import F_IP, F_IP_CONVERSATION, F_IP_FULL_CONVERSATION, parse_ip_full_conversation, parse_ipv4_conversation
 from saq.environment import get_global_runtime_settings
 from saq.observables.base import ObservableValueError
@@ -46,13 +45,6 @@ class IPObservable(Observable):
 
         # otherwise it has to match exactly
         return self.value == value
-
-class IPObservablePresenter(ObservablePresenter):
-    """Presenter for IPObservable."""
-
-    @property
-    def template_path(self) -> str:
-        return "analysis/ip_observable.html"
 
 class IPConversationObservable(Observable):
     def __init__(self, *args, **kwargs):
@@ -128,6 +120,3 @@ class IPFullConversationObservable(Observable):
     @property   
     def dest_port(self):
         return self._dest_port
-
-
-register_observable_presenter(IPObservable, IPObservablePresenter)

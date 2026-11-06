@@ -16,6 +16,7 @@ from app.blueprints import register_blueprints
 from app.integration import register_integration_blueprints
 from app.user_preferences import get_alert_sections_preference, get_theme_preference
 from saq.configuration.config import get_config
+from saq.integration.integration_loader import import_integration_modules
 from flask_config import get_flask_config
 from flask_login import LoginManager
 from flask_executor import Executor # XXX what is this for?
@@ -143,6 +144,8 @@ def create_app():
     executor.init_app(flask_app)
 
     register_blueprints(flask_app)
+    # an integration's gui_module registers its blueprint callback, so it is imported before they run
+    import_integration_modules("gui_module")
     register_integration_blueprints(flask_app)
 
     # every url_for() on a static endpoint gets ?v=<hash of the file>, so a release that changes

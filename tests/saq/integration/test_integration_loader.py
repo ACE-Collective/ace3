@@ -158,10 +158,11 @@ class TestInitializeIntegrations:
 
         initialize_integrations()
 
-        failures = [r for r in caplog.records if r.message.startswith("failed to import integration module broken")]
+        failures = [r for r in caplog.records if r.message == "unable to import the python_module no_such_integration_package of integration broken"]
         assert len(failures) == 1
         assert failures[0].levelname == "ERROR"
         assert failures[0].exc_info[0] is ModuleNotFoundError
+        assert failures[0].integration == "broken"
 
     def test_undeclared_integration_is_logged_at_warning(self, integration_env, monkeypatch, caplog):
         """An integration directory with no integration_*: block is logged at WARNING."""
