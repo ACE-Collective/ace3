@@ -254,9 +254,14 @@ def test_serving_an_api_imports_no_routes():
 
 
 def test_importing_the_api_application_builds_no_app():
-    # the API entry points import it to call create_app() themselves
-    run_python("import aceapi_v2.application as application\n"
-               "assert application._app is None\n")
+    # the API entry points import it to call create_app() themselves, and the tests get theirs from
+    # tests/aceapi_v2/conftest.py::v2_app()
+    run_python("from fastapi import FastAPI\n"
+               "built = []\n"
+               "init = FastAPI.__init__\n"
+               "FastAPI.__init__ = lambda self, *args, **kwargs: (built.append(self), init(self, *args, **kwargs))[1]\n"
+               "import aceapi_v2.application as application\n"
+               "assert not built and not hasattr(application, 'app'), built\n")
 
 
 def test_importing_ace_api_does_not_import_requests():

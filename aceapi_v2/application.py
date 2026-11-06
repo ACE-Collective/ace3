@@ -99,17 +99,3 @@ def create_app() -> FastAPI:
 
     return app
 
-
-# The tests import an app instance as aceapi_v2.application.app. It is built on first access (PEP 562), not when
-# this module is imported: the API entry points import it to call create_app() themselves, and building it here
-# built a second application in every API worker.
-_app = None
-
-
-def __getattr__(name: str) -> FastAPI:
-    if name == "app":
-        global _app
-        if _app is None:
-            _app = create_app()
-        return _app
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

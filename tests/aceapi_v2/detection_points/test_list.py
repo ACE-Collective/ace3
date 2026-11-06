@@ -11,7 +11,6 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import update
 
-from aceapi_v2.application import app
 from aceapi_v2.common import listing
 from aceapi_v2.detection_points import service
 from saq.database.model import Alert, DetectionPoint, User
@@ -19,6 +18,7 @@ from saq.database.pool import get_db
 from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
 from tests.saq.helpers import insert_alert_with_detections
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -250,7 +250,7 @@ class TestExport:
         assert len(lines) == 2 and "content_hash" in lines[0] and "error" in lines[1]
 
     def test_each_export_documents_exactly_one_media_type(self):
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         for path, media_type in (("/detection-points/export/ndjson", "application/x-ndjson"),
                                  ("/detection-points/export/csv", "text/csv")):
             assert list(paths[path]["get"]["responses"]["200"]["content"]) == [media_type]

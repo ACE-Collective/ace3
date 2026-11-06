@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from aceapi_v2.application import app as v2_app
 from saq.configuration.config import get_config
 from saq.database.model import AuthPermissionCatalog
 from saq.database.pool import get_db
@@ -19,6 +18,7 @@ from saq.permissions.catalog import (
     sync_permission_catalog,
 )
 from saq.permissions.logic import key_scope_allows, parse_permission_pattern
+from tests.aceapi_v2.conftest import v2_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -232,7 +232,7 @@ def _fastapi_apps():
     import aceapi_ai.application
 
     return [
-        ("aceapi_v2", v2_app, _FASTAPI_PUBLIC_PATHS),
+        ("aceapi_v2", v2_app(), _FASTAPI_PUBLIC_PATHS),
         ("aceapi_ai", aceapi_ai.application.app, _AI_PUBLIC_PATHS),
     ]
 
@@ -273,7 +273,7 @@ class TestRouteCoverage:
         and every route that should use it does (rather than carrying no gate at all)."""
         gated = {
             (method, path)
-            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for path, methods, dependant in _iter_effective_routes(v2_app())
             for method in methods
             if method not in ("HEAD", "OPTIONS")
             and _dependant_has_gate(dependant, {"self_service_dependency"})
@@ -286,7 +286,7 @@ class TestRouteCoverage:
         key_routes = {("POST", "/users/me/apikeys"), ("PUT", "/users/me/apikeys/{key_id}"), ("DELETE", "/users/me/apikeys/{key_id}")}
         pairs = {
             (method, path): _dependant_permission_pairs(dependant)
-            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for path, methods, dependant in _iter_effective_routes(v2_app())
             for method in methods
             if (method, path) in key_routes
         }

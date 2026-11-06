@@ -12,7 +12,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from aceapi_v2.application import app
 from saq.analysis.root import load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_splunk_config
 from saq.constants import (
@@ -33,6 +32,7 @@ from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.modules.test import CustomReqFalseAnalysis, DeclaredNoProduceAnalysis
 from tests.saq.helpers import audit_actor_of, audit_record, create_root_analysis
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -243,7 +243,7 @@ class TestClickerSearches:
         get_config().load_analysis_module_configs()
 
         # starlette re-raises after the catch-all handler has built the 500
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        transport = ASGITransport(app=v2_app(), raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test",
                                headers={"x-ace-auth": valid_api_key}) as client:
             with caplog.at_level(logging.ERROR):
