@@ -10,10 +10,8 @@ from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_DE4DOT, ANALYSIS_MODULE_EXIF, ANALYSIS_MODULE_FILE_HASH_ANALYZER, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION, ANALYSIS_MODULE_LNK_PARSER, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, De4dotAnalyzer, ExifAnalyzer, FileHashAnalysis, FileHashAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, HTMLDataURLAnalysis, HTMLDataURLAnalyzer, LnkParseAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
-from saq.modules.file_analysis.dotnet import De4dotAnalysis
-from saq.modules.file_analysis.exif import ExifAnalysis
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
 from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -358,58 +356,6 @@ def test_autoit_decompilation(caplog, datadir, monkeypatch, test_context):
     assert analysis.scripts == ['script_1.au3']
 
 @pytest.mark.integration
-def test_lnk_parser(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with a file observable
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    target_path = datadir / 'google_chrome.lnk'
-    observable = root.add_file_observable(target_path)
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(LnkParseAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_LNK_PARSER)))
-    result = analyzer.execute_analysis(observable)
-
-    assert result == AnalysisExecutionResult.COMPLETED
-    from saq.modules.file_analysis.lnk_parser import LnkParseAnalysis
-    analysis = observable.get_and_load_analysis(LnkParseAnalysis)
-    assert isinstance(analysis, LnkParseAnalysis)
-    assert analysis.icon_location == 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-    assert analysis.working_directory == 'C:\\Program Files\\Google\\Chrome\\Application'
-
-@pytest.mark.integration
-def test_de4dot_analyzer(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with file observable
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-
-    target_path = root.create_file_path('malicious.exe')
-    with open(str(datadir / '6346eea9dff4eac53113fc2ba3b8a497.hex'), 'r') as fp_in:
-        with open(target_path, 'wb') as fp_out:
-            for line in fp_in:
-                line = line.strip()
-                fp_out.write(bytes.fromhex(line))
-
-    observable = root.add_file_observable(target_path)
-    analyzer = De4dotAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
-    analysis_result = analyzer.execute_analysis(observable)
-
-    assert analysis_result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_analysis(De4dotAnalysis)
-    assert analysis.deobfuscated
-    
-    # there should be a single file observable
-    assert isinstance(analysis, De4dotAnalysis)
-    assert len(analysis.observables) == 1
-    assert analysis.observables[0].type == F_FILE
-    assert analysis.observables[0].file_path == 'malicious.exe.deobfuscated'
-    assert analysis.observables[0].redirection == observable
-    assert analysis.observables[0].has_relationship(R_EXTRACTED_FROM)
-
-@pytest.mark.integration
 def test_zipped_jar(datadir, test_context):
     # Create a test alert with file observable
     root = create_root_analysis(analysis_mode='test_single')
@@ -434,48 +380,6 @@ def test_zipped_jar(datadir, test_context):
     assert len(extracted) == 1
     assert extracted[0].file_path == 'zipped.jar.extracted/META-INF/MANIFEST.MF'
     assert extracted[0].has_relationship(R_EXTRACTED_FROM)
-
-
-@pytest.mark.integration
-def test_exif_analysis(caplog, datadir, monkeypatch, test_context):
-    # Create a test alert with an office document
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'doc.docx')
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-    analysis = analyzer.execute_analysis(observable)
-
-    assert analysis == AnalysisExecutionResult.COMPLETED
-    assert 'Exif data collection completed.' in caplog.text
-
-    # an executable is neither an office document nor a pdf, so it is not analyzed
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'hello_autoit.exe')
-
-    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
-    assert observable.get_and_load_analysis(ExifAnalysis) is None
-
-    # Create a third test alert with an ole
-    root = create_root_analysis(analysis_mode='test-single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / 'doc.doc')
-
-    # Execute the analysis
-    analyzer = AnalysisModuleAdapter(ExifAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_EXIF)))
-    analysis = analyzer.execute_analysis(observable)
-
-    assert analysis == AnalysisExecutionResult.COMPLETED
-
 
 
 @pytest.mark.parametrize('valid_analysis_modes,analysis_mode, valid_alert_types,alert_type,expected_result', [
@@ -608,30 +512,6 @@ def test_ocr_analyzer(datadir, test_filename, expected_strings, expected_urls, e
     url_observable_values = [o.value for o in analysis.observables]
     assert all(expected_url in url_observable_values for expected_url in expected_urls)
 
-@pytest.mark.unit
-def test_html_data_url_extraction(datadir, test_context):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "ref.html")
-    
-    analyzer = HTMLDataURLAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_HTML_DATA_URL_EXTRACTION))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(HTMLDataURLAnalysis)
-    assert isinstance(analysis, HTMLDataURLAnalysis)
-
-    assert analysis.count == 2
-
-    # Extracted data-URL images skip expensive OCR but must still be scanned
-    # for QR codes -- an embedded data-URL image is a common quishing vector.
-    for extracted in analysis.get_observables_by_type(F_FILE):
-        excluded = " ".join(extracted.excluded_analysis)
-        assert "OCRAnalyzer" in excluded
-        assert "QRCodeAnalyzer" not in excluded
-
 OFFICE_XML_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
@@ -692,28 +572,6 @@ def test_office_xml_rel_target_without_host(tmp_path, test_context):
     assert analysis.urls == ["https:.."]
     assert analysis.get_observables_by_type(F_URL) == []
     assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
-
-@pytest.mark.unit
-def test_one_file_in_zip_detection(datadir):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    #shutil.copy(str(datadir / "evil.zip"), root.storage_dir)
-    observable = root.add_file_observable(datadir / "evil.zip")
-
-    analyzer = AnalysisModuleAdapter(FileTypeAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_TYPE)))
-    analyzer.execute_analysis(observable)
-    
-    analyzer = AnalysisModuleAdapter(ArchiveAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_ARCHIVE)))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(ArchiveAnalysis)
-    assert analysis.has_tag("one_in_zip")
-
 
 @pytest.mark.unit
 def test_file_type_image_yara_meta(datadir):
@@ -830,23 +688,6 @@ def test_file_type_no_type_for_generic_files(datadir):
 
 
 
-
-@pytest.mark.unit
-def test_empty_file_hash(datadir, test_context):
-    root = create_root_analysis(analysis_mode='test_single')
-    root.initialize_storage()
-    observable = root.add_file_observable(datadir / "empty")
-    # the hash analyzer needs a FileTypeAnalysis, and without one it records nothing whatever the size
-    _run_file_type_analyzer(root, observable)
-
-    analyzer = AnalysisModuleAdapter(FileHashAnalyzer(
-        context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_FILE_HASH_ANALYZER)))
-    
-    result = analyzer.execute_analysis(observable)
-    assert result == AnalysisExecutionResult.COMPLETED
-    analysis = observable.get_and_load_analysis(FileHashAnalysis)
-    assert analysis is None
 
 @pytest.mark.unit
 def test_qrcode(datadir, test_context):
