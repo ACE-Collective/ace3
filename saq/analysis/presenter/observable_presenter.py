@@ -79,9 +79,9 @@ class ObservablePresenter:
     def is_set_for_detection(self) -> bool:
         """Returns True if this observable is enabled for future detection."""
         if self._detection_status is None:
-            # imported here, not at module level: every process imports this module (the observable types
-            # and the integrations register their presenters and actions through it), and only a presenter
-            # that has to ask the database itself needs the database models
+            # imported here, not at module level: an integration that registers its actions from its
+            # package init, rather than from its GUI blueprint's module, imports this module in every
+            # process, and only a presenter that has to ask the database itself needs the database models
             from saq.database.database_observable import observable_is_set_for_detection
             self._detection_status = observable_is_set_for_detection(self._observable)
 
@@ -148,7 +148,3 @@ class ObservablePresenter:
     def __getattr__(self, name):
         """Delegate any missing attributes to the underlying observable object."""
         return getattr(self._observable, name)
-
-
-# The specialized presenters for specific observable types are now co-located
-# with their respective observable classes in the observables modules

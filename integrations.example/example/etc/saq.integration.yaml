@@ -4,8 +4,9 @@
 
 # Every integration requires an integration_<name>: block. It is the only thing that causes your
 # integration's python package to be imported, and importing the package is what runs your
-# registration hooks: register_integration_configuration(), register_directive(),
-# register_observable_action(). It also names your API router and GUI blueprint.
+# registration hooks: register_integration_configuration(), register_directive(). It also names your
+# API router and GUI blueprint; register_observable_action() goes in the module of the GUI blueprint,
+# which only the GUI imports.
 #
 # Without this block your src/ still lands on the path and this config file is still merged, so
 # everything *looks* configured -- but none of your hooks run, and the failures are invisible.

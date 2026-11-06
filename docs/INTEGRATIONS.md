@@ -93,14 +93,15 @@ integration_example:
   # a brief description of what the integration provides
   description: "Example Integration"
   # the python package to import, in every ACE process: it runs your registration hooks
-  # (register_integration_configuration(), register_directive(), register_observable_action(), ...),
-  # so its __init__.py imports only what they need
+  # (register_integration_configuration(), register_directive(), ...), so its __init__.py imports
+  # only what they need
   python_module: example
   # optional: your FastAPI router, as module:attribute, served under /api/v2/integrations/<name>
   # (see Adding API routes). only the API imports it
   api_router: example.api.router:router
   # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
-  # your blueprints (see Adding GUI pages). only the GUI imports it
+  # your blueprints (see Adding GUI pages). only the GUI imports it, so its module is also where
+  # register_observable_action() and register_alert_action() go
   gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
@@ -108,6 +109,15 @@ integration_example:
 ```
 
 **The `integration_<name>:` block is mandatory.** 
+
+Every ACE process imports `python_module`, so its package init registers only what every process
+needs (`register_integration_configuration()`, `register_directive()`) and imports nothing heavier
+(`docs/IMPORTS.md`). Register what only the GUI uses, `register_observable_action()` and
+`register_observable_presenter()` (`saq/analysis/presenter/observable_presenter.py`) and
+`register_alert_action()` (`saq/gui/alert_actions.py`), at module level in the module your
+`gui_blueprint` names, or a module it imports: only the GUI imports it, once, when it builds its app.
+`integrations.example/example/src/example/app/observable_actions.py`, which
+`example/app/blueprint.py` imports, is a working example.
 
 ACE logs a warning at startup for any discovered integration directory that has no
 `integration_*:` block.
@@ -345,7 +355,7 @@ that carries one tag to one queue and does nothing to any other alert.
 
 An integration adds a button to the alert page's toolbar with an **alert action**
 (`saq/gui/alert_actions.py`), the alert-level counterpart of `register_observable_action()`.
-Subclass `AlertAction` and register the class when your package is imported:
+Subclass `AlertAction` and register the class from the module of your `gui_blueprint`:
 
 ```python
 from saq.gui.alert_actions import AlertAction, register_alert_action

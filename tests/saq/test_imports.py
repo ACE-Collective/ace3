@@ -92,13 +92,14 @@ def test_configuration_does_not_import_the_analysis_framework():
 
 def test_the_example_integration_registers_without_loading_what_it_registers():
     # integration authors start from integrations.example, and initialize_integrations() imports its package
-    # in every process: its analyzer, blueprint and API router load only where they are used. Nothing in
-    # the package names the router or the blueprint: its integration_example: block does
+    # in every process: its analyzer, blueprint, observable action and API router load only where they are
+    # used. Nothing in the package names the router or the blueprint: its integration_example: block does
     src = os.path.join(get_base_dir(), "integrations.example", "example", "src")
     _assert_loads_none(f"sys.path.insert(0, {src!r})\n"
                        "import example\n",
                        ["example.modules", "example.app", "example.api", "saq.observables.base",
-                        "saq.modules.base_module", "saq.analysis.root", "aceapi_v2", "app", "flask", "werkzeug",
+                        "saq.modules.base_module", "saq.analysis.root", "saq.gui",
+                        "saq.analysis.presenter.observable_presenter", "aceapi_v2", "app", "flask", "werkzeug",
                         "fastapi"])
 
 
@@ -118,7 +119,20 @@ def test_the_example_integration_declares_its_router_and_blueprint():
                "assert isinstance(load(config.api_router), APIRouter)\n"
                "flask_app = Flask('test')\n"
                "load(config.gui_blueprint)(flask_app)\n"
-               "assert 'example.index' in flask_app.view_functions, flask_app.view_functions\n")
+               "assert 'example.index' in flask_app.view_functions, flask_app.view_functions\n"
+               # the module of the GUI blueprint registers the observable action
+               "from saq.analysis.presenter.observable_presenter import _OBSERVABLE_ACTION_REGISTRY\n"
+               "from saq.constants import F_TEST\n"
+               "assert [action.__name__ for action in _OBSERVABLE_ACTION_REGISTRY[F_TEST]] == "
+               "['ObservableActionExample']\n")
+
+
+def test_the_observable_types_do_not_import_the_presentation_layer():
+    # every process that reads an alert imports the observable types; the GUI registers their presenters and
+    # actions itself (saq/gui/observable_presenters.py)
+    modules = sorted({target.partition(":")[0] for target in get_config().observable_types.classes.values()})
+    _assert_loads_none("".join(f"import {module}\n" for module in modules),
+                       ["saq.analysis.presenter.observable_presenter", "saq.gui", "flask"])
 
 
 def test_sql_timing_listeners_come_with_the_first_engine():
@@ -207,6 +221,18 @@ def test_the_apps_register_the_root_analysis_presenter(app_module):
                "from saq.analysis.root import RootAnalysis\n"
                "from saq.gui.alert import GUIAlertPresenter\n"
                "assert isinstance(create_analysis_presenter(RootAnalysis()), GUIAlertPresenter)\n", timeout=180)
+
+
+def test_the_gui_registers_the_core_observable_presenters_and_actions():
+    # saq.gui.observable_presenters registers them when imported, and only the alert view imports it, so the
+    # registries are read before anything else imports it
+    run_python("import app.analysis.views.index\n"
+               "from saq.analysis.presenter.observable_presenter import _OBSERVABLE_ACTION_REGISTRY, "
+               "_OBSERVABLE_PRESENTER_REGISTRY\n"
+               "from saq.constants import F_URL\n"
+               "from saq.observables.network.ip import IPObservable\n"
+               "assert _OBSERVABLE_PRESENTER_REGISTRY[IPObservable].__name__ == 'IPObservablePresenter'\n"
+               "assert _OBSERVABLE_ACTION_REGISTRY[F_URL]\n", timeout=180)
 
 
 @pytest.mark.parametrize("package", ["saq.analysis", "saq.gui", "saq.collectors.hunter", "saq.modules.file_analysis",

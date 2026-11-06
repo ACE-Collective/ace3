@@ -13,6 +13,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.analysis.presenter import create_analysis_presenter
 from saq.analysis.presenter.observable_presenter import create_observable_presenter
+import saq.gui.observable_presenters  # noqa: F401 registers the core observable types' presenters and actions
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config
 from saq.constants import CLOSED_EVENT_LIMIT, DIRECTIVE_DESCRIPTIONS, F_FILE, GUI_DIRECTIVES

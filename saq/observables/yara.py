@@ -11,10 +11,6 @@ class YaraRuleObservable(Observable):
     def value(self, new_value):
         self._value = new_value.strip()
 
-    @property
-    def jinja_available_actions(self):
-        return []
-
 class YaraStringObservable(Observable):
     def __init__(self, *args, **kwargs):
         super().__init__(F_YARA_STRING, *args, **kwargs)
@@ -29,10 +25,6 @@ class YaraStringObservable(Observable):
     @Observable.value.setter
     def value(self, new_value):
         self._value = new_value.strip()
-
-    @property
-    def jinja_available_actions(self):
-        return []
 
     @property
     def rule(self):
