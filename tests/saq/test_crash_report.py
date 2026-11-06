@@ -56,6 +56,7 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.database.pool import get_db
+from tests.saq.helpers import wait_for_condition
 
 
 def _raise(message="boom"):
@@ -1009,7 +1010,14 @@ def test_armed_hang_dump_fires_while_the_gil_is_held(hang_stacks_file):
     # a match that runs about a second without releasing the GIL
     re.match(r"(a+)+$", "a" * 24 + "b")
 
-    assert "test_armed_hang_dump_fires_while_the_gil_is_held" in _read(hang_stacks_file)
+    # the C thread can still be writing when the match returns, and the main thread's stack
+    # comes last
+    wait_for_condition(
+        lambda: "test_armed_hang_dump_fires_while_the_gil_is_held" in _read(hang_stacks_file),
+        timeout=10,
+    )
+    # it caught the main thread in the match, not in the wait above
+    assert "in match" in _read(hang_stacks_file)
 
 
 @pytest.mark.unit
