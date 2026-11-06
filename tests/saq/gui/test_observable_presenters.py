@@ -40,7 +40,10 @@ from saq.gui.observable_presenters import (
 def _action_names(observable) -> list[str]:
     # detection_status and is_interesting given, so the presenter asks no database
     presenter = create_observable_presenter(observable, detection_status=False, is_interesting=False)
-    return [action.name for action in presenter.available_actions if action.name]
+    # only core's: an installed integration registers its own actions on the same types from its gui_blueprint,
+    # which the GUI app (built by earlier tests in this process) or a test of the integration has imported
+    return [action.name for action in presenter.available_actions
+            if action.name and type(action).__module__.startswith("saq.")]
 
 
 @pytest.mark.unit

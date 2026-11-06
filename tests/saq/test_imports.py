@@ -14,9 +14,10 @@ import pytest
 
 import saq.database
 from saq.configuration.config import get_config
+from saq.constants import F_TEST
 from saq.environment import get_base_dir
 from saq.integration.integration_util import get_valid_integration_dirs
-from tests.saq.helpers import run_python
+from tests.saq.helpers import load_integration_hooks, run_python
 
 pytestmark = pytest.mark.unit
 
@@ -105,26 +106,11 @@ def test_the_example_integration_registers_without_loading_what_it_registers():
 
 def test_the_example_integration_declares_its_router_and_blueprint():
     # the API and the GUI import what its integration_example: block names
-    integration_dir = os.path.join(get_base_dir(), "integrations.example", "example")
-    run_python("import importlib, sys, yaml\n"
-               f"sys.path.insert(0, {os.path.join(integration_dir, 'src')!r})\n"
-               "from fastapi import APIRouter\n"
-               "from flask import Flask\n"
-               "from saq.configuration.schema import IntegrationConfig\n"
-               f"with open({os.path.join(integration_dir, 'etc', 'saq.integration.yaml')!r}) as fp:\n"
-               "    config = IntegrationConfig.model_validate(yaml.safe_load(fp)['integration_example'])\n"
-               "def load(target):\n"
-               "    module_name, attribute = target.split(':')\n"
-               "    return getattr(importlib.import_module(module_name), attribute)\n"
-               "assert isinstance(load(config.api_router), APIRouter)\n"
-               "flask_app = Flask('test')\n"
-               "load(config.gui_blueprint)(flask_app)\n"
-               "assert 'example.index' in flask_app.view_functions, flask_app.view_functions\n"
-               # the module of the GUI blueprint registers the observable action
-               "from saq.analysis.presenter.observable_presenter import _OBSERVABLE_ACTION_REGISTRY\n"
-               "from saq.constants import F_TEST\n"
-               "assert [action.__name__ for action in _OBSERVABLE_ACTION_REGISTRY[F_TEST]] == "
-               "['ObservableActionExample']\n")
+    loaded = load_integration_hooks(os.path.join(get_base_dir(), "integrations.example", "example"), "example")
+    assert loaded["api_router"] == "APIRouter"
+    assert "example.index" in loaded["view_functions"]
+    # the module of the GUI blueprint registers the observable action
+    assert loaded["observable_actions"] == {F_TEST: ["ObservableActionExample"]}
 
 
 def test_the_observable_types_do_not_import_the_presentation_layer():

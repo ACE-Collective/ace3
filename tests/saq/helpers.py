@@ -2,6 +2,7 @@ import copy
 from contextlib import contextmanager
 import ctypes
 from datetime import datetime, timedelta
+import json
 import logging
 from multiprocessing import Pipe, Process, RLock
 from multiprocessing.managers import SyncManager
@@ -179,6 +180,52 @@ def run_python(code: str, timeout: int = 120) -> subprocess.CompletedProcess:
                             timeout=timeout)
     assert result.returncode == 0, result.stderr[-4000:]
     return result
+
+
+# every ACE process imports an integration's package; only the API and the GUI load these
+_LOADED_ONLY_BY_THE_APPS = ["flask", "werkzeug", "fastapi", "app", "aceapi_v2", "saq.gui",
+                            "saq.analysis.presenter.observable_presenter"]
+
+
+def load_integration_hooks(integration_dir: str, block: str) -> dict:
+    """Does in a fresh interpreter what ACE does with the integration in integration_dir: imports the python_module
+    of its integration_<block>: block, as every process does, then loads its api_router, as the API does, and calls
+    its gui_blueprint with a Flask app, as the GUI does. Returns what that loaded, for the caller to assert on:
+    name, loaded_by_package (the modules of _LOADED_ONLY_BY_THE_APPS the package import loaded), api_router (the
+    type name of what api_router names, or None), blueprints and view_functions of the Flask app, and the class
+    names of the observable actions (by observable type) and the alert actions registered."""
+    src = os.path.join(integration_dir, "src")
+    config_path = os.path.join(integration_dir, "etc", "saq.integration.yaml")
+    result = run_python(
+        "import importlib, json, sys, yaml\n"
+        f"sys.path.insert(0, {src!r})\n"
+        "from saq.configuration.schema import IntegrationConfig\n"
+        f"with open({config_path!r}) as fp:\n"
+        f"    config = IntegrationConfig.model_validate(yaml.safe_load(fp)['integration_{block}'])\n"
+        "importlib.import_module(config.python_module)\n"
+        f"loaded_by_package = [name for name in {_LOADED_ONLY_BY_THE_APPS!r} if name in sys.modules]\n"
+        "def load(target):\n"
+        "    module_name, attribute = target.split(':')\n"
+        "    return getattr(importlib.import_module(module_name), attribute)\n"
+        "api_router = type(load(config.api_router)).__name__ if config.api_router else None\n"
+        "from flask import Flask\n"
+        "flask_app = Flask('test')\n"
+        "if config.gui_blueprint:\n"
+        "    load(config.gui_blueprint)(flask_app)\n"
+        "from saq.analysis.presenter.observable_presenter import _OBSERVABLE_ACTION_REGISTRY\n"
+        "from saq.gui.alert_actions import _ALERT_ACTION_REGISTRY\n"
+        "print(json.dumps({\n"
+        "    'name': config.name,\n"
+        "    'loaded_by_package': loaded_by_package,\n"
+        "    'api_router': api_router,\n"
+        "    'blueprints': sorted(flask_app.blueprints),\n"
+        "    'view_functions': sorted(flask_app.view_functions),\n"
+        "    'observable_actions': {observable_type: [action.__name__ for action in actions]\n"
+        "                           for observable_type, actions in _OBSERVABLE_ACTION_REGISTRY.items()},\n"
+        "    'alert_actions': [action.__name__ for action in _ALERT_ACTION_REGISTRY],\n"
+        "}))\n")
+    # the last line: what the integration's modules log goes to stderr
+    return json.loads(result.stdout.splitlines()[-1])
 
 def process_is_gone(pid: int) -> bool:
     """True once pid has exited: a zombie has, and only waits for whoever reaps it."""
