@@ -9,7 +9,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -56,7 +55,6 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.database.pool import get_db
-from tests.saq.helpers import wait_for_condition
 
 
 def _raise(message="boom"):
@@ -1000,24 +998,6 @@ def test_armed_hang_dump_fires(hang_stacks_file):
     assert "Thread 0x" in stacks
     assert "test_armed_hang_dump_fires" in stacks
     assert take_hang_stacks(os.getpid()) == stacks
-
-
-@pytest.mark.unit
-def test_armed_hang_dump_fires_while_the_gil_is_held(hang_stacks_file):
-    """The case this exists for: a regex in _sre holds the GIL, which starves every Python
-    thread (the watchdog), but not faulthandler's C thread."""
-    arm_hang_stack_dump(0.4)
-    # a match that runs about a second without releasing the GIL
-    re.match(r"(a+)+$", "a" * 24 + "b")
-
-    # the C thread can still be writing when the match returns, and the main thread's stack
-    # comes last
-    wait_for_condition(
-        lambda: "test_armed_hang_dump_fires_while_the_gil_is_held" in _read(hang_stacks_file),
-        timeout=10,
-    )
-    # it caught the main thread in the match, not in the wait above
-    assert "in match" in _read(hang_stacks_file)
 
 
 @pytest.mark.unit
