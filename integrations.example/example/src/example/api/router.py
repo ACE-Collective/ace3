@@ -11,7 +11,7 @@ from aceapi_v2.sync import run_db_in_thread
 
 logger = logging.getLogger(__name__)
 
-# register_integration_router() authenticates every route; each one still needs its own
+# the API authenticates every integration route; each one still needs its own
 # permission gate
 router = APIRouter()
 

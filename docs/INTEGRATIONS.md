@@ -73,6 +73,7 @@ Follow these steps to bulid a new integration.
 1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 1. (optional) Add correlation hunt query sources or command types. See [Extending correlation hunts](#extending-correlation-hunts).
 1. (optional) Add an alert router that decides which queue an alert goes to. See [Routing alerts](#routing-alerts).
+1. (optional) Add GUI pages. See [Adding GUI pages](#adding-gui-pages).
 1. (optional) Add API routes for your pages and actions to call. See [Adding API routes](#adding-api-routes).
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
@@ -91,8 +92,16 @@ integration_example:
   enabled: true
   # a brief description of what the integration provides
   description: "Example Integration"
-  # the python package to import
+  # the python package to import, in every ACE process: it runs your registration hooks
+  # (register_integration_configuration(), register_directive(), register_observable_action(), ...),
+  # so its __init__.py imports only what they need
   python_module: example
+  # optional: your FastAPI router, as module:attribute, served under /api/v2/integrations/<name>
+  # (see Adding API routes). only the API imports it
+  api_router: example.api.router:router
+  # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
+  # your blueprints (see Adding GUI pages). only the GUI imports it
+  gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration
@@ -416,11 +425,43 @@ A name the GUI cannot load is left out of the list and logged at ERROR with an e
 stored in the alert's `alert_template` extension, which is how a hunt's `alert_template` setting
 (`docs/HUNTS.md`) works as well. A submitted value that is not in the list is refused.
 
+## Adding GUI pages
+
+An integration's pages, templates and static files live in a Flask blueprint. Name a function that
+registers it in your `integration_<name>:` block as `gui_blueprint`, and the GUI calls it with its
+Flask app when it builds the app:
+
+```python
+# src/vendor/app/blueprint.py
+from flask import Blueprint, Flask
+
+vendor_bp = Blueprint("vendor", __name__, url_prefix="/vendor", template_folder="../templates")
+
+def register(flask_app: Flask) -> None:
+    import vendor.app.views  # noqa: F401  (views imports vendor_bp from this module)
+    flask_app.register_blueprint(vendor_bp)
+```
+
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  gui_blueprint: vendor.app.blueprint:register
+```
+
+- **Only the GUI imports it.** Every ACE process imports your package, so don't import Flask or the
+  blueprint from it.
+- A function that fails to import, or raises, is logged at ERROR and the GUI starts without your
+  pages.
+
+`integrations.example/example/src/example/app/blueprint.py` is a working example.
+
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through
-the API (`aceapi_v2`), not through routes in its Flask blueprint. Register the module that defines
-your FastAPI router when your package is imported, and its routes are served under
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Name your FastAPI router in your
+`integration_<name>:` block as `api_router`, and its routes are served under
 `/api/v2/integrations/<name>`:
 
 ```python
@@ -439,18 +480,22 @@ async def submit(
     log_audit("user %s requested a submission for observable %s in alert %s",
               auth.auth_name, observable, alert_uuid, auth=auth, alert_uuid=alert_uuid)
     return ObservableAnalysisRequested(message="Submission requested.")
-
-# src/vendor/__init__.py
-from aceapi_v2.integrations import register_integration_router
-
-register_integration_router("vendor", "vendor.api.router")
 ```
 
-- **Register the module's name, not the router.** Every ACE process imports your package, but only
-  the API serves the routes. `vendor.api.router` (which must define `router`) is imported when an
-  API app is built, so the other processes never load FastAPI or your router's service layer. A
-  router module that fails to import is logged at ERROR and left out, and the API starts without
-  it. Passing the router object still works, but it costs every process that import.
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  api_router: vendor.api.router:router
+```
+
+- **Only the API imports the router.** Every ACE process imports your package, but only the API
+  serves the routes, so don't import the router module from it. The API imports `api_router` when it
+  builds its app. A router that fails to import is logged at ERROR and left out, and the API starts
+  without it.
+- **The integration's name is the URL prefix**, so an integration with an `api_router` is named
+  with lowercase letters, digits, dashes and underscores. Any other name fails config validation.
 
 - **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
   The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`
@@ -468,8 +513,7 @@ register_integration_router("vendor", "vendor.api.router")
 - **Call the route from the template with `aceApi`** (`app/static/js/ace_api.js`), which prefixes
   `/api/v2`, sends the session cookie and rejects with the API's own error message:
   `aceApi.post("/integrations/vendor/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/submit")`.
-- The router is registered once, under one name; registering another router under the same name
-  is an error. Keep the Flask blueprint only for templates, static files and pages.
+- Keep the Flask blueprint only for templates, static files and pages.
 
 `integrations.example/example/src/example/api/router.py` is a working example.
 

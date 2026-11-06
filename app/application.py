@@ -13,7 +13,6 @@ import urllib
 
 from app.blueprints import register_blueprints
 
-from app.integration import register_integration_blueprints
 from app.user_preferences import get_alert_sections_preference, get_theme_preference
 from saq.configuration.config import get_config
 from flask_config import get_flask_config
@@ -21,6 +20,7 @@ from flask_login import LoginManager
 from flask_executor import Executor # XXX what is this for?
 
 from saq.database.pool import remove_all_sessions
+from saq.integration.integration_loader import apply_integration_hooks
 from saq.disposition import (
     get_disposition_css,
     get_dispositions,
@@ -143,7 +143,7 @@ def create_app():
     executor.init_app(flask_app)
 
     register_blueprints(flask_app)
-    register_integration_blueprints(flask_app)
+    apply_integration_hooks("gui_blueprint", lambda integration, register: register(flask_app))
 
     # every url_for() on a static endpoint gets ?v=<hash of the file>, so a release that changes
     # a file changes its URL and nginx can let browsers keep a versioned URL forever

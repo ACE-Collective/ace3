@@ -4,7 +4,7 @@ import re
 import string
 import sys
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 
 from saq.configuration.lazy_registry import LazyConfigRegistry
 from saq.configuration.secret_ref import SecretRef
@@ -430,11 +430,36 @@ class TimelineConfig(BaseModel):
     #shodan_default: str = Field(..., description="path to default shodan configuration")
     #splunk_default: str = Field(..., description="path to default splunk configuration")
 
+# module:attribute, imported only by the process that uses it
+_IMPORT_TARGET = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
+
+# an integration's API routes are served under /api/v2/integrations/<name>
+_INTEGRATION_ROUTER_NAME = re.compile(r"[a-z0-9]+([_-][a-z0-9]+)*")
+
+
 class IntegrationConfig(BaseModel):
     name: str = Field(..., description="the name of the integration")
     description: str = Field(..., description="the description of the integration")
     enabled: bool = Field(..., description="whether the integration is enabled or disabled")
-    python_module: str = Field(..., description="the python module of the integration")
+    python_module: str = Field(..., description="the python module of the integration, imported by every ACE process")
+    api_router: Optional[str] = Field(default=None, description="the integration's FastAPI APIRouter as module:attribute, served under /api/v2/integrations/<name>; only the API imports it")
+    gui_blueprint: Optional[str] = Field(default=None, description="a function as module:attribute that the GUI calls with its Flask app to register the integration's blueprints; only the GUI imports it")
+
+    @field_validator("api_router", "gui_blueprint")
+    @classmethod
+    def _validate_import_target(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        # a module or attribute that does not exist is found when the app imports it, which only the
+        # app that uses it does
+        if value is not None and not _IMPORT_TARGET.fullmatch(value):
+            raise ValueError(f"{info.field_name}: {value!r} is not module:attribute")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_router_name(self) -> "IntegrationConfig":
+        if self.api_router is not None and not _INTEGRATION_ROUTER_NAME.fullmatch(self.name):
+            raise ValueError(f"integration {self.name!r} declares an api_router, so its name must be lowercase "
+                             f"letters, digits, dashes and underscores: it is the routes' URL prefix")
+        return self
 
 class AnalysisModuleGroupConfig(BaseModel):
     name: str = Field(..., description="the name of the analysis module group")
@@ -615,9 +640,6 @@ class NRDURLList(BaseModel):
     backups: list[str] = Field(default_factory=list, description="ordered list of backup URLs to try if the primary download fails")
 
 
-_OBSERVABLE_CLASS_TARGET = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
-
-
 class ObservableTypesConfig(BaseModel):
     """Configuration for the per-observable-type registry (inheritance, default display types, ...)."""
     config_path: str = Field(default="", description="path to a YAML file providing per-observable-type configuration; blank disables YAML-defined config (Python-class inheritance still applies)")
@@ -631,7 +653,7 @@ class ObservableTypesConfig(BaseModel):
         # does not exist fails only when its type is first built, since importing it here would load
         # every observable type into every process
         for o_type, target in value.items():
-            if not _OBSERVABLE_CLASS_TARGET.fullmatch(target):
+            if not _IMPORT_TARGET.fullmatch(target):
                 raise ValueError(f"observable_types.classes.{o_type}: {target!r} is not module:Class")
         return value
 
