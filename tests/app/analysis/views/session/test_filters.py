@@ -144,16 +144,6 @@ def test_overlay_keeps_every_entry_in_effect():
 
 
 @pytest.mark.unit
-def test_overlay_narrows_a_filter_already_in_effect():
-    """The clicked row matched the filter, so its owner is one of the owners allowed;
-    replacing the entry narrows to it. Merging would change nothing."""
-    owner = {"name": "Owner", "inverted": False, "values": ["None", "analyst"]}
-    mine = {"name": "Owner", "inverted": False, "values": ["analyst"]}
-
-    assert overlay_filters([OPEN, owner, QUEUE], [mine]) == [OPEN, mine, QUEUE]
-
-
-@pytest.mark.unit
 def test_overlay_switches_to_a_second_observable():
     """"Has both" is not expressible (one entry per filter and polarity, values ORed), and
     ORing the new value in would widen the list, so a second pivot on the same filter

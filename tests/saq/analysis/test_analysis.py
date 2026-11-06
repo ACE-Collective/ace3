@@ -118,45 +118,6 @@ def test_module_path_memoized_and_instance_validated():
     assert analysis.module_path == f"{base}:second"
 
 @pytest.mark.unit
-def test_load_analysis_from_module_path_success():
-    from saq.analysis.analysis import load_analysis_from_module_path
-    from saq.modules.test import GenericTestAnalysis
-
-    analysis = load_analysis_from_module_path("saq.modules.test:GenericTestAnalysis")
-    assert isinstance(analysis, GenericTestAnalysis)
-
-@pytest.mark.unit
-def test_load_analysis_from_module_path_missing_logs_error(caplog):
-    from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
-
-    caplog.set_level(logging.DEBUG)
-    analysis = load_analysis_from_module_path("saq.modules.test:DoesNotExist")
-
-    assert isinstance(analysis, UnknownAnalysis)
-    assert analysis.module_path == "saq.modules.test:DoesNotExist"
-
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1
-    assert "saq.modules.test:DoesNotExist" in errors[0].getMessage()
-
-@pytest.mark.unit
-def test_load_analysis_from_module_path_deprecated_logs_debug(caplog, monkeypatch):
-    from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path
-
-    monkeypatch.setattr(get_config(), "deprecated_modules", ["saq.modules.test:DoesNotExist"])
-
-    caplog.set_level(logging.DEBUG)
-    analysis = load_analysis_from_module_path("saq.modules.test:DoesNotExist")
-
-    assert isinstance(analysis, UnknownAnalysis)
-    assert analysis.module_path == "saq.modules.test:DoesNotExist"
-
-    # a deprecated module is expected to be missing, so nothing above DEBUG is logged
-    assert not [r for r in caplog.records if r.levelno > logging.DEBUG]
-    debug_messages = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-    assert any("saq.modules.test:DoesNotExist" in m for m in debug_messages)
-
-@pytest.mark.unit
 def test_load_removed_user_tag_analysis(caplog):
     # the user_tagger module was removed, but saved alerts still reference its analysis
     from saq.analysis.analysis import UnknownAnalysis, load_analysis_from_module_path

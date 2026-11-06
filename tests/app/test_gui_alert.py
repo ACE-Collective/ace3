@@ -126,6 +126,11 @@ def test_icon_from_a_url():
     ({"description": "Phish_Kit detected"}, {"phish": "x", "tool": "x"}, "phish"),
     ({"tool": "Mail Tool"}, {"tool": "x"}, "tool"),
     ({"alert_type": "brand new"}, {"brand": "x"}, "brand"),
+    # description tokens split on spaces as well as underscores
+    ({"description": "Splunk detection"}, {"splunk": "x"}, "splunk"),
+    # the tool comes before the alert type
+    ({"alert_type": "manual check", "tool": "splunk hunter"}, {"splunk": "x", "manual": "x"}, "splunk"),
+    ({}, {"nothing_matches": "x"}, "default"),
     ({}, {}, "default"),
 ])
 def test_legacy_icon(monkeypatch, fields, favicons, expected):
