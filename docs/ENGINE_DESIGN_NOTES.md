@@ -223,13 +223,11 @@ returns `True`.
 
 Refusing rather than raising is what the module side already knows how to
 handle — it is the same answer the deadline-expiry branch just above gives.
-`AnalysisModule.delay_analysis` sets the transient
-`analysis.delay_analysis_timed_out`, closes the analysis out `COMPLETED`, and the
-executor's cache-write gate (`executor.py`) keeps that empty result out of the
-analysis cache (§10.1, §11). The attribute keeps its name: it is already the
-general "the engine refused the delay" marker, and renaming it would churn the
-cache-attribution `skip_reason` for no behavioral gain. The root loses one
-module's analysis instead of hanging.
+`AnalysisModule.delay_analysis` closes the analysis out `COMPLETED` with
+`analysis.error` set, and the executor's cache-write gate (`executor.py`) keeps
+that empty result out of the analysis cache like any failed analysis (§10.1,
+§11, §12.4). The root loses one module's analysis, which the analyst sees as
+failed, instead of hanging.
 
 The `-> bool` annotation and the "True = recorded" docstring were pushed through
 `WorkloadManagerInterface` / `WorkloadManagerAdapter` / `DatabaseWorkloadManager`
@@ -384,13 +382,13 @@ double count:
 
 - `_execute_recursive_analysis` wraps the MAIN LOOP in `try`/`finally` and squares
   the budget up on the way out (`executor.py:1990`). The `finally` is load
-  bearing: `AnalysisTimeoutError` (§12.4) and a cancelled analysis (§12.2) both
+  bearing: `AnalysisTimeoutError` (§12.5) and a cancelled analysis (§12.2) both
   leave the loop that way, and `AnalysisOrchestrator._execute_analysis` saves the
   root on both paths.
 - `_execute_module_analysis` persists the running figure where `current_total_time`
   is already computed (`executor.py:1409`). The executor saves the root after
   every module invocation (§15), so this is what survives a worker killed
-  mid-module — the monitor's `os._exit(1)` or the manager's `SIGKILL` (§12.5).
+  mid-module — the monitor's `os._exit(1)` or the manager's `SIGKILL` (§12.6).
 
 *The budget covers one logical analysis run, not the root's lifetime.* `execute()`
 (`executor.py:431`) now seeds on `context.is_delayed_analysis`: a

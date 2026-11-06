@@ -244,7 +244,7 @@ available (§5.2).
 
 - `worker.process` is `None` or has an exit code (process died / auto-refreshed);
 - `worker.analysis_has_timed_out(record)` — the tracking record the manager just
-  read off disk for this worker (§12.5) says a module started more than its
+  read off disk for this worker (§12.6) says a module started more than its
   `maximum_analysis_time` ago. The deadline is on `CLOCK_MONOTONIC`, which is
   system-wide, so the manager compares it against its own reading. It `SIGKILL`s
   the worker's process group;
@@ -298,7 +298,7 @@ collector would have reached the inherited objects (`docs/IMPORTS.md`).
 `restart_worker()` promotes the dead worker's tracking record to a pending failure,
 removes the worker, creates a replacement with the same name/priority/idle
 timeout, starts it **in the execution mode the pool was started in** (§19.11)
-*and with that pending record* (§12.5), and then does an awkward dance to close
+*and with that pending record* (§12.6), and then does an awkward dance to close
 the dead `multiprocessing.Process` (falling back to poking `_popen.finalizer()`),
 with an `XXX` acknowledging it does not handle signal-killed processes cleanly.
 
@@ -317,7 +317,7 @@ group (§4.4), and what single-threaded mode runs in-process:
 5. `UNTIL_COMPLETE` → set the controlled-shutdown flag up front;
 6. `_handle_failed_analysis(pending_failure)` — record the failure of a previous
    incarnation that died mid-module, from the record the manager forked us with
-   (§12.5);
+   (§12.6);
 7. loop:
    - immediate-shutdown flag set → break;
    - past auto-refresh time → break (the manager forks a fresh worker, which
@@ -767,7 +767,7 @@ implement.
 `min(mode maximum_analysis_time, module maximum_analysis_time)` and then warns
 every 5 seconds; once elapsed time passes the *module's* limit it calls
 `os._exit(1)`, killing the worker process outright. The manager then kills what the
-worker left running (§4.4). Recovery is §12.5.
+worker left running (§4.4). Recovery is §12.6.
 
 ---
 
@@ -870,10 +870,9 @@ Back in `AnalysisModule.delay_analysis`:
 - returned `True` → `analysis.completed = False`, `analysis.delayed = True`,
   return `INCOMPLETE`;
 - returned `False` (deadline expired, or the request could not be recorded) →
-  set the transient `analysis.delay_analysis_timed_out = True`,
-  `analysis.completed = True`, `analysis.delayed = False`, return `COMPLETED`.
-  The analysis is closed out empty and the executor's cache-write gate refuses
-  to cache it.
+  the analysis is closed out failed (`analysis.error` "timed out waiting for
+  delayed analysis to complete", `completed = True`, `delayed = False`), return
+  `COMPLETED`. Like any failed analysis it is never cached (§12.4).
 
 `root.delayed` is *computed*: true if any analysis anywhere in the tree has
 `delayed` set. Its setter is a deliberate no-op (the serialized value is
@@ -926,7 +925,7 @@ Replay failures deliberately fall through to the live run without re-raising, so
 the outer handler does not treat a cache problem as a module failure.
 
 **Write.** `_maybe_write_cache_delta` after a successful run, gated on
-`analysis_result == COMPLETED` and `not delay_analysis_timed_out`. When the run
+`analysis_result == COMPLETED` and no `analysis.error` (§12.4). When the run
 is the final cycle of a delayed module, earlier cycles' deltas for the same
 `(module_path, observable_uuid)` are merged in first so a replay reproduces the
 whole contribution.
@@ -1011,12 +1010,65 @@ Caught per-module in `_execute_module_analysis`:
 | `WaitForAnalysisException` | create the dependency edge and move on (§9.1) |
 | `ExcessiveFileDataSizeError` | re-raised — aborts the whole work item |
 | `AnalysisFailedException` | logged as a warning (expected on retry after a kill), fails any dependency |
-| anything else | logged as a **warning** (with `exc_info`), so it writes no error report; the dependency (if any) is failed; and an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`) |
+| anything else | logged as a **warning** (with `exc_info`), so it writes no error report; the dependency (if any) is failed; an analysis module **crash report** is written — the traceback, the tree and the file the module died on, keyed by a logged `crash_id` (`docs/CRASH_REPORTS.md`); and the failure is recorded for the analyst (§12.4) |
 
 Note that a module blowing up does not fail the work item — the loop continues
 with the next module.
 
-### 12.4 `AnalysisTimeoutError` unwinding
+`AnalysisError` is not in this table: `AnalysisModule.analyze()` catches it
+before the executor sees it (§12.4).
+
+### 12.4 Analysis errors
+
+`Analysis.error` is the message saying why the module that generated an analysis
+failed, or `None`. It is kept in the tree (`root.json`), not in the details, so
+it is read without loading them. A module says it failed in one of two ways:
+
+```python
+# from anywhere under execute_analysis()/continue_analysis()/execute_final_analysis()
+raise AnalysisError(f"whois lookup of {domain} failed: {e}")
+
+# or, holding the analysis, and returning normally
+analysis.error = f"exiftool exited {result.returncode}: {result.stderr[-200:]}"
+return AnalysisExecutionResult.COMPLETED
+```
+
+The message is required: `AnalysisError("")` and `analysis.error = ""` raise
+`ValueError`. `analysis.error = None` clears it. `analyze()` turns an
+`AnalysisError` into an error on the module's analysis of the observable,
+creating that analysis if the module had not yet, closes it out completed
+(`close_with_error()`), logs it at INFO with the root and observable, and
+returns `COMPLETED`. It writes no crash report: it is a failure the module
+expected. Whatever the analysis already holds (observables, details, a summary)
+is kept and shown as a partial result.
+
+What an error does:
+
+- **GUI.** The alert tree shows an `error` badge on the analysis, with the
+  message beside it when there is no summary, and renders a failed analysis
+  that has neither summary nor observables, which would otherwise be hidden.
+  The analysis page shows the message above the details.
+- **Cache.** `_maybe_write_cache_delta` never caches a failed analysis
+  (`skip_reason` `analysis_error`): the next root to see the observable runs
+  the module again.
+- **Retry.** A module whose `allow_reanalysis_on_failure` is true runs again on
+  an observable whose analysis failed. Otherwise a failed analysis is final for
+  that root, like any completed one.
+- **Delta.** The attribution log (`root.module_executions`) records the error
+  with the analysis.
+
+The engine records the failures a module cannot report itself: an uncaught
+exception (§12.3) and a killed worker (§12.6). If the module had created its
+analysis, that analysis gets the error, keeping a message the module already
+set, with the `crash_id` appended. If it had not, the engine does **not** create
+one, because code that reads an analysis takes one that exists as the module's
+result (`EmailArchiver` indexes URLs under every `EmailArchiveResults` it
+finds). The failure goes in `root.analysis_failures` instead, which also stops
+the module from running on that observable again in the root, and the alert
+tree shows it under the observable. Code that reads another module's analysis
+checks `analysis.error` before trusting it.
+
+### 12.5 `AnalysisTimeoutError` unwinding
 
 `AnalysisExecutor.execute` catches it, still runs `_execute_post_analysis`, and
 re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
@@ -1024,7 +1076,7 @@ re-raises. `AnalysisOrchestrator._execute_analysis` saves the partial tree, sets
 `orchestrate_analysis` catches it, logs a warning, returns `False` — and the
 `finally` still runs the full post-analysis path.
 
-### 12.5 Worker death recovery
+### 12.6 Worker death recovery
 
 Two independent mechanisms:
 
@@ -1063,7 +1115,9 @@ reconstructed from the tracking record since the process that died wrote nothing
 (`docs/CRASH_REPORTS.md`) — calls
 `root.set_analysis_failed(module_path, obs_type, obs_value, "process died
 unexpectedly (crash_id ...)")` — the crash id rides along so an analyst reading the
-alert can reach the report without finding the log line first — saves,
+alert can reach the report without finding the log line first — puts the same
+message on the module's analysis of the observable if the module had created one
+(§12.4), saves,
 force-releases the lock *scoped to the lock_uuid it actually observes* so it can
 never delete a live worker's lock, and finally
 **deletes the pending file** — deleting it is the acknowledgement, so a replacement

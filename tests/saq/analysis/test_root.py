@@ -136,6 +136,7 @@ STORED_ROOT_JSON = {
     "company_name": "probe-company",
     "completed": True,
     "delayed": False,
+    "error": None,
     "delayed_analysis_tracking": {},
     "dependency_tracking": [],
     "description": "probe description",

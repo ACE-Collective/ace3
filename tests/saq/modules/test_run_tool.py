@@ -233,7 +233,8 @@ def test_upx_unpack(root_analysis, fake_tools, caplog):
     assert _run(module, observable) < 30
     _assert_stopped_in_sandbox(tool_dir, caplog, "upx")
     analysis = observable.get_analysis(UPXAnalysis)
-    assert analysis.details["error"] == "upx -d did not finish"
+    assert analysis.error == "upx -d did not finish"
+    assert analysis.generate_summary() == "UPX Analysis: decompression failed: upx -d did not finish"
     assert not analysis.observables
     # the incomplete output is not kept
     assert not os.path.exists(f"{observable.full_path}.upx.exe")

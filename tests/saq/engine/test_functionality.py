@@ -1533,6 +1533,15 @@ def test_crash_report_on_module_exception():
     assert metadata['analysis_mode'] == 'test_groups'
     assert metadata['exception_type'] == 'RuntimeError'
     assert metadata['exception_message'] == 'testing failure case'
+
+    # the module raised before creating its analysis, so the analyst sees the failure, with the
+    # crash id, under the observable: no analysis that other modules would take as a result
+    root = load_root(root.storage_dir)
+    observable = root.get_observable(observable.uuid)
+    assert not observable.get_analysis(BasicTestAnalysis)
+    assert root.get_analysis_failed_message(BasicTestAnalysis, observable) == (
+        f"RuntimeError: testing failure case (crash_id {crash_id})"
+    )
     assert metadata['observable_type'] == F_FILE
     assert metadata['complete'] is True
 

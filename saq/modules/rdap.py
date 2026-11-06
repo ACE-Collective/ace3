@@ -45,7 +45,7 @@ import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from saq.analysis import Analysis
 from saq.analysis.presenter.analysis_presenter import (
@@ -60,9 +60,9 @@ from saq.util.strings import format_item_list_for_summary
 # whoisit, whois and tldextract (~16 MB with the requests and httpx they load) are imported in the functions that
 # query: the search indexer and the GUI import this module only to read RdapAnalysis
 
-KEY_ERROR = "error"
 KEY_LOOKUP_PROTOCOL = "lookup_protocol"
 KEY_RDAP_ATTEMPT_ERROR = "rdap_attempt_error"
+KEY_NOT_FOUND = "not_found"
 
 KEY_AGE_CREATED_IN_DAYS = "age_created_in_days"
 KEY_AGE_LAST_UPDATED_IN_DAYS = "age_last_updated_in_days"
@@ -280,9 +280,9 @@ class RdapAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_LOOKUP_PROTOCOL: None,
             KEY_RDAP_ATTEMPT_ERROR: None,
+            KEY_NOT_FOUND: None,
 
             KEY_AGE_CREATED_IN_DAYS: None,
             KEY_AGE_LAST_UPDATED_IN_DAYS: None,
@@ -310,14 +310,6 @@ class RdapAnalysis(Analysis):
         }
 
     @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
-    @property
     def lookup_protocol(self):
         """``"rdap"`` | ``"whois"`` | ``None`` (both failed)."""
         return self.details[KEY_LOOKUP_PROTOCOL]
@@ -325,6 +317,15 @@ class RdapAnalysis(Analysis):
     @lookup_protocol.setter
     def lookup_protocol(self, value):
         self.details[KEY_LOOKUP_PROTOCOL] = value
+
+    @property
+    def not_found(self) -> Optional[str]:
+        """The registry's authoritative "does not exist" answer. An answer, not an error: it is cached."""
+        return self.details.get(KEY_NOT_FOUND)
+
+    @not_found.setter
+    def not_found(self, value: Optional[str]):
+        self.details[KEY_NOT_FOUND] = value
 
     @property
     def rdap_attempt_error(self):
@@ -513,6 +514,8 @@ class RdapAnalysis(Analysis):
 
         if self.error:
             parts.append(f"error: {self.error}")
+        elif self.not_found:
+            parts.append(self.not_found)
         else:
             if self.network_cidr:
                 network = self.network_cidr
@@ -630,8 +633,8 @@ class RdapAnalyzer(AnalysisModule):
         Returns:
             ``None`` on success;
             ``_RDAP_NXDOMAIN_SENTINEL`` for an authoritative "does not
-                exist" answer (no fallback needed; the error is also
-                stored on the analysis);
+                exist" answer (no fallback needed; the answer is also
+                stored on the analysis as ``not_found``);
             a free-form error string for any other failure (caller
                 will fall back to WHOIS).
         """
@@ -644,7 +647,7 @@ class RdapAnalyzer(AnalysisModule):
             else:
                 result = whoisit.domain(query_target, include_raw=True)
         except ResourceDoesNotExist as e:
-            analysis.error = f"rdap: domain not found: {e}".split(
+            analysis.not_found = f"rdap: domain not found: {e}".split(
                 "\n", 1
             )[0].strip()[:200]
             return _RDAP_NXDOMAIN_SENTINEL

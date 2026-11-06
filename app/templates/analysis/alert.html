@@ -410,7 +410,12 @@
                             <i class="bi bi-lightning-fill" style="color: #ffa500;"></i>
                         </span>
                     {% endif %}
-                    {% if node.obj.summary is none %}
+                    {% if node.obj.error is not none %}
+                        <span class="badge text-bg-danger" title="The analysis module failed: {{ node.obj.error }}">
+                            <i class="bi bi-exclamation-triangle-fill"></i> error
+                        </span>
+                    {% endif %}
+                    {% if node.obj.summary is none and node.obj.error is none %}
                         {# if no summary is available then we just display the str rep of the analysis #}
                         {{node.obj}}
                     {% else %}
@@ -422,6 +427,10 @@
                             {# if an alert has been archived then we do not create links because the analysis has been deleted #}
                             {{node.presenter.display_name}}
                         {% endif %}
+                    {% endif %}
+                    {# a summary usually says why already; without one the message is all the analyst gets #}
+                    {% if node.obj.error is not none and node.obj.summary is none %}
+                        <span class="text-danger small" title="{{ node.obj.error }}">{{ node.obj.error | truncate(200) }}</span>
                     {% endif %}
 
                     {# display any external (pivot) links #}
@@ -463,6 +472,19 @@
         {% else %}
             {# hidden="until-found" rather than display: none, so find-in-page still searches it (collapseTree in saq_analysis.js) #}
             <ul{% if is_default_collapsed %} hidden="until-found"{% endif %}>
+                {# modules that failed on this observable without leaving an analysis to show it #}
+                {% if not node.is_analysis %}
+                    {% for failed_name, failed_reason in (analysis_failure_map or {}).get(node.obj.uuid, ()) %}
+                        <li class="saq-analysis-li">
+                            <span class="saq-analysis-bullet">&bull;</span>
+                            <span class="badge text-bg-danger" title="The analysis module failed: {{ failed_reason }}">
+                                <i class="bi bi-exclamation-triangle-fill"></i> error
+                            </span>
+                            {{ failed_name }}
+                            <span class="text-danger small" title="{{ failed_reason }}">{{ failed_reason | truncate(200) }}</span>
+                        </li>
+                    {% endfor %}
+                {% endif %}
                 {% for child in node.children %}
                     {{ display_tree_node(child) }}
                 {% endfor %}

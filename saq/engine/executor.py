@@ -7,7 +7,7 @@ import time
 from typing import Optional
 from enum import Enum
 
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, mark_analysis_failed
 from saq.analysis.blob_store import get_blob_store
 from saq.analysis.cache import (
     apply_delta,
@@ -1132,9 +1132,11 @@ class AnalysisExecutor:
           (the slot already existed, no delayed→completed transition)
           slips past ``put_cached_delta``'s still-delayed check — which
           inspects the analysis dict — and a partial result gets cached.
-        - the analysis was not closed out by a delayed-analysis deadline
-          expiry (``delay_analysis_timed_out``) — that path returns
-          COMPLETED with an empty result the module never received.
+        - the analysis has no error (``Analysis.error``): a failure is not an
+          answer, and caching it would replay the failure into every root
+          analyzing the same observable for the TTL. That includes a
+          delayed-analysis deadline expiry, which returns COMPLETED with an
+          empty result the module never received.
 
         ``prior_deltas`` are the earlier delayed-cycle deltas recorded for
         this (module_path, observable); their tree mutations are merged
@@ -1150,24 +1152,20 @@ class AnalysisExecutor:
         if not get_config().analysis_cache.enabled:
             return
 
-        # A delayed-analysis deadline expiry also returns COMPLETED, with the
-        # analysis closed out empty -- the module never received its result.
-        # Caching that would replay "nothing" into every root that analyzes
-        # the same observable for the TTL. Tool-side partial timeouts are
-        # different: those flow back through the module with real output and
-        # stay cacheable.
+        # a failed analysis is not an answer: the next root to see this observable runs the module
+        # again. Tool-side partial timeouts the module reports without an error stay cacheable
         target_analysis = None
         if analysis_module.generated_analysis_type is not None:
             target_analysis = observable.get_analysis(
                 analysis_module.generated_analysis_type, instance=analysis_module.instance
             )
-        if getattr(target_analysis, "delay_analysis_timed_out", False):
+        if isinstance(target_analysis, Analysis) and target_analysis.error is not None:
             logging.info(
                 "skipping cache write",
                 extra={
                     "module_name": analysis_module.name,
                     "observable_type": observable.type,
-                    "skip_reason": "delay_analysis_timed_out",
+                    "skip_reason": "analysis_error",
                 },
             )
             return
@@ -1716,7 +1714,7 @@ class AnalysisExecutor:
             # the analyst-facing record: one directory, named by a crash id that is logged,
             # carrying the traceback, the tree and the file the module died on. see
             # docs/CRASH_REPORTS.md
-            record_module_crash(
+            crash_id = record_module_crash(
                 crash_type=CRASH_TYPE_EXCEPTION,
                 module_path=MODULE_PATH(analysis_module),
                 module_name=analysis_module.name,
@@ -1725,6 +1723,10 @@ class AnalysisExecutor:
                 exception=e,
                 maximum_analysis_time=analysis_module.maximum_analysis_time,
             )
+
+            # and the analyst-facing mark on the analysis itself, so the alert shows the module
+            # failed instead of the analysis silently missing. the crash id leads to the report
+            self._record_module_exception(root, work_item.observable, analysis_module, e, crash_id)
 
             if work_item.dependency:
                 work_item.dependency.set_status_failed("error: {}".format(e))
@@ -1760,6 +1762,45 @@ class AnalysisExecutor:
         else:
             self._drain_work_stack_buffer(
                 context, root, work_stack, work_stack_buffer
+            )
+
+    def _record_module_exception(
+        self,
+        root: RootAnalysis,
+        observable: Optional[Observable],
+        analysis_module: AnalysisModuleInterface,
+        exception: Exception,
+        crash_id: Optional[str],
+    ) -> None:
+        """Records that a module raised, where the analyst sees it: on its analysis of the observable,
+        or, if it raised before creating one, in the root's analysis failures. Either way the module
+        does not run on that observable again in this root. Never raises: it runs on the crash path."""
+        if observable is None or analysis_module.generated_analysis_type is None:
+            return
+
+        try:
+            module_path = MODULE_PATH(analysis_module)
+            analysis = observable.get_analysis(module_path)
+            # a module that recorded why it failed before it raised knows better than the exception
+            if isinstance(analysis, Analysis) and analysis.error is not None:
+                message = analysis.error
+            else:
+                message = f"{type(exception).__name__}: {exception}"
+
+            if crash_id:
+                message = f"{message} (crash_id {crash_id})"
+
+            if not mark_analysis_failed(observable, module_path, message):
+                root.set_analysis_failed(module_path, observable.type, observable.value, error_message=message)
+        except Exception:
+            logging.exception(
+                "unable to mark analysis failed",
+                extra={
+                    "module_name": analysis_module.name,
+                    "root_uuid": root.uuid,
+                    "observable_uuid": observable.uuid,
+                    "crash_id": crash_id,
+                },
             )
 
     def _drain_work_stack_buffer(

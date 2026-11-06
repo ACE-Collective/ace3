@@ -2,7 +2,11 @@ import logging
 import os
 import pytest
 
+from saq.analysis.analysis import Analysis
+from saq.analysis.presenter import create_analysis_presenter
+from saq.analysis.root import load_root
 from saq.configuration.config import get_config
+from saq.constants import F_TEST
 from saq.observables.file import FileObservable
 
 @pytest.mark.unit
@@ -189,3 +193,38 @@ def test_is_deprecated_module_path(monkeypatch):
 
     # a value that is not a module path at all is not deprecated
     assert not is_deprecated_module_path("not a module path")
+
+
+class _ErrorAnalysis(Analysis):
+    pass
+
+
+@pytest.mark.unit
+def test_error_is_saved_with_the_tree_and_read_without_the_details(root_analysis):
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test")
+    analysis = observable.add_analysis(_ErrorAnalysis())
+    analysis.details = {"found": "nothing"}
+    analysis.error = "lookup timed out"
+    root_analysis.save()
+
+    loaded = load_root(root_analysis.storage_dir)
+    loaded_analysis = loaded.get_observable(observable.uuid).get_analysis(_ErrorAnalysis)
+    # the tree, the GUI and the engine read it without loading the analysis details
+    assert loaded_analysis.error == "lookup timed out"
+
+
+@pytest.mark.unit
+def test_an_analysis_saved_before_errors_existed_has_no_error():
+    analysis = Analysis()
+    analysis.json = {"uuid": "1", "summary": "old", "completed": True, "delayed": False}
+
+    assert analysis.error is None
+
+
+@pytest.mark.unit
+def test_a_failed_analysis_is_rendered_without_a_summary_or_observables():
+    analysis = Analysis()
+    assert not create_analysis_presenter(analysis).should_render
+
+    analysis.error = "lookup timed out"
+    assert create_analysis_presenter(analysis).should_render

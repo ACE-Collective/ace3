@@ -543,8 +543,10 @@ def test_rdap_analyzer_resource_does_not_exist_no_fallback(test_context, monkeyp
     analyzer.execute_analysis(observable)
     analysis = observable.get_analysis(RdapAnalysis)
     assert analysis.lookup_protocol is None
-    assert analysis.error is not None
-    assert "domain not found" in analysis.error
+    # an answer, not a failure: it is cached like one
+    assert analysis.error is None
+    assert "domain not found" in analysis.not_found
+    assert analysis.generate_summary() == f"RDAP Analysis: {analysis.not_found}"
     assert analysis.domain_name is None
     assert analysis.registrar is None
     assert analysis.age_created_in_days is None

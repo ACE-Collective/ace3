@@ -16,7 +16,6 @@ from saq.modules.file_analysis.file_type import FileTypeAnalyzer
 
 KEY_STDOUT = "stdout"
 KEY_STDERR = "stderr"
-KEY_ERROR = "error"
 KEY_DEOBFUSCATED = "deobfuscated"
 KEY_EXIT_CODE = "exit_code"
 
@@ -43,7 +42,6 @@ class De4dotAnalysis(Analysis):
         self.details = {
             KEY_STDOUT: None,
             KEY_STDERR: None,
-            KEY_ERROR: None,
             KEY_DEOBFUSCATED: False,
         }
 
@@ -67,14 +65,6 @@ class De4dotAnalysis(Analysis):
     @stderr.setter
     def stderr(self, value):
         self.details[KEY_STDERR] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def deobfuscated(self):

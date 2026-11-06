@@ -32,7 +32,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     KEY_EXIT_CODE = "exit_code"
     KEY_EVENT_COUNT = "event_count"
     KEY_SECONDARY_SCRIPT_COUNT = "secondary_script_count"
-    KEY_ERROR = "error"
     # "compile" (the source never parsed, so it is not JavaScript), "runtime"
     # (it parsed and failed mid-execution, so it IS JavaScript), or None.
     KEY_ERROR_TYPE = "error_type"
@@ -56,7 +55,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
             JavaScriptDeobfuscationAnalysis.KEY_EXIT_CODE: None,
             JavaScriptDeobfuscationAnalysis.KEY_EVENT_COUNT: 0,
             JavaScriptDeobfuscationAnalysis.KEY_SECONDARY_SCRIPT_COUNT: 0,
-            JavaScriptDeobfuscationAnalysis.KEY_ERROR: None,
             JavaScriptDeobfuscationAnalysis.KEY_ERROR_TYPE: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_STATUS: None,
             JavaScriptDeobfuscationAnalysis.KEY_WEBCRACK_ERROR: None,
@@ -109,14 +107,6 @@ class JavaScriptDeobfuscationAnalysis(Analysis):
     @secondary_script_count.setter
     def secondary_script_count(self, value):
         self.details[JavaScriptDeobfuscationAnalysis.KEY_SECONDARY_SCRIPT_COUNT] = value
-
-    @property
-    def error(self):
-        return None if self.details is None else self.details.get(JavaScriptDeobfuscationAnalysis.KEY_ERROR)
-
-    @error.setter
-    def error(self, value):
-        self.details[JavaScriptDeobfuscationAnalysis.KEY_ERROR] = value
 
     @property
     def error_type(self):
@@ -321,7 +311,7 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                     analysis.event_count = int(report.get("event_count", 0) or 0)
                     analysis.secondary_script_count = int(report.get("secondary_script_count", 0) or 0)
                     if report.get("error"):
-                        analysis.error = report["error"]
+                        analysis.error = str(report["error"])
                     analysis.error_type = report.get("error_type")
                     analysis.webcrack_status = report.get("webcrack_status")
                     analysis.webcrack_error = report.get("webcrack_error")
