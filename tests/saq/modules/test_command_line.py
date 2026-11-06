@@ -406,6 +406,8 @@ def test_command_line_base64_undecodable_run_in_command_body_skipped(root_analys
     "powershell.exe -ExecutionPolicy Bypass -File C:\\Scripts\\test.ps1",
     "powershell.exe -ex RemoteSigned -File C:\\Scripts\\test.ps1",
     "pwsh.exe -ErrorAction Stop -File C:\\Scripts\\test.ps1",
+    # a bare dash is an empty flag name, which every name starts with
+    "powershell.exe - Bypass -File C:\\Scripts\\test.ps1",
 ])
 def test_command_line_base64_minimum_length_kept_after_other_e_flags(root_analysis, command_line):
     """a flag that only starts with e (-ExecutionPolicy) does not lift the size limit on the word after it"""
