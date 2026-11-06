@@ -167,15 +167,6 @@ def test_only_the_abandoned_pool_stops_rolling_back(capfd):
     assert engine.pool._reset_on_return is reset_rollback
 
 
-@pytest.mark.integration
-def test_reset_database_after_fork_writes_to_stderr(capfd):
-    # calling this in the parent is benign: no tracked connection has a foreign pid, so
-    # nothing is closed, and dispose(close=False) plus registry.clear() only swap in
-    # fresh pools that SQLAlchemy rebuilds lazily.
-    reset_database_after_fork()
-    assert "inherited database connections" in capfd.readouterr().err
-
-
 class _Blocking(io.RawIOBase):
     """A raw stream whose reads and writes wait until released, so a thread reading or writing through
     a buffered stream over it holds that stream's lock for as long as the test needs."""

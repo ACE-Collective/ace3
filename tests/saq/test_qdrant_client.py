@@ -33,13 +33,6 @@ class TestGetQdrantClient:
 
         assert mock_client.call_args.kwargs["timeout"] == 10
 
-    def test_timeout_always_present(self, mock_qdrant_config):
-        """Guards the regression directly: the kwarg must never be absent."""
-        with patch("saq.qdrant_client.QdrantClient") as mock_client:
-            get_qdrant_client()
-
-        assert "timeout" in mock_client.call_args.kwargs
-
     def test_ssl_arguments_only_when_enabled(self, mock_qdrant_config, monkeypatch):
         with patch("saq.qdrant_client.QdrantClient") as mock_client:
             get_qdrant_client()

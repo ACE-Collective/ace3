@@ -53,7 +53,7 @@ def test_no_detection(root_analysis):
     assert root_analysis.analysis_mode == 'test_groups'
 
     # make sure we detected the change in modes
-    assert log_count('analysis mode for RootAnalysis({}) changed from test_empty to correlation'.format(root_analysis.uuid)) == 0
+    assert log_count('analysis mode for RootAnalysis({}) changed from test_groups to correlation'.format(root_analysis.uuid)) == 0
     assert log_count('completed analysis RootAnalysis({})'.format(root_analysis.uuid)) == 1
 
 @pytest.mark.integration
@@ -67,15 +67,15 @@ def test_existing_alert(root_analysis):
     ALERT(root_analysis)
 
     # now analyze the alert that's already in the database
-    engine = Engine()
+    engine = Engine(config=EngineConfiguration(local_analysis_modes=[ANALYSIS_MODE_CORRELATION]))
     engine.configuration_manager.config.alerting_enabled = True
-    engine.configuration_manager.enable_module('basic_test')
+    engine.configuration_manager.enable_module('basic_test', ANALYSIS_MODE_CORRELATION)
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
-    assert load_alert(root_analysis.uuid)
-
-    # and we should have a warning about the alert already existing
-    #self.assertEqual(log_count('uuid {} already exists in alerts table'.format(root.uuid)), 1)
+    # ALERT() stored the alert before basic_test added its detection point, so the detection is
+    # there only if the engine synced the alert it analyzed
+    get_db().close()
+    assert load_alert(root_analysis.uuid).detection_count == 1
 
 @pytest.mark.integration
 def test_whitelisted(root_analysis):
@@ -90,9 +90,6 @@ def test_whitelisted(root_analysis):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
 
     assert not load_alert(root_analysis.uuid)
-
-    # and we should have a warning about the alert already existing
-    #self.assertEqual(log_count('uuid {} already exists in alerts table'.format(root.uuid)), 1)
 
 @pytest.mark.system
 def test_alert_dispositioned():

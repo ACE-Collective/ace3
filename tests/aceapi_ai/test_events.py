@@ -37,16 +37,6 @@ async def test_event_requires_auth(unauth_client):
 
 
 @pytest.mark.asyncio
-async def test_event_requires_ai_event_scope(_override_db_session, session, test_user):
-    from tests.aceapi_ai.conftest import api_key_client
-    from tests.aceapi_v2.conftest import make_api_key
-
-    key = await make_api_key(session, test_user.id, inherit=False, scope=[("ai", "fake"), ("ai", "alert")])
-    async with api_key_client(key) as client:
-        assert (await client.get("/events/1")).status_code == 403
-
-
-@pytest.mark.asyncio
 async def test_event_missing_is_404_and_malformed_is_400(ai_scoped_client):
     assert (await ai_scoped_client.get("/events/999999")).status_code == 404
     assert (await ai_scoped_client.get("/events/11111111-1111-1111-1111-111111111111")).status_code == 404

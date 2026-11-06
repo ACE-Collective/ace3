@@ -73,7 +73,10 @@ class DetectionPage(BaseModel):
 
 
 class DetectionCreate(BaseModel):
-    """Add a detection. The observable need not have ever been seen."""
+    """Add a detection. Omit expires_on for the configured lifetime; null means never expire.
+
+    The observable need not have ever been seen.
+    """
     type: str
     value: str
     expires_on: datetime | None = None

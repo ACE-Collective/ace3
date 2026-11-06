@@ -101,8 +101,10 @@ class TestExpectations:
         await client.put(f"/svs/tests/{OTHER_GUID}/expectations/windows/{NOISE}", json={"state": "rejected"})
         rows = (await client.get("/svs/expectations/")).json()["data"]
         assert [(row["test_guid"], row["state"]) for row in rows] == [(GUID, "expected"), (OTHER_GUID, "rejected")]
-        rows = (await client.get("/svs/expectations/", params={"test": GUID, "state": "expected"})).json()["data"]
+        rows = (await client.get("/svs/expectations/", params={"test": GUID})).json()["data"]
         assert [row["signature_uuid"] for row in rows] == [SIGNATURE]
+        rows = (await client.get("/svs/expectations/", params={"state": "rejected"})).json()["data"]
+        assert [row["test_guid"] for row in rows] == [OTHER_GUID]
         assert (await client.get("/svs/expectations/", params={"state": "candidate"})).status_code == 422
 
         assert (await client.delete(f"/svs/tests/{GUID}/expectations/windows/{SIGNATURE}")).status_code == 204
@@ -276,6 +278,7 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
         # a global ignore changes every test's results
         assert (await client.put(f"/svs/ignores/global/{NOISE}", json={})).status_code == 403
         assert (await client.get("/svs/expectations/")).status_code == 403
+        assert (await client.get("/svs/ignores/")).status_code == 403
 
     admin = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "admin")])
     async with api_key_client(admin) as client:
@@ -283,8 +286,3 @@ async def test_permissions(_override_db_session, session: AsyncSession, test_use
         assert (await client.delete(f"/svs/ignores/global/{NOISE}")).status_code == 204
         assert (await client.put(f"/svs/tests/{GUID}/ignores/{NOISE}", json={})).status_code == 403
 
-
-@pytest.mark.asyncio
-async def test_no_permission(noperm_client: AsyncClient):
-    assert (await noperm_client.get("/svs/expectations/")).status_code == 403
-    assert (await noperm_client.get("/svs/ignores/")).status_code == 403

@@ -6,8 +6,9 @@ import pytest
 
 from saq.analysis import RootAnalysis
 from saq.constants import F_IP, AnalysisExecutionResult
+from saq.configuration import get_config
+from saq.configuration.schema import APIQueryDefaultsConfig
 from saq.modules.api_analysis import AnalysisDelay, BaseAPIAnalysis, BaseAPIAnalyzer, BaseAPIAnalyzerConfig
-from saq.util import create_timedelta
 from tests.saq.test_util import create_test_context
 
 
@@ -56,16 +57,6 @@ def root():
 def _analyzer(root, delayed_analysis, results=None, analyzer_class=_Analyzer, **config):
     context = create_test_context(root=root, delayed_analysis_interface=delayed_analysis)
     return analyzer_class(context=context, config=_config(**config), results=results)
-
-
-@pytest.mark.unit
-def test_generated_analysis_type_defaults_to_base_analysis(root, delayed_analysis):
-    # it used to be a plain method, so a subclass that didn't override it handed the engine a bound method
-    analyzer = _analyzer(root, delayed_analysis, results=[])
-    observable = root.add_observable_by_spec(F_IP, "10.0.0.1")
-
-    assert analyzer.generated_analysis_type is BaseAPIAnalysis
-    assert isinstance(analyzer.create_analysis(observable), BaseAPIAnalysis)
 
 
 @pytest.mark.unit
@@ -179,17 +170,24 @@ def test_generate_summary_without_results_or_error():
 
 
 @pytest.mark.unit
-def test_configured_durations_override_api_defaults(root, delayed_analysis):
+def test_configured_durations_override_api_defaults(root, delayed_analysis, monkeypatch):
+    # every default differs from every other, and from the configured values
+    api_defaults = APIQueryDefaultsConfig(
+        name="test_api", wide_duration_before="00:04:00:00", wide_duration_after="00:05:00:00",
+        narrow_duration_before="00:00:06:00", narrow_duration_after="00:00:07:00",
+        max_result_count=8, query_timeout=9, async_delay=10, use_index_time=False)
+    monkeypatch.setattr(type(get_config()), "get_api_query_defaults_config", lambda self, name: api_defaults)
+
     defaults = _analyzer(root, delayed_analysis)
     configured = _analyzer(root, delayed_analysis, wide_duration_before="00:02:00:00", wide_duration_after="00:03:00:00",
                            narrow_duration_before="00:00:02:00", narrow_duration_after="00:00:03:00",
                            max_result_count=5, query_timeout=11, async_delay=13,
                            time_ranges={"LOOKBACK": {"duration_before": "01:00:00:00"}, "EMPTY": {}})
 
-    assert configured.wide_duration_before == create_timedelta("00:02:00:00")
-    assert configured.wide_duration_after == create_timedelta("00:03:00:00")
-    assert configured.narrow_duration_before == create_timedelta("00:00:02:00")
-    assert configured.narrow_duration_after == create_timedelta("00:00:03:00")
+    assert configured.wide_duration_before == datetime.timedelta(hours=2)
+    assert configured.wide_duration_after == datetime.timedelta(hours=3)
+    assert configured.narrow_duration_before == datetime.timedelta(minutes=2)
+    assert configured.narrow_duration_after == datetime.timedelta(minutes=3)
     assert configured.max_result_count == 5
     assert configured.query_timeout == 11
     assert configured.async_delay_seconds == 13
@@ -198,9 +196,13 @@ def test_configured_durations_override_api_defaults(root, delayed_analysis):
         "EMPTY": {"duration_before": datetime.timedelta(0), "duration_after": datetime.timedelta(0)},
     }
 
-    assert defaults.wide_duration_before == create_timedelta(defaults.api_defaults.wide_duration_before)
-    assert defaults.query_timeout == defaults.api_defaults.query_timeout
-    assert defaults.async_delay_seconds == defaults.api_defaults.async_delay
+    assert defaults.wide_duration_before == datetime.timedelta(hours=4)
+    assert defaults.wide_duration_after == datetime.timedelta(hours=5)
+    assert defaults.narrow_duration_before == datetime.timedelta(minutes=6)
+    assert defaults.narrow_duration_after == datetime.timedelta(minutes=7)
+    assert defaults.max_result_count == 8
+    assert defaults.query_timeout == 9
+    assert defaults.async_delay_seconds == 10
     assert defaults.additional_time_ranges == {}
 
 

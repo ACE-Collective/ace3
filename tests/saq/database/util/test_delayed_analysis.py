@@ -38,16 +38,6 @@ def _delayed_analysis_rows(root_uuid: str) -> list[tuple]:
 
 
 @pytest.mark.integration
-def test_returns_true_on_success(request_args):
-    """A successful insert must report success -- the caller marks the analysis
-    delayed based on this."""
-    root = request_args[0]
-
-    assert delayed_analysis.add_delayed_analysis_request(*request_args, 0, 0, 10) is True
-    assert len(_delayed_analysis_rows(root.uuid)) == 1
-
-
-@pytest.mark.integration
 def test_returns_false_when_insert_fails(request_args):
     """A failed insert means there is no row, and nothing will ever resume the
     analysis."""
@@ -74,7 +64,8 @@ def test_inserts_the_request_row(request_args):
     """The row identifies the target: root uuid, observable uuid, module name,
     the delay interval and the node that has to resume it."""
     root, observable, analysis_module = request_args
-    delayed_analysis.add_delayed_analysis_request(root, observable, analysis_module, 1, 2, 3)
+    # the caller marks the analysis delayed only when this reports success
+    assert delayed_analysis.add_delayed_analysis_request(root, observable, analysis_module, 1, 2, 3) is True
 
     (row,) = _delayed_analysis_rows(root.uuid)
     assert row[:5] == (

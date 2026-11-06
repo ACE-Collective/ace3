@@ -72,7 +72,8 @@ MULTI = [{"description": "d1", "signature_uuid": SIG_A, "fqdn": "one.example.com
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("disposition", ["OPEN", "IGNORE", "FALSE_POSITIVE", "DELIVERY", "GRAYWARE", "NOT_CONFIGURED"])
+# one disposition of each class: the rule reads only the class
+@pytest.mark.parametrize("disposition", ["OPEN", "FALSE_POSITIVE", "DELIVERY"])
 @pytest.mark.parametrize("detections", [SINGLE, MULTI], ids=["single", "multi"])
 @pytest.mark.parametrize("with_override", [False, True], ids=["inherited", "override"])
 @pytest.mark.parametrize("run_state", [None, "ended", "reviewed"], ids=["no-run", "unreviewed-run", "reviewed-run"])

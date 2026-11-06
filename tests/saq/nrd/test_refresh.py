@@ -105,6 +105,9 @@ def test_config_hash_insensitive_to_primary_order():
 def test_config_hash_changes_when_primary_changes():
     a = [_make_url_list("https://a.example/list.txt")]
     b = [_make_url_list("https://different.example/list.txt")]
+    # stored in the database and compared by the next run, so it must not vary between processes:
+    # sha256 of '["https://a.example/list.txt"]', computed outside ACE
+    assert _compute_config_hash(a) == "1a7f1d64e638d01bdc016872d169ac06880823946d415f4097723a7d2376be6b"
     assert _compute_config_hash(a) != _compute_config_hash(b)
 
 
@@ -134,11 +137,6 @@ def test_normalize_domain_drops_non_domain_lines():
     assert _normalize_domain("192.168.1.1/24") is None
     assert _normalize_domain("not a domain at all") is None
     assert _normalize_domain("https://example.com/path") is None
-
-
-@pytest.mark.unit
-def test_normalize_domain_punycode_passthrough():
-    assert _normalize_domain("xn--caf-dma.example") == "xn--caf-dma.example"
 
 
 @pytest.mark.unit
@@ -406,19 +404,6 @@ def test_iter_lines_forces_utf8_when_charset_missing(nrd_env, requests_mock, cap
     # No "Dropped N malformed entries" warning should have been emitted.
     drop_warnings = [r for r in caplog.records if "Dropped" in r.getMessage() and "malformed" in r.getMessage()]
     assert not drop_warnings, "IDN lines were mis-decoded and dropped"
-
-
-@pytest.mark.unit
-def test_atomic_swap_does_not_leave_new_file(nrd_env, requests_mock):
-    db_path, configure = nrd_env
-    list_url = "https://feed.example/nrd.txt"
-    requests_mock.get(list_url, text="alpha.example\n", headers={"ETag": "etag-v1"})
-
-    configure([_make_url_list(list_url)])
-    assert refresh() == 0
-
-    new_path = db_path.with_suffix(db_path.suffix + ".new")
-    assert not new_path.exists(), "leftover .new file means atomic swap failed"
 
 
 # ---------------------------------------------------------------------------

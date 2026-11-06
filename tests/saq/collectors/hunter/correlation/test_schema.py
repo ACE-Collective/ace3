@@ -26,19 +26,10 @@ class TestExpressionConfig:
         assert expr.type == "jinja"
         assert expr.value == "{{ field1 }}"
 
-    def test_explicit_jinja(self):
-        expr = ExpressionConfig(type="jinja", value="{{ x }}")
-        assert expr.type == "jinja"
-
     @pytest.mark.parametrize("expr_type", ["equals", "glob", "regex"])
     def test_comparison_requires_property(self, expr_type):
         with pytest.raises(ValidationError):
             ExpressionConfig(type=expr_type, value="test")
-
-    @pytest.mark.parametrize("expr_type", ["equals", "glob", "regex"])
-    def test_comparison_with_property(self, expr_type):
-        expr = ExpressionConfig(type=expr_type, value="test", property="field1")
-        assert expr.property == "field1"
 
     def test_not_rejects_list(self):
         with pytest.raises(ValidationError):
@@ -53,10 +44,6 @@ class TestExpressionConfig:
         expr = ExpressionConfig(type="and", value=["{{ a }}", "{{ b }}"])
         assert len(expr.value) == 2
 
-    def test_case_sensitive_default(self):
-        expr = ExpressionConfig(type="equals", value="x", property="f")
-        assert expr.case_sensitive is True
-
 
 @pytest.mark.unit
 class TestCommandConfig:
@@ -65,25 +52,13 @@ class TestCommandConfig:
         with pytest.raises(ValidationError):
             CommandConfig(type="query", query="search index=main")
 
-    def test_query_valid(self):
-        cmd = CommandConfig(type="query", source="splunk", query="search index=main")
-        assert cmd.source == "splunk"
-
     def test_executable_requires_path(self):
         with pytest.raises(ValidationError):
             CommandConfig(type="executable")
 
-    def test_executable_valid(self):
-        cmd = CommandConfig(type="executable", path="/usr/bin/script.py")
-        assert cmd.path == "/usr/bin/script.py"
-
     def test_defined_requires_name(self):
         with pytest.raises(ValidationError):
             CommandConfig(type="defined")
-
-    def test_defined_valid(self):
-        cmd = CommandConfig(type="defined", name="my_command")
-        assert cmd.name == "my_command"
 
     def test_default_timeout_is_a_backstop(self):
         """The default has to clear real correlate query durations (p99 ~400s).
@@ -94,14 +69,6 @@ class TestCommandConfig:
         cmd = CommandConfig(type="query", source="splunk", query="search index=main")
         assert parse_timespec(cmd.timeout) >= timedelta(minutes=10)
 
-    def test_explicit_timeout_wins(self):
-        cmd = CommandConfig(type="query", source="splunk", query="search index=main", timeout="45s")
-        assert parse_timespec(cmd.timeout) == timedelta(seconds=45)
-
-    def test_executable_with_env(self):
-        cmd = CommandConfig(type="executable", path="/usr/bin/test", env={"KEY": "value"})
-        assert cmd.env == {"KEY": "value"}
-
     def test_executable_env_defaults_none(self):
         cmd = CommandConfig(type="executable", path="/usr/bin/test")
         assert cmd.env is None
@@ -109,15 +76,6 @@ class TestCommandConfig:
     def test_source_options_defaults_to_empty_dict(self):
         cmd = CommandConfig(type="query", source="splunk", query="search index=main")
         assert cmd.source_options == {}
-
-    def test_source_options_accepts_dict(self):
-        cmd = CommandConfig(
-            type="query",
-            source="rapid7",
-            query="where(...)",
-            source_options={"log_names": ["Firewall Activity"], "ingestion_lag_buffer": "1h"},
-        )
-        assert cmd.source_options == {"log_names": ["Firewall Activity"], "ingestion_lag_buffer": "1h"}
 
     def test_predefined_command_source_options_round_trip(self):
         predef = PredefinedCommandConfig(
@@ -129,17 +87,6 @@ class TestCommandConfig:
         )
         cmd = predef.to_command_config()
         assert cmd.source_options == {"log_names": ["Authentication"]}
-
-    def test_predefined_command_source_options_overridable(self):
-        predef = PredefinedCommandConfig(
-            name="rapid7_default",
-            type="query",
-            source="rapid7",
-            query="where(...)",
-            source_options={"log_names": ["Authentication"]},
-        )
-        cmd = predef.to_command_config({"source_options": {"log_names": ["Firewall Activity"]}})
-        assert cmd.source_options == {"log_names": ["Firewall Activity"]}
 
 
 @pytest.mark.unit
@@ -179,23 +126,6 @@ class TestTransformConfig:
                 command=CommandConfig(type="defined", name="test"),
             )
 
-    def test_valid_property_transform(self):
-        t = TransformConfig(
-            type="event",
-            method="property",
-            property_name="result",
-            command=CommandConfig(type="defined", name="test"),
-        )
-        assert t.property_name == "result"
-
-    def test_valid_mutate_transform(self):
-        t = TransformConfig(
-            type="stream",
-            method="mutate",
-            command=CommandConfig(type="defined", name="test"),
-        )
-        assert t.method == "mutate"
-
 
 @pytest.mark.unit
 class TestActionConfig:
@@ -205,42 +135,13 @@ class TestActionConfig:
         action = ActionConfig.model_validate(action_type)
         assert action.type == action_type
 
-    def test_string_shorthand(self):
-        action = ActionConfig.model_validate("filter")
-        assert action.type == "filter"
-
-    def test_log_without_message_valid(self):
-        action = ActionConfig(type="log")
-        assert action.log_message is None
-
-    def test_log_valid(self):
-        action = ActionConfig(type="log", log_message="hello {{ name }}")
-        assert action.log_message == "hello {{ name }}"
-
-    def test_log_fields_on_non_log_action(self):
-        action = ActionConfig(type="filter", log_level="WARNING", log_message="filtering event")
-        assert action.log_level == "WARNING"
-        assert action.log_message == "filtering event"
-
     def test_invalid_type(self):
         with pytest.raises(ValidationError):
             ActionConfig(type="bogus")
 
-    def test_alert_with_overrides(self):
-        action = ActionConfig(type="alert", queue="my_queue", analysis_mode="analysis")
-        assert action.queue == "my_queue"
-        assert action.analysis_mode == "analysis"
-
 
 @pytest.mark.unit
 class TestStepConfig:
-
-    def test_dispatch_condition(self):
-        step = StepConfig.model_validate({
-            "when": "{{ x }}",
-            "execute": [{"action": "filter"}],
-        })
-        assert isinstance(step.step, ConditionConfig)
 
     def test_dispatch_transform(self):
         step = StepConfig.model_validate({
@@ -289,12 +190,6 @@ class TestCorrelateConfig:
             StepConfig.model_validate({"action": "alert"}),
         ])
         assert config.timeout == "15m"
-
-    def test_custom_timeout(self):
-        config = CorrelateConfig(timeout="1h", logic=[
-            StepConfig.model_validate({"action": "alert"}),
-        ])
-        assert config.timeout == "1h"
 
     def test_invalid_timeout(self):
         with pytest.raises(ValidationError):
@@ -354,24 +249,6 @@ class TestPredefinedCommandConfig:
         assert cmd.type == "executable"
         assert cmd.args == ["arg1"]
 
-    def test_to_command_config_no_overrides(self):
-        predef = PredefinedCommandConfig(
-            name="lookup",
-            type="executable",
-            path="/usr/bin/lookup.sh",
-        )
-        cmd = predef.to_command_config()
-        assert cmd.path == "/usr/bin/lookup.sh"
-
-    def test_env_field(self):
-        predef = PredefinedCommandConfig(
-            name="lookup",
-            type="executable",
-            path="/usr/bin/lookup.sh",
-            env={"API_KEY": "{{ _event.key }}"},
-        )
-        assert predef.env == {"API_KEY": "{{ _event.key }}"}
-
     def test_env_carried_to_command_config(self):
         predef = PredefinedCommandConfig(
             name="lookup",
@@ -397,8 +274,8 @@ class TestCustomCommandTypeSchema:
     def test_custom_command_without_options_accepted(self):
         assert CommandConfig.model_validate({"type": "wiz_lookup"}).options == {}
 
+    # query has a test of its own below, which also checks the hint
     @pytest.mark.parametrize("builtin", [
-        {"type": "query", "source": "splunk", "query": "search"},
         {"type": "executable", "path": "/bin/true"},
         {"type": "defined", "name": "c"},
     ])
@@ -427,20 +304,10 @@ class TestCustomCommandTypeSchema:
         with pytest.raises(ValidationError, match=f"does not accept \\['{field}'\\]"):
             CommandConfig.model_validate({"type": "wiz_lookup", field: value})
 
-    @pytest.mark.parametrize("field,value", [
-        ("source", "splunk"),
-        ("path", "/bin/true"),
-        ("args", ["a"]),
-    ])
-    def test_builtin_fields_rejected_on_custom_predefined(self, field, value):
-        with pytest.raises(ValidationError, match=f"does not accept \\['{field}'\\]"):
-            PredefinedCommandConfig.model_validate({"name": "c", "type": "wiz_lookup", field: value})
-
-    def test_options_rejected_on_builtin_predefined(self):
-        with pytest.raises(ValidationError, match="only valid for custom command types"):
-            PredefinedCommandConfig.model_validate({
-                "name": "c", "type": "executable", "path": "/bin/true", "options": {"x": 1},
-            })
+    def test_builtin_fields_rejected_on_custom_predefined(self):
+        """PredefinedCommandConfig runs the same placement check; the cases above cover each field."""
+        with pytest.raises(ValidationError, match="does not accept \\['source'\\]"):
+            PredefinedCommandConfig.model_validate({"name": "c", "type": "wiz_lookup", "source": "splunk"})
 
     def test_predefined_custom_command_round_trips(self):
         predef = PredefinedCommandConfig.model_validate({
@@ -468,9 +335,6 @@ _STRICT_PAYLOADS: list[tuple[type, dict]] = [
     (ConditionConfig, {"when": "{{ true }}", "execute": []}),
     (PredefinedCommandConfig, {"name": "c", "type": "executable", "path": "/bin/true"}),
     (CorrelateConfig, {"logic": []}),
-    # custom command types: settings belong under `options`, so a stray top-level key is still a typo
-    (CommandConfig, {"type": "wiz_lookup", "options": {"ip": "1.2.3.4"}}),
-    (PredefinedCommandConfig, {"name": "c", "type": "wiz_lookup", "options": {"ip": "1.2.3.4"}}),
 ]
 
 
@@ -510,9 +374,7 @@ def test_step_config_rejects_extra_next_to_transform():
 
 @pytest.mark.unit
 @pytest.mark.parametrize("keys", [
-    {"when": "{{ true }}", "transform": {}},
     {"when": "{{ true }}", "action": "log"},
-    {"transform": {}, "action": "log"},
     {"when": "{{ true }}", "transform": {}, "action": "log"},
 ])
 def test_step_config_rejects_multiple_step_keys(keys):

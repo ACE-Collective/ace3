@@ -140,33 +140,10 @@ def test_exclusion_matches_mac_in_any_notation(tmp_path):
 
 
 @pytest.mark.unit
-def test_exclusion_value_containing_a_colon(tmp_path):
-    """Exclusion specs split on the first colon only, so a url value keeps its
-    scheme separator."""
-    executor = _make_executor({F_URL: ["https://google.com/evil"]})
-    work_item = _make_work_item(tmp_path, F_URL, "https://google.com/evil")
-
-    assert (
-        executor._process_observable_exclusions(work_item)
-        == ObservableExclusionResult.EXCLUDED
-    )
-
-
-@pytest.mark.unit
 def test_no_exclusion_for_unlisted_type(tmp_path):
-    """An observable of a type with no exclusions configured passes through."""
-    executor = _make_executor({F_IPV4: ["127.0.0.1"]})
-    work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
-
-    assert (
-        executor._process_observable_exclusions(work_item)
-        == ObservableExclusionResult.OK
-    )
-
-
-@pytest.mark.unit
-def test_no_exclusions_configured(tmp_path):
-    executor = _make_executor({})
+    """An observable of a type with no exclusions configured passes through, even when another
+    type excludes its value."""
+    executor = _make_executor({F_URL: ["google.com"]})
     work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
 
     assert (

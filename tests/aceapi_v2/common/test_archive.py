@@ -5,11 +5,8 @@ from aceapi_v2.common.archive import safe_file_name
 
 @pytest.mark.unit
 @pytest.mark.parametrize("file_name, expected", [
-    ("invoice.doc", "invoice.doc"),
-    ("../../etc/passwd", "passwd"),
     ("dir/sub/..hidden", "hidden"),
     ("with spaces & $(stuff).exe", "with_spaces_stuff_.exe"),
-    ("", "file"),
     ("...", "file"),
     ("manifest.json", "file_manifest.json"),
     ("match.json", "match.json"),

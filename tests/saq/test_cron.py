@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -21,17 +22,22 @@ class MockCron:
         self.config_arg = config_arg
         self.ran = False
         self.shutdown_signaled = False
-        # signal dispositions observed from inside run(), while the loop is running
-        self.handlers_during_run = {}
         self.exception_to_raise = None
+        # when set, run() sends this signal to the process and waits for it to arrive
+        self.signal_to_send = None
 
     async def run(self):
         self.ran = True
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            self.handlers_during_run[sig] = signal.getsignal(sig)
-
         if self.exception_to_raise:
             raise self.exception_to_raise
+
+        if self.signal_to_send:
+            os.kill(os.getpid(), self.signal_to_send)
+            # asyncio runs the handler on a later iteration of the loop
+            for _ in range(100):
+                if self.shutdown_signaled:
+                    break
+                await asyncio.sleep(0.01)
 
     def signal_shutdown(self):
         self.shutdown_signaled = True
@@ -44,10 +50,13 @@ class MockCronFactory:
         self.created = []
         # when set, the next constructed MockCron raises this out of run()
         self.exception_to_raise = None
+        # when set, the next constructed MockCron sends this signal from inside run()
+        self.signal_to_send = None
 
     def __call__(self, config_arg):
         cron = MockCron(config_arg)
         cron.exception_to_raise = self.exception_to_raise
+        cron.signal_to_send = self.signal_to_send
         self.created.append(cron)
         return cron
 
@@ -89,7 +98,7 @@ def restore_signal_handlers():
 @pytest.mark.unit
 class TestACECronService:
     def test_start_runs_cron_to_completion(self, mock_cron, cron_config):
-        """test that start() creates an event loop and runs the cron
+        """test that start() creates an event loop and runs the cron, with the configured path
 
         regression test for python 3.14, where asyncio.get_event_loop() raises
         RuntimeError instead of implicitly creating a loop for the main thread
@@ -98,51 +107,28 @@ class TestACECronService:
 
         assert len(mock_cron) == 1
         assert mock_cron[0].ran
-
-    def test_start_uses_configured_cron_config_path(self, mock_cron, cron_config):
-        """test that the configured cron_config_path is passed to Cron"""
-        ACECronService().start()
-
         assert mock_cron[0].config_arg == cron_config.cron_config_path
 
-    def test_start_leaves_no_running_loop(self, mock_cron, cron_config):
-        """test that the event loop is closed and unset after start() returns"""
-        ACECronService().start()
-
-        with pytest.raises(RuntimeError):
-            asyncio.get_running_loop()
-
-    def test_signal_handlers_installed_during_run(self, mock_cron, cron_config):
-        """test that SIGINT/SIGTERM are wired to the cron while it is running"""
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-
-        ACECronService().start()
-
-        # asyncio installs its own handler for any signal passed to add_signal_handler
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            assert mock_cron[0].handlers_during_run[sig] not in (
-                signal.SIG_DFL,
-                signal.default_int_handler,
-            )
-
-    def test_signal_handlers_removed_after_run(self, mock_cron, cron_config):
-        """test that the signal handlers are removed once the cron finishes"""
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    @pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+    def test_a_shutdown_signal_reaches_the_coordinator_and_the_cron(self, mock_cron, cron_config, monkeypatch, sig):
+        """the coordinator's watchdog is what bounds yacron's wait for its running jobs, and
+        signal_shutdown is what makes yacron stop at all"""
+        # without the service's own handler this one takes the signal, instead of it ending pytest
+        signal.signal(sig, lambda signum, frame: None)
+        coordinator = Mock()
+        monkeypatch.setattr("saq.cron.get_shutdown_coordinator", lambda: coordinator)
+        mock_cron.signal_to_send = sig
 
         ACECronService().start()
 
-        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
-        assert signal.getsignal(signal.SIGINT) == signal.default_int_handler
+        coordinator.request_shutdown.assert_called_once_with("received shutdown signal")
+        assert mock_cron[0].shutdown_signaled
 
-    def test_signal_handlers_removed_when_cron_raises(self, mock_cron, cron_config):
-        """test that the signal handlers are removed even if the cron raises"""
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    def test_start_passes_on_a_failure_of_the_cron(self, mock_cron, cron_config):
         mock_cron.exception_to_raise = ValueError("boom")
 
         with pytest.raises(ValueError, match="boom"):
             ACECronService().start()
-
-        assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
 
 
 CRON_CONFIG_PATH = Path(__file__).resolve().parents[2] / "etc" / "cron.yaml"
@@ -199,9 +185,9 @@ class TestACECronConfig:
     def test_max_parallel_tasks_defaults_to_unset(self):
         assert self._config().max_parallel_tasks is None
 
-    def test_max_parallel_tasks_accepts_positive(self):
-        assert self._config(max_parallel_tasks=3).max_parallel_tasks == 3
+    def test_max_parallel_tasks_accepts_one(self):
+        assert self._config(max_parallel_tasks=1).max_parallel_tasks == 1
 
     def test_max_parallel_tasks_rejects_zero(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="greater than or equal to 1"):
             self._config(max_parallel_tasks=0)

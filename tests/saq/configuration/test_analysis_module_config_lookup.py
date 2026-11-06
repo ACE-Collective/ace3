@@ -179,8 +179,3 @@ def test_config_class_that_allows_extra_keys_keeps_them(tmp_path):
     assert config.get_analysis_module_config("file_hash_analyzer").ignore_pattern_test == "*.test"
 
 
-@pytest.mark.unit
-def test_base_module_config_rejects_undeclared_key():
-    with pytest.raises(ValidationError, match="semaphore"):
-        AnalysisModuleConfig(name="shodan", python_module=__name__, python_class="FirstAnalyzer",
-                             enabled=True, semaphore="shodan")

@@ -54,6 +54,8 @@ class TestPropertyTransform:
         event = {}
         updated, _, _ = apply_transform(transform, "true\n", event, [event])
         assert updated["active"] is True
+        updated, _, _ = apply_transform(transform, "false\n", event, [event])
+        assert updated["active"] is False
 
     def test_list_type(self):
         transform = TransformConfig(

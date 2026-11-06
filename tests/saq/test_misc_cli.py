@@ -1,7 +1,8 @@
 """Tests for the `ace event`, `ace git`, `ace debug` and `ace s3` commands."""
 
+import sys
 from datetime import date, timedelta
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -72,7 +73,8 @@ def _event(name: str, days_old: int = 0, malware: str | None = None) -> int:
 
 
 def _status_of(event_id: int) -> str:
-    get_db().expire_all()
+    # a new transaction: what the command wrote must be committed, not only flushed on this session
+    get_db().close()
     return get_db().query(Event).filter(Event.id == event_id).one().status.value
 
 
@@ -209,13 +211,21 @@ def test_s3_upload_argument_errors(argv, message, caplog):
 
 
 @pytest.mark.unit
-def test_s3_upload_failure_is_logged_with_traceback(tmp_path, caplog):
-    # boto3 is not installed in the dev container, so the upload fails at the import
+def test_s3_upload_failure_is_logged_with_traceback(tmp_path, caplog, monkeypatch):
+    client = Mock()
+    client.upload_file.side_effect = RuntimeError("upload refused")
+    # boto3 is not a dependency of open source ACE, so the command's lazy import gets a stand-in, and the
+    # botocore Config it would be handed is stubbed too
+    monkeypatch.setattr("saq.storage.s3.build_boto_config", lambda: None)
+    fake_boto3 = ModuleType("boto3")
+    fake_boto3.client = lambda *args, **kwargs: client
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     path = tmp_path / "upload.txt"
     path.write_text("data")
     args = _parse("s3", "upload", "--file", str(path), "--bucket", "bucket", "--key", "key")
 
     assert args.func(args) == 1
     [record] = [r for r in caplog.records if r.getMessage().startswith("failed to upload")]
-    assert record.getMessage().startswith(f"failed to upload {path} to s3://bucket/key")
-    assert record.exc_info is not None
+    assert record.getMessage() == f"failed to upload {path} to s3://bucket/key: upload refused"
+    assert record.levelname == "ERROR" and record.exc_info is not None
+    client.upload_file.assert_called_once_with(str(path), "bucket", "key")

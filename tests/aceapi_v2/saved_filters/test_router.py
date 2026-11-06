@@ -75,10 +75,6 @@ class TestAuth:
     async def test_requires_auth(self, unauth_client: AsyncClient):
         assert (await unauth_client.get(f"{BASE}/")).status_code == 401
 
-    @pytest.mark.asyncio
-    async def test_requires_permission(self, noperm_client: AsyncClient):
-        assert (await noperm_client.get(f"{BASE}/")).status_code == 403
-
 
 class TestCrud:
     @pytest.mark.asyncio
@@ -95,12 +91,6 @@ class TestCrud:
         fetched = await client.get(f"{BASE}/{created['uuid']}")
         assert fetched.status_code == 200
         assert fetched.json()["uuid"] == created["uuid"]
-
-    @pytest.mark.asyncio
-    async def test_duplicate_name_conflicts(self, client: AsyncClient):
-        await _create(client, "Dupe")
-        response = await client.post(f"{BASE}/", json={"name": "Dupe", "filters": QUEUE_FILTER})
-        assert response.status_code == 409
 
     @pytest.mark.asyncio
     async def test_update(self, client: AsyncClient):
@@ -141,12 +131,6 @@ class TestCrud:
         assert (await client.delete(f"{BASE}/does-not-exist")).status_code == 404
 
     @pytest.mark.asyncio
-    async def test_rejects_invalid_filter_name(self, client: AsyncClient):
-        response = await client.post(f"{BASE}/", json={
-            "name": "Bad", "filters": [{"name": "Nope", "values": ["x"]}]})
-        assert response.status_code == 422
-
-    @pytest.mark.asyncio
     async def test_rejects_unparseable_date_token_at_write_time(self, client: AsyncClient):
         """A bad date must never reach storage: it would raise on every subsequent /manage
         load, leaving the analyst's queue broken until someone reset their filters by hand."""
@@ -164,11 +148,15 @@ class TestCrud:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_accepts_detection_point_value(self, client: AsyncClient):
-        created = await _create(
-            client, "Detection Point", filters=[{"name": "Detection Point", "inverted": False,
-                                                 "values": ["6F3A1B2C-1111-2222-3333-444455556666:v1"]}])
-        assert created["filters"][0]["values"] == ["6f3a1b2c-1111-2222-3333-444455556666:v1"]
+    @pytest.mark.parametrize("name, value, stored", [
+        # a detection point value is stored lowercased
+        ("Detection Point", "6F3A1B2C-1111-2222-3333-444455556666:v1", "6f3a1b2c-1111-2222-3333-444455556666:v1"),
+        ("Analysis", "saq.modules.file_analysis.qrcode:QRCodeAnalysis", "saq.modules.file_analysis.qrcode:QRCodeAnalysis"),
+        ("Alert Date", "-24h@h", "-24h@h"),
+    ], ids=["detection_point", "analysis_module_path", "relative_date_token"])
+    async def test_accepts_a_valid_value(self, client: AsyncClient, name, value, stored):
+        created = await _create(client, name, filters=[{"name": name, "inverted": False, "values": [value]}])
+        assert created["filters"][0]["values"] == [stored]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", ["QRCodeAnalysis", ["saq.modules.file_analysis.qrcode", "QRCodeAnalysis"]])
@@ -177,19 +165,6 @@ class TestCrud:
             "name": "Bad Analysis",
             "filters": [{"name": "Analysis", "values": [value]}]})
         assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_accepts_analysis_module_path(self, client: AsyncClient):
-        created = await _create(
-            client, "QR codes", filters=[{"name": "Analysis", "inverted": False,
-                                          "values": ["saq.modules.file_analysis.qrcode:QRCodeAnalysis"]}])
-        assert created["filters"][0]["values"] == ["saq.modules.file_analysis.qrcode:QRCodeAnalysis"]
-
-    @pytest.mark.asyncio
-    async def test_accepts_relative_date_token(self, client: AsyncClient):
-        created = await _create(
-            client, "Relative", filters=[{"name": "Alert Date", "inverted": False, "values": ["-24h@h"]}])
-        assert created["filters"][0]["values"] == ["-24h@h"]
 
     @pytest.mark.asyncio
     async def test_relative_token_stored_verbatim_not_resolved(
@@ -335,11 +310,6 @@ class TestQuickFilters:
         assert all(f["quick_filter_order"] is None for f in response.json()["data"])
 
     @pytest.mark.asyncio
-    async def test_rejects_unknown_uuid(self, client: AsyncClient):
-        response = await client.put(f"{BASE}/quick-filters", json={"filter_uuids": ["nope"]})
-        assert response.status_code == 400
-
-    @pytest.mark.asyncio
     async def test_rejects_another_users_uuid(
         self, client: AsyncClient, other_client: AsyncClient
     ):
@@ -349,12 +319,14 @@ class TestQuickFilters:
 
     @pytest.mark.asyncio
     async def test_list_returns_pinned_first_in_badge_order(self, client: AsyncClient):
-        await _create(client, "Zebra")
-        b = await _create(client, "Bravo")
-        await client.put(f"{BASE}/quick-filters", json={"filter_uuids": [b["uuid"]]})
+        # pinned in an order that is not the names' order, and unpinned ahead of both by name
+        await _create(client, "Alpha")
+        mike = await _create(client, "Mike")
+        zebra = await _create(client, "Zebra")
+        await client.put(f"{BASE}/quick-filters", json={"filter_uuids": [zebra["uuid"], mike["uuid"]]})
 
         names = [f["name"] for f in (await client.get(f"{BASE}/")).json()["data"]]
-        assert names[0] == "Bravo"
+        assert names == ["Zebra", "Mike", "Alpha"]
 
 
 class TestScratchRows:

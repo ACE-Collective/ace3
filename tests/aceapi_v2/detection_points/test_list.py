@@ -11,7 +11,6 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import update
 
-from aceapi_v2.application import app
 from aceapi_v2.common import listing
 from aceapi_v2.detection_points import service
 from saq.database.model import Alert, DetectionPoint, User
@@ -19,6 +18,7 @@ from saq.database.pool import get_db
 from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
 from tests.saq.helpers import insert_alert_with_detections
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -101,17 +101,21 @@ class TestRows:
 class TestKeysetPaging:
     @pytest.mark.asyncio
     async def test_no_skip_or_repeat_while_detections_arrive(self, client: AsyncClient):
-        for index in range(5):
-            insert_alert_with_detections([_detection(SIG_A, description=f"d{index}")])
+        """A detection that comes into the listing ahead of the page a client is on (here one of
+        an alert that moves to this node) would shift every later page by one under OFFSET."""
+        alerts = [insert_alert_with_detections([_detection(SIG_A, description=f"d{index}")]) for index in range(5)]
+        location = alerts[1].location
+        _set_alert(alerts[1], location="some-other-node")
 
         first = await client.get("/detection-points/", params={"limit": 2})
         body = first.json()
-        seen = [row["content_hash"] + row["alert_uuid"] for row in body["data"]]
+        seen = [row["description"] for row in body["data"]]
+        _set_alert(alerts[1], location=location)
         insert_alert_with_detections([_detection(SIG_A, description="late")])
 
         rest = await _all_pages(client, {"cursor": body["next_cursor"]}, 2)
-        seen += [row["content_hash"] + row["alert_uuid"] for row in rest]
-        assert len(seen) == len(set(seen)) == 6
+        seen += [row["description"] for row in rest]
+        assert seen == ["d0", "d2", "d3", "d4", "late"]
 
     @pytest.mark.asyncio
     async def test_bad_cursor_and_limits(self, client: AsyncClient):
@@ -246,7 +250,7 @@ class TestExport:
         assert len(lines) == 2 and "content_hash" in lines[0] and "error" in lines[1]
 
     def test_each_export_documents_exactly_one_media_type(self):
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         for path, media_type in (("/detection-points/export/ndjson", "application/x-ndjson"),
                                  ("/detection-points/export/csv", "text/csv")):
             assert list(paths[path]["get"]["responses"]["200"]["content"]) == [media_type]

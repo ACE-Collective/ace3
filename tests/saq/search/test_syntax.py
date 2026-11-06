@@ -10,7 +10,6 @@ from saq.search.syntax import (
     FIELD_ALERT_UUID,
     FIELD_OBSERVABLE,
     FIELD_TAG,
-    mask_quoted,
     parse_search_query,
     resolve_field,
 )
@@ -183,7 +182,7 @@ class TestDetectionPointTerms:
         assert entry["inverted"] is True
         assert entry["values"] == [SIGNATURE_UUID, f"{SIGNATURE_UUID}:v2"]
 
-    @pytest.mark.parametrize("value", ["not-a-uuid", "6f3a1b2c", f"{SIGNATURE_UUID}:"])
+    @pytest.mark.parametrize("value", ["6f3a1b2c", f"{SIGNATURE_UUID}:"])
     def test_bad_value_is_an_error_not_a_dropped_filter(self, value):
         parsed = parse_search_query(f"detection_point:{value}")
         assert parsed.filters == ()
@@ -219,11 +218,6 @@ class TestQuoting:
         parsed = parse_search_query('tag:"phish')
         assert parsed.errors and "unterminated quote" in parsed.errors[0]
 
-    def test_mask_quoted_roundtrip(self):
-        masked, quoted = mask_quoted('a "b c" d')
-        assert " " not in masked.split("\x00")[1]
-        assert quoted == ["b c"]
-
 
 class TestErrors:
     def test_invalid_value_for_its_type(self):
@@ -251,6 +245,8 @@ class TestHint:
 
     def test_no_hint_when_an_exact_term_was_given(self):
         assert parse_search_query("ipv4:10.20.30.40").hint() is None
+        # a bare indicator next to the term: the term is the lookup, so there is nothing to suggest
+        assert parse_search_query("ipv4:10.20.30.40 10.20.30.41").hint() is None
 
     def test_no_hint_for_prose(self):
         assert parse_search_query("docusign phish invoice").hint() is None

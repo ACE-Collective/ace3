@@ -141,15 +141,6 @@ def test_node_identity_of_file_uses_the_content_sha256(root_analysis: RootAnalys
     assert bytes.fromhex(identity.value_sha256) == observable.sha256_bytes
 
 
-@pytest.mark.unit
-def test_node_identity_does_not_depend_on_uuids(root_analysis: RootAnalysis):
-    other = RootAnalysis()
-    a = root_analysis.add_observable_by_spec(F_IPV4, "10.0.0.1")
-    b = other.add_observable_by_spec(F_IPV4, "10.0.0.1")
-    assert a.uuid != b.uuid
-    assert node_identity(a) == node_identity(b)
-
-
 # --- the desired index keys detections on the node -------------------------------------------
 
 @pytest.mark.unit

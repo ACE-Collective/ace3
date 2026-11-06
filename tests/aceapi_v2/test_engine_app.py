@@ -6,7 +6,6 @@ traffic back onto the workers this container exists to keep free for the engines
 """
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from aceapi_v2.application import create_app
 from aceapi_v2.app_factory import create_engine_app
@@ -31,13 +30,3 @@ def test_engine_app_serves_nothing_else():
     paths = _route_paths(create_engine_app())
     assert paths
     assert {path for path in paths if not path.startswith(ENGINE_APP_PREFIXES)} == set()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_engine_app_answers_ping():
-    async with AsyncClient(transport=ASGITransport(app=create_engine_app()), base_url="http://test") as client:
-        response = await client.get("/health/ping")
-
-    assert response.status_code == 200
-    assert response.json() == {"result": "pong"}

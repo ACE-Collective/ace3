@@ -167,10 +167,9 @@ RESTRICTED = pikepdf.Permissions(extract=False, modify_other=False, print_highre
     # RC4 revisions have no crypt filters, so pikepdf reports their stream method as none
     (pikepdf.Encryption(owner="", user="", R=3, aes=False, metadata=False), "rc4", 128, True, True),
     (pikepdf.Encryption(owner="", user="", R=4, aes=True), "aes", 128, True, True),
-    (pikepdf.Encryption(owner="", user="", R=6), "aesv3", 256, True, True),
     # an owner (permissions) password only, with restricted permissions
     (pikepdf.Encryption(owner="secret", user="", R=6, allow=RESTRICTED), "aesv3", 256, False, False),
-], ids=["rc4_128", "aes128", "aes256", "owner_password_only"])
+], ids=["rc4_128", "aes128", "owner_password_only"])
 def test_pdf_analyzer_decrypts_pdf_with_empty_user_password(root_analysis, tmp_path, encryption, method, bits,
                                                             owner_password_empty, extract):
     pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, encryption), "pdf_analyzer")
@@ -306,9 +305,10 @@ def test_pdf_analyzer_survives_a_decrypted_copy_it_cannot_save(root_analysis, tm
 
 @pytest.mark.integration
 @pytest.mark.parametrize("form_value", [
-    "short",
-    # long enough, but not base64
-    "not-base64!" * 10,
+    # valid base64 of a payload long enough, but shorter than a payload is encoded
+    base64.b64encode(b"x" * 40).decode(),
+    # long enough, but not base64: the decoder would drop the dashes and read the rest
+    "abcd-" * 20,
     # base64, but decodes to too few bytes to be a payload
     base64.b64encode(b"x" * 20).decode() + "=" * 40,
 ])

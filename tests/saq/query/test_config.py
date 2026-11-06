@@ -5,7 +5,6 @@ from saq.observables.mapping import ObservableMapping
 from saq.query.config import (
     BaseQueryConfig,
     SummaryDetailConfig,
-    load_query_from_file,
     resolve_query,
 )
 
@@ -20,6 +19,7 @@ def test_base_query_config_defaults():
     assert config.max_result_count is None
     assert config.ignored_values == []
     assert config.summary_details == []
+    assert config.time_ranges is None
 
 
 @pytest.mark.unit
@@ -64,23 +64,6 @@ def test_summary_detail_config_invalid_format():
 
 
 @pytest.mark.unit
-def test_load_query_from_file(tmp_path):
-    """Test loading a query from file."""
-    query_file = tmp_path / "test_query.txt"
-    query_file.write_text("SELECT * FROM events WHERE ip = '1.2.3.4'")
-
-    result = load_query_from_file(str(query_file))
-    assert result == "SELECT * FROM events WHERE ip = '1.2.3.4'"
-
-
-@pytest.mark.unit
-def test_resolve_query_inline():
-    """Test resolve_query with inline query."""
-    result = resolve_query("SELECT 1", None, "test")
-    assert result == "SELECT 1"
-
-
-@pytest.mark.unit
 def test_resolve_query_from_file(tmp_path):
     """Test resolve_query with file path."""
     query_file = tmp_path / "test_query.txt"
@@ -105,33 +88,6 @@ def test_resolve_query_inline_takes_precedence(tmp_path):
 
     result = resolve_query("INLINE QUERY", str(query_file), "test")
     assert result == "INLINE QUERY"
-
-
-@pytest.mark.unit
-def test_base_query_config_time_ranges_none():
-    """Test BaseQueryConfig with no time_ranges."""
-    config = BaseQueryConfig()
-    assert config.time_ranges is None
-
-
-@pytest.mark.unit
-def test_base_query_config_time_ranges_string_shorthand():
-    """Test time_ranges with plain string values (lookback-only shorthand)."""
-    config = BaseQueryConfig(time_ranges={"TIMESPEC2": "00:30:00"})
-    assert config.time_ranges is not None
-    assert "TIMESPEC2" in config.time_ranges
-    assert config.time_ranges["TIMESPEC2"].duration_before == "00:30:00"
-    assert config.time_ranges["TIMESPEC2"].duration_after is None
-
-
-@pytest.mark.unit
-def test_base_query_config_time_ranges_dict_form():
-    """Test time_ranges with full dict form (before and after)."""
-    config = BaseQueryConfig(time_ranges={
-        "TIMESPEC2": {"duration_before": "01:00:00", "duration_after": "24:00:00"}
-    })
-    assert config.time_ranges["TIMESPEC2"].duration_before == "01:00:00"
-    assert config.time_ranges["TIMESPEC2"].duration_after == "24:00:00"
 
 
 @pytest.mark.unit

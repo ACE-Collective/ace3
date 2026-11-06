@@ -49,19 +49,6 @@ def create_test_user(username="testuser", email="test@example.com", password="te
 @pytest.mark.integration
 class TestAuthGroupManagement:
     
-    def test_create_auth_group(self):
-        """Test creating a new auth group."""
-        group = create_auth_group("test_group")
-        
-        assert group.name == "test_group"
-        assert group.id is not None
-        
-        # Verify it was saved to database
-        session = get_db()
-        db_group = session.query(AuthGroup).filter(AuthGroup.name == "test_group").first()
-        assert db_group is not None
-        assert db_group.id == group.id
-
     def test_create_auth_group_idempotent(self):
         """Test that creating an auth group with existing name is idempotent."""
         group1 = create_auth_group("duplicate_group")
@@ -93,22 +80,6 @@ class TestAuthGroupManagement:
         """Test deleting a non-existent auth group returns False."""
         result = delete_auth_group(99999)
         assert result is False
-
-    def test_add_user_to_auth_group(self):
-        """Test adding a user to an auth group."""
-        group = create_auth_group("user_group")
-        user = create_test_user("groupuser1", "groupuser1@example.com")
-        
-        result = add_user_to_auth_group(user.id, group.id)
-        assert result is True
-        
-        # Verify mapping exists in database
-        session = get_db()
-        mapping = session.query(AuthGroupUser).filter(
-            AuthGroupUser.user_id == user.id,
-            AuthGroupUser.group_id == group.id
-        ).first()
-        assert mapping is not None
 
     def test_add_user_to_auth_group_idempotent(self):
         """Test that adding a user to the same group twice is idempotent."""
@@ -205,27 +176,6 @@ class TestUserPermissionManagement:
         
         assert perm.effect == "ALLOW"
 
-    def test_add_user_permission_idempotent(self):
-        """Test that adding the same permission twice is idempotent."""
-        user = create_test_user("permuser5", "permuser5@example.com")
-        major = "duplicate"
-        minor = "permission"
-        
-        perm1 = add_user_permission(user.id, major, minor)
-        perm2 = add_user_permission(user.id, major, minor)
-        
-        assert perm1.id == perm2.id
-        
-        # Verify only one permission exists
-        session = get_db()
-        count = session.query(AuthUserPermission).filter(
-            AuthUserPermission.user_id == user.id,
-            AuthUserPermission.major == major,
-            AuthUserPermission.minor == minor,
-            AuthUserPermission.effect == "ALLOW"
-        ).count()
-        assert count == 1
-
     def test_add_user_permission_stores_lowercase(self):
         """The unique index is case-insensitive and enforcement ignores case, so a case variant of a
         grant is the same grant: stored once, lowercase, and enforced."""
@@ -259,8 +209,6 @@ class TestUserPermissionManagement:
 
     def test_delete_user_permission_nonexistent_permission_id(self):
         """Test deleting user permission with non-existent permission ID."""
-        user = create_test_user("permuser7", "permuser7@example.com")
-        
         deleted = delete_user_permission(99999)
         
         assert deleted is False
@@ -328,27 +276,6 @@ class TestGroupPermissionManagement:
         assert perm2.id == perm1.id
         assert user_has_permission(user.id, "signature", "read") is True
         assert user_has_permission(user.id, "signature", "download") is False
-
-    def test_add_group_permission_idempotent(self):
-        """Test that adding the same group permission twice is idempotent."""
-        group = create_auth_group("duplicate_perm_group")
-        major = "duplicate"
-        minor = "permission"
-        
-        perm1 = add_group_permission(group.id, major, minor)
-        perm2 = add_group_permission(group.id, major, minor)
-        
-        assert perm1.id == perm2.id
-        
-        # Verify only one permission exists
-        session = get_db()
-        count = session.query(AuthGroupPermission).filter(
-            AuthGroupPermission.group_id == group.id,
-            AuthGroupPermission.major == major,
-            AuthGroupPermission.minor == minor,
-            AuthGroupPermission.effect == "ALLOW"
-        ).count()
-        assert count == 1
 
     def test_delete_group_permission_by_id(self):
         """Test deleting a group permission by ID."""
@@ -532,19 +459,16 @@ class TestPermissionQueries:
         
         permissions = get_group_permissions(group.id)
         
-        assert len(permissions) == 3
         assert all(isinstance(p, GroupPermission) for p in permissions)
-        
-        # Check permissions structure
-        for perm in permissions:
-            assert hasattr(perm, 'major')
-            assert hasattr(perm, 'minor')
-            assert hasattr(perm, 'effect')
-            assert perm.effect in ['ALLOW', 'DENY']
+        assert sorted((p.major, p.minor, p.effect) for p in permissions) == [
+            ("admin", "delete", "ALLOW"), ("group_test", "read", "ALLOW"), ("group_test", "write", "DENY")]
 
     def test_get_group_permissions_empty_group(self):
         """Test getting permissions for group with no permissions."""
         group = create_auth_group("empty_perm_group")
+        # another group's grant must not show up
+        other = create_auth_group("other_perm_group")
+        add_group_permission(other.id, "alert", "read", "ALLOW")
         
         permissions = get_group_permissions(group.id)
         

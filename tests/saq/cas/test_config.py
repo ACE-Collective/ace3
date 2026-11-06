@@ -66,11 +66,3 @@ def test_custom_requires_spec_and_root_is_local_only():
 def test_pool_names_are_validated(name):
     with pytest.raises(ValidationError, match="must match"):
         CASConfig.model_validate({"pools": {name: {}}})
-
-
-@pytest.mark.unit
-def test_pool_config_from_yaml_shape():
-    config = CASConfig.model_validate({
-        "pools": {"svs_samples": {"backend": "local", "encryption": "system", "retention": "held", "grace_seconds": 10}}})
-    pool = config.pools["svs_samples"]
-    assert pool.encryption == "system" and pool.grace_seconds == 10

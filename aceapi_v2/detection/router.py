@@ -69,14 +69,16 @@ async def create_detection(
             detection_context=detection_context,
             expires_on=body.expires_on,
             batch_id=body.batch_id,
+            use_default_expiration="expires_on" not in body.model_fields_set,
         )
     except InvalidDetectionValue as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except service.DetectionAlreadyExists as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
 
-    log_audit("user %s added detection %s for %s %r: %s",
-              auth.auth_name, detection.id, detection.type, detection.value, detection_context,
+    log_audit("user %s added detection %s for %s %r expiring %s: %s",
+              auth.auth_name, detection.id, detection.type, detection.value, detection.expires_on or "never",
+              detection_context,
               auth=auth, detection_id=detection.id, observable_type=detection.type, observable_value=detection.value)
     return detection
 

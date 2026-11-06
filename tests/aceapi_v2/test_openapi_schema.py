@@ -14,6 +14,8 @@ See aceapi_v2/responses.py for the response classes that make this come out righ
 
 import pytest
 
+from tests.aceapi_v2.conftest import v2_app
+
 # path -> the one media type its 200 response may advertise
 V2_BINARY_ROUTES = {
     "/alerts/{alert_uuid}/download": "application/zip",
@@ -59,9 +61,8 @@ class TestBinaryResponseMediaTypes:
 
     @pytest.mark.parametrize("path,media_type", sorted(V2_BINARY_ROUTES.items()))
     def test_aceapi_v2_route_advertises_its_media_type(self, path, media_type):
-        from aceapi_v2.application import app
 
-        assert _content_types(app.openapi(), path) == {media_type}
+        assert _content_types(v2_app().openapi(), path) == {media_type}
 
     @pytest.mark.parametrize("path,media_type", sorted(AI_BINARY_ROUTES.items()))
     def test_aceapi_ai_route_advertises_its_media_type(self, path, media_type):

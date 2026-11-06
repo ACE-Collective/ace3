@@ -35,21 +35,6 @@ class TestActionResult:
 @pytest.mark.unit
 class TestExecuteAction:
 
-    def test_filter(self):
-        action = ActionConfig(type="filter")
-        result = execute_action(action, {}, [])
-        assert result.action_type == "filter"
-
-    def test_stop(self):
-        action = ActionConfig(type="stop")
-        result = execute_action(action, {}, [])
-        assert result.action_type == "stop"
-
-    def test_discard(self):
-        action = ActionConfig(type="discard")
-        result = execute_action(action, {}, [])
-        assert result.action_type == "discard"
-
     def test_alert_with_overrides(self):
         action = ActionConfig(type="alert", queue="my_queue", analysis_mode="deep")
         result = execute_action(action, {}, [])
@@ -73,10 +58,10 @@ class TestExecuteAction:
 
     def test_log_default_level(self, caplog):
         action = ActionConfig(type="log", log_message="test message")
-        with caplog.at_level(logging.INFO):
-            result = execute_action(action, {}, [])
-        assert result.action_type == "log"
-        assert "test message" in caplog.text
+        with caplog.at_level(logging.DEBUG):
+            execute_action(action, {}, [])
+        records = [r for r in caplog.records if r.getMessage() == "correlation log: test message"]
+        assert [r.levelno for r in records] == [logging.INFO]
 
 
 @pytest.mark.unit
@@ -84,10 +69,11 @@ class TestUniversalActionLogging:
 
     @pytest.mark.parametrize("action_type", ["filter", "stop", "discard", "alert", "log"])
     def test_default_log_message(self, action_type, caplog):
-        """All action types log a default message when log_message is not set."""
+        """Each action type returns its own result and logs a default message when log_message is not set."""
         action = ActionConfig(type=action_type)
         with caplog.at_level(logging.INFO):
-            execute_action(action, {}, [])
+            result = execute_action(action, {}, [])
+        assert result.action_type == action_type
         assert f"executed {action_type} action" in caplog.text
 
     def test_custom_log_message_on_non_log_action(self, caplog):

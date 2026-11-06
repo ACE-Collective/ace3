@@ -26,7 +26,6 @@ from saq.gui.filter_query import (
     AnalysisFilter,
     build_alert_query,
     count_alerts,
-    create_filter,
     filter_alert_uuids,
     get_analysis_type_labels,
 )
@@ -111,6 +110,8 @@ def corpus():
     _attach(signed, "ipv4", "10.20.30.40")
     _attach(tagged, "ipv4", "203.0.113.7")
     _tag(tagged, "credential-harvest")
+    # a tag of another name, which the Tag filter must tell apart
+    _tag(signed, "phishing")
     return signed, tagged, plain
 
 
@@ -122,8 +123,10 @@ class TestObservableFilter:
                         "values": [["signature_id", SIGNATURE_UUID]]}]) == {signed.uuid}
 
     def test_type_and_value_must_both_match(self, corpus):
+        """`hostname` accepts the value, so this reaches the lookup: the (type, sha256) pair
+        has to match, not the value's digest alone."""
         assert _uuids([{"name": "Observable", "inverted": False,
-                        "values": [["ipv4", SIGNATURE_UUID]]}]) == set()
+                        "values": [["hostname", SIGNATURE_UUID]]}]) == set()
 
     def test_value_is_normalized_the_way_the_engine_normalizes_it(self, corpus):
         """Matching on (type, sha256) after resolve_observable_identity(), not on the raw
@@ -300,36 +303,31 @@ class TestOtherFilters:
         assert _uuids([{"name": "Tag", "inverted": False, "values": ["credential-harvest"]}]) == {tagged.uuid}
 
     def test_inverted_tag_keeps_untagged_alerts(self, corpus):
-        _, tagged, plain = corpus
+        signed, tagged, plain = corpus
         found = _uuids([{"name": "Tag", "inverted": True, "values": ["credential-harvest"]}])
-        assert plain.uuid in found and tagged.uuid not in found
+        assert plain.uuid in found and signed.uuid in found and tagged.uuid not in found
 
     def test_queue(self, corpus):
         signed, _, _ = corpus
         assert _uuids([{"name": "Queue", "inverted": False, "values": ["external"]}]) == {signed.uuid}
 
     def test_date_range_resolves_in_the_timezone_it_is_given(self, corpus):
-        """No current_user here: the caller supplies the timezone."""
-        signed, tagged, _ = corpus
+        """No current_user here: the caller supplies the timezone. `tagged` was inserted at
+        2026-02-01 00:00 UTC, which is 19:00 on 01-31 in New York: inside a window that ends
+        at 20:00 New York time, and outside one that ends at 20:00 UTC."""
+        _, tagged, _ = corpus
         window = [{"name": "Alert Date", "inverted": False,
-                   "values": ["01-15-2026 00:00 - 02-15-2026 00:00"]}]
-        assert tagged.uuid in _uuids(window) and signed.uuid not in _uuids(window)
+                   "values": ["01-15-2026 00:00 - 01-31-2026 20:00"]}]
 
-    def test_create_filter_needs_no_request_context(self):
-        assert create_filter("Alert Date", False, tz=pytz.utc) is not None
-        assert create_filter("Observable", True) is not None
+        def uuids_in(tz):
+            query = build_alert_query(window, entity=Alert, tz=tz, locations=None)
+            return {row[0] for row in query.with_entities(Alert.uuid).distinct()}
+
+        assert uuids_in(pytz.timezone("America/New_York")) == {tagged.uuid}
+        assert uuids_in(pytz.utc) == set()
 
 
 class TestHelpers:
-    def test_count_alerts_counts_alerts_not_joined_rows(self, corpus):
-        """The Observable join fans out; counting rows would double-count the alert carrying
-        two observables."""
-        signed, _, _ = corpus
-        filters = [{"name": "Observable", "inverted": False,
-                    "values": [["signature_id", SIGNATURE_UUID], ["ipv4", "10.20.30.40"]]}]
-        assert count_alerts(filters, entity=Alert, tz=pytz.utc, locations=None) == 1
-        assert _uuids(filters) == {signed.uuid}
-
     def test_filter_alert_uuids_preserves_order_and_drops_the_rest(self, corpus):
         signed, tagged, plain = corpus
         given = [plain.uuid, signed.uuid, tagged.uuid]
@@ -357,10 +355,10 @@ class TestAliasedEntity:
         return {row[0] for row in query.with_entities(entity.uuid).distinct()}
 
     def test_tag(self, corpus):
-        _, tagged, plain = corpus
+        signed, tagged, plain = corpus
         assert self._aliased_uuids([{"name": "Tag", "inverted": False, "values": ["credential-harvest"]}]) == {tagged.uuid}
         inverted = self._aliased_uuids([{"name": "Tag", "inverted": True, "values": ["credential-harvest"]}])
-        assert plain.uuid in inverted and tagged.uuid not in inverted
+        assert plain.uuid in inverted and signed.uuid in inverted and tagged.uuid not in inverted
 
     def test_observable(self, corpus):
         signed, _, _ = corpus

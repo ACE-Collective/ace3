@@ -95,11 +95,13 @@ def test_hidden_mime_in_a_read_only_file(root_analysis, tmp_path):
     ("page.html", b"<html>no mime here</html>", None),
     ("empty.html", b"", None),
 ])
-def test_hidden_mime_skipped(root_analysis, tmp_path, name, content, directive):
+def test_hidden_mime_skipped(root_analysis, tmp_path, caplog, name, content, directive):
     path = tmp_path / name
     path.write_bytes(content)
 
     assert not _analyze(root_analysis, path, "hidden_mime", directive=directive).get_and_load_analysis(HiddenMIMEAnalysis)
+    # parse_mime cannot map an empty file: the module must stop before it
+    assert not [r for r in caplog.records if "failed on" in r.getMessage()]
 
 
 @pytest.mark.integration
@@ -119,9 +121,8 @@ def test_active_mime(root_analysis, tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("content", [b"not active mime", b""])
-def test_active_mime_skipped(root_analysis, tmp_path, content):
+def test_active_mime_skipped(root_analysis, tmp_path):
     path = tmp_path / "editdata.mso"
-    path.write_bytes(content)
+    path.write_bytes(b"not active mime")
 
     assert not _analyze(root_analysis, path, "active_mime").get_and_load_analysis(ActiveMimeAnalysis)

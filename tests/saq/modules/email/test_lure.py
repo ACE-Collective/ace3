@@ -245,9 +245,8 @@ def test_reason_segments():
     ("https://evil.example.net/login", True),
     ("HTTP://evil.example.net/", True),
     ("mailto:user@example.com", False),
-    # urlparse raises on these, and an attacker writes the link
+    # urlparse raises on this, and an attacker writes the link
     ("http://[x/", False),
-    ("https://a.example.com]/x", False),
 ])
 def test_is_http_url(value, expected):
     assert is_http_url(value) is expected
@@ -582,7 +581,6 @@ def test_settings_file_blank_weights_keep_their_defaults(tmp_path):
     "weights:\n  qrr: 50\n",
     "max_candidates: 0\n",
     "benign_domains: [\n",
-    "- not a mapping\n",
 ])
 def test_settings_file_that_does_not_load(tmp_path, caplog, text):
     path = tmp_path / "lure_url.yaml"

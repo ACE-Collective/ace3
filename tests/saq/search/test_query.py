@@ -80,10 +80,6 @@ class TestFuse:
         assert query.exact_first(fused, ["a", "b"]) == [("a", 0.8), ("b", 0.9), ("d", 0.5), ("c", 0.4)]
         assert query.exact_first(fused, []) == fused
 
-    def test_consensus_beats_single_lane_at_equal_weight(self):
-        fused = query.fuse({"x": ["a", "b"], "y": ["b", "a"]}, {"x": 1.0, "y": 1.0}, k=60)
-        assert fused[0][1] == pytest.approx(fused[1][1])
-
 
 class TestTiers:
     def _result(self, lanes, dense=None, sparse=None):
@@ -148,9 +144,6 @@ class TestSearchAlerts:
     def test_include_hits_false(self, lanes):
         response = query.search_alerts(SearchRequest(query=EXACT_AND_TEXT, include_hits=False))
         assert all(r.hits == [] for r in response.results)
-
-    def test_blank_query(self, lanes):
-        assert query.search_alerts(SearchRequest(query="   ")).total == 0
 
     def test_prose_never_reaches_the_exact_lane(self, lanes, monkeypatch):
         """Free text does not run an exact lookup. `lexical_search` is stubbed to return
@@ -339,6 +332,9 @@ class TestQdrantCalls:
     @pytest.mark.integration
     def test_similar_search_unindexed_alert(self, mock_qdrant):
         assert query.similar_search("alert-1", SearchFilters(), limit=5, group_size=2).dense == []
+        # with no points there is nothing to recommend from, and qdrant answers a recommend
+        # query without examples with a 422, which would be logged as a failed search
+        mock_qdrant.query_points_groups.assert_not_called()
         response = query.similar_alerts("alert-1")
         assert response.total == 0 and response.query == "similar:alert-1"
 

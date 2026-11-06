@@ -78,14 +78,6 @@ class TestStates:
         _reviewed()
         assert _history().state == TestState.NO_EXPECTATIONS
 
-    def test_validated(self, user_id):
-        expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
-        run = _reviewed()
-        _result(run, SIGNATURE, "hit", "hit")
-        history = _history()
-        assert (history.state, history.expected, history.last_reviewed_run_uuid) == (
-            TestState.VALIDATED, 1, run.uuid)
-
     @pytest.mark.parametrize("reviewed_status", ["missing", "possibly_suppressed"])
     def test_failing(self, user_id, reviewed_status):
         expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
@@ -96,8 +88,11 @@ class TestStates:
     def test_only_the_latest_reviewed_run_counts(self, user_id):
         expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")
         _result(_reviewed(timedelta(days=2)), SIGNATURE, "missing", "missing")
-        _result(_reviewed(), SIGNATURE, "hit", "hit")
-        assert _history().state == TestState.VALIDATED
+        latest = _reviewed()
+        _result(latest, SIGNATURE, "hit", "hit")
+        history = _history()
+        assert (history.state, history.expected, history.last_reviewed_run_uuid) == (
+            TestState.VALIDATED, 1, latest.uuid)
 
     def test_an_expectation_added_after_the_review_waits_for_one(self, user_id):
         expectations.set_expectation(GUID, SIGNATURE, "expected", user_id, platform="windows")

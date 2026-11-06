@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from saq.analysis.root import RootAnalysis
@@ -73,14 +75,17 @@ def test_hop_not_in_the_tree_has_no_link():
     {"document_url": START},           # recorded before the scanner wrote "navigation"
     {"navigation": [], "document_url": START},
 ])
-def test_scan_without_navigation_is_left_out(metrics):
+def test_scan_without_navigation_is_left_out(metrics, caplog):
     root = RootAnalysis()
     target = root.add_observable_by_spec(F_URL, START)
     analysis = PhishkitAnalysis()
     target.add_analysis(analysis)
     analysis.metrics = metrics
 
-    assert build_crawl_chains(root) == []
+    with caplog.at_level(logging.WARNING):
+        assert build_crawl_chains(root) == []
+    # left out, not built and then dropped by the catch-all for a scan it could not read
+    assert "unable to build the crawl chain" not in caplog.text
 
 
 @pytest.mark.unit

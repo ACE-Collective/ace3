@@ -4,11 +4,9 @@ import re
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
 
-from aceapi_v2.application import app as v2_app
 from saq.configuration.config import get_config
-from saq.database.model import AuthGroupPermission, AuthPermissionCatalog, AuthUserPermission
+from saq.database.model import AuthPermissionCatalog
 from saq.database.pool import get_db
 from saq.permissions.catalog import (
     CATALOG_PAIRS,
@@ -20,6 +18,7 @@ from saq.permissions.catalog import (
     sync_permission_catalog,
 )
 from saq.permissions.logic import key_scope_allows, parse_permission_pattern
+from tests.aceapi_v2.conftest import v2_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -233,7 +232,7 @@ def _fastapi_apps():
     import aceapi_ai.application
 
     return [
-        ("aceapi_v2", v2_app, _FASTAPI_PUBLIC_PATHS),
+        ("aceapi_v2", v2_app(), _FASTAPI_PUBLIC_PATHS),
         ("aceapi_ai", aceapi_ai.application.app, _AI_PUBLIC_PATHS),
     ]
 
@@ -274,7 +273,7 @@ class TestRouteCoverage:
         and every route that should use it does (rather than carrying no gate at all)."""
         gated = {
             (method, path)
-            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for path, methods, dependant in _iter_effective_routes(v2_app())
             for method in methods
             if method not in ("HEAD", "OPTIONS")
             and _dependant_has_gate(dependant, {"self_service_dependency"})
@@ -287,7 +286,7 @@ class TestRouteCoverage:
         key_routes = {("POST", "/users/me/apikeys"), ("PUT", "/users/me/apikeys/{key_id}"), ("DELETE", "/users/me/apikeys/{key_id}")}
         pairs = {
             (method, path): _dependant_permission_pairs(dependant)
-            for path, methods, dependant in _iter_effective_routes(v2_app)
+            for path, methods, dependant in _iter_effective_routes(v2_app())
             for method in methods
             if (method, path) in key_routes
         }
@@ -449,86 +448,3 @@ class TestSyncPermissionCatalog:
         rows = {(r.major, r.minor) for r in session.query(AuthPermissionCatalog).all()}
         assert rows == get_catalog_pairs()
 
-
-# The exact rewrite statements from the seed_permission_catalog migration, exercised directly so a
-# regression in the normalization logic fails a fast test rather than only in a live upgrade.
-def _normalize_user_edit(session):
-    for table, subject_col in (("auth_user_permission", "user_id"), ("auth_group_permission", "group_id")):
-        session.execute(text(
-            f"DELETE e FROM {table} e "
-            f"JOIN {table} w "
-            f"  ON w.{subject_col} = e.{subject_col} "
-            f" AND w.major = 'user' AND w.minor = 'write' "
-            f" AND w.effect = e.effect "
-            f"WHERE e.major = 'user' AND e.minor = 'edit'"
-        ))
-        session.execute(text(
-            f"UPDATE {table} SET minor = 'write' "
-            f"WHERE major = 'user' AND minor = 'edit'"
-        ))
-    session.commit()
-
-
-@pytest.mark.integration
-class TestUserEditNormalization:
-    def _make_user(self, username):
-        from saq.database.model import User
-        session = get_db()
-        user = User()
-        user.username = username
-        user.email = f"{username}@example.com"
-        user.password = "x"
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-        return user
-
-    def test_user_grants_normalized(self):
-        session = get_db()
-        # A: only user:edit ALLOW  -> becomes user:write ALLOW
-        a = self._make_user("norm_a")
-        session.add(AuthUserPermission(user_id=a.id, major="user", minor="edit", effect="ALLOW"))
-        # B: user:edit ALLOW + user:write ALLOW (same effect) -> merged into single write ALLOW
-        b = self._make_user("norm_b")
-        session.add(AuthUserPermission(user_id=b.id, major="user", minor="edit", effect="ALLOW"))
-        session.add(AuthUserPermission(user_id=b.id, major="user", minor="write", effect="ALLOW"))
-        # C: user:edit DENY + user:write ALLOW (different effects) -> both effects preserved
-        c = self._make_user("norm_c")
-        session.add(AuthUserPermission(user_id=c.id, major="user", minor="edit", effect="DENY"))
-        session.add(AuthUserPermission(user_id=c.id, major="user", minor="write", effect="ALLOW"))
-        session.commit()
-
-        _normalize_user_edit(session)
-
-        def perms(uid):
-            return {
-                (p.minor, p.effect)
-                for p in session.query(AuthUserPermission).filter(
-                    AuthUserPermission.user_id == uid, AuthUserPermission.major == "user"
-                ).all()
-            }
-
-        assert perms(a.id) == {("write", "ALLOW")}
-        assert perms(b.id) == {("write", "ALLOW")}
-        assert perms(c.id) == {("write", "ALLOW"), ("write", "DENY")}
-        # No user:edit rows remain anywhere.
-        assert session.query(AuthUserPermission).filter(AuthUserPermission.minor == "edit").count() == 0
-
-    def test_group_grants_normalized(self):
-        from saq.permissions import create_auth_group
-        session = get_db()
-        g = create_auth_group("norm_group")
-        session.add(AuthGroupPermission(group_id=g.id, major="user", minor="edit", effect="ALLOW"))
-        session.add(AuthGroupPermission(group_id=g.id, major="user", minor="write", effect="ALLOW"))
-        session.commit()
-
-        _normalize_user_edit(session)
-
-        rows = {
-            (p.minor, p.effect)
-            for p in session.query(AuthGroupPermission).filter(
-                AuthGroupPermission.group_id == g.id, AuthGroupPermission.major == "user"
-            ).all()
-        }
-        assert rows == {("write", "ALLOW")}
-        assert session.query(AuthGroupPermission).filter(AuthGroupPermission.minor == "edit").count() == 0

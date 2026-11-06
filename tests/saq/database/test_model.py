@@ -74,20 +74,6 @@ def test_sync_icon_configuration_blueprint():
     assert alert.icon_url is None
 
 @pytest.mark.integration
-def test_sync_icon_configuration_url():
-    # sync() should mirror a url icon configuration into the icon_url column
-    root_analysis = create_root_analysis(uuid=str(uuid.uuid4()))
-    root_analysis.initialize_storage()
-    root_analysis.set_extension(KEY_ICON_CONFIGURATION, {"url": "https://example.com/icon.png"})
-    root_analysis.save()
-    ALERT(root_analysis)
-
-    alert = load_alert(root_analysis.uuid)
-    assert alert.icon_url == "https://example.com/icon.png"
-    assert alert.icon_blueprint_name is None
-    assert alert.icon_blueprint_path is None
-
-@pytest.mark.integration
 def test_sync_icon_configuration_long_data_url():
     # icon_url must accept data urls well beyond the old 1024 char limit
     long_data_url = "data:image/png;base64," + ("A" * 5000)

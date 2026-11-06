@@ -119,11 +119,9 @@ def test_post_analysis_exports_each_original_email(root_analysis, emitted):
     archive_path = os.path.join(get_base_dir(), "archive", "test.gz.e")
     add_email(root_analysis, log_entry(), urls=["http://a.example/", "http://b.example/", "http://a.example/"],
               archive_path=archive_path)
-    # a file that is not an original email is not logged
-    other_path = root_analysis.create_file_path("other.txt")
-    with open(other_path, "wb") as fp:
-        fp.write(b"other")
-    root_analysis.add_file_observable(other_path)
+    # an email that is not an original email (an attachment, say) is not logged
+    other = add_email(root_analysis, log_entry(message_id="<attached@example.com>"), name="attached.email.rfc822")
+    other.remove_directive(DIRECTIVE_ORIGINAL_EMAIL)
 
     assert make_analyzer(root_analysis).execute_post_analysis()
 

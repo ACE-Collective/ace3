@@ -13,9 +13,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from aceapi_v2.application import app as v2_app
 from aceapi_v2.database import get_async_session
-from tests.aceapi_v2.conftest import make_api_key
+from tests.aceapi_v2.conftest import make_api_key, v2_app
 from tests.saq.test_permission_catalog import _FASTAPI_PUBLIC_PATHS, _iter_effective_routes
 
 pytestmark = pytest.mark.integration
@@ -48,9 +47,9 @@ async def _override_v2_db_session(connection):
         finally:
             await session.close()
 
-    v2_app.dependency_overrides[get_async_session] = override_get_session
+    v2_app().dependency_overrides[get_async_session] = override_get_session
     yield
-    v2_app.dependency_overrides.clear()
+    v2_app().dependency_overrides.clear()
 
 
 def _fill_path_params(path: str) -> str:
@@ -61,11 +60,11 @@ def _fill_path_params(path: str) -> str:
 async def test_ai_scoped_key_is_403_on_every_gated_v2_route(_override_v2_db_session, ai_key):
     checked = 0
     async with AsyncClient(
-        transport=ASGITransport(app=v2_app),
+        transport=ASGITransport(app=v2_app()),
         base_url="http://test",
         headers={"x-ace-auth": ai_key},
     ) as client:
-        for path, methods, _ in _iter_effective_routes(v2_app):
+        for path, methods, _ in _iter_effective_routes(v2_app()):
             if path in _FASTAPI_PUBLIC_PATHS:
                 continue
 

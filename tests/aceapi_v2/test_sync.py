@@ -8,10 +8,10 @@ import pytest
 from fastapi.dependencies.models import _is_async_gen_callable, _is_coroutine_callable
 from sqlalchemy import text
 
-from aceapi_v2.application import app as v2_app
 from aceapi_v2.sync import run_db_in_thread
 from saq.database.pool import get_db
 from tests.saq.test_permission_catalog import _iter_effective_routes
+from tests.aceapi_v2.conftest import v2_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -93,7 +93,7 @@ def test_every_route_and_dependency_is_async():
 
     sync_calls = []
     route_count = 0
-    for app_name, app in (("aceapi_v2", v2_app), ("aceapi_ai", aceapi_ai.application.app)):
+    for app_name, app in (("aceapi_v2", v2_app()), ("aceapi_ai", aceapi_ai.application.app)):
         for path, methods, dependant in _iter_effective_routes(app):
             route_count += 1
             sync_calls.extend(

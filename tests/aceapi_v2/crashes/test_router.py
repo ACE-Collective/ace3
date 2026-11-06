@@ -96,22 +96,16 @@ def local_node() -> str:
 class TestAuth:
     @pytest.mark.asyncio
     async def test_list_requires_auth(self, unauth_client: AsyncClient):
+        # the router-level dependency authenticates every route the same way, so one route
+        # stands for all three
         assert (await unauth_client.get("/crashes/")).status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_get_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get(f"/crashes/{uuid.uuid4()}")
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_download_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get(f"/crashes/{uuid.uuid4()}/download")
-        assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_requires_crash_read(self, noperm_client: AsyncClient):
         """A crash report archive is live malware; it is behind its own permission."""
+        # each route declares the permission itself, so each one is checked
         assert (await noperm_client.get("/crashes/")).status_code == 403
+        assert (await noperm_client.get(f"/crashes/{uuid.uuid4()}")).status_code == 403
         response = await noperm_client.get(f"/crashes/{uuid.uuid4()}/download")
         assert response.status_code == 403
 
@@ -120,17 +114,13 @@ class TestCrashIdValidation:
     """The crash id becomes a filesystem path and then an archive handed to an analyst."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("bad_id", ["not-a-crash-id", "..", "%2e%2e", "0" * 40])
-    async def test_malformed_id_rejected(self, client: AsyncClient, bad_id: str):
-        response = await client.get(f"/crashes/{bad_id}")
-        assert response.status_code in (400, 404)
-        if response.status_code == 400:
-            assert response.json()["detail"] == "invalid crash id"
-
-    @pytest.mark.asyncio
-    async def test_traversal_rejected(self, client: AsyncClient):
-        response = await client.get("/crashes/..%2F..%2F..%2Fetc%2Fpasswd/download")
-        assert response.status_code in (400, 404)
+    @pytest.mark.parametrize("route", ["", "/download"])
+    async def test_malformed_id_rejected(self, client: AsyncClient, route: str):
+        # the server decodes %2e%2e to "..", which reaches the route as the crash id. a 404 here
+        # would come from find_crash_report_dir's own check, not from the one at the boundary
+        response = await client.get(f"/crashes/%2e%2e{route}")
+        assert response.status_code == 400
+        assert response.json()["detail"] == "invalid crash id"
 
     @pytest.mark.asyncio
     async def test_unknown_id_is_404(self, client: AsyncClient):
@@ -274,6 +264,9 @@ class TestListCrashReports:
         await _index(session, crash_id, _write_report(crash_id, node=local_node), local_node,
                      module_name="unique_test_module",
                      module_path="saq.modules.test:UniqueTestAnalysis")
+        # a crash of another module, which neither filter may return
+        other = str(uuid.uuid4())
+        await _index(session, other, _write_report(other, node=local_node), local_node)
 
         by_name = await client.get("/crashes/", params={"module": "unique_test_module"})
         assert [r["crash_id"] for r in by_name.json()["data"]] == [crash_id]
@@ -429,23 +422,6 @@ class TestCrossNodeViaSharedStorage:
         assert (await client.get(f"/crashes/{crash_id}/download")).status_code == 409
 
     @pytest.mark.asyncio
-    async def test_listing_marks_remote_reports_non_local(
-        self, client: AsyncClient, session: AsyncSession, shared_storage
-    ):
-        """With replication on, `local` still means 'on this node's disk'. The listing cannot
-        know whether the shared copy exists without a round trip per row, so it does not claim it."""
-        root_uuid = str(uuid.uuid4())
-        crash_id = str(uuid.uuid4())
-        crash_dir = _write_report(crash_id, node="other-node")
-        await _index(session, crash_id, crash_dir, "other-node", root_uuid=root_uuid)
-
-        response = await client.get("/crashes/", params={"root_uuid": root_uuid})
-        rows = response.json()["data"]
-        assert len(rows) == 1
-        assert rows[0]["node"] == "other-node"
-        assert rows[0]["local"] is False
-
-    @pytest.mark.asyncio
     async def test_local_report_with_replication_on(
         self, client: AsyncClient, session: AsyncSession, shared_storage, local_node: str
     ):
@@ -499,31 +475,3 @@ class TestWrongNodeWithoutReplication:
         await _index(session, crash_id, crash_dir, "some-other-node")
 
         assert (await client.get(f"/crashes/{crash_id}/download")).status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_listing_marks_remote_reports_unreachable(
-        self, client: AsyncClient, session: AsyncSession
-    ):
-        root_uuid = str(uuid.uuid4())
-        crash_id = str(uuid.uuid4())
-        await _index(session, crash_id, _write_report(crash_id, node="other-node"), "other-node",
-                     root_uuid=root_uuid)
-
-        response = await client.get("/crashes/", params={"root_uuid": root_uuid})
-        rows = response.json()["data"]
-        assert rows[0]["local"] is False
-
-    @pytest.mark.asyncio
-    async def test_listing_local_only_for_this_node(
-        self, client: AsyncClient, session: AsyncSession, local_node: str
-    ):
-        root_uuid = str(uuid.uuid4())
-        mine = str(uuid.uuid4())
-        theirs = str(uuid.uuid4())
-        await _index(session, mine, _write_report(mine, node=local_node), local_node,
-                     root_uuid=root_uuid)
-        await _index(session, theirs, _write_report(theirs, node="other-node"), "other-node",
-                     root_uuid=root_uuid)
-
-        rows = (await client.get("/crashes/", params={"root_uuid": root_uuid})).json()["data"]
-        assert {r["crash_id"]: r["local"] for r in rows} == {mine: True, theirs: False}

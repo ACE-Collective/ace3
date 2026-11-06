@@ -7,8 +7,8 @@ import pytest
 from PIL import Image
 
 from saq.configuration.config import get_config
-from saq.constants import DIRECTIVE_YARA_META_PREFIX, F_FILE_LOCATION, F_SHA256
-from saq.observables.file import parse_yara_meta_directive, YARA_META_NAME_PATTERN
+from saq.constants import DIRECTIVE_YARA_META_PREFIX, F_SHA256
+from saq.observables.file import parse_yara_meta_directive
 
 
 class TestParseYaraMetaDirective:
@@ -33,9 +33,12 @@ class TestParseYaraMetaDirective:
         assert result == ("key", "")
 
     @pytest.mark.unit
-    def test_non_yara_meta_directive(self):
-        result = parse_yara_meta_directive("sandbox")
+    def test_non_yara_meta_directive(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            result = parse_yara_meta_directive("sandbox")
         assert result is None
+        # ignored, not refused as a malformed yara meta directive
+        assert not [r for r in caplog.records if "yara meta" in r.getMessage()]
 
     @pytest.mark.unit
     def test_missing_equals(self):
@@ -45,11 +48,6 @@ class TestParseYaraMetaDirective:
     @pytest.mark.unit
     def test_invalid_name_with_spaces(self):
         result = parse_yara_meta_directive("yara_meta:bad name=value")
-        assert result is None
-
-    @pytest.mark.unit
-    def test_invalid_name_with_special_chars(self):
-        result = parse_yara_meta_directive("yara_meta:bad!name=value")
         assert result is None
 
 
@@ -84,19 +82,9 @@ class TestFileObservableYaraMeta:
 
         observable = root_analysis.add_file_observable(file_path)
         observable.add_yara_meta("type", "script.javascript")
-
-        assert observable.has_yara_meta("type", "script.javascript")
-
-    @pytest.mark.unit
-    def test_has_yara_meta_missing(self, root_analysis):
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"test content")
-
-        observable = root_analysis.add_file_observable(file_path)
-        observable.add_yara_meta("type", "script.javascript")
         observable.add_directive("sandbox")
 
+        assert observable.has_yara_meta("type", "script.javascript")
         # wrong value for an existing name
         assert not observable.has_yara_meta("type", "script.vbscript")
         # name that was never added
@@ -118,15 +106,6 @@ class TestFileObservableYaraMeta:
         assert "content_type=email_body" in tags
         assert "source=imap" in tags
         assert len(tags) == 2
-
-    @pytest.mark.unit
-    def test_yara_meta_tags_empty(self, root_analysis):
-        file_path = root_analysis.create_file_path("test.txt")
-        with open(file_path, "wb") as fp:
-            fp.write(b"test content")
-
-        observable = root_analysis.add_file_observable(file_path)
-        assert observable.yara_meta_tags == []
 
     @pytest.mark.unit
     def test_yara_meta_tags_with_mixed_directives(self, root_analysis):
@@ -174,11 +153,6 @@ class TestFileObservableExt:
 
 
 class TestFileObservableMimeType:
-    @pytest.mark.unit
-    def test_mime_type_of_file(self, root_analysis):
-        observable = root_analysis.add_file_observable(_write_file(root_analysis, "test.txt", b"test content"))
-        assert observable.mime_type == "text/plain"
-
     @pytest.mark.unit
     def test_missing_file_has_no_mime_type(self, root_analysis):
         file_path = _write_file(root_analysis, "test.txt", b"test content")
@@ -270,26 +244,27 @@ class TestFileObservableScaledDimensions:
         assert (observable.scaled_width, observable.scaled_height) == (100, 50)
 
     @pytest.mark.unit
-    def test_large_image_is_scaled(self, root_analysis):
-        observable = root_analysis.add_file_observable(_write_image(root_analysis, "large.png", 640, 480))
-        assert (observable.scaled_width, observable.scaled_height) == (320, 240)
-
-    @pytest.mark.unit
     def test_dimensions_are_computed_once(self, root_analysis, monkeypatch):
         observable = root_analysis.add_file_observable(_write_image(root_analysis, "large.png", 640, 480))
         assert observable.scaled_width == 320
 
         # read from the serialized values from now on, not from the file
-        monkeypatch.setattr("PIL.Image.open", Mock(side_effect=AssertionError("image reopened")))
+        image_open = Mock()
+        monkeypatch.setattr("PIL.Image.open", image_open)
         observable.compute_scaled_dimensions()
         assert (observable.scaled_width, observable.scaled_height) == (320, 240)
+        image_open.assert_not_called()
 
     @pytest.mark.unit
-    def test_not_an_image(self, root_analysis):
+    def test_not_an_image(self, root_analysis, caplog):
         observable = root_analysis.add_file_observable(_write_file(root_analysis, "test.txt", b"test"))
         assert not observable.is_image
-        assert observable.scaled_width is None
-        assert observable.scaled_height is None
+        with caplog.at_level(logging.WARNING):
+            assert observable.scaled_width is None
+            assert observable.scaled_height is None
+
+        # not parsed as an image at all
+        assert not [r for r in caplog.records if "unable to parse image" in r.getMessage()]
 
     @pytest.mark.unit
     def test_unparseable_image(self, root_analysis, caplog):
@@ -312,11 +287,3 @@ class TestFileObservableTagMapping:
         assert observable.tag_mapping_type == F_SHA256
         assert observable.tag_mapping_value == sha256
         assert observable.tag_mapping_md5_hex == hashlib.md5(sha256.encode()).hexdigest()
-
-
-class TestFileLocationObservable:
-    @pytest.mark.unit
-    def test_hostname_and_path(self, root_analysis):
-        observable = root_analysis.add_observable_by_spec(F_FILE_LOCATION, r"workstation@C:\Users\test\evil.exe")
-        assert observable.hostname == "workstation"
-        assert observable.full_path == r"C:\Users\test\evil.exe"

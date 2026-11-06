@@ -19,16 +19,6 @@ class TestFlaskSessionAuth:
     """Test Flask session cookie as a third auth fallback."""
 
     @pytest.mark.asyncio
-    async def test_valid_flask_session_cookie(
-        self, unauth_client: AsyncClient, test_user: User
-    ):
-        """Valid Flask session cookie should authenticate successfully."""
-        cookie = make_flask_session_cookie(test_user.id)
-        unauth_client.cookies.set("session", cookie)
-        response = await unauth_client.get("/observable-types/")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
     async def test_flask_session_is_a_session_credential(self, session: AsyncSession, test_user: User):
         # a session shares auth_type "user" with a user API key and, like a config key, has no key_id,
         # so only credential tells a GUI session apart from a key

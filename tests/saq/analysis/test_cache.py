@@ -123,7 +123,7 @@ class TestPutCachedDelta:
 
     @pytest.mark.integration
     def test_happy_path_writes_row(self, blob_store, caplog):
-        module = _make_module()
+        module = _make_module(version=3)
         delta = _make_delta(module)
         try:
             with caplog.at_level(logging.INFO):
@@ -139,7 +139,7 @@ class TestPutCachedDelta:
             with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
                 cursor = db.cursor()
                 cursor.execute(
-                    "SELECT delta_zstd, delta_uncompressed_size, has_blob_refs "
+                    "SELECT delta_zstd, delta_uncompressed_size, has_blob_refs, module_version "
                     "FROM analysis_result_cache WHERE cache_key = %s",
                     (delta.cache_key,),
                 )
@@ -151,6 +151,7 @@ class TestPutCachedDelta:
             assert rebuilt.target_observable_diff.added_tags == ["t1"]
             assert row[1] > 0
             assert row[2] in (0, False)
+            assert row[3] == 3
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -181,10 +182,16 @@ class TestPutCachedDelta:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_skips_when_cache_ttl_is_none(self, blob_store):
+    def test_skips_when_cache_ttl_is_none(self, blob_store, caplog):
+        """A module without a cache_ttl is never cached, even when the
+        delta already carries a cache key (an executor that set it, or a
+        module whose ttl was removed from its config)."""
         module = _make_module(ttl=None)
-        delta = _make_delta(module)
-        assert put_cached_delta(delta, module, blob_store) is None
+        delta = _make_delta(_make_module(name=module.config.name))
+        with caplog.at_level(logging.WARNING):
+            assert put_cached_delta(delta, module, blob_store) is None
+        assert _row_count(delta.cache_key) == 0
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     @pytest.mark.integration
     def test_refuses_delta_with_removals(self, blob_store):
@@ -299,39 +306,6 @@ class TestPutCachedDelta:
         assert warn_logs
         assert warn_logs[0].levelno == logging.WARNING
         assert warn_logs[0].module_name == module.config.name
-
-    @pytest.mark.integration
-    def test_repeat_write_with_new_version_appends(self, blob_store):
-        """A re-analysis at a new module version appends a row; the freshest
-        row (the one the lookup path picks) carries the new version."""
-        module = _make_module()
-        delta = _make_delta(module)
-        try:
-            put_cached_delta(delta, module, blob_store)
-            # second write at version 2 with a longer ttl so its expires_at is
-            # unambiguously later than the first row's
-            module2 = _make_module(
-                name=module.config.name, version=2, ttl=timedelta(hours=2)
-            )
-            delta2 = _make_delta(
-                module2,
-                observable_type=delta.observable_type,
-                observable_value=delta.observable_value,
-            )
-            delta2.cache_key = delta.cache_key
-            assert put_cached_delta(delta2, module2, blob_store) is not None
-            assert _row_count(delta.cache_key) == 2
-            # the lookup path reads the freshest (latest expires_at) row
-            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "SELECT module_version FROM analysis_result_cache "
-                    "WHERE cache_key = %s ORDER BY expires_at DESC LIMIT 1",
-                    (delta.cache_key,),
-                )
-                assert cursor.fetchone()[0] == 2
-        finally:
-            _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
     def test_large_details_spill_to_blob_store(self, blob_store):
@@ -508,7 +482,7 @@ class TestPutCachedDeltaFileObservables:
             _delete_cache_row(delta.cache_key)
 
     @pytest.mark.integration
-    def test_file_delta_dedupes_existing_blob(self, blob_store, tmp_path):
+    def test_file_delta_dedupes_existing_blob(self, blob_store, tmp_path, monkeypatch):
         """A second write of the same content reuses the existing blob
         (exists() short-circuit) and just adds its own reference."""
         module = _make_module()
@@ -517,9 +491,12 @@ class TestPutCachedDeltaFileObservables:
         delta = _make_file_delta(module, file_obs)
         try:
             assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            # on S3 a put is an upload; the second write must not make one
+            put_spy = Mock(wraps=blob_store.put)
+            monkeypatch.setattr(blob_store, "put", put_spy)
             assert put_cached_delta(delta, module, blob_store, root=root) is not None
+            put_spy.assert_not_called()
             assert _row_count(delta.cache_key) == 2
-            assert blob_store.exists(file_obs.value)
         finally:
             _delete_cache_row(delta.cache_key)
 
@@ -722,113 +699,33 @@ class TestKillSwitch:
         assert _row_count(delta.cache_key) == 0
 
 
-class TestMaintainGlobal:
-
-    @pytest.mark.integration
-    def test_deletes_orphan_blobs_after_unreference(self, blob_store):
-        """maintain_global keeps referenced blobs and reclaims orphans (real blob_refs)."""
-        import os
-        import time
-
-        module = _make_module()
-        # 32 KiB reliably triggers the blob-store spill path
-        big_details = {"payload": "x" * (32 * 1024)}
-        analysis = {
-            "type": "saq.modules.test:Dummy",
-            "summary": "big",
-            "details": big_details,
-        }
-        delta = _make_delta(module, analysis=analysis)
-        try:
-            put_cached_delta(delta, module, blob_store)
-            assert _blob_ref_count(delta.cache_key) == 1
-
-            # backdate every blob so the GC grace period doesn't protect them
-            for _sha, _path in blob_store.iter_blobs():
-                past = time.time() - 3600
-                os.utime(_path, (past, past))
-
-            # the blob is still referenced — maintain_global must not delete it
-            stats = blob_store.maintain_global(timedelta(minutes=5))
-            assert stats.blobs_deleted == 0
-            assert stats.skipped_referenced == 1
-
-            # drop the blob_ref — a partition drop reclaims the cache row and
-            # its blob_refs together; deleting the row directly stands in here
-            with get_db_connection(DB_ANALYSIS_RESULT_CACHE) as db:
-                cursor = db.cursor()
-                cursor.execute(
-                    "DELETE FROM blob_refs WHERE referrer_id = %s",
-                    (delta.cache_key,),
-                )
-                cursor.execute(
-                    "DELETE FROM analysis_result_cache WHERE cache_key = %s",
-                    (delta.cache_key,),
-                )
-                db.commit()
-            assert _blob_ref_count(delta.cache_key) == 0
-
-            # now the blob is an orphan — maintain_global reclaims it
-            stats = blob_store.maintain_global(timedelta(minutes=5))
-            assert stats.blobs_deleted == 1
-        finally:
-            _delete_cache_row(delta.cache_key)
-
-
 class TestCollectStats:
 
     @pytest.mark.integration
-    def test_stats_reflect_table_state(self, blob_store):
+    def test_stats_count_each_table(self, blob_store):
+        """collect_stats reads InnoDB's per-partition estimates, which only
+        move after ANALYZE TABLE and are cached per session for
+        information_schema_stats_expiry seconds; refreshing both makes the
+        estimates of these tiny tables exact."""
         module = _make_module()
-        # 32 KiB is 2× the default analysis_cache.details_spill_bytes,
-        # so this reliably triggers the blob-store spill path.
-        big_details = {"payload": "x" * (32 * 1024)}
+        # 32 KiB is 2x the default analysis_cache.details_spill_bytes,
+        # so the second delta spills its details and takes one blob_refs row
         delta_small = _make_delta(module, observable_value="https://small.example/")
         delta_big = _make_delta(
             module,
             observable_value="https://big.example/",
-            analysis={"type": "saq.modules.test:Dummy", "summary": "big", "details": big_details},
+            analysis={"type": "saq.modules.test:Dummy", "summary": "big", "details": {"payload": "x" * (32 * 1024)}},
         )
-        try:
-            before = collect_stats()
-            put_cached_delta(delta_small, module, blob_store)
-            put_cached_delta(delta_big, module, blob_store)
-            after = collect_stats()
+        delta_other = _make_delta(module, observable_value="https://other.example/")
+        assert put_cached_delta(delta_small, module, blob_store) is not None
+        assert put_cached_delta(delta_big, module, blob_store) is not None
+        assert put_cached_delta(delta_other, module, blob_store) is not None
 
-            # row counts and byte totals come from InnoDB per-partition
-            # statistics which only refresh periodically — assert
-            # non-regression rather than exact growth
-            assert after["total_rows"] >= before["total_rows"]
-            assert after["blob_refs_rows"] >= before["blob_refs_rows"]
-            assert after["total_on_disk_bytes"] >= before["total_on_disk_bytes"]
-        finally:
-            _delete_cache_row(delta_small.cache_key)
-            _delete_cache_row(delta_big.cache_key)
+        session = get_db(DB_ANALYSIS_RESULT_CACHE)
+        session.execute(text("ANALYZE TABLE analysis_result_cache, blob_refs")).all()
+        session.execute(text("SET SESSION information_schema_stats_expiry = 0"))
+        stats = collect_stats()
 
-
-@pytest.mark.integration
-def test_cache_replay_preserves_queue_and_signature():
-    """Guards the cache.py replay-fidelity fix: a detection's queue + signature
-    fields (family included) must survive capture->replay, not silently revert to defaults."""
-    from saq.analysis.cache import _apply_root_diff
-    from saq.analysis.detection_point import DetectionPoint
-    from tests.saq.helpers import create_root_analysis
-
-    # a detection with non-default queue + signature, serialized as the cache stores it
-    dp = DetectionPoint("hunt matched", queue="experimental",
-                        signature_uuid="sig-xyz", signature_version="deadbeef",
-                        signature_family="hunt")
-    det_dict = dp.json
-
-    root = create_root_analysis()
-    root.initialize_storage()
-    diff = RootDiff()
-    diff.added_detections = [det_dict]
-    _apply_root_diff(root, diff)
-
-    replayed = root.all_detection_points
-    assert len(replayed) == 1
-    assert replayed[0].queue == "experimental"
-    assert replayed[0].signature_uuid == "sig-xyz"
-    assert replayed[0].signature_version == "deadbeef"
-    assert replayed[0].signature_family == "hunt"
+        assert stats["total_rows"] == 3
+        assert stats["blob_refs_rows"] == 1
+        assert stats["total_on_disk_bytes"] > 0

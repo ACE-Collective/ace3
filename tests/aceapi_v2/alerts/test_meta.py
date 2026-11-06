@@ -65,7 +65,10 @@ async def test_unowned_alert(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_owned_alert(client: AsyncClient):
+    # unowned alerts on either side, so the lookup has to find this one by its uuid
+    insert_alert()
     alert = insert_alert()
+    insert_alert()
     user = get_db().query(User).filter(User.username == "unittest").one()
     _set_owner(alert.uuid, user.id, datetime(2026, 3, 30, 12, 0, 0))
 

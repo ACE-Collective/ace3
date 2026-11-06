@@ -244,13 +244,15 @@ def test_worker_not_superseded_by_other_targets_or_own_probe(make_check):
     worker = ExternalRemediationCheckWorker(probe)
 
     value = "<not-superseded-1@example.com>|alice@example.com"
+    # both confirmed longer ago than the grace window, so only the target and probe filters exclude them
+    confirmed_at = datetime.now(timezone.utc) - timedelta(hours=2)
     # a sibling confirmation for a DIFFERENT target
     make_check(probe_name="other_probe",
                observable_value="<different@example.com>|bob@example.com",
-               status="COMPLETED", result=CheckResult.CONFIRMED.value)
+               status="COMPLETED", result=CheckResult.CONFIRMED.value, update_time=confirmed_at)
     # this probe's own confirmation for the same target (excluded by design)
     make_check(probe_name="fake_probe", observable_value=value,
-               status="COMPLETED", result=CheckResult.CONFIRMED.value)
+               status="COMPLETED", result=CheckResult.CONFIRMED.value, update_time=confirmed_at)
     check = make_check(observable_value=value)
 
     worker.process(_work_item_from(check))

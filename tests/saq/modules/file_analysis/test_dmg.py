@@ -54,6 +54,8 @@ def test_dmg(root_analysis, tmp_path, fake_dmg2img):
     analysis = target.get_and_load_analysis(DMGAnalysis)
     [image] = [o for o in analysis.observables if o.type == F_FILE]
     assert image.file_name == "Installer.img"
+    assert analysis.details["image_file"] == image.full_path
+    assert analysis.details["stdout"] == "dmg2img converted"
     assert image.has_tag("dmg") and image.has_tag("macos")
     assert image.redirection.uuid == target.uuid
     # files only, not directories

@@ -3,12 +3,15 @@
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 import uuid
 
 import pytest
 
 from saq.cas import get_cas
 from saq.configuration.config import get_config
+from saq.environment import get_data_dir
 from saq.svs.capture import capture_hold
 from saq.svs.constants import CaptureState
 from saq.svs.yara.corpus import FILE_PATH_MAX_LENGTH, SKIP_UNREADABLE, SKIP_UNSAFE_PATH, SKIP_WRONG_NODE, read_corpus, write_units
@@ -43,19 +46,31 @@ def test_units_are_distinct_scans_and_samples_carry_labels():
     assert corpus.samples[(sha256, OTHER_RULE_UUID)].label is None
 
 
+@pytest.fixture
+def data_dir_tmp():
+    """A directory on the data directory's filesystem, as svs.yara.work_dir is: a hardlink from the
+    pool's read cache works there, and not across to tmp_path."""
+    path = tempfile.mkdtemp(dir=get_data_dir())
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest.mark.integration
-def test_units_are_copied_out_of_the_pool(tmp_path):
+def test_units_are_copied_out_of_the_pool(data_dir_tmp):
     sha256 = stored_sample("FALSE_POSITIVE", b"copy me", [RULE_UUID], name="dir/a.txt")
     _put(b"copy me", insert_capture(str(uuid.uuid4()), sha256, OTHER_RULE_UUID, file_path="b.txt"))
 
     corpus = read_corpus()
-    write_units(corpus, _pool(), str(tmp_path / "u"))
+    write_units(corpus, _pool(), os.path.join(data_dir_tmp, "u"))
 
     paths = {unit.file_path: unit.path for unit in corpus.units}
     assert paths["dir/a.txt"].endswith("/files/dir/a.txt")
     for path in paths.values():
         with open(path, "rb") as fp:
             assert fp.read() == b"copy me"
+        # the two units share one copy, and no file of the pool's (its read cache) is linked in:
+        # the sandboxed scan could change what the pool serves
+        assert os.stat(path).st_nlink == 2
     assert corpus.replayed_sha256s() == {sha256}
     assert corpus.bytes == len(b"copy me")
     assert corpus.skipped == []

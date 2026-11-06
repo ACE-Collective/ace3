@@ -553,15 +553,15 @@ def mock_api_call(monkeypatch):
     attached to a different loop" against the cached engine.
     """
     # local: ace_api and the v2 app pull in the whole API layer, which most tests never load
+    from tests.aceapi_v2.conftest import v2_app
     import ace_api
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
-    from aceapi_v2.application import app as fastapi_app
     from aceapi_v2.sync import run_async
 
     # the API server (tests/saq/helpers.py::execute_api_server) mounts the v2 app the same way
     server = FastAPI()
-    server.mount("/api/v2", fastapi_app)
+    server.mount("/api/v2", v2_app())
 
     def mock_execute_api_call(command,
                         method=ace_api.METHOD_GET,

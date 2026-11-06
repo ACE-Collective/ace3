@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -95,6 +96,9 @@ def test_an_identical_request_shares_the_queued_validation(svs_repository):
 
     assert _request() == (validation_uuid, False)
     assert _request(head="c" * 40)[1]
+    # API workers in other processes share it through this key, so it is the same in every process:
+    # sha256 of the JSON ["svs_rules", "a" * 40, "b" * 40], computed outside ACE
+    assert row.active_key == "e59ce04f87ba60c144f48f4908d4ff0b8772decf7fc1cbc807136670b50d2a6b"
 
 
 def test_a_completed_validation_answers_until_the_corpus_changes(svs_repository):
@@ -166,7 +170,22 @@ def test_the_engine_fingerprint_follows_the_disposition_classification(svs_repos
 
 def test_only_one_worker_claims_a_validation(svs_repository):
     validation_uuid, _ = _request()
-    first = claim("node1", **LEASE)
+    real_transaction = validations.private_transaction
+    raced = {}
+
+    @contextmanager
+    def racing_transaction():
+        with real_transaction() as session:
+            yield session
+        # node1 claims the validation after node2 read the queue and before node2's UPDATE
+        if "first" not in raced:
+            raced["first"] = None
+            raced["first"] = claim("node1", **LEASE)
+
+    with patch.object(validations, "private_transaction", racing_transaction):
+        assert claim("node2", **LEASE) is None
+
+    first = raced["first"]
     assert (first.uuid, first.attempts) == (validation_uuid, 1)
     assert claim("node2", **LEASE) is None
 

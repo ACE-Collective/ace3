@@ -88,6 +88,8 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
     ])
     def test_handle_detection_points_whitelisted_analysis(self, orchestrator, execution_context, monkeypatch, forced_alerts, expected_mode):
         """Test whitelisted analysis behavior with and without forced alerts."""
+        # a detection the whitelist has to override, or the mode stays put without it
+        self._add_detection(execution_context.root)
         execution_context.root.add_tag("whitelisted")
 
         monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", forced_alerts)
@@ -96,19 +98,15 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
 
         assert execution_context.root.analysis_mode == expected_mode
 
-    @pytest.mark.parametrize("initial_mode,expected_mode", [
-        ("test_groups", ANALYSIS_MODE_CORRELATION),
-        (ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_CORRELATION)
-    ])
-    def test_handle_detection_points_with_detections(self, orchestrator, execution_context, monkeypatch, initial_mode, expected_mode):
-        """Test analysis with detections changes to or stays in correlation mode."""
-        execution_context.root.analysis_mode = initial_mode
+    def test_handle_detection_points_with_detections(self, orchestrator, execution_context, monkeypatch):
+        """Test analysis with detections changes to correlation mode."""
+        assert execution_context.root.analysis_mode == "test_groups"
         self._add_detection(execution_context.root)
         monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", False)
 
         orchestrator._handle_detection_points(execution_context)
 
-        assert execution_context.root.analysis_mode == expected_mode
+        assert execution_context.root.analysis_mode == ANALYSIS_MODE_CORRELATION
 
     @pytest.mark.parametrize("forced_alerts,expected_mode", [
         (False, "test_groups"),
@@ -175,16 +173,6 @@ class TestAnalysisOrchestratorFinallyBlock:
             assert result is False
             mock_post_analysis.assert_called_once_with(execution_context)
 
-    def test_post_analysis_logic_called_on_check_disposition_exception(self, orchestrator, execution_context):
-        """test that _handle_post_analysis_logic is called when _check_disposition raises an exception"""
-        with patch.object(orchestrator, '_check_disposition', side_effect=RuntimeError("disposition check failed")), \
-             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
-
-            result = orchestrator.orchestrate_analysis(execution_context)
-
-            assert result is False
-            mock_post_analysis.assert_called_once_with(execution_context)
-
     def test_post_analysis_logic_skipped_when_process_work_item_fails(self, orchestrator, execution_context):
         """test that _handle_post_analysis_logic is skipped when _process_work_item returns False"""
         # a delayed analysis request for an observable the saved root does not have cannot be loaded
@@ -216,7 +204,7 @@ class TestAnalysisOrchestratorFinallyBlock:
             # the root was never loaded - there is nothing to clean up
             mock_post_analysis.assert_not_called()
 
-    def test_post_analysis_logic_skipped_when_storage_dir_missing(self, orchestrator, execution_context):
+    def test_post_analysis_logic_skipped_when_storage_dir_missing(self, orchestrator, execution_context, caplog):
         """regression: a re-picked-up work item whose storage dir is gone must not run cleanup
 
         this reproduces the production scenario where an orphaned workload row is
@@ -228,11 +216,17 @@ class TestAnalysisOrchestratorFinallyBlock:
         shutil.rmtree(execution_context.root.storage_dir)
         assert not os.path.isdir(execution_context.root.storage_dir)
 
-        with patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis:
+        with patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis, \
+             caplog.at_level("WARNING"):
             result = orchestrator.orchestrate_analysis(execution_context)
 
             assert result is False
             mock_post_analysis.assert_not_called()
+
+        # an expected leftover, not an error: without the check the load fails, and that is
+        # logged at ERROR with a traceback (an error report)
+        assert any("missing - already processed?" in r.getMessage() for r in caplog.records)
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
     def test_post_analysis_logic_called_when_check_disposition_returns_true(self, orchestrator, monkeypatch):
         """test that _handle_post_analysis_logic is called when _check_disposition returns True (skipping analysis)"""
@@ -265,17 +259,6 @@ class TestAnalysisOrchestratorFinallyBlock:
             error_call_args = str(mock_logging.exception.call_args)
             assert "post-analysis logic" in error_call_args
 
-    def test_orchestrate_analysis_exception_before_finally_block(self, orchestrator, execution_context):
-        """test that _handle_post_analysis_logic is called even when there's an exception in the try block"""
-        with patch.object(orchestrator, '_check_disposition', side_effect=ValueError("unexpected error")), \
-             patch.object(orchestrator, '_handle_post_analysis_logic') as mock_post_analysis, \
-             patch('saq.engine.analysis_orchestrator.logging'):
-
-            result = orchestrator.orchestrate_analysis(execution_context)
-
-            assert result is False
-            mock_post_analysis.assert_called_once_with(execution_context)
-
     def test_multiple_exceptions_in_try_and_finally(self, orchestrator, execution_context):
         """test behavior when exceptions occur in both try and finally blocks"""
         with patch.object(orchestrator, '_execute_analysis', side_effect=RuntimeError("execute failed")), \
@@ -291,39 +274,13 @@ class TestAnalysisOrchestratorFinallyBlock:
 
 @pytest.mark.integration
 class TestSyncAlertToDatabaseBuildIndex:
-    """_sync_alert_to_database must rebuild the observable index (build_index=True) whenever
-    analysis was aborted, even while root.delayed is still True.
-
-    Regression: an alert that timed out with outstanding delayed analysis had its delayed
-    requests cleared and abandoned, but root.delayed (computed from the in-memory tree) stayed
-    True, so alert.sync(build_index=False) skipped the rebuild and the alert's observables never
-    reached observable_mapping -- making it unfindable by observable filter. Since the delayed
-    analysis was abandoned, no later pass ever rebuilt the index."""
+    """When _sync_alert_to_database syncs an alert at all. Whether it rebuilds the observable
+    index is checked against the index itself, in TestSyncAlertToDatabaseRebuildIndexIntegration
+    (delayed, then aborted) and test_live_tree_is_attached_when_the_storage_dir_matches (neither)."""
 
     @pytest.fixture
     def orchestrator(self):
         return create_test_orchestrator()
-
-    @pytest.mark.parametrize("delayed,analysis_aborted,expected_build_index", [
-        # normal delayed pass: skip the rebuild, a later non-delayed pass will do it
-        (True, False, False),
-        # not delayed: always rebuild (existing behavior)
-        (False, False, True),
-        # THE FIX: aborted while delayed -> force the rebuild (no later pass will run)
-        (True, True, True),
-        # aborted and not delayed -> rebuild either way
-        (False, True, True),
-    ])
-    def test_build_index_decision(self, orchestrator, delayed, analysis_aborted, expected_build_index):
-        context = EngineExecutionContext(work_item=_alert_root(delayed=delayed))
-        assert context.root.delayed is delayed
-        context.analysis_aborted = analysis_aborted
-
-        with patch.object(Alert, "sync", autospec=True, side_effect=Alert.sync) as sync:
-            orchestrator._sync_alert_to_database(context)
-
-        sync.assert_called_once()
-        assert sync.call_args.kwargs == {"build_index": expected_build_index}
 
     @pytest.mark.parametrize("analysis_aborted,expected_sync", [
         # nothing ran because the alert was already dispositioned -- nothing to write
@@ -410,9 +367,15 @@ class TestSyncAlertToDatabaseAvoidsRereadingTheTree:
 
 @pytest.mark.integration
 class TestSyncAlertToDatabaseRebuildIndexIntegration:
-    """End-to-end variant of TestSyncAlertToDatabaseBuildIndex against a real alert + DB:
-    an observable discovered during a delayed, then aborted, analysis must become searchable
-    (present in observable_mapping) only when the abort forces the index rebuild."""
+    """_sync_alert_to_database must rebuild the observable index whenever analysis was aborted,
+    even while root.delayed is still True: an observable discovered during a delayed, then
+    aborted, analysis must become searchable (present in observable_mapping).
+
+    Regression: an alert that timed out with outstanding delayed analysis had its delayed
+    requests cleared and abandoned, but root.delayed (computed from the in-memory tree) stayed
+    True, so alert.sync(build_index=False) skipped the rebuild and the alert's observables never
+    reached observable_mapping. Since the delayed analysis was abandoned, no later pass ever
+    rebuilt the index."""
 
     @pytest.fixture
     def orchestrator(self):
@@ -460,17 +423,6 @@ class TestCheckDispositionAnalystOverride:
 
     def _context(self, analysis_mode=ANALYSIS_MODE_CORRELATION):
         return EngineExecutionContext(work_item=create_root_analysis(analysis_mode=analysis_mode))
-
-    @pytest.mark.unit
-    def test_analyst_request_overrides_stop_disposition(self, orchestrator, stop_on_false_positive):
-        """a disposition that would otherwise stop analysis is bypassed for one pass"""
-        context = self._context()
-        request_analyst_analysis(context.root)
-
-        assert orchestrator._check_disposition(context) is False
-
-        # consume-once: the flag is cleared so the next pass behaves normally
-        assert STATE_ANALYST_REQUESTED_ANALYSIS not in context.root.state
 
     @pytest.mark.integration
     def test_flag_is_consumed_only_once(self, orchestrator, stop_on_false_positive):

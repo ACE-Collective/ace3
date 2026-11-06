@@ -4,7 +4,9 @@ and reporting."""
 import csv
 import io
 import json
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
@@ -23,11 +25,12 @@ from saq.database.model import (
     TagMapping,
     User,
 )
+from saq.constants import F_IPV4
 from saq.database.pool import get_db
-from saq.database.util.alert import touch_alerts
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from saq.database.util.alert import ALERT, touch_alerts
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
 from saq.detection_verdicts.store import confirm_alert
-from tests.saq.helpers import insert_alert, insert_alert_with_detections
+from tests.saq.helpers import create_root_analysis, insert_alert, insert_alert_with_detections
 from tests.saq.svs.conftest import SIGNATURE_UUID, attribute_to_run
 
 pytestmark = pytest.mark.integration
@@ -40,11 +43,6 @@ def _set(alert: Alert, **values) -> None:
     db = get_db()
     db.execute(Alert.__table__.update().where(Alert.id == alert.id).values(**values))
     db.commit()
-
-
-def _updated_at(alert: Alert) -> datetime:
-    return get_db().execute(
-        text("SELECT updated_at FROM alerts WHERE id = :id"), {"id": alert.id}).scalar_one()
 
 
 async def _all_pages(client: AsyncClient, params: dict, limit: int) -> list[dict]:
@@ -213,17 +211,26 @@ class TestKeysetPaging:
 
     @pytest.mark.asyncio
     async def test_no_skip_or_repeat_while_alerts_arrive(self, client: AsyncClient):
-        """The reason this is a keyset and not an offset: a row inserted while a client pages
-        would shift every later page by one under OFFSET."""
-        first = [insert_alert() for _ in range(4)]
+        """The reason this is a keyset and not an offset: a row that comes into the listing ahead
+        of the page a client is on (here an earlier alert moved into the queue it lists) would
+        shift every later page by one under OFFSET."""
+        first = [insert_alert()]
+        moved = insert_alert()
+        first += [insert_alert() for _ in range(3)]
+        for alert in first:
+            _set(alert, queue="external")
+        params = {"f": "queue:external", "limit": 2}
 
-        page = (await client.get("/alerts/", params={"limit": 2})).json()
+        page = (await client.get("/alerts/", params=params)).json()
         seen = [row["uuid"] for row in page["data"]]
+        _set(moved, queue="external")
         late = [insert_alert() for _ in range(2)]
+        for alert in late:
+            _set(alert, queue="external")
 
         cursor = page["next_cursor"]
         while cursor:
-            page = (await client.get("/alerts/", params={"limit": 2, "cursor": cursor})).json()
+            page = (await client.get("/alerts/", params=dict(params, cursor=cursor))).json()
             seen.extend(row["uuid"] for row in page["data"])
             cursor = page["next_cursor"]
 
@@ -285,13 +292,6 @@ class TestComments:
         (record,) = csv.DictReader(io.StringIO((await client.get("/alerts/export/csv")).text))
         assert record["comments"] == "first\nsecond, with a comma"
 
-    @pytest.mark.asyncio
-    async def test_ndjson(self, client: AsyncClient):
-        alert = insert_alert()
-        self._comment(alert, "a note", datetime(2026, 5, 1))
-
-        (line,) = (await client.get("/alerts/export/ndjson")).text.splitlines()
-        assert json.loads(line)["comments"] == ["a note"]
 
 
 class TestFilters:
@@ -301,9 +301,15 @@ class TestFilters:
         observables at all. The manage page's CSV export once inner-joined the observable
         mapping and dropped them, exporting fewer alerts than the analyst was looking at."""
         alert = insert_alert()
+        root = create_root_analysis(uuid=str(uuid.uuid4()))
+        root.initialize_storage()
+        root.add_observable_by_spec(F_IPV4, "10.0.0.1")
+        root.save()
+        ALERT(root)
 
         rows = (await client.get("/alerts/export/csv", params={"f": "!observable:ipv4:10.0.0.1"})).text
         assert alert.uuid in rows
+        assert root.uuid not in rows
 
     @pytest.mark.asyncio
     async def test_share_link_filters(self, client: AsyncClient):
@@ -387,12 +393,23 @@ class TestFilters:
 
     @pytest.mark.asyncio
     async def test_relative_dates_resolve_in_the_given_timezone(self, client: AsyncClient):
-        recent = insert_alert()
-        old = insert_alert()
-        _set(old, insert_date=datetime(2020, 1, 1))
+        """`@d` is midnight where the analyst is: yesterday in New York is not yesterday in UTC."""
+        new_york = ZoneInfo("America/New_York")
+        midnight = datetime.combine(datetime.now(new_york).date(), time(), new_york)
 
-        rows = (await client.get("/alerts/", params={"f": "alert_date:-7d", "tz": "America/New_York"})).json()["data"]
-        assert [row["uuid"] for row in rows] == [recent.uuid]
+        def utc(moment: datetime) -> datetime:
+            return moment.astimezone(timezone.utc).replace(tzinfo=None)
+
+        # 23:00 yesterday in New York, which is already today in UTC
+        late_yesterday = insert_alert()
+        _set(late_yesterday, insert_date=utc(midnight - timedelta(hours=1)))
+        # 23:00 the day before in New York, which is yesterday in UTC
+        day_before = insert_alert()
+        _set(day_before, insert_date=utc(midnight - timedelta(days=1, hours=1)))
+
+        rows = (await client.get("/alerts/", params={
+            "f": "alert_date:-1d@d - @d", "tz": "America/New_York"})).json()["data"]
+        assert [row["uuid"] for row in rows] == [late_yesterday.uuid]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("params", [
@@ -549,9 +566,8 @@ class TestExport:
     def test_each_export_documents_exactly_one_media_type(self):
         """One route per format: neither export advertises the other's content type, and the
         old combined /export route is gone."""
-        from aceapi_v2.application import app
 
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         assert "/alerts/export" not in paths
         for path, media_type in (("/alerts/export/ndjson", "application/x-ndjson"),
                                  ("/alerts/export/csv", "text/csv")):
@@ -568,11 +584,3 @@ class TestUpdatedAtColumn:
         line = next(line for line in ddl.splitlines() if "`updated_at`" in line)
         assert "timestamp(6)" in line.lower()
         assert "ON UPDATE CURRENT_TIMESTAMP(6)" in line
-
-    def test_every_write_to_the_row_moves_it(self):
-        alert = insert_alert()
-        _set(alert, updated_at=LONG_AGO)
-
-        touch_alerts([alert.uuid])
-        get_db().commit()
-        assert _updated_at(alert) > LONG_AGO

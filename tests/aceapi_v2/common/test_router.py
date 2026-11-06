@@ -14,6 +14,7 @@ pytestmark = pytest.mark.integration
 class TestPing:
     @pytest.mark.asyncio
     async def test_requires_auth(self, unauth_client: AsyncClient):
+        # the credential is required once, for the whole router, so one route checks it for all
         response = await unauth_client.get("/common/ping")
         assert response.status_code == 401
 
@@ -26,11 +27,6 @@ class TestPing:
 
 class TestSupportedApiVersion:
     @pytest.mark.asyncio
-    async def test_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get("/common/supported_api_version")
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
     async def test_ok(self, client: AsyncClient):
         response = await client.get("/common/supported_api_version")
         assert response.status_code == 200
@@ -38,11 +34,6 @@ class TestSupportedApiVersion:
 
 
 class TestValidCompanies:
-    @pytest.mark.asyncio
-    async def test_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get("/common/valid_companies")
-        assert response.status_code == 401
-
     @pytest.mark.asyncio
     async def test_returns_inserted(
         self, session: AsyncSession, client: AsyncClient
@@ -68,11 +59,6 @@ class TestValidCompanies:
 
 
 class TestValidObservables:
-    @pytest.mark.asyncio
-    async def test_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get("/common/valid_observables")
-        assert response.status_code == 401
-
     @pytest.mark.asyncio
     async def test_excludes_deprecated_and_has_descriptions(
         self, client: AsyncClient
@@ -104,11 +90,6 @@ class TestValidObservables:
 
 
 class TestValidDirectives:
-    @pytest.mark.asyncio
-    async def test_requires_auth(self, unauth_client: AsyncClient):
-        response = await unauth_client.get("/common/valid_directives")
-        assert response.status_code == 401
-
     @pytest.mark.asyncio
     async def test_ok(self, client: AsyncClient):
         response = await client.get("/common/valid_directives")

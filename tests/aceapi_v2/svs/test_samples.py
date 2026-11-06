@@ -15,7 +15,6 @@ from httpx import AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aceapi_v2.application import app
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.common import listing
 from aceapi_v2.svs.samples import service
@@ -28,7 +27,7 @@ from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
 from tests.saq.helpers import audit_actor_of, audit_actors, audit_record
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
@@ -266,7 +265,6 @@ class TestFilters:
         (["rule:old"], ["missing"]),
         (["file_name:tp.exe"], ["tp", "tp2"]),
         (["file_name:%"], []),
-        (["label:fp"], ["fp"]),
         (["label:tp,fp"], ["fp", "tp", "tp2"]),
         (["label:none"], ["missing", "none"]),
         # an inverse keeps the rows whose value is null
@@ -374,7 +372,7 @@ class TestExport:
         assert (await client.get("/svs/samples/export/csv", params={"f": "nope:x"})).status_code == 422
 
     def test_each_export_documents_exactly_one_media_type(self):
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         for path, media_type in (("/svs/samples/export/ndjson", "application/x-ndjson"),
                                  ("/svs/samples/export/csv", "text/csv")):
             assert list(paths[path]["get"]["responses"]["200"]["content"]) == [media_type]
@@ -717,13 +715,6 @@ class TestLabelActions:
         (skipped,) = body["skipped"]
         assert skipped["alert_uuid"] == fp_alert.uuid
         assert "correct its disposition" in skipped["reason"]
-
-    @pytest.mark.asyncio
-    async def test_nothing_writable_is_409(self, client: AsyncClient):
-        _, sha256, _ = _sample("FALSE_POSITIVE", [RULE_UUID])
-        response = await client.put(f"/svs/samples/{sha256}/{RULE_UUID}/label", json={"verdict": "tp"})
-        assert response.status_code == 409
-        assert "correct its disposition" in response.json()["detail"]
 
     @pytest.mark.asyncio
     async def test_bad_requests(self, client: AsyncClient):

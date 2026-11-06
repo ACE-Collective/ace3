@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+from unittest.mock import Mock
+
 import pytest
 from saq.constants import (
     NODE_EXPECTED_STATE_OFFLINE,
@@ -12,7 +15,6 @@ from saq.database.pool import get_db_connection
 from saq.database.util.node import (
     get_node_status,
     set_node_expected_state,
-    set_node_status,
     update_collector_status,
 )
 from saq.engine.configuration_manager import ConfigurationManager
@@ -20,32 +22,27 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineType
 from saq.engine.node_manager.local_node_manager import LocalNodeManager
 from saq.engine.node_manager.node_manager_factory import create_node_manager
-from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.environment import get_global_runtime_settings
-
-# TODO create tests for each node manager implementation
-
-
-@pytest.mark.unit
-def test_node_manager_initialization():
-    """Test that NodeManager can be initialized properly."""
-    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
-    assert isinstance(node_manager, NodeManagerInterface)
-
 
 @pytest.mark.unit
 def test_should_update_node_status():
-    """Test the should_update_node_status method."""
     node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
 
-    # Initially should return True since next_status_update_time is None
+    # never updated yet
+    assert node_manager.should_update_node_status() is True
+
+    node_manager._node_manager.next_status_update_time = datetime.now() + timedelta(hours=1)
+    assert node_manager.should_update_node_status() is False
+
+    node_manager._node_manager.next_status_update_time = datetime.now() - timedelta(seconds=1)
     assert node_manager.should_update_node_status() is True
 
 
 @pytest.mark.unit
-def test_local_node_manager_set_status_is_noop():
+def test_a_local_engine_gets_the_local_node_manager():
     node_manager = create_node_manager(ConfigurationManager(EngineConfiguration(engine_type=EngineType.LOCAL)))
-    # no database access happens here -- this just needs to not blow up
+    assert isinstance(node_manager._node_manager, LocalNodeManager)
+    # a local engine has no node row, so this writes nothing
     node_manager.set_status(NODE_STATUS_RUNNING)
 
 
@@ -78,14 +75,6 @@ def test_distributed_initialize_node_clears_offline_intent():
     node_manager.initialize_node()
 
     assert _get_node_expected_state(get_global_runtime_settings().saq_node_id) == NODE_EXPECTED_STATE_ONLINE
-
-
-@pytest.mark.integration
-def test_distributed_set_status():
-    node_manager = create_node_manager(ConfigurationManager(EngineConfiguration()))
-    node_manager.initialize_node()
-    node_manager.set_status(NODE_STATUS_RUNNING)
-    assert get_node_status(get_global_runtime_settings().saq_node_id) == NODE_STATUS_RUNNING
 
 
 @pytest.mark.integration
@@ -148,14 +137,14 @@ def test_execute_drain_routines_reverts_draining_on_pending_collector(monkeypatc
 
     # a collector that came back with an unflushed backlog (e.g. crash and restart)
     # reverts a draining node to draining_collectors so the backlog can flush
-    def fail_transfer():
-        raise AssertionError("transfer_delayed_analysis should not be called after a revert")
-
-    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", fail_transfer)
+    # a Mock rather than a stand-in that raises: execute_drain_routines catches and logs anything raised
+    transfer = Mock(return_value=(0, 0, 0))
+    monkeypatch.setattr(distributed_node_manager, "transfer_delayed_analysis", transfer)
     node_manager.set_status(NODE_STATUS_DRAINING)
     update_collector_status(node_id, "test", NODE_STATUS_DRAINING, 3)
     node_manager._node_manager.execute_drain_routines()
     assert get_node_status(node_id) == NODE_STATUS_DRAINING_COLLECTORS
+    transfer.assert_not_called()
 
 
 @pytest.mark.integration

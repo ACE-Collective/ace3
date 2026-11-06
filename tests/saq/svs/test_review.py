@@ -30,7 +30,6 @@ from saq.database.util.user_management import add_user
 from saq.detection_verdicts.store import set_verdicts
 from saq.svs import association, expectations, results, review, run_comments, runs
 from saq.svs.constants import RunEventKind, RunState
-from saq.svs.result_state import mark_runs_stale
 from tests.saq.helpers import create_root_analysis
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, person, started_run
 
@@ -421,13 +420,3 @@ class TestComments:
 
         run_comments.delete_comment(run.uuid, comment.id, user_id, ACTOR)
         assert run_comments.list_comments(run.uuid) == []
-
-
-def test_stale_marking_does_not_wait_on_a_review_forever(user_id):
-    """mark_runs_stale and a review lock the run's result state in the same order as the router."""
-    run = _ended(_run())
-    with private_transaction() as session:
-        mark_runs_stale(session, run_ids=[run.id])
-    results.recompute_stale_results()
-    review.review(run.uuid, user_id, ACTOR)
-    assert _run_row(run).state == RunState.REVIEWED

@@ -16,7 +16,6 @@ import pytest
 
 from saq.cli.commands import gui_api
 from saq.constants import ENV_ACE_LOG_CONFIG_PATH
-from saq.environment import get_base_dir
 
 
 def _gui_args(**kwargs) -> Namespace:
@@ -48,6 +47,8 @@ def gui_mocks(monkeypatch):
 @pytest.mark.unit
 def test_find_free_port():
     port = gui_api.find_free_port()
+    # binding port 0 would pass for any socket, so the port itself has to be a real one
+    assert port > 0
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", port))
 
@@ -58,17 +59,19 @@ def test_start_api_v2_server(monkeypatch, logging_config_path):
     monkeypatch.delenv(ENV_ACE_LOG_CONFIG_PATH, raising=False)
     popen = MagicMock()
     monkeypatch.setattr(gui_api.subprocess, "Popen", popen)
+    # the suite's working directory is SAQ_HOME, which would hide a server started from the wrong one
+    monkeypatch.setattr(gui_api, "get_base_dir", lambda: "/the/checkout")
 
     gui_api.start_api_v2_server(24555, logging_config_path)
 
-    command = popen.call_args.args[0]
     kwargs = popen.call_args.kwargs
-    assert command[:4] == [sys.executable, "-m", "uvicorn", "api_uvicorn:application"]
-    assert command[command.index("--host") + 1] == "127.0.0.1"
-    assert command[command.index("--port") + 1] == "24555"
-    assert "--reload" in command
-    assert kwargs["cwd"] == get_base_dir()
+    assert popen.call_args.args[0] == [
+        sys.executable, "-m", "uvicorn", "api_uvicorn:application", "--host", "127.0.0.1", "--port", "24555",
+        "--reload", "--reload-dir", "aceapi_v2", "--reload-dir", "saq"]
+    assert kwargs["cwd"] == "/the/checkout"
     assert kwargs["preexec_fn"] is gui_api._terminate_with_parent
+    # no logging config: the variable is not set at all (Popen refuses a None in the environment)
+    assert (ENV_ACE_LOG_CONFIG_PATH in kwargs["env"]) == (logging_config_path is not None)
     assert kwargs["env"].get(ENV_ACE_LOG_CONFIG_PATH) == logging_config_path
 
 
@@ -116,11 +119,16 @@ def test_stop_api_v2_server():
         process.kill()
         process.wait(timeout=10)
 
-    # an already exited server is left alone
-    exited = subprocess.Popen(["true"])
-    exited.wait(timeout=10)
-    gui_api.stop_api_v2_server(exited)
-    assert exited.returncode == 0
+
+@pytest.mark.unit
+def test_stop_api_v2_server_leaves_an_exited_server_alone():
+    # a real Popen could not show this: terminating an exited process does nothing
+    process = MagicMock()
+    process.poll.return_value = 0
+
+    gui_api.stop_api_v2_server(process)
+
+    process.terminate.assert_not_called()
 
 
 @pytest.mark.unit

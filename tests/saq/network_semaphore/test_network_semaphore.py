@@ -3,7 +3,6 @@
 
 import logging
 import threading
-import time
 from unittest.mock import Mock
 
 import pytest
@@ -21,24 +20,22 @@ from saq.network_semaphore.fallback import (
     add_undefined_fallback_semaphore,
 )
 from saq.network_semaphore.service import NetworkSemaphoreService
-from tests.saq.helpers import log_count, wait_for_log_count
+from tests.saq.helpers import log_count, wait_for_condition, wait_for_log_count
 
-
-def wait_for_condition(predicate, timeout_seconds: float = 10.0, poll_interval_seconds: float = 0.1) -> None:
-    """Poll until predicate() returns True or timeout elapses.
-
-    Raises AssertionError on timeout to fail the test.
-    """
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        if predicate():
-            return
-        time.sleep(poll_interval_seconds)
-    assert False, "Timed out waiting for condition"
 
 @pytest.fixture(autouse=True)
 def clear_fallback_semaphores():
     initialize_fallback_semaphores(force=True)
+
+
+@pytest.fixture
+def server():
+    """A network semaphore server, stopped after the test: a failed assertion would otherwise leave
+    its thread running, and the test process waiting for it at exit."""
+    server = NetworkSemaphoreServer()
+    yield server
+    server.stop()
+    server.wait()
 
 #
 # test network semaphores
@@ -65,8 +62,7 @@ def test_service_start_stop():
     service.wait()
 
 @pytest.mark.system
-def test_acquire_release_undefined_network_semaphore():
-    server = NetworkSemaphoreServer()
+def test_acquire_release_undefined_network_semaphore(server):
     server.start()
     server.wait_for_start(timeout=5)
 
@@ -79,15 +75,12 @@ def test_acquire_release_undefined_network_semaphore():
     assert not client.semaphore_acquired
     wait_for_condition(lambda: len(server.undefined_semaphores) == 0)
 
-    server.stop()
-    server.wait()
 
     assert log_count("acquiring fallback") == 0
 
 
 @pytest.mark.system
-def test_acquire_release_defined_network_semaphore():
-    server = NetworkSemaphoreServer()
+def test_acquire_release_defined_network_semaphore(server):
     server.config.semaphore_capacity_limits["test"] = 3
     server.start()
     server.wait_for_start(timeout=5)
@@ -102,15 +95,12 @@ def test_acquire_release_defined_network_semaphore():
 
     assert len(server.undefined_semaphores) == 0
 
-    server.stop()
-    server.wait()
 
     assert log_count("acquiring fallback") == 0
 
 
 @pytest.mark.system
-def test_acquire_block_network_semaphore():
-    server = NetworkSemaphoreServer()
+def test_acquire_block_network_semaphore(server):
     server.start()
     server.wait_for_start(timeout=5)
 
@@ -126,50 +116,37 @@ def test_acquire_block_network_semaphore():
     assert client_2.acquire("test", 0)
     client_2.release()
 
-    server.stop()
-    server.wait()
+    # the clients reached the server: the fallback refuses a second client the same way
+    assert log_count("acquiring fallback") == 0
+
 
 
 @pytest.mark.system
-def test_acquire_after_wait_network_semaphore():
-    server = NetworkSemaphoreServer()
+def test_acquire_after_wait_network_semaphore(server):
     server.start()
     server.wait_for_start(timeout=5)
 
-    event_1 = threading.Event()
-    event_2 = threading.Event()
+    client_1 = NetworkSemaphoreClient()
+    assert client_1.acquire("test")
 
-    def run_client_1():
-        client_1_local = NetworkSemaphoreClient()
-        assert client_1_local.acquire("test")
-        event_1.set()
-        event_2.wait()
-        client_1_local.release()
-
-    def run_client_2():
-        client_2_local = NetworkSemaphoreClient()
-        assert client_2_local.acquire("test")
-        client_2_local.release()
-
-    thread_1 = threading.Thread(target=run_client_1)
-    thread_1.start()
-    event_1.wait()
-
-    thread_2 = threading.Thread(target=run_client_2)
-    thread_2.start()
+    # an assertion in a thread does not fail the test, so the waiting client's result comes back here
+    client_2 = NetworkSemaphoreClient()
+    result = []
+    thread = threading.Thread(target=lambda: result.append(client_2.acquire("test")), daemon=True)
+    thread.start()
     wait_for_log_count("waiting for semaphore", 1)
-    event_2.set()
 
-    thread_2.join()
-    thread_1.join()
+    client_1.release()
+    thread.join(10)
+    assert result == [True]
+    # it got the network semaphore it waited for, not a fallback
+    assert client_2.fallback_semaphore is None
+    client_2.release()
 
-    server.stop()
-    server.wait()
 
 
 @pytest.mark.system
-def test_multiple_locks_network_semaphore():
-    server = NetworkSemaphoreServer()
+def test_multiple_locks_network_semaphore(server):
     server.config.semaphore_capacity_limits["test"] = 3
     server.start()
     server.wait_for_start(timeout=5)
@@ -191,13 +168,13 @@ def test_multiple_locks_network_semaphore():
     client_2.release()
     client_1.release()
 
-    server.stop()
-    server.wait()
+    # the clients reached the server: the fallback has the same capacity
+    assert log_count("acquiring fallback") == 0
+
 
 
 @pytest.mark.system
-def test_cancel_request_callback():
-    server = NetworkSemaphoreServer()
+def test_cancel_request_callback(server):
     server.start()
     server.wait_for_start(timeout=5)
 
@@ -208,9 +185,9 @@ def test_cancel_request_callback():
     assert not client_2.acquire("test")
 
     client_1.release()
+    # the clients reached the server: a cancelled fallback request returns False too
+    assert log_count("acquiring fallback") == 0
 
-    server.stop()
-    server.wait()
 
 
 #
@@ -237,10 +214,11 @@ def test_acquire_release_undefined_fallback_semaphore():
 
     client = NetworkSemaphoreClient()
     assert client.acquire("test")
+    assert client.fallback_semaphore is not None
     assert len(get_undefined_fallback_semaphores()) == 1
     client.release()
     assert not client.semaphore_acquired
-    wait_for_condition(lambda: len(get_undefined_fallback_semaphores()) == 0)
+    assert len(get_undefined_fallback_semaphores()) == 0
 
 
 @pytest.mark.integration
@@ -260,71 +238,25 @@ def test_acquire_release_defined_fallback_semaphore():
 
 
 @pytest.mark.integration
-def test_use_fallback_semaphores():
-    # make sure what we can use fallback semaphores if network semaphores are unavailable
-    client = NetworkSemaphoreClient()
-    assert client.fallback_semaphore is None
-
-    assert len(get_undefined_fallback_semaphores()) == 0
-    client.acquire("test")
-    assert client.fallback_semaphore is not None
-    assert client.semaphore_acquired
-    assert len(get_undefined_fallback_semaphores()) == 1
-    client.release()
-    assert len(get_undefined_fallback_semaphores()) == 0
-    assert not client.semaphore_acquired
-
-
-@pytest.mark.integration
-def test_fallback_semaphore_timeout():
-    client_1 = NetworkSemaphoreClient()
-    assert client_1.acquire("test")
-    client_2 = NetworkSemaphoreClient()
-    assert not client_2.acquire("test", timeout=0)
-    client_1.release()
-
-
-@pytest.mark.integration
 def test_acquire_after_wait_fallback_semaphore():
-    event_1 = threading.Event()
-    event_2 = threading.Event()
-
-    client_1 = NetworkSemaphoreClient()
-    client_2 = NetworkSemaphoreClient()
-
-    def run_client_1():
-        client_1_local = NetworkSemaphoreClient()
-        assert client_1_local.acquire("test")
-        event_1.set()
-        event_2.wait()
-        client_1_local.release()
-
-    def run_client_2():
-        assert not client_2.acquire("test", 0)
-        event_2.set()
-        assert client_2.acquire("test")
-        client_2.release()
-
-    thread_1 = threading.Thread(target=run_client_1)
-    thread_1.start()
-    event_1.wait()
-
-    thread_2 = threading.Thread(target=run_client_2)
-    thread_2.start()
-
-    thread_2.join()
-    thread_1.join()
-
-
-@pytest.mark.integration
-def test_cancel_request_callback_fallback_semaphore():
+    # the semaphore service is not running, so both clients use the fallback
     client_1 = NetworkSemaphoreClient()
     assert client_1.acquire("test")
 
-    client_2 = NetworkSemaphoreClient(cancel_request_callback=lambda: True)
-    assert not client_2.acquire("test")
+    client_2 = NetworkSemaphoreClient()
+    assert not client_2.acquire("test", 0)
+
+    # an assertion in a thread does not fail the test, so the waiting client's result comes back here
+    result = []
+    thread = threading.Thread(target=lambda: result.append(client_2.acquire("test")), daemon=True)
+    thread.start()
+    thread.join(0.5)
+    assert thread.is_alive(), "the second client did not wait for the semaphore"
 
     client_1.release()
+    thread.join(10)
+    assert result == [True]
+    client_2.release()
 
 
 @pytest.mark.unit

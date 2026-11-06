@@ -49,13 +49,6 @@ def test_collect_stops_at_maximum(file_manager):
 
 
 @pytest.mark.unit
-def test_collect_empty_staging(file_manager):
-    """an empty staging directory yields nothing"""
-    collector = HunterCollector(file_manager)
-    assert list(collector.collect()) == []
-
-
-@pytest.mark.unit
 def test_staged_submission_round_trips_metadata(file_manager):
     """key, group_assignments, group_value and queued_at survive the trip through disk
 

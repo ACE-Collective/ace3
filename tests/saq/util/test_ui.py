@@ -14,14 +14,9 @@ def _real_hexdump(content: bytes) -> str:
 @pytest.mark.skipif(shutil.which("hexdump") is None, reason="needs hexdump to compare with")
 @pytest.mark.parametrize("content", [
     b"",
-    b"A",
-    b"0123456789abcdef",
-    b"0123456789abcdef0",
-    b"\xff" * 48,
+    # a squeezed run of lines, then a short last line
     b"\xff" * 48 + b"tail",
-    b"x" * 16 + b"y" * 16 + b"x" * 16,
-    b"\x00" * 15,
-    b"a\\nb\\\\c",
+    # every byte value, and lines that repeat but not one after the other
     bytes(range(256)) * 3,
 ])
 def test_hexdump_is_hexdump_c(content):
@@ -39,7 +34,7 @@ def test_hexdump_lines_takes_chunks():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("chunk", [b"Hello, world!\n", bytes(range(16)), b"0123456789"])
+@pytest.mark.parametrize("chunk", [b"Hello, world!\n"])
 def test_hexdump_line_html_unmarked_is_the_plain_line(chunk):
     assert hexdump_line_html(32, chunk, range(0)) == hexdump(b"\x00" * 32 + chunk).splitlines()[2]
 

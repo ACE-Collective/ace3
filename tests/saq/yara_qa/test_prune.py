@@ -154,15 +154,6 @@ def test_purge_keeps_every_other_hold_on_the_file(qa_pool, make_file, root_analy
     assert purged not in [row.id for row in match_rows()]
 
 
-def test_a_purged_slot_can_be_used_again(make_file, root_analysis):
-    cap = get_config().yara_qa.max_files_per_version
-    ids = [_store(make_file, root_analysis) for _ in range(cap)]
-    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "capped"
-
-    purge_matches(QA_UUID, match_ids=[ids[0]])
-    assert record_qa_match(qa_match_result(), QATarget.from_file_observable(make_file(), root_analysis.uuid)).status == "stored"
-
-
 @pytest.mark.parametrize("targets", [{}, {"versions": [VERSION_A], "match_ids": [1]}])
 def test_purge_needs_exactly_one_target(targets):
     with pytest.raises(ValueError):

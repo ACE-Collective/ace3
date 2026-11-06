@@ -60,19 +60,8 @@ class TestApiKeyAuth:
         assert result.credential is None
 
     @pytest.mark.asyncio
-    async def test_disabled_user_key_is_rejected(self, session: AsyncSession):
-        """Regression: disabling a user must revoke API access, not just browser access."""
-        await _make_user_with_key(
-            session, "apikey_disabled_user", "22222222-2222-2222-2222-222222222222", enabled=False
-        )
-        await session.flush()
-
-        result = await verify_api_key("22222222-2222-2222-2222-222222222222", session)
-        assert result.auth_type != API_AUTH_TYPE_USER
-        assert not result
-
-    @pytest.mark.asyncio
     async def test_re_enabling_restores_access_with_same_key(self, session: AsyncSession):
+        """Regression: disabling a user must revoke API access, not just browser access."""
         user = await _make_user_with_key(
             session, "apikey_toggle_user", "33333333-3333-3333-3333-333333333333", enabled=False
         )

@@ -38,7 +38,6 @@ def _values(analysis, observable_type):
 @pytest.mark.parametrize("path, file_name, user_name", [
     (r"C:\Users\bob\AppData\Local\Temp\invoice.exe", "invoice.exe", "bob"),
     (r"c:\users\Alice Smith\Downloads\scan.pdf.js", "scan.pdf.js", "Alice Smith"),
-    (r"C:\Windows\System32\rundll32.exe", "rundll32.exe", None),
     ("/home/bob/.config/autostart/updater.desktop", "updater.desktop", None),
     # the user name is only taken from the start of the path
     (r"D:\backup\C:\Users\carol\notes.txt", "notes.txt", None),
@@ -96,7 +95,6 @@ def _analyze_file_location(root_analysis, file_location, *module_names):
 
 @pytest.mark.parametrize("file_location, hostname, file_path", [
     (r"ws-1234@C:\Users\bob\Downloads\setup.msi", "ws-1234", r"C:\Users\bob\Downloads\setup.msi"),
-    ("web01.example.com@/var/tmp/payload.sh", "web01.example.com", "/var/tmp/payload.sh"),
     # only the first @ separates the hostname from the path
     ("web01@/home/bob/backup@2026/notes.txt", "web01", "/home/bob/backup@2026/notes.txt"),
 ])

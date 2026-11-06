@@ -1,4 +1,6 @@
 import glob
+import json
+from importlib.metadata import PackageNotFoundError, version as package_version
 import logging
 import os
 import re
@@ -7,15 +9,19 @@ from typing import Optional, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM, AnalysisExecutionResult
-from saq.environment import get_global_runtime_settings, get_temp_dir
+from saq.environment import get_base_dir, get_global_runtime_settings, get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.hash import FileHashAnalyzer
 from saq.modules.file_analysis.is_file_type import is_image, is_pdf_file
 from saq.modules.tool_version import file_content_version, probe_binary_version
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import sandbox_python
 
 from PIL import Image, ImageOps
+
+# what bin/qr_decode_opencv.py prints when OpenCV cannot load on this node
+OPENCV_STARTUP_ERRORS = ["qr_decode_opencv: cannot load OpenCV"]
 
 
 class QRCodeAnalysis(Analysis):
@@ -151,14 +157,20 @@ class QRCodeAnalyzer(AnalysisModule):
         """Mix the external tools' versions and the URL filter file's
         identity into the cache key.
 
-        zbarimg / gs / pdfinfo each affect what this module extracts, so a
-        package upgrade must invalidate cached results.
+        zbarimg / gs / pdfinfo / OpenCV each affect what this module extracts,
+        so a package upgrade must invalidate cached results.
         """
         result = {}
         for tool, args in (("zbarimg", None), ("gs", None), ("pdfinfo", ["-v"])):
             version = probe_binary_version(tool, args=args)
             if version is not None:
                 result[tool] = version
+
+        try:
+            result["opencv"] = package_version("opencv-python")
+        except PackageNotFoundError:
+            # no version to key on; the scan itself fails and logs that it could not run
+            pass
 
         filter_path = self.qrcode_filter_path
         if filter_path is not None:
@@ -222,6 +234,30 @@ class QRCodeAnalyzer(AnalysisModule):
             return None
 
         return result.stdout
+
+    def _scan_image_with_opencv(self, image_path: str) -> Optional[tuple[str, str]]:
+        """Scans an image zbarimg found no URL in, and its inverse: an icon over the center of a code
+        can hide it from zbarimg. Returns the codes read in each, one per line, with the semantics of
+        _scan_image, so a failure here is never recorded (or cached) as a negative result either."""
+        script = os.path.join(get_base_dir(), "bin", "qr_decode_opencv.py")
+        # OpenBLAS, which numpy loads, starts a thread per core and each reserves address space under the sandbox's memory limit.
+        # The run decodes twice, the image and its inverse, so it gets the time of two scans
+        result = self.run_sandboxed_tool([sandbox_python(), "-I", script, image_path], image_path,
+                                         timeout=2 * self.timeout, read_files=[script],
+                                         env={"OPENBLAS_NUM_THREADS": "1"}, startup_errors=OPENCV_STARTUP_ERRORS)
+        if result is None:
+            return None
+
+        if result.returncode != 0:
+            logging.warning(f"opencv qr decoding failed on {image_path} with exit code {result.returncode}: "
+                            f"{result.stderr[-500:]}", extra={"path": image_path})
+            return None
+
+        codes = json.loads(result.stdout)
+        if codes["normal"] or codes["inverted"]:
+            logging.info(f"opencv read a QR code zbarimg could not in {image_path}", extra={"path": image_path})
+
+        return "\n".join(codes["normal"]), "\n".join(codes["inverted"])
 
     def _scan_inverted_image(self, image_path: str) -> Optional[str]:
         """Invert the image and scan it for QR codes. Uses a temp file for
@@ -351,6 +387,14 @@ class QRCodeAnalyzer(AnalysisModule):
                 scan_failed = True
             page_urls = self._extract_valid_urls(stdout, qrcode_filter) if stdout else []
 
+            opencv = None
+            if stdout is not None and not page_urls:
+                opencv = self._scan_image_with_opencv(target_file_path)
+                if opencv is None:
+                    scan_failed = True
+                else:
+                    page_urls = self._extract_valid_urls(opencv[0], qrcode_filter)
+
             if page_urls:
                 normal_urls.extend(page_urls)
             else:
@@ -359,8 +403,9 @@ class QRCodeAnalyzer(AnalysisModule):
                 if inverted_stdout is None:
                     scan_failed = True
                 inverted_page_urls = self._extract_valid_urls(inverted_stdout, qrcode_filter) if inverted_stdout else []
-                if inverted_page_urls:
-                    inverted_urls.extend(inverted_page_urls)
+                if not inverted_page_urls and opencv:
+                    inverted_page_urls = self._extract_valid_urls(opencv[1], qrcode_filter)
+                inverted_urls.extend(inverted_page_urls)
 
         return normal_urls, inverted_urls, scan_failed
 

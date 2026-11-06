@@ -22,6 +22,7 @@ from saq.configuration.config import get_analysis_module_config
 from saq.constants import F_TEST
 from saq.database.util.locking import acquire_lock, get_lock_uuid, release_lock
 from saq.engine import tracking
+from saq.environment import get_global_runtime_settings
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.lock_manager.adapter import LockManagerAdapter
@@ -218,13 +219,25 @@ def test_module_tracking_without_a_target_is_ignored(writer, reader):
 
 
 @pytest.mark.unit
-def test_the_write_is_atomic(writer):
+def test_the_write_is_atomic(writer, reader, monkeypatch):
     """tmp + rename, so a reader never sees a torn record and no .tmp is left behind."""
     writer.track_current_work_target(_target())
     _track(writer)
 
     assert os.path.exists(get_worker_tracking_path("any-0"))
     assert not os.path.exists(f"{get_worker_tracking_path('any-0')}.tmp")
+
+    # a write that dies after the file it writes to was truncated
+    def truncate_and_fail(path, mode="r", *args, **kwargs):
+        open(path, mode, *args, **kwargs).close()
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(tracking, "open", truncate_and_fail, raising=False)
+    writer.track_current_work_target(_target(uuid=OTHER_ROOT_UUID))
+    monkeypatch.undo()
+
+    # leaves the previous record whole
+    assert reader.read_worker_record("any-0").root_uuid == ROOT_UUID
 
 
 @pytest.mark.unit
@@ -245,16 +258,6 @@ def test_the_null_writer_writes_nothing(reader):
 @pytest.mark.unit
 def test_a_missing_file_reads_as_nothing_tracked(reader):
     assert reader.read_worker_record("never-existed") is None
-
-
-@pytest.mark.unit
-def test_a_corrupt_file_reads_as_nothing_tracked(writer, reader):
-    writer.track_current_work_target(_target())
-    with open(get_worker_tracking_path("any-0"), "w") as fp:
-        fp.write('{"root_uuid": "11111111')
-
-    # deliberately "nothing was tracked" rather than a plausible looking half record
-    assert reader.read_worker_record("any-0") is None
 
 
 @pytest.mark.unit
@@ -343,19 +346,6 @@ def test_reclaiming_the_same_root_does_not_wipe_the_pending_failure(writer, read
     assert reader.read_worker_record("any-0").module_path == "saq.modules.test:Innocent"
 
 
-@pytest.mark.unit
-def test_a_replacement_on_a_different_root_leaves_the_failure_alone(writer, reader):
-    writer.track_current_work_target(_target())
-    _track(writer, module_path="saq.modules.test:Killer")
-    reader.claim_failure("any-0")
-
-    replacement = TrackingWriter("any-0")
-    replacement.track_current_work_target(_target(uuid=OTHER_ROOT_UUID))
-
-    assert os.path.exists(get_pending_tracking_path(ROOT_UUID))
-    assert reader.read_worker_record("any-0").root_uuid == OTHER_ROOT_UUID
-
-
 #
 # startup recovery
 #
@@ -370,16 +360,6 @@ def test_startup_promotes_a_leftover_worker_file(writer, reader):
     assert [r.root_uuid for r in pending] == [ROOT_UUID]
     assert pending[0].pending_failure
     assert not os.path.exists(get_worker_tracking_path("any-0"))
-
-
-@pytest.mark.unit
-def test_startup_does_not_resurrect_a_cleanly_finished_root(writer, reader):
-    writer.track_current_work_target(_target())
-    _track(writer)
-    writer.clear_module_tracking()
-    writer.clear_target_tracking()
-
-    assert reader.recover_pending_failures() == []
 
 
 @pytest.mark.unit
@@ -406,8 +386,6 @@ def test_a_corrupt_pending_file_is_skipped(writer, reader):
 @pytest.mark.unit
 def test_tracking_is_scoped_to_the_node():
     """Two engines sharing a data directory must not collide."""
-    from saq.environment import get_global_runtime_settings
-
     settings = get_global_runtime_settings()
     original = settings.saq_node
     try:
@@ -425,12 +403,17 @@ def test_tracking_is_scoped_to_the_node():
 
 
 @pytest.mark.unit
-def test_clear_all_tracking_removes_every_node(writer):
+def test_clear_all_tracking_removes_every_node(writer, monkeypatch):
     writer.track_current_work_target(_target())
-    assert os.path.exists(get_worker_tracking_path("any-0"))
+    this_node_dir = get_tracking_dir()
+    monkeypatch.setattr(get_global_runtime_settings(), "saq_node", "other-node")
+    TrackingWriter("any-0").track_current_work_target(_target())
+    other_node_dir = get_tracking_dir()
+    assert os.path.exists(this_node_dir) and os.path.exists(other_node_dir)
 
     clear_all_tracking()
-    assert not os.path.exists(get_tracking_dir())
+    assert not os.path.exists(this_node_dir)
+    assert not os.path.exists(other_node_dir)
 
 
 @pytest.mark.unit

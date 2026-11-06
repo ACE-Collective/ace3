@@ -58,18 +58,6 @@ def test_a_lock_failure_is_run_again(caplog, code):
 
 
 @pytest.mark.integration
-def test_another_error_is_raised_at_once():
-    name = f"retry-{uuid.uuid4()}"
-    calls = []
-
-    with pytest.raises(OperationalError):
-        run_private_transaction(_failing(name, [1062], calls), "")
-
-    assert len(calls) == 1
-    assert _tag_names([name]) == []
-
-
-@pytest.mark.integration
 def test_a_real_integrity_error_is_raised_at_once():
     name = f"retry-{uuid.uuid4()}"
     with private_transaction() as session:

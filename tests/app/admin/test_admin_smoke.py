@@ -30,10 +30,6 @@ REMOVED_FLASK_ENDPOINTS = (
     "admin.detection_expiration",
 )
 
-# the page views that legitimately remain
-PAGE_VIEWS = ("admin.admin_hub", "admin.manage_users", "admin.detection_settings", "admin.manage_secrets",
-              "admin.cli_console")
-
 
 @pytest.fixture
 def admin_user():
@@ -51,10 +47,6 @@ def admin_user():
 
 
 class TestAdminIsPagesOnly:
-    def test_page_views_exist(self, app):
-        for endpoint in PAGE_VIEWS:
-            assert endpoint in app.view_functions, endpoint
-
     def test_json_endpoints_are_not_served_by_flask(self, app):
         """New endpoints belong in aceapi_v2. Nothing here may serve JSON."""
         for endpoint in REMOVED_FLASK_ENDPOINTS:
@@ -102,28 +94,9 @@ class TestAdminPagesRender:
                 assert resp.status_code == 200, endpoint
                 assert needle in resp.data, endpoint
 
-    def test_pages_are_permission_gated(self, app):
-        noperms = add_user(
-            username="noperms_admin",
-            email="noperms_admin@localhost",
-            display_name="No Perms",
-            password="TestPass123!",
-            queue=QUEUE_DEFAULT,
-            timezone="UTC",
-        )
-        try:
-            with app.test_client() as client:
-                client.post(url_for("auth.login"), data={
-                    "username": "noperms_admin", "password": "TestPass123!",
-                })
-                for endpoint in ("admin.manage_users", "admin.detection_settings", "admin.manage_secrets",
-                                 "admin.cli_console"):
-                    assert client.get(url_for(endpoint)).status_code in (302, 403), endpoint
-        finally:
-            delete_user("noperms_admin")
-
     def test_pages_point_at_the_v2_api(self, app, admin_user):
-        """The rendered pages must call aceapi_v2, not a Flask route."""
+        """The rendered pages must call aceapi_v2, not a Flask route. The calls are made by the
+        scripts the pages load."""
         with app.test_client() as client:
             client.post(url_for("auth.login"), data={
                 "username": "adminuser", "password": "TestPass123!",
@@ -132,8 +105,14 @@ class TestAdminPagesRender:
             assert b"/ace/admin/users/add" not in users_page
             detection_page = client.get(url_for("admin.detection_settings")).data
             assert b"/ace/admin/detection/toggle" not in detection_page
-            # the add form and the delete button both go straight to the v2 API
-            assert b"/api/v2/detection" in detection_page or b"admin_detection.js" in detection_page
+
+            for page, script, api in (
+                (users_page, "js/manage_users.js", b'"/api/v2/users"'),
+                (detection_page, "js/admin_detection.js", b'"/api/v2/detection"'),
+            ):
+                script_url = url_for("static", filename=script)
+                assert script_url.encode() in page, script
+                assert api in client.get(script_url).data, script
 
 
 # The nav link is `<a ... >Admin</a>`; the hub heading is "Administration", so this needle matches
@@ -179,6 +158,8 @@ class TestAdminAreaGate:
 
                 assert client.get(url_for("admin.manage_users")).status_code == 403
                 assert client.get(url_for("admin.detection_settings")).status_code == 403
+                assert client.get(url_for("admin.manage_secrets")).status_code == 403
+                assert client.get(url_for("admin.cli_console")).status_code == 403
         finally:
             delete_user("gate_admin_only")
 

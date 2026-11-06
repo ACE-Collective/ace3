@@ -7,6 +7,7 @@ shutting down, so nothing released the locks it held, and the work those locks w
 blocking sat unclaimable until they expired five minutes later.
 """
 
+import threading
 import time
 from unittest.mock import Mock
 
@@ -14,7 +15,7 @@ import pytest
 
 from saq.engine.configuration_manager import ConfigurationManager
 from saq.engine.engine_configuration import EngineConfiguration
-from saq.engine.enums import EngineExecutionMode, EngineType, WorkerManagerState
+from saq.engine.enums import EngineType, WorkerManagerState
 from saq.engine.execution_context import EngineExecutionContext
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
@@ -182,7 +183,7 @@ def test_worker_cancels_in_flight_analysis_on_shutdown():
 
 
 @pytest.mark.unit
-def test_shutdown_watcher_is_harmless_when_idle():
+def test_shutdown_watcher_is_harmless_when_idle(monkeypatch):
     """A worker between work items has no context to cancel; the loop notices the event
     on its own."""
     worker = Worker(
@@ -192,6 +193,15 @@ def test_shutdown_watcher_is_harmless_when_idle():
     )
     worker.current_execution_context = None
 
+    # pytest only warns about an exception raised in a thread, so record it here
+    raised = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: raised.append(args.exc_value))
+
+    before = set(threading.enumerate())
     worker._start_shutdown_watcher()
+    [watcher] = [t for t in set(threading.enumerate()) - before if t.name.startswith("shutdown-watcher-")]
     worker.immediate_shutdown()
-    time.sleep(0.1)  # nothing to assert but that it did not raise
+    watcher.join(10)
+
+    assert not watcher.is_alive()
+    assert raised == []

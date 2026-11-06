@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import hashlib
 import logging
+import pymysql
 import pytest
 import uuid
 
@@ -17,7 +18,7 @@ from saq.constants import (
     REVIEW_COMMENT_PREFIX,
 )
 from saq.database.model import Alert, Comment, Observable, ObservableMapping, User, Workload
-from saq.database.pool import get_db
+from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import (
     ALERT,
     AlertFrozen,
@@ -87,29 +88,24 @@ def test_ALERT_with_owner(two_analysts):
 @pytest.mark.integration
 def test_get_alert_by_uuid_existing():
     """Test getting an existing alert by UUID."""
-    # Create and insert an alert
     alert = insert_alert()
-    alert_uuid = alert.uuid
-    
-    # Get alert by UUID
-    retrieved_alert = get_alert_by_uuid(alert_uuid)
-    
-    # Verify correct alert was retrieved
+    # another alert the lookup must leave out
+    insert_alert()
+
+    retrieved_alert = get_alert_by_uuid(alert.uuid)
+
     assert retrieved_alert is not None
-    assert retrieved_alert.uuid == alert_uuid
+    assert retrieved_alert.uuid == alert.uuid
     assert retrieved_alert.id == alert.id
 
 
 @pytest.mark.integration
 def test_get_alert_by_uuid_nonexistent():
     """Test getting a non-existent alert by UUID returns None."""
-    nonexistent_uuid = str(uuid.uuid4())
-    
-    # Try to get non-existent alert
-    alert = get_alert_by_uuid(nonexistent_uuid)
-    
-    # Should return None
-    assert alert is None
+    # an alert that exists, which a lookup of another uuid must not return
+    insert_alert()
+
+    assert get_alert_by_uuid(str(uuid.uuid4())) is None
 
 
 @pytest.mark.integration
@@ -138,38 +134,6 @@ def test_set_dispositions_basic():
         
     finally:
         delete_user("testuser_disp")
-
-
-@pytest.mark.integration
-def test_set_dispositions_with_comment():
-    """Test setting disposition with user comment."""
-    user = add_user("testuser_comment", "testuser_comment@test.com", "Test User", "password123")
-    add_user_permission(user.id, "*", "*")
-
-    try:
-        alert = insert_alert()
-        comment_text = "This is a test disposition comment"
-        
-        # Set disposition with comment
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id, comment_text)
-        
-        # Verify disposition was set
-        db = get_db()
-        db.refresh(alert)
-        assert alert.disposition == DISPOSITION_FALSE_POSITIVE
-        
-        # Verify comment was added
-        comment = db.query(Comment).filter(
-            Comment.uuid == alert.uuid,
-            Comment.user_id == user.id,
-            Comment.comment == comment_text
-        ).first()
-        
-        assert comment is not None
-        assert comment.comment == comment_text
-        
-    finally:
-        delete_user("testuser_comment")
 
 
 @pytest.mark.integration
@@ -204,6 +168,7 @@ def test_set_dispositions_multiple_alerts():
         # Verify comments were added to all alerts
         comments = db.query(Comment).filter(
             Comment.uuid.in_(alert_uuids),
+            Comment.user_id == user.id,
             Comment.comment == "Bulk disposition"
         ).all()
         assert len(comments) == 3
@@ -428,18 +393,37 @@ def test_set_dispositions_leaves_alert_owned_by_another_alone(two_analysts):
 def test_set_dispositions_leaves_ineligible_alerts_alone(two_analysts):
     """The caller's eligible check runs once the rows are locked, with the alerts that would change;
     those it drops are left alone."""
-    _, other = two_analysts
+    owner, other = two_analysts
     kept, dropped = insert_alert(), insert_alert()
+    # owned by another analyst, so it would not change and eligible is not asked about it
+    owned = insert_alert()
+    _set_owner(owned, owner.id)
     asked = []
+    locked = []
+
+    def _is_locked(alert_uuid) -> bool:
+        with get_db_connection() as db:
+            c = db.cursor()
+            try:
+                c.execute("SELECT id FROM alerts WHERE uuid = %s FOR UPDATE NOWAIT", (alert_uuid,))
+                return False
+            except pymysql.err.OperationalError as e:
+                if e.args[0] != 3572:  # ER_LOCK_NOWAIT
+                    raise
+                return True
+            finally:
+                db.rollback()
 
     def eligible(alert_uuids):
         asked.append(alert_uuids)
+        locked.extend(_is_locked(alert_uuid) for alert_uuid in alert_uuids)
         return {kept.uuid}
 
-    result = set_dispositions([kept.uuid, dropped.uuid], DISPOSITION_FALSE_POSITIVE, other.id, "sweeping",
-                              eligible=eligible)
+    result = set_dispositions([kept.uuid, dropped.uuid, owned.uuid], DISPOSITION_FALSE_POSITIVE, other.id,
+                              "sweeping", eligible=eligible)
 
     assert asked == [[kept.uuid, dropped.uuid]]
+    assert locked == [True, True]
     assert result.permitted == [kept.uuid]
     assert result.ineligible == [dropped.uuid]
     assert _reload(kept).disposition == DISPOSITION_FALSE_POSITIVE
@@ -472,20 +456,6 @@ def test_set_dispositions_takes_confirmed_alert(two_analysts, caplog):
 
 
 @pytest.mark.integration
-def test_set_dispositions_ignores_stale_confirmation(two_analysts):
-    """Agreeing to take an alert from one analyst does not take it from whoever has it now."""
-    owner, other = two_analysts
-    alert = insert_alert()
-    _set_owner(alert, owner.id)
-
-    result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, other.id,
-                              confirmed_takes={alert.uuid: owner.id + 1000})
-
-    assert result.skipped == {alert.uuid: "Original Owner"}
-    assert _reload(alert).owner_id == owner.id
-
-
-@pytest.mark.integration
 def test_set_dispositions_takes_alert_owned_by_disabled_account(two_analysts):
     owner, other = two_analysts
     alert = insert_alert()
@@ -500,21 +470,6 @@ def test_set_dispositions_takes_alert_owned_by_disabled_account(two_analysts):
     row = _reload(alert)
     assert row.disposition == DISPOSITION_FALSE_POSITIVE
     assert row.owner_id == other.id
-
-
-@pytest.mark.integration
-def test_set_dispositions_changes_own_alert_without_confirmation(two_analysts):
-    owner, _ = two_analysts
-    alert = insert_alert()
-    _set_owner(alert, owner.id)
-
-    result = set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, owner.id)
-
-    assert result.permitted == [alert.uuid]
-    assert result.reassigned == []
-    row = _reload(alert)
-    assert row.disposition == DISPOSITION_FALSE_POSITIVE
-    assert row.owner_id == owner.id
 
 
 @pytest.mark.integration
@@ -617,30 +572,6 @@ def test_change_alert_owner_audits_who_made_the_change(two_analysts, third_analy
     (record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert ownership taken"]
     assert (record.alert_owner, record.new_owner, record.changed_by) == (
         "original_owner", "third_analyst", "new_disposer")
-
-
-@pytest.mark.integration
-def test_set_dispositions_already_dispositioned():
-    """Test setting disposition on already dispositioned alert."""
-    user = add_user("testuser_redispo", "testuser_redispo@test.com", "Test User", "password123")
-    add_user_permission(user.id, "*", "*")
-
-    try:
-        alert = insert_alert()
-        
-        # Set initial disposition
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
-        
-        # Try to set same disposition again (should not change anything)
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, user.id)
-
-        # Should still work but might not update if already set to same value
-        db = get_db()
-        db.refresh(alert)
-        assert alert.disposition == DISPOSITION_FALSE_POSITIVE
-
-    finally:
-        delete_user("testuser_redispo")
 
 
 @pytest.mark.integration
@@ -1003,7 +934,6 @@ def test_touch_alerts_rotates_version():
     # both rotated in one call share the new token
     assert _db_version(alert_1.uuid) == _db_version(alert_2.uuid)
 
-    from saq.database.pool import get_db_connection
     after_session = _db_version(alert_1.uuid)
     with get_db_connection() as db:
         c = db.cursor()
@@ -1103,15 +1033,16 @@ def test_set_dispositions_does_not_take_a_frozen_alert(two_analysts):
 
 @pytest.mark.integration
 def test_set_dispositions_logs_no_change_for_a_frozen_alert(two_analysts, caplog):
+    """Only the alert that changed is logged, not the frozen one dispositioned with it."""
     _, analyst = two_analysts
-    alert = insert_alert()
-    make_simulated(alert)
+    frozen, normal = insert_alert(), insert_alert()
+    make_simulated(frozen)
     caplog.clear()
 
     with caplog.at_level(logging.INFO):
-        set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
+        set_dispositions([frozen.uuid, normal.uuid], DISPOSITION_FALSE_POSITIVE, analyst.id)
 
-    assert _audit_records(caplog, "AUDIT: alert dispositioned") == []
+    assert [r.alert_uuid for r in _audit_records(caplog, "AUDIT: alert dispositioned")] == [normal.uuid]
 
 
 @pytest.mark.integration

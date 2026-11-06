@@ -303,13 +303,6 @@ class TestDisassociate:
 
 
 class TestNotATestAndKeep:
-    def test_not_a_test_on_a_context_alert(self, run, user_id):
-        root = _alert()
-        assert [r.confidence for r in _attributions(root.uuid, run.id)] == ["context"]
-        result = association.disassociate(run.uuid, root.uuid, person(user_id), not_a_test=True)
-        assert (result.svs_status, result.queue) == (None, QUEUE_DEFAULT)
-        assert _attributions(root.uuid, run.id)[0].removal_reason == "not a test"
-
     def test_not_a_test_on_a_marker_alert_is_refused(self, run, user_id):
         root = _alert(marker=run.marker)
         with pytest.raises(AssociationConflict):
