@@ -226,6 +226,9 @@ def cancel_file_collection(collection_id: int) -> bool:
 def retry_file_collection(collection_id: int) -> bool:
     """Resets a completed file collection request to try again.
 
+    It starts over: its attempts, and the max_collection_time_seconds window measured from its
+    insert_date, which would otherwise finish a request given up on as failed again at once.
+
     Args:
         collection_id: The ID of the file collection to retry.
 
@@ -245,6 +248,7 @@ def retry_file_collection(collection_id: int) -> bool:
         lock_time=None,
         update_time=func.NOW(),
         retry_count=0,
+        insert_date=func.NOW(),
     )
     update = update.where(FileCollection.id == collection_id)
     get_db().execute(update)

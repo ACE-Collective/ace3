@@ -1,9 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 from typing import Optional
 
 from sqlalchemy import text
-from sqlalchemy.orm import Query
 from sqlalchemy.sql import func
 
 from saq.database.model import Alert, FileCollection
@@ -15,36 +14,55 @@ from saq.queue_service import QueueCollector
 from saq.util.time import calculate_backoff_delay
 
 
-def create_file_collection_work_item(file_collection: FileCollection) -> Optional[FileCollectionWorkItem]:
+def give_up(file_collection: FileCollection, message: str, *conditions) -> bool:
+    """Finishes a collection this collector has locked as failed with the given message, when
+    `conditions` also hold, and returns whether it did. QueueCollector.collect_work_items commits
+    the update."""
+    update = FileCollection.__table__.update()
+    update = update.values(
+        lock=None,
+        status=FileCollectionStatus.COMPLETED.value,
+        result=FileCollectorStatus.FAILED.value,
+        result_message=message,
+        update_time=func.NOW(),
+    )
+    update = update.where(FileCollection.id == file_collection.id, FileCollection.lock == file_collection.lock, *conditions)
+    if get_db().execute(update).rowcount == 0:
+        return False
+
+    logging.warning(
+        f"file collection {file_collection.id} for {file_collection.type} {file_collection.key} failed: {message}",
+        extra={"file_collection_id": file_collection.id, "alert_uuid": file_collection.alert_uuid},
+    )
+    return True
+
+
+def create_file_collection_work_item(
+    file_collection: FileCollection, max_collection_time_seconds: int
+) -> Optional[FileCollectionWorkItem]:
     """Creates a FileCollectionWorkItem from a FileCollection database object.
 
     The collected file goes in the alert's storage directory, or for a collection no alert asked
     for, in this node's directory for it (saq.file_collection.storage). Deleting an alert leaves
-    its collections behind. A collection whose alert no longer exists has nowhere to put its file,
-    so this marks it completed and failed, releases its lock and returns None.
-    QueueCollector.collect_work_items commits that update.
+    its collections behind. A collection with no work left is marked completed and failed, its
+    lock is released and None is returned: one older than max_collection_time_seconds, which is
+    no longer collected, and one whose alert no longer exists, which has nowhere to put its file.
+    Left pending, a collection is what every later request for the same file attaches to
+    (saq.file_collection.database).
     """
+    # measured on the database clock, in the update, because insert_date is the database's
+    expired = func.NOW() >= func.DATE_ADD(
+        FileCollection.insert_date, text(f"INTERVAL {max_collection_time_seconds} SECOND")
+    )
+    if give_up(file_collection, f"gave up: not collected within {timedelta(seconds=max_collection_time_seconds)}", expired):
+        return None
+
     if file_collection.alert_uuid is None:
         storage_dir = unattached_storage_dir(file_collection.id)
     else:
         alert = get_db().query(Alert).filter(Alert.uuid == file_collection.alert_uuid).first()
         if alert is None:
-            message = f"alert {file_collection.alert_uuid} no longer exists"
-            update = FileCollection.__table__.update()
-            update = update.values(
-                lock=None,
-                status=FileCollectionStatus.COMPLETED.value,
-                result=FileCollectorStatus.FAILED.value,
-                result_message=message,
-                update_time=func.NOW(),
-            )
-            update = update.where(FileCollection.id == file_collection.id, FileCollection.lock == file_collection.lock)
-            get_db().execute(update)
-            logging.warning(
-                f"file collection {file_collection.id} for {file_collection.type} {file_collection.key} "
-                f"failed: {message}",
-                extra={"file_collection_id": file_collection.id, "alert_uuid": file_collection.alert_uuid},
-            )
+            give_up(file_collection, f"alert {file_collection.alert_uuid} no longer exists")
             return None
         storage_dir = alert.storage_dir
 
@@ -64,8 +82,8 @@ def create_file_collection_work_item(file_collection: FileCollection) -> Optiona
 class FileCollectionCollector(QueueCollector[FileCollectionWorkItem]):
     """Responsible for collecting file collection jobs from the database and sending them to the appropriate workers.
 
-    Uses exponential backoff for retry delays based on retry_count, and a time-based cutoff based
-    on max_collection_time_seconds."""
+    Uses exponential backoff for retry delays based on retry_count. A collection still unfinished
+    max_collection_time_seconds after it was queued is finished as failed the next time it is due."""
 
     model = FileCollection
     label = "file collection"
@@ -89,14 +107,6 @@ class FileCollectionCollector(QueueCollector[FileCollectionWorkItem]):
         for listener in self.listeners.values():
             pending.update(listener.pending_collection_ids())
         return pending
-
-    def filter_candidates(self, query: Query) -> Query:
-        # only collections that have not exceeded max collection time (time-based cutoff)
-        return query.filter(
-            func.NOW() < func.DATE_ADD(
-                FileCollection.insert_date, text(f"INTERVAL {self.max_collection_time_seconds} SECOND")
-            )
-        )
 
     def ready(self, rows: list[FileCollection]) -> list[FileCollection]:
         # Skip anything a listener already holds. A worker's queue can hold an item longer than
@@ -135,4 +145,4 @@ class FileCollectionCollector(QueueCollector[FileCollectionWorkItem]):
         return ready_for_retry
 
     def build_work_item(self, row: FileCollection) -> Optional[FileCollectionWorkItem]:
-        return create_file_collection_work_item(row)
+        return create_file_collection_work_item(row, self.max_collection_time_seconds)

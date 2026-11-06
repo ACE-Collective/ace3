@@ -9,7 +9,12 @@ from saq.constants import F_FILE_LOCATION
 from saq.database.model import FileCollection
 from saq.database.pool import get_db
 from saq.file_collection.collector import FileCollectionCollector
-from saq.file_collection.database import queue_file_collection
+from saq.file_collection.database import (
+    get_pending_file_collection_by_observable,
+    queue_file_collection,
+    resolve_duplicate_pending_file_collection,
+    retry_file_collection,
+)
 from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
@@ -364,3 +369,183 @@ def test_collect_time_based_cutoff(db_alert):
     tasks = collector.collect_work_items()
     assert len(tasks) == 1
     assert tasks[0].id == collection_id2
+
+
+@pytest.mark.integration
+def test_collect_finishes_collections_past_the_cutoff(db_alert, caplog):
+    """A collection past max_collection_time_seconds is never handed out again, so the collector
+    finishes it as failed. Left pending, every later request for the same file attached to it and
+    waited on a collection that never ran."""
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    expired_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'IN_PROGRESS' WHERE id = :id"),
+        {"id": expired_id},
+    )
+    get_db().commit()
+
+    with caplog.at_level(logging.WARNING):
+        assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    expired = get_db().get(FileCollection, expired_id)
+    assert expired.status == FileCollectionStatus.COMPLETED.value
+    assert expired.result == FileCollectorStatus.FAILED.value
+    assert expired.result_message == "gave up: not collected within 1:00:00"
+    assert expired.lock is None
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == (
+        f"file collection {expired_id} for {F_FILE_LOCATION} host@/path/to/file failed: "
+        "gave up: not collected within 1:00:00"
+    )
+    assert warnings[0].file_collection_id == expired_id
+    assert warnings[0].alert_uuid == db_alert.uuid
+
+    # a new request for the same file is no longer folded into the expired one
+    assert get_pending_file_collection_by_observable("custom", F_FILE_LOCATION, "host@/path/to/file") is None
+    new_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    assert resolve_duplicate_pending_file_collection(new_id) == new_id
+    assert [task.id for task in collector.collect_work_items()] == [new_id]
+
+
+@pytest.mark.integration
+def test_collect_leaves_expired_collections_that_are_still_being_worked(db_alert):
+    """An expired collection a worker still holds (its lock has not timed out, or a listener of
+    this collector has it queued) is left for that worker to finish."""
+    listener = TestFileCollectionListener()
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", listener)
+
+    locked_id, queued_id, other_id = (
+        queue_file_collection(
+            collector_name=name,
+            observable_type=F_FILE_LOCATION,
+            observable_value=f"host@/path/to/{name}",
+            alert_uuid=db_alert.uuid,
+        )
+        for name in ("custom", "custom", "unregistered")
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR WHERE id IN :ids"),
+        {"ids": (locked_id, queued_id, other_id)},
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET status = 'IN_PROGRESS', `lock` = 'held', lock_time = NOW() WHERE id = :id"),
+        {"id": locked_id},
+    )
+    get_db().commit()
+    listener.pending.add(queued_id)
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    for collection_id in (locked_id, queued_id, other_id):
+        assert get_db().get(FileCollection, collection_id).status != FileCollectionStatus.COMPLETED.value
+
+    # once the worker lets go of it, the queued one is finished
+    listener.finish(queued_id)
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    assert get_db().get(FileCollection, queued_id).result == FileCollectorStatus.FAILED.value
+    assert get_db().get(FileCollection, locked_id).status == FileCollectionStatus.IN_PROGRESS.value
+
+
+@pytest.mark.integration
+def test_collect_finishes_an_expired_collection_whose_lock_timed_out(db_alert):
+    """A collection left IN_PROGRESS and locked, by a service that stopped or a worker that died
+    before releasing it, is finished once its lock times out."""
+    collector = FileCollectionCollector(lock_timeout_seconds=300, max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text(
+            "UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'IN_PROGRESS', "
+            "`lock` = 'stale', lock_time = NOW() - INTERVAL 1 HOUR WHERE id = :id"
+        ),
+        {"id": collection_id},
+    )
+    get_db().commit()
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    file_collection = get_db().get(FileCollection, collection_id)
+    assert file_collection.status == FileCollectionStatus.COMPLETED.value
+    assert file_collection.result == FileCollectorStatus.FAILED.value
+    assert file_collection.lock is None
+
+
+@pytest.mark.integration
+def test_collect_leaves_completed_collections_past_the_cutoff(db_alert):
+    """A collection that finished keeps its result however old it is."""
+    collector = FileCollectionCollector(max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text(
+            "UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR, status = 'COMPLETED', "
+            "result = 'SUCCESS', result_message = 'collected' WHERE id = :id"
+        ),
+        {"id": collection_id},
+    )
+    get_db().commit()
+
+    assert not collector.collect_work_items()
+
+    get_db().expire_all()
+    file_collection = get_db().get(FileCollection, collection_id)
+    assert (file_collection.status, file_collection.result, file_collection.result_message) == (
+        FileCollectionStatus.COMPLETED.value, FileCollectorStatus.SUCCESS.value, "collected")
+
+
+@pytest.mark.integration
+def test_retry_of_an_expired_collection_is_collected(db_alert):
+    """Retrying a collection that was given up on starts its time window over, so the collector
+    hands it out instead of giving up on it again."""
+    # a retry is due after initial_retry_delay_seconds, like any attempt
+    collector = FileCollectionCollector(initial_retry_delay_seconds=0, max_collection_time_seconds=3600)
+    collector.register_listener("custom", TestFileCollectionListener())
+
+    collection_id = queue_file_collection(
+        collector_name="custom",
+        observable_type=F_FILE_LOCATION,
+        observable_value="host@/path/to/file",
+        alert_uuid=db_alert.uuid,
+    )
+    get_db().execute(
+        text("UPDATE file_collection SET insert_date = NOW() - INTERVAL 2 HOUR WHERE id = :id"),
+        {"id": collection_id},
+    )
+    get_db().commit()
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    assert get_db().get(FileCollection, collection_id).result == FileCollectorStatus.FAILED.value
+
+    assert retry_file_collection(collection_id)
+
+    assert [task.id for task in collector.collect_work_items()] == [collection_id]

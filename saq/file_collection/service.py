@@ -27,7 +27,8 @@ class FileCollectionServiceConfig(ServiceConfig):
     )
     max_collection_time_seconds: int = Field(
         default=604800,
-        description="Maximum total time to keep retrying collection (7 days default)."
+        description="Maximum total time to keep retrying collection (7 days default). A collection "
+                    "still unfinished after it completes as FAILED."
     )
     retention_days: int = Field(
         default=7,
