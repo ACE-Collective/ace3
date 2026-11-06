@@ -6,6 +6,10 @@
 #     checkout, at the commit the main checkout has checked out
 #   - tests/test_external_integration_*: the main checkout's links into those repositories
 #   - local: a link to the main checkout's local/, so what is written there outlives the worktree
+#   - a copy of each path in .worktreeinclude, which Claude Code copies into a worktree it creates
+#     and other tools do not
+#   - .claude/skills/<name>: a link to each skill in the main checkout and in ~/.claude/skills that
+#     the worktree does not have, because a worktree gets only the skills git tracks
 #
 # and prunes the integration repositories' records of worktrees that have since been deleted.
 #
@@ -14,11 +18,12 @@
 # the hook hands to Claude as context.
 #
 
-# as a hook, set up the directory the session works in, which the hook input names as "cwd": the
-# desktop app runs a worktree session's hooks from the main checkout, which is where this script
-# is then. By hand, set up the checkout the script is in.
+# as a hook (--hook), set up the directory the session works in, which the hook input names as "cwd":
+# the desktop app runs a worktree session's hooks from the main checkout, which is where this script
+# is then. Otherwise, set up the checkout the script is in, and leave stdin alone: only a hook's stdin
+# is sure to reach EOF, and one left open by a background shell would block this forever.
 dir=$(dirname "${BASH_SOURCE[0]}")/..
-if [ ! -t 0 ]; then
+if [ "$1" = "--hook" ]; then
     cwd=$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("cwd", ""))' 2>/dev/null)
     [ -n "$cwd" ] && dir=$cwd
 fi
@@ -75,19 +80,67 @@ for link in "$main"/tests/test_external_integration_*; do
 done
 [ $linked -gt 0 ] && echo "tests: linked $linked test_external_integration_* directories"
 
+case $worktree in
+    "$main"/*)
+        # relative, so that they also resolve in the dev container, which mounts the main checkout
+        # at /opt/ace
+        up=$(printf '%s' "${worktree#"$main"/}" | sed 's|[^/][^/]*|..|g')
+        local_target=$up/local
+        skills_target=../../$up/.claude/skills
+        ;;
+    *)
+        local_target=$main/local
+        skills_target=$main/.claude/skills
+        ;;
+esac
+
 if [ ! -e "$worktree/local" ] && [ ! -L "$worktree/local" ]; then
     mkdir -p "$main/local"
-    case $worktree in
-        "$main"/*)
-            # relative, so that it also resolves in the dev container, which mounts the main
-            # checkout at /opt/ace
-            up=$(printf '%s' "${worktree#"$main"/}" | sed 's|[^/][^/]*|..|g')
-            ln -s "$up/local" "$worktree/local"
-            ;;
-        *)
-            ln -s "$main/local" "$worktree/local"
-            ;;
-    esac && echo "local: linked to $main/local"
+    ln -s "$local_target" "$worktree/local" && echo "local: linked to $main/local"
+fi
+
+# the main checkout's come first, so that it wins over the user for a skill they both have
+mkdir -p "$worktree/.claude/skills"
+linked=0
+names=
+for skill in "$main"/.claude/skills/*/ "$HOME"/.claude/skills/*/; do
+    skill=${skill%/}
+    name=$(basename "$skill")
+    # this also skips a dangling link and a directory that is not a skill
+    [ -e "$skill/SKILL.md" ] || continue
+    [ -e "$worktree/.claude/skills/$name" ] || [ -L "$worktree/.claude/skills/$name" ] && continue
+
+    case $skill in
+        "$main"/*) target=$skills_target/$name ;;
+        *) target=$skill ;;
+    esac
+    if ln -s "$target" "$worktree/.claude/skills/$name"; then
+        linked=$((linked + 1))
+        names="$names $name"
+    else
+        status=1
+    fi
+done
+# Claude Code lists these from a session's second turn, so this is how its first turn learns of them
+[ $linked -gt 0 ] && echo "skills: linked $linked from $main and ~/.claude/skills, which a session that" \
+    "is already running lists from its next turn. Until then, read .claude/skills/<name>/SKILL.md to" \
+    "use one:$names"
+
+if [ -f "$main/.worktreeinclude" ]; then
+    while IFS= read -r entry; do
+        case $entry in
+            ""|"#"*) continue ;;
+        esac
+        name=${entry%/}
+        [ -e "$main/$name" ] || continue
+        [ -e "$worktree/$name" ] && continue
+        if cp -Rp "$main/$name" "$worktree/$name"; then
+            echo "$name: copied from $main"
+        else
+            rm -rf "${worktree:?}/$name"
+            status=1
+        fi
+    done < "$main/.worktreeinclude"
 fi
 
 exit $status

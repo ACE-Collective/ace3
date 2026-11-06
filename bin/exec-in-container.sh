@@ -40,9 +40,34 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# Get the container name
+CONTAINER=$(bash bin/get-dev-container.sh)
+
+if [ -z "$CONTAINER" ]; then
+    echo "Error: No development container found"
+    exit 1
+fi
+
+# Prints where a bind mount of the container shows a host path, the deepest mount winning.
+path_in_container() {
+    local source destination best_source="" best_destination=""
+    while IFS=$'\t' read -r source destination; do
+        case $1 in
+            "$source"|"$source"/*)
+                if [ ${#source} -gt ${#best_source} ]; then
+                    best_source=$source
+                    best_destination=$destination
+                fi
+                ;;
+        esac
+    done < <(docker inspect --format '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}}{{"\t"}}{{.Destination}}{{"\n"}}{{end}}{{end}}' "$CONTAINER")
+    [ -n "$best_source" ] && echo "$best_destination${1#"$best_source"}"
+}
+
 # The dev container mounts the main checkout at /opt/ace, so a git worktree under it is at
-# /opt/ace/<its path in the main checkout>. Run there, with SAQ_HOME and PYTHONPATH on it, so the
-# command runs this checkout's code rather than the main checkout's.
+# /opt/ace/<its path in the main checkout>. A worktree anywhere else is visible only through a mount
+# of its own (docs/MULTI_INSTANCE.md). Run there, with SAQ_HOME and PYTHONPATH on it, so the command
+# runs this checkout's code rather than the main checkout's.
 WORKDIR=/opt/ace
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 if [ "$common_dir" != "$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)" ]; then
@@ -53,18 +78,14 @@ if [ "$common_dir" != "$(git rev-parse --path-format=absolute --git-dir 2>/dev/n
             WORKDIR="/opt/ace/${checkout#"$main"/}"
             ;;
         *)
-            echo "Error: $checkout is not inside $main, so the dev container cannot see it"
-            exit 1
+            WORKDIR=$(path_in_container "$checkout")
+            if [ -z "$WORKDIR" ]; then
+                echo "Error: the dev container cannot see $checkout. Mount it (or a directory above it) for" \
+                     "the dev service in $main/docker-compose.override.yml and recreate dev (docs/MULTI_INSTANCE.md)" >&2
+                exit 1
+            fi
             ;;
     esac
-fi
-
-# Get the container name
-CONTAINER=$(bin/get-dev-container.sh)
-
-if [ -z "$CONTAINER" ]; then
-    echo "Error: No development container found"
-    exit 1
 fi
 
 #echo "Executing in container: $CONTAINER"
