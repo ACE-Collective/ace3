@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import shlex
 from typing import Type
 
@@ -19,6 +20,9 @@ KEY_BASE64_PAYLOADS = "base64_payloads"
 
 KEY_BASE64 = "base64"
 KEY_FILE_PATH = "file_path"
+
+# a maximal run of base64 characters (standard or url-safe alphabet) with optional padding
+RE_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]+={0,2}")
 
 class CommandLineAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
@@ -88,6 +92,33 @@ class CommandLineAnalyzer(AnalysisModule):
             if file_location is not None and command_line.has_directive(DIRECTIVE_COLLECT_FILE):
                 file_location.add_directive(DIRECTIVE_COLLECT_FILE)
 
+    def _add_base64_payload(self, analysis, encoded: str, decoded_data: bytes):
+        """Write a decoded payload to a file and add it as a file observable."""
+        # find a unique file name
+        for file_name_index in range(1024 * 1024): # sanity check
+            file_name = f"command_line_base64_payload_{file_name_index}.bin"
+            target_file = self.get_root().create_file_path(file_name)
+            if not os.path.exists(target_file):
+                break
+            else:
+                target_file = None
+
+        if not target_file:
+            logging.error("unable to find a unique file name for command line base64 payload")
+            return
+
+        with open(target_file, "wb") as fp:
+            fp.write(decoded_data)
+
+        file_observable = analysis.add_file_observable(target_file)
+        if file_observable:
+            file_observable.add_tag("base64")
+            file_observable.add_yara_meta("type", "payload.base64")
+        analysis.base64_payloads.append({
+            KEY_BASE64: encoded,
+            KEY_FILE_PATH: target_file,
+        })
+
     @staticmethod
     def _remove_prefix_substrings(paths):
         """Remove paths that are a prefix substring of a more specific path.
@@ -121,14 +152,14 @@ class CommandLineAnalyzer(AnalysisModule):
             while token.startswith('"') and token.endswith('"'):
                 token = token[1:-1]
 
-            # looking specifically for powershell's -EncodedCommand parameter
-            # if we see that then we can ignore the size restriction for the next token
-            is_encoding_flag = token.lower().startswith("-e") or token.lower().startswith("/e")
-
             # ignore flags and options when looking for interesting components
             if token.startswith("-") or token.startswith("/"):
-                # if this is the encoding flag, set the flag for the next token
-                if is_encoding_flag:
+                # looking specifically for powershell's -EncodedCommand parameter
+                # if we see that then we can ignore the size restriction for the next token
+                # powershell takes any prefix of the name (-e, -enc) and -ec, but other flags start with e too
+                # (-ExecutionPolicy Bypass, -ErrorAction Stop) and the word after them is not base64
+                flag_name = token[1:].lower()
+                if flag_name == "ec" or (flag_name and "encodedcommand".startswith(flag_name)):
                     ignore_size_restriction = True
                 continue
 
@@ -141,33 +172,25 @@ class CommandLineAnalyzer(AnalysisModule):
                 except Exception:
                     continue
                 if ignore_size_restriction or len(decoded_data) >= self.base64_minimum_length:
-                    # find a unique file name
-                    for file_name_index in range(1024 * 1024): # sanity check
-                        file_name = f"command_line_base64_payload_{file_name_index}.bin"
-                        target_file = self.get_root().create_file_path(file_name)
-                        if not os.path.exists(target_file):
-                            break
-                        else:
-                            target_file = None
-
-                    if not target_file:
-                        logging.error("unable to find a unique file name for command line base64 payload")
-                        continue
-
-                    with open(target_file, "wb") as fp:
-                        fp.write(decoded_data)
-
-                    file_observable = analysis.add_file_observable(target_file)
-                    if file_observable:
-                        file_observable.add_tag("base64")
-                        file_observable.add_yara_meta("type", "payload.base64")
-                    analysis.base64_payloads.append({
-                        KEY_BASE64: token,
-                        KEY_FILE_PATH: target_file,
-                    })
+                    self._add_base64_payload(analysis, token, decoded_data)
 
             # reset the flag after processing each non-flag token
             ignore_size_restriction = False
+
+        # regex-based pass to find base64 that is only part of a token
+        # (e.g. -EncodedCommand nested in a quoted -Command script body)
+        extracted = {payload[KEY_BASE64] for payload in analysis.base64_payloads}
+        for candidate in RE_BASE64_RUN.findall(command_line.value):
+            # cheap length check first so the many short words are never decoded
+            if candidate in extracted or len(candidate) * 3 // 4 < self.base64_minimum_length:
+                continue
+            try:
+                decoded_data = decode_base64(candidate)
+            except Exception:
+                continue  # a run of base64 characters that does not decode is not a payload
+            if len(decoded_data) >= self.base64_minimum_length:
+                self._add_base64_payload(analysis, candidate, decoded_data)
+                extracted.add(candidate)
 
         # regex-based pass to find paths that shlex tokenization missed
         # (e.g. paths embedded in PowerShell -Command script bodies with escaped quotes)

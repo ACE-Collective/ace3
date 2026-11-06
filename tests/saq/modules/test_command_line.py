@@ -188,15 +188,16 @@ def test_command_line_base64_minimum_length_respected(root_analysis):
 
 
 @pytest.mark.integration
-def test_command_line_base64_minimum_length_ignored_with_encoded_flag(root_analysis):
-    """test that minimum length restriction is bypassed for -EncodedCommand parameters"""
+@pytest.mark.parametrize("flag", ["-e", "-ec", "-enc", "-EncodedCommand", "/EncodedCommand"])
+def test_command_line_base64_minimum_length_ignored_with_encoded_flag(root_analysis, flag):
+    """test that minimum length restriction is bypassed for -EncodedCommand and its abbreviations"""
     root_analysis.analysis_mode = "test_groups"
 
     # create a short base64 string
     short_payload = base64.b64encode(b"short").decode('ascii')
 
-    # when following -e flag, even short payloads should be extracted
-    command_line = f"powershell.exe -e {short_payload}"
+    # when following the encoded command flag, even short payloads should be extracted
+    command_line = f"powershell.exe {flag} {short_payload}"
     command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line)
     root_analysis.save()
     root_analysis.schedule()
@@ -453,4 +454,96 @@ def test_command_line_combined_file_paths_and_base64(root_analysis):
     # should have extracted both file path and base64 payload
     assert len(analysis.file_paths) >= 1
     assert len(analysis.base64_payloads) == 1
+    assert r'C:\Scripts\test.ps1' in analysis.file_paths
+
+@pytest.mark.integration
+def test_command_line_base64_extraction_nested_in_command_body(root_analysis):
+    """a payload inside a quoted -Command script body is part of a larger shlex token and must still be found"""
+    root_analysis.analysis_mode = "test_groups"
+
+    original_command = "Start-Process 'C:\\Temp\\example\\report.pbip'; $exitCode = $?; Out-File -LiteralPath 'C:\\Temp\\example.log'"
+    encoded_command = base64.b64encode(original_command.encode('utf-16le')).decode('ascii')
+
+    command_line = (
+        '"pwsh.exe" -NoProfile -Command "$p = Start-Process -PassThru -FilePath \'pwsh.exe\' '
+        f'-ArgumentList \'-NoProfile -NonInteractive -EncodedCommand {encoded_command}\' -WindowStyle Hidden; '
+        '$p.WaitForExit()"'
+    )
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert analysis.load_details()
+
+    assert len(analysis.base64_payloads) == 1
+    payload = analysis.base64_payloads[0]
+    assert payload[KEY_BASE64] == encoded_command
+    with open(payload[KEY_FILE_PATH], 'rb') as fp:
+        assert fp.read() == original_command.encode('utf-16le')
+
+    file_observable = analysis.find_observable(lambda o: o.type == F_FILE and o.has_tag('base64'))
+    assert file_observable
+
+
+@pytest.mark.integration
+def test_command_line_base64_undecodable_run_in_command_body_skipped(root_analysis):
+    """a long run of base64 characters that does not decode is skipped and the payloads after it are still found"""
+    root_analysis.analysis_mode = "test_groups"
+
+    # 173 data characters is one more than a multiple of 4, which no padding makes decodable
+    undecodable = "A" * 172 + "-"
+    payload_data = b"G" * 150
+    encoded_payload = base64.b64encode(payload_data).decode('ascii')
+    command_line = f'powershell.exe -Command "Write-Output \'{undecodable}\'; Write-Output \'{encoded_payload}\'"'
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert analysis.load_details()
+
+    assert len(analysis.base64_payloads) == 1
+    payload = analysis.base64_payloads[0]
+    assert payload[KEY_BASE64] == encoded_payload
+    with open(payload[KEY_FILE_PATH], 'rb') as fp:
+        assert fp.read() == payload_data
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("command_line", [
+    "powershell.exe -ExecutionPolicy Bypass -File C:\\Scripts\\test.ps1",
+    "powershell.exe -ex RemoteSigned -File C:\\Scripts\\test.ps1",
+    "pwsh.exe -ErrorAction Stop -File C:\\Scripts\\test.ps1",
+])
+def test_command_line_base64_minimum_length_kept_after_other_e_flags(root_analysis, command_line):
+    """a flag that only starts with e (-ExecutionPolicy) does not lift the size limit on the word after it"""
+    root_analysis.analysis_mode = "test_groups"
+
+    command_line_observable = root_analysis.add_observable_by_spec(F_COMMAND_LINE, command_line)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('command_line_analyzer', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    command_line_observable = root_analysis.get_observable(command_line_observable.uuid)
+    analysis = command_line_observable.get_and_load_analysis(CommandLineAnalysis)
+    assert analysis.load_details()
+
+    assert analysis.base64_payloads == []
     assert r'C:\Scripts\test.ps1' in analysis.file_paths
