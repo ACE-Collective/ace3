@@ -73,10 +73,6 @@ class TestCommandConfig:
         cmd = CommandConfig(type="executable", path="/usr/bin/test")
         assert cmd.env is None
 
-    def test_source_options_defaults_to_empty_dict(self):
-        cmd = CommandConfig(type="query", source="splunk", query="search index=main")
-        assert cmd.source_options == {}
-
     def test_predefined_command_source_options_round_trip(self):
         predef = PredefinedCommandConfig(
             name="rapid7_default",

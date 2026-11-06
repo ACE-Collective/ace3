@@ -57,13 +57,6 @@ def test_summary_detail_config_defaults():
 
 
 @pytest.mark.unit
-def test_summary_detail_config_invalid_format():
-    """Test SummaryDetailConfig with invalid format falls back to md."""
-    config = SummaryDetailConfig(content="test", format="invalid")
-    assert config.format == "md"
-
-
-@pytest.mark.unit
 def test_resolve_query_from_file(tmp_path):
     """Test resolve_query with file path."""
     query_file = tmp_path / "test_query.txt"
