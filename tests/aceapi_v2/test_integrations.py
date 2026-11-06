@@ -24,7 +24,9 @@ def registry(monkeypatch):
     """An empty registry and no integrations router yet, so these tests do not see the routers of the
     integrations installed here and leave none of theirs behind. They build their own apps, on a new
     router: the app the other tests use would keep serving a router registered on the real one for
-    the rest of the session."""
+    the rest of the session. That app is built here first, if no test has built it yet, so it does not
+    include the empty router this fixture puts in place and the routers these tests register on it."""
+    v2_app()
     monkeypatch.setattr(integrations, "_ROUTERS", {})
     monkeypatch.setattr(integrations, "_router", None)
     monkeypatch.setattr(integrations, "_included", set())
