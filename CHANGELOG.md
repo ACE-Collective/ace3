@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.139] - 2026-11-06
+
+- [Keep the observable presenter tests to core's actions, and give integrations a hook test helper](https://github.com/ACE-Collective/ace3/pull/1170)
+- [Record when an analyst comment was edited](https://github.com/ACE-Collective/ace3/pull/1168)
+- [Register observable presenters and actions from the GUI layer](https://github.com/ACE-Collective/ace3/pull/1167)
+- [Name integration API routers and GUI blueprints in config](https://github.com/ACE-Collective/ace3/pull/1166)
+- [Find base64 nested in command line tokens and lift the size limit only for PowerShell's -EncodedCommand](https://github.com/ACE-Collective/ace3/pull/1163)
+- [Build the tests' API v2 app after the configuration is loaded](https://github.com/ACE-Collective/ace3/pull/1162)
+- [Fix two full-suite failures: boto3 in a CLI test, the search collection race](https://github.com/ACE-Collective/ace3/pull/1159)
+- [Support git worktrees outside the main checkout](https://github.com/ACE-Collective/ace3/pull/1158)
+- [Read logo QR codes zbarimg cannot find with OpenCV](https://github.com/ACE-Collective/ace3/pull/1157)
+- [Audit the test suite: remove tests that cannot fail and fix the rest](https://github.com/ACE-Collective/ace3/pull/1155)
+- [Give observable detections a default expiration with a date picker](https://github.com/ACE-Collective/ace3/pull/1153)
+
 ## [3.0.138] - 2026-11-05
 
 - [Run pdfparser on a decrypted copy of PDFs with an empty user password](https://github.com/ACE-Collective/ace3/pull/1150)
