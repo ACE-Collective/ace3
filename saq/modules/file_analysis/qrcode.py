@@ -240,9 +240,10 @@ class QRCodeAnalyzer(AnalysisModule):
         can hide it from zbarimg. Returns the codes read in each, one per line, with the semantics of
         _scan_image, so a failure here is never recorded (or cached) as a negative result either."""
         script = os.path.join(get_base_dir(), "bin", "qr_decode_opencv.py")
-        # OpenBLAS, which numpy loads, starts a thread per core and each reserves address space under the sandbox's memory limit
+        # OpenBLAS, which numpy loads, starts a thread per core and each reserves address space under the sandbox's memory limit.
+        # The run decodes twice, the image and its inverse, so it gets the time of two scans
         result = self.run_sandboxed_tool([sandbox_python(), "-I", script, image_path], image_path,
-                                         timeout=self.timeout, read_files=[script],
+                                         timeout=2 * self.timeout, read_files=[script],
                                          env={"OPENBLAS_NUM_THREADS": "1"}, startup_errors=OPENCV_STARTUP_ERRORS)
         if result is None:
             return None

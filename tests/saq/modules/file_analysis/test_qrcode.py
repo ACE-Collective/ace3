@@ -326,6 +326,26 @@ def test_opencv_runs_once_on_an_image_without_a_code(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_opencv_run_has_the_time_of_both_decodes(tmp_path, monkeypatch):
+    # one run decodes the image and its inverse, so a large image that each decode reads within the
+    # module's timeout must not time out because the run does both
+    timeouts = []
+    run_sandboxed_tool = QRCodeAnalyzer.run_sandboxed_tool
+
+    def recording(self, args, target, **kwargs):
+        if any(arg.endswith("qr_decode_opencv.py") for arg in args):
+            timeouts.append(kwargs["timeout"])
+        return run_sandboxed_tool(self, args, target, **kwargs)
+
+    monkeypatch.setattr(QRCodeAnalyzer, "run_sandboxed_tool", recording)
+    Image.new("RGB", (64, 64), "white").save(tmp_path / "blank.png")
+
+    _analyze(tmp_path, tmp_path / "blank.png", timeout=7)
+
+    assert timeouts == [14]
+
+
+@pytest.mark.unit
 def test_opencv_timeout_is_not_a_negative_result(tmp_path, monkeypatch):
     # run_sandboxed_tool returns None for a tool it stopped, which it has already logged
     def stopped(self, args, target, **kwargs):
