@@ -5,8 +5,7 @@
 # Every integration requires an integration_<name>: block. It is the only thing that causes your
 # integration's python package to be imported, and importing the package is what runs your
 # registration hooks: register_integration_configuration(), register_directive(),
-# register_observable_action(), register_integration_blueprint_callback(),
-# register_integration_router().
+# register_observable_action(). It also names your API router and GUI blueprint.
 #
 # Without this block your src/ still lands on the path and this config file is still merged, so
 # everything *looks* configured -- but none of your hooks run, and the failures are invisible.
@@ -15,8 +14,15 @@ integration_example:
   # required -- an integration with enabled: false is not imported
   enabled: true
   description: "Example Integration"
-  # the python package name under src/ -- note this is often NOT the integration directory name
+  # the python package name under src/ -- note this is often NOT the integration directory name.
+  # every ACE process imports it, so it imports only what its registration hooks need
   python_module: example
+  # optional: the APIRouter, as module:attribute, served under /api/v2/integrations/<name>.
+  # only the API imports it
+  api_router: example.api.router:router
+  # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
+  # your blueprints. only the GUI imports it
+  gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration

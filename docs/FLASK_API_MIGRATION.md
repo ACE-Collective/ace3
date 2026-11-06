@@ -105,14 +105,14 @@ Reference: `aceapi_v2/common/router.py`, `aceapi_v2/observable_types/router.py`.
 
 ### Integration routes
 
-An integration's routes move into the integration, not into `aceapi_v2/`: a package `src/<package>/api/` with `router.py` and `service.py` (and `schemas.py` if it needs a model of its own), whose router module the package registers on import with `register_integration_router("<name>", "<package>.api.router")` (`aceapi_v2/integrations.py`, documented in `docs/INTEGRATIONS.md`). It is served under `/api/v2/integrations/<name>`, so it cannot collide with a core route.
+An integration's routes move into the integration, not into `aceapi_v2/`: a package `src/<package>/api/` with `router.py` and `service.py` (and `schemas.py` if it needs a model of its own), whose router the integration names in its `integration_<name>:` block as `api_router: <package>.api.router:router` (documented in `docs/INTEGRATIONS.md`). It is served under `/api/v2/integrations/<name>`, so it cannot collide with a core route.
 
-- **The blueprint stays** when it serves templates, static files or pages; only its data routes go. Drop the `import ...app.views` from the blueprint callback and delete the module.
+- **The blueprint stays** when it serves templates, static files or pages; only its data routes go. Drop the `import ...app.views` from the `gui_blueprint` function and delete the module.
 - **Reuse the core services.** An observable action that adds a directive and queues the alert is `request_observable_analysis()` with the integration's directive; one that only reads is `load_observable()` (both `aceapi_v2/alerts/service.py`). These give the integration the core actions' behavior: 409 on a locked alert, 422 for an observable of another type, correlation mode on a dispositioned alert.
 - **Permissions.** Keep the route's legacy pair. A route that had only `@login_required` gets the pair of the closest core route (`observable:write` for an action that changes the alert or sends its content somewhere, `observable:read` for one that reads).
 - **Callers** are the integration's templates: call the route through `aceApi`, as the core action templates do.
 - **Tests** import the `tests/aceapi_v2/conftest.py` client fixtures into the test module; see `docs/INTEGRATIONS.md`. Give the module a name no other test module has (`test_<integration>_api.py`): some integration test directories are not packages.
-- **Two repositories, two changes.** The integration's change needs a release of ACE that has `register_integration_router()`; merge it after that release, and write its PR description in its own repository.
+- **Two repositories, two changes.** The integration's change needs a release of ACE that reads `api_router`; merge it after that release, and write its PR description in its own repository.
 
 ### Auth
 
@@ -158,7 +158,6 @@ If a new group adds endpoints that require new client-side support (file uploads
 - The routes inside the applications `aceapi_v2/app_factory.py` builds are at `/<group>/<name>`; the uvicorn entry points serve them under `/api/v2` through `aceapi_v2/serving.py::serve_under()`, which is also what sets the root path Swagger/OpenAPI URLs are built from. `TestClient`/`AsyncClient` on `create_app()` should request the inner paths, not `/api/v2/...`.
 - `Company.json` (`saq/database/model.py:762`) and similar ORM-side `.json` properties are not needed in v2 — use Pydantic `model_validate` instead.
 - If a legacy endpoint already delegates to a v2 service via `run_async_with_session` (e.g. the pre-migration `/common/get_valid_observables`), that service already exists and should be reused, not duplicated.
-- **Routers registered after the app was built.** Integrations are imported during `initialize_environment()`. The API containers build their app after that, but anything that calls `create_app()` first built it before. The app still serves them because `create_app()` includes the shared `/integrations` router once and FastAPI (0.141, pinned) resolves an included router's routes per request. `tests/aceapi_v2/test_integrations.py::TestRegistration::test_registered_after_the_app_was_built` fails if an upgrade changes that.
 - **Route walks.** `app.routes` holds `_IncludedRouter` wrappers, not `APIRoute`s, so walking it for paths finds none; use `effective_route_contexts()` as `tests/saq/test_permission_catalog.py::_iter_effective_routes` does, or `app.openapi()["paths"]`.
 
 ### Deletion checklist
@@ -517,7 +516,7 @@ Notes:
 |---------------------------------------------------------------|------------------------------------------------------------------------------------------------|
 | `POST /example/example_observable_action` (example integration) | `POST /api/v2/integrations/example/alerts/{alert_uuid}/observables/{observable_uuid}/example` |
 
-New: `aceapi_v2/integrations.py` (`register_integration_router()`), included by `create_app()` under `/integrations` with the same credential check as every core router. Tests: `tests/aceapi_v2/test_integrations.py`.
+New: `include_integration_routers()` (`aceapi_v2/application.py`), called by `create_app()`, which serves every integration's `api_router` under `/integrations` with the same credential check as every core router. Tests: `tests/aceapi_v2/test_integrations.py`.
 
 The example integration (`integrations.example/`), which integration authors copy, now shows the pattern: its observable action calls `example/api/router.py` through `aceApi`, gated on `alert:read`, and its blueprint keeps only its page. The observable actions of the integrations one site runs (five routes in three integrations, every one with traffic in the last six months) moved in the same change, in their own repository.
 

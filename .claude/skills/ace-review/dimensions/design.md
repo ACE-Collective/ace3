@@ -28,7 +28,7 @@ Read first: `CLAUDE.md` § Engineering values → Keep it lean, § Conventions, 
 - A function-level import with no comment saying why.
 - Integration leakage:
   - An integration-specific name or symbol added to `saq/constants.py`, `saq/gui/`, `saq/configuration/schema.py` or anywhere else in core.
-  - An integration reaching into core internals where a generic registration hook exists (hunter correlation registries, `aceapi_v2/integrations.py`, `saq/alert_routing/registry.py`, `etc/cron/<cadence>/`).
+  - An integration reaching into core internals where a generic registration hook exists (hunter correlation registries, `api_router`/`gui_blueprint` in the `integration_<name>:` block, `saq/alert_routing/registry.py`, `etc/cron/<cadence>/`).
   - A missing hook should be added to core generically, in its own core PR.
 - In an integration repo: code that only works because of a local core modification that isn't part of a core PR.
 

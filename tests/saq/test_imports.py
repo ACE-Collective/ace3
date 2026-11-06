@@ -90,20 +90,35 @@ def test_configuration_does_not_import_the_analysis_framework():
                         "saq.database.model", "sqlalchemy", "flask"])
 
 
-def test_integration_registration_does_not_load_the_apps():
-    # integrations import these in every ACE process to register their routers and blueprints
-    _assert_loads_none("import aceapi_v2.integrations, app.integration\n",
-                       ["aceapi_v2.application", "app.application", "fastapi", "flask"])
-
-
 def test_the_example_integration_registers_without_loading_what_it_registers():
     # integration authors start from integrations.example, and initialize_integrations() imports its package
-    # in every process: its analyzer, blueprint and API router load only where they are used
+    # in every process: its analyzer, blueprint and API router load only where they are used. Nothing in
+    # the package names the router or the blueprint: its integration_example: block does
     src = os.path.join(get_base_dir(), "integrations.example", "example", "src")
     _assert_loads_none(f"sys.path.insert(0, {src!r})\n"
                        "import example\n",
-                       ["example.modules", "example.app.blueprint", "example.api.router", "saq.observables.base",
-                        "saq.modules.base_module", "saq.analysis.root", "flask", "werkzeug", "fastapi"])
+                       ["example.modules", "example.app", "example.api", "saq.observables.base",
+                        "saq.modules.base_module", "saq.analysis.root", "aceapi_v2", "app", "flask", "werkzeug",
+                        "fastapi"])
+
+
+def test_the_example_integration_declares_its_router_and_blueprint():
+    # the API and the GUI import what its integration_example: block names
+    integration_dir = os.path.join(get_base_dir(), "integrations.example", "example")
+    run_python("import importlib, sys, yaml\n"
+               f"sys.path.insert(0, {os.path.join(integration_dir, 'src')!r})\n"
+               "from fastapi import APIRouter\n"
+               "from flask import Flask\n"
+               "from saq.configuration.schema import IntegrationConfig\n"
+               f"with open({os.path.join(integration_dir, 'etc', 'saq.integration.yaml')!r}) as fp:\n"
+               "    config = IntegrationConfig.model_validate(yaml.safe_load(fp)['integration_example'])\n"
+               "def load(target):\n"
+               "    module_name, attribute = target.split(':')\n"
+               "    return getattr(importlib.import_module(module_name), attribute)\n"
+               "assert isinstance(load(config.api_router), APIRouter)\n"
+               "flask_app = Flask('test')\n"
+               "load(config.gui_blueprint)(flask_app)\n"
+               "assert 'example.index' in flask_app.view_functions, flask_app.view_functions\n")
 
 
 def test_sql_timing_listeners_come_with_the_first_engine():
@@ -231,8 +246,7 @@ def test_reading_analysis_does_not_import_the_analysis_tools():
 
 
 def test_the_api_packages_import_nothing():
-    # importing any module of a package runs its init; integrations import aceapi_v2.integrations and
-    # app.integration from every process
+    # importing any module of a package runs its init
     run_python("import sys\n"
                "import aceapi_v2, aceapi_ai, app\n"
                "loaded = sorted(name for name in sys.modules if name.split('.')[0] in ('aceapi_v2', 'aceapi_ai', 'app') "
@@ -243,8 +257,7 @@ def test_the_api_packages_import_nothing():
 def test_the_engine_api_does_not_import_the_user_api():
     # the http-api-engine container serves only the engine, health and common routes
     _assert_loads_none("import aceapi_v2.app_factory\n",
-                       ["aceapi_v2.application", "aceapi_v2.alerts", "aceapi_v2.svs", "aceapi_v2.integrations",
-                        "aceapi_ai"])
+                       ["aceapi_v2.application", "aceapi_v2.alerts", "aceapi_v2.svs", "aceapi_ai"])
 
 
 def test_serving_an_api_imports_no_routes():
