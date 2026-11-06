@@ -34,6 +34,7 @@ from saq.logging import ThreadSuppressionFilter, audit_actor
 from saq.permissions.user import add_user_permission
 from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import workload_count
+from tests.aceapi_v2.conftest import v2_app
 
 
 # Valid hunt YAML content for reuse in tests
@@ -176,7 +177,6 @@ class _V2HuntApi:
 
     def post(self, path, json=None, data=None, content_type=None, headers=None):
         from httpx import ASGITransport, AsyncClient
-        from aceapi_v2.application import app as fastapi_app
         from aceapi_v2.sync import run_async
 
         request_headers = dict(headers or {})
@@ -189,7 +189,7 @@ class _V2HuntApi:
                 request_headers["content-type"] = content_type
 
         async def _send():
-            transport = ASGITransport(app=fastapi_app, raise_app_exceptions=self.raise_app_exceptions)
+            transport = ASGITransport(app=v2_app(), raise_app_exceptions=self.raise_app_exceptions)
             async with AsyncClient(transport=transport, base_url="http://testserver") as client:
                 return await client.post(path, headers=request_headers, **kwargs)
 

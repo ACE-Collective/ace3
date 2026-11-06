@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends
 from httpx import ASGITransport, AsyncClient
 
 from aceapi_v2 import integrations
-from aceapi_v2.application import app, create_app
+from aceapi_v2.application import create_app
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.dependencies import require_permission
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -22,8 +23,10 @@ pytestmark = pytest.mark.integration
 def registry(monkeypatch):
     """An empty registry and no integrations router yet, so these tests do not see the routers of the
     integrations installed here and leave none of theirs behind. They build their own apps, on a new
-    router: the module-level app would keep serving a router registered on the real one for the rest
-    of the session."""
+    router: the app the other tests use would keep serving a router registered on the real one for
+    the rest of the session. That app is built here first, if no test has built it yet, so it does not
+    include the empty router this fixture puts in place and the routers these tests register on it."""
+    v2_app()
     monkeypatch.setattr(integrations, "_ROUTERS", {})
     monkeypatch.setattr(integrations, "_router", None)
     monkeypatch.setattr(integrations, "_included", set())
@@ -63,9 +66,9 @@ def _paths(fastapi_app) -> list[str]:
 
 
 def _client(fastapi_app, api_key: str | None = None) -> AsyncClient:
-    # the session override the client fixtures put on the module-level app, so the API key they
-    # mint is visible to this app too
-    fastapi_app.dependency_overrides.update(app.dependency_overrides)
+    # the session override the client fixtures put on v2_app(), so the API key they mint is visible
+    # to this app too
+    fastapi_app.dependency_overrides.update(v2_app().dependency_overrides)
     return AsyncClient(transport=ASGITransport(app=fastapi_app), base_url="http://test",
                        headers={"x-ace-auth": api_key} if api_key else {})
 
@@ -73,9 +76,9 @@ def _client(fastapi_app, api_key: str | None = None) -> AsyncClient:
 class TestRegistration:
     @pytest.mark.asyncio
     async def test_registered_after_the_app_was_built(self, _override_db_session, valid_api_key):
-        """Integrations are imported during initialize_environment(), after importing aceapi_v2
-        has built the module-level app. This holds because FastAPI resolves an included router's
-        routes per request (it has since 0.141); if an upgrade changes that, this fails."""
+        """An app built before an integration registers its router still serves it, because FastAPI
+        resolves an included router's routes per request (it has since 0.141); if an upgrade changes
+        that, this fails."""
         built = create_app()
 
         integrations.register_integration_router("vendor", _router())

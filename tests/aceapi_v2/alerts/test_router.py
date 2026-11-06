@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from aceapi_v2.application import app
 from saq.analysis.root import RootAnalysis, load_root
 from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.database import get_db
@@ -29,6 +28,7 @@ from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_base_dir
 from saq.search.tasks import submit_index_task
 from tests.saq.helpers import audit_actor_of, audit_record, insert_alert, make_simulated, workload_count
+from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
@@ -561,7 +561,7 @@ class TestUnhandledException:
         # starlette's ServerErrorMiddleware re-raises after building the response so
         # the server can still log it; disable raise_app_exceptions so we can observe
         # the 500 response the catch-all handler produced
-        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        transport = ASGITransport(app=v2_app(), raise_app_exceptions=False)
         async with AsyncClient(
             transport=transport,
             base_url="http://test",

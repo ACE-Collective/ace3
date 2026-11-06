@@ -8,7 +8,6 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aceapi_v2.application import app
 from aceapi_v2.auth import (
     API_AUTH_TYPE_CONFIG,
     API_AUTH_TYPE_USER,
@@ -29,6 +28,7 @@ from tests.aceapi_v2.conftest import (
     key_scope,
     make_api_key,
     make_flask_session_cookie,
+    v2_app,
 )
 
 pytestmark = pytest.mark.integration
@@ -55,7 +55,7 @@ async def _make_user(session: AsyncSession, username: str, perms: list[tuple[str
 
 def _client_for(user: User) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app),
+        transport=ASGITransport(app=v2_app()),
         base_url="http://test",
         headers={"x-ace-auth": user.test_api_key},
     )
@@ -589,7 +589,7 @@ async def _make_analyst(session: AsyncSession, username: str) -> tuple[User, Aut
 def _browser_for(user: User, fetch_site: str = "same-origin") -> AsyncClient:
     """The GUI's credential: the Flask session cookie, sent by the browser's same-origin fetch."""
     client = AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test", headers={"sec-fetch-site": fetch_site})
+        transport=ASGITransport(app=v2_app()), base_url="http://test", headers={"sec-fetch-site": fetch_site})
     client.cookies.set("session", make_flask_session_cookie(user.id))
     return client
 

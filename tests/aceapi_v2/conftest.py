@@ -2,6 +2,7 @@ import hashlib
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from itsdangerous import URLSafeTimedSerializer
 from sqlalchemy import select
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from aceapi_v2.application import app
+from aceapi_v2.application import create_app
 from aceapi_v2.database import build_database_url, get_async_session
 from aceapi_v2.users.schemas import ApiKeyScope
 from aceapi_v2.users.service import create_user_api_key
@@ -68,10 +69,28 @@ def make_flask_session_cookie(user_id) -> str:
     return s.dumps({"_user_id": str(user_id)})
 
 
+_app: FastAPI | None = None
+
+
+def v2_app() -> FastAPI:
+    """The API v2 app the tests send requests to, built on first use.
+
+    The API containers build theirs after initialize_environment() has loaded the configuration, and
+    so does this: it refuses to run before global_setup has, as it would at module level while pytest
+    collects the test modules (#1160)."""
+    global _app
+    if _app is None:
+        if get_config() is None:
+            raise RuntimeError("v2_app() was called before the configuration was loaded: call it from a "
+                               "test or a fixture, not at module level")
+        _app = create_app()
+    return _app
+
+
 def api_key_client(api_key: str) -> AsyncClient:
     """An AsyncClient that authenticates with the given API key via the x-ace-auth header."""
     return AsyncClient(
-        transport=ASGITransport(app=app),
+        transport=ASGITransport(app=v2_app()),
         base_url="http://test",
         headers={"x-ace-auth": api_key},
     )
@@ -140,16 +159,16 @@ async def _override_db_session(connection: AsyncConnection):
         finally:
             await session.close()
 
-    app.dependency_overrides[get_async_session] = override_get_session
+    v2_app().dependency_overrides[get_async_session] = override_get_session
     yield
-    app.dependency_overrides.clear()
+    v2_app().dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
 async def unauth_client(_override_db_session) -> AsyncGenerator[AsyncClient]:
     """HTTP client without authentication credentials."""
     async with AsyncClient(
-        transport=ASGITransport(app=app),
+        transport=ASGITransport(app=v2_app()),
         base_url="http://test",
     ) as client:
         yield client

@@ -28,7 +28,7 @@ from saq.database.model import (
 from saq.constants import F_IPV4
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, touch_alerts
-from tests.aceapi_v2.conftest import api_key_client, make_api_key
+from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
 from saq.detection_verdicts.store import confirm_alert
 from tests.saq.helpers import create_root_analysis, insert_alert, insert_alert_with_detections
 from tests.saq.svs.conftest import SIGNATURE_UUID, attribute_to_run
@@ -566,9 +566,8 @@ class TestExport:
     def test_each_export_documents_exactly_one_media_type(self):
         """One route per format: neither export advertises the other's content type, and the
         old combined /export route is gone."""
-        from aceapi_v2.application import app
 
-        paths = app.openapi()["paths"]
+        paths = v2_app().openapi()["paths"]
         assert "/alerts/export" not in paths
         for path, media_type in (("/alerts/export/ndjson", "application/x-ndjson"),
                                  ("/alerts/export/csv", "text/csv")):
