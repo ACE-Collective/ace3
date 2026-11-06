@@ -315,6 +315,17 @@ def test_opencv_only_runs_when_zbar_finds_nothing(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_opencv_runs_once_on_an_image_without_a_code(tmp_path, monkeypatch):
+    runs = _running_opencv(monkeypatch)
+    Image.new("RGB", (64, 64), "white").save(tmp_path / "blank.png")
+
+    _, observable, analysis = _analyze(tmp_path, tmp_path / "blank.png")
+
+    assert analysis.extracted_text is None
+    assert runs == [observable.full_path]
+
+
+@pytest.mark.unit
 def test_opencv_timeout_is_not_a_negative_result(tmp_path, monkeypatch):
     # run_sandboxed_tool returns None for a tool it stopped, which it has already logged
     def stopped(self, args, target, **kwargs):
@@ -343,6 +354,28 @@ def test_opencv_failure_is_not_a_negative_result(tmp_path, monkeypatch, caplog):
     records = [r for r in caplog.records if "opencv qr decoding failed" in r.getMessage()]
     assert records and "cv2.error: bad image" in records[0].getMessage()
     assert records[0].path in runs
+
+
+@pytest.mark.unit
+def test_opencv_that_cannot_load_is_an_error(tmp_path, monkeypatch, caplog):
+    # under this address space limit the interpreter starts but cv2's shared libraries do not map,
+    # as on a node whose tool_sandbox.memory_limit is too low for OpenCV
+    run_sandboxed_tool = QRCodeAnalyzer.run_sandboxed_tool
+
+    def starved(self, args, target, **kwargs):
+        if any(arg.endswith("qr_decode_opencv.py") for arg in args):
+            kwargs["memory_limit"] = 175 * 1024 ** 2
+        return run_sandboxed_tool(self, args, target, **kwargs)
+
+    monkeypatch.setattr(QRCodeAnalyzer, "run_sandboxed_tool", starved)
+
+    _, observable, analysis = _analyze(tmp_path, LOGO_QR_IMAGE)
+
+    assert analysis is None
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "cannot load OpenCV" in record.getMessage()
+    assert record.exc_info
+    assert record.path == observable.full_path
 
 
 @pytest.mark.unit
