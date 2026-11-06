@@ -36,6 +36,7 @@ from saq.search.model import (
     model_slug,
 )
 from saq.search.sparse import sparse_vector
+from saq.shutdown import is_shutting_down
 
 DENSE = "dense"
 SPARSE = "sparse"
@@ -56,6 +57,11 @@ FIELD_LOCATION = "location"
 FIELD_TAGS = "tags"
 FIELD_ANALYSIS_UUID = "analysis_uuid"
 FIELD_OBSERVABLE_UUID = "observable_uuid"
+
+# how long a worker waits for another worker's create of the collection to finish. A create takes
+# well under a second, even while the disk is busy
+CREATE_WAIT_SECONDS = 30.0
+CREATE_POLL_SECONDS = 0.05
 
 KEYWORD_INDEXES = (FIELD_ROOT_UUID, FIELD_KIND, FIELD_ALERT_TYPE, FIELD_QUEUE, FIELD_DISPOSITION, FIELD_LOCATION, FIELD_TAGS)
 DATETIME_INDEXES = (FIELD_INSERT_DATE,)
@@ -141,26 +147,36 @@ def existing_payload_indexes(client: QdrantClient, name: str) -> set[str]:
     return set((info.payload_schema or {}).keys())
 
 
+def wait_for_payload_indexes(client: QdrantClient, name: str) -> set[str]:
+    """Reads the payload indexes of a collection that another worker may still be creating.
+
+    Qdrant lists the collection, and answers a second create of it with a 409, before the first
+    create has finished. Until it finishes, reads fail with a 500, and so do updates such as
+    create_payload_index ("Failed to apply operation to at least one `Active` replica"). So the
+    collection is not touched until a read succeeds. Bounded by CREATE_WAIT_SECONDS; a 500 that
+    outlasts it means qdrant is failing for some other reason, and is raised."""
+    deadline = time.monotonic() + CREATE_WAIT_SECONDS
+    waiting = False
+    while True:
+        try:
+            return existing_payload_indexes(client, name)
+        except UnexpectedResponse as e:
+            if e.status_code != HTTPStatus.INTERNAL_SERVER_ERROR or time.monotonic() >= deadline or is_shutting_down():
+                raise
+
+            if not waiting:
+                logging.info("search_collection_schema_unreadable", extra={"collection": name, "status": e.status_code})
+                waiting = True
+
+            time.sleep(CREATE_POLL_SECONDS)
+
+
 def ensure_collection(client: QdrantClient, model, name: Optional[str] = None) -> str:
     """Creates the collection and its payload indexes if they do not exist. Returns the name."""
     name = name or collection_name()
     if client.collection_exists(collection_name=name):
-        try:
-            present = existing_payload_indexes(client, name)
-        except UnexpectedResponse as e:
-            # qdrant reports the collection as existing about a millisecond before another
-            # worker's create of it returns, and reads fail with a 500 until it does. Create
-            # every index, as the 409 path below does. If qdrant is failing for some other
-            # reason, those creates fail too and raise
-            if e.status_code != HTTPStatus.INTERNAL_SERVER_ERROR:
-                raise
-
-            logging.info("search_collection_schema_unreadable", extra={"collection": name, "status": e.status_code})
-            present = set()
+        present = wait_for_payload_indexes(client, name)
     else:
-        # a collection this call creates, or one another worker is still creating, has no payload
-        # indexes yet, so every index is created below. Creating one that already exists succeeds
-        present = set()
         try:
             client.create_collection(
                 collection_name=name,
@@ -168,18 +184,19 @@ def ensure_collection(client: QdrantClient, model, name: Optional[str] = None) -
                 sparse_vectors_config={SPARSE: models.SparseVectorParams(modifier=models.Modifier.IDF)},
             )
             logging.info("search_collection_created", extra={"collection": name})
+            present = set()
         except UnexpectedResponse as e:
             # every indexer worker runs this when it starts, so another worker can create the
             # collection between the check above and this create. Qdrant answers that with a 409.
             # The collection name includes the model and the schema version, so the other worker
-            # created this same collection. Its create may still be running, and until it ends
-            # get_collection fails with a 500 while create_payload_index succeeds. That is why
-            # this path never reads the payload schema
+            # created this same collection, and its create may still be running
             if e.status_code != HTTPStatus.CONFLICT:
                 raise
 
             logging.info("search_collection_already_exists", extra={"collection": name})
+            present = wait_for_payload_indexes(client, name)
 
+    # creating an index another worker has just created succeeds
     for field_name in KEYWORD_INDEXES:
         if field_name not in present:
             client.create_payload_index(collection_name=name, field_name=field_name, field_schema=models.PayloadSchemaType.KEYWORD, wait=True)
