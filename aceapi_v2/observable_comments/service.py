@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -161,8 +161,14 @@ async def update_comment(
         return None
     if comment.user_id != user_id:
         raise PermissionError("Only the comment author can edit this comment")
-    comment.comment = comment_text
-    await session.flush()
+    # the upload form stores its comment as typed and the edit box sends it trimmed, with LF line
+    # breaks for one stored with CRLF ones, so saving it untouched is not a change and must not mark
+    # it edited
+    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
+        comment.comment = comment_text
+        comment.edited_at = func.now()
+        await session.flush()
+        await session.refresh(comment, attribute_names=["edited_at"])
     return comment
 
 

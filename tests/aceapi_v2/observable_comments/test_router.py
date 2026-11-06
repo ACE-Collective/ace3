@@ -54,6 +54,7 @@ class TestObservableComments:
         assert data["observable_id"] == obs.id
         assert "id" in data
         assert "insert_date" in data
+        assert data["edited_at"] is None
         assert "user_display_name" in data
 
     @pytest.mark.asyncio
@@ -134,6 +135,42 @@ class TestObservableComments:
         assert response.status_code == 200
         data = response.json()
         assert data["comment"] == "updated text"
+
+        await session.refresh(comment)
+        assert comment.comment == "updated text"
+        # the edit is timestamped, and the comment keeps the time it was made
+        assert comment.edited_at is not None
+        assert comment.edited_at >= comment.insert_date
+        assert data["edited_at"] == comment.edited_at.isoformat()
+        assert data["insert_date"] == comment.insert_date.isoformat()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored, sent", [
+        ("same text", "same text"),
+        # the edit box sends LF line breaks for a comment stored with CRLF ones
+        ("first line\r\nsecond line", "first line\nsecond line"),
+        # the upload form stores its comment as typed; the edit box sends it trimmed
+        ("looks benign\r\n", "looks benign"),
+        (" looks benign", "looks benign"),
+    ])
+    async def test_update_comment_without_a_change(
+        self, session: AsyncSession, client: AsyncClient, test_user: User, stored: str, sent: str
+    ):
+        """Saving a comment's text untouched does not mark it edited."""
+        obs = Observable(type="ipv4", sha256=_sha256("10.0.0.6"), value=b"10.0.0.6")
+        session.add(obs)
+        await session.commit()
+        comment = ObservableComment(user_id=test_user.id, observable_id=obs.id, comment=stored)
+        session.add(comment)
+        await session.commit()
+
+        response = await client.patch(f"/observable-comments/{comment.id}", json={"comment": sent})
+        assert response.status_code == 200
+        assert response.json()["edited_at"] is None
+
+        await session.refresh(comment)
+        assert comment.comment == stored
+        assert comment.edited_at is None
 
     @pytest.mark.asyncio
     async def test_update_comment_author_only(

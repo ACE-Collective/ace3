@@ -2,12 +2,13 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ObservableCommentRead(BaseModel):
     id: int
     insert_date: datetime
+    edited_at: datetime | None = Field(description="when the text last changed; null if never edited")
     user_id: int
     user_display_name: str
     observable_id: int

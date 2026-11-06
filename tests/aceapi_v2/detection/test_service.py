@@ -160,7 +160,8 @@ class TestObservableContext:
         # added newest first, so the order is the dates' and not the rows'
         session.add_all([
             ObservableComment(observable_id=obs.id, user_id=user.id, comment="second",
-                              insert_date=datetime(2024, 6, 1, 0, 0, 0)),
+                              insert_date=datetime(2024, 6, 1, 0, 0, 0),
+                              edited_at=datetime(2024, 7, 1, 0, 0, 0)),
             ObservableComment(observable_id=obs.id, user_id=user.id, comment="first",
                               insert_date=datetime(2024, 1, 1, 0, 0, 0)),
         ])
@@ -172,6 +173,7 @@ class TestObservableContext:
         # oldest-first
         assert [c.comment for c in results[0].comments] == ["first", "second"]
         assert results[0].comments[0].user_display_name == "Det Commenter"
+        assert [c.edited_at for c in results[0].comments] == [None, datetime(2024, 7, 1, 0, 0, 0)]
 
     @pytest.mark.asyncio
     async def test_never_seen_observable_has_no_context(self, session: AsyncSession):

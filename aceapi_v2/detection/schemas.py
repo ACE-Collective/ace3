@@ -22,6 +22,7 @@ class ObservableCommentSummary(BaseModel):
     comment: str
     user_display_name: str
     insert_date: datetime
+    edited_at: datetime | None = None
 
 
 class ObservableDetectionRead(BaseModel):

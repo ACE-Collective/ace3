@@ -166,6 +166,7 @@ async def _load_observable_context(session: AsyncSession, detections: list[Obser
                     comment=c.comment,
                     user_display_name=c.user.display_name if c.user else "",
                     insert_date=c.insert_date,
+                    edited_at=c.edited_at,
                 )
                 # oldest-first, matching the observable-comments service's ordering
                 for c in sorted(observable.observable_comments, key=lambda c: c.insert_date)

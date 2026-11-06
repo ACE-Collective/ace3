@@ -18,10 +18,10 @@ from saq.analysis.module_path import MODULE_PATH
 from saq.configuration.config import get_analysis_module_config, get_config
 from saq.analysis.presenter.observable_presenter import create_observable_presenter
 from saq.constants import ACTION_MARK_INTERESTING, ACTION_UNMARK_INTERESTING, ANALYSIS_MODULE_BASIC_TEST, F_TEST, F_YARA_RULE
-from saq.database.model import Alert, Observable as DBObservable
+from saq.database.model import Alert, Comment, Observable as DBObservable, ObservableComment
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
-from saq.database.util.observable_detection import create_observable_detection
+from saq.database.util.observable_detection import create_observable_detection, resolve_observable_identity
 from saq.gui import alert_actions
 from saq.gui.alert_actions import AlertAction, register_alert_action
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -585,6 +585,45 @@ def test_index_renders_detection_and_interesting_actions(
     # expiration dialog opens with the detection's current expiration
     assert f'aceApi.del("/detection/{detection_id}")' in body
     assert re.search(rf'show_detection_expiration_modal_for\(\s*{detection_id},\s*"2099-01-02 03:04:05"\)', body)
+
+
+@pytest.mark.integration
+def test_index_marks_edited_comments(web_client, root_analysis, test_context):
+    """An alert or observable comment changed after it was made says when; an unedited one does
+    not."""
+    test_observable, _ = _run_basic_analyzer(root_analysis, test_context)
+    root_analysis.save()
+    alert = ALERT(root_analysis)
+
+    db = get_db()
+    user_id = get_config().global_settings.automation_user_id
+    db.add(Comment(uuid=alert.uuid, user_id=user_id, comment="never edited alert comment"))
+    db.add(Comment(uuid=alert.uuid, user_id=user_id, comment="edited alert comment",
+                   edited_at=datetime(2026, 3, 4, 5, 6, 7)))
+
+    identity = resolve_observable_identity(test_observable.type, test_observable.value)
+    db_observable = db.query(DBObservable).filter(
+        DBObservable.type == identity.type, DBObservable.sha256 == identity.value_sha256).one_or_none()
+    if db_observable is None:
+        db_observable = DBObservable(type=identity.type, sha256=identity.value_sha256,
+                                     value=identity.value.encode("utf8"))
+        db.add(db_observable)
+        db.flush()
+    db.add(ObservableComment(user_id=user_id, observable_id=db_observable.id,
+                             comment="never edited observable comment"))
+    db.add(ObservableComment(user_id=user_id, observable_id=db_observable.id,
+                             comment="edited observable comment", edited_at=datetime(2026, 5, 6, 7, 8, 9)))
+    db.commit()
+
+    result = web_client.get(url_for("analysis.index"), query_string={"direct": root_analysis.uuid})
+    assert result.status_code == 200
+
+    body = result.data.decode("utf-8")
+    assert "edited alert comment" in body
+    assert "edited observable comment" in body
+    assert "(edited 2026-03-04 05:06:07)" in body
+    assert "(edited 2026-05-06 07:08)" in body
+    assert body.count("(edited ") == 2
 
 
 @pytest.mark.integration

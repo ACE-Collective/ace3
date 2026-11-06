@@ -6,10 +6,16 @@ the pages render behind their permission gates. The behaviour behind those endpo
 tests/aceapi_v2/users/ and tests/aceapi_v2/detection/.
 """
 
+from datetime import datetime
+
 import pytest
 from flask import url_for
 
+from saq.configuration.config import get_config
 from saq.constants import QUEUE_DEFAULT
+from saq.database.model import Observable, ObservableComment
+from saq.database.pool import get_db
+from saq.database.util.observable_detection import create_observable_detection, resolve_observable_identity
 from saq.database.util.user_management import add_user, delete_user
 from saq.permissions.user import add_user_permission
 
@@ -93,6 +99,34 @@ class TestAdminPagesRender:
                 resp = client.get(url_for(endpoint))
                 assert resp.status_code == 200, endpoint
                 assert needle in resp.data, endpoint
+
+    def test_detection_page_marks_edited_comments(self, app, admin_user):
+        """An observable comment changed after it was made says when; an unedited one does not."""
+        # comments by admin_user would block deleting it at teardown
+        user_id = get_config().global_settings.automation_user_id
+        create_observable_detection("ipv4", "192.0.2.10", user_id)
+        identity = resolve_observable_identity("ipv4", "192.0.2.10")
+        db = get_db()
+        observable = Observable(type=identity.type, sha256=identity.value_sha256,
+                                value=identity.value.encode("utf8"))
+        db.add(observable)
+        db.flush()
+        db.add(ObservableComment(user_id=user_id, observable_id=observable.id, comment="never touched"))
+        db.add(ObservableComment(user_id=user_id, observable_id=observable.id, comment="reworded",
+                                 edited_at=datetime(2026, 5, 6, 7, 8, 9)))
+        db.commit()
+
+        with app.test_client() as client:
+            client.post(url_for("auth.login"), data={
+                "username": "adminuser", "password": "TestPass123!",
+            })
+            resp = client.get(url_for("admin.detection_settings"), query_string={"q": "192.0.2.10"})
+            assert resp.status_code == 200
+            body = resp.data.decode("utf-8")
+            assert "never touched" in body
+            assert "reworded" in body
+            assert "(edited 2026-05-06 07:08)" in body
+            assert body.count("(edited ") == 1
 
     def test_pages_point_at_the_v2_api(self, app, admin_user):
         """The rendered pages must call aceapi_v2, not a Flask route. The calls are made by the
