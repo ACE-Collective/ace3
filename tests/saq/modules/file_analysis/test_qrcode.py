@@ -278,6 +278,23 @@ def test_filter_applies_to_codes_opencv_reads(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+def test_logo_qr_code_beside_a_filtered_code(tmp_path, monkeypatch):
+    # zbarimg reads only the plain code, which the filter drops, so OpenCV still looks for the logo code
+    filters = tmp_path / "qrcode_filters.txt"
+    filters.write_text("qrco\\.de/\n")
+    monkeypatch.setattr(QRCodeAnalyzer, "qrcode_filter_path", property(lambda self: str(filters)))
+    with Image.open(LOGO_QR_IMAGE) as logo, Image.open(QR_IMAGE) as plain:
+        both = Image.new("RGB", (logo.width + plain.width + 40, max(logo.height, plain.height) + 40), "white")
+        both.paste(logo.convert("RGB"), (10, 20))
+        both.paste(plain.convert("RGB"), (logo.width + 30, 20))
+    both.save(tmp_path / "both.png")
+
+    _, _, analysis = _analyze(tmp_path, tmp_path / "both.png")
+
+    assert analysis.extracted_text == LOGO_QR_URL
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("name", ["blank.png", "blank.ico"])
 def test_image_without_a_code_is_a_negative_result(tmp_path, name):
     # OpenCV cannot load an .ico, which is not the same as the scan failing
