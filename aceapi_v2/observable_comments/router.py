@@ -24,6 +24,7 @@ def _to_read(comment) -> ObservableCommentRead:
     return ObservableCommentRead(
         id=comment.id,
         insert_date=comment.insert_date,
+        edited_at=comment.edited_at,
         user_id=comment.user_id,
         user_display_name=comment.user.display_name if comment.user else "unknown",
         observable_id=comment.observable_id,

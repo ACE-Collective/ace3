@@ -147,7 +147,7 @@
     {% for c in obs_comments %}
     <div class="observable-comment" style="font-size: 85%; color: var(--bs-secondary-color);">
         <span class="bi bi-chat-left-text" style="color: var(--bs-tertiary-color);"></span>
-        <span class="text-muted">{{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</span>
+        <span class="text-muted">{{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}{% if c.edited_at %} (edited {{ c.edited_at.strftime('%Y-%m-%d %H:%M') }}){% endif %}</span>
         <strong>{{ c.user.display_name if c.user else 'unknown' }}</strong>:
         <span class="obs-comment-text">{{ c.comment }}</span>
         {% if c.user_id == current_user.id %}

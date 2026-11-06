@@ -4033,6 +4033,9 @@ class Comment(Base):
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
 
+    # when the text last changed; NULL when never edited
+    edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
+
     user: Mapped["User"] = relationship(
         'User', primaryjoin='Comment.user_id == User.id',
         foreign_keys=[user_id], backref='comments')
@@ -4065,6 +4068,9 @@ class ObservableComment(Base):
         index=True)
 
     comment: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # when the text last changed; NULL when never edited
+    edited_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP, nullable=True)
 
     user: Mapped["User"] = relationship('User', foreign_keys=[user_id])
     observable: Mapped["Observable"] = relationship('Observable', backref='observable_comments')

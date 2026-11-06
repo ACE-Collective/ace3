@@ -252,11 +252,11 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
         {
             "alert_uuid": "...",
             "alert_comments": [
-                {"insert_date": "...", "user": {...}, "comment": "..."}, ...
+                {"insert_date": "...", "edited_at": "..." or null, "user": {...}, "comment": "..."}, ...
             ],
             "observable_comments": [
                 {"observable": {"type": "...", "value": "...", "sha256": "..."},
-                 "insert_date": "...", "user": {...}, "comment": "..."}, ...
+                 "insert_date": "...", "edited_at": "..." or null, "user": {...}, "comment": "..."}, ...
             ],
         }
     """
@@ -282,6 +282,7 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
         "alert_comments": [
             {
                 "insert_date": c.insert_date.isoformat(),
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
                 "user": _serialize_user(c.user),
                 "comment": c.comment,
             }
@@ -295,6 +296,7 @@ def collect_alert_comments(alert: GUIAlert) -> dict:
                     "sha256": c.observable.sha256.hex(),
                 },
                 "insert_date": c.insert_date.isoformat(),
+                "edited_at": c.edited_at.isoformat() if c.edited_at else None,
                 "user": _serialize_user(c.user),
                 "comment": c.comment,
             }
@@ -326,13 +328,15 @@ def update_alert_comment(alert_uuid: str, comment_id: int, comment_text: str, au
     if comment.user_id != user_id:
         raise HTTPException(status_code=403, detail="Only the comment author can edit this comment")
 
-    # a comment added through the GUI's form was stored with a form submission's CRLF line breaks,
-    # while the edit modal sends a textarea's LF ones, so saving it untouched is not a change
-    if comment.comment.replace("\r\n", "\n") != comment_text.replace("\r\n", "\n"):
+    # a comment added through the GUI's form was stored as typed, with a form submission's CRLF line
+    # breaks, while the edit request is stripped and the modal sends a textarea's LF ones, so saving
+    # it untouched is not a change
+    if comment.comment.replace("\r\n", "\n").strip() != comment_text.replace("\r\n", "\n").strip():
         log_audit("user %s edited comment %s on alert %s from %r to %r",
                   auth.auth_name, comment_id, alert_uuid, comment.comment, comment_text,
                   auth=auth, alert_uuid=alert_uuid, comment_id=comment_id)
         comment.comment = comment_text
+        comment.edited_at = func.now()
         touch_alerts([alert_uuid])
         get_db().commit()
         submit_index_task(alert_uuid)
@@ -341,6 +345,7 @@ def update_alert_comment(alert_uuid: str, comment_id: int, comment_text: str, au
         comment_id=comment.comment_id,
         alert_uuid=comment.uuid,
         insert_date=comment.insert_date,
+        edited_at=comment.edited_at,
         user_id=comment.user_id,
         user_display_name=comment.user.display_name if comment.user else "unknown",
         comment=comment.comment,

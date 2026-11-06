@@ -179,7 +179,7 @@
                     {% for c in det.comments %}
                     <div class="obs-comment mb-1">
                         <div>{{ c.comment }}</div>
-                        <div class="text-muted small">— {{ c.user_display_name }} · {{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}</div>
+                        <div class="text-muted small">— {{ c.user_display_name }} · {{ c.insert_date.strftime('%Y-%m-%d %H:%M') }}{% if c.edited_at %} (edited {{ c.edited_at.strftime('%Y-%m-%d %H:%M') }}){% endif %}</div>
                     </div>
                     {% endfor %}
                 </td>

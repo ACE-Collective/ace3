@@ -485,7 +485,8 @@ class TestDownloadAlert:
         # a comment on a different alert must not leak in
         db.add(Comment(uuid=str(uuid4()), user_id=user.id, comment="other alert"))
         db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="first alert comment"))
-        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="second alert comment"))
+        db.add(Comment(uuid=alert_uuid, user_id=user.id, comment="second alert comment",
+                       edited_at=datetime(2026, 3, 4, 5, 6, 7)))
 
         value = b"192.0.2.1"
         observable = Observable(type="ipv4", sha256=hashlib.sha256(value).digest(), value=value)
@@ -522,10 +523,12 @@ class TestDownloadAlert:
         for c in comments["alert_comments"]:
             assert c["user"]["username"] == "unittest"
             assert c["insert_date"]
+        assert [c["edited_at"] for c in comments["alert_comments"]] == [None, "2026-03-04T05:06:07"]
 
         assert len(comments["observable_comments"]) == 1
         oc = comments["observable_comments"][0]
         assert oc["comment"] == "known scanner"
+        assert oc["edited_at"] is None
         assert oc["user"]["username"] == "unittest"
         assert oc["observable"] == {
             "type": "ipv4",
@@ -755,9 +758,13 @@ def _alert_version(alert_uuid: str) -> str:
     return get_db().query(Alert).filter(Alert.uuid == alert_uuid).one().version
 
 
-def _comment_text(comment_id: int) -> str:
+def _comment_row(comment_id: int) -> Comment:
     get_db().expire_all()
-    return get_db().query(Comment).filter(Comment.comment_id == comment_id).one().comment
+    return get_db().query(Comment).filter(Comment.comment_id == comment_id).one()
+
+
+def _comment_text(comment_id: int) -> str:
+    return _comment_row(comment_id).comment
 
 
 class TestUpdateAlertComment:
@@ -781,6 +788,8 @@ class TestUpdateAlertComment:
         user_id = _unittest_user_id()
         alert_uuid, comment_id = _insert_commented_alert(user_id)
         version = _alert_version(alert_uuid)
+        insert_date = _comment_row(comment_id).insert_date
+        assert _comment_row(comment_id).edited_at is None
 
         response = await client.patch(
             f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "  edited comment\n"})
@@ -791,7 +800,14 @@ class TestUpdateAlertComment:
         assert data["user_id"] == user_id
         assert data["comment"] == "edited comment"
 
-        assert _comment_text(comment_id) == "edited comment"
+        row = _comment_row(comment_id)
+        assert row.comment == "edited comment"
+        # the edit is timestamped, and the comment keeps the time it was made
+        assert row.edited_at is not None
+        assert row.edited_at >= insert_date
+        assert row.insert_date == insert_date
+        assert data["edited_at"] == row.edited_at.isoformat()
+        assert data["insert_date"] == insert_date.isoformat()
         audit = audit_record(caplog, f"user unittest edited comment {comment_id} on alert {alert_uuid}")
         assert (*audit_actor_of(audit), audit.alert_uuid, audit.comment_id) == (*client_actor, alert_uuid, comment_id)
         # the change is visible to clients polling the alert, and the search index picks it up
@@ -807,6 +823,8 @@ class TestUpdateAlertComment:
         response = await client.patch(
             f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "original comment"})
         assert response.status_code == 200
+        assert response.json()["edited_at"] is None
+        assert _comment_row(comment_id).edited_at is None
         assert _alert_version(alert_uuid) == version
         mock_submit_index_task.assert_not_called()
 
@@ -822,6 +840,26 @@ class TestUpdateAlertComment:
         assert response.status_code == 200
         assert _alert_version(alert_uuid) == version
         assert _comment_text(comment_id) == "first line\r\nsecond line"
+        assert _comment_row(comment_id).edited_at is None
+        mock_submit_index_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ["looks benign\r\n", " looks benign"])
+    @patch("aceapi_v2.alerts.service.submit_index_task", wraps=submit_index_task)
+    async def test_edge_whitespace_alone_is_not_a_change(self, mock_submit_index_task, client: AsyncClient,
+                                                         stored: str):
+        # the add form stores the text as typed; the edit request is stripped
+        alert_uuid, comment_id = _insert_commented_alert(_unittest_user_id(), stored)
+        version = _alert_version(alert_uuid)
+
+        response = await client.patch(
+            f"/alerts/{alert_uuid}/comments/{comment_id}", json={"comment": "looks benign"})
+        assert response.status_code == 200
+        assert response.json()["edited_at"] is None
+        row = _comment_row(comment_id)
+        assert row.edited_at is None
+        assert row.comment == stored
+        assert _alert_version(alert_uuid) == version
         mock_submit_index_task.assert_not_called()
 
     @pytest.mark.asyncio
