@@ -57,7 +57,7 @@ directory as hostile, as it did before.
 - A tool the node cannot run at all is an operator's problem. That covers a node without Landlock, a
   program that is not found, a program in a directory that holds SAQ_HOME or the data directory,
   a program the sandbox cannot start (exit 125, 126 or 127 with no output), and a runtime it keeps
-  from starting: the JVM or CoreCLR exits with its own start-up error (`startup_errors`) when a
+  from starting: the JVM, CoreCLR or OpenCV exits with its own start-up error (`startup_errors`) when a
   directory it needs is not readable or the memory limit is too small for it. It is logged at ERROR
   with an error report once per module and program per process, then at WARNING.
 
@@ -71,6 +71,9 @@ On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails.
   the tool in the same process. The .NET GC reserves 256 GB of address space unless it gets
   `DOTNET_GCHeapHardLimit` and `DOTNET_GCRegionRange`, and even then the runtime reserves about
   5 GB, so these tools run with a 12 GB `memory_limit`. The heap limit bounds what they use.
+- numpy's OpenBLAS starts a thread per core, and each reserves address space under the memory
+  limit, so `bin/qr_decode_opencv.py` runs with `OPENBLAS_NUM_THREADS=1`. It exits with its own
+  start-up error (`startup_errors`) when OpenCV cannot load.
 - de4dot runs as `/opt/de4dotEx/de4dot` (`binary_path`), not through the `/usr/local/bin` wrapper,
   which execs a binary the sandbox would not let it read.
 - A split archive does not extract without its other volumes. The archive module gives the
@@ -88,6 +91,7 @@ On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails.
 ## Which tools
 
 Sandboxed: `gs` (PDF rewriting, QR page rendering), `exiftool`, `pdftotext`, `pdfinfo`, `zbarimg`,
+`bin/qr_decode_opencv.py` (OpenCV, on what `zbarimg` finds no QR code in),
 `7z`, `unrar`, `unzip`, `unace`, `bin/unjar`, `dmg2img`, `upx`, `de4dot`, `ilspycmd`, the CFR
 decompiler, `zip2john`, `rar2john`, `pdf2john.pl`, `office2john.py` and `john`
 (`saq/cracking.py`). The encrypted-rar module extracts with a sandboxed `unrar` instead of
