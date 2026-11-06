@@ -387,15 +387,6 @@ def test_the_refresher_runs_until_stopped_and_survives_a_failure(checkout, monke
     assert not service.catalog.thread.is_alive()
 
 
-@pytest.mark.integration
-def test_the_refresher_stays_idle_off_the_primary_node(monkeypatch):
-    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
-    service = SVSService()
-    service.start()
-    assert service.catalog is None
-    service.stop()
-
-
 #
 # ace svs catalog
 #

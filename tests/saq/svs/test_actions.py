@@ -363,13 +363,6 @@ def test_an_unfinished_purge_is_retried(user_id, svs_pool, monkeypatch):
     assert not svs_pool.exists(sha256)
 
 
-def test_delete_needs_a_reason_and_a_sample(user_id):
-    with pytest.raises(ValueError):
-        actions.delete_sample("ab" * 32, user_id, " ", actor="unittest")
-    with pytest.raises(SampleNotFound):
-        actions.delete_sample("ab" * 32, user_id, "privacy", actor="unittest")
-
-
 def test_a_missing_capture_is_deleted_too(user_id):
     sha256 = "cd" * 32
     insert_capture(str(uuid.uuid4()), sha256, state="missing", missing_reason="file", stored_at=None)

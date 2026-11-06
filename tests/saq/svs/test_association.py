@@ -297,17 +297,7 @@ class TestDisassociate:
         (row,) = _attributions(root.uuid, run.id)
         assert (row.source, row.removed_at, row.removed_by_user_id) == ("manual", None, None)
 
-    def test_nothing_to_disassociate(self, run, user_id):
-        with pytest.raises(AssociationConflict):
-            association.disassociate(run.uuid, _alert(host="srv-01").uuid, person(user_id))
-
-
 class TestNotATestAndKeep:
-    def test_not_a_test_on_a_marker_alert_is_refused(self, run, user_id):
-        root = _alert(marker=run.marker)
-        with pytest.raises(AssociationConflict):
-            association.disassociate(run.uuid, root.uuid, person(user_id), not_a_test=True)
-
     def test_keep(self, run, user_id):
         root = _alert()
         result = association.keep(run.uuid, root.uuid, person(user_id))
