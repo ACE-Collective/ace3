@@ -766,6 +766,9 @@ class RootAnalysis(Analysis):
         # this also clears any pre/post analysis module tracking
         self.state = {}
 
+        # a module that failed gets another chance: it may have been fixed since
+        self.analysis_failures = {}
+
         # remove any empty directories left behind
         if self.file_manager:
             self.file_manager.cleanup_empty_directories()

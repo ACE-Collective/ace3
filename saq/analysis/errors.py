@@ -12,7 +12,9 @@ class AnalysisError(Exception):
     The module's analysis of the observable is created if it does not exist yet and marked with the
     message (Analysis.error), which the analyst sees in the alert. Unlike any other exception it
     writes no crash report: it is a failure the module expected, like a lookup that timed out or a
-    tool that exited non-zero."""
+    tool that exited non-zero. Raise it from the exception it wraps (raise AnalysisError(...) from e)
+    so the log has that exception's traceback. An exception the module did not expect is left to
+    raise: the engine writes a crash report for it."""
 
     def __init__(self, message: str):
         if not isinstance(message, str) or not message.strip():

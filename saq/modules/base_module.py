@@ -885,8 +885,11 @@ class AnalysisModule(FileWatcherMixin):
             # the module said it failed: the analyst sees why on its analysis, which is kept with
             # whatever the module put in it before it failed
             close_with_error(self.create_analysis(observable), e.message)
+            # at INFO, so no error report: the failure was expected. the traceback of the exception it
+            # wraps, if any, is still the only way to find its cause from the log
             logging.info(
                 "%s failed to analyze %s: %s", self, observable, e.message,
+                exc_info=e.__cause__ or e.__context__,
                 extra={
                     "module_name": self.name,
                     "observable_uuid": observable.uuid,

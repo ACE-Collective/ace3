@@ -1026,7 +1026,7 @@ it is read without loading them. A module says it failed in one of two ways:
 
 ```python
 # from anywhere under execute_analysis()/continue_analysis()/execute_final_analysis()
-raise AnalysisError(f"whois lookup of {domain} failed: {e}")
+raise AnalysisError(f"whois lookup of {domain} failed: {e}") from e
 
 # or, holding the analysis, and returning normally
 analysis.error = f"exiftool exited {result.returncode}: {result.stderr[-200:]}"
@@ -1038,8 +1038,10 @@ The message is required: `AnalysisError("")` and `analysis.error = ""` raise
 `AnalysisError` into an error on the module's analysis of the observable,
 creating that analysis if the module had not yet, closes it out completed
 (`close_with_error()`), logs it at INFO with the root and observable, and
-returns `COMPLETED`. It writes no crash report: it is a failure the module
-expected. Whatever the analysis already holds (observables, details, a summary)
+returns `COMPLETED`, with the traceback of the exception the `AnalysisError`
+was raised from, if any. It writes no crash report: it is a failure the module
+expected. An exception the module did not expect is left to raise, so the engine
+writes a crash report for it (§12.3), rather than wrapped in an `AnalysisError`. Whatever the analysis already holds (observables, details, a summary)
 is kept and shown as a partial result.
 
 What an error does:
@@ -1065,7 +1067,10 @@ one, because code that reads an analysis takes one that exists as the module's
 result (`EmailArchiver` indexes URLs under every `EmailArchiveResults` it
 finds). The failure goes in `root.analysis_failures` instead, which also stops
 the module from running on that observable again in the root, and the alert
-tree shows it under the observable. Code that reads another module's analysis
+tree shows it under the observable. An analyst asking for analysis (Analyze
+Alert, an observable action, `request_analyst_analysis()`) or `ace alert reset`
+clears `analysis_failures`, so a module that failed, transiently or before a
+fix was deployed, runs again. Code that reads another module's analysis
 checks `analysis.error` before trusting it.
 
 ### 12.5 `AnalysisTimeoutError` unwinding

@@ -241,6 +241,22 @@ def test_upx_unpack(root_analysis, fake_tools, caplog):
 
 
 @pytest.mark.integration
+def test_upx_failure_without_a_message_is_named_by_its_type(root_analysis, monkeypatch):
+    """An exception whose str() is empty still gives the analysis an error, which needs a message."""
+    module = _module(UPXAnalyzer, "upx", root_analysis)
+    monkeypatch.setattr(module, "test_upx", lambda path: True)
+
+    def _raise(*args, **kwargs):
+        raise TimeoutError()
+
+    monkeypatch.setattr(module, "run_sandboxed_tool", _raise)
+    observable = _file(root_analysis, "packed.exe", b"MZ packed")
+
+    _run(module, observable)
+    assert observable.get_analysis(UPXAnalysis).error == "TimeoutError"
+
+
+@pytest.mark.integration
 def test_ssdeep(root_analysis, fake_tools):
     tool_dir = fake_tools({"ssdeep": HANG})
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)

@@ -11,12 +11,13 @@ from flask import url_for
 
 from saq.analysis.file_manager.local_file_manager import clean_file_name
 from saq.analysis.root import RootAnalysis
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS, EventTimeSource
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, F_TEST, STATE_ANALYST_REQUESTED_ANALYSIS, EventTimeSource
 from saq.database.model import ObservableComment
 from saq.database.pool import get_db
-from saq.database.util.alert import get_alert_by_uuid
+from saq.database.util.alert import ALERT, get_alert_by_uuid
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_temp_dir
+from saq.modules.test import BasicTestAnalysis
 from saq.util.filesystem import is_path_under
 from tests.saq.helpers import audit_actor_of, audit_record
 
@@ -394,6 +395,20 @@ class TestAnalyzeAlert:
         alert = get_alert_by_uuid(alert_uuid)
         assert alert is not None
     
+    def test_analyze_alert_lets_failed_modules_run_again(self, web_client, root_analysis):
+        """Analyze Alert after a module failed (say, it was fixed since) runs that module again."""
+        observable = root_analysis.add_observable_by_spec(F_TEST, "test")
+        root_analysis.set_analysis_failed(BasicTestAnalysis, F_TEST, "test", error_message="RuntimeError: boom")
+        root_analysis.save()
+        ALERT(root_analysis)
+
+        result = web_client.post(url_for('analysis.analyze_alert'), data={'alert_uuid': root_analysis.uuid})
+
+        assert result.status_code == 302
+        root = RootAnalysis(storage_dir=root_analysis.storage_dir)
+        root.load()
+        assert not root.is_analysis_failed(BasicTestAnalysis, root.get_observable(observable.uuid))
+
     def test_analyze_alert_nonexistent_uuid(self, web_client):
         """Test analyze_alert with nonexistent alert_uuid."""
         # Try to analyze an alert with a nonexistent UUID

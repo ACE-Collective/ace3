@@ -454,3 +454,14 @@ class TestCheckDispositionAnalystOverride:
 
         assert root.analysis_mode == ANALYSIS_MODE_CORRELATION
         assert root.state[STATE_ANALYST_REQUESTED_ANALYSIS] is True
+
+    @pytest.mark.unit
+    def test_request_analyst_analysis_lets_failed_modules_run_again(self):
+        """an analyst asking for analysis gives every module that failed on the alert another chance"""
+        root = create_root_analysis(analysis_mode="dispositioned")
+        observable = root.add_observable_by_spec(F_TEST, "test")
+        root.set_analysis_failed(BasicTestAnalysis, F_TEST, "test", error_message="RuntimeError: boom")
+
+        request_analyst_analysis(root)
+
+        assert not root.is_analysis_failed(BasicTestAnalysis, observable)

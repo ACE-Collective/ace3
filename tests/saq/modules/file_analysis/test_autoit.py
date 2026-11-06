@@ -1,4 +1,6 @@
 import os
+from types import SimpleNamespace
+
 import pytest
 
 from saq.configuration.config import get_analysis_module_config
@@ -115,6 +117,25 @@ class TestAutoItAnalyzer:
         os.remove(file_observable.full_path)
 
         assert analyzer.custom_requirement(file_observable) is False
+
+    def test_execute_analysis_failure_without_a_message_is_named_by_its_type(self, root_analysis, datadir, monkeypatch):
+        """An exception whose str() is empty still gives the analysis an error, which needs a message."""
+        analyzer = AutoItAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_AUTOIT))
+        file_observable = root_analysis.add_file_observable(str(datadir / "UGtZgHHT.au3"))
+        results = [SimpleNamespace(stdout="", stderr=""), TimeoutError()]
+
+        def _run_tool(*args, **kwargs):
+            result = results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(analyzer, "run_tool", _run_tool)
+
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+        assert file_observable.get_analysis(AutoItAnalysis).error == "TimeoutError"
 
     def test_execute_analysis_autoit_file(self, root_analysis, datadir, tmpdir, monkeypatch):
         analyzer = AutoItAnalyzer(

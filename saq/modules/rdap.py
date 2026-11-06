@@ -31,6 +31,8 @@ Outcomes to handle:
       fallback to WHOIS (the registry told us the truth).
     - RDAP can't serve this TLD / bootstrap failed / RDAP server
       errored: fall back to ``python-whois``.
+    - WHOIS says the domain is not registered: authoritative negative,
+      recorded like RDAP's.
     - Both fail: surface a combined error so the analyst sees both
       failure modes.
     - Query succeeds but the registry omits creation / last-changed
@@ -614,6 +616,9 @@ class RdapAnalyzer(AnalysisModule):
         if whois_error is None:
             analysis.lookup_protocol = "whois"
             return AnalysisExecutionResult.COMPLETED
+        if whois_error == _WHOIS_NOT_FOUND_SENTINEL:
+            # the registry's authoritative "not found", like RDAP's above
+            return AnalysisExecutionResult.COMPLETED
 
         analysis.error = f"rdap: {rdap_error}; whois: {whois_error}"
         return AnalysisExecutionResult.COMPLETED
@@ -722,14 +727,22 @@ class RdapAnalyzer(AnalysisModule):
     ) -> str | None:
         """Populate ``analysis`` from a legacy WHOIS query for
         ``query_domain`` (the registrable domain reduced from
-        ``observable``). Returns ``None`` on success or an error string
-        on failure.
+        ``observable``). Returns ``None`` on success,
+        ``_WHOIS_NOT_FOUND_SENTINEL`` for the registry's authoritative
+        "not found" (stored on the analysis as ``not_found``), or an error
+        string on failure.
         """
         import whois
-        from whois.exceptions import PywhoisError
+        # local, like whois: loaded only by the process that queries (see the note on imports above)
+        from whois.exceptions import PywhoisError, WhoisDomainNotFoundError
 
         try:
             whois_result = whois.whois(query_domain)
+        except WhoisDomainNotFoundError as e:
+            # python-whois puts the first line of the registry's reply in the message, which on its
+            # own does not say the domain is unregistered
+            analysis.not_found = f"whois: domain not found: {e}".split("\n", 1)[0].strip()[:200]
+            return _WHOIS_NOT_FOUND_SENTINEL
         except PywhoisError as e:
             return str(e).split("\n", 1)[0].strip()[:200] or "query failed"
         except Exception as e:  # noqa: BLE001
@@ -788,6 +801,7 @@ class RdapAnalyzer(AnalysisModule):
 # Sentinel returned by ``_try_rdap`` to distinguish "RDAP says no" from
 # "RDAP can't answer". Internal; never stored on the analysis.
 _RDAP_NXDOMAIN_SENTINEL = "__rdap_nxdomain__"
+_WHOIS_NOT_FOUND_SENTINEL = "__whois_not_found__"
 
 
 class RdapAnalysisPresenter(AnalysisPresenter):

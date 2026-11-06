@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 
 import pytest
-from whois.exceptions import PywhoisError
+from whois.exceptions import PywhoisError, WhoisDomainNotFoundError
 from whoisit.errors import (
     BootstrapError,
     QueryError,
@@ -688,6 +688,34 @@ def test_rdap_analyzer_both_protocols_fail(test_context, monkeypatch):
     assert analysis.error is not None
     assert "rdap: no RDAP service" in analysis.error
     assert "whois: No whois server is known" in analysis.error
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_whois_domain_not_found_is_an_answer(test_context, monkeypatch):
+    """A TLD with no RDAP service falls back to WHOIS, and the registry saying the domain is not
+    registered is an answer like RDAP's: no error, so it is cached."""
+    def _rdap(_domain, **_kw):
+        raise UnsupportedError("No RDAP service for TLD 'de'")
+
+    def _whois(_domain):
+        # python-whois puts the registry's reply in the message; DENIC's starts with the domain
+        raise WhoisDomainNotFoundError("Domain: unregistered-xyz.de\nStatus: free")
+
+    _patch_rdap(monkeypatch, _rdap)
+    _patch_whois(monkeypatch, _whois)
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "unregistered-xyz.de")
+
+    analyzer = _make_analyzer(test_context)
+    analyzer.root = root
+
+    analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(RdapAnalysis)
+    assert analysis.error is None
+    assert analysis.not_found == "whois: domain not found: Domain: unregistered-xyz.de"
+    assert analysis.generate_summary() == "RDAP Analysis: whois: domain not found: Domain: unregistered-xyz.de"
 
 
 @pytest.mark.unit

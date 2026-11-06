@@ -646,6 +646,16 @@ class _FailingBeforeAnalysisModule(_TestModule):
         raise AnalysisError("lookup timed out")
 
 
+class _WrappingModule(_TestModule):
+    """Turns the exception it caught into an AnalysisError, the way docs/ENGINE.md shows."""
+
+    def execute_analysis(self, observable):
+        try:
+            {}["data"]
+        except KeyError as e:
+            raise AnalysisError(f"unexpected response: {e}") from e
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("message", [None, "", "   ", 42])
 def test_analysis_error_requires_a_message(message):
@@ -687,6 +697,19 @@ def test_analysis_error_marks_the_analysis_failed_and_keeps_what_it_found(root, 
     assert record.levelno == logging.INFO
     assert record.observable_uuid == observable.uuid
     assert record.root_uuid == root.uuid
+
+
+@pytest.mark.unit
+def test_analysis_error_logs_the_exception_it_wraps(root, caplog):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_WrappingModule)
+
+    with caplog.at_level(logging.INFO):
+        module.analyze(observable)
+
+    record = next(r for r in caplog.records if r.message.endswith("unexpected response: 'data'"))
+    # the traceback of the KeyError, so the cause can be found from the log
+    assert record.exc_info and record.exc_info[0] is KeyError
 
 
 @pytest.mark.unit
