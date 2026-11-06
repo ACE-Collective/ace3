@@ -2,6 +2,7 @@ import logging
 from logging.handlers import BufferingHandler
 import os
 import sys
+import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +18,7 @@ from saq.integration.integration_loader import (
     load_integration_component_src,
     load_integration_component_bin,
     load_integration_component_etc,
+    load_integration_from_directory,
 )
 from saq.integration.integration_manager import disable_integration
 from saq.integration.integration_util import (
@@ -158,11 +160,29 @@ class TestInitializeIntegrations:
 
         initialize_integrations()
 
-        failures = [r for r in caplog.records if r.message == "unable to import the python_module no_such_integration_package of integration broken"]
+        failures = [r for r in caplog.records if r.message.startswith("failed to import integration module broken")]
         assert len(failures) == 1
         assert failures[0].levelname == "ERROR"
         assert failures[0].exc_info[0] is ModuleNotFoundError
-        assert failures[0].integration == "broken"
+
+    def test_a_disabled_integration_is_not_imported(self, integration_env, monkeypatch, caplog):
+        """Its hooks would register observable actions whose templates live in the GUI blueprint
+        apply_integration_hooks() leaves out for it. It is declared, so it is not warned about either."""
+        token = uuid.uuid4().hex
+        names = {True: f"switched_on_{token}", False: f"switched_off_{token}"}
+        for name in names.values():
+            load_integration_from_directory(integration_env(name))
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        monkeypatch.setattr("saq.integration.integration_loader.get_config", lambda: SimpleNamespace(integrations=[
+            IntegrationConfig(name=name, description=name, enabled=enabled, python_module=name)
+            for enabled, name in names.items()]))
+
+        with caplog.at_level(logging.WARNING):
+            initialize_integrations()
+
+        assert names[True] in sys.modules
+        assert names[False] not in sys.modules
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_undeclared_integration_is_logged_at_warning(self, integration_env, monkeypatch, caplog):
         """An integration directory with no integration_*: block is logged at WARNING."""

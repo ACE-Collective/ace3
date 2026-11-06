@@ -73,6 +73,7 @@ Follow these steps to bulid a new integration.
 1. (optional) Put executables in `etc/cron/hourly`, `etc/cron/daily` or `etc/cron/weekly` to run them on that schedule alongside ACE's own maintenance tasks, one file per task. See `docs/CRON.md`.
 1. (optional) Add correlation hunt query sources or command types. See [Extending correlation hunts](#extending-correlation-hunts).
 1. (optional) Add an alert router that decides which queue an alert goes to. See [Routing alerts](#routing-alerts).
+1. (optional) Add GUI pages. See [Adding GUI pages](#adding-gui-pages).
 1. (optional) Add API routes for your pages and actions to call. See [Adding API routes](#adding-api-routes).
 
 You can use the example provided in `integrations.example` as a starting point to create a new integration.
@@ -91,12 +92,17 @@ integration_example:
   enabled: true
   # a brief description of what the integration provides
   description: "Example Integration"
-  # the python package to import, in every ACE process
+  # the python package to import, in every ACE process: it runs your registration hooks
+  # (register_integration_configuration(), register_directive(), ...), so its __init__.py imports
+  # only what they need
   python_module: example
-  # optional -- the module the GUI imports when it builds its app (see below)
-  gui_module: example.gui
-  # optional -- the module that defines your API router (see Adding API routes)
-  api_module: example.api.router
+  # optional: your FastAPI router, as module:attribute, served under /api/v2/integrations/<name>
+  # (see Adding API routes). only the API imports it
+  api_router: example.api.router:router
+  # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
+  # your blueprints (see Adding GUI pages). only the GUI imports it, so its module is also where
+  # register_observable_action() and register_alert_action() go
+  gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration
@@ -106,14 +112,12 @@ integration_example:
 
 Every ACE process imports `python_module`, so its package init registers only what every process
 needs (`register_integration_configuration()`, `register_directive()`) and imports nothing heavier
-(`docs/IMPORTS.md`). Register what only the GUI uses from `gui_module`, which only the GUI imports,
-when it builds its app and before it registers the integrations' blueprints:
-`register_observable_action()` and `register_observable_presenter()`
-(`saq/analysis/presenter/observable_presenter.py`), `register_alert_action()`
-(`saq/gui/alert_actions.py`) and `register_integration_blueprint_callback()` (`app/integration.py`).
-That module can import Flask and your blueprint at module level. A `gui_module` that fails to
-import is logged at ERROR and the GUI starts without it.
-`integrations.example/example/src/example/gui.py` is a working example.
+(`docs/IMPORTS.md`). Register what only the GUI uses, `register_observable_action()` and
+`register_observable_presenter()` (`saq/analysis/presenter/observable_presenter.py`) and
+`register_alert_action()` (`saq/gui/alert_actions.py`), at module level in the module your
+`gui_blueprint` names, or a module it imports: only the GUI imports it, once, when it builds its app.
+`integrations.example/example/src/example/app/observable_actions.py`, which
+`example/app/blueprint.py` imports, is a working example.
 
 ACE logs a warning at startup for any discovered integration directory that has no
 `integration_*:` block.
@@ -351,7 +355,7 @@ that carries one tag to one queue and does nothing to any other alert.
 
 An integration adds a button to the alert page's toolbar with an **alert action**
 (`saq/gui/alert_actions.py`), the alert-level counterpart of `register_observable_action()`.
-Subclass `AlertAction` and register the class from your `gui_module`:
+Subclass `AlertAction` and register the class from the module of your `gui_blueprint`:
 
 ```python
 from saq.gui.alert_actions import AlertAction, register_alert_action
@@ -431,12 +435,44 @@ A name the GUI cannot load is left out of the list and logged at ERROR with an e
 stored in the alert's `alert_template` extension, which is how a hunt's `alert_template` setting
 (`docs/HUNTS.md`) works as well. A submitted value that is not in the list is refused.
 
+## Adding GUI pages
+
+An integration's pages, templates and static files live in a Flask blueprint. Name a function that
+registers it in your `integration_<name>:` block as `gui_blueprint`, and the GUI calls it with its
+Flask app when it builds the app:
+
+```python
+# src/vendor/app/blueprint.py
+from flask import Blueprint, Flask
+
+vendor_bp = Blueprint("vendor", __name__, url_prefix="/vendor", template_folder="../templates")
+
+def register(flask_app: Flask) -> None:
+    import vendor.app.views  # noqa: F401  (views imports vendor_bp from this module)
+    flask_app.register_blueprint(vendor_bp)
+```
+
+```yaml
+# etc/saq.integration.yaml
+integration_vendor:
+  name: vendor
+  ...
+  gui_blueprint: vendor.app.blueprint:register
+```
+
+- **Only the GUI imports it.** Every ACE process imports your package, so don't import Flask or the
+  blueprint from it.
+- A function that fails to import, or raises, is logged at ERROR and the GUI starts without your
+  pages.
+
+`integrations.example/example/src/example/app/blueprint.py` is a working example.
+
 ## Adding API routes
 
 Anything an integration's pages, observable actions or alert actions fetch or change goes through
-the API (`aceapi_v2`), not through routes in its Flask blueprint. Name the module that defines your
-FastAPI router as `api_module` in your `integration_<name>:` block, and its routes are served under
-`/api/v2/integrations/<name>`, where `<name>` is the block's `name`:
+the API (`aceapi_v2`), not through routes in its Flask blueprint. Name your FastAPI router in your
+`integration_<name>:` block as `api_router`, and its routes are served under
+`/api/v2/integrations/<name>`:
 
 ```python
 # src/vendor/api/router.py
@@ -461,16 +497,15 @@ async def submit(
 integration_vendor:
   name: vendor
   ...
-  api_module: vendor.api.router
+  api_router: vendor.api.router:router
 ```
 
-- **Only the API imports the module.** `vendor.api.router` (which must define `router`) is imported
-  when an API app is built, so the other processes never load FastAPI or your router's service
-  layer. A router module that fails to import, or a `name` that is not lowercase letters, digits
-  and dashes, is logged at ERROR and left out, and the API starts without it. Calling
-  `register_integration_router("vendor", "vendor.api.router")` (`aceapi_v2/integrations.py`) from
-  your package init does the same; passing it the router object instead costs every process that
-  import.
+- **Only the API imports the router.** Every ACE process imports your package, but only the API
+  serves the routes, so don't import the router module from it. The API imports `api_router` when it
+  builds its app. A router that fails to import is logged at ERROR and left out, and the API starts
+  without it.
+- **The integration's name is the URL prefix**, so an integration with an `api_router` is named
+  with lowercase letters, digits, dashes and underscores. Any other name fails config validation.
 
 - **Every route needs a permission gate** (`require_permission()`, from `aceapi_v2/dependencies.py`).
   The `/integrations` prefix only requires a valid credential; `tests/saq/test_permission_catalog.py`
@@ -488,8 +523,7 @@ integration_vendor:
 - **Call the route from the template with `aceApi`** (`app/static/js/ace_api.js`), which prefixes
   `/api/v2`, sends the session cookie and rejects with the API's own error message:
   `aceApi.post("/integrations/vendor/alerts/{{alert.uuid}}/observables/{{_observable.uuid}}/submit")`.
-- The router is registered once, under one name; registering another router under the same name
-  is an error. Keep the Flask blueprint only for templates, static files and pages.
+- Keep the Flask blueprint only for templates, static files and pages.
 
 `integrations.example/example/src/example/api/router.py` is a working example.
 

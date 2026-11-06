@@ -2,8 +2,10 @@ import importlib
 import logging
 import os
 import sys
+from typing import Any, Callable
 
 from saq.configuration.config import get_config
+from saq.configuration.schema import IntegrationConfig
 from saq.environment import get_global_runtime_settings
 from saq.integration.integration_manager import is_integration_enabled
 from saq.integration.integration_util import (
@@ -78,42 +80,57 @@ def load_integration_component_etc(dir_path: str):
             #get_config().load_file(auto_load_config_file)
 
 def initialize_integrations():
-    """Initializes all integrations. 
-    This simply imports the module as defined by each integration, giving the module a chance to initialize itself."""
-    _warn_about_undeclared_integrations(import_integration_modules("python_module"))
+    """Imports the python_module of each enabled integration, which runs its registration hooks.
 
+    A disabled one is not imported: its observable actions would point at templates in the GUI
+    blueprint that apply_integration_hooks() leaves out for it."""
+    declared: set[str] = set()
 
-def import_integration_modules(field: str) -> set[str]:
-    """Imports the module each integration_<name>: block names in field (python_module, gui_module), which
-    is what runs the registrations in it, and returns the ones imported. One that fails to import is
-    logged and left out, so it cannot keep the process from starting."""
-    imported: set[str] = set()
     for integration_config in get_config().integrations:
-        module = getattr(integration_config, field)
-        if not module:
+        declared.add(integration_config.python_module)
+        if not integration_config.enabled:
+            logging.info("integration %s is disabled, not importing %s", integration_config.name,
+                         integration_config.python_module, extra={"integration": integration_config.name})
             continue
 
         try:
-            importlib.import_module(module)
-            imported.add(module)
+            importlib.import_module(integration_config.python_module)
+        except Exception as e:
+            logging.exception(f"failed to import integration module {integration_config.name}: {e}")
+
+    _warn_about_undeclared_integrations(declared)
+
+
+def apply_integration_hooks(hook: str, apply: Callable[[IntegrationConfig, Any], None]) -> None:
+    """Imports the module:attribute each enabled integration names under <hook> (api_router,
+    gui_blueprint) in its integration_<name>: block, and passes the integration and the attribute to
+    apply. Only the app that uses a hook calls this, so no other process imports what it names. One
+    that fails to import or apply is logged and left out, so one integration cannot keep an app from
+    starting."""
+    for integration in get_config().integrations:
+        target = getattr(integration, hook)
+        if target is None or not integration.enabled:
+            continue
+
+        try:
+            module_name, attribute = target.split(":")
+            apply(integration, getattr(importlib.import_module(module_name), attribute))
         except Exception:
-            logging.exception("unable to import the %s %s of integration %s", field, module, integration_config.name,
-                              extra={"integration": integration_config.name, "python_module": module})
-
-    return imported
+            logging.exception("unable to load the %s of integration %s from %s", hook, integration.name, target,
+                              extra={"integration": integration.name, "hook": hook, "target": target})
 
 
-def _warn_about_undeclared_integrations(imported: set[str]):
+def _warn_about_undeclared_integrations(declared: set[str]):
     """Warns about an integration directory that declares no integration_<name>: block.
 
     Such a directory is still discovered: its src/ goes on the path and its etc/saq.integration.yaml
     is merged, so its analysis modules and services look configured. But nothing ever imports the
-    package, its gui_module or its api_module, so every module level register_integration_configuration(),
-    register_directive(), register_observable_action(), register_integration_blueprint_callback() and
-    register_integration_router() call in them silently never runs. The resulting failures are
-    invisible -- a missing integration config surfaces only as a swallowed constructor exception in
-    saq/modules/adapter.py, a missing observable action or GUI blueprint as nothing at all, and a
-    missing API router as a 404. This is what shipped broken in 3.0.101.
+    package, so every module level register_integration_configuration(), register_directive() and
+    register_observable_action() call in it silently never runs, and its api_router and
+    gui_blueprint are never declared. The resulting failures are invisible -- a missing integration
+    config surfaces only as a swallowed constructor exception in saq/modules/adapter.py, a missing
+    observable action or GUI blueprint as nothing at all, and a missing API router as a 404. This is
+    what shipped broken in 3.0.101.
     """
     for dir_path in get_valid_integration_dirs():
         integration_name = get_integration_name_from_path(dir_path)
@@ -125,7 +142,7 @@ def _warn_about_undeclared_integrations(imported: set[str]):
 
         # warn per directory rather than per package: an integration with more than one package
         # under src/ only needs one of them declared for its hooks to run
-        if not packages or any(package in imported for package in packages):
+        if not packages or any(package in declared for package in packages):
             continue
 
         for package in packages:

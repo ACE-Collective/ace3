@@ -1,75 +1,47 @@
-"""The API routes an integration registers (aceapi_v2/integrations.py), served under
+"""The API routes an integration declares with api_router in its integration_<name>: block, served under
 /api/v2/integrations/<name>."""
 
 import logging
 import sys
 import uuid
-from types import SimpleNamespace
-from typing import Annotated
 
 import pytest
-from fastapi import APIRouter, Depends
 from httpx import ASGITransport, AsyncClient
 
-from aceapi_v2 import integrations
 from aceapi_v2.application import create_app
-from aceapi_v2.auth.schemas import ApiAuthResult
-from aceapi_v2.dependencies import require_permission
-from saq.configuration.schema import IntegrationConfig
 from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(autouse=True)
-def configured(monkeypatch) -> list[IntegrationConfig]:
-    """An empty registry, no integrations router yet and no integration_<name>: blocks, so these tests
-    do not see the routers of the integrations installed here and leave none of theirs behind. They
-    build their own apps, on a new router: the app the other tests use would keep serving a router
-    registered on the real one for the rest of the session. That app is built here first, if no test
-    has built it yet, so it does not include the empty router this fixture puts in place and the
-    routers these tests register on it. A test appends the blocks it needs to the list."""
+def _tests_app_built_first():
+    """Builds the app the other tests use, if no test in this worker has yet, before a test here declares
+    its integrations: built after, it would serve their routers for the rest of the session."""
     v2_app()
-    monkeypatch.setattr(integrations, "_ROUTERS", {})
-    monkeypatch.setattr(integrations, "_router", None)
-    monkeypatch.setattr(integrations, "_included", set())
-    blocks: list[IntegrationConfig] = []
-    monkeypatch.setattr(integrations, "get_config", lambda: SimpleNamespace(integrations=blocks))
-    return blocks
-
-
-def _block(name: str, api_module: str | None) -> IntegrationConfig:
-    return IntegrationConfig(name=name, description="test", enabled=True, python_module="vendor",
-                             api_module=api_module)
 
 
 @pytest.fixture
 def router_module(tmp_path, monkeypatch) -> str:
-    """The name of a module, importable but not yet imported, that defines an integration's router."""
+    """The name of a module, importable but not yet imported, that defines an integration's router: one
+    route behind a permission gate and one without."""
     name = f"vendor_api_{uuid.uuid4().hex}"
     (tmp_path / f"{name}.py").write_text(
-        "from fastapi import APIRouter\n"
+        "from typing import Annotated\n"
+        "from fastapi import APIRouter, Depends\n"
+        "from aceapi_v2.auth.schemas import ApiAuthResult\n"
+        "from aceapi_v2.dependencies import require_permission\n"
         "router = APIRouter()\n"
-        "@router.get('/ping')\n"
-        "async def ping() -> dict:\n"
+        "not_a_router = object()\n"
+        "@router.get('/gated')\n"
+        "async def gated(auth: Annotated[ApiAuthResult, Depends(require_permission('alert', 'read'))]) -> dict:\n"
+        "    return {'user': auth.auth_name}\n"
+        "@router.get('/ungated')\n"
+        "async def ungated() -> dict:\n"
         "    return {}\n")
     monkeypatch.syspath_prepend(str(tmp_path))
     yield name
     sys.modules.pop(name, None)
-
-
-def _router() -> APIRouter:
-    router = APIRouter()
-
-    @router.get("/gated")
-    async def gated(auth: Annotated[ApiAuthResult, Depends(require_permission("alert", "read"))]) -> dict:
-        return {"user": auth.auth_name}
-
-    @router.get("/ungated")
-    async def ungated() -> dict:
-        return {}
-
-    return router
 
 
 def _paths(fastapi_app) -> list[str]:
@@ -84,158 +56,75 @@ def _client(fastapi_app, api_key: str | None = None) -> AsyncClient:
                        headers={"x-ace-auth": api_key} if api_key else {})
 
 
-class TestRegistration:
-    @pytest.mark.asyncio
-    async def test_registered_after_the_app_was_built(self, _override_db_session, valid_api_key):
-        """An app built before an integration registers its router still serves it, because FastAPI
-        resolves an included router's routes per request (it has since 0.141); if an upgrade changes
-        that, this fails."""
-        built = create_app()
+class TestDeclaration:
+    def test_served_under_the_integration_name(self, declare_integration, router_module):
+        declare_integration("vendor", api_router=f"{router_module}:router")
 
-        integrations.register_integration_router("vendor", _router())
+        assert {"/integrations/vendor/gated", "/integrations/vendor/ungated"} <= set(_paths(create_app()))
 
-        async with _client(built, valid_api_key) as client:
-            assert (await client.get("/integrations/vendor/gated")).status_code == 200
-
-    def test_registering_the_same_router_again_does_nothing(self):
-        router = _router()
-        integrations.register_integration_router("vendor", router)
-        integrations.register_integration_router("vendor", router)
-
-        assert _paths(create_app()).count("/integrations/vendor/gated") == 1
-
-    def test_a_name_belongs_to_one_router(self):
-        integrations.register_integration_router("vendor", _router())
-
-        with pytest.raises(ValueError):
-            integrations.register_integration_router("vendor", _router())
-
-    @pytest.mark.parametrize("name", ["", "Vendor", "a/b", "a_b", "-a", "a-"])
-    def test_invalid_names(self, name):
-        with pytest.raises(ValueError):
-            integrations.register_integration_router(name, _router())
-
-
-class TestRegistrationByModule:
-    def test_imported_only_when_an_app_is_built(self, router_module):
-        integrations.register_integration_router("vendor", router_module)
-        assert router_module not in sys.modules
-
-        assert "/integrations/vendor/ping" in _paths(create_app())
-        assert router_module in sys.modules
-
-    @pytest.mark.asyncio
-    async def test_registered_after_the_app_was_built(self, router_module, _override_db_session, valid_api_key):
-        built = create_app()
-
-        integrations.register_integration_router("vendor", router_module)
-
-        assert router_module in sys.modules
-        async with _client(built, valid_api_key) as client:
-            assert (await client.get("/integrations/vendor/ping")).status_code == 200
-
-    def test_registering_the_same_module_again_does_nothing(self, router_module):
-        integrations.register_integration_router("vendor", router_module)
-        integrations.register_integration_router("vendor", router_module)
-
-        assert _paths(create_app()).count("/integrations/vendor/ping") == 1
-
-    def test_a_name_belongs_to_one_module(self, router_module):
-        integrations.register_integration_router("vendor", router_module)
-
-        with pytest.raises(ValueError):
-            integrations.register_integration_router("vendor", "some.other.module")
-
-    def test_a_module_that_fails_to_import_is_logged_and_left_out(self, router_module, caplog):
-        integrations.register_integration_router("broken", "no_such_integration_module")
-        integrations.register_integration_router("vendor", router_module)
-
-        with caplog.at_level(logging.ERROR):
-            paths = _paths(create_app())
-
-        assert "/integrations/vendor/ping" in paths
-        assert not [path for path in paths if path.startswith("/integrations/broken")]
-        errors = [record for record in caplog.records
-                  if record.getMessage().startswith("unable to load the API router of integration broken")]
-        assert len(errors) == 1
-        assert errors[0].levelno == logging.ERROR and errors[0].exc_info is not None
-
-    def test_a_module_that_failed_is_retried_by_the_next_app(self, router_module, monkeypatch):
-        integrations.register_integration_router("vendor", router_module)
-        monkeypatch.setitem(sys.modules, router_module, None)  # import raises ImportError
-
-        assert "/integrations/vendor/ping" not in _paths(create_app())
-
-        monkeypatch.delitem(sys.modules, router_module)
-        assert "/integrations/vendor/ping" in _paths(create_app())
-
-
-class TestApiModule:
-    def test_served_under_the_integration_name(self, configured, router_module):
-        configured.append(_block("vendor", router_module))
-
-        assert "/integrations/vendor/ping" in _paths(create_app())
-
-    def test_imported_only_when_an_app_is_built(self, configured, router_module):
-        configured.append(_block("vendor", router_module))
+    def test_imported_only_when_an_app_is_built(self, declare_integration, router_module):
+        declare_integration("vendor", api_router=f"{router_module}:router")
         assert router_module not in sys.modules
 
         create_app()
+
         assert router_module in sys.modules
 
-    def test_a_block_without_one_adds_nothing(self, configured):
-        configured.append(_block("vendor", None))
+    def test_a_disabled_integration_is_not_served(self, declare_integration, router_module):
+        declare_integration("vendor", api_router=f"{router_module}:router", enabled=False)
 
         assert not [path for path in _paths(create_app()) if path.startswith("/integrations/")]
+        assert router_module not in sys.modules
 
-    def test_a_name_that_cannot_be_a_path_is_logged_and_left_out(self, configured, router_module, caplog):
-        configured.append(_block("vendor_api", "no_such_integration_module"))
-        configured.append(_block("vendor", router_module))
+    def test_an_integration_without_a_router(self, declare_integration, router_module):
+        declare_integration("vendor", api_router=None)
+        declare_integration("other", api_router=f"{router_module}:router")
+
+        paths = _paths(create_app())
+
+        assert not [path for path in paths if path.startswith("/integrations/vendor")]
+        assert "/integrations/other/gated" in paths
+
+    @pytest.mark.parametrize("target", ["no_such_integration_module:router", "{module}:no_such_router",
+                                        "{module}:not_a_router"])
+    def test_one_that_fails_to_load_is_logged_and_left_out(self, declare_integration, router_module, caplog, target):
+        target = target.format(module=router_module)
+        declare_integration("broken", api_router=target)
+        declare_integration("vendor", api_router=f"{router_module}:router")
 
         with caplog.at_level(logging.ERROR):
             paths = _paths(create_app())
 
-        assert "/integrations/vendor/ping" in paths
+        assert "/integrations/vendor/gated" in paths
+        assert not [path for path in paths if path.startswith("/integrations/broken")]
         errors = [record for record in caplog.records
-                  if record.getMessage().startswith("unable to register the API router of integration vendor_api")]
+                  if record.getMessage() == f"unable to load the api_router of integration broken from {target}"]
         assert len(errors) == 1
         assert errors[0].levelno == logging.ERROR and errors[0].exc_info is not None
-        assert errors[0].integration == "vendor_api"
+        assert (errors[0].integration, errors[0].hook, errors[0].target) == ("broken", "api_router", target)
 
-    def test_a_module_that_fails_to_import_is_logged_and_left_out(self, configured, router_module, caplog):
-        configured.append(_block("broken", "no_such_integration_module"))
-        configured.append(_block("vendor", router_module))
 
-        with caplog.at_level(logging.ERROR):
-            paths = _paths(create_app())
+class TestTheTestsApp:
+    def test_does_not_serve_what_these_tests_declare(self, declare_integration, router_module):
+        declare_integration("vendor", api_router=f"{router_module}:router")
 
-        assert "/integrations/vendor/ping" in paths
-        assert not [path for path in paths if path.startswith("/integrations/broken")]
-        assert [record for record in caplog.records
-                if record.getMessage().startswith("unable to load the API router of integration broken")]
-
-    def test_also_registered_from_the_package_init(self, configured, router_module):
-        """An integration that still calls register_integration_router() with the same module."""
-        configured.append(_block("vendor", router_module))
-        integrations.register_integration_router("vendor", router_module)
-
-        assert _paths(create_app()).count("/integrations/vendor/ping") == 1
+        assert not [path for path in _paths(v2_app()) if path.startswith("/integrations/vendor")]
 
 
 class TestAccess:
     @pytest.mark.asyncio
-    async def test_every_route_requires_a_credential(self, _override_db_session):
+    async def test_every_route_requires_a_credential(self, declare_integration, router_module, _override_db_session):
         """Even one the integration left without a permission gate (which
         tests/saq/test_permission_catalog.py fails)."""
-        integrations.register_integration_router("vendor", _router())
+        declare_integration("vendor", api_router=f"{router_module}:router")
 
         async with _client(create_app()) as client:
             assert (await client.get("/integrations/vendor/ungated")).status_code == 401
             assert (await client.get("/integrations/vendor/gated")).status_code == 401
 
     @pytest.mark.asyncio
-    async def test_a_gated_route(self, _override_db_session, valid_api_key):
-        integrations.register_integration_router("vendor", _router())
+    async def test_a_gated_route(self, declare_integration, router_module, _override_db_session, valid_api_key):
+        declare_integration("vendor", api_router=f"{router_module}:router")
 
         async with _client(create_app(), valid_api_key) as client:
             response = await client.get("/integrations/vendor/gated")

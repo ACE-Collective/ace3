@@ -9,6 +9,7 @@ import shutil
 import socket
 import sys
 import tempfile
+from types import SimpleNamespace
 from typing import Optional
 import uuid
 
@@ -16,6 +17,7 @@ import requests
 
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_config, set_config
+from saq.configuration.schema import IntegrationConfig
 from saq.constants import ANALYSIS_MODE_ANALYSIS, INSTANCE_TYPE_UNITTEST, SERVICE_ENGINE
 from saq.crypto import set_encryption_password
 from saq.database.admin import superuser_connection
@@ -531,6 +533,22 @@ def root_analysis(tmpdir) -> RootAnalysis:
         analysis_mode=ANALYSIS_MODE_ANALYSIS)
     root.initialize_storage()
     return root
+
+@pytest.fixture
+def declare_integration(monkeypatch):
+    """Replaces the integrations apply_integration_hooks() reads with the ones declared here, so a test
+    does not see the integrations installed in this checkout. Takes the integration's name and its
+    integration_<name>: hooks (api_router=, gui_blueprint=)."""
+    declared: list[IntegrationConfig] = []
+    monkeypatch.setattr("saq.integration.integration_loader.get_config",
+                        lambda: SimpleNamespace(integrations=declared))
+
+    def _declare(name: str, enabled: bool = True, **hooks: str | None):
+        declared.append(IntegrationConfig(name=name, description=name, enabled=enabled,
+                                          python_module=f"{name}_package", **hooks))
+
+    return _declare
+
 
 @pytest.fixture
 def api_server():

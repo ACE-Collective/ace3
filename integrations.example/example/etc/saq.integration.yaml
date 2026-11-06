@@ -3,11 +3,10 @@
 # other name is silently ignored.
 
 # Every integration requires an integration_<name>: block. It is the only thing that causes your
-# integration's python package to be imported, and importing the package is what runs the
-# registration hooks every process needs: register_integration_configuration(), register_directive().
-# The GUI imports gui_module, which registers what only the GUI uses: register_observable_action(),
-# register_observable_presenter(), register_alert_action(), register_integration_blueprint_callback().
-# The API serves the router api_module defines.
+# integration's python package to be imported, and importing the package is what runs your
+# registration hooks: register_integration_configuration(), register_directive(). It also names your
+# API router and GUI blueprint; register_observable_action() goes in the module of the GUI blueprint,
+# which only the GUI imports.
 #
 # Without this block your src/ still lands on the path and this config file is still merged, so
 # everything *looks* configured -- but none of your hooks run, and the failures are invisible.
@@ -16,12 +15,15 @@ integration_example:
   # required -- an integration with enabled: false is not imported
   enabled: true
   description: "Example Integration"
-  # the python package name under src/ -- note this is often NOT the integration directory name
+  # the python package name under src/ -- note this is often NOT the integration directory name.
+  # every ACE process imports it, so it imports only what its registration hooks need
   python_module: example
-  # optional -- imported only by the GUI, when it builds its app
-  gui_module: example.gui
-  # optional -- the module that defines `router`, served under /api/v2/integrations/<name>
-  api_module: example.api.router
+  # optional: the APIRouter, as module:attribute, served under /api/v2/integrations/<name>.
+  # only the API imports it
+  api_router: example.api.router:router
+  # optional: a function, as module:attribute, that the GUI calls with its Flask app to register
+  # your blueprints. only the GUI imports it
+  gui_blueprint: example.app.blueprint:register
   # extra keys are permitted and ignored
   author: unixfreak0037@gmail.com
   repo: https://github.com/unixfreak0037/ace3-example-integration

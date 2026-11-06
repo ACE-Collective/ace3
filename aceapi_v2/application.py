@@ -1,6 +1,6 @@
 """FastAPI application factory for ACE API v2."""
 
-from fastapi import FastAPI, Security
+from fastapi import APIRouter, FastAPI, Security
 
 from aceapi_v2.alerts.router import router as alerts_router
 from aceapi_v2.analysis.router import router as analysis_router
@@ -18,7 +18,6 @@ from aceapi_v2.file_collection.router import router as file_collection_router
 from aceapi_v2.filter_screens.router import router as filter_screens_router
 from aceapi_v2.health.router import router as health_router
 from aceapi_v2.hunt.router import router as hunt_router
-from aceapi_v2.integrations import get_integrations_router
 from aceapi_v2.nodes.router import router as nodes_router
 from aceapi_v2.observable_types.router import router as observable_types_router
 from aceapi_v2.observables.router import router as observables_router
@@ -43,6 +42,7 @@ from aceapi_v2.threats.router import router as threats_router
 from aceapi_v2.user_preferences.router import router as user_preferences_router
 from aceapi_v2.users.router import router as users_router
 from aceapi_v2.yara_qa.router import router as yara_qa_router
+from saq.integration.integration_loader import apply_integration_hooks
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -93,9 +93,13 @@ def create_app() -> FastAPI:
     # takes the user from the auth result
     app.include_router(user_preferences_router, prefix="/users/me/preferences", tags=["users"])
 
-    # the routes of integrations, under /integrations/<name> so they never collide with these
-    app.include_router(get_integrations_router(), prefix="/integrations", tags=["integrations"],
+    # the router each integration names in api_router, under /integrations/<name> so they never collide
+    # with these. Every one requires a valid credential; each route still needs its own
+    # require_permission() gate, which tests/saq/test_permission_catalog.py checks.
+    integrations_router = APIRouter()
+    apply_integration_hooks("api_router", lambda integration, router: integrations_router.include_router(
+        router, prefix=f"/{integration.name}"))
+    app.include_router(integrations_router, prefix="/integrations", tags=["integrations"],
                        dependencies=[Security(get_current_auth)])
 
     return app
-
