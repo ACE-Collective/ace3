@@ -1784,6 +1784,30 @@ analysis_module_email_address_fqdn_analyzer:
   python_class: EmailAddressFQDNAnalyzer
   enabled: true
 
+# detects a Reply-To whose domain is not the From domain and was registered recently: the From is
+# often a real (or compromised) sender that passes authentication, the Reply-To a look-alike the
+# attacker registered days before. only when the domains differ does it ask rdap_domain_age_analyzer
+# for the Reply-To domain's registration date, so most email costs nothing
+analysis_module_email_reply_to_domain_age_analyzer:
+  name: email_reply_to_domain_age_analyzer
+  python_module: saq.modules.email.address
+  python_class: EmailReplyToDomainAgeAnalyzer
+  enabled: true
+  # a Reply-To domain registered at most this many days before the email is analyzed is a detection
+  max_domain_age_days: 7
+
+# rdap_analyzer for email mode, limited to the domains email_reply_to_domain_age_analyzer marks with
+# the check_domain_age directive. a separate instance because rdap_analyzer runs on every domain,
+# which email volume cannot afford
+analysis_module_rdap_domain_age_analyzer:
+  name: rdap_domain_age_analyzer
+  instance: domain_age
+  python_module: saq.modules.rdap
+  python_class: RdapAnalyzer
+  enabled: true
+  required_directives: [check_domain_age]
+  cache_ttl: 604800  # 7 days
+
 analysis_module_email_conversation_frequency_analyzer:
   name: email_conversation_frequency_analyzer
   python_module: saq.modules.email.fa
@@ -2709,8 +2733,10 @@ module_group_email:
     - email_conversation_attachment_analyzer
     - email_conversation_frequency_analyzer
     - email_conversation_link_analyzer
+    - email_reply_to_domain_age_analyzer
     - encrypted_archive_analyzer
     - mailbox_email_analyzer
+    - rdap_domain_age_analyzer
 
 module_group_common:
   name: common

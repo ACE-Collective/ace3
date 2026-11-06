@@ -352,6 +352,7 @@ REVIEW_COMMENT_PREFIX = "[REVIEW] "
 # --- DIRECTIVES
 DIRECTIVE_ANALYZE_ACTIVITY = 'analyze_activity'
 DIRECTIVE_ARCHIVE = 'archive'
+DIRECTIVE_CHECK_DOMAIN_AGE = 'check_domain_age'
 DIRECTIVE_CLICKER_DETECTION = 'clicker_detection'
 DIRECTIVE_COLLECT_FILE = 'collect_file'
 DIRECTIVE_CRAWL = 'crawl'
@@ -390,6 +391,7 @@ DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_ANALYZE_ACTIVITY: 'analyze the activity of this for some time period around a certain event',
     DIRECTIVE_ARCHIVE: 'archive the file',
+    DIRECTIVE_CHECK_DOMAIN_AGE: 'look up when this domain was registered',
     DIRECTIVE_CLICKER_DETECTION: 'check log sources for users who clicked this URL or visited this domain',
     DIRECTIVE_COLLECT_FILE: 'collect the file from the remote endpoint',
     DIRECTIVE_CRAWL: 'crawl the URL',
@@ -1113,6 +1115,7 @@ ANALYSIS_MODULE_EMAIL_CONVERSATION_ATTACHMENT_ANALYZER = "email_conversation_att
 ANALYSIS_MODULE_EMAIL_CONVERSATION_FREQUENCY_ANALYZER = "email_conversation_frequency_analyzer"
 ANALYSIS_MODULE_EMAIL_CONVERSATION_LINK_ANALYZER = "email_conversation_link_analyzer"
 ANALYSIS_MODULE_EMAIL_LOGGER = "email_logger"
+ANALYSIS_MODULE_EMAIL_REPLY_TO_DOMAIN_AGE_ANALYZER = "email_reply_to_domain_age_analyzer"
 ANALYSIS_MODULE_ENCRYPTED_ARCHIVE_ANALYZER = "encrypted_archive_analyzer"
 ANALYSIS_MODULE_EXIF = "exif"
 ANALYSIS_MODULE_EXTRACTED_OLE_ANALYZER = "extracted_ole_analyzer"
@@ -1163,6 +1166,7 @@ ANALYSIS_MODULE_PROTECTED_URL_ANALYZER = "protected_url_analyzer"
 ANALYSIS_MODULE_QRCODE = "qrcode"
 ANALYSIS_MODULE_RAR_ENCRYPTION_ANALYZER = "rar_encryption_analyzer"
 ANALYSIS_MODULE_RDAP_ANALYZER = "rdap_analyzer"
+ANALYSIS_MODULE_RDAP_DOMAIN_AGE_ANALYZER = "rdap_domain_age_analyzer"
 ANALYSIS_MODULE_RTFOLE = "rtfole"
 ANALYSIS_MODULE_SITE_TAGGER = "site_tagger"
 ANALYSIS_MODULE_SNORT_SIGNATURE_ANALYSIS_V1 = "snort_signature_analysis_v1"

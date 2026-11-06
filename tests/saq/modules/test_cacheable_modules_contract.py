@@ -39,6 +39,7 @@ from saq.constants import (
     ANALYSIS_MODULE_PHISHKIT_ANALYZER,
     ANALYSIS_MODULE_QRCODE,
     ANALYSIS_MODULE_RDAP_ANALYZER,
+    ANALYSIS_MODULE_RDAP_DOMAIN_AGE_ANALYZER,
     ANALYSIS_MODULE_SITE_TAGGER,
     DIRECTIVE_CRAWL,
     DIRECTIVE_OCR,
@@ -65,7 +66,7 @@ def _contract_root():
     return root
 
 
-def _check_rdap_analyzer(monkeypatch):
+def _check_rdap_analyzer(monkeypatch, module_name=ANALYSIS_MODULE_RDAP_ANALYZER):
     """Runs RdapAnalyzer with a mocked ``whoisit.domain()`` (and a
     failing ``whois.whois()`` to guard against the fallback firing).
     Returns the delta produced. Mirrors the mock pattern in
@@ -101,7 +102,7 @@ def _check_rdap_analyzer(monkeypatch):
 
     analyzer = RdapAnalyzer(
         context=create_test_context(root=root),
-        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER),
+        config=get_analysis_module_config(module_name),
     )
 
     before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
@@ -393,6 +394,9 @@ CONTRACT_CHECKERS: dict[str, ContractCheck] = {
     "analysis_module_site_tagger": ContractCheck(_check_site_tagger, file_capable=False),
     "analysis_module_nrd_analyzer": ContractCheck(_check_nrd_analyzer, file_capable=False),
     "analysis_module_rdap_analyzer": ContractCheck(_check_rdap_analyzer, file_capable=False),
+    "analysis_module_rdap_domain_age_analyzer": ContractCheck(
+        lambda monkeypatch: _check_rdap_analyzer(monkeypatch, ANALYSIS_MODULE_RDAP_DOMAIN_AGE_ANALYZER),
+        file_capable=False),
     "analysis_module_ocr": ContractCheck(_check_ocr, file_capable=True),
     "analysis_module_qrcode": ContractCheck(_check_qrcode, file_capable=True),
     "analysis_module_phishkit_analyzer": ContractCheck(_check_phishkit, file_capable=True),
