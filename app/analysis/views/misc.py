@@ -162,5 +162,20 @@ def analyze_alert():
         flash(str(e))
         return redirect(url_for('analysis.index', direct=alert.uuid))
 
+    # a module that failed before it created its analysis (root.analysis_failures) gets another
+    # chance: the analyst may be asking because the failure was transient, or the module was fixed
+    lock_uuid = str(uuid4())
+    if not acquire_lock(alert.uuid, lock_uuid):
+        # an alert someone holds (usually the engine, mid-analysis) is not queued again
+        flash("unable to lock alert {}".format(alert))
+        return redirect(url_for('analysis.index', direct=alert.uuid))
+
+    try:
+        alert.root_analysis.load()
+        alert.root_analysis.analysis_failures = {}
+        alert.sync()
+    finally:
+        release_lock(alert.uuid, lock_uuid)
+
     alert.root_analysis.schedule()
     return redirect(url_for('analysis.index', direct=alert.uuid))

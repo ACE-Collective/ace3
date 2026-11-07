@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from saq.analysis import Analysis, RootAnalysis
+from saq.analysis.errors import AnalysisError
 from saq.constants import (
     DIRECTIVE_EXCLUDE_ALL,
     DIRECTIVE_IGNORE_AUTOMATION_LIMITS,
@@ -32,11 +33,7 @@ class _OtherAnalysis(Analysis):
 
 
 class _FailableAnalysis(Analysis):
-    """An analysis that records whether it failed, for the allow_reanalysis_on_failure path."""
-
-    @property
-    def error(self):
-        return self.details.get("error") if self.details else None
+    """The analysis of the module that allows reanalysis on failure."""
 
 
 class _TestModule(AnalysisModule):
@@ -182,7 +179,7 @@ def test_accepts_retries_failed_analysis(root):
     module = _module(root, cls=_RetryingModule)
 
     analysis = module.create_analysis(observable)
-    analysis.details = {"error": "upstream timed out"}
+    analysis.error = "upstream timed out"
     analysis.completed = True
 
     assert module.accepts(observable)
@@ -197,11 +194,22 @@ def test_accepts_does_not_retry_successful_analysis(root):
     module = _module(root, cls=_RetryingModule)
 
     analysis = module.create_analysis(observable)
-    analysis.details = {"error": None}
     analysis.completed = True
 
     assert not module.accepts(observable)
     assert observable.get_analysis(_FailableAnalysis) is analysis
+
+
+@pytest.mark.unit
+def test_accepts_never_retries_failed_analysis_by_default(root):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root)
+
+    analysis = module.create_analysis(observable)
+    analysis.error = "upstream timed out"
+
+    assert not module.accepts(observable)
+    assert observable.get_analysis(_TestAnalysis) is analysis
 
 
 @pytest.mark.unit
@@ -411,7 +419,7 @@ def test_delay_analysis_refused(root):
     assert module.delay_analysis(observable, analysis, seconds=5) == AnalysisExecutionResult.COMPLETED
     assert analysis.completed
     assert not analysis.delayed
-    assert analysis.delay_analysis_timed_out
+    assert analysis.error == "timed out waiting for delayed analysis to complete"
 
 
 @pytest.mark.unit
@@ -615,3 +623,118 @@ def test_sleep_stops_on_cancel(root, monkeypatch):
 def test_str_includes_instance(root):
     assert str(_module(root)) == "_TestModule"
     assert str(_module(root, instance="alpha")) == "_TestModule:alpha"
+
+
+#
+# analysis errors
+#
+
+class _FailingModule(_TestModule):
+    """Adds an observable, then fails the way a module reports an expected failure."""
+
+    def execute_analysis(self, observable):
+        analysis = self.create_analysis(observable)
+        analysis.add_observable_by_spec(F_TEST, "partial result")
+        raise AnalysisError("lookup timed out")
+
+    def continue_analysis(self, observable, analysis):
+        raise AnalysisError("the scan never finished")
+
+
+class _FailingBeforeAnalysisModule(_TestModule):
+    def execute_analysis(self, observable):
+        raise AnalysisError("lookup timed out")
+
+
+class _WrappingModule(_TestModule):
+    """Turns the exception it caught into an AnalysisError, the way docs/ENGINE.md shows."""
+
+    def execute_analysis(self, observable):
+        try:
+            {}["data"]
+        except KeyError as e:
+            raise AnalysisError(f"unexpected response: {e}") from e
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message", [None, "", "   ", 42])
+def test_analysis_error_requires_a_message(message):
+    with pytest.raises(ValueError):
+        AnalysisError(message)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("message", ["", "   ", 42])
+def test_analysis_error_attribute_requires_a_message(message):
+    analysis = _TestAnalysis()
+    with pytest.raises(ValueError):
+        analysis.error = message
+
+    assert analysis.error is None
+
+
+@pytest.mark.unit
+def test_analysis_error_can_be_cleared():
+    analysis = _TestAnalysis()
+    analysis.error = "failed"
+    analysis.error = None
+    assert analysis.error is None
+
+
+@pytest.mark.unit
+def test_analysis_error_marks_the_analysis_failed_and_keeps_what_it_found(root, caplog):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_FailingModule)
+
+    with caplog.at_level(logging.INFO):
+        assert module.analyze(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(_TestAnalysis)
+    assert analysis.error == "lookup timed out"
+    assert analysis.completed
+    assert analysis.find_observable(lambda o: o.value == "partial result")
+    record = next(r for r in caplog.records if r.message.endswith("lookup timed out"))
+    assert record.levelno == logging.INFO
+    assert record.observable_uuid == observable.uuid
+    assert record.root_uuid == root.uuid
+
+
+@pytest.mark.unit
+def test_analysis_error_logs_the_exception_it_wraps(root, caplog):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_WrappingModule)
+
+    with caplog.at_level(logging.INFO):
+        module.analyze(observable)
+
+    record = next(r for r in caplog.records if r.message.endswith("unexpected response: 'data'"))
+    # the traceback of the KeyError, so the cause can be found from the log
+    assert record.exc_info and record.exc_info[0] is KeyError
+
+
+@pytest.mark.unit
+def test_analysis_error_creates_the_analysis_the_module_had_not(root):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_FailingBeforeAnalysisModule)
+
+    assert module.analyze(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(_TestAnalysis)
+    assert analysis.error == "lookup timed out"
+    # and the module is not run on it again
+    assert not module.accepts(observable)
+
+
+@pytest.mark.unit
+def test_analysis_error_closes_out_a_delayed_analysis(root):
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_FailingModule)
+    analysis = observable.add_analysis(_TestAnalysis())
+    analysis.completed = False
+    analysis.delayed = True
+
+    assert module.analyze(observable, delayed_analysis=True) == AnalysisExecutionResult.COMPLETED
+
+    assert analysis.error == "the scan never finished"
+    assert analysis.completed
+    assert not analysis.delayed

@@ -44,6 +44,10 @@ class AnalysisPresenter:
     @property
     def should_render(self) -> bool:
         """Returns True if the Analysis should be rendered in the GUI."""
+        # a failed module is shown even when it produced nothing, or the analyst never learns it failed
+        if self._analysis.error is not None:
+            return True
+
         if self._analysis.summary is not None:
             return True
 

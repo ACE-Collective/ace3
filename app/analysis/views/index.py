@@ -10,6 +10,7 @@ from app.analysis.views.session.filters import filter_special_tags
 from app.auth.permissions import require_permission
 from app.blueprints import analysis
 from saq.analysis.analysis import Analysis
+from saq.analysis.module_path import SPLIT_MODULE_PATH
 from saq.analysis.observable import Observable
 from saq.analysis.presenter import create_analysis_presenter
 from saq.analysis.presenter.observable_presenter import create_observable_presenter
@@ -321,6 +322,29 @@ class TreeNode:
 
     def __str__(self):
         return "TreeNode({}, {}, {})".format(self.obj, self.reference_node, self.visible)
+
+
+def build_analysis_failure_map(root: RootAnalysis) -> dict[str, list[tuple[str, str]]]:
+    """observable uuid -> [(analysis name, why)] for each module that failed on the observable without
+    leaving an analysis to show it (it raised before creating one, or its process died). A module that
+    did leave one shows its own error on it."""
+    result: dict[str, list[tuple[str, str]]] = {}
+    if not root.analysis_failures:
+        return result
+
+    for observable in root.all_observables:
+        key = f"{observable.type}:{observable.value}"
+        for module_path, failures in root.analysis_failures.items():
+            if key not in failures or isinstance(observable.get_analysis(module_path), Analysis):
+                continue
+
+            _module, name, instance = SPLIT_MODULE_PATH(module_path)
+            if instance:
+                name = f"{name}:{instance}"
+
+            result.setdefault(observable.uuid, []).append((name, failures[key] or "the analysis module failed"))
+
+    return result
 
 
 def _recurse(current_node, node_tracker=None):
@@ -781,6 +805,7 @@ def index():
         'analysis/index.html',
         alert=alert,
         cache_hit_map=cache_hit_map,
+        analysis_failure_map=build_analysis_failure_map(alert.root_analysis),
         remediation_timeline_events=remediation_timeline_events,
         external_check_footer=external_check_footer,
         remediation_coverage=remediation_coverage,

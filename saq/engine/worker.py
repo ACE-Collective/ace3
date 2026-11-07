@@ -11,7 +11,7 @@ from typing import Optional, Union
 
 import psutil
 
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, mark_analysis_failed
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import get_engine_config
@@ -853,6 +853,12 @@ class Worker:
                 last_analysis_module.observable_value,
                 error_message=error_message,
             )
+
+            # and on the analysis itself, if the module got as far as creating it, so the analyst
+            # sees the failure where it would have shown its result
+            observable = root.get_observable(last_analysis_module.observable_uuid) if last_analysis_module.observable_uuid else None
+            if observable is not None:
+                mark_analysis_failed(observable, last_analysis_module.module_path, error_message)
 
             root.save()
 

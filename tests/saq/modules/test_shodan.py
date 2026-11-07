@@ -185,6 +185,17 @@ def test_query_error(root_analysis, fake_shodan, caplog):
 
 
 @pytest.mark.integration
+def test_query_error_without_a_message_is_named_by_its_type(root_analysis, fake_shodan):
+    # the analysis error needs a message, and str(ConnectionError()) is empty
+    fake_shodan.error = ConnectionError()
+
+    _, observable = _analyze(root_analysis, F_IPV4, "198.51.100.11")
+
+    analysis = observable.get_and_load_analysis(ShodanAnalysis)
+    assert analysis.error == "ConnectionError"
+
+
+@pytest.mark.integration
 def test_unexpected_results(root_analysis, fake_shodan, caplog):
     # a host result without its data list
     fake_shodan.host_result = {"domains": [], "ports": []}

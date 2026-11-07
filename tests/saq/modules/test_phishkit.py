@@ -19,7 +19,6 @@ from saq.modules.phishkit import (
     FIELD_SCAN_TYPE,
     FIELD_SCAN_RESULT,
     FIELD_OUTPUT_FILES,
-    FIELD_ERROR,
     FIELD_EXIT_CODE,
     FIELD_STDOUT,
     FIELD_STDERR,
@@ -76,7 +75,7 @@ def test_phishkit_analysis_init():
     assert analysis.details[FIELD_SCAN_TYPE] is None
     assert analysis.details[FIELD_SCAN_RESULT] is None
     assert analysis.details[FIELD_OUTPUT_FILES] == []
-    assert analysis.details[FIELD_ERROR] is None
+    assert analysis.error is None
     assert analysis.details[FIELD_PROXY_STATUS] is None
 
 

@@ -16,7 +16,6 @@ from saq.constants import F_IP, F_IPV4, F_SHA1, SUMMARY_DETAIL_FORMAT_PRE, Analy
 from saq.modules import AnalysisModule
 
 KEY_SHODAN_RESULTS = 'shodan_results'
-KEY_ERROR = 'error'
 
 DIRECTIVE_QUERY_SHODAN = 'query_shodan'
 register_directive(DIRECTIVE_QUERY_SHODAN, 'query shodan API for details', gui=True)
@@ -37,7 +36,6 @@ class ShodanAnalysis(Analysis):
 
         self.details = {
             KEY_SHODAN_RESULTS: None,
-            KEY_ERROR: None,
         }
 
     @property
@@ -47,14 +45,6 @@ class ShodanAnalysis(Analysis):
     @shodan_results.setter
     def shodan_results(self, value):
         self.details[KEY_SHODAN_RESULTS] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def dns(self):
@@ -112,7 +102,7 @@ class ShodanAnalyzer(AnalysisModule):
             elif observable.type == F_SHA1:
                 analysis.shodan_results = self.search_cert(observable.value)
         except Exception as e:
-            analysis.error = str(e)
+            analysis.error = str(e) or type(e).__name__
             logging.warning(f"unable to query shodan: {e}")
             return AnalysisExecutionResult.COMPLETED
 
@@ -169,7 +159,7 @@ class ShodanAnalyzer(AnalysisModule):
                                 self._add_cert_observable(analysis, observable.value, cert)
 
         except Exception as e:
-            analysis.error = str(e)
+            analysis.error = str(e) or type(e).__name__
             logging.warning(f"unable to parse shodan results: {e}")
 
         return AnalysisExecutionResult.COMPLETED

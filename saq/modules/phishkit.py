@@ -31,7 +31,6 @@ FIELD_JOB_ID = "job_id"
 FIELD_SCAN_TYPE = "scan_type"
 FIELD_SCAN_RESULT = "scan_result"
 FIELD_OUTPUT_FILES = "output_files"
-FIELD_ERROR = "error"
 FIELD_EXIT_CODE = "exit_code"
 FIELD_STDOUT = "stdout"
 FIELD_STDERR = "stderr"
@@ -94,7 +93,6 @@ class PhishkitAnalysis(Analysis):
             FIELD_SCAN_TYPE: None,  # SCAN_TYPE_URL or SCAN_TYPE_FILE
             FIELD_SCAN_RESULT: None,  # result from phishkit scan
             FIELD_OUTPUT_FILES: [],  # list of output file paths
-            FIELD_ERROR: None,  # error message if scan failed
             FIELD_METRICS: None,  # scan metrics (bytes downloaded, domain breakdown, etc.)
             FIELD_PROXY_STATUS: None,  # proxy usage / fallback info from the scanner worker
         }
@@ -167,14 +165,6 @@ class PhishkitAnalysis(Analysis):
     @output_files.setter
     def output_files(self, value: List[str]):
         self.details[FIELD_OUTPUT_FILES] = value
-
-    @property
-    def error(self) -> Optional[str]:
-        return self.details.get(FIELD_ERROR)
-
-    @error.setter
-    def error(self, value: str):
-        self.details[FIELD_ERROR] = value
 
     @property
     def metrics(self) -> Optional[dict]:

@@ -20,7 +20,6 @@ KEY_EMAIL = 'email'
 KEY_EMAIL_BODY = 'email_body'
 KEY_WORD_LIST = 'word_list'
 KEY_PASSWORD = 'password'
-KEY_ERROR = 'error'
 
 class ZipEncryptionAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
@@ -31,7 +30,6 @@ class ZipEncryptionAnalysis(Analysis):
             KEY_EMAIL_BODY: None,
             KEY_WORD_LIST: [],
             KEY_PASSWORD: None,
-            KEY_ERROR: None
         }
 
     @override
@@ -78,14 +76,6 @@ class ZipEncryptionAnalysis(Analysis):
     @password.setter
     def password(self, value):
         self.details[KEY_PASSWORD] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     def generate_summary(self):
         if self.details is None:
