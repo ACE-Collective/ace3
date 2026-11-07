@@ -125,6 +125,13 @@
                         </div>
                         <div class="card-body">
                             <div class="card-text"></div>
+                                {% if analysis.error is not none %}
+                                <div class="alert alert-danger" role="alert">
+                                    <i class="bi bi-exclamation-triangle-fill"></i>
+                                    <b>{{ analysis.display_name }} failed:</b>
+                                    <span style="white-space: pre-wrap;">{{ analysis.error }}</span>
+                                </div>
+                                {% endif %}
                                 <!-- main content area for the details of the analysis-based object -->
                                 {% include analysis_presenter.template_path %}
                             </div>

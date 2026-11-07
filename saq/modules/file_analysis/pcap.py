@@ -153,7 +153,6 @@ RE_CONVERSATION = re.compile(
     r"^(\S+)\s+<->\s+(\S+)\s+\d+\s+\S+ \S+\s+\d+\s+\S+ \S+\s+(\d+)\s+(\S+ \S+)\s+([\d.]+)\s+([\d.]+)\s*$")
 RE_IO_STAT_TOTAL = re.compile(r"^\|\s*[\d.]+\s*<>\s*[\d.]+\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|")
 
-KEY_ERROR = "error"
 KEY_CLIENT_RANDOMS = "tls_client_randoms"
 KEY_CARVED_SHA256 = "carved_sha256"
 KEY_INDEX = "index"
@@ -1200,20 +1199,12 @@ class PcapAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.details = {KEY_ERROR: None, KEY_INDEX: None, KEY_ADDED: {}, KEY_OMITTED: {}}
+        self.details = {KEY_INDEX: None, KEY_ADDED: {}, KEY_OMITTED: {}}
 
     @override
     @property
     def display_name(self) -> str:
         return "PCAP Analysis"
-
-    @property
-    def error(self) -> Optional[str]:
-        return self.details.get(KEY_ERROR)
-
-    @error.setter
-    def error(self, value: Optional[str]):
-        self.details[KEY_ERROR] = value
 
     @property
     def index(self) -> Optional[dict]:
@@ -1419,7 +1410,6 @@ class PcapTlsDecryptionAnalysis(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             "keylogs": [],
             "sessions": 0,
             "sessions_with_keys": 0,
@@ -1434,10 +1424,6 @@ class PcapTlsDecryptionAnalysis(Analysis):
         return "PCAP TLS Decryption"
 
     @property
-    def error(self) -> Optional[str]:
-        return self.details.get(KEY_ERROR)
-
-    @property
     def applied_keylogs(self) -> set[str]:
         return {k["sha256"] for k in self.details.get("keylogs", [])}
 
@@ -1445,8 +1431,8 @@ class PcapTlsDecryptionAnalysis(Analysis):
         if not self.details:
             return None
         sessions = self.details.get("sessions", 0)
-        if self.details.get(KEY_ERROR):
-            return f"PCAP TLS Decryption: failed: {self.details[KEY_ERROR]}"
+        if self.error:
+            return f"PCAP TLS Decryption: failed: {self.error}"
         sources = []
         if self.details.get("sessions_with_embedded_keys"):
             sources.append("embedded in the capture")
@@ -1503,20 +1489,20 @@ def apply_keylogs(config: PcapConfig, pcap_file: FileObservable, pcap_analysis: 
                         known_sha256=known_sha256, statistics=False, stopping=stopping)
     except PcapNodeError as e:
         analysis.details["keylogs"] = all_keylogs
-        analysis.details[KEY_ERROR] = str(e)
+        analysis.error = str(e) or type(e).__name__
         log_loop_exception(e, f"unable to decrypt pcap {pcap_file.full_path} (sha256 {pcap_file.sha256_hash})")
         return
     except PcapError as e:
         # like a capture that cannot be dissected: the analyst sees it in the analysis
         analysis.details["keylogs"] = all_keylogs
-        analysis.details[KEY_ERROR] = str(e)
+        analysis.error = str(e) or type(e).__name__
         logging.info("unable to decrypt pcap %s (sha256 %s): %s", pcap_file.full_path, pcap_file.sha256_hash, e,
                      extra={"pcap_sha256": pcap_file.sha256_hash})
         return
 
     analysis.details["keylogs"] = all_keylogs
     index.pop(KEY_CLIENT_RANDOMS, None)
-    analysis.details[KEY_ERROR] = None
+    analysis.error = None
     analysis.details[KEY_INDEX] = merge_index(analysis.details.get(KEY_INDEX), index, config.max_table_rows)
     plaintext_keys = {o.key for o in collect_observables(plaintext_index, config.excluded_fqdn_suffixes)}
     items = [o for o in collect_observables(index, config.excluded_fqdn_suffixes)
@@ -1560,7 +1546,7 @@ class PcapTlsDecryptor(AnalysisModule):
         assert isinstance(analysis, PcapTlsDecryptionAnalysis)
         left = self.time_left()
         if _run_seconds(config) > left:
-            analysis.details[KEY_ERROR] = _out_of_time(_run_seconds(config), left)
+            analysis.error = _out_of_time(_run_seconds(config), left)
             logging.info("not decrypting pcap %s (sha256 %s): %s s needed, %.0f s left", _file.full_path,
                          _file.sha256_hash, _run_seconds(config), left, extra={"pcap_sha256": _file.sha256_hash})
             return AnalysisExecutionResult.COMPLETED

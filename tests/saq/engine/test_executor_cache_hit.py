@@ -363,12 +363,10 @@ class TestMaybeWriteCacheDelta:
         assert final.target_observable_diff.added_tags == ["post-delay"]
 
     @pytest.mark.unit
-    def test_delay_timeout_blocks_cache_write(self, tmp_path, monkeypatch):
-        """A delayed-analysis deadline expiry returns COMPLETED with the
-        analysis closed out empty — the module never received its result.
-        The delta still shows a delayed→completed transition, so without
-        this gate the empty result gets cached and replays "nothing" into
-        every root analyzing the same observable for the TTL."""
+    def test_analysis_error_blocks_cache_write(self, tmp_path, monkeypatch):
+        """A failed analysis returns COMPLETED like any other. Without this
+        gate the failure gets cached and replays into every root analyzing
+        the same observable for the TTL."""
         put_mock = MagicMock()
         monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
         executor = _make_executor()
@@ -376,7 +374,7 @@ class TestMaybeWriteCacheDelta:
         context = _make_context(root)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         analysis = obs.add_analysis(RdapAnalysis())
-        analysis.delay_analysis_timed_out = True
+        analysis.error = "rdap: timed out; whois: timed out"
         module = _make_cacheable_module()
         delta = self._delta(obs)
 
@@ -387,10 +385,9 @@ class TestMaybeWriteCacheDelta:
         put_mock.assert_not_called()
 
     @pytest.mark.unit
-    def test_completed_analysis_without_timeout_marker_writes(self, tmp_path, monkeypatch):
-        """A COMPLETED result is written, and it is the control for the timeout gate:
-        an attached analysis WITHOUT the marker (a genuine post-delay completion)
-        still gets cached."""
+    def test_completed_analysis_without_error_writes(self, tmp_path, monkeypatch):
+        """A COMPLETED result is written, and it is the control for the error gate:
+        an attached analysis without an error still gets cached."""
         put_mock = MagicMock(return_value=None)
         monkeypatch.setattr("saq.engine.executor.put_cached_delta", put_mock)
         executor = _make_executor()
@@ -409,8 +406,8 @@ class TestMaybeWriteCacheDelta:
         assert put_mock.call_args[0][0] is delta
 
 
-class TestDelayAnalysisTimeoutMarker:
-    """base_module.delay_analysis marks the analysis when the engine
+class TestDelayAnalysisTimeoutError:
+    """base_module.delay_analysis marks the analysis failed when the engine
     refuses the delay (deadline expired), so the executor's cache write
     can tell that COMPLETED apart from a genuine post-delay completion."""
 
@@ -435,7 +432,7 @@ class TestDelayAnalysisTimeoutMarker:
         return AnalysisModule(config, context=context)
 
     @pytest.mark.unit
-    def test_accepted_delay_does_not_set_marker(self, tmp_path):
+    def test_accepted_delay_does_not_set_error(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")
         analysis = obs.add_analysis(RdapAnalysis())
@@ -445,7 +442,7 @@ class TestDelayAnalysisTimeoutMarker:
 
         assert result == AnalysisExecutionResult.INCOMPLETE
         assert analysis.delayed is True
-        assert not getattr(analysis, "delay_analysis_timed_out", False)
+        assert analysis.error is None
 
 
 class TestModuleExecutionDeltaCacheHitMetadata:

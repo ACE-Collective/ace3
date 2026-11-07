@@ -1551,6 +1551,51 @@ def test_crash_report_on_module_exception():
 
     assert metadata['file_sha256'] == observable.value
 
+    # the module raised before creating its analysis, so the analyst sees the failure, with the
+    # crash id, under the observable: no analysis that other modules would take as a result
+    root = load_root(root.storage_dir)
+    observable = root.get_observable(observable.uuid)
+    assert not observable.get_analysis(BasicTestAnalysis)
+    assert root.get_analysis_failed_message(BasicTestAnalysis, observable) == (
+        f"RuntimeError: testing failure case (crash_id {crash_id})"
+    )
+
+
+@pytest.mark.integration
+def test_module_that_raised_runs_again_after_a_reset():
+    """A module that raised is not run again on that observable in the same pass, but a reset
+    (ace alert reset) gives it another chance, which is how a fixed module gets re-run."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    target_path = root.create_file_path('test.txt')
+    with open(target_path, 'w') as fp:
+        fp.write('Hello, world!')
+
+    observable = root.add_file_observable(target_path)
+    root.save()
+    root.schedule()
+
+    # BasicTestAnalyzer.execute_file_analysis() raises on any file observable
+    engine = Engine()
+    engine.configuration_manager.enable_module('basic_test')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(root.storage_dir)
+    assert root.is_analysis_failed(BasicTestAnalysis, root.get_observable(observable.uuid))
+
+    root._reset()
+    root.save()
+    assert not root.is_analysis_failed(BasicTestAnalysis, root.get_observable(observable.uuid))
+
+    existing = set(_enum_crash_reports())
+    root.schedule()
+    engine = Engine()
+    engine.configuration_manager.enable_module('basic_test')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    # it ran, and raised, again
+    assert len(set(_enum_crash_reports()) - existing) == 1
+
 
 @pytest.mark.integration
 def test_crash_report_is_indexed_in_the_database():

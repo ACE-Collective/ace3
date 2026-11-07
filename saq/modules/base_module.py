@@ -10,7 +10,8 @@ import subprocess
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Optional, Type, Union
-from saq.analysis.analysis import Analysis
+from saq.analysis.analysis import Analysis, close_with_error
+from saq.analysis.errors import AnalysisError
 from saq.analysis.interfaces import RootAnalysisInterface
 from saq.analysis.module_path import MODULE_PATH
 from saq.analysis.observable import Observable
@@ -307,7 +308,7 @@ class AnalysisModule(FileWatcherMixin):
         """Returns True if this analysis module allows re-analysis when the previous analysis failed.
 
         When True, if an observable already has a completed analysis from this module
-        but that analysis has a truthy 'error' attribute, the module will be allowed
+        but that analysis failed (Analysis.error is set), the module will be allowed
         to run again (the failed analysis will be removed first).
 
         Override this property in subclasses to enable retry behavior.
@@ -732,23 +733,16 @@ class AnalysisModule(FileWatcherMixin):
 
             # has this analysis completed?
             if current_analysis.completed:
-                # Check if this module allows re-analysis on failure and the analysis failed
-                if self.allow_reanalysis_on_failure and hasattr(current_analysis, 'error'):
-                    # Load details to get the actual error value from disk
-                    current_analysis.load_details()
-                    if current_analysis.error:
-                        # Remove the failed analysis to allow retry
-                        logging.info(
-                            f"removing failed analysis {current_analysis} from {observable} "
-                            f"to allow retry by {self}"
-                        )
-                        module_path = current_analysis.module_path
-                        if module_path in observable.analysis:
-                            del observable.analysis[module_path]
-                        # Continue - don't return False, allow reanalysis
-                    else:
-                        logging.debug("already analyzed {} with {}".format(observable, self))
-                        return False
+                if self.allow_reanalysis_on_failure and current_analysis.error is not None:
+                    # Remove the failed analysis to allow retry
+                    logging.info(
+                        f"removing failed analysis {current_analysis} from {observable} "
+                        f"to allow retry by {self}"
+                    )
+                    module_path = current_analysis.module_path
+                    if module_path in observable.analysis:
+                        del observable.analysis[module_path]
+                    # Continue - don't return False, allow reanalysis
                 else:
                     logging.debug("already analyzed {} with {}".format(observable, self))
                     return False
@@ -873,20 +867,39 @@ class AnalysisModule(FileWatcherMixin):
 
         analysis_result = AnalysisExecutionResult.COMPLETED
 
-        # if we are executing in "final analysis mode" then we call this function instead
-        if final_analysis:
-            analysis_result = self.execute_final_analysis(observable)
-        # are we continuing analysis of a delayed analysis?
-        elif delayed_analysis:
-            # get the analysis that has been completed so far
-            existing_analysis = observable.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
-            if existing_analysis:
-                analysis_result = self.continue_analysis(observable, existing_analysis)
+        try:
+            # if we are executing in "final analysis mode" then we call this function instead
+            if final_analysis:
+                analysis_result = self.execute_final_analysis(observable)
+            # are we continuing analysis of a delayed analysis?
+            elif delayed_analysis:
+                # get the analysis that has been completed so far
+                existing_analysis = observable.get_and_load_analysis(self.generated_analysis_type, instance=self.instance)
+                if existing_analysis:
+                    analysis_result = self.continue_analysis(observable, existing_analysis)
+                else:
+                    analysis_result = self.execute_analysis(observable)
             else:
                 analysis_result = self.execute_analysis(observable)
-        else:
-            analysis_result = self.execute_analysis(observable)
-                
+        except AnalysisError as e:
+            # the module said it failed: the analyst sees why on its analysis, which is kept with
+            # whatever the module put in it before it failed
+            close_with_error(self.create_analysis(observable), e.message)
+            # at INFO, so no error report: the failure was expected. the traceback of the exception it
+            # wraps, if any, is still the only way to find its cause from the log
+            logging.info(
+                "%s failed to analyze %s: %s", self, observable, e.message,
+                exc_info=e.__cause__ or e.__context__,
+                extra={
+                    "module_name": self.name,
+                    "observable_uuid": observable.uuid,
+                    "observable_type": observable.type,
+                    "root_uuid": self.get_root().uuid,
+                    "analysis_error": e.message,
+                },
+            )
+            return AnalysisExecutionResult.COMPLETED
+
         if not isinstance(analysis_result, AnalysisExecutionResult):
             logging.error(f"analysis module {self} should return an AnalysisExecutionResult (returned {type(analysis_result)})")
             return analysis_result
@@ -958,13 +971,9 @@ class AnalysisModule(FileWatcherMixin):
             analysis.delayed = True
             return AnalysisExecutionResult.INCOMPLETE
 
-        # the delay was refused (deadline expired): the analysis is closed out
-        # WITHOUT the module ever receiving its result. Transient attribute
-        # (never serialized) -- the executor's cache write checks it in this
-        # same pass to keep the empty result out of the analysis cache.
-        analysis.delay_analysis_timed_out = True
-        analysis.completed = True
-        analysis.delayed = False
+        # the delay was refused (deadline expired): the analysis is closed out WITHOUT the module
+        # ever receiving its result, which is a failure the analyst sees, and is never cached
+        close_with_error(analysis, "timed out waiting for delayed analysis to complete")
         return AnalysisExecutionResult.COMPLETED
 
     # ========================================

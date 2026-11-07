@@ -8,7 +8,6 @@ from saq.analysis.search import search_down
 from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 
-KEY_ERROR = "error"
 KEY_EXTRACTED_EMAIL = "extracted_email"
 
 class MessageIDAnalysisV2(Analysis):
@@ -17,7 +16,6 @@ class MessageIDAnalysisV2(Analysis):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = { 
-            KEY_ERROR: None,
             KEY_EXTRACTED_EMAIL: None,
         }
 
@@ -25,14 +23,6 @@ class MessageIDAnalysisV2(Analysis):
     @property
     def display_name(self) -> str:
         return "Message ID Analysis"
-
-    @property
-    def error(self) -> Optional[str]:
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value: str):
-        self.details[KEY_ERROR] = value
 
     @property
     def extracted_email(self) -> Optional[str]:
@@ -106,7 +96,7 @@ class MessageIDAnalyzerV2(AnalysisModule):
         except Exception as e:
             logging.exception(f"unable to get archived email {message_id.value}: {e}")
             if analysis:
-                analysis.error = str(e)
+                analysis.error = str(e) or type(e).__name__
 
             return AnalysisExecutionResult.COMPLETED
 

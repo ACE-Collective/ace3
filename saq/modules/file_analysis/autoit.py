@@ -12,7 +12,6 @@ from saq.util.strings import format_item_list_for_summary
 
 KEY_STDOUT = "stdout"
 KEY_STDERR = "stderr"
-KEY_ERROR = "error"
 KEY_SCRIPTS = "scripts"
 KEY_OUTPUT_DIR = "output_dir"
 
@@ -23,7 +22,6 @@ class AutoItAnalysis(Analysis):
         self.details = {
             KEY_STDOUT: None,
             KEY_STDERR: None,
-            KEY_ERROR: None,
             KEY_SCRIPTS: [],
             KEY_OUTPUT_DIR: None,
         }
@@ -48,14 +46,6 @@ class AutoItAnalysis(Analysis):
     @stderr.setter
     def stderr(self, value):
         self.details[KEY_STDERR] = value
-
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
 
     @property
     def scripts(self) -> list[str]:
@@ -133,7 +123,7 @@ class AutoItAnalyzer(AnalysisModule):
                 analysis.error = "unautoit extract-all timed out"
                 return AnalysisExecutionResult.COMPLETED
         except Exception as e:
-            analysis.error = str(e)
+            analysis.error = str(e) or type(e).__name__
             logging.info(f'AutoIt decompilation failed for {local_file_path}')
 
         # Add any decompiled .au3 scripts as file observables

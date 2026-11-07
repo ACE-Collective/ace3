@@ -47,14 +47,12 @@ example_exif_data = [
 ]
 
 KEY_EXIF_DATA = "exifdata"
-KEY_ERROR = "error"
 
 class ExifAnalysis(Analysis):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.details = {
-            KEY_ERROR: None,
             KEY_EXIF_DATA: {},
         }
 
@@ -70,14 +68,6 @@ class ExifAnalysis(Analysis):
     @exifdata.setter
     def exifdata(self, value: dict):
         self.details[KEY_EXIF_DATA] = value
-
-    @property
-    def error(self) -> str:
-        return self.details.get(KEY_ERROR, "")
-
-    @error.setter
-    def error(self, value: str):
-        self.details[KEY_ERROR] = value
 
     def generate_summary(self) -> str:
         if not self.details:

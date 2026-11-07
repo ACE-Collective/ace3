@@ -794,7 +794,9 @@ def test_pdf_unexpected_failure_gets_a_crash_report(root_analysis, tmp_path, mon
     assert [r["file_sha256"] for r in reports] == [attachment.value]
     analysis = attachment.get_and_load_analysis(PDFEncryptionAnalysis)
     assert analysis.password is None
-    assert analysis.error == "decryption failed: john exploded"
+    # the module's own message is kept, and the engine adds the crash report's id to it
+    crash_id = reports[0]["crash_id"]
+    assert analysis.error == f"decryption failed: john exploded (crash_id {crash_id})"
 
 
 @pytest.mark.integration

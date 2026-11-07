@@ -75,7 +75,7 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
                     # msoffcrypto cannot/does not support certain types of encryption
                     if str(e) == 'Unsupported encryption method':
                         analysis = self.create_analysis(_file)
-                        analysis.error = str(e)
+                        analysis.error = str(e) or type(e).__name__
                         _file.add_tag('encrypted_msoffice')
                         return AnalysisExecutionResult.COMPLETED
 

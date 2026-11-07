@@ -839,7 +839,7 @@ def test_upx(root_analysis, datadir):
 
     analysis = _file.get_and_load_analysis(UPXAnalysis)
     assert analysis
-    assert analysis.details['error'] is None
+    assert analysis.error is None
 
     target_file = analysis.get_observables_by_type(F_FILE)[0]
     assert target_file

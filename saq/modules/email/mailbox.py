@@ -5,7 +5,6 @@ from saq.observables.file import FileObservable
 
 MAILBOX_ALERT_PREFIX = 'ACE Mailbox Scanner Detection -'
 
-KEY_ERROR = "error"
 KEY_RESULTS = "results"
 
 class MailboxEmailAnalysis(Analysis):

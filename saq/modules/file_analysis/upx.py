@@ -12,7 +12,6 @@ from saq.observables.file import FileObservable
 KEY_STDOUT = "stdout"
 KEY_STDERR = "stderr"
 KEY_OUTPUT_FILE = "output_file"
-KEY_ERROR = "error"
 
 class UPXAnalysis(Analysis):
 
@@ -22,7 +21,6 @@ class UPXAnalysis(Analysis):
             KEY_STDOUT: None,
             KEY_STDERR: None,
             KEY_OUTPUT_FILE: None,
-            KEY_ERROR: None,
         }
 
     @override
@@ -54,17 +52,9 @@ class UPXAnalysis(Analysis):
     def output_file(self, value):
         self.details[KEY_OUTPUT_FILE] = value
 
-    @property
-    def error(self):
-        return self.details[KEY_ERROR]
-
-    @error.setter
-    def error(self, value):
-        self.details[KEY_ERROR] = value
-
     def generate_summary(self) -> str:
-        if self.details[KEY_ERROR]:
-            return f"{self.display_name}: decompression failed: {self.details[KEY_ERROR]}"
+        if self.error:
+            return f"{self.display_name}: decompression failed: {self.error}"
 
         return f"{self.display_name}: decompression success: {self.details[KEY_OUTPUT_FILE]}"
 
@@ -110,13 +100,13 @@ class UPXAnalyzer(AnalysisModule):
                                              outputs={'unpacked.exe': output_path})
             if result is None:
                 # whatever it wrote is incomplete, and was not kept
-                analysis.details['error'] = "upx -d did not finish"
+                analysis.error = "upx -d did not finish"
                 return AnalysisExecutionResult.COMPLETED
 
             analysis.details['stdout'], analysis.details['stderr'] = result.stdout, result.stderr
             analysis.details['output_file'] = os.path.basename(output_path)
         except Exception as e:
-            analysis.details['error'] = str(e)
+            analysis.error = str(e) or type(e).__name__
             logging.error(f"upx failed for {local_file_path}: {e}")
             return AnalysisExecutionResult.COMPLETED
 

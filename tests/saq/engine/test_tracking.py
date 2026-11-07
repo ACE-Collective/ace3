@@ -29,7 +29,7 @@ from saq.engine.lock_manager.adapter import LockManagerAdapter
 from saq.engine.lock_manager.distributed import DistributedLockManager
 from saq.engine.node_manager.node_manager_interface import NodeManagerInterface
 from saq.engine.worker import Worker
-from saq.modules.test import BasicTestAnalyzer
+from saq.modules.test import BasicTestAnalysis, BasicTestAnalyzer
 from saq.engine.tracking import (
     NullTrackingWriter,
     TrackingReader,
@@ -491,6 +491,30 @@ def test_recovered_record_lands_on_the_right_root(root_analysis):
     # and the worker acknowledged it, so the next restart will not replay it
     assert TrackingReader().recover_pending_failures() == []
     assert get_lock_uuid(root_analysis.uuid) is None, "recovery did not release its own lock"
+
+
+@pytest.mark.integration
+def test_recovery_marks_the_analysis_the_dead_module_had_created(root_analysis):
+    """A module that created its analysis before its worker was killed (a hang, a timeout) leaves
+    that analysis marked failed, where the analyst would have seen its result."""
+    root_analysis.analysis_mode = "test_groups"
+    observable = root_analysis.add_observable_by_spec(F_TEST, "test_1")
+    analysis = observable.add_analysis(BasicTestAnalysis())
+    analysis.completed = False
+    root_analysis.save()
+
+    dying = TrackingWriter("correlation-0")
+    dying.track_current_work_target(root_analysis)
+    dying.track_current_analysis_module(_basic_test_module(), observable)
+
+    pending = TrackingReader().recover_pending_failures()
+    assert _recovering_worker()._handle_failed_analysis(pending[0])
+
+    reloaded = RootAnalysis(storage_dir=root_analysis.storage_dir)
+    reloaded.load()
+    analysis = reloaded.get_observable(observable.uuid).get_analysis(BasicTestAnalysis)
+    assert re.fullmatch(r"process died unexpectedly \(crash_id [0-9a-f-]{36}\)", analysis.error)
+    assert analysis.completed
 
 
 @pytest.mark.integration
