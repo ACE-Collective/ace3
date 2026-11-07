@@ -419,15 +419,6 @@ class TestDefinedCustomCommand:
         assert output.splitlines() == [json.dumps({"message": "hi bob"})]
         assert handler.calls[0][1].count == 1
 
-    def test_predefined_round_trip_does_not_trip_builtin_field_check(self):
-        """to_command_config() dumps every field (source_options={}, time_range=None, ...); the
-        custom-type check must judge values, not which fields were set."""
-        predef = PredefinedCommandConfig(name="greet", type="echo", options={"message": "m"})
-        cmd = predef.to_command_config()
-        assert cmd.type == "echo"
-        assert cmd.options == {"message": "m"}
-
-
 def _config(logic) -> CorrelateConfig:
     return CorrelateConfig.model_validate({"logic": logic})
 

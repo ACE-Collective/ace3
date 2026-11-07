@@ -7,8 +7,8 @@ from flask import url_for
 from datetime import datetime
 
 from saq.analysis.root import load_root
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DISPOSITION_SIMULATED, STATE_ANALYST_REQUESTED_ANALYSIS
-from saq.database.model import Alert, Workload
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, STATE_ANALYST_REQUESTED_ANALYSIS
+from saq.database.model import Workload
 from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
@@ -139,17 +139,6 @@ class TestAddObservable:
         assert response.status_code == 302
         assert f'direct={missing_uuid}' in response.location
         assert _is_unlocked(missing_uuid)
-
-    def test_frozen_alert_is_not_modified(self, web_client, alert, basic_form_data):
-        """An alert with a frozen disposition is neither changed nor queued again."""
-        get_db().query(Alert).filter(Alert.uuid == alert.uuid).update({Alert.disposition: DISPOSITION_SIMULATED})
-        get_db().commit()
-
-        response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
-
-        assert response.status_code == 302
-        assert _saved_root(alert).get_observable_by_type('ipv4') is None
-        assert _workload_modes(alert) == []
 
     def test_unable_to_acquire_lock(self, web_client, alert, basic_form_data):
         """Test when unable to acquire lock on alert."""

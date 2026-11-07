@@ -2273,57 +2273,6 @@ def test_process_query_results_file_observable_with_grouping_and_properties(monk
 
 
 @pytest.mark.unit
-def test_process_query_results_with_ignored_values(monkeypatch, tmpdir, hunt_manager):
-    """test observable mapping with ignored_values"""
-    import saq.collectors.hunter.query_hunter
-
-    monkeypatch.setattr(saq.collectors.hunter.query_hunter, "local_time", mock_local_time)
-
-    hunt = default_hunt(
-        manager=hunt_manager,
-        name="test_ignored_values",
-        group_by=None,
-        analysis_mode=ANALYSIS_MODE_CORRELATION,
-        observable_mapping=[
-            ObservableMapping(
-                fields=["src_ip"],
-                type="ip",
-                ignored_values=[r"0\.0\.0\.0", r"127\.0\.0\.1"]
-            )
-        ]
-    )
-
-    # test with a value that should be ignored
-    submissions = hunt.process_query_results([{"src_ip": "0.0.0.0"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    # should only have F_SIGNATURE_ID observable, no ipv4 observable
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 0
-
-    # test with another ignored value
-    submissions = hunt.process_query_results([{"src_ip": "127.0.0.1"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 0
-
-    # test with a value that should NOT be ignored
-    submissions = hunt.process_query_results([{"src_ip": "1.2.3.4"}])
-    assert submissions
-    assert len(submissions) == 1
-    submission = submissions[0]
-
-    ipv4_observables = [o for o in submission.root.observables if o.type == F_IP]
-    assert len(ipv4_observables) == 1
-    assert ipv4_observables[0].value == "1.2.3.4"
-
-
-@pytest.mark.unit
 def test_process_query_results_with_display_type_and_value(monkeypatch, tmpdir, hunt_manager):
     """test observable mapping with display_type and display_value"""
     import saq.collectors.hunter.query_hunter

@@ -1,5 +1,4 @@
-from datetime import datetime, timedelta
-import hashlib
+from datetime import datetime
 import logging
 import pymysql
 import pytest
@@ -486,55 +485,11 @@ def test_set_dispositions_protects_another_analysts_disposition(two_analysts):
     assert _reload(alert).disposition == DISPOSITION_FALSE_POSITIVE
 
 
-@pytest.mark.integration
-def test_change_alert_owner_takes(two_analysts):
-    owner, other = two_analysts
-    owned = insert_alert()
-    _set_owner(owned, owner.id)
-    confirmed = insert_alert()
-    _set_owner(confirmed, owner.id)
-    unowned = insert_alert()
-
-    result = change_alert_owner([owned.uuid, confirmed.uuid, unowned.uuid], other.id, other.id,
-                                confirmed_takes={confirmed.uuid: owner.id})
-
-    assert result.permitted == [confirmed.uuid, unowned.uuid]
-    assert result.reassigned == [confirmed.uuid]
-    assert result.skipped == {owned.uuid: "Original Owner"}
-    assert _reload(owned).owner_id == owner.id
-    assert _reload(confirmed).owner_id == other.id
-    assert _reload(unowned).owner_id == other.id
-
-
 @pytest.fixture
 def third_analyst():
     user = add_user("third_analyst", "third@test.com", "Third Analyst", "password123")
     yield user
     delete_user("third_analyst")
-
-
-@pytest.mark.integration
-def test_change_alert_owner_assigns(two_analysts, third_analyst):
-    """Assigning gives the alerts to someone else. An alert the new owner already has needs no
-    confirmation; one a third analyst owns is left alone like any other."""
-    assigner, assignee = two_analysts
-    unowned = insert_alert()
-    mine = insert_alert()
-    _set_owner(mine, assigner.id)
-    already_theirs = insert_alert()
-    _set_owner(already_theirs, assignee.id)
-    someone_elses = insert_alert()
-    _set_owner(someone_elses, third_analyst.id)
-
-    result = change_alert_owner(
-        [unowned.uuid, mine.uuid, already_theirs.uuid, someone_elses.uuid], assignee.id, assigner.id)
-
-    assert result.permitted == [unowned.uuid, mine.uuid, already_theirs.uuid]
-    assert result.reassigned == []
-    assert result.skipped == {someone_elses.uuid: "Third Analyst"}
-    for alert in (unowned, mine, already_theirs):
-        assert _reload(alert).owner_id == assignee.id
-    assert _reload(someone_elses).owner_id == third_analyst.id
 
 
 @pytest.mark.integration

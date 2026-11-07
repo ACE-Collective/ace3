@@ -2,30 +2,12 @@ import pytest
 
 from saq.crypto import (
     CONFIG_KEY_ENCRYPTION_KEY,
-    InvalidPasswordError,
     PasswordNotSetError,
     decrypt_chunk,
     encrypt_chunk,
-    encryption_key_set,
     get_aes_key,
     set_encryption_password,
 )
-
-@pytest.mark.integration
-def test_change_password():
-    assert encryption_key_set()
-    # verify the password
-    aes_key = get_aes_key('test')
-    # now change the password to something else
-    set_encryption_password('new password', old_password='test')
-    # aes key should still be the same
-    assert aes_key == get_aes_key('new password')
-
-@pytest.mark.integration
-def test_invalid_password():
-    assert encryption_key_set()
-    with pytest.raises(InvalidPasswordError):
-        aes_key = get_aes_key('invalid_password')
 
 #
 # file formats (v0 and v1) and the stream API

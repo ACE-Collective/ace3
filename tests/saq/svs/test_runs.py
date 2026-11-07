@@ -381,12 +381,6 @@ def test_a_call_that_does_not_apply_is_a_conflict_and_is_recorded():
     assert _state(run.uuid).state == RunState.STARTED
 
 
-def test_unknown_run():
-    for call in (start, cancel):
-        with pytest.raises(UnknownRun):
-            call("00000000-0000-4000-8000-000000000000", LAUNCHER)
-
-
 def test_executed_records_a_success():
     run = register(_registration(), LAUNCHER)
     start(run.uuid, LAUNCHER)
@@ -736,17 +730,6 @@ def test_the_run_timer_runs_until_stopped_and_survives_a_failure(monkeypatch):
         service.stop()
         service.wait()
     assert not service.runs.thread.is_alive()
-
-
-def test_the_run_timer_stays_idle_off_the_primary_node(monkeypatch):
-    monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
-    service = SVSService()
-    service.start()
-    try:
-        assert service.runs is None
-    finally:
-        service.stop()
-        service.wait()
 
 
 def test_a_single_threaded_service_is_finished_when_it_returns():

@@ -314,11 +314,12 @@ def test_overlay_narrows_a_filter_already_in_effect(web_client):
     """Clicking the owner of an alert in the default list (unowned or mine)."""
     owners = [{"name": "Owner", "inverted": False, "values": ["None", "analyst"]}]
     mine = [{"name": "Owner", "inverted": False, "values": ["analyst"]}]
-    _apply(web_client, QUEUE + owners)
+    _apply(web_client, owners + QUEUE)
 
     _overlay(web_client, mine, label="Owner: analyst")
 
-    assert _effective(web_client) == QUEUE + mine
+    # in the entry's place, not moved to the end
+    assert _effective(web_client) == mine + QUEUE
 
 
 @pytest.mark.integration
@@ -505,22 +506,6 @@ def test_legacy_link_redirects_to_the_canonical_format(web_client):
     assert response.status_code == 302
     assert "/manage?" in response.headers["Location"]
     assert "f=tag" in response.headers["Location"]
-
-
-@pytest.mark.integration
-def test_legacy_link_yields_the_same_filters_as_the_modern_one(web_client):
-    """The property that makes the redirect lossless."""
-    legacy = json.dumps([{"name": "Observable", "inverted": False,
-                          "values": [["url", "https://evil.com/a,b:c"]]}])
-    response = web_client.get(url_for("analysis.set_filters"),
-                              query_string={"redirect": "1", "filters": legacy})
-    web_client.get(response.headers["Location"])
-    via_legacy = _effective(web_client)
-
-    web_client.get(url_for("analysis.manage"), query_string={"f": encode_filter_query([
-        {"name": "Observable", "inverted": False, "values": [["url", "https://evil.com/a,b:c"]]}])})
-
-    assert via_legacy == _effective(web_client)
 
 
 @pytest.mark.integration

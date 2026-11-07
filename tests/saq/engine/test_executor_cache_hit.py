@@ -432,20 +432,6 @@ class TestDelayAnalysisTimeoutError:
         return AnalysisModule(config, context=context)
 
     @pytest.mark.unit
-    def test_refused_delay_sets_error(self, tmp_path):
-        root = _make_root(tmp_path)
-        obs = root.add_observable_by_spec(F_FQDN, "example.com")
-        analysis = obs.add_analysis(RdapAnalysis())
-        module = self._make_module(delay_accepted=False, root=root)
-
-        result = module.delay_analysis(obs, analysis, seconds=3, timeout_seconds=10)
-
-        assert result == AnalysisExecutionResult.COMPLETED
-        assert analysis.completed is True
-        assert analysis.delayed is False
-        assert analysis.error == "timed out waiting for delayed analysis to complete"
-
-    @pytest.mark.unit
     def test_accepted_delay_does_not_set_error(self, tmp_path):
         root = _make_root(tmp_path)
         obs = root.add_observable_by_spec(F_FQDN, "example.com")

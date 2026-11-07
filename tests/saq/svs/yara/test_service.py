@@ -191,6 +191,7 @@ def test_the_service_stays_idle_off_the_primary_node(svs_repository, monkeypatch
     monkeypatch.setenv(ENV_ACE_IS_PRIMARY_NODE, "0")
     service.start()
     assert service.workers == []
+    assert (service.catalog, service.runs, service.coverage) == (None, None, None)
     waiter = _waiting(service)
     service.stop()
     waiter.join(timeout=5)

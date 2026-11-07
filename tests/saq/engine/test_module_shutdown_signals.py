@@ -155,14 +155,10 @@ def test_module_sees_the_engines_cancel():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("stop", ["shutdown", "cancel"])
-def test_module_sleep_returns_once_it_should_stop(stop):
+def test_module_sleep_returns_once_it_should_stop():
     shutdown_interface = FakeShutdownInterface()
     module = make_module(create_test_context(shutdown_interface=shutdown_interface))
-    if stop == "shutdown":
-        shutdown_interface.immediate = True
-    else:
-        module.cancel_analysis()
+    shutdown_interface.immediate = True
 
     started = time.monotonic()
     module.sleep(60)

@@ -58,6 +58,11 @@ def test_data_urls_extracted(root_analysis, tmp_path):
         assert extracted.get_relationship_by_type(R_EXTRACTED_FROM).target == observable
         # an extracted file is not scanned for data URLs again
         assert extracted.get_and_load_analysis(HTMLDataURLAnalysis) is None
+        # an extracted image skips expensive OCR but is still scanned for QR codes: an embedded
+        # data URL image is a common quishing vector
+        excluded = " ".join(extracted.excluded_analysis)
+        assert "OCRAnalyzer" in excluded
+        assert "QRCodeAnalyzer" not in excluded
 
 
 @pytest.mark.integration

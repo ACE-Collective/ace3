@@ -171,6 +171,7 @@ class TestDe4dotAnalyzer:
         assert analysis.deobfuscated is True
 
         # check that deobfuscated file was added as observable
+        assert [o.file_name for o in analysis.observables] == [f"{file_observable.file_name}.deobfuscated"]
         deobfuscated_observable = None
         for obs in analysis.observables:
             if isinstance(obs, FileObservable) and obs.file_name.endswith(".deobfuscated"):
