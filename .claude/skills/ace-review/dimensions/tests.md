@@ -28,7 +28,7 @@ Read first: `CLAUDE.md` § Testing and § Engineering values → Tests. Then rea
 
 **What the tests prove.**
 - **Failure paths.** For each new `except`, refusal, conflict, timeout or fallback, is there a test that triggers it? Is there a test that asserts its log record (`caplog`, `search_log`, `wait_for_log_count`)?
-- **Assertions that can't fail.** `assert x, 1` (the `1` is the failure message, not a comparison), `assert True`, a test with no assertion, or assertions only on mocks the test itself set up.
+- **Assertions that can't fail.** `assert x, 1` (the `1` is the failure message, not a comparison), `assert True`, a test with no assertion, or assertions only on mocks the test itself set up. Also `pytest.raises(Exception)` with no `match=`, which passes on any bug in the code under test unless the code really raises a plain `Exception`, and an `assert` in a thread, which pytest turns into a warning.
 - **Over-mocking.** A test that mocks the code under test, or mocks the database in an `integration` test that could use the real one. In this repo integration tests use the real DB, and `monkeypatch` is preferred over `MagicMock`.
 - **Analysis module tests** follow the standard shape in CLAUDE.md: run the engine, then reload from disk with `load_root` before asserting. Asserting on the in-memory root after an engine run is wrong.
 

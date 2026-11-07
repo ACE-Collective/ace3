@@ -73,6 +73,9 @@ HTTP_CALL = re.compile(r"(requests|httpx)\.(get|post|put|patch|delete|head|optio
 THREAD_HOPS = {"run_in_threadpool", "to_thread", "run_in_executor"}
 # a shorter function is a copy by coincidence more often than by pasting
 COPY_MIN_STATEMENTS = 3
+# a call a test relies on to check something: pytest.fail, mock assert_*, a helper named for it
+TEST_CHECK_CALL = re.compile(r"(_?assert|_?check|_?verify|_?expect|wait_for)", re.IGNORECASE)
+
 # what --check tells the author to do about each kind of lead
 CHECK_FIXES = {
     "bare-except": "catch the exception you expect, and log it with logging.exception() or re-raise it",
@@ -81,6 +84,10 @@ CHECK_FIXES = {
     "print-exc": "use logging.exception() instead of traceback.print_exc()",
     "error-without-traceback": "use logging.exception(), or exc_info=True (log_loop_exception() in a long-running loop)",
     "sleep-in-test": "wait with wait_for_condition() or wait_for_log_count() from tests/saq/helpers.py",
+    "vacuous-assert": "assert something that can be false; `assert x, \"literal\"` passes for any truthy x, so write `assert x == \"literal\"`",
+    "broad-raises": "name the exception the code raises; where it raises a plain Exception, add match= or a comment on that line saying so",
+    "no-assertion": "assert what the test claims, or add a comment before the first statement saying what failing looks like",
+    "assert-in-thread": "pytest turns an assert in a thread into a warning: return the thread's result to the test and assert there, with a bounded join",
     "thread-hop": "reach a thread only through aceapi_v2.sync.run_db_in_thread",
     "shell-true": "pass an argument list without shell=True",
     "unbounded-wait": "give it a timeout, or a comment naming what bounds it",
@@ -483,6 +490,9 @@ class Scanner(ast.NodeVisitor):
         self.handlers = saved
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # visit_Lambda shares this method; a function inside a test is part of that test
+        if self.is_test and not self.function_depth and not isinstance(node, ast.Lambda):
+            self.check_test(node)
         self.visit_scope(node, True)
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -527,6 +537,11 @@ class Scanner(ast.NodeVisitor):
             self.lead(node, "error-without-traceback", "logging")
         if self.is_test and name in self.sleeps:
             self.lead(node, "sleep-in-test", "tests")
+        if self.is_test and attr == "raises" and node.args:
+            caught = node.args[0].elts if isinstance(node.args[0], ast.Tuple) else node.args[:1]
+            if (any(dotted(c) in ("Exception", "BaseException") for c in caught) and "match" not in keywords
+                    and not self.commented(node.lineno, node.lineno)):
+                self.lead(node, "broad-raises", "tests")
         if self.in_api and attr in THREAD_HOPS:
             self.lead(node, "thread-hop", "design")
         if any(k.arg == "shell" and isinstance(k.value, ast.Constant) and k.value.value is True for k in node.keywords):
@@ -538,6 +553,46 @@ class Scanner(ast.NodeVisitor):
         if attr == "wait_for":
             # asyncio.wait_for(x.wait(), timeout) bounds the wait it is given
             self.bounded.update(id(arg) for arg in node.args[:1])
+        self.generic_visit(node)
+
+    def check_test(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        nested = {n.name: n for n in ast.walk(node) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not node}
+        checks = False
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Assert):
+                checks = True
+            elif isinstance(inner, ast.Call):
+                # dotted() is empty for m["c"].run.assert_called_once(); the last attribute is what counts
+                short = inner.func.attr if isinstance(inner.func, ast.Attribute) else dotted(inner.func)
+                checks = checks or bool(TEST_CHECK_CALL.match(short)) or short in ("raises", "warns", "fail")
+                if short == "Thread":
+                    target = next((k.value for k in inner.keywords if k.arg == "target"), None)
+                    body = nested.get(target.id) if isinstance(target, ast.Name) else None
+                    if body is not None and any(isinstance(n, ast.Assert) for n in ast.walk(body)):
+                        self.lead(body, "assert-in-thread", "tests", last=body.end_lineno)
+        decorators = [dotted(d.func if isinstance(d, ast.Call) else d).rsplit(".", 1)[-1] for d in node.decorator_list]
+        # the signature may span lines, and a docstring does not end the place for the comment
+        first_statement = node.body[1] if ast.get_docstring(node) is not None and len(node.body) > 1 else node.body[0]
+        # pytest collects test functions only from test_*.py; a helper may be named anything
+        if (node.name.startswith("test") and os.path.basename(self.path).startswith("test_")
+                and not checks and "fixture" not in decorators
+                and not self.commented(node.lineno, first_statement.lineno)):
+            self.lead(node, "no-assertion", "tests")
+
+    def visit_Assert(self, node: ast.Assert) -> None:
+        if self.is_test:
+            test, message = node.test, node.msg
+            always = isinstance(test, ast.Constant) and test.value
+            itself = (isinstance(test, ast.Compare) and len(test.ops) == 1
+                      and isinstance(test.ops[0], (ast.Eq, ast.Is, ast.GtE, ast.LtE))
+                      and ast.unparse(test.left) == ast.unparse(test.comparators[0])
+                      # `f() is f()` is how a test shows a result is cached
+                      and not any(isinstance(n, ast.Call) for n in ast.walk(test.left)))
+            # a sentence is a failure message; a bare word is what == was meant to compare with
+            literal = (isinstance(message, ast.Constant) and not isinstance(test, (ast.Compare, ast.BoolOp, ast.UnaryOp))
+                       and (not isinstance(message.value, str) or (len(message.value) <= 40 and " " not in message.value)))
+            if always or itself or literal:
+                self.lead(node, "vacuous-assert", "tests")
         self.generic_visit(node)
 
     def check_bounded(self, node: ast.Call, name: str, attr: str, keywords: set[str]) -> None:
