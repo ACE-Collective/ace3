@@ -19,7 +19,7 @@ from saq.database.util.locking import acquire_lock, release_lock
 from saq.environment import get_temp_dir
 from saq.modules.test import BasicTestAnalysis
 from saq.util.filesystem import is_path_under
-from tests.saq.helpers import audit_actor_of, audit_record
+from tests.saq.helpers import audit_actor_of, audit_record, workload_count
 
 
 @pytest.mark.integration
@@ -408,6 +408,42 @@ class TestAnalyzeAlert:
         root = RootAnalysis(storage_dir=root_analysis.storage_dir)
         root.load()
         assert not root.is_analysis_failed(BasicTestAnalysis, root.get_observable(observable.uuid))
+
+    def test_analyze_alert_refuses_an_alert_someone_holds(self, web_client, root_analysis):
+        """While the engine (or anyone) holds the alert's lock, Analyze Alert queues nothing."""
+        observable = root_analysis.add_observable_by_spec(F_TEST, "test")
+        root_analysis.set_analysis_failed(BasicTestAnalysis, F_TEST, "test", error_message="RuntimeError: boom")
+        root_analysis.save()
+        ALERT(root_analysis)
+        before = workload_count(root_analysis.uuid)
+
+        lock_uuid = str(uuid4())
+        assert acquire_lock(root_analysis.uuid, lock_uuid)
+        try:
+            result = web_client.post(url_for('analysis.analyze_alert'), data={'alert_uuid': root_analysis.uuid})
+        finally:
+            release_lock(root_analysis.uuid, lock_uuid)
+
+        assert result.status_code == 302
+        assert f'direct={root_analysis.uuid}' in result.location
+        assert _flashes(web_client)[0].startswith("unable to lock alert")
+        assert workload_count(root_analysis.uuid) == before
+        root = RootAnalysis(storage_dir=root_analysis.storage_dir)
+        root.load()
+        assert root.is_analysis_failed(BasicTestAnalysis, root.get_observable(observable.uuid))
+
+    def test_analyze_alert_releases_the_lock_when_the_alert_fails_to_load(self, web_client):
+        alert_uuid = _new_alert_uuid(web_client)
+        os.remove(RootAnalysis(storage_dir=get_alert_by_uuid(alert_uuid).storage_dir).json_path)
+        # the upload left its loaded Alert in the session the test shares with the view; a request reads it fresh
+        get_db().expunge_all()
+
+        with pytest.raises(FileNotFoundError):
+            web_client.post(url_for('analysis.analyze_alert'), data={'alert_uuid': alert_uuid})
+
+        lock_uuid = str(uuid4())
+        assert acquire_lock(alert_uuid, lock_uuid)
+        release_lock(alert_uuid, lock_uuid)
 
     def test_analyze_alert_nonexistent_uuid(self, web_client):
         """Test analyze_alert with nonexistent alert_uuid."""

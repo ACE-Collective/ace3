@@ -19,8 +19,9 @@ def request_analyst_analysis(root: "RootAnalysis"):
        already worked: the alert may be sitting in a post-correlation analysis mode such as
        dispositioned (which enables almost no modules), and the engine short-circuits analysis of
        dispositioned alerts. This switches back to correlation mode and sets the consume-once flag
-       the engine honors, so the requested analysis actually runs. Every module that failed on the
-       alert gets another chance: the failure may have been transient, or the module fixed since.
+       the engine honors, so the requested analysis actually runs. A module that failed before it
+       created its analysis (root.analysis_failures) gets another chance: the failure may have been
+       transient, or the module fixed since. One whose analysis holds an error does not.
 
        The caller is still responsible for syncing the alert and calling add_workload()."""
 
