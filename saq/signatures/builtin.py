@@ -59,6 +59,7 @@ XLM_MACRO_URL                 = BuiltinSignature("xlm_macro_url", "3e719b5d-8063
 EMAIL_ENCRYPTED_DECRYPTED     = BuiltinSignature("email_encrypted_attachment_decrypted", "ef715326-081e-4ece-97ba-02817b5a28cd", "decrypted email attachment (office/rar/zip)")
 EMAIL_MACRO_NEW_SENDER        = BuiltinSignature("email_macro_new_sender", "26fb96a4-6e20-48df-b826-a9c4a25b1965", "macro from a new sender")
 EMAIL_SUSPECT_URL_NEW_SENDER  = BuiltinSignature("email_suspect_url_new_sender", "11b42a94-e21a-4cd0-bdb6-8f278d20611d", "suspect URL from a new sender")
+EMAIL_REPLY_TO_NEW_DOMAIN     = BuiltinSignature("email_reply_to_new_domain", "6e657ca7-43c4-49e4-bb7b-cac91fc01e1d", "Reply-To on a newly registered domain other than the From domain")
 CVE_2021_30657_DMG_SCRIPT     = BuiltinSignature("cve_2021_30657_dmg_script", "3ba358a3-b7ab-4475-a10a-f2a8070b455d", "CVE-2021-30657 DMG script")
 URL_CLICKER                   = BuiltinSignature("url_clicker", "a764126b-443d-4991-a554-72d86125382d", "user clicked a URL / visited a flagged domain (clicker detection)")
 DHASH_IMAGE_MATCH             = BuiltinSignature("dhash_image_match", "10d1e320-3b07-45f1-9bcf-078044643b7e", "image dhash match")
@@ -98,6 +99,7 @@ BUILTIN_SIGNATURES = {
         EMAIL_ENCRYPTED_DECRYPTED,
         EMAIL_MACRO_NEW_SENDER,
         EMAIL_SUSPECT_URL_NEW_SENDER,
+        EMAIL_REPLY_TO_NEW_DOMAIN,
         CVE_2021_30657_DMG_SCRIPT,
         URL_CLICKER,
         DHASH_IMAGE_MATCH,
