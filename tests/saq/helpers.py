@@ -25,12 +25,8 @@ from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import (
     ANALYSIS_MODE_ANALYSIS,
-    DISPOSITION_FALSE_POSITIVE,
     DISPOSITION_SIMULATED,
-    F_FILE_NAME,
     F_FQDN,
-    F_HOSTNAME,
-    F_URL,
 )
 from saq.database.model import Alert, Workload, load_alert
 from saq.database.pool import get_db
@@ -147,27 +143,6 @@ def track_io(target_function):
         finally:
             _disable_io_tracker()
     return wrapper
-
-def add_fp_alert():
-    root = create_root_analysis(uuid=str(uuid.uuid4()))
-    root.initialize_storage()
-
-    root.add_observable_by_spec(F_FQDN, 'microsoft.com')
-    root.add_observable_by_spec(F_URL, 'https://google.com')
-    root.add_observable_by_spec(F_FILE_NAME, 'calc.exe')
-    root.add_observable_by_spec(F_HOSTNAME, 'localhost')
-
-    root.save()
-
-    alert = ALERT(root)
-
-    #alert = Alert(storage_dir=root.storage_dir)
-    #alert.load()
-
-    alert.disposition = DISPOSITION_FALSE_POSITIVE
-    alert.disposition_time = datetime.now()
-
-    alert.sync()
 
 class WaitTimedOutError(Exception):
     pass
@@ -533,21 +508,6 @@ def reset_unittest_logging():
     global memory_log_handler
 
     memory_log_handler.clear()
-
-def stop_unittest_logging():
-
-    global test_log_manager
-    global test_log_sync
-    global test_log_messages
-    global memory_log_handler
-
-    if memory_log_handler is not None:
-        logging.getLogger().removeHandler(memory_log_handler)
-
-    test_log_manager = None
-    test_log_sync = None
-    test_log_messages = None
-    memory_log_handler = None
 
 @contextmanager
 def unconfigured_logging():

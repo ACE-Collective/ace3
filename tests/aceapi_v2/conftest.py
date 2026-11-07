@@ -208,12 +208,6 @@ async def client_actor(session: AsyncSession, test_user: User, valid_api_key: st
 
 
 @pytest_asyncio.fixture
-async def invalid_api_key() -> str:
-    """A well-formed key value that matches no stored key (authentication must fail)."""
-    return "00000000-0000-0000-0000-000000000000"
-
-
-@pytest_asyncio.fixture
 async def noperm_client(_override_db_session, session: AsyncSession) -> AsyncGenerator[AsyncClient]:
     """Authenticated as a user with NO permissions, via an inherit key. Because the intersection's
     user half denies, every permission-gated route returns 403 (the successor to the old

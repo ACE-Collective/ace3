@@ -263,8 +263,8 @@ def test_changed_tests_are_selected_and_the_unmarked_ones_listed(repo, review):
     (repo / "tests" / "saq" / "test_a_gone.py").unlink()
     write(repo, "saq/worker.py", "def run():\n    return 2\n")
     write(repo, "tests/saq/test_new.py", "\n".join([
-        "import pytest", "", "@pytest.mark.unit", "def test_marked():", "    pass", "",
-        "def test_unmarked():", "    pass", "", "class TestGroup:", "    def test_in_class(self):", "        pass", "",
+        "import pytest", "", "@pytest.mark.unit", "def test_marked():", "    assert run()", "",
+        "def test_unmarked():", "    assert run()", "", "class TestGroup:", "    def test_in_class(self):", "        assert run()", "",
     ]))
     write(repo, "tests/saq/test_broken.py", "def test_(:\n")
 
@@ -661,7 +661,7 @@ def run_check(repo, tmp_path, monkeypatch):
 
 def test_check_prints_each_lead_with_its_fix_and_writes_nothing(repo, tmp_path, monkeypatch, capsys):
     write(repo, "saq/worker.py", "import logging\n\ndef run():\n    try:\n        return 1\n    except ValueError as e:\n        logging.error('failed: %s', e)\n        logging.error('and again')\n")
-    write(repo, "tests/saq/test_worker.py", "def test_run():\n    pass\n")
+    write(repo, "tests/saq/test_worker.py", "def test_run():\n    assert run()\n")
 
     assert run_check(repo, tmp_path, monkeypatch) == 1
 
@@ -690,7 +690,7 @@ def test_check_on_a_change_with_nothing_to_flag_exits_zero(repo, tmp_path, monke
 
 
 def test_every_check_has_a_fix_to_print():
-    checks = set(re.findall(r'self\.lead\(node, "([a-z-]+)"', Path(prepare.__file__).read_text()))
+    checks = set(re.findall(r'self\.lead\(\w+, "([a-z-]+)"', Path(prepare.__file__).read_text()))
 
     assert checks and checks | {"copied-function", "stale-reference", "unmarked-test"} == set(prepare.CHECK_FIXES)
 
@@ -808,7 +808,7 @@ FLAGGED_CHECKS = [
 LEAD_DIMENSIONS = {
     "bare-except": "logging", "silent-except": "logging", "raise-without-from": "logging", "print-exc": "logging",
     "error-without-traceback": "logging", "shell-true": "correctness", "unbounded-wait": "uptime", "no-timeout": "uptime",
-    "local-import": "design", "offset-paging": "performance", "thread-hop": "design", "sleep-in-test": "tests",
+    "local-import": "design", "offset-paging": "performance", "thread-hop": "design", "vacuous-assert": "tests", "broad-raises": "tests", "no-assertion": "tests", "assert-in-thread": "tests", "sleep-in-test": "tests",
 }
 
 CLEAN = '''\
@@ -909,6 +909,7 @@ def test_x(t):
     nap(1)
     monotonic()
     t.join()
+    assert t
 """
 
 
@@ -923,14 +924,70 @@ def test_x(t):
     ("saq/test_x.py", TEST_SOURCE, ["sleep-in-test", "sleep-in-test"]),
     ("saq/conftest.py", TEST_SOURCE, ["sleep-in-test", "sleep-in-test"]),
     ("saq/x.py", TEST_SOURCE, ["unbounded-wait"]),
-    ("tests/saq/test_y.py", "from time import sleep\n\ndef test_x():\n    sleep(1)\n", ["sleep-in-test"]),
-    ("tests/saq/test_y.py", "from gevent import sleep\n\ndef test_x():\n    sleep(1)\n", []),
+    ("tests/saq/test_y.py", "from time import sleep\n\ndef test_x():\n    sleep(1)\n    assert x\n", ["sleep-in-test"]),
+    ("tests/saq/test_y.py", "from gevent import sleep\n\ndef test_x():\n    sleep(1)\n    assert x\n", []),
+    # checks of what a test can fail on, in test files only
+    ("tests/saq/test_y.py", "def test_x():\n    assert True\n", ["vacuous-assert"]),
+    ("saq/x.py", "def f():\n    assert True\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a == a\n", ["vacuous-assert"]),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a is a\n", ["vacuous-assert"]),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a, 1\n", ["vacuous-assert"]),
+    # these can fail, and a short word after a comparison is a message
+    ("tests/saq/test_y.py", "def test_x():\n    assert False\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a != a\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a == 1, 'value'\n", []),
+    ("tests/saq/test_y.py", "def test_x(a, b):\n    assert a and b, 'value'\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert not a, 'value'\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a, 'value'\n", ["vacuous-assert"]),
+    # a failure message and a cached result are not vacuous
+    ("tests/saq/test_y.py", "def test_x(a):\n    assert a, 'the file was not written'\n", []),
+    ("tests/saq/test_y.py", "def test_x(f):\n    assert f() is f()\n", []),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    with pytest.raises(Exception):\n        pass\n", ["broad-raises"]),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    with pytest.raises((KeyError, Exception)):\n        pass\n", ["broad-raises"]),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    with pytest.raises(KeyError):\n        pass\n", []),
+    # the code can really raise a plain Exception, which match= or a comment says
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    with pytest.raises(Exception, match='failed'):\n        pass\n", []),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    with pytest.raises(Exception):  # scan() raises it\n        pass\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    a.run()\n", ["no-assertion"]),
+    ("tests/saq/test_y.py", "def test_x(a):  # failing is an exception from run()\n    a.run()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    a.assert_called_once()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    wait_for_condition(a)\n", []),
+    ("tests/saq/test_y.py", "def test_x(m):\n    m['c'].run.assert_called_once()\n", []),
+    ("tests/saq/test_y.py", "def test_x(f):\n    f().run.assert_called_once_with(1)\n", []),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x():\n    pytest.fail('x')\n", []),
+    ("tests/saq/test_y.py", "import pytest\n\ndef test_x(a):\n    with pytest.warns(UserWarning):\n        a()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    check_result(a)\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    verify_x(a)\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    _expect(a)\n", []),
+    # the comment that clears no-assertion can follow a long signature or the docstring
+    ("tests/saq/test_y.py", "def test_x(\n    a,\n):  # failing is an exception from run()\n    a.run()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    # failing is an exception from run()\n    a.run()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    \"\"\"Runs.\"\"\"\n    # failing is an exception\n    a.run()\n", []),
+    ("tests/saq/test_y.py", "def test_x(a):\n    a.run()\n    # not the place for it\n    a.stop()\n", ["no-assertion"]),
+    # a docstring can be the whole body
+    ("tests/saq/test_y.py", "def stub():\n    \"\"\"Doc.\"\"\"\n", []),
+    # a lambda at module level has no name, and a function in a test is part of that test
+    ("tests/saq/test_y.py", "X = lambda: 1\n\ndef test_x(a):\n    assert a\n", []),
+    ("tests/saq/test_y.py", "def test_x():\n    def test_inner(a):\n        a.run()\n    assert test_inner\n", []),
+    ("tests/saq/test_y.py", "import pytest\n\n@pytest.fixture\ndef test_comms():\n    yield\n", []),
+    ("tests/saq/test_y.py", "def helper(a):\n    a.run()\n", []),
+    ("tests/saq/test_y.py", "from threading import Thread\n\ndef test_x():\n    def run():\n        assert 1 == 2\n    t = Thread(target=run)\n    t.start()\n", ["assert-in-thread"]),
+    ("tests/saq/test_y.py", "from threading import Thread\n\ndef test_x():\n    def run():\n        return 1\n    t = Thread(target=run)\n    t.start()\n    assert t\n", []),
 ])
 def test_scan_checks_that_depend_on_where_the_file_is(path, source, checks):
     leads = prepare.scan_python(path, source, set(range(1, 10)))
 
     assert [lead["check"] for lead in leads] == checks
     assert all(lead["dimension"] == LEAD_DIMENSIONS[lead["check"]] for lead in leads)
+
+
+def test_an_assert_added_inside_an_existing_thread_body_is_a_lead():
+    source = ("from threading import Thread\n\ndef test_x():\n    def run():\n        value = 1\n"
+              "        assert value == 2\n    t = Thread(target=run)\n    t.start()\n")
+
+    leads = prepare.scan_python("tests/saq/test_y.py", source, {6})
+
+    assert [(lead["check"], lead["line"]) for lead in leads] == [("assert-in-thread", 4)]
 
 
 def test_scan_looks_inside_classes_and_at_calls_on_call_results():
