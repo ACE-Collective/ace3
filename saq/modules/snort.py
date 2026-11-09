@@ -10,6 +10,7 @@ from typing import Optional, Type
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.configuration.config import get_config
+from saq.error.reporting import log_peer_unavailable
 from saq.constants import F_SNORT_SIGNATURE, REDIS_DB_SNORT, SUMMARY_DETAIL_FORMAT_TXT, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -96,7 +97,10 @@ class SnortSignatureAnalyzer_v1(AnalysisModule):
             result = extract_signature(snort_sig.signature_id, snort_sig.rev)
         except Exception as e:
             # redis could not answer, which is not "no such signature"
-            logging.warning(f"unable to look up snort signature {snort_sig.signature_id} rev {snort_sig.rev}: {e}")
+            context = f"redis for snort signature {snort_sig.signature_id} rev {snort_sig.rev}"
+            if not log_peer_unavailable(e, context, unreachable=(redis.exceptions.ConnectionError, redis.exceptions.TimeoutError)):
+                logging.exception(f"unable to look up snort signature {snort_sig.signature_id} rev {snort_sig.rev}",
+                                  extra={"root_uuid": self.get_root().uuid, "observable_uuid": snort_sig.uuid})
             analysis.error = f"unable to look up the signature: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 

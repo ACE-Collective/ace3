@@ -222,6 +222,21 @@ def test_crack_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
 
 
 @pytest.mark.integration
+def test_wordlist_failure_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
+    def _wordlist(*args, **kwargs):
+        raise ValueError("bad range")
+
+    monkeypatch.setattr("saq.modules.email.encryption.zip.generate_wordlist", _wordlist)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
+
+    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    assert analysis.password is None
+    assert analysis.error == "unable to build the password wordlist: bad range"
+    assert any(r.levelno == logging.ERROR and "error encountered when building password wordlist" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.integration
 def test_an_extraction_that_fails_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
     # 7z exits 2 for an error, such as a member it could not decrypt
     _tool_runs_instead(monkeypatch, ZipEncryptionAnalyzer, "7z",
@@ -233,6 +248,19 @@ def test_an_extraction_that_fails_is_recorded(root_analysis, tmp_path, monkeypat
     assert analysis.error == "7z exited with status 2: ERROR: Wrong password : invoice.txt"
     assert any(r.levelno == logging.WARNING and "7z could not extract every file" in r.getMessage()
                for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_an_extraction_with_a_warning_is_not_an_error(root_analysis, tmp_path, monkeypatch, caplog):
+    # 7z exits 1 for a warning, and still extracts what it can
+    _tool_runs_instead(monkeypatch, ZipEncryptionAnalyzer, "7z",
+                       ["sh", "-c", "echo 'WARNING: headers error' >&2; exit 1"])
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
+
+    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    assert analysis.password == PASSWORD
+    assert analysis.error is None
+    assert not any("7z could not extract every file" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.integration
@@ -511,6 +539,37 @@ def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkey
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
     assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted rar" in r.getMessage()
                and "CRC failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_rar_crack_failure_is_recorded(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
+    def _crack(*args, **kwargs):
+        raise FileNotFoundError("john binary not found")
+
+    monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", _crack)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.password is None
+    assert analysis.error == "unable to crack the password: john binary not found"
+    assert _FakeRarFile.extracted_with == []
+    assert any(r.levelno == logging.ERROR and "Error encountered when trying to crack password" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_rar_wordlist_failure_is_recorded(root_analysis, tmp_path, fake_rar, monkeypatch, caplog):
+    def _wordlist(*args, **kwargs):
+        raise ValueError("bad range")
+
+    monkeypatch.setattr("saq.modules.email.encryption.rar.generate_wordlist", _wordlist)
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
+
+    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    assert analysis.password is None
+    assert analysis.error == "unable to build the password wordlist: bad range"
+    assert any(r.levelno == logging.ERROR and "Error encountered when building password wordlist" in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.integration

@@ -1,6 +1,7 @@
 
 import logging
 import os
+import subprocess
 import uuid
 
 from unittest.mock import Mock
@@ -612,6 +613,44 @@ def test_olevba_failure_is_an_error(tmp_path, test_context, monkeypatch):
 
     assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
     assert observable.get_analysis(OLEVBA_Analysis_v1_2).error == "olevba failed: not an OLE2 structured storage file"
+    assert observable.has_tag("olevba_failed")
+
+def _olevba_on(root, path):
+    observable = root.add_file_observable(path)
+    file_type = FileTypeAnalysis()
+    file_type.details = {"type": "Zip archive data", "mime": "application/zip"}
+    observable.add_analysis(file_type)
+    analyzer = OLEVBA_Analyzer_v1_2(context=create_test_context(root=root),
+                                    config=get_analysis_module_config(ANALYSIS_MODULE_OLEVBA_V1_2))
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    return observable
+
+@pytest.mark.unit
+def test_olevba_on_an_encrypted_zip_is_not_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.zip"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error is None
+    assert not observable.has_tag("olevba_failed")
+
+@pytest.mark.unit
+def test_olevba_that_cannot_open_an_office_document_is_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.docx"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error.startswith("olevba failed: Failed to open file ")
     assert observable.has_tag("olevba_failed")
 
 @pytest.mark.unit

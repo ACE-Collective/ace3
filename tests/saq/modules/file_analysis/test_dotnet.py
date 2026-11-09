@@ -206,7 +206,7 @@ class TestDe4dotAnalyzer:
         assert not os.path.exists(f"{file_observable.full_path}.deobfuscated")
         assert not analysis.observables
 
-    def test_a_deobfuscation_that_writes_nothing_fails(self, root_analysis, tmpdir, monkeypatch):
+    def test_a_deobfuscation_that_writes_nothing_fails(self, root_analysis, tmpdir, monkeypatch, caplog):
         # the real -d detection check runs, the deobfuscation exits without writing its file
         real = De4dotAnalyzer.run_sandboxed_tool
         calls = []
@@ -232,6 +232,9 @@ class TestDe4dotAnalyzer:
         assert analysis.error == "de4dot exited with status 1: ERROR: bad image, without writing a deobfuscated file"
         assert analysis.generate_summary().startswith("De4dot Analysis error: ")
         assert not analysis.observables
+        [record] = [r for r in caplog.records if "failed on" in r.getMessage()]
+        assert record.levelno == logging.INFO
+        assert record.path == file_observable.full_path
 
     @pytest.mark.skipif(not os.path.exists("/opt/de4dotEx/de4dot"), reason="de4dot is not installed")
     def test_a_runtime_the_sandbox_keeps_from_starting_is_reported(self, root_analysis, tmpdir, monkeypatch, caplog):
@@ -407,6 +410,26 @@ class TestIlspyAnalyzer:
         # with no .il written there is nothing to add, and no warning about a missing file
         assert not [obs for obs in analysis.observables if obs.file_name.endswith(".il")]
         assert "non-existant file" not in caplog.text
+
+    def test_execute_analysis_that_writes_no_il_fails(self, root_analysis, tmpdir, monkeypatch, caplog):
+        monkeypatch.setattr(IlspyAnalyzer, "run_sandboxed_tool", Mock(
+            return_value=SandboxResult(returncode=1, stdout="", stderr="System.BadImageFormatException: bad\n")))
+
+        analyzer = IlspyAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_ILSPY))
+
+        test_file = _write_dotnet_sample(tmpdir / "test.exe")
+        file_observable = root_analysis.add_file_observable(test_file)
+
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = file_observable.get_analysis(IlspyAnalysis)
+        assert analysis.exit_code == 1
+        assert analysis.error == "ilspy exited with status 1: System.BadImageFormatException: bad, without writing IL"
+        assert not analysis.observables
+        [record] = [r for r in caplog.records if "failed on" in r.getMessage()]
+        assert record.levelno == logging.INFO
 
     def test_execute_analysis_duplicate_filename(self, root_analysis, tmpdir):
         analyzer = IlspyAnalyzer(

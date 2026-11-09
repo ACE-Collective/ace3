@@ -1,3 +1,4 @@
+import logging
 import os
 import struct
 from pathlib import Path
@@ -8,7 +9,7 @@ from saq.analysis.root import load_root
 from saq.constants import DIRECTIVE_SANDBOX, F_FILE, R_EXTRACTED_FROM
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
-from saq.modules.file_analysis.rtf import ExtractedRTFAnalysis, NoWhiteSpaceAnalysis, RTFOLEObjectAnalysis
+from saq.modules.file_analysis.rtf import ExtractedRTFAnalysis, NoWhiteSpaceAnalysis, RTFOLEObjectAnalysis, RTFOLEObjectAnalyzer
 from saq.signatures.builtin import RTF_EXTRACTED_SUSPECT_FILE
 from saq.util.uuid import get_storage_dir
 
@@ -99,7 +100,7 @@ def test_ignores_files_that_are_not_rtf(root_analysis, tmp_path):
 
 
 @pytest.mark.integration
-def test_rtfobj_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
+def test_rtfobj_failure_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
     from saq.configuration.config import get_analysis_module_config
 
     script = tmp_path / "rtfobj"
@@ -114,6 +115,23 @@ def test_rtfobj_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
     assert analysis.stdout == ""
     assert analysis.extracted_files == []
     assert analysis.summary is None
+    assert any(r.levelno == logging.INFO and "failed on" in r.getMessage() and "rtfobj blew up" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_rtfobj_that_cannot_run_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
+    def _run_tool(self, *args, **kwargs):
+        raise OSError("no python")
+
+    monkeypatch.setattr(RTFOLEObjectAnalyzer, "run_tool", _run_tool)
+
+    analysis = _analyze(root_analysis, _rtf(tmp_path), ("rtfole",)).get_and_load_analysis(RTFOLEObjectAnalysis)
+
+    assert analysis.error == "unable to run rtfobj: no python"
+    assert analysis.extracted_files == []
+    [record] = [r for r in caplog.records if r.levelno == logging.ERROR and "execution of" in r.getMessage()]
+    assert record.exc_info is not None
 
 
 @pytest.mark.integration

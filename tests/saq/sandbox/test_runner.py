@@ -280,3 +280,13 @@ def test_a_probe_that_could_not_run_is_tried_again(monkeypatch, caplog):
 ], ids=["stderr", "silent", "signal", "long-line"])
 def test_failure_reason(result, reason):
     assert result.failure_reason("7z") == reason
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("returncode,stderr,reason", [
+    (None, None, "rtfobj exited with an unknown status"),
+    (None, "Traceback\nValueError: bad\n", "rtfobj exited with an unknown status: ValueError: bad"),
+    (-1, None, "rtfobj exited with status -1"),
+], ids=["unknown", "unknown-with-stderr", "no-stderr"])
+def test_tool_failure_reason(returncode, stderr, reason):
+    assert runner.tool_failure_reason("rtfobj", returncode, stderr) == reason

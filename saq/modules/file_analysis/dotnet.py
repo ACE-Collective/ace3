@@ -134,6 +134,8 @@ class De4dotAnalyzer(AnalysisModule):
             analysis.stderr = result.stderr or None
             if not os.path.exists(output_path):
                 analysis.error = f"{result.failure_reason('de4dot')}, without writing a deobfuscated file"
+                logging.info("%s failed on %s: %s", self, local_file_path, analysis.error,
+                             extra={"module_name": self.name, "path": local_file_path, "root_uuid": self.get_root().uuid})
 
         analysis.details['deobfuscated'] = True
         file_observable = analysis.add_file_observable(output_path, volatile=True)
@@ -251,6 +253,8 @@ class IlspyAnalyzer(AnalysisModule):
 
         if not os.path.exists(target_path):
             analysis.error = f"{result.failure_reason('ilspy')}, without writing IL"
+            logging.info("%s failed on %s: %s", self, _file.full_path, analysis.error,
+                         extra={"module_name": self.name, "path": _file.full_path, "root_uuid": self.get_root().uuid})
             return AnalysisExecutionResult.COMPLETED
 
         file_observable = analysis.add_file_observable(target_path, volatile=True)

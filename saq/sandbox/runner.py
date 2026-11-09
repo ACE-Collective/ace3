@@ -212,19 +212,26 @@ class SandboxResult:
     output_exceeded: bool = False
 
     def failure_reason(self, tool: str) -> str:
-        """Why tool failed, for an Analysis.error: how it exited, and the last line of its stderr, which
-        is where a tool says why it died."""
-        # the sandbox exits 128 + N for a command killed by signal N
-        if 128 < self.returncode <= 128 + signal.SIGRTMAX:
-            reason = f"{tool} was killed by signal {self.returncode - 128}"
-        else:
-            reason = f"{tool} exited with status {self.returncode}"
+        return tool_failure_reason(tool, self.returncode, self.stderr)
 
-        lines = self.stderr.strip().splitlines()
-        if lines:
-            reason += f": {lines[-1][:500]}"
 
-        return reason
+def tool_failure_reason(tool: str, returncode: int | None, stderr: str | None) -> str:
+    """Why tool failed, for an Analysis.error: how it exited, and the last line of its stderr, which is where a
+    tool says why it died. returncode is None when the tool's exit status was lost (the js deobfuscator's
+    exit.code file is missing or unreadable)."""
+    if returncode is None:
+        reason = f"{tool} exited with an unknown status"
+    # the sandbox (and a shell) exits 128 + N for a command killed by signal N
+    elif 128 < returncode <= 128 + signal.SIGRTMAX:
+        reason = f"{tool} was killed by signal {returncode - 128}"
+    else:
+        reason = f"{tool} exited with status {returncode}"
+
+    lines = (stderr or "").strip().splitlines()
+    if lines:
+        reason += f": {lines[-1][:500]}"
+
+    return reason
 
 
 class SandboxOutputExceeded(RuntimeError):

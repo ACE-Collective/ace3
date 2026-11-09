@@ -392,16 +392,21 @@ def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("report,stderr,error", [
+@pytest.mark.parametrize("report,exit_code,stderr,error", [
     # the manager killed the scanner at its timeout: an empty report
-    ({}, "scanner container timed out after 30s", "js deobfuscator exited with -1: scanner container timed out after 30s"),
+    ({}, "-1", "scanner container timed out after 30s",
+     "js deobfuscator exited with status -1: scanner container timed out after 30s"),
+    # the container was killed by SIGKILL (the OOM killer)
+    ({}, "137", "", "js deobfuscator was killed by signal 9"),
+    # the exit status was lost
+    ({}, "garbage", "", "js deobfuscator exited with an unknown status"),
     # the harness said why itself
-    ({"error": "out of memory"}, "", "out of memory"),
-], ids=["timeout", "harness-error"])
-def test_a_scanner_that_exits_non_zero_fails_the_analysis(datadir, monkeypatch, report, stderr, error):
+    ({"error": "out of memory"}, "-1", "", "out of memory"),
+], ids=["timeout", "killed", "unknown-status", "harness-error"])
+def test_a_scanner_that_exits_non_zero_fails_the_analysis(datadir, monkeypatch, report, exit_code, stderr, error):
     def _failed_shim(file_path, output_dir, timeout=60, scanner_timeout=30, dom_snapshot_path=None):
         os.makedirs(output_dir, exist_ok=True)
-        files = {"report.json": json.dumps(report), "exit.code": "-1", "std.err": stderr}
+        files = {"report.json": json.dumps(report), "exit.code": exit_code, "std.err": stderr}
         for name, content in files.items():
             with open(os.path.join(output_dir, name), "w") as fp:
                 fp.write(content)
@@ -417,7 +422,6 @@ def test_a_scanner_that_exits_non_zero_fails_the_analysis(datadir, monkeypatch, 
     assert _build_analyzer(root).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
-    assert analysis.exit_code == -1
     assert analysis.error == error
     assert [o for o in analysis.observables if o.type == F_FILE] == []
 

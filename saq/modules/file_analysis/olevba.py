@@ -161,7 +161,7 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
 
         # imported here: oletools (and the XLM deobfuscator and setuptools it loads) costs ~19 MB, and the search
         # indexer and the GUI import this module only to read OLEVBA_Analysis_v1_2
-        from oletools.olevba import VBA_Parser, filter_vba
+        from oletools.olevba import FileOpenError, VBA_Parser, filter_vba
 
         parser = None
 
@@ -261,8 +261,10 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                 
         except Exception as e:
             logging.warning("olevba execution error on {}: {}".format(local_file_path, e))
-            # what it found before it failed is kept
-            analysis.error = f"olevba failed: {str(e) or type(e).__name__}"
+            # olevba cannot open a zip or OLE file that is not an office document, such as an encrypted zip, and
+            # that is a failure only when the file's name says it is one. What it found before it failed is kept.
+            if is_office_ext(local_file_path) or not isinstance(e, FileOpenError):
+                analysis.error = f"olevba failed: {str(e) or type(e).__name__}"
 
             # if the file ends with a microsoft office extension then we tag it
             if is_office_ext(local_file_path):

@@ -50,7 +50,8 @@ directory as hostile, as it did before.
   their analysis says the extraction did not finish.
 - A tool that ran and failed (exited with an error, or wrote nothing it should have) is a failed
   analysis too. `SandboxResult.failure_reason(tool)` words its `Analysis.error`: how the tool exited
-  and the last line of its stderr.
+  and the last line of its stderr (`tool_failure_reason()` for a tool that ran outside the sandbox).
+  The module logs it at INFO with the path, since nothing else does.
 - An archive listing is read even when it is longer than `tool_sandbox.max_output_bytes`
   (`partial_output`): an archive padded with entries has more files than any limit, so it is
   extracted under the file count limit, which takes the dangerous files first. The extractors run
