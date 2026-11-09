@@ -289,9 +289,11 @@ def test_detection_mode_restarts_from_scratch_without_looping():
     engine_process = engine.start_nonblocking()
     engine.wait_for_start()
 
-    # the worker dies on basic_test and is replaced
+    # the worker dies on basic_test and is replaced, and the replacement runs generate_file
+    # again; stopping the engine before that second run finishes would leave it uncounted
     wait_for_log_count("detected death of", 1, 5)
     wait_for_log_count("started worker", 2, 5)
+    wait_for_log_count("analysis GenerateFileAnalysis is completed", 2, 5)
     os.kill(engine_process.pid, signal.SIGINT)
     wait_for_process(engine_process)
 

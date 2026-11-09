@@ -16,7 +16,7 @@ from saq.environment import get_base_dir
 from saq.modules.file_analysis.vbs import PCODEDMP_KILLED, PCodeAnalysis, VBScriptAnalysis
 from saq.signatures.builtin import VBS_HEX_ENCODED_CONTENT
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import wait_for_condition
+from tests.saq.helpers import process_is_gone, wait_for_condition
 from tests.saq.modules.conftest import HANG, fake_tool_pids
 
 OLE_FILES = Path(__file__).parent.parent / "test_file_analysis_full" / "ole_files"
@@ -133,14 +133,6 @@ def _pcodedmp_pid(tool_dir: str) -> int:
     return fake_tool_pids(tool_dir)[0]
 
 
-def _gone(pid: int) -> bool:
-    try:
-        with open(f"/proc/{pid}/stat") as fp:
-            return fp.read().split(")")[-1].split()[0] == "Z"
-    except FileNotFoundError:
-        return True
-
-
 def _run_wrapper(timeout: int, tool_dir: str, target: Path, **kwargs) -> subprocess.Popen:
     return subprocess.Popen([os.path.join(get_base_dir(), "bin", "pcodedmp_wrapper"), str(timeout),
                              os.path.join(tool_dir, "pcodedmp"), str(target)],
@@ -157,7 +149,7 @@ def test_pcodedmp_wrapper_stops_pcodedmp_at_its_deadline(tmp_path, fake_tools):
     p.kill()
     p.wait()
 
-    wait_for_condition(lambda: _gone(pid))
+    wait_for_condition(lambda: process_is_gone(pid))
 
 
 @pytest.mark.unit
@@ -179,7 +171,7 @@ def test_pcodedmp_wrapper_dies_with_its_callers_process_group(tmp_path, fake_too
     os.killpg(p.pid, signal.SIGKILL)
     p.wait()
 
-    wait_for_condition(lambda: _gone(pid))
+    wait_for_condition(lambda: process_is_gone(pid))
 
 
 @pytest.mark.integration
@@ -212,7 +204,7 @@ def test_pcodedmp_timeout(root_analysis, tmp_path, monkeypatch, caplog, fake_too
     # the wrapper stopped it, the module did not have to
     assert not any("pcodedmp_wrapper did not exit" in r.getMessage() for r in caplog.records)
     pid = _pcodedmp_pid(tool_dir)
-    assert _gone(pid)
+    assert process_is_gone(pid)
 
 
 @pytest.mark.integration
@@ -234,4 +226,4 @@ def test_pcodedmp_wrapper_that_does_not_exit(root_analysis, tmp_path, monkeypatc
 
     # pcodedmp still ends at its own deadline
     pid = _pcodedmp_pid(tool_dir)
-    wait_for_condition(lambda: _gone(pid))
+    wait_for_condition(lambda: process_is_gone(pid))

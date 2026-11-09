@@ -3,7 +3,7 @@
 # the ACE test suite is not safe to run more than once at a time
 #
 # every pytest process owns a slot (tests/unittest_session.py) that decides its data directory
-# under $SAQ_HOME/data_unittest, its API and network semaphore ports and its log file; the
+# (under get_data_dir_root()), its API and network semaphore ports and its log file; the
 # process deletes and recreates that data directory at session start and again before every
 # integration/system test. the slots of a pytest-xdist run are distinct, but a second run would
 # reuse them, so two runs at the same time destroy each other's state, and (with pytest-randomly
@@ -44,7 +44,7 @@ class SessionLockError(Exception):
 def get_marker_path() -> str:
     """Returns the path to the pytest session marker file.
 
-    This is deliberately outside of data_unittest/ -- that directory is deleted by
+    This is deliberately outside of the data directories -- they are deleted by
     execute_global_setup() at the start of the very session the marker is guarding."""
     return os.path.join(os.environ.get("SAQ_HOME", os.getcwd()), MARKER_FILENAME)
 
@@ -169,7 +169,7 @@ def describe_holder(path: str) -> str:
         f"the ACE test suite marker file exists: {path}",
         "",
         "the test suite is not safe to run more than once at a time in one checkout or one",
-        "container -- each run deletes and recreates its data_unittest/<slot> directories, binds",
+        "container -- each run deletes and recreates its per-slot data directories, binds",
         "fixed per-slot ports and writes per-slot Qdrant collections, so concurrent runs corrupt",
         "each other. (a single run may use pytest-xdist: pytest -n auto)",
         "",

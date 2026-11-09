@@ -122,7 +122,7 @@ def get_project_root() -> str:
 def get_registry_dir() -> str:
     """Returns the directory the registry records live in, creating it if needed.
 
-    Deliberately outside of data_unittest/ -- that directory is deleted before every
+    Deliberately outside of the data directories -- they are deleted before every
     integration test."""
     path = os.path.join(get_project_root(), REGISTRY_DIRNAME)
     os.makedirs(path, exist_ok=True)
