@@ -426,10 +426,13 @@ $(document).ready(function() {
         expandCollapsedAncestors(target);
 
         var applyHighlight = function() {
-            target.classList.add('jump-highlight');
-            setTimeout(function() {
+            // the theme's animation decides how long the highlight lasts
+            target.addEventListener('animationend', function onEnd(event) {
+                if (event.target !== target) return;
+                target.removeEventListener('animationend', onEnd);
                 target.classList.remove('jump-highlight');
-            }, 2000);
+            });
+            target.classList.add('jump-highlight');
         };
 
         // If already in view, scrollIntoView is a no-op and 'scrollend'
