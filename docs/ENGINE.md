@@ -1541,7 +1541,7 @@ modules that are already gone.
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
-| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue` (`EngineExecutionContext.record_execution_statistics`) |
+| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue`, and the root's `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
 

@@ -6,6 +6,7 @@ from multiprocessing import cpu_count
 import os
 import re
 import signal
+from unittest.mock import MagicMock, patch
 import uuid
 import pytest
 
@@ -14,7 +15,7 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, NODE_STATUS_RUNNING, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_FQDN, F_IPV4, NODE_STATUS_RUNNING, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
@@ -25,6 +26,7 @@ from saq.database.util.workload import add_workload
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
+from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
 from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
@@ -2042,6 +2044,39 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
     # No writes happened, so write fields stay absent.
     assert "cache_write_ms_sum" not in payload
     assert "cache_write_bytes_uncompressed_sum" not in payload
+
+
+@pytest.mark.unit
+def test_per_root_carries_observable_counts(tmpdir, monkeypatch):
+    """Every row of the per-root summary carries the root's observable total and
+    its count per observable type, including observables added below the root."""
+
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+    root.add_observable_by_spec(F_IPV4, "5.6.7.8")
+    fqdn = root.add_observable_by_spec(F_FQDN, "example.com")
+    analysis = Analysis()
+    fqdn.add_analysis(analysis)
+    analysis.add_observable_by_spec(F_IPV4, "9.9.9.9")
+    # the same observable added a second time is still one observable
+    analysis.add_observable_by_spec(F_IPV4, "1.2.3.4")
+
+    context = EngineExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+    context.total_analysis_time["module_b"] = 2.0
+
+    _enable_fluent_metrics(monkeypatch)
+    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+        mock_sender = MagicMock()
+        mock_sender_class.return_value = mock_sender
+        context.record_execution_statistics(10.0, str(tmpdir))
+
+    payloads = [call[0][1] for call in mock_sender.emit.call_args_list]
+    assert len(payloads) == 2
+    for payload in payloads:
+        assert payload["observable_count"] == 4
+        assert payload["observable_type_counts"] == {F_IPV4: 3, F_FQDN: 1}
 
 
 @pytest.mark.unit

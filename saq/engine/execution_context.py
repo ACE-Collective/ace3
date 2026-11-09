@@ -1,3 +1,4 @@
+from collections import Counter
 from datetime import datetime
 import logging
 from typing import TYPE_CHECKING, Optional, Union
@@ -150,7 +151,8 @@ class EngineExecutionContext:
         had any activity in this execution context -- either live execution
         time, cache hits, cache misses, or cache writes. Each event carries
         the per-module aggregates (exec_count, cache_* counters, byte/time
-        sums) and root-level context (alert_type, is_alert, queue).
+        sums) and root-level context (alert_type, is_alert, queue,
+        observable_count, observable_type_counts).
 
         Args:
             elapsed_time: The total elapsed time for the analysis.
@@ -168,6 +170,10 @@ class EngineExecutionContext:
 
             current_time = local_time().strftime("%Y-%m-%d %H:%M:%S.%f")
             _total = sum(self.total_analysis_time.values())
+
+            # counted once here, not per row: every row carries the same root-level values
+            observable_type_counts = dict(Counter(o.type for o in self.root.all_observables))
+            observable_count = sum(observable_type_counts.values())
 
             # Iterate the union of all per-(root, module) counter dicts so
             # cache-only modules (cache hits, no live executions) still get
@@ -200,6 +206,8 @@ class EngineExecutionContext:
                     "alert_type": self.root.alert_type,
                     "is_alert": self.root.analysis_mode == ANALYSIS_MODE_CORRELATION,
                     "queue": self.root.queue,
+                    "observable_count": observable_count,
+                    "observable_type_counts": observable_type_counts,
                 }
 
                 hits = self.cache_hit_count.get(key, 0)
