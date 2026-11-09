@@ -1852,144 +1852,141 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
         mock_sender_class.assert_not_called()
 
 
+def _record_metrics(context, elapsed_time, tmpdir):
+    """Runs record_execution_statistics against a mocked fluent sender and returns
+    (root event, {module name: module event}), checking there is exactly one root event."""
+    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+        mock_sender = MagicMock()
+        mock_sender_class.return_value = mock_sender
+        context.record_execution_statistics(elapsed_time, str(tmpdir))
+
+    mock_sender_class.assert_called_once_with("test_tag", host="localhost", port=24224)
+    # first arg to emit() is the label (None means "now")
+    assert all(call[0][0] is None for call in mock_sender.emit.call_args_list)
+    events = [call[0][1] for call in mock_sender.emit.call_args_list]
+    root_events = [e for e in events if e["event_type"] == "root"]
+    assert len(root_events) == 1
+    module_events = {e["module"]: e for e in events if e["event_type"] == "module"}
+    assert len(root_events) + len(module_events) == len(events)
+    return root_events[0], module_events
+
+
+# the fields that describe the root, carried only by its root event
+ROOT_ONLY_METRIC_FIELDS = [
+    "total_analysis_time_seconds", "total_time_seconds", "alert_type", "is_alert",
+    "queue", "observable_count", "observable_type_counts",
+]
+
+CACHE_METRIC_FIELDS = [
+    "cache_hit_count", "cache_miss_count",
+    "cache_write_count_insert",
+    "cache_lookup_ms_sum", "cache_lookup_ms_max",
+    "cache_write_ms_sum", "cache_write_ms_max",
+    "cache_write_bytes_uncompressed_sum",
+    "cache_write_bytes_compressed_sum",
+]
+
+
 @pytest.mark.unit
 def test_record_execution_statistics_with_fluent_bit(tmpdir, monkeypatch):
-    """test that record_execution_statistics sends metrics to fluent bit when enabled"""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
-    # create a root analysis
+    """One root event for the work item, then one event per module that did anything."""
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-
-    # create an execution context
     context = EngineExecutionContext(root)
-
-    # add some mock module execution times
     context.total_analysis_time["module_a"] = 2.5
     context.total_analysis_time["module_b"] = 1.5
 
     _enable_fluent_metrics(monkeypatch)
+    root_event, module_events = _record_metrics(context, 10.0, tmpdir)
 
-    # mock the fluent sender
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
+    assert root_event["root_uuid"] == root.uuid
+    assert "timestamp" in root_event
+    assert root_event["total_analysis_time_seconds"] == 4.0  # 2.5 + 1.5
+    assert root_event["total_time_seconds"] == 10.0
+    assert root_event["alert_type"] == root.alert_type
+    # create_root_analysis() defaults analysis_mode to "test_groups" so is_alert is False here
+    assert root_event["is_alert"] is False
+    assert root_event["queue"] == root.queue
+    assert "module" not in root_event
 
-        # record statistics
-        elapsed_time = 10.0
-        stats_dir = str(tmpdir)
-        context.record_execution_statistics(elapsed_time, stats_dir)
+    assert set(module_events) == {"module_a", "module_b"}
+    event_a = module_events["module_a"]
+    assert event_a["root_uuid"] == root.uuid
+    # the root event and its module events share a timestamp, so they can be joined
+    assert event_a["timestamp"] == root_event["timestamp"]
+    assert event_a["analysis_time_seconds"] == 2.5
+    assert event_a["percentage"] == 25.0  # 2.5 / 10.0 * 100
+    assert event_a["exec_count"] == 0  # nothing populated total_exec_count
+    # No cache activity was recorded, so the cache_* fields are absent.
+    for k in CACHE_METRIC_FIELDS:
+        assert k not in event_a, f"unexpected cache field {k}"
 
-        # verify fluent sender was created only once
-        mock_sender_class.assert_called_once_with(
-            "test_tag",
-            host="localhost",
-            port=24224
-        )
+    event_b = module_events["module_b"]
+    assert event_b["analysis_time_seconds"] == 1.5
+    assert event_b["percentage"] == 15.0  # 1.5 / 10.0 * 100
+    assert event_b["exec_count"] == 0
 
-        # verify emit was called twice (once for each module)
-        assert mock_sender.emit.call_count == 2
 
-        # check the log events that were emitted
-        calls = mock_sender.emit.call_args_list
+@pytest.mark.unit
+def test_module_metric_events_do_not_repeat_root_fields(tmpdir, monkeypatch):
+    """What describes the root is only on the root event, not on every module event."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
+    root.initialize_storage()
+    root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+    context = EngineExecutionContext(root)
+    context.total_analysis_time["module_a"] = 1.0
+    context.cache_hit_count["module_b"] = 1
 
-        # Iteration order of set() is not guaranteed, so look up by
-        # module name rather than positional index.
-        payloads_by_module = {
-            call[0][1]["module"]: call[0][1] for call in calls
-        }
-        assert set(payloads_by_module) == {"module_a", "module_b"}
-        log_event_a = payloads_by_module["module_a"]
-        log_event_b = payloads_by_module["module_b"]
+    _enable_fluent_metrics(monkeypatch)
+    root_event, module_events = _record_metrics(context, 10.0, tmpdir)
 
-        # first arg to emit() is the label (None means "now")
-        assert all(call[0][0] is None for call in calls)
+    for k in ROOT_ONLY_METRIC_FIELDS:
+        assert k in root_event
+    assert set(module_events) == {"module_a", "module_b"}
+    for event in module_events.values():
+        for k in ROOT_ONLY_METRIC_FIELDS:
+            assert k not in event, f"module event repeats root field {k}"
 
-        assert log_event_a["module"] == "module_a"
-        assert log_event_a["analysis_time_seconds"] == 2.5
-        assert log_event_a["percentage"] == 25.0  # 2.5 / 10.0 * 100
-        assert log_event_a["total_analysis_time_seconds"] == 4.0  # 2.5 + 1.5
-        assert log_event_a["total_time_seconds"] == 10.0
-        assert log_event_a["root_uuid"] == root.uuid
-        assert "timestamp" in log_event_a
-        # New fields added in the per-(root, module) aggregation PR:
-        # exec_count + alert fields are always present. is_alert is
-        # driven by analysis_mode (CORRELATION).
-        # create_root_analysis() defaults analysis_mode
-        # to "test_groups" so is_alert is False here.
-        assert log_event_a["exec_count"] == 0  # nothing populated total_exec_count
-        assert log_event_a["alert_type"] == root.alert_type
-        assert log_event_a["is_alert"] is False
-        assert "queue" in log_event_a
-        # No cache activity was recorded → cache_* fields must be absent.
-        for k in [
-            "cache_hit_count", "cache_miss_count",
-            "cache_write_count_insert",
-            "cache_lookup_ms_sum", "cache_lookup_ms_max",
-            "cache_write_ms_sum", "cache_write_ms_max",
-            "cache_write_bytes_uncompressed_sum",
-            "cache_write_bytes_compressed_sum",
-        ]:
-            assert k not in log_event_a, f"unexpected cache field {k}"
 
-        assert log_event_b["module"] == "module_b"
-        assert log_event_b["analysis_time_seconds"] == 1.5
-        assert log_event_b["percentage"] == 15.0  # 1.5 / 10.0 * 100
-        assert log_event_b["total_analysis_time_seconds"] == 4.0
-        assert log_event_b["total_time_seconds"] == 10.0
-        assert log_event_b["exec_count"] == 0
-        assert log_event_b["is_alert"] is False
+@pytest.mark.unit
+def test_root_metric_event_emitted_when_no_module_ran(tmpdir, monkeypatch):
+    """A work item where no module did anything still reports its root event."""
+    root = create_root_analysis(uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    root.add_observable_by_spec(F_IPV4, "1.2.3.4")
+    context = EngineExecutionContext(root)
+
+    _enable_fluent_metrics(monkeypatch)
+    root_event, module_events = _record_metrics(context, 3.0, tmpdir)
+
+    assert module_events == {}
+    assert root_event["root_uuid"] == root.uuid
+    assert root_event["total_analysis_time_seconds"] == 0
+    assert root_event["total_time_seconds"] == 3.0
+    assert root_event["observable_count"] == 1
+    assert root_event["observable_type_counts"] == {F_IPV4: 1}
 
 
 @pytest.mark.unit
 def test_record_execution_statistics_zero_elapsed_time(tmpdir, monkeypatch):
     """test that record_execution_statistics handles zero elapsed time"""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
-    # create a root analysis
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-
-    # create an execution context
     context = EngineExecutionContext(root)
-
-    # add some mock module execution times
     context.total_analysis_time["module_a"] = 1.0
 
     _enable_fluent_metrics(monkeypatch)
+    root_event, module_events = _record_metrics(context, 0.0, tmpdir)
 
-    # mock the fluent sender
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-
-        # record statistics with zero elapsed time
-        elapsed_time = 0.0
-        stats_dir = str(tmpdir)
-        context.record_execution_statistics(elapsed_time, stats_dir)
-
-        # verify emit was called
-        assert mock_sender.emit.call_count == 1
-
-        # check the log event
-        log_event = mock_sender.emit.call_args[0][1]
-        assert log_event["percentage"] == 0.0  # should be 0 when elapsed_time is 0
-        assert log_event["total_time_seconds"] == 0  # should be 0 when elapsed_time is 0
+    assert root_event["total_time_seconds"] == 0
+    assert module_events["module_a"]["percentage"] == 0.0  # should be 0 when elapsed_time is 0
 
 
 @pytest.mark.unit
 def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, caplog):
     """test that record_execution_statistics handles exceptions gracefully"""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import patch
-
-    # create a root analysis
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
-
-    # create an execution context
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
 
@@ -2000,9 +1997,7 @@ def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, cap
         mock_sender_class.side_effect = Exception("connection failed")
 
         # record statistics - should not raise an exception
-        elapsed_time = 10.0
-        stats_dir = str(tmpdir)
-        context.record_execution_statistics(elapsed_time, stats_dir)
+        context.record_execution_statistics(10.0, str(tmpdir))
 
     # the failure is reported, not raised
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
@@ -2014,9 +2009,6 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
     """A module that only ever hit the cache (no live execution) must still
     produce a row in the per-root summary so the dashboard can count it.
     """
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     context = EngineExecutionContext(root)
@@ -2027,14 +2019,10 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
     context.cache_lookup_ms_max["module_x"] = 5
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(10.0, str(tmpdir))
+    _, module_events = _record_metrics(context, 10.0, tmpdir)
 
-    assert mock_sender.emit.call_count == 1
-    payload = mock_sender.emit.call_args[0][1]
-    assert payload["module"] == "module_x"
+    assert set(module_events) == {"module_x"}
+    payload = module_events["module_x"]
     assert payload["analysis_time_seconds"] == 0
     assert payload["exec_count"] == 0
     assert payload["cache_hit_count"] == 3
@@ -2048,9 +2036,8 @@ def test_per_root_emits_for_cache_only_modules(tmpdir, monkeypatch):
 
 @pytest.mark.unit
 def test_per_root_carries_observable_counts(tmpdir, monkeypatch):
-    """Every row of the per-root summary carries the root's observable total and
-    its count per observable type, including observables added below the root."""
-
+    """The root event carries the root's observable total and its count per
+    observable type, including observables added below the root."""
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.add_observable_by_spec(F_IPV4, "1.2.3.4")
@@ -2064,28 +2051,18 @@ def test_per_root_carries_observable_counts(tmpdir, monkeypatch):
 
     context = EngineExecutionContext(root)
     context.total_analysis_time["module_a"] = 1.0
-    context.total_analysis_time["module_b"] = 2.0
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(10.0, str(tmpdir))
+    root_event, _ = _record_metrics(context, 10.0, tmpdir)
 
-    payloads = [call[0][1] for call in mock_sender.emit.call_args_list]
-    assert len(payloads) == 2
-    for payload in payloads:
-        assert payload["observable_count"] == 4
-        assert payload["observable_type_counts"] == {F_IPV4: 3, F_FQDN: 1}
+    assert root_event["observable_count"] == 4
+    assert root_event["observable_type_counts"] == {F_IPV4: 3, F_FQDN: 1}
 
 
 @pytest.mark.unit
 def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir, monkeypatch):
-    """exec_count + alert fields are always present; cache_* fields appear
-    only when the module had cache activity in this (root, module)."""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
+    """exec_count is always present; cache_* fields appear only when the
+    module had cache activity in this (root, module)."""
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     context = EngineExecutionContext(root)
@@ -2093,32 +2070,18 @@ def test_per_root_omits_cache_fields_when_no_cache_activity(tmpdir, monkeypatch)
     context.total_exec_count["module_a"] = 3
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(10.0, str(tmpdir))
+    _, module_events = _record_metrics(context, 10.0, tmpdir)
 
-    payload = mock_sender.emit.call_args[0][1]
+    payload = module_events["module_a"]
     assert payload["exec_count"] == 3
     # No cache fields when the module had no cache activity.
-    for k in [
-        "cache_hit_count", "cache_miss_count",
-        "cache_write_count_insert",
-        "cache_lookup_ms_sum", "cache_lookup_ms_max",
-        "cache_write_ms_sum", "cache_write_ms_max",
-        "cache_write_bytes_uncompressed_sum",
-        "cache_write_bytes_compressed_sum",
-    ]:
+    for k in CACHE_METRIC_FIELDS:
         assert k not in payload
 
 
 @pytest.mark.unit
 def test_per_root_is_alert_true_when_correlation_mode(tmpdir, monkeypatch):
     """is_alert is True when analysis_mode is CORRELATION."""
-    from saq.constants import ANALYSIS_MODE_CORRELATION
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode=ANALYSIS_MODE_CORRELATION)
     root.initialize_storage()
     root.alert_type = "splunk - ipv4 search"
@@ -2128,24 +2091,17 @@ def test_per_root_is_alert_true_when_correlation_mode(tmpdir, monkeypatch):
     context.total_exec_count["module_a"] = 1
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(2.0, str(tmpdir))
+    root_event, _ = _record_metrics(context, 2.0, tmpdir)
 
-    payload = mock_sender.emit.call_args[0][1]
-    assert payload["alert_type"] == "splunk - ipv4 search"
-    assert payload["is_alert"] is True
-    assert payload["queue"] == "external"
+    assert root_event["alert_type"] == "splunk - ipv4 search"
+    assert root_event["is_alert"] is True
+    assert root_event["queue"] == "external"
 
 
 @pytest.mark.unit
 def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir, monkeypatch):
     """is_alert is False when analysis_mode hasn't transitioned to CORRELATION yet.
     """
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     root.alert_type = "mailbox"
@@ -2154,22 +2110,15 @@ def test_per_root_is_alert_false_when_alert_type_set_but_not_promoted(tmpdir, mo
     context.total_exec_count["module_a"] = 1
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(2.0, str(tmpdir))
+    root_event, _ = _record_metrics(context, 2.0, tmpdir)
 
-    payload = mock_sender.emit.call_args[0][1]
-    assert payload["alert_type"] == "mailbox"
-    assert payload["is_alert"] is False
+    assert root_event["alert_type"] == "mailbox"
+    assert root_event["is_alert"] is False
 
 
 @pytest.mark.unit
 def test_per_root_cache_write_byte_aggregation(tmpdir, monkeypatch):
     """Write byte sums flow through to the payload when cache writes occurred."""
-    from saq.engine.execution_context import EngineExecutionContext
-    from unittest.mock import MagicMock, patch
-
     root = create_root_analysis(uuid=str(uuid.uuid4()))
     root.initialize_storage()
     context = EngineExecutionContext(root)
@@ -2185,12 +2134,9 @@ def test_per_root_cache_write_byte_aggregation(tmpdir, monkeypatch):
     context.cache_write_bytes_compressed_sum["module_a"] = 800
 
     _enable_fluent_metrics(monkeypatch)
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
-        mock_sender = MagicMock()
-        mock_sender_class.return_value = mock_sender
-        context.record_execution_statistics(5.0, str(tmpdir))
+    _, module_events = _record_metrics(context, 5.0, tmpdir)
 
-    payload = mock_sender.emit.call_args[0][1]
+    payload = module_events["module_a"]
     assert payload["cache_miss_count"] == 2
     assert payload["cache_write_count_insert"] == 1
     assert payload["cache_write_ms_sum"] == 15

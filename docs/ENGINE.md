@@ -524,7 +524,7 @@ otherwise-pointless alert re-sync in `_sync_alert_to_database`.
 
 ### 6.4 `_execute_analysis`
 
-Times the executor call, then `root.save()`, then emits per-module metrics if
+Times the executor call, then `root.save()`, then emits the per-root and per-module metrics if
 `metrics_logging.enabled`.
 
 On any exception it saves whatever it has, sets `analysis_aborted = True`, clears
@@ -1407,7 +1407,7 @@ than per-process.
 | `analysis_modes_ignore_cumulative_timeout` | modes exempt from the cumulative fail timeout. |
 | `log_analysis_timeout_as_warning` | declared in the schema; not read by the engine code. |
 | `alerting_enabled` | master switch for detection → alert. |
-| `metrics_logging` | fluent-bit destination for per-module metrics. |
+| `metrics_logging` | fluent-bit destination for the per-root and per-module metrics. |
 
 ### 16.2 `analysis_mode_<name>:` (`AnalysisModeConfig`)
 
@@ -1541,7 +1541,8 @@ modules that are already gone.
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
-| Per-`(root, module)` metrics | fluent-bit event per module with `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums, `alert_type`, `is_alert`, `queue`, and the root's `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
+| Per-root metrics | one fluent-bit event per work item with `event_type` `root`: `root_uuid`, `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
+| Per-`(root, module)` metrics | one fluent-bit event per module that did anything in the work item, with `event_type` `module`: `root_uuid`, `module`, `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums. It shares `root_uuid` and `timestamp` with its root event, and carries none of the root event's other fields |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
 

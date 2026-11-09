@@ -43,7 +43,7 @@ section with the full design.
 | **Config guards** | `cache_ttl` mutually exclusive with `wide_diff` and with `is_grouped_by_time` (pydantic validators); CI contract lint per opt-in (removals / relationship scope / file specs blob-backable for `file_capable` modules, no files otherwise). | §A6, §A1 |
 | **Lifecycle** | Daily partition maintenance (drop > `partition_retention_days`=35, reorganize catchall, provision ahead); read-time `expires_at` filter owns precision; blob GC is a separate grace-period sweep. No row DELETEs anywhere. File blobs ride the same `blob_refs`/GC mechanism as spilled details. | §A8 |
 | **Opt-ins (core)** | `rdap_analyzer` 7d; `nrd_analyzer` 24h + DB-file `extended_version`; `site_tagger` 30d + CSV `extended_version`; **`ocr` 7d + tesseract-version `extended_version`; `qrcode` 7d + zbarimg/gs/pdfinfo versions + OpenCV package version + filter-file content sha256** (Phase 4); **`phishkit_analyzer` 6h + `extended_version` = scanner-config content hash + running scanner image id via the dedicated `scanner_image_id` task** (2026-06-29). OCR/QR also cache **negative results** (clean scan, nothing found → summary-less analysis recorded; scan *failures* record nothing and are never cached). Phishkit caches **partial/timeout results on purpose** (a timeout is usually the target site blocking our crawl — a stable property — not transient noise; staleness is bounded by the 6h TTL); a scan that could not be dispatched or whose result could not be fetched sets `analysis.error` and is not cached. | Phase 3/4 notes, §A4, phishkit opt-in notes |
-| **Metrics** | Per-(root, module) fields on the per-root summary event: hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
+| **Metrics** | Per-(root, module) fields on the per-module metric events (`event_type` `module`): hit/miss/write counts, lookup latency (**hits + misses**), write latency/bytes. `cache_stats` heartbeat (15 min) from partition statistics. | PR #242 notes |
 | **Not implemented** | Phase 3.5 single-flight dedup (redesigned 2026-06-10: non-blocking, delayed-analysis requeue, `single_flight` opt-in — §A9). Deliberately re-sequenced after Phase 4; it has no dependents. Yara opt-in deferred — not for version reasons (the ruleset under `signature_dir` IS fingerprintable, nrd-style): its filtered output depends on file name and observable meta-tags, which sit outside the content-keyed cache; its SANDBOX directive lands on the *redirection target* (cross-observable, unreplayable); and a local yss socket scan is cheaper than a cache hit anyway. | §A9, Phase 4 notes |
 
 ## Problem
@@ -3318,6 +3318,13 @@ the existing per-root summary event** (`record_execution_statistics` in
 `cache_lookup_db_ms_sum` / `cache_lookup_decode_ms_sum` / `cache_lookup_blob_ms_sum`,
 `cache_write_ms_sum` / `cache_write_ms_max`, `cache_write_bytes_uncompressed_sum` /
 `cache_write_bytes_compressed_sum`, plus `alert_type`, `is_alert`, `queue`.
+
+> **Root fields moved (2026-11-09):** `alert_type`, `is_alert`, `queue`,
+> `total_analysis_time_seconds` and `total_time_seconds` are no longer on the
+> `(root, module)` rows. They are on the work item's one root event
+> (`event_type` `root`), which shares `root_uuid` and `timestamp` with its
+> module rows. A panel that filtered module rows by `is_alert` or `queue` now
+> joins them to the root event on `root_uuid`.
 
 Cache fields are only attached when the (root, module) actually had cache
 activity, so non-cacheable modules pay no byte cost.
