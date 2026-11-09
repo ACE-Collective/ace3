@@ -179,6 +179,7 @@ integrations/*
 
 # claude
 .claude/settings.local.json
+.claude/worktrees/
 .claude/skills/*
 !.claude/skills/ace-review/
 !.claude/skills/bug-fix/

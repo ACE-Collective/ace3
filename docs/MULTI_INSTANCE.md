@@ -17,15 +17,9 @@ docker compose up -d
 With an offset of 100 the second instance's GUI is at `https://localhost:5100/ace`, nginx at
 8543 and 9543. The original checkout needs no `.env` and keeps every default it has today.
 
-> **Use a clone, not a `git worktree`.** A worktree's `.git` is a *file* holding an absolute host
-> path back to the parent repo (`gitdir: /path/to/parent/.git/worktrees/<name>`). The containers
-> bind-mount only the worktree directory itself at `/opt/ace`, so that path does not exist inside
-> them and every `git` command against the checkout fails with `fatal: not a git repository`.
-> Neither the running stack nor the test suite needs the ACE checkout to be a git repository — the
-> signature and hunt repositories are separate repos with real `.git` directories and are
-> unaffected, and the one test that lists the tracked config files reads them from disk when git
-> cannot — but you lose `git` inside the containers. If you want a worktree anyway, also
-> bind-mount the parent repo's `.git` into the container at the same absolute path the gitdir names.
+> **Use a clone, not a `git worktree`.** A worktree has no stack of its own: its scripts find the
+> stack of the checkout it was made from (see *Working with a specific instance* below), so it
+> cannot be a second instance.
 
 ## How the isolation works
 
@@ -116,7 +110,14 @@ cd /opt/ace2 && bin/ace-shutdown.sh
 A git worktree under a checkout has no stack of its own. In a worktree, `get-dev-container.sh` and
 `get-ace-container.sh` find the stack of the checkout the worktree was made from, and
 `exec-in-container.sh` runs its command from the worktree's own path in the container, with
-`SAQ_HOME` set to that path.
+`SAQ_HOME` set to that path. Started inside the container, which has no `docker`, it runs the
+command in place, from the worktree.
+
+A worktree's `.git` file names its repository by absolute path, and the host sees the checkout at a
+different path than the container's `/opt/ace`, so `git` works in a worktree only on the side that
+created it, and its git work is done there. On the host, the scripts refuse a worktree that git
+cannot open rather than fall back to the main checkout's stack and code; in the container,
+`exec-in-container.sh` runs a host worktree's command in place, which needs no git.
 
 A worktree outside its checkout (T3 Code keeps them under `~/.t3/worktrees/<repo>/`) is not visible
 in the container until you mount it. In the checkout's `docker-compose.override.yml`, mount the

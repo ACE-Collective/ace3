@@ -1,10 +1,12 @@
 """Tests for bin/exec-in-container.sh, which runs a command in the dev container from the path the
 calling checkout has there.
 
-Each test builds a throwaway main checkout holding the real scripts, and replaces docker with a
-bash function that answers from what the test says is mounted and records the docker exec.
+Each test builds a throwaway main checkout holding the real scripts. Run from the host, docker is a
+bash function that answers from what the test says is mounted and records the docker exec. Run from
+inside the dev container, which these tests are, there is no docker.
 """
 
+import getpass
 import os
 import shutil
 import subprocess
@@ -26,8 +28,10 @@ def _git(cwd: Path, *args: str):
 def main(tmp_path) -> Path:
     main = tmp_path / "main"
     (main / "bin").mkdir(parents=True)
-    for script in ("exec-in-container.sh", "get-dev-container.sh"):
+    for script in ("exec-in-container.sh", "get-dev-container.sh", "get-ace-container.sh"):
         shutil.copy2(BIN / script, main / "bin" / script)
+    # records which checkout's copy was sourced
+    (main / "load_environment").write_text('export SOURCED_LOAD_ENVIRONMENT="${BASH_SOURCE[0]}"\n')
     _git(main, "init", "--quiet", "--initial-branch=main")
     _git(main, "add", ".")
     _git(main, "commit", "--quiet", "-m", "initial")
@@ -140,3 +144,96 @@ def test_no_container(main, tmp_path):
     assert result.returncode == 1
     assert exec_args is None
     assert "No development container" in result.stdout + result.stderr
+
+
+def _created_on_the_other_side(worktree: Path):
+    """makes the worktree look the way one created on the other side of the dev container's mount
+    does: its .git names a gitdir at a path that does not exist on this side"""
+    (worktree / ".git").write_text("gitdir: /the/other/side/.git/worktrees/wt\n")
+
+
+def test_worktree_created_on_the_other_side_is_refused(main, tmp_path):
+    # git cannot open it here, so without the check it would run as the main checkout at /opt/ace
+    worktree = _worktree(main, main / ".claude" / "worktrees" / "wt")
+    _created_on_the_other_side(worktree)
+
+    result, exec_args = _run(tmp_path, worktree, {main: "/opt/ace"})
+
+    assert result.returncode == 1
+    assert exec_args is None
+    assert "/the/other/side/.git/worktrees/wt" in result.stderr
+    assert "other side" in result.stderr
+    # the container is not what is missing
+    assert "No development container" not in result.stdout + result.stderr
+
+
+def test_ace_container_lookup_refuses_a_worktree_created_on_the_other_side(main):
+    worktree = _worktree(main, main / ".claude" / "worktrees" / "wt")
+    _created_on_the_other_side(worktree)
+
+    result = subprocess.run(["bash", str(worktree / "bin" / "get-ace-container.sh")],
+                            capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "/the/other/side/.git/worktrees/wt" in result.stderr
+
+
+REPORT = 'echo "$PWD|$SAQ_HOME|$PYTHONPATH|$VIRTUAL_ENV|$SOURCED_LOAD_ENVIRONMENT"'
+
+
+def _run_in_container(checkout: Path, *args: str) -> subprocess.CompletedProcess:
+    """Runs the script in checkout the way it runs inside the dev container, with no docker."""
+    assert Path("/.dockerenv").exists(), "the test suite runs in the dev container"
+    env = {name: value for name, value in os.environ.items() if not name.startswith("BASH_FUNC_docker")}
+    return subprocess.run(["bash", str(checkout / "bin" / "exec-in-container.sh"), *args],
+                          env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+
+def test_in_the_container_the_main_checkout_runs_here(main):
+    result = _run_in_container(main, REPORT)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{main}|{main}|{main}|/venv|{main}/load_environment"
+
+
+@pytest.mark.parametrize("location", ["inside", "outside"])
+def test_in_the_container_a_worktree_runs_its_own_code(main, tmp_path, location):
+    path = main / ".claude" / "worktrees" / "wt" if location == "inside" else tmp_path / "elsewhere" / "wt"
+    worktree = _worktree(main, path)
+
+    # the dev container's PATH has /opt/ace on it, so a bare `source load_environment` would source
+    # the main checkout's
+    result = _run_in_container(worktree, REPORT)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{worktree}|{worktree}|{worktree}|/venv|{worktree}/load_environment"
+
+
+def test_in_the_container_the_arguments_and_exit_status_pass_through(main):
+    result = _run_in_container(main, "echo", "two words;", "exit 3")
+
+    assert result.returncode == 3
+    assert result.stdout.strip() == "two words"
+
+
+def test_in_the_container_the_interactive_flags_are_accepted(main):
+    result = _run_in_container(main, "-i", "-t", "echo ran")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ran"
+
+
+def test_in_the_container_another_user_is_refused(main):
+    result = _run_in_container(main, "-u", "root", "echo ran")
+
+    assert result.returncode == 1
+    assert "ran" not in result.stdout
+    assert "root" in result.stderr
+
+
+def test_in_the_container_the_current_user_is_accepted(main):
+    result = _run_in_container(main, "-u", getpass.getuser(), "echo ran")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ran"

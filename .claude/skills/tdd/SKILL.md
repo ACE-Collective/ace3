@@ -7,7 +7,7 @@ description: "Write ACE tests that can fail: red before green, one behavior at a
 
 A test is a claim about what the code does for the code, user or service that calls it. Nobody has evidence for that claim until they have seen the test fail. Most of the test findings /ace-review raises are of two kinds: tests that still pass with the code they cover removed, and failure branches that no test runs. This loop prevents both. Write the test, watch it fail for the reason you expect, make it pass, and put the failure in the PR.
 
-CLAUDE.md § Testing says how to run tests: in the `dev` container, through `bin/exec-in-container.sh` from the host or a worktree, with run markers, one run at a time. § Engineering values → Tests says what must be covered.
+CLAUDE.md § Testing says how to run tests: in the `dev` container, through `bin/exec-in-container.sh`, which works from the host, in `dev` and from a worktree, with run markers, one run at a time. § Engineering values → Tests says what must be covered.
 
 Adapted from Matt Pocock's `tdd` skill and the `tdd` and `principle-test-behavior-not-implementation` skills of Lauren Tan's pstack (MIT, see `LICENSE`).
 

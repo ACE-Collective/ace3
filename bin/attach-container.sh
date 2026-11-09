@@ -20,6 +20,12 @@ do
 done
 shift $((OPTIND-1))
 
+# the dev container has no docker, and nothing to attach to from inside it
+if ! command -v docker >/dev/null && [ -e /.dockerenv ]; then
+    echo "already in a container ($(hostname))"
+    exit 0
+fi
+
 # attach to the dev container by default
 TARGET_CONTAINER=$(bin/get-dev-container.sh)
 
