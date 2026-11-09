@@ -11,7 +11,7 @@
 #   - .claude/skills/<name>: a link to each skill in the main checkout and in ~/.claude/skills that
 #     the worktree does not have, because a worktree gets only the skills git tracks
 #
-# and prunes the integration repositories' records of worktrees that have since been deleted.
+# and removes the integration repositories' records of worktrees that have since been deleted.
 #
 # Run by the SessionStart hook in .claude/settings.json; safe to run by hand. It does nothing in
 # the main checkout, changes nothing that already exists, and prints only what it created, which
@@ -40,13 +40,36 @@ worktree=$(git rev-parse --show-toplevel) || exit 1
 main=$(dirname "$common_dir")
 status=0
 
+# Removes the records of repository $1's worktrees that are missing under the main checkout or beside
+# this worktree. Not `git worktree prune`: the host and the dev container see the checkout at
+# different paths, so to one of them every worktree the other created is missing, and prune would
+# remove its record and break git in it. A worktree is used only from the side that created it.
+remove_missing_worktrees() {
+    local path="" prunable="" line
+    while IFS= read -r line; do
+        case $line in
+            "worktree "*) path=${line#worktree } ;;
+            # git never lists a locked worktree as prunable
+            prunable*) prunable=1 ;;
+            "")
+                if [ -n "$prunable" ]; then
+                    case $path in
+                        "$main"/*|"$(dirname "$worktree")"/*) git -C "$1" worktree remove "$path" || status=1 ;;
+                    esac
+                fi
+                path="" prunable=""
+                ;;
+        esac
+    done < <(git -C "$1" worktree list --porcelain; echo)
+}
+
 for repo in "$main"/integrations/*/; do
     repo=${repo%/}
     name=$(basename "$repo")
     # an integration installed as a plain directory has no repository to take a worktree of
     [ -e "$repo/.git" ] || continue
 
-    git -C "$repo" worktree prune
+    remove_missing_worktrees "$repo"
     [ -e "$worktree/integrations/$name" ] && continue
 
     if git -C "$repo" worktree add --quiet --detach "$worktree/integrations/$name" HEAD; then

@@ -6,6 +6,7 @@
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 USER="ace"
+USER_GIVEN=""
 INTERACTIVE=""
 TTY=""
 
@@ -14,6 +15,7 @@ while getopts "u:it" opt; do
     case ${opt} in
         u)
             USER="$OPTARG"
+            USER_GIVEN=1
             ;;
         i)
             INTERACTIVE="-i"
@@ -40,8 +42,20 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
+# Already in a container of the stack (the dev container has no docker): run the command here, from
+# this checkout, which is then already at its path in the container. Its own load_environment, because
+# the dev container's PATH has /opt/ace on it.
+if ! command -v docker >/dev/null && [ -e /.dockerenv ]; then
+    if [ -n "$USER_GIVEN" ] && [ "$USER" != "$(id -un)" ]; then
+        echo "Error: already in the container as $(id -un), and it has no sudo to run as $USER" >&2
+        exit 1
+    fi
+    WORKDIR=$(pwd -P)
+    SAQ_HOME="$WORKDIR" PYTHONPATH="$WORKDIR" exec bash -c "source \"$WORKDIR/load_environment\" && source /venv/bin/activate && $*"
+fi
+
 # Get the container name
-CONTAINER=$(bash bin/get-dev-container.sh)
+CONTAINER=$(bash bin/get-dev-container.sh) || exit 1
 
 if [ -z "$CONTAINER" ]; then
     echo "Error: No development container found"

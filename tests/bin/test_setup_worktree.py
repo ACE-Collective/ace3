@@ -213,6 +213,48 @@ def test_prunes_the_worktree_of_a_deleted_worktree(main):
     assert str(deleted) not in _git(main / "integrations" / "ext", "worktree", "list")
 
 
+def test_keeps_the_record_of_a_worktree_the_other_side_created(main, tmp_path):
+    # the host and the dev container see the checkout at different paths, so a worktree the other
+    # side created is missing here; removing its record would break git in it over there
+    ext = main / "integrations" / "ext"
+    other_side = tmp_path / "other-side" / "wt" / "integrations" / "ext"
+    _git(ext, "worktree", "add", "--quiet", "--detach", str(other_side))
+    shutil.rmtree(tmp_path / "other-side")
+    worktree = _add_worktree(main, "wt")
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert str(other_side) in _git(ext, "worktree", "list")
+
+
+def test_keeps_the_record_of_a_locked_worktree(main):
+    worktree = _add_worktree(main, "wt")
+    deleted = _add_worktree(main, "deleted")
+    _run(deleted)
+    _git(main / "integrations" / "ext", "worktree", "lock", str(deleted / "integrations" / "ext"))
+    shutil.rmtree(deleted)
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert str(deleted) in _git(main / "integrations" / "ext", "worktree", "list")
+
+
+def test_removes_the_record_of_a_deleted_worktree_beside_one_outside_the_checkout(main, tmp_path):
+    worktree = tmp_path / "elsewhere" / "wt"
+    deleted = tmp_path / "elsewhere" / "deleted"
+    for path in (worktree, deleted):
+        _git(main, "worktree", "add", "--quiet", "--detach", str(path))
+    _run(deleted)
+    shutil.rmtree(deleted)
+
+    result = _run(worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert str(deleted) not in _git(main / "integrations" / "ext", "worktree", "list")
+
+
 def test_refuses_an_absolute_test_link(main):
     (main / "tests" / LINK).unlink()
     (main / "tests" / LINK).symlink_to(main / "integrations" / "ext" / "tests")
