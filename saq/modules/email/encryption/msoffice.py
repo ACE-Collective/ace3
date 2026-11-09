@@ -59,6 +59,8 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
         if not _file.exists:
             return AnalysisExecutionResult.COMPLETED
 
+        analysis = None
+
         # is this an encrypted OLE document?
         try:
             with open(_file.full_path, 'rb') as office_fp:
@@ -155,5 +157,9 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
                 logging.exception(f"decryption for {_file} failed: {e}")
 
             logging.debug(f"decryption failed for unsupported file format on file {_file}")
+
+            # an encrypted document whose cracking or decryption failed
+            if analysis is not None:
+                analysis.error = f"decryption failed: {str(e) or type(e).__name__}"
 
             return AnalysisExecutionResult.COMPLETED

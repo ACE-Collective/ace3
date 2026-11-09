@@ -273,6 +273,8 @@ def test_failed_search_is_reported_and_the_rest_still_run(test_context, caplog):
 
     # the failure is visible to the analyst, next to the clicks the other search found
     assert analysis.get_clicker_error() == "safelinks: splunk said no"
+    # a failed analysis: badged in the alert, never cached
+    assert analysis.error == "safelinks: splunk said no"
     assert analysis.generate_summary() == "URL Clicks (Splunk): 1 click found, ERROR: safelinks: splunk said no"
 
     records = [r for r in caplog.records if getattr(r, "clicker_search", None) == "safelinks"]

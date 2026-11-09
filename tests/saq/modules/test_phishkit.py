@@ -639,6 +639,7 @@ def test_phishkit_analyzer_continue_analysis_no_job_id(monkeypatch, test_context
 
     assert result == AnalysisExecutionResult.COMPLETED
     get_result.assert_not_called()
+    assert analysis.error == "no job id: the scan was never dispatched"
     assert [r.levelno for r in caplog.records if r.getMessage() == f"no job ID for analysis {analysis}"] == [logging.ERROR]
 
 

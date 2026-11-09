@@ -594,6 +594,7 @@ class PhishkitAnalyzer(AnalysisModule):
         """Completes an existing analysis."""
         if not analysis.job_id:
             logging.error(f"no job ID for analysis {analysis}")
+            analysis.error = "no job id: the scan was never dispatched"
             return AnalysisExecutionResult.COMPLETED
 
         # wait for the job to complete

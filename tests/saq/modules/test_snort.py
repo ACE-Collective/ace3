@@ -11,8 +11,11 @@ from saq.modules.snort import (
         KEY_SURICATA_RULES_MTIME,
         KEY_SURICATA_RULES_LOCK,)
 
+import logging
+
 import fakeredis
 import pytest
+import redis
 
 from saq.analysis.root import load_root
 from saq.engine.core import Engine
@@ -77,7 +80,8 @@ def test_extract_signature_with_redis_unavailable():
         def get(self, key):
             raise ConnectionError("redis is down")
 
-    assert extract_signature('2404000', '5818', get_redis_connection=Unavailable) is None
+    with pytest.raises(ConnectionError):
+        extract_signature('2404000', '5818', get_redis_connection=Unavailable)
 
 
 def _analyze(root_analysis, monkeypatch, sig_db, value):
@@ -116,6 +120,44 @@ def test_snort_signature_analyzer_unknown_signature(root_analysis, monkeypatch, 
     assert analysis.signature_id is None
     assert analysis.generate_summary() is None
     assert not root_analysis.summary_details
+
+@pytest.mark.integration
+def test_snort_signature_analyzer_redis_unavailable(root_analysis, monkeypatch, caplog):
+    class Unavailable:
+        def get(self, key):
+            raise ConnectionError("redis is down")
+
+    root_analysis, analysis = _analyze(root_analysis, monkeypatch, Unavailable(), "1:2404000:5818")
+
+    assert "redis for snort signature 2404000 rev 5818 unavailable: redis is down" in caplog.text
+    assert analysis.error == "unable to look up the signature: redis is down"
+    assert analysis.signature_id is None
+
+@pytest.mark.integration
+def test_snort_signature_analyzer_redis_client_connection_error_is_an_outage(root_analysis, monkeypatch, caplog):
+    class Unavailable:
+        def get(self, key):
+            raise redis.exceptions.ConnectionError("connection refused")
+
+    root_analysis, analysis = _analyze(root_analysis, monkeypatch, Unavailable(), "1:2404000:5818")
+
+    assert "redis for snort signature 2404000 rev 5818 unavailable: connection refused" in caplog.text
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert analysis.error == "unable to look up the signature: connection refused"
+
+@pytest.mark.integration
+def test_snort_signature_analyzer_redis_error_is_logged_with_traceback(root_analysis, monkeypatch, caplog):
+    class WrongType:
+        def get(self, key):
+            raise redis.exceptions.ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value")
+
+    root_analysis, analysis = _analyze(root_analysis, monkeypatch, WrongType(), "1:2404000:5818")
+
+    [record] = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert record.getMessage() == "unable to look up snort signature 2404000 rev 5818"
+    assert record.exc_info is not None
+    assert record.root_uuid == root_analysis.uuid
+    assert analysis.error == "unable to look up the signature: WRONGTYPE Operation against a key holding the wrong kind of value"
 
 @pytest.mark.integration
 def test_snort_signature_analyzer_unparsable_value(root_analysis, monkeypatch, sig_db, caplog):

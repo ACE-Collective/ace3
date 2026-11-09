@@ -123,7 +123,6 @@ def archive_volumes(path: str) -> list[str]:
 
 KEY_FILE_COUNT = 'file_count'
 KEY_EXTRACTED_FILES = 'extracted_files'
-KEY_EXTRACTION_ERROR = 'extraction_error'
 
 
 class ArchiveAnalysis(Analysis):
@@ -157,16 +156,6 @@ class ArchiveAnalysis(Analysis):
     def extracted_files(self, value: list[str]):
         self.details[KEY_EXTRACTED_FILES] = value
 
-    @property
-    def extraction_error(self) -> Optional[str]:
-        """Why the extractor did not extract everything, when it did not; analyses saved before
-        this was recorded have no such key."""
-        return self.details.get(KEY_EXTRACTION_ERROR)
-
-    @extraction_error.setter
-    def extraction_error(self, value: Optional[str]):
-        self.details[KEY_EXTRACTION_ERROR] = value
-
     def generate_summary(self):
         if not self.file_count:
             return None
@@ -174,8 +163,8 @@ class ArchiveAnalysis(Analysis):
         result = f"{self.display_name}: extracted {len(self.extracted_files)} of {self.file_count} files"
         if self.extracted_files:
             result += f": ({format_item_list_for_summary(self.extracted_files)})"
-        if self.extraction_error:
-            result += f" ({self.extraction_error})"
+        if self.error:
+            result += f" ({self.error})"
 
         return result
 
@@ -511,8 +500,9 @@ class ArchiveAnalyzer(AnalysisModule):
         if not os.path.isdir(extracted_path):
             try:
                 os.makedirs(extracted_path)
-            except Exception:
+            except Exception as e:
                 logging.exception("unable to create directory %s", extracted_path)
+                analysis.error = f"unable to create {extracted_path}: {e}"
                 return AnalysisExecutionResult.COMPLETED
 
         logging.debug("extracting {} files from archive {} into {}".format(count, local_file_path, extracted_path))
@@ -565,7 +555,9 @@ class ArchiveAnalyzer(AnalysisModule):
             # run_sandboxed_tool() logged why: a timeout, a member over the file size limit
             extraction_errors.append("the extractor did not finish")
 
-        analysis.extraction_error = "; ".join(extraction_errors) or None
+        if extraction_errors:
+            # what was extracted is still analyzed, as a partial result
+            analysis.error = "; ".join(extraction_errors)
 
         # the extractor may have honored stored mode bits that make files unreadable to us
         normalize_extracted_permissions(extracted_path)

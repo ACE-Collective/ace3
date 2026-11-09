@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import override
+from typing import Optional, override
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, F_FILE
 from saq.modules import AnalysisModule
@@ -242,10 +242,18 @@ class FileTypeAnalyzer(AnalysisModule):
         analysis = self.create_analysis(_file)
 
         # get the human readable
-        analysis.details['type'] = self.run_file(['file', '-b', '-L', local_file_path], local_file_path)
+        file_type = self.run_file(['file', '-b', '-L', local_file_path], local_file_path)
 
         # get the mime type
-        analysis.details['mime'] = self.run_file(['file', '-b', '--mime-type', '-L', local_file_path], local_file_path)
+        mime_type = self.run_file(['file', '-b', '--mime-type', '-L', local_file_path], local_file_path)
+
+        # a file that was stopped is recorded as having no type, and the checks below that read the file
+        # themselves still run
+        if file_type is None or mime_type is None:
+            analysis.error = "file did not finish"
+
+        analysis.details['type'] = file_type or ""
+        analysis.details['mime'] = mime_type or ""
 
         # stamp the mime type onto the observable so it is serialized with the alert.
         # The alert page reads FileObservable.mime_type (via is_image) for every file
@@ -334,11 +342,11 @@ class FileTypeAnalyzer(AnalysisModule):
 
         return AnalysisExecutionResult.COMPLETED
 
-    def run_file(self, args: list[str], local_file_path: str) -> str:
-        """Returns what the file command printed, or an empty string if it had to be stopped."""
+    def run_file(self, args: list[str], local_file_path: str) -> Optional[str]:
+        """Returns what the file command printed, or None if it had to be stopped."""
         result = self.run_tool(args, local_file_path, capture_output=True)
         if result is None:
-            return ""
+            return None
 
         if result.stderr:
             logging.warning("file command returned error output for {0}".format(local_file_path))

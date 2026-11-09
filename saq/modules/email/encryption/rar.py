@@ -207,10 +207,12 @@ class RarEncryptionAnalyzer(AnalysisModule):
                                                            read_files=[wordlist_path])
                     except Exception as e:
                         logging.error(f"Error encountered when trying to crack password for {_file}: {e}")
+                        analysis.error = f"unable to crack the password: {str(e) or type(e).__name__}"
                         return AnalysisExecutionResult.COMPLETED
 
             except Exception as e:
                 logging.error(f"Error encountered when building password wordlist for {_file}: {e}")
+                analysis.error = f"unable to build the password wordlist: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
         if not analysis.password:
@@ -242,6 +244,7 @@ class RarEncryptionAnalyzer(AnalysisModule):
             analysis.error = "unrar could not write every file"
         elif result.returncode != 0:
             logging.warning(f"Unable to extract data from encrypted rar {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = result.failure_reason("unrar")
             return AnalysisExecutionResult.COMPLETED
 
         # add files in the Rar as observables

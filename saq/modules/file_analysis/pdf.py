@@ -245,7 +245,9 @@ class PDFAnalyzer(AnalysisModule):
             result = self.run_tool(['python3', self.pdfparser_path, '-f', '-w', '-v', '-c', '--debug', _file.full_path],
                                    _file.full_path, timeout=PDFPARSER_TIMEOUT_SECONDS, stdout=fp, stderr=PIPE)
 
-        if result and result.stderr:
+        if result is None:
+            analysis.error = "pdfparser did not finish, so its dump of the objects is incomplete"
+        elif result.stderr:
             logging.warning("pdfparser returned errors for {}".format(_file.full_path))
 
         # add the output file as a new file to scan
@@ -422,6 +424,7 @@ class PDFTextAnalyzer(AnalysisModule):
         result = self.run_sandboxed_tool([self.pdftotext_path, local_file_path, "output.txt"], local_file_path,
                                          timeout=self.timeout, outputs={"output.txt": output_path})
         if result is None:
+            analysis.error = "pdftotext did not finish"
             return AnalysisExecutionResult.COMPLETED
 
         analysis.stdout, analysis.stderr = result.stdout, result.stderr

@@ -18,6 +18,7 @@ from saq.js_deobfuscator import deobfuscate_file
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import tool_failure_reason
 from saq.util.filesystem import create_temporary_directory
 from saq.util.strings import format_item_list_for_summary
 
@@ -348,6 +349,9 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             logging.warning(
                 f"js deobfuscator exit {analysis.exit_code} for {local_file_path}; stderr={analysis.stderr!r}"
             )
+            # a scanner that timed out or crashed reports no error of its own
+            if not analysis.error:
+                analysis.error = tool_failure_reason("js deobfuscator", analysis.exit_code, analysis.stderr)
             return AnalysisExecutionResult.COMPLETED
 
         if not deobfuscated_src or not os.path.exists(deobfuscated_src):

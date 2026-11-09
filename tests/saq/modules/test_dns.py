@@ -92,6 +92,8 @@ def test_nxdomain_still_produces_analysis(test_context):
     assert analysis.status == STATUS_NXDOMAIN
     assert "does not exist" in analysis.generate_summary()
     assert analysis.get_observable_by_type(F_IP) is None
+    # an answer, not a failure
+    assert analysis.error is None
 
 
 @pytest.mark.unit
@@ -99,6 +101,29 @@ def test_dns_error_is_distinct_from_nxdomain(test_context):
     analysis, _ = _run(test_context, "broken.example.com", dns.resolver.NoNameservers())
     assert analysis.status == STATUS_DNS_ERROR
     assert "lookup failed" in analysis.generate_summary()
+    # we could not look: the analysis failed
+    assert analysis.error.startswith("A lookup failed: ")
+
+
+@pytest.mark.unit
+def test_apex_lookups_that_fail_are_errors(test_context):
+    def side_effect(name, rdtype):
+        if rdtype == "A" and name == "example.com":
+            return _a_answer(["1.2.3.4"])
+        if rdtype == "MX":
+            raise dns.resolver.LifetimeTimeout(timeout=5.0, errors={})
+        raise dns.resolver.NoNameservers()
+
+    analysis, _ = _run(test_context, "example.com", side_effect)
+    # the A record is kept
+    assert analysis.status == STATUS_OK
+    assert analysis.ip_address == "1.2.3.4"
+    # not looked up, rather than "no MX" or "no wildcard"
+    assert analysis.mx is None
+    assert analysis.wildcard_dns is None
+    mx_error, wildcard_error = analysis.error.split("; ")
+    assert mx_error.startswith("MX lookup failed: ")
+    assert wildcard_error.startswith("wildcard probe failed: ")
 
 
 @pytest.mark.unit

@@ -102,12 +102,15 @@ class DMGAnalyzer(AnalysisModule):
                                          outputs={"image.img": image_file})
         if result is None:
             # whatever it wrote is incomplete, and was not kept
+            analysis.error = "dmg2img did not finish"
             return AnalysisExecutionResult.COMPLETED
 
         analysis.details["stdout"], analysis.details["stderr"] = result.stdout, result.stderr
 
         if not os.path.exists(image_file):
-            logging.debug(f"failed to create img file {image_file} from {local_file_path}")
+            analysis.error = f"{result.failure_reason('dmg2img')}, without writing an image"
+            logging.info("%s failed on %s: %s", self, local_file_path, analysis.error,
+                         extra={"module_name": self.name, "path": local_file_path, "root_uuid": self.get_root().uuid})
             return AnalysisExecutionResult.COMPLETED
 
         analysis.details["image_file"] = image_file
@@ -121,7 +124,16 @@ class DMGAnalyzer(AnalysisModule):
         # get the list of files
         result = self.run_sandboxed_tool(['7z', 'l', image_file], image_file)
         if result is None:
+            # the image is still analyzed on its own
+            analysis.error = "7z l did not finish, so the image's files are not listed"
             return AnalysisExecutionResult.COMPLETED
+
+        # 7z exits 1 for a warning, and still lists what it read. above that the listing is kept, since it is
+        # whatever 7z read before it failed
+        if result.returncode > 1:
+            analysis.error = f"{result.failure_reason('7z l')}, so the image's file list may be incomplete"
+            logging.info("%s failed on %s: %s", self, image_file, analysis.error,
+                         extra={"module_name": self.name, "path": image_file, "root_uuid": self.get_root().uuid})
 
         # parse the output
         file_listing = False

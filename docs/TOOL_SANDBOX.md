@@ -43,10 +43,15 @@ directory as hostile, as it did before.
 `run_sandboxed_tool()` returns `None` when it did not get a result:
 
 - A timeout, too much output or a file larger than `tool_sandbox.file_size_limit` is the file's
-  doing. It is logged at WARNING with the path, and the module records that the tool did not finish.
+  doing. It is logged at WARNING with the path, and the module sets `Analysis.error` to say the tool
+  did not finish (`docs/ENGINE.md` §12.4).
   A file that hit the limit is cut off there, and the tool wrote nothing after it. unrar exits 5
   instead of dying, and keeps the file only with `-kb`, which both unrar extractions pass. The archive and encrypted-archive modules keep what was extracted, and
   their analysis says the extraction did not finish.
+- A tool that ran and failed (exited with an error, or wrote nothing it should have) is a failed
+  analysis too. `SandboxResult.failure_reason(tool)` words its `Analysis.error`: how the tool exited
+  and the last line of its stderr (`tool_failure_reason()` for a tool that ran outside the sandbox).
+  The module logs it at INFO with the path, since nothing else does.
 - An archive listing is read even when it is longer than `tool_sandbox.max_output_bytes`
   (`partial_output`): an archive padded with entries has more files than any limit, so it is
   extracted under the file count limit, which takes the dangerous files first. The extractors run

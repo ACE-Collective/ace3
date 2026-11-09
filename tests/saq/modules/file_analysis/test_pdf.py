@@ -412,6 +412,7 @@ def test_pdftotext_timeout_stops_it(root_analysis, tmp_path, monkeypatch, caplog
 
     analysis = pdf.get_and_load_analysis(PDFTextAnalysis)
     assert analysis.output_path is None
+    assert analysis.error == "pdftotext did not finish"
     # what it wrote before it was stopped is not kept
     assert not [o for o in analysis.observables if o.type == F_FILE]
     assert any(r.levelno == logging.WARNING and "stopped sh" in r.getMessage() and "timed out" in r.getMessage()

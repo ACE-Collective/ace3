@@ -1,6 +1,7 @@
 
 import logging
 import os
+import subprocess
 import uuid
 
 from unittest.mock import Mock
@@ -10,8 +11,9 @@ from PIL import Image
 
 from saq.analysis import Observable
 from saq.configuration.config import get_analysis_module_config
-from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
+from saq.constants import ANALYSIS_MODULE_ARCHIVE, ANALYSIS_MODULE_AUTOIT, ANALYSIS_MODULE_FILE_TYPE, ANALYSIS_MODULE_OCR, ANALYSIS_MODULE_OFFICE_XML_REL, ANALYSIS_MODULE_OLEVBA_V1_2, ANALYSIS_MODULE_QRCODE, ANALYSIS_MODULE_URL_EXTRACTION, DIRECTIVE_CRAWL_EXTRACTED_URLS, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_EXTRACT_URLS_DOMAIN_AS_URL, DIRECTIVE_FORCE_DOWNLOAD, F_FILE, F_URL, R_DOWNLOADED_FROM, R_EXTRACTED_FROM, AnalysisExecutionResult
 from saq.modules.file_analysis import ArchiveAnalysis, ArchiveAnalyzer, AutoItAnalyzer, FileTypeAnalysis, FileTypeAnalyzer, OCRAnalysis, OCRAnalyzer, OfficeXMLRelationshipExternalURLAnalysis, OfficeXMLRelationshipExternalURLAnalyzer, QRCodeAnalysis, QRCodeAnalyzer, URLExtractionAnalysis, URLExtractionAnalyzer
+from saq.modules.file_analysis.olevba import OLEVBA_Analysis_v1_2, OLEVBA_Analyzer_v1_2
 from saq.signatures.builtin import OFFICE_EXTERNAL_OLEOBJECT
 
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -572,6 +574,84 @@ def test_office_xml_rel_target_without_host(tmp_path, test_context):
     assert analysis.urls == ["https:.."]
     assert analysis.get_observables_by_type(F_URL) == []
     assert [dp.signature_uuid for dp in observable.detections] == [OFFICE_EXTERNAL_OLEOBJECT.uuid]
+
+@pytest.mark.unit
+def test_office_xml_rel_that_cannot_be_parsed(tmp_path, test_context):
+    """The targets read before the parse error are still added, and the analysis says it failed."""
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    rels_path = tmp_path / "document.xml.rels"
+    rels_path.write_text(OFFICE_XML_RELS.replace("</Relationships>", "<Relationship"))
+    observable = root.add_file_observable(rels_path)
+
+    analyzer = OfficeXMLRelationshipExternalURLAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config(ANALYSIS_MODULE_OFFICE_XML_REL))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    analysis = observable.get_and_load_analysis(OfficeXMLRelationshipExternalURLAnalysis)
+    assert analysis.error.startswith("unable to parse document.xml.rels: ")
+    assert analysis.urls == ["https://example.com/payload.html!"]
+
+@pytest.mark.unit
+def test_olevba_failure_is_an_error(tmp_path, test_context, monkeypatch):
+    def _fail(*args, **kwargs):
+        raise ValueError("not an OLE2 structured storage file")
+
+    monkeypatch.setattr("oletools.olevba.VBA_Parser", _fail)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+    path = tmp_path / "invoice.doc"
+    path.write_bytes(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1" + b"\x00" * 504)
+    observable = root.add_file_observable(path)
+    file_type = FileTypeAnalysis()
+    file_type.details = {"type": "Composite Document File V2 Document", "mime": "application/msword"}
+    observable.add_analysis(file_type)
+
+    analyzer = OLEVBA_Analyzer_v1_2(context=create_test_context(root=root),
+                                    config=get_analysis_module_config(ANALYSIS_MODULE_OLEVBA_V1_2))
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error == "olevba failed: not an OLE2 structured storage file"
+    assert observable.has_tag("olevba_failed")
+
+def _olevba_on(root, path):
+    observable = root.add_file_observable(path)
+    file_type = FileTypeAnalysis()
+    file_type.details = {"type": "Zip archive data", "mime": "application/zip"}
+    observable.add_analysis(file_type)
+    analyzer = OLEVBA_Analyzer_v1_2(context=create_test_context(root=root),
+                                    config=get_analysis_module_config(ANALYSIS_MODULE_OLEVBA_V1_2))
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    return observable
+
+@pytest.mark.unit
+def test_olevba_on_an_encrypted_zip_is_not_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.zip"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error is None
+    assert not observable.has_tag("olevba_failed")
+
+@pytest.mark.unit
+def test_olevba_that_cannot_open_an_office_document_is_an_error(tmp_path):
+    payload = tmp_path / "invoice.txt"
+    payload.write_text("payload")
+    archive = tmp_path / "invoice.docx"
+    subprocess.run(["7z", "a", "-tzip", "-pSecr3tPw", str(archive), str(payload)], check=True, capture_output=True)
+    root = create_root_analysis(analysis_mode="test_single", uuid=str(uuid.uuid4()))
+    root.initialize_storage()
+
+    observable = _olevba_on(root, archive)
+
+    assert observable.get_analysis(OLEVBA_Analysis_v1_2).error.startswith("olevba failed: Failed to open file ")
+    assert observable.has_tag("olevba_failed")
 
 @pytest.mark.unit
 def test_file_type_image_yara_meta(datadir):

@@ -1,3 +1,4 @@
+import logging
 import zipfile
 from pathlib import Path
 
@@ -64,7 +65,7 @@ def test_dmg(root_analysis, tmp_path, fake_dmg2img):
 
 
 @pytest.mark.integration
-def test_dmg2img_fails(root_analysis, tmp_path):
+def test_dmg2img_fails(root_analysis, tmp_path, caplog):
     path = tmp_path / "broken.dmg"
     path.write_bytes(b"not really a disk image")
 
@@ -73,6 +74,9 @@ def test_dmg2img_fails(root_analysis, tmp_path):
     analysis = target.get_and_load_analysis(DMGAnalysis)
     assert analysis.details["image_file"] is None
     assert not [o for o in analysis.observables if o.type == F_FILE]
+    assert analysis.error.startswith("dmg2img ")
+    assert analysis.error.endswith(", without writing an image")
+    assert any(r.levelno == logging.INFO and "failed on" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.integration
@@ -81,3 +85,36 @@ def test_not_a_dmg(root_analysis, tmp_path):
     path.write_bytes(b"PK")
 
     assert not _analyze(root_analysis, path).get_and_load_analysis(DMGAnalysis)
+
+
+LISTING = """   Date      Time    Attr         Size   Compressed  Name
+------------------- ----- ------------ ------------  ------------------------
+2021-04-06 23:33:19 .....        16388        20480  Installer/payload.app
+------------------- ----- ------------ ------------  ------------------------
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("returncode,error", [
+    # a warning: what it read is listed
+    (1, None),
+    (2, "7z l exited with status 2: ERROR: Data Error : Installer/broken.app, so the image's file list may be incomplete"),
+], ids=["warning", "error"])
+def test_dmg_listing_that_fails(root_analysis, tmp_path, fake_dmg2img, monkeypatch, caplog, returncode, error):
+    fake_run = DMGAnalyzer.run_sandboxed_tool
+
+    def _run(self, args, target, **kwargs):
+        if args[:2] == ["7z", "l"]:
+            return SandboxResult(returncode, LISTING, "ERROR: Data Error : Installer/broken.app\n")
+        return fake_run(self, args, target, **kwargs)
+
+    monkeypatch.setattr(DMGAnalyzer, "run_sandboxed_tool", _run)
+    path = tmp_path / "Installer.dmg"
+    path.write_bytes(b"koly" * 10)
+
+    analysis = _analyze(root_analysis, path).get_and_load_analysis(DMGAnalysis)
+
+    assert analysis.error == error
+    # what 7z listed is kept either way
+    assert [line.split()[-1] for line in analysis.details["file_list"]] == ["Installer/payload.app"]
+    assert any(r.levelno == logging.INFO and "failed on" in r.getMessage() for r in caplog.records) is (error is not None)

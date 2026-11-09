@@ -453,6 +453,7 @@ class YaraScanner_v3_4(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             logging.exception("error scanning file {}: ({}) {}".format(local_file_path, type(e), e))
+            scan_error = f"yara scan failed: {str(e) or type(e).__name__}"
             
             # we copy the files we cannot scan to a directory where we can debug it later
             if self.save_scan_failures and self.scan_failure_dir is not None:
@@ -465,7 +466,11 @@ class YaraScanner_v3_4(AnalysisModule):
                     logging.debug("copied {} to {}".format(local_file_path, dest_path))
                 except Exception as e:
                     logging.exception("unable to copy {} to {}: {}".format(local_file_path, self.scan_failure_dir, e))
-            
+
+            # the matches are listed, but the failure came before any of them became a detection
+            if analysis is not None:
+                analysis.error = scan_error
+
             return AnalysisExecutionResult.COMPLETED
 
         if not analysis:

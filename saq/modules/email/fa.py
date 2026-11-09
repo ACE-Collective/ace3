@@ -129,6 +129,8 @@ class EmailConversationFrequencyAnalyzer(AnalysisModule):
             except Exception as e:
                 logging.exception("unable to query brocess: {}".format(e))
                 self.enter_cooldown()
+                # the sender count is kept; how often the two talk is not known
+                analysis.error = f"unable to query brocess for the conversation count: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
         return AnalysisExecutionResult.COMPLETED

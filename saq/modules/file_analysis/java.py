@@ -2,9 +2,10 @@ from datetime import datetime
 import logging
 import os
 import shutil
-from typing import Optional, Type, override
+from typing import Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
+from saq.analysis.errors import AnalysisError
 from saq.analysis.observable import Observable
 from saq.constants import F_FILE, AnalysisExecutionResult
 from saq.modules.base_module import AnalysisModule
@@ -95,30 +96,31 @@ class JavaClassDecompilerAnalysisModule(AnalysisModule):
         """The maximum amount of time (in seconds) to wait for the decompiler to complete."""
         return self.config.timeout
 
-    def decompile_class_file(self, class_file: str) -> Optional[str]:
+    def decompile_class_file(self, class_file: str) -> str:
         """Decompiles class_file into class_file-N-decompiled.java next to it, where N makes the name
-        unique, and returns its path; None if the decompilation failed."""
+        unique, and returns its path. Raises AnalysisError if the decompilation failed."""
         # make sure the class file exists
         if not os.path.exists(class_file):
             logging.error(f"class file {class_file} does not exist")
-            return None
+            raise AnalysisError(f"class file {class_file} does not exist")
 
         start_time = datetime.now()
         result = self.run_sandboxed_tool(["java", *JVM_OPTIONS, "-jar", CFR_JAR, class_file], class_file,
                                          timeout=self.timeout, read_dirs=jvm_conf_dirs(),
                                          startup_errors=JVM_STARTUP_ERRORS)
         if result is None:
-            return None
+            # run_sandboxed_tool() logged why
+            raise AnalysisError("cfr did not finish")
 
         # cfr exits 0 for a file it cannot decompile; anything else is a crash, and its output is not source
         if result.returncode != 0:
             logging.info(f"decompilation of {class_file} exited with {result.returncode}: {result.stderr.strip()[-500:]}")
-            return None
+            raise AnalysisError(result.failure_reason("cfr"))
 
         source = strip_banner(result.stdout)
         if not source:
             logging.info(f"decompilation of {class_file} returned nothing: {result.stderr.strip()[-500:]}")
-            return None
+            raise AnalysisError("cfr could not decompile the class file")
 
         counter = 0
         output_file = f"{class_file}-{counter}-decompiled.java"
@@ -161,16 +163,12 @@ class JavaClassDecompilerAnalysisModule(AnalysisModule):
         analysis = self.create_analysis(observable)
         assert isinstance(analysis, JavaClassDecompilerAnalysis)
 
-        # attempt to decompile the java class file
+        # a decompilation that fails raises AnalysisError, which marks this analysis failed
         decompiled_file = self.decompile_class_file(observable.full_path)
-        if decompiled_file:
-            # add the decompiled file as an observable
-            decompiled_file_observable = analysis.add_file_observable(decompiled_file)
-            if decompiled_file_observable:
-                decompiled_file_observable.add_tag("decompiled")
-                decompiled_file_observable.add_yara_meta("type", "script.java.decompiled")
-                analysis.decompiled_files.append(decompiled_file)
-
-            return AnalysisExecutionResult.COMPLETED
+        decompiled_file_observable = analysis.add_file_observable(decompiled_file)
+        if decompiled_file_observable:
+            decompiled_file_observable.add_tag("decompiled")
+            decompiled_file_observable.add_yara_meta("type", "script.java.decompiled")
+            analysis.decompiled_files.append(decompiled_file)
 
         return AnalysisExecutionResult.COMPLETED

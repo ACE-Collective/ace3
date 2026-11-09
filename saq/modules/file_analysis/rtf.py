@@ -9,6 +9,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.is_file_type import is_rtf_file
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import tool_failure_reason
 from saq.util.strings import format_item_list_for_summary
 
 KEY_STDOUT = 'stdout'
@@ -134,12 +135,19 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
                               local_file_path, capture_output=True, universal_newlines=True)
             if p is None:
                 # what it extracted before it was stopped may be cut short
+                analysis.error = "rtfobj did not finish"
                 return AnalysisExecutionResult.COMPLETED
 
             analysis.stdout, analysis.stderr = p.stdout, p.stderr
             analysis.return_code = p.returncode
+            # rtfobj exits 0 whatever it found, so anything else is a crash; what it extracted is still added
+            if p.returncode != 0:
+                analysis.error = tool_failure_reason("rtfobj", p.returncode, p.stderr)
+                logging.info("%s failed on %s: %s", self, local_file_path, analysis.error,
+                             extra={"module_name": self.name, "path": local_file_path, "root_uuid": self.get_root().uuid})
         except Exception as e:
             logging.exception("execution of {} failed: {}".format(self.rtfobj_path, e))
+            analysis.error = f"unable to run rtfobj: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
         # walk the output directory and add all discovered files as observables

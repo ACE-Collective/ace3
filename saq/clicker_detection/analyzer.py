@@ -104,10 +104,10 @@ class ClickerDetectionAnalysisMixin:
         events = self.details.get("clicker_events") or []
         count = len(events)
         found = f"{count} click{'' if count == 1 else 's'} found" if events else "no clicks found"
-        if self.query_error:
+        if self.error:
             # one failed search must not hide the clicks the others found
             prefix = f"{found}, " if events else ""
-            return f"{label}: {prefix}ERROR: {self.query_error}"
+            return f"{label}: {prefix}ERROR: {self.error}"
         return f"{label}: {found}"
 
     def get_clicker_error(self) -> Optional[str]:
@@ -115,7 +115,7 @@ class ClickerDetectionAnalysisMixin:
 
         Lets the unified view surface 'a search errored' distinctly from 'ran clean, no clicks'.
         """
-        return self.query_error or None
+        return self.error
 
     def get_clicker_events(self) -> list[ClickerEvent]:
         events: list[ClickerEvent] = []
@@ -278,12 +278,12 @@ class ClickerDetectionMixin:
                                   extra={"clicker_source": self.config.source, "clicker_search": name,
                                          "observable": observable.value})
                 results = None
-                error = str(e)
+                error = str(e) or type(e).__name__
 
             if error is not None:
                 # recorded so that a search that never answered does not read as "no clicks found"
-                previous = f"{analysis.query_error}; " if analysis.query_error else ""
-                analysis.query_error = f"{previous}{name}: {error}"
+                previous = f"{analysis.error}; " if analysis.error else ""
+                analysis.error = f"{previous}{name}: {error}"
 
             if results is not None:
                 self.process_query_results(results, analysis, observable)

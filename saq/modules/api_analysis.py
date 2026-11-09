@@ -38,7 +38,6 @@ from saq.util import abs_path, create_timedelta
 
 KEY_QUERY = 'query'
 KEY_QUERY_RESULTS = 'query_results'
-KEY_QUERY_ERROR = 'query_error'
 KEY_QUERY_SUMMARY = 'query_summary'
 KEY_QUERY_START = 'query_start'
 KEY_QUESTION = 'question'
@@ -71,7 +70,6 @@ class BaseAPIAnalysis(Analysis):
        Properties:
            query: A string containing the query that was executed.
            query_results: A string containing the result of the query if successful
-           query_error: A string containing the error message returned, if there was one
            query_summary: A string containing the summary configuration item for this query.
            question: A string containing question configuration item for this query
        """
@@ -81,7 +79,6 @@ class BaseAPIAnalysis(Analysis):
         self.details = {
                 KEY_QUERY:         None,
                 KEY_QUERY_RESULTS: None,
-                KEY_QUERY_ERROR:   None,
                 KEY_QUESTION:      None,
                 KEY_QUERY_SUMMARY: None,
                 KEY_QUERY_START:   None,
@@ -124,15 +121,6 @@ class BaseAPIAnalysis(Analysis):
         self.details[KEY_QUERY_RESULTS] = value
 
     @property
-    def query_error(self):
-        """Returns the error message returned, if there was one."""
-        return self.details[KEY_QUERY_ERROR]
-
-    @query_error.setter
-    def query_error(self, value):
-        self.details[KEY_QUERY_ERROR] = value
-
-    @property
     def question(self):
         """Returns the question configuration item for this query."""
         return self.details[KEY_QUESTION]
@@ -152,8 +140,8 @@ class BaseAPIAnalysis(Analysis):
 
     def generate_summary(self):
         result = f'{self.query_summary}: '
-        if self.query_error is not None:
-            result += f'ERROR: {self.query_error}'
+        if self.error is not None:
+            result += f'ERROR: {self.error}'
             return result
         elif self.query_results is not None:
             # 'events' is a common query key and used heavily for qradar, so we attempt to extract it here
@@ -644,12 +632,12 @@ class BaseAPIAnalyzer(AnalysisModule):
             # warn if timed out
             logging.warning(f'{self.api} query timed out: {self.target_query}')
             analysis.query_results = None
-            analysis.query_error = 'timed out'
+            analysis.error = 'timed out'
 
         except Exception as e:
             logging.error(f"Error when executing {self.api} query {self.target_query}: {e}")
             analysis.query_results = None
-            analysis.query_error = str(e)
+            analysis.error = str(e) or type(e).__name__
 
         if analysis.query_results is None:
             return AnalysisExecutionResult.COMPLETED
