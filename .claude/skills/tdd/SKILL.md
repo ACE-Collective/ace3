@@ -71,6 +71,11 @@ Mock only what ACE doesn't own: network peers and outside services, the clock, r
 - **Order.** The suite runs in random order. New module-level state (a cache, a registry, a singleton) is reset in `global_function_setup` in `tests/conftest.py`.
 - **A forked child that ends in `os._exit`.** Coverage can't record its lines. Assert on its exit code, log record or effect, and say so in the PR.
 - **A copied helper.** Search `tests/saq/helpers.py` and the nearest `conftest.py` before writing a helper or a fixture. `prepare.py --check` (below) flags an exact copy.
+- **A fallback that hides the bug.** A test that a stored value is used must trip every fallback that could compute it again, not only the most expensive one.
+- **An assert in a thread.** pytest turns it into a warning and the test passes. Return the thread's result to the test, and bound the join.
+- **An input the code never changes.** Give a test's input a value the code must replace, not one a constructor default, a fixture or a helper already supplies.
+- **Deleting a "duplicate".** Two tests that run the same code can make different claims. Before deleting one, compare what each asserts: a break at a guard they share shows that the kept test catches that break, not that it checks each thing the deleted test asserted.
+- **Tests that look alike.** Tests with nearly the same names and assertions can guard two implementations of the same logic. Break one implementation and see whether both fail.
 - **The test lock.** While another run holds it, a single-test run exits with code 4. Wait for that run to finish. A marker left by a killed run is cleared with the `rm` the message prints.
 
 ## Before asking for a review
@@ -79,4 +84,4 @@ Mock only what ACE doesn't own: network peers and outside services, the clock, r
 bin/exec-in-container.sh /venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check
 ```
 
-It lists the lines the branch adds that ACE's review flags (a missing traceback, an unbounded wait, a sleep in a test, a copied function, an unmarked test), each with the fix it expects. Fix them or add the comment it asks for, then run it again until it prints nothing.
+It lists the lines the branch adds that ACE's review flags (a missing traceback, an unbounded wait, a sleep in a test, an assert that cannot fail, a test with no assertion, a copied function, an unmarked test), each with the fix it expects. Fix them or add the comment it asks for, then run it again until it prints nothing.
