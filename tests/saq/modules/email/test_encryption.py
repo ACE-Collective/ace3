@@ -217,7 +217,22 @@ def test_crack_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
 
     analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password is None
+    assert analysis.error == "unable to crack the password: john binary not found"
     assert any(r.levelno == logging.ERROR and "error encountered when trying to crack password" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_an_extraction_that_fails_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
+    # 7z exits 2 for an error, such as a member it could not decrypt
+    _tool_runs_instead(monkeypatch, ZipEncryptionAnalyzer, "7z",
+                       ["sh", "-c", "echo 'ERROR: Wrong password : invoice.txt' >&2; exit 2"])
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
+
+    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    assert analysis.password == PASSWORD
+    assert analysis.error == "7z exited with status 2: ERROR: Wrong password : invoice.txt"
+    assert any(r.levelno == logging.WARNING and "7z could not extract every file" in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.integration
@@ -304,6 +319,20 @@ def test_msoffice_password_not_found(root_analysis, tmp_path):
     # the well known default passwords are always tried first
     assert analysis.word_list[:2] == ["VelvetSweatshop", "/01Hannes Ruescher/01"]
     assert analysis.summary == "MSOffice Encryption Analysis: could not crack password"
+
+
+@pytest.mark.integration
+def test_msoffice_decryption_that_fails_is_recorded(root_analysis, tmp_path, monkeypatch, caplog):
+    # john "cracked" a password the document does not open with
+    monkeypatch.setattr("saq.modules.email.encryption.msoffice.crack_password", lambda *args, **kwargs: "wrong")
+    email_path = _email(tmp_path, _encrypted_docx(tmp_path), subtype="octet-stream")
+    _, email_observable = _analyze(root_analysis, email_path, MSOFFICE_MODULES)
+
+    analysis = _attachment(email_observable, "statement.docx").get_and_load_analysis(MSOfficeEncryptionAnalysis)
+    assert analysis.password == "wrong"
+    assert analysis.error.startswith("decryption failed: ")
+    assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "statement.docx.decrypted")
+    assert any(r.levelno == logging.ERROR and r.exc_info and "decryption for" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.integration
@@ -478,6 +507,7 @@ def test_rar_that_unrar_cannot_extract(root_analysis, tmp_path, fake_rar, monkey
 
     analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
     assert analysis.password == PASSWORD
+    assert analysis.error == f"unrar exited with status 3: CRC failed in the encrypted file {RAR_SAMPLE_MEMBER}"
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == RAR_SAMPLE_MEMBER)
     assert any(r.levelno == logging.WARNING and "Unable to extract data from encrypted rar" in r.getMessage()
                and "CRC failed" in r.getMessage() for r in caplog.records)

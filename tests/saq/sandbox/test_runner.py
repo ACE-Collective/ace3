@@ -268,3 +268,15 @@ def test_a_probe_that_could_not_run_is_tried_again(monkeypatch, caplog):
     [record] = [r for r in caplog.records if "unable to probe for landlock support" in r.getMessage()]
     assert record.levelno == logging.ERROR
     assert record.exc_info
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("result,reason", [
+    (runner.SandboxResult(2, "", "reading\nERROR: bad header\n\n"), "7z exited with status 2: ERROR: bad header"),
+    (runner.SandboxResult(1, "", ""), "7z exited with status 1"),
+    # the sandbox exits 128 + N for a command killed by signal N
+    (runner.SandboxResult(128 + 9, "", ""), "7z was killed by signal 9"),
+    (runner.SandboxResult(0, "", "x" * 600), f"7z exited with status 0: {'x' * 500}"),
+], ids=["stderr", "silent", "signal", "long-line"])
+def test_failure_reason(result, reason):
+    assert result.failure_reason("7z") == reason

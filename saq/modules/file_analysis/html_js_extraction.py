@@ -409,6 +409,8 @@ class HTMLJavaScriptExtractor(AnalysisModule):
                 )
             except Exception as e:
                 logging.warning(f"failed to extract JavaScript from {_file.file_name}: {e}")
+                # what was extracted from the other blocks is kept
+                analysis.error = f"failed to extract JavaScript: {str(e) or type(e).__name__}"
 
         return AnalysisExecutionResult.COMPLETED
 

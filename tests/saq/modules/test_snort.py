@@ -77,7 +77,8 @@ def test_extract_signature_with_redis_unavailable():
         def get(self, key):
             raise ConnectionError("redis is down")
 
-    assert extract_signature('2404000', '5818', get_redis_connection=Unavailable) is None
+    with pytest.raises(ConnectionError):
+        extract_signature('2404000', '5818', get_redis_connection=Unavailable)
 
 
 def _analyze(root_analysis, monkeypatch, sig_db, value):
@@ -116,6 +117,18 @@ def test_snort_signature_analyzer_unknown_signature(root_analysis, monkeypatch, 
     assert analysis.signature_id is None
     assert analysis.generate_summary() is None
     assert not root_analysis.summary_details
+
+@pytest.mark.integration
+def test_snort_signature_analyzer_redis_unavailable(root_analysis, monkeypatch, caplog):
+    class Unavailable:
+        def get(self, key):
+            raise ConnectionError("redis is down")
+
+    root_analysis, analysis = _analyze(root_analysis, monkeypatch, Unavailable(), "1:2404000:5818")
+
+    assert "unable to look up snort signature 2404000 rev 5818: redis is down" in caplog.text
+    assert analysis.error == "unable to look up the signature: redis is down"
+    assert analysis.signature_id is None
 
 @pytest.mark.integration
 def test_snort_signature_analyzer_unparsable_value(root_analysis, monkeypatch, sig_db, caplog):

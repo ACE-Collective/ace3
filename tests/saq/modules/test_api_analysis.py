@@ -69,7 +69,7 @@ def test_execute_analysis_processes_results(root, delayed_analysis):
     analysis = observable.get_analysis(BaseAPIAnalysis)
     assert analysis.query == "search ip=10.0.0.1 type=ip"
     assert analysis.question == "Was it seen?"
-    assert analysis.query_error is None
+    assert analysis.error is None
     assert analyzer.processed == [[{"src": "10.0.0.2"}, {"src": "10.0.0.3"}]]
     assert analyzer.finalized == [observable]
     assert analysis.generate_summary() == "Test API: (2 results)"
@@ -94,11 +94,21 @@ def test_execute_analysis_query_error(root, delayed_analysis, caplog):
     assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     analysis = observable.get_analysis(BaseAPIAnalysis)
-    assert analysis.query_error == "connection refused"
+    assert analysis.error == "connection refused"
     assert analysis.query_results is None
     assert analyzer.processed == []
     assert analysis.generate_summary() == "Test API: ERROR: connection refused"
     assert any(r.levelno == logging.ERROR and "connection refused" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_execute_analysis_query_error_without_a_message_is_named_by_its_type(root, delayed_analysis):
+    analyzer = _analyzer(root, delayed_analysis, results=RuntimeError())
+    observable = root.add_observable_by_spec(F_IP, "10.0.0.1")
+
+    assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    assert observable.get_analysis(BaseAPIAnalysis).error == "RuntimeError"
 
 
 @pytest.mark.unit
@@ -127,7 +137,7 @@ def test_async_query_delays_until_timeout(root, delayed_analysis, caplog):
     assert analyzer.continue_analysis(observable, analysis) == AnalysisExecutionResult.COMPLETED
 
     assert analyzer.queries == ["search ip=10.0.0.1 type=ip", "search ip=10.0.0.1 already built"]
-    assert analysis.query_error == "timed out"
+    assert analysis.error == "timed out"
     assert analysis.query_results is None
     assert any(r.levelno == logging.WARNING and "query timed out" in r.getMessage() for r in caplog.records)
 

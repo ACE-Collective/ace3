@@ -261,6 +261,8 @@ class OLEVBA_Analyzer_v1_2(AnalysisModule):
                 
         except Exception as e:
             logging.warning("olevba execution error on {}: {}".format(local_file_path, e))
+            # what it found before it failed is kept
+            analysis.error = f"olevba failed: {str(e) or type(e).__name__}"
 
             # if the file ends with a microsoft office extension then we tag it
             if is_office_ext(local_file_path):

@@ -215,10 +215,12 @@ class ZipEncryptionAnalyzer(AnalysisModule):
                                                            read_files=[wordlist_path])
                     except Exception as e:
                         logging.error(f"error encountered when trying to crack password for {_file}: {e}")
+                        analysis.error = f"unable to crack the password: {str(e) or type(e).__name__}"
                         return AnalysisExecutionResult.COMPLETED
 
             except Exception as e:
                 logging.error(f"error encountered when building password wordlist for {_file}: {e}")
+                analysis.error = f"unable to build the password wordlist: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 
         if not analysis.password:
@@ -236,13 +238,18 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
         # extract data from zip to output directory w/ 7zip
         # 'x' = extract, '-y' = assume yes to all queries
-        if self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
-                                    _file.full_path], _file.full_path, timeout=self.extract_timeout,
-                                   write_dirs=[output_dir]) is None:
+        result = self.run_sandboxed_tool(['7z', 'x', '-y', f'-p{analysis.password}', f"-o{os.path.abspath(output_dir)}",
+                                          _file.full_path], _file.full_path, timeout=self.extract_timeout,
+                                         write_dirs=[output_dir])
+        if result is None:
             # run_sandboxed_tool() logged why (a timeout, a member over the file size limit). What it
             # extracted before it was stopped is still decrypted content and is still added: the last
             # file may be cut short
             analysis.error = "7z did not finish"
+        elif result.returncode > 1:
+            # 7z exits 1 for a warning; what it extracted before an error is still added
+            logging.warning(f"7z could not extract every file of encrypted zip {_file}: {result.stderr.strip()[-500:]}")
+            analysis.error = result.failure_reason("7z")
 
         # add files in the zip as observables
         for dirpath, dirnames, filenames in os.walk(output_dir):

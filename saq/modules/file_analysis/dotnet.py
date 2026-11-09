@@ -132,6 +132,8 @@ class De4dotAnalyzer(AnalysisModule):
         else:
             analysis.stdout = result.stdout or None
             analysis.stderr = result.stderr or None
+            if not os.path.exists(output_path):
+                analysis.error = f"{result.failure_reason('de4dot')}, without writing a deobfuscated file"
 
         analysis.details['deobfuscated'] = True
         file_observable = analysis.add_file_observable(output_path, volatile=True)
@@ -176,6 +178,9 @@ class IlspyAnalysis(Analysis):
     @override
     def generate_summary(self) -> Optional[str]:
         result = "Ilspy Analysis"
+
+        if self.error:
+            return f"{result}: failed: {self.error}"
 
         if self.exit_code is not None:
             result += f": exit code {self.exit_code}"
@@ -238,13 +243,14 @@ class IlspyAnalyzer(AnalysisModule):
                                          env=DOTNET_ENV, memory_limit=DOTNET_MEMORY_LIMIT,
                                          outputs={il_name: target_path}, startup_errors=DOTNET_STARTUP_ERRORS)
         if result is None:
-            analysis.stderr = "ilspy did not finish"
+            analysis.error = "ilspy did not finish"
             return AnalysisExecutionResult.COMPLETED
 
         analysis.exit_code = result.returncode
         analysis.stderr = result.stderr or None
 
         if not os.path.exists(target_path):
+            analysis.error = f"{result.failure_reason('ilspy')}, without writing IL"
             return AnalysisExecutionResult.COMPLETED
 
         file_observable = analysis.add_file_observable(target_path, volatile=True)

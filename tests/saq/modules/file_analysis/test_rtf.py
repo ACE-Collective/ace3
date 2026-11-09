@@ -109,6 +109,7 @@ def test_rtfobj_failure_is_recorded(root_analysis, tmp_path, monkeypatch):
     analysis = _analyze(root_analysis, _rtf(tmp_path), ("rtfole",)).get_and_load_analysis(RTFOLEObjectAnalysis)
 
     assert analysis.return_code == 2
+    assert analysis.error == "rtfobj exited with status 2: rtfobj blew up"
     assert analysis.stderr == "rtfobj blew up"
     assert analysis.stdout == ""
     assert analysis.extracted_files == []

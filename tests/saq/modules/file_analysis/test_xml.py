@@ -107,3 +107,24 @@ def test_xml_binary_data_part_named_the_package_root(root_analysis):
         os.path.join("document.xml.xml", "_"): b"root",
         os.path.join("document.xml.xml", "word", "vbaProject.bin"): b"macros",
     }
+
+
+@pytest.mark.integration
+def test_xml_binary_data_that_cannot_be_parsed(root_analysis):
+    root_analysis.analysis_mode = "test_groups"
+    target_path = root_analysis.create_file_path("document.xml")
+    with open(target_path, "w") as fp:
+        # cut off partway through
+        fp.write(_flat_opc([("/word/media/image1.png", b"image")])[:-30])
+
+    _file = root_analysis.add_file_observable(target_path)
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module("xml_binary_analyzer", "test_groups")
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    analysis = root_analysis.get_observable(_file.uuid).get_and_load_analysis(XMLBinaryDataAnalysis)
+    assert analysis.error.startswith("unable to parse XML: ")

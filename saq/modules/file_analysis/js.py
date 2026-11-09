@@ -348,6 +348,12 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
             logging.warning(
                 f"js deobfuscator exit {analysis.exit_code} for {local_file_path}; stderr={analysis.stderr!r}"
             )
+            # a scanner that timed out or crashed reports no error of its own
+            if not analysis.error:
+                stderr_lines = (analysis.stderr or "").strip().splitlines()
+                analysis.error = f"js deobfuscator exited with {analysis.exit_code}"
+                if stderr_lines:
+                    analysis.error += f": {stderr_lines[-1][:500]}"
             return AnalysisExecutionResult.COMPLETED
 
         if not deobfuscated_src or not os.path.exists(deobfuscated_src):

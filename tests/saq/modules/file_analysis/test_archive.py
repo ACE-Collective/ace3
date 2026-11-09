@@ -545,8 +545,25 @@ def test_an_extraction_that_does_not_finish_is_recorded(root_analysis, monkeypat
 
     analysis = observable.get_analysis(ArchiveAnalysis)
     assert "b_small.txt" not in analysis.extracted_files
-    assert analysis.extraction_error == "the extractor did not finish"
+    assert analysis.error == "the extractor did not finish"
     assert analysis.generate_summary().endswith("(the extractor did not finish)")
+
+
+@pytest.mark.integration
+def test_an_extraction_directory_that_cannot_be_created_fails_the_analysis(root_analysis, caplog):
+    observable = _archive_observable(root_analysis, "data.zip", *ZIP, _zip_bytes({"a.txt": "a"}))
+    # a file where the extraction directory goes
+    extracted_path = f"{observable.full_path}.extracted"
+    with open(extracted_path, "w") as fp:
+        fp.write("in the way")
+
+    assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_analysis(ArchiveAnalysis)
+    assert analysis.error.startswith(f"unable to create {extracted_path}: ")
+    assert analysis.extracted_files == []
+    assert any(r.levelno == logging.ERROR and r.exc_info and extracted_path in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.integration
@@ -565,7 +582,7 @@ def test_an_archive_whose_listing_is_too_large_is_still_extracted(root_analysis,
 
     analysis = observable.get_analysis(ArchiveAnalysis)
     assert analysis.extracted_files == ["payload.exe"]
-    assert analysis.extraction_error == "the listing was larger than 16384 bytes, so the file count is not known"
+    assert analysis.error == "the listing was larger than 16384 bytes, so the file count is not known"
 
 
 @pytest.mark.integration
@@ -582,7 +599,7 @@ def test_a_rar_extraction_stopped_at_the_file_size_limit_is_recorded(root_analys
         assert _analyzer(root_analysis).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
 
     analysis = observable.get_analysis(ArchiveAnalysis)
-    assert analysis.extraction_error == "the extractor did not finish"
+    assert analysis.error == "the extractor did not finish"
     assert any(r.levelno == logging.WARNING and "Write error" in r.getMessage() for r in caplog.records)
     assert analysis.extracted_files == ["IMPORTANT DOCUMENT.vbs"]
     (member,) = analysis.get_observables_by_type(F_FILE)
@@ -609,7 +626,7 @@ def test_a_multi_volume_archive_is_extracted(root_analysis, tmp_path):
 
     analysis = observable.get_analysis(ArchiveAnalysis)
     assert analysis.extracted_files == ["payload.exe"]
-    assert analysis.extraction_error is None
+    assert analysis.error is None
 
 
 @pytest.mark.integration

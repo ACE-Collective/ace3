@@ -15,6 +15,7 @@ from saq.modules.file_analysis.dotnet import (
     KEY_DEOBFUSCATED,
 )
 from saq.observables.file import FileObservable
+from saq.sandbox.runner import SandboxResult
 from tests.saq.test_util import create_test_context
 
 DOTNET_SAMPLE_HEX = os.path.join(os.path.dirname(__file__), "..", "test_file_analysis", "6346eea9dff4eac53113fc2ba3b8a497.hex")
@@ -205,6 +206,33 @@ class TestDe4dotAnalyzer:
         assert not os.path.exists(f"{file_observable.full_path}.deobfuscated")
         assert not analysis.observables
 
+    def test_a_deobfuscation_that_writes_nothing_fails(self, root_analysis, tmpdir, monkeypatch):
+        # the real -d detection check runs, the deobfuscation exits without writing its file
+        real = De4dotAnalyzer.run_sandboxed_tool
+        calls = []
+
+        def _run(self, args, target, **kwargs):
+            calls.append(args)
+            if len(calls) == 2:
+                return SandboxResult(returncode=1, stdout="", stderr="loading\nERROR: bad image\n")
+            return real(self, args, target, **kwargs)
+
+        monkeypatch.setattr(De4dotAnalyzer, "run_sandboxed_tool", _run)
+
+        analyzer = De4dotAnalyzer(
+            context=create_test_context(root=root_analysis),
+            config=get_analysis_module_config(ANALYSIS_MODULE_DE4DOT))
+
+        test_file = _write_dotnet_sample(tmpdir / "test.exe")
+        file_observable = root_analysis.add_file_observable(test_file)
+
+        assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = file_observable.get_analysis(De4dotAnalysis)
+        assert analysis.error == "de4dot exited with status 1: ERROR: bad image, without writing a deobfuscated file"
+        assert analysis.generate_summary().startswith("De4dot Analysis error: ")
+        assert not analysis.observables
+
     @pytest.mark.skipif(not os.path.exists("/opt/de4dotEx/de4dot"), reason="de4dot is not installed")
     def test_a_runtime_the_sandbox_keeps_from_starting_is_reported(self, root_analysis, tmpdir, monkeypatch, caplog):
         # CoreCLR does not start without its own /proc/<pid>
@@ -254,6 +282,13 @@ class TestIlspyAnalysis:
 
         summary = analysis.generate_summary()
         assert summary == "Ilspy Analysis: exit code 1: stderr: error occurred"
+
+    def test_generate_summary_with_error(self):
+        analysis = IlspyAnalysis()
+        analysis.exit_code = 1
+        analysis.error = "ilspy exited with status 1, without writing IL"
+
+        assert analysis.generate_summary() == "Ilspy Analysis: failed: ilspy exited with status 1, without writing IL"
 
 
 @pytest.mark.unit
@@ -367,7 +402,8 @@ class TestIlspyAnalyzer:
 
         analysis = file_observable.get_analysis(IlspyAnalysis)
         assert analysis is not None
-        assert analysis.stderr == "ilspy did not finish"
+        assert analysis.error == "ilspy did not finish"
+        assert analysis.generate_summary() == "Ilspy Analysis: failed: ilspy did not finish"
         # with no .il written there is nothing to add, and no warning about a missing file
         assert not [obs for obs in analysis.observables if obs.file_name.endswith(".il")]
         assert "non-existant file" not in caplog.text

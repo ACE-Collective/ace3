@@ -92,7 +92,14 @@ class SnortSignatureAnalyzer_v1(AnalysisModule):
 
         logging.info(f"searching snort rules for {snort_sig.value}")
 
-        result = extract_signature(snort_sig.signature_id, snort_sig.rev)
+        try:
+            result = extract_signature(snort_sig.signature_id, snort_sig.rev)
+        except Exception as e:
+            # redis could not answer, which is not "no such signature"
+            logging.warning(f"unable to look up snort signature {snort_sig.signature_id} rev {snort_sig.rev}: {e}")
+            analysis.error = f"unable to look up the signature: {str(e) or type(e).__name__}"
+            return AnalysisExecutionResult.COMPLETED
+
         if result is None:
             logging.warning(f"cannot find snort signature {snort_sig.signature_id} rev {snort_sig.rev}")
             return AnalysisExecutionResult.COMPLETED
@@ -197,8 +204,4 @@ def build_signature_db(sig_path, **kwargs):
 def extract_signature(signature_id, rev, get_redis_connection=_get_redis_connection):
     """Given a snort/suricata signature id and revision, return the signature that matches as a string."""
     redis_connection = get_redis_connection()
-    try:
-        return redis_connection.get(_create_signature_key(signature_id, rev))
-    except Exception as e:
-        logging.warning(f"invalid snort/suricata spec signature_id {signature_id} rev {rev}: {e}")
-        return None
+    return redis_connection.get(_create_signature_key(signature_id, rev))

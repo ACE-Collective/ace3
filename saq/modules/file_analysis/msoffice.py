@@ -112,6 +112,8 @@ class OfficeXMLRelationshipExternalURLAnalyzer(AnalysisModule):
             etree.parse(local_file_path, parser)
         except Exception as e:
             logging.warning("unable to parse XML file {}: {}".format(_file, e))
+            # the targets read before the error are still added
+            analysis.error = f"unable to parse {os.path.basename(local_file_path)}: {str(e) or type(e).__name__}"
 
         for url in parser_target.urls:
             url = analysis.add_observable_by_spec(F_URL, url)

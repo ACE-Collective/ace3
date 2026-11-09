@@ -5,6 +5,7 @@ import shutil
 
 import pytest
 
+from saq.analysis.errors import AnalysisError
 from saq.analysis.root import load_root
 from saq.constants import F_FILE
 from saq.engine.core import Engine
@@ -38,15 +39,16 @@ def test_decompile_java_class_file(tmp_path, datadir):
     assert os.path.exists(java_file_2)
     assert java_file_2 != java_file
 
-    # if we pass a missing file we get None back
-    assert module.decompile_class_file('does_not_exist.java') is None
+    with pytest.raises(AnalysisError, match="does_not_exist.java does not exist"):
+        module.decompile_class_file('does_not_exist.java')
 
-    # if we pass something that is not a java class file we get None back
+    # something that is not a java class file is not decompiled
     not_class_file = tmp_path / 'not_a_class_file.class'
     not_class_file.write_text("This is not a class file.")
     not_class_file = str(not_class_file)
 
-    assert module.decompile_class_file(not_class_file) is None
+    with pytest.raises(AnalysisError, match="^cfr could not decompile the class file$"):
+        module.decompile_class_file(not_class_file)
 
 
 @pytest.mark.unit
@@ -95,6 +97,7 @@ def test_decompiler_keeps_an_empty_analysis_when_decompiling_fails(root_analysis
     analysis = _analyze_with_decompiler(root_analysis, broken)
 
     assert isinstance(analysis, JavaClassDecompilerAnalysis)
+    assert analysis.error == "cfr could not decompile the class file"
     assert analysis.decompiled_files == []
     assert analysis.get_observables_by_type(F_FILE) == []
 
@@ -124,7 +127,8 @@ def test_a_jvm_the_sandbox_keeps_from_starting_is_reported(datadir, monkeypatch,
     cannot_start(monkeypatch)
     class_file = shutil.copy(datadir / 'VxUGJsAplRNavewkjKujp.class', datadir / 'copy.class')
 
-    assert _decompiler().decompile_class_file(class_file) is None
+    with pytest.raises(AnalysisError, match="^cfr did not finish$"):
+        _decompiler().decompile_class_file(class_file)
 
     # the JVM's error is not the decompiled source
     assert not os.path.exists(f"{class_file}-0-decompiled.java")
@@ -135,14 +139,19 @@ def test_a_jvm_the_sandbox_keeps_from_starting_is_reported(datadir, monkeypatch,
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("result", [None, SandboxResult(1, "class Partial {", "Exception in thread \"main\"")],
-                         ids=["stopped", "failed"])
-def test_a_decompilation_that_does_not_finish_writes_nothing(datadir, monkeypatch, result):
+@pytest.mark.parametrize("result,error", [
+    (None, "cfr did not finish"),
+    (SandboxResult(1, "class Partial {", "Exception in thread \"main\""),
+     "cfr exited with status 1: Exception in thread \"main\""),
+], ids=["stopped", "failed"])
+def test_a_decompilation_that_does_not_finish_writes_nothing(datadir, monkeypatch, result, error):
     module = _decompiler()
     monkeypatch.setattr(module, "run_sandboxed_tool", lambda *args, **kwargs: result)
     class_file = str(datadir / 'VxUGJsAplRNavewkjKujp.class')
 
-    assert module.decompile_class_file(class_file) is None
+    with pytest.raises(AnalysisError) as e:
+        module.decompile_class_file(class_file)
+    assert e.value.message == error
     assert not os.path.exists(f"{class_file}-0-decompiled.java")
 
 

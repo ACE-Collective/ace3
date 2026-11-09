@@ -227,6 +227,8 @@ class TestCVE_2021_30657_Analyzer:
         assert analysis is not None
         assert len(analysis.suspect_files) == 0
         assert any(r.levelno == logging.ERROR and "failed to extracted" in r.getMessage() for r in caplog.records)
+        assert analysis.error.startswith("7z exited with status ")
+        assert analysis.error.endswith(", without extracting Installer/yWnBJLaF/1302.app/Contents/MacOS/missing")
 
     @pytest.mark.unit
     def test_execute_analysis_non_script_file(self, tmpdir, test_context):

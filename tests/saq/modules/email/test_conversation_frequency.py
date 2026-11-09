@@ -106,6 +106,7 @@ def test_brocess_failure(root_analysis, monkeypatch, caplog, failing_query):
         assert not analysis
     else:
         assert analysis.dest_count is None
+        assert analysis.error == "unable to query brocess for the conversation count: brocess is down"
 
 
 #

@@ -124,7 +124,7 @@ def test_analyzer_tags_match(nrd_db, test_context):
     assert analysis.age_created_in_days == "3"
     assert analysis.datetime_created is not None
     assert analysis.lookup_protocol == "rdap"
-    assert analysis.lookup_error is None
+    assert analysis.error is None
     assert "registered 3 day(s) ago" in analysis.generate_summary()
     assert observable.has_tag(TAG_NRD)
 
@@ -306,7 +306,7 @@ def test_analyzer_fails_open_on_lookup_failure(nrd_db, test_context, creation_lo
     assert analysis.age_created_in_days is None
     assert analysis.datetime_created is None
     assert analysis.lookup_protocol is None
-    assert analysis.lookup_error.startswith("rdap:")
+    assert analysis.error.startswith("rdap:")
     assert "unverified" in analysis.generate_summary()
     assert observable.has_tag(TAG_NRD)
 
@@ -330,7 +330,7 @@ def test_analyzer_verification_disabled(nrd_db, test_context, creation_lookup, d
     assert analysis is not None
     assert analysis.is_nrd is True
     assert analysis.age_created_in_days is None
-    assert analysis.lookup_error is None
+    assert analysis.error is None
     assert analysis.generate_summary() == "Newly Registered Domain: present in local NRD list"
     assert observable.has_tag(TAG_NRD)
     assert creation_lookup.calls == []

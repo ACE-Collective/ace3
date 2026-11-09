@@ -34,7 +34,6 @@ KEY_MATCHED_AT = "matched_at"
 KEY_DATETIME_CREATED = "datetime_created"
 KEY_AGE_CREATED_IN_DAYS = "age_created_in_days"
 KEY_LOOKUP_PROTOCOL = "lookup_protocol"
-KEY_LOOKUP_ERROR = "lookup_error"
 
 TAG_NRD = "suspect:nrd"
 
@@ -50,7 +49,6 @@ class NRDAnalysis(Analysis):
             KEY_DATETIME_CREATED: None,
             KEY_AGE_CREATED_IN_DAYS: None,
             KEY_LOOKUP_PROTOCOL: None,
-            KEY_LOOKUP_ERROR: None,
         }
 
     @property
@@ -94,14 +92,6 @@ class NRDAnalysis(Analysis):
     def lookup_protocol(self, value) -> None:
         self.details[KEY_LOOKUP_PROTOCOL] = value
 
-    @property
-    def lookup_error(self):
-        return self.details.get(KEY_LOOKUP_ERROR)
-
-    @lookup_error.setter
-    def lookup_error(self, value) -> None:
-        self.details[KEY_LOOKUP_ERROR] = value
-
     def generate_summary(self):
         if not self.is_nrd:
             return None
@@ -110,10 +100,10 @@ class NRDAnalysis(Analysis):
                 "Newly Registered Domain: present in local NRD list "
                 f"(registered {self.age_created_in_days} day(s) ago)"
             )
-        if self.lookup_error:
+        if self.error:
             return (
                 "Newly Registered Domain: present in local NRD list "
-                f"(registration age unverified: {self.lookup_error})"
+                f"(registration age unverified: {self.error})"
             )
         return "Newly Registered Domain: present in local NRD list"
 
@@ -214,8 +204,9 @@ class NRDAnalyzer(AnalysisModule):
                 analysis.age_created_in_days = _age_in_days_as_string(lookup.created, now)
                 analysis.lookup_protocol = lookup.protocol
             else:
-                # Fail open: keep the hit, record why it could not be verified.
-                analysis.lookup_error = lookup.error
+                # Fail open: keep the hit, record why it could not be verified. As an error it is
+                # not cached, so the next alert with this domain tries the lookup again.
+                analysis.error = lookup.error
 
         observable.add_tag(TAG_NRD)
 

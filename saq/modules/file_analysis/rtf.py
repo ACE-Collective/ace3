@@ -134,12 +134,20 @@ class RTFOLEObjectAnalyzer(AnalysisModule):
                               local_file_path, capture_output=True, universal_newlines=True)
             if p is None:
                 # what it extracted before it was stopped may be cut short
+                analysis.error = "rtfobj did not finish"
                 return AnalysisExecutionResult.COMPLETED
 
             analysis.stdout, analysis.stderr = p.stdout, p.stderr
             analysis.return_code = p.returncode
+            # rtfobj exits 0 whatever it found, so anything else is a crash; what it extracted is still added
+            if p.returncode != 0:
+                stderr_lines = p.stderr.strip().splitlines()
+                analysis.error = f"rtfobj exited with status {p.returncode}"
+                if stderr_lines:
+                    analysis.error += f": {stderr_lines[-1][:500]}"
         except Exception as e:
             logging.exception("execution of {} failed: {}".format(self.rtfobj_path, e))
+            analysis.error = f"unable to run rtfobj: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
         # walk the output directory and add all discovered files as observables

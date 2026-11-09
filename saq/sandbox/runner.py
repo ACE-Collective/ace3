@@ -211,6 +211,21 @@ class SandboxResult:
     # wrote up to then
     output_exceeded: bool = False
 
+    def failure_reason(self, tool: str) -> str:
+        """Why tool failed, for an Analysis.error: how it exited, and the last line of its stderr, which
+        is where a tool says why it died."""
+        # the sandbox exits 128 + N for a command killed by signal N
+        if 128 < self.returncode <= 128 + signal.SIGRTMAX:
+            reason = f"{tool} was killed by signal {self.returncode - 128}"
+        else:
+            reason = f"{tool} exited with status {self.returncode}"
+
+        lines = self.stderr.strip().splitlines()
+        if lines:
+            reason += f": {lines[-1][:500]}"
+
+        return reason
+
 
 class SandboxOutputExceeded(RuntimeError):
     """The command wrote more than max_output_bytes and everything it started is gone. A RuntimeError,

@@ -32,6 +32,9 @@ class MicrosoftScriptEncodingAnalysis(Analysis):
         self.details[KEY_ANALYSIS_OUTPUT] = value
 
     def generate_summary(self):
+        if self.error:
+            return f'{self.display_name}: failed: {self.error}'
+
         if self.details:
             return f'{self.display_name}: {self.analysis_output}'
 
@@ -104,6 +107,7 @@ class MicrosoftScriptEncodingAnalyzer(AnalysisModule):
         if result is None:
             # whatever it wrote is incomplete
             os.remove(output_path)
+            analysis.error = "the decoder did not finish"
             return AnalysisExecutionResult.COMPLETED
 
         if os.path.getsize(output_path):

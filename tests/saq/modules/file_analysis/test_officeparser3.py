@@ -75,3 +75,35 @@ def test_officeparser_that_times_out_is_killed(root_analysis, hanging_officepars
     assert observable.has_directive(DIRECTIVE_SANDBOX)
     assert observable.get_analysis(OfficeParserAnalysis3) is None
     assert any(r.getMessage().startswith("timeout expired for officeparser") for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_officeparser_that_times_out_after_writing_its_manifest_fails(root_analysis, monkeypatch):
+    # what it extracted before it was stopped is still added, as a partial result
+    tool_dir = os.path.join(get_data_dir(), f"slow-officeparser-{uuid.uuid4()}")
+    os.makedirs(tool_dir)
+    tool_path = os.path.join(tool_dir, "officeparser")
+    with open(tool_path, "w") as fp:
+        fp.write('#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done\n'
+                 'mkdir -p "$out" && : > "$out/manifest"\nexec sleep 60\n')
+    os.chmod(tool_path, 0o755)
+
+    analyzer = OfficeParserAnalyzer3(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config("officeparser3"))
+    monkeypatch.setattr(analyzer.config, "officeparser_path", tool_path)
+    monkeypatch.setattr(analyzer.config, "timeout", 1)
+
+    file_path = root_analysis.create_file_path("macro.doc")
+    with open(file_path, "wb") as fp:
+        fp.write(OLE_HEADER + b"\x00" * 504)
+    observable = root_analysis.add_file_observable(file_path)
+    observable.add_analysis(FileTypeAnalysis())
+
+    try:
+        assert analyzer.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+    finally:
+        shutil.rmtree(tool_dir, ignore_errors=True)
+
+    assert observable.has_tag("officeparser_failed")
+    assert observable.get_analysis(OfficeParserAnalysis3).error == "officeparser timed out after 1 seconds"

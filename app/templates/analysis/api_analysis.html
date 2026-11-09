@@ -21,13 +21,6 @@
 </div>
 {% endif %}
 
-{# --- Error --- #}
-{% if analysis.details.get('query_error') %}
-<div class="alert alert-danger" role="alert">
-    <strong>Query Error:</strong> {{ analysis.details['query_error'] }}
-</div>
-{% endif %}
-
 {# --- Query (collapsible, collapsed by default) --- #}
 {% if analysis.details.get('query') %}
 <div class="mb-3">

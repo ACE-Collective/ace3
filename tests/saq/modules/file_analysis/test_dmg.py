@@ -73,6 +73,8 @@ def test_dmg2img_fails(root_analysis, tmp_path):
     analysis = target.get_and_load_analysis(DMGAnalysis)
     assert analysis.details["image_file"] is None
     assert not [o for o in analysis.observables if o.type == F_FILE]
+    assert analysis.error.startswith("dmg2img ")
+    assert analysis.error.endswith(", without writing an image")
 
 
 @pytest.mark.integration

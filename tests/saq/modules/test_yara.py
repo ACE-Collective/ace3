@@ -790,6 +790,24 @@ class TestYaraScanFailures:
         assert any(r.getMessage().startswith("unable to copy") and "disk full" in r.getMessage() for r in caplog.records)
 
     @pytest.mark.integration
+    def test_a_failure_after_the_matches_are_listed_fails_the_analysis(self, root_analysis, monkeypatch, caplog):
+        # a match without its meta stops the scan after the analysis that lists it is made, before
+        # any match becomes a detection; the copy failing too must not lose the reason
+        monkeypatch.setattr(yara_client, "scan_file", lambda *args, **kwargs: [{"rule": "no_meta"}])
+        module = _yara_module(root_analysis)
+        monkeypatch.setattr(module.config, "save_scan_failures", True)
+        monkeypatch.setattr("saq.modules.file_analysis.yara.shutil.copy", Mock(side_effect=OSError("disk full")))
+        observable = _file_observable(root_analysis, name="partial.bin")
+
+        with caplog.at_level(logging.ERROR):
+            assert module.execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+        analysis = observable.get_analysis(YaraScanResults_v3_4)
+        assert analysis.error == "yara scan failed: 'meta'"
+        assert not observable.detections
+        assert any(r.getMessage().startswith("unable to copy") for r in caplog.records)
+
+    @pytest.mark.integration
     def test_failed_file_is_not_kept_by_default(self, root_analysis, failing_scan):
         module = _yara_module(root_analysis)
         before = set(os.listdir(module.scan_failure_dir))

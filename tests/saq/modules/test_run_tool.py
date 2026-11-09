@@ -152,7 +152,10 @@ def test_mse(root_analysis, fake_tools, monkeypatch):
     _assert_stopped(tool_dir)
     # the incomplete output is not kept
     assert not os.path.exists(f"{observable.full_path}.decrypted.vbs")
-    assert not observable.get_analysis(MicrosoftScriptEncodingAnalysis).observables
+    analysis = observable.get_analysis(MicrosoftScriptEncodingAnalysis)
+    assert not analysis.observables
+    assert analysis.error == "the decoder did not finish"
+    assert analysis.generate_summary() == "Microsoft Script Encoding Analysis: failed: the decoder did not finish"
 
 
 @pytest.mark.integration
@@ -167,6 +170,7 @@ def test_dmg2img(root_analysis, fake_tools, caplog):
     # the incomplete image is not kept
     assert not os.path.exists(observable.full_path[:-4] + ".img")
     assert not observable.get_analysis(DMGAnalysis).observables
+    assert observable.get_analysis(DMGAnalysis).error == "dmg2img did not finish"
 
 
 @pytest.mark.integration
@@ -182,6 +186,7 @@ def test_dmg_listing(root_analysis, fake_tools, caplog):
     # the image is analyzed on its own; only its listing is missing
     assert [o.file_name for o in analysis.observables] == ["Installer.img"]
     assert analysis.details["file_list"] == []
+    assert analysis.error == "7z l did not finish, so the image's files are not listed"
 
 
 @pytest.mark.integration
@@ -281,6 +286,7 @@ def test_rtfobj(root_analysis, data_dir_tool, monkeypatch):
         assert not psutil.pid_exists(int(fp.read()))
     analysis = observable.get_analysis(RTFOLEObjectAnalysis)
     assert analysis.extracted_files == []
+    assert analysis.error == "rtfobj did not finish"
 
 
 @pytest.mark.integration
@@ -301,6 +307,8 @@ def test_pdfparser(root_analysis, data_dir_tool, monkeypatch, caplog):
     # what it wrote before it was stopped is still scanned
     assert [o.file_name for o in observable.get_analysis(PDFAnalysis).observables
             if o.file_name.endswith(".pdfparser")] == ["document.pdf.pdfparser"]
+    assert observable.get_analysis(PDFAnalysis).error == \
+        "pdfparser did not finish, so its dump of the objects is incomplete"
 
 
 @pytest.fixture
@@ -395,7 +403,10 @@ def test_cve_extraction(root_analysis, fake_tools, tmpdir, caplog):
     # out of time: the second file is not tried
     _assert_stopped_in_sandbox(tool_dir, caplog, "7z")
     assert len([r for r in caplog.records if " stopped 7z on " in r.getMessage()]) == 1
-    assert observable.get_analysis(CVE_2021_30657_Analysis).suspect_files == {}
+    analysis = observable.get_analysis(CVE_2021_30657_Analysis)
+    assert analysis.suspect_files == {}
+    assert analysis.error.startswith("7z did not finish extracting ")
+    assert analysis.error.endswith(", so it and the files after it were not checked")
 
 
 @pytest.mark.integration
@@ -407,7 +418,9 @@ def test_cve_mime_type(root_analysis, fake_tools, tmpdir):
 
     assert _run(module, observable) < 30
     _assert_stopped(tool_dir)
-    assert observable.get_analysis(CVE_2021_30657_Analysis).suspect_files == {}
+    analysis = observable.get_analysis(CVE_2021_30657_Analysis)
+    assert analysis.suspect_files == {}
+    assert analysis.error.startswith("file did not finish on ")
 
 
 @pytest.mark.integration
@@ -421,6 +434,7 @@ def test_file_type(root_analysis, fake_tools):
     # the description and the mime type
     _assert_stopped(tool_dir, count=2)
     analysis = observable.get_analysis(FileTypeAnalysis)
+    assert analysis.error == "file did not finish"
     assert analysis.file_type == ""
     assert analysis.mime_type == ""
     # the checks that read the file themselves still run
@@ -440,6 +454,8 @@ def test_file_type_error_output(root_analysis, fake_tools, caplog):
     analysis = observable.get_analysis(FileTypeAnalysis)
     assert analysis.file_type == "text/plain"
     assert analysis.mime_type == "text/plain"
+    # a warning is not a failure
+    assert analysis.error is None
     warnings = [r for r in caplog.records if r.getMessage() == f"file command returned error output for {observable.full_path}"]
     assert len(warnings) == 2
 

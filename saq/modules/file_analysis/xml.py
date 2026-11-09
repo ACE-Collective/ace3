@@ -125,6 +125,7 @@ class XMLPlainTextAnalyzer(AnalysisModule):
                     analysis.details = { KEY_XML_PLAIN_TEXT : _file.file_path }
         except Exception as e:
             logging.info("unable to parse XML file {}: {}".format(_file, e))
+            analysis.error = f"unable to parse XML: {str(e) or type(e).__name__}"
 
         return AnalysisExecutionResult.COMPLETED
 
@@ -233,10 +234,10 @@ class XMLBinaryDataAnalyzer(AnalysisModule):
             logging.debug("{} is not a Word.Document".format(local_file_path))
             return AnalysisExecutionResult.COMPLETED
 
-        try:
+        analysis = self.create_analysis(_file)
+        assert isinstance(analysis, XMLBinaryDataAnalysis)
 
-            analysis = self.create_analysis(_file)
-            assert isinstance(analysis, XMLBinaryDataAnalysis)
+        try:
             parser = etree.XMLParser(target=_XMLParser(self.get_root(), f'{_file.file_path}.xml'))
             extracted_files = etree.parse(local_file_path, parser)
 
@@ -247,6 +248,7 @@ class XMLBinaryDataAnalyzer(AnalysisModule):
 
         except Exception as e:
             logging.info("xml parsing failed for {}: {}".format(local_file_path, e))
+            analysis.error = f"unable to parse XML: {str(e) or type(e).__name__}"
             return AnalysisExecutionResult.COMPLETED
 
         return AnalysisExecutionResult.COMPLETED

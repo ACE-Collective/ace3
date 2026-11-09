@@ -941,6 +941,8 @@ def test_extraction_failure_is_logged(monkeypatch, caplog, test_context):
 
     assert _run_extractor(root, observable, test_context) == AnalysisExecutionResult.COMPLETED
     assert "failed to extract JavaScript from boom.html: extract failed" in caplog.text
+    analysis = observable.get_and_load_analysis(HTMLJavaScriptExtractionAnalysis)
+    assert analysis.error == "failed to extract JavaScript: extract failed"
 
 
 @pytest.mark.unit
