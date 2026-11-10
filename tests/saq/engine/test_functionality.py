@@ -1166,9 +1166,11 @@ def test_declared_dependency_no_analysis_target():
     assert test_observable.get_and_load_analysis(DeclaredDepOnNoProduceAnalysis)
 
 @pytest.mark.integration
-def test_retry_on_failure_removes_what_the_failed_analysis_added():
-    # retry_on_failure fails on its first two runs and succeeds on the third. each retry
-    # replaces the failed analysis, and the observables a replaced analysis added go with it
+def test_retry_on_failure_retries_once_per_work_item():
+    # retry_on_failure fails on its first two runs and succeeds on the third. a work item
+    # retries a failed analysis once, so a failure that persists cannot rerun the module on
+    # every pass; the next work item on the root retries it again. each retry replaces the
+    # failed analysis, and the observables a replaced analysis added go with it
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
@@ -1181,27 +1183,40 @@ def test_retry_on_failure_removes_what_the_failed_analysis_added():
 
     root = load_root(get_storage_dir(root.uuid))
     analysis = root.get_observable(test_observable.uuid).get_and_load_analysis(RetryOnFailureAnalysis)
+    assert analysis.details == {"run": 2}
+    assert analysis.error == "run 2 failed"
+    assert [o.value for o in root.get_observables_by_type(F_USER)] == ["retry_run_2"]
+
+    root.schedule()
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    analysis = root.get_observable(test_observable.uuid).get_and_load_analysis(RetryOnFailureAnalysis)
     assert analysis.details == {"run": 3}
     assert analysis.error is None
     assert [o.value for o in root.get_observables_by_type(F_USER)] == ["retry_run_3"]
 
 @pytest.mark.integration
-def test_declared_dependency_check_leaves_failed_analysis_in_place():
-    # depends_on_retry declares a dependency on retry_on_failure, which fails on its
-    # first two runs, and the root comes in with a failed retry_on_failure analysis from an
-    # earlier execution. a failed analysis its module will retry does not satisfy the
-    # dependency, so the dependent waits for the run of its dependency edge: the engine
-    # retries retry_on_failure on its own pass (run 1), then again for the edge (run 2),
-    # and the dependent runs on what run 2 left. checking the dependency must not remove
-    # that analysis (the dependent would see none), and it must not take the earlier
-    # execution's failed analysis (run 0) or run 1 as the answer.
+@pytest.mark.parametrize("earlier_failure, dependent_saw, final_run", [
+    # the root comes in with a failed analysis (run 0) from an earlier work item: the
+    # dependent waits, retry_on_failure's own pass retries it (run 1), and that is final
+    (True, 1, 1),
+    # run 1 is not a retry, so the dependent's edge retries it (run 2), and that is final
+    (False, 2, 2),
+])
+def test_declared_dependency_check_leaves_failed_analysis_in_place(earlier_failure, dependent_saw, final_run):
+    # depends_on_retry declares a dependency on retry_on_failure, which fails on its first
+    # two runs. a failed analysis its module will retry in this work item does not satisfy
+    # the dependency, so the dependent runs on what the retry left. checking the dependency
+    # must not remove that analysis (the dependent would see none).
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
-    earlier = test_observable.add_analysis(RetryOnFailureAnalysis())
-    earlier.details = {"run": 0}
-    earlier.error = "an earlier execution failed"
-    earlier.completed = True
+    if earlier_failure:
+        earlier = test_observable.add_analysis(RetryOnFailureAnalysis())
+        earlier.details = {"run": 0}
+        earlier.error = "an earlier work item failed"
+        earlier.completed = True
     root.save()
     root.schedule()
 
@@ -1212,8 +1227,8 @@ def test_declared_dependency_check_leaves_failed_analysis_in_place():
 
     root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable.get_and_load_analysis(DependsOnRetryAnalysis).details == {"saw_dependency_run": 2}
-    assert test_observable.get_and_load_analysis(RetryOnFailureAnalysis).details == {"run": 3}
+    assert test_observable.get_and_load_analysis(DependsOnRetryAnalysis).details == {"saw_dependency_run": dependent_saw}
+    assert test_observable.get_and_load_analysis(RetryOnFailureAnalysis).details == {"run": final_run}
 
 @pytest.mark.integration
 def test_declared_dependency_startup_cycle():

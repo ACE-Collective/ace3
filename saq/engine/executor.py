@@ -602,10 +602,8 @@ class AnalysisExecutor:
                 existing_analysis = dep.target_observable.get_analysis(
                     dep.target_analysis_type
                 )
-                retrying = (
-                    isinstance(existing_analysis, Analysis)
-                    and target_analysis_module is not None
-                    and target_analysis_module.will_retry(existing_analysis)
+                retrying = target_analysis_module is not None and self._will_retry(
+                    context, dep.target_observable, target_analysis_module, existing_analysis
                 )
                 if existing_analysis is False or (existing_analysis is not None and not retrying):
                     logging.debug(f"already analyzed obs {dep.target_observable} target {dep.target_analysis_type}")
@@ -882,13 +880,46 @@ class AnalysisExecutor:
             else:
                 raise AnalysisTimeoutError(f"ACE took too long to analyze {root}")
 
+    def _will_retry(
+        self,
+        context: EngineExecutionContext,
+        observable: Observable,
+        analysis_module: AnalysisModuleInterface,
+        analysis: Analysis | bool | None,
+    ) -> bool:
+        """Returns True if this work item will retry analysis, the failed analysis of
+        analysis_module on observable. A work item retries a failed analysis once: each
+        retry adds an analysis, which queues the observable again, so a failure that
+        persists would otherwise rerun the module on every pass until the cumulative
+        analysis time ran out. The next work item on the root retries it again."""
+        return (
+            isinstance(analysis, Analysis)
+            and analysis_module.will_retry(analysis)
+            and (observable.uuid, analysis.module_path) not in context.retried_analysis
+        )
+
     def _check_module_acceptance(
-        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+        self,
+        context: EngineExecutionContext,
+        work_item: WorkTarget,
+        analysis_module: AnalysisModuleInterface,
     ) -> bool:
         """Checks to see if the analysis module accepts the work item."""
         if work_item.observable:
-            # does this module accept this observable type?
-            if not analysis_module.accepts(work_item.observable):
+            # does this module accept this observable type? a failed analysis the module
+            # would retry, but which this work item already retried, is final for now
+            existing_analysis = work_item.observable.get_analysis(
+                analysis_module.generated_analysis_type, instance=analysis_module.instance
+            )
+            retried = (
+                isinstance(existing_analysis, Analysis)
+                and analysis_module.will_retry(existing_analysis)
+                and not self._will_retry(context, work_item.observable, analysis_module, existing_analysis)
+            )
+            if retried:
+                logging.debug("%s already retried %s on %s", analysis_module, existing_analysis, work_item.observable)
+
+            if retried or not analysis_module.accepts(work_item.observable):
                 if work_item.dependency:
                     work_item.dependency.set_status_failed("unaccepted for analysis")
                     work_item.dependency.increment_status()
@@ -1218,7 +1249,10 @@ class AnalysisExecutor:
             )
 
     def _seed_declared_dependencies(
-        self, work_item: WorkTarget, analysis_module: AnalysisModuleInterface
+        self,
+        context: EngineExecutionContext,
+        work_item: WorkTarget,
+        analysis_module: AnalysisModuleInterface,
     ) -> bool:
         """Ensure this module's declared dependencies are satisfied before it runs.
 
@@ -1271,7 +1305,7 @@ class AnalysisExecutor:
                 isinstance(existing_analysis, Analysis)
                 and (
                     not existing_analysis.completed
-                    or dependency_module.will_retry(existing_analysis)
+                    or self._will_retry(context, observable, dependency_module, existing_analysis)
                 )
             ):
                 continue
@@ -1345,12 +1379,12 @@ class AnalysisExecutor:
             return
 
         # does this module accept the work item?
-        if not self._check_module_acceptance(work_item, analysis_module):
+        if not self._check_module_acceptance(context, work_item, analysis_module):
             return
 
         # ensure declared dependencies are satisfied before running this module;
         # if any are unmet, the dependency edges are seeded and we defer this module
-        if self._seed_declared_dependencies(work_item, analysis_module):
+        if self._seed_declared_dependencies(context, work_item, analysis_module):
             return
 
         try:
@@ -1411,7 +1445,8 @@ class AnalysisExecutor:
             existing_analysis = work_item.observable.get_analysis(
                 analysis_module.generated_analysis_type, instance=analysis_module.instance
             )
-            if isinstance(existing_analysis, Analysis) and analysis_module.will_retry(existing_analysis):
+            if self._will_retry(context, work_item.observable, analysis_module, existing_analysis):
+                context.retried_analysis.add((work_item.observable.uuid, existing_analysis.module_path))
                 logging.info(
                     "retrying %s on %s: deleting its failed analysis (%s)",
                     analysis_module, work_item.observable, existing_analysis.error,

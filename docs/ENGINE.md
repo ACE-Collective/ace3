@@ -1058,7 +1058,13 @@ What an error does:
   deletes the failed analysis with `Observable.delete_analysis()`, which takes the
   observables it added with it, right before the module runs again, never in
   `accepts()`, which declared-dependency checks also call. Until the retry has run,
-  the failed analysis does not satisfy a declared dependency on the module.
+  the failed analysis does not satisfy a declared dependency on the module. A work
+  item retries a failed analysis once (`EngineExecutionContext.retried_analysis`):
+  each retry adds an analysis, which queues the observable again, so without the
+  limit a failure that persists reruns the module on every pass until
+  `maximum_cumulative_analysis_fail_time` fails the root. A retry that fails is
+  final until the next work item on the root (analyst requested analysis, a mode
+  change, a delayed analysis request), which retries it once more.
   Otherwise a failed analysis is final for that root, like any completed one.
 - **Delta.** The attribution log (`root.module_executions`) records the error
   with the analysis.
