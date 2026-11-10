@@ -98,16 +98,20 @@ column stays visible when the list is narrowed to one disposition.
 
 ## The theme
 
-The `theme` preference is `{mode: "system" | "light" | "dark" | "jd" | "halloween"}`,
+The `theme` preference is `{mode: "system" | "light" | "dark" | "jd" | "sepia" | "halloween"}`,
 `system` by default. `system` follows the operating system's light or dark setting, and `jd`
 (shown as 👴 JD) is a high-contrast light mode: black on white, every color at WCAG AAA
-contrast, underlined links and slightly larger text. `halloween` (🎃 Halloween) is a dark
+contrast, underlined links and slightly larger text. `sepia` (👓 Sepia) is a low-glare light
+mode for long sessions: dark brown ink on a tan page with no pure white or black, JD's larger
+text and focus ring, and every text color at WCAG AAA contrast. Its vendor pop-ups are tan too,
+images are dimmed slightly until hovered, and tags and colored buttons keep Bootstrap's colors.
+`halloween` (🎃 Halloween) is a dark
 mode: pumpkin orange on midnight purple, a moonlit glow, a jack-o'-lantern in place of the
 logo and a cobweb in the navbar's corner.
 
 `core.html` renders the mode on the root element as `data-ace-theme`, and Bootstrap's own
-`data-bs-theme` as `light` or `dark` (`jd` is `light`, `halloween` is `dark`). A mode that
-builds on light or dark, like these two, redefines only what differs under its
+`data-bs-theme` as `light` or `dark` (`jd` and `sepia` are `light`, `halloween` is `dark`). A
+mode that builds on light or dark, like these, redefines only what differs under its
 `[data-ace-theme=...]` block in `saq.css`, after the palette it builds on: the dark
 palette derives its subtle shades from its base colors, so Halloween sets only those. A new
 mode is added to `ThemePreference`, `THEME_CHOICES` and both places in `core.html` that pick
