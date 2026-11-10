@@ -18,7 +18,7 @@ from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.configuration.schema import SandboxConfig
-from saq.constants import F_FILE, F_FQDN, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_HOSTNAME, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -1066,6 +1066,85 @@ class DeclaredDepOnNoProduceModule(AnalysisModule):
     def execute_analysis(self, test) -> AnalysisExecutionResult:
         # declared dependency produces no analysis, but we must still run
         self.create_analysis(test)
+        return AnalysisExecutionResult.COMPLETED
+
+class RetryOnFailureAnalysis(Analysis):
+    pass
+
+class RetryOnFailureModule(AnalysisModule):
+    """fails on its first two runs, succeeds on the third, and allows reanalysis on failure.
+    each run numbers itself and adds an observable of its own, so a test can tell which
+    run's analysis is in the tree and whether a replaced run's observable was cleaned up."""
+    @property
+    def generated_analysis_type(self):
+        return RetryOnFailureAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    @property
+    def allow_reanalysis_on_failure(self):
+        return True
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.initialize_state({"runs": 0})
+        state = self.state
+        state["runs"] += 1
+        self.state = state
+
+        analysis = self.create_analysis(test)
+        analysis.details = {"run": state["runs"]}
+        analysis.add_observable_by_spec(F_USER, f"retry_run_{state['runs']}")
+        if state["runs"] < 3:
+            analysis.error = f"run {state['runs']} failed"
+        return AnalysisExecutionResult.COMPLETED
+
+class RetryChildAnalysis(Analysis):
+    pass
+
+class RetryChildModule(AnalysisModule):
+    """adds a hostname under each user observable a retry_on_failure run added, so a test can
+    tell whether a module ran on an observable after a retry removed it from the tree."""
+    @property
+    def generated_analysis_type(self):
+        return RetryChildAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_USER
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value.startswith("retry_run_")
+
+    def execute_analysis(self, user) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(user)
+        analysis.add_observable_by_spec(F_HOSTNAME, f"child_of_{user.value}")
+        return AnalysisExecutionResult.COMPLETED
+
+class DependsOnRetryAnalysis(Analysis):
+    pass
+
+class DependsOnRetryModule(AnalysisModule):
+    """declares a dependency on retry_on_failure and records which run of it it saw."""
+    @property
+    def generated_analysis_type(self):
+        return DependsOnRetryAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        dependency = test.get_and_load_analysis(RetryOnFailureAnalysis)
+        analysis = self.create_analysis(test)
+        analysis.details = {"saw_dependency_run": dependency.details["run"] if dependency else None}
         return AnalysisExecutionResult.COMPLETED
 
 class DeclaredCycleAnalysis_X(Analysis):

@@ -727,8 +727,8 @@ most "why didn't my module run?" answers live:
 → `valid_queues` / `invalid_queues` → `invalid_alert_types` → `DIRECTIVE_EXCLUDE_ALL`
 → module-level `observable_exclusions` → observable-level exclusions →
 `required_directives` → `required_tags` → already-analyzed check (including the
-`False` sentinel, and the `allow_reanalysis_on_failure` retry path that *deletes* a
-failed analysis) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
+`False` sentinel, and the `allow_reanalysis_on_failure` retry path that accepts a
+failed analysis without touching it) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
 (bypassed by `DIRECTIVE_IGNORE_AUTOMATION_LIMITS`) → `should_analyze()`.
 
 `custom_requirement` is deliberately **not** in `accepts()`. It runs at gate 7
@@ -1054,8 +1054,12 @@ What an error does:
   (`skip_reason` `analysis_error`): the next root to see the observable runs
   the module again.
 - **Retry.** A module whose `allow_reanalysis_on_failure` is true runs again on
-  an observable whose analysis failed. Otherwise a failed analysis is final for
-  that root, like any completed one.
+  an observable whose analysis failed (`AnalysisModule.will_retry()`). The engine
+  deletes the failed analysis with `Observable.delete_analysis()`, which takes the
+  observables it added with it, right before the module runs again, never in
+  `accepts()`, which declared-dependency checks also call. Until the retry has run,
+  the failed analysis does not satisfy a declared dependency on the module.
+  Otherwise a failed analysis is final for that root, like any completed one.
 - **Delta.** The attribution log (`root.module_executions`) records the error
   with the analysis.
 

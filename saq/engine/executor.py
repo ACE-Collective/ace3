@@ -592,19 +592,25 @@ class AnalysisExecutor:
             # do we need to execute the dependency anaylysis?
             if dep.ready:
                 logging.debug(f"analyzing ready dependency {dep}")
-                # has this already been completed?
+                target_analysis_module = (
+                    self._get_analysis_module_by_generated_analysis(
+                        dep.target_analysis_type
+                    )
+                )
+                # has this already been completed? a failed analysis the target module
+                # retries has not answered yet: the retry runs through this edge
                 existing_analysis = dep.target_observable.get_analysis(
                     dep.target_analysis_type
                 )
-                if existing_analysis is False or existing_analysis is not None:
+                retrying = (
+                    isinstance(existing_analysis, Analysis)
+                    and target_analysis_module is not None
+                    and target_analysis_module.will_retry(existing_analysis)
+                )
+                if existing_analysis is False or (existing_analysis is not None and not retrying):
                     logging.debug(f"already analyzed obs {dep.target_observable} target {dep.target_analysis_type}")
                     dep.increment_status()
                 else:
-                    target_analysis_module = (
-                        self._get_analysis_module_by_generated_analysis(
-                            dep.target_analysis_type
-                        )
-                    )
                     if target_analysis_module is None:
                         raise RuntimeError(
                             "cannot find target analysis for {}".format(dep)
@@ -636,6 +642,13 @@ class AnalysisExecutor:
         assert isinstance(context.work_stack, WorkStack)
         while len(context.work_stack) > 0:
             work_item = context.work_stack.popleft()
+
+            # a retry's delete_analysis() removes the observables the failed analysis added,
+            # but their work items are still queued: anything analyzed on them would be saved
+            # with no way to reach it from the tree
+            if work_item.observable and context.root.get_observable(work_item.observable.uuid) is not work_item.observable:
+                logging.debug("skipping %s: its observable was removed from the tree", work_item)
+                continue
 
             # is this work item waiting on a dependency?
             if work_item.observable:
@@ -1224,11 +1237,14 @@ class AnalysisExecutor:
         deferred to a later pass; False if all declared dependencies are satisfied
         and the module may run now.
 
-        A dependency is treated as satisfied (mirroring wait_for_analysis) when the
+        A dependency is treated as satisfied when the
         dependency module does not accept the observable, an existing dependency edge
         is completed/resolved/failed, or the target analysis is already present as a
         completed Analysis or the "no analysis" (False) sentinel. A present-but-not-
-        completed (delayed) target analysis is NOT satisfied -- we keep waiting.
+        completed (delayed) target analysis is NOT satisfied -- we keep waiting -- and
+        neither is a failed one the dependency module will retry, until the edge the
+        retry runs through is terminal. wait_for_analysis differs here: it only has the
+        analysis type, not the module, so it returns such a failed analysis.
         """
         dependency_modules = self.configuration_manager.get_declared_dependencies(
             analysis_module.config.name
@@ -1257,10 +1273,14 @@ class AnalysisExecutor:
                 dependency_module.generated_analysis_type,
                 instance=dependency_module.instance,
             )
-            # satisfied if we have a completed Analysis or the False no-analysis sentinel
+            # satisfied if we have a completed Analysis the dependency module will not
+            # retry, or the False no-analysis sentinel
             if existing_analysis is not None and not (
                 isinstance(existing_analysis, Analysis)
-                and not existing_analysis.completed
+                and (
+                    not existing_analysis.completed
+                    or dependency_module.will_retry(existing_analysis)
+                )
             ):
                 continue
 
@@ -1394,6 +1414,23 @@ class AnalysisExecutor:
                     "analysis module failed in previous execution"
                 )
 
+            # a failed analysis the module retries is replaced now that the module is about
+            # to run, with everything it added (observables, detection points, details file)
+            existing_analysis = work_item.observable.get_analysis(
+                analysis_module.generated_analysis_type, instance=analysis_module.instance
+            )
+            if isinstance(existing_analysis, Analysis) and analysis_module.will_retry(existing_analysis):
+                logging.info(
+                    "retrying %s on %s: deleting its failed analysis (%s)",
+                    analysis_module, work_item.observable, existing_analysis.error,
+                    extra={
+                        "root_uuid": root.uuid,
+                        "observable_uuid": work_item.observable.uuid,
+                        "module_name": analysis_module.config.name,
+                    },
+                )
+                work_item.observable.delete_analysis(existing_analysis)
+
             # delayed_analysis=True must only be passed to the module that is actually
             # being resumed from its prior delay_analysis() call -- not to every module
             # invoked during a DelayedAnalysisRequest resumption. context.is_delayed_analysis
@@ -1411,8 +1448,9 @@ class AnalysisExecutor:
             # completed), so replay would collide with that slot -- marking it
             # complete without its own result and abandoning the work the
             # module has in flight. Outside a resume, accepts() returning True
-            # means the observable has no analysis at this module_path, so
-            # replay does not conflict. The inner try/except deliberately does
+            # means the observable has no analysis at this module_path (a failed
+            # one being retried was deleted just above), so replay does not
+            # conflict. The inner try/except deliberately does
             # NOT re-raise — replay failure must fall through to the live path
             # so the outer except Exception below doesn't treat it as a module
             # failure (which would write a crash report spuriously).
