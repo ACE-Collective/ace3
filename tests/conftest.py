@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Optional
 import uuid
 
+import bcrypt
 import requests
 
 from saq.analysis.root import RootAnalysis
@@ -55,6 +56,12 @@ from tests.saq.helpers import (
 )
 from tests.saq.test_util import create_test_context
 from tests import session_lock, unittest_database, unittest_session
+
+# The suite creates and logs in users thousands of times, and bcrypt's default cost (12 rounds,
+# about 180 ms per hash and again per check) is the point in production and only overhead here.
+# 4 rounds is bcrypt's minimum; the hash keeps its $2b$ format, and checkpw reads the cost from it.
+_bcrypt_gensalt = bcrypt.gensalt
+bcrypt.gensalt = lambda rounds=4, prefix=b"2b": _bcrypt_gensalt(rounds, prefix)
 
 def needs_full_reset(request: pytest.FixtureRequest) -> bool:
     """Returns True if the given test request is an integration or system test, False otherwise."""
@@ -271,17 +278,9 @@ def execute_global_setup():
     # XXX get rid of this
     get_global_runtime_settings().unit_testing = True
 
-    # every pytest process (each pytest-xdist worker is one) gets its own data directory
-    # under data_unittest/, named after its slot -- see tests/unittest_session.py
-    data_dir_root = unittest_session.get_data_dir_root()
-    os.makedirs(data_dir_root, exist_ok=True)
-
-    # anything in there that is not a slot directory is left over from before the layout
-    # had slots (the data directory used to be data_unittest/ itself)
-    for entry in os.listdir(data_dir_root):
-        if not unittest_session.is_slot_name(entry):
-            entry_path = os.path.join(data_dir_root, entry)
-            shutil.rmtree(entry_path) if os.path.isdir(entry_path) else os.remove(entry_path)
+    # every pytest process (each pytest-xdist worker is one) gets its own data directory,
+    # named after its slot, outside the checkout -- see tests/unittest_session.py
+    os.makedirs(unittest_session.get_data_dir_root(), exist_ok=True)
 
     data_dir = unittest_session.get_session_data_dir()
     if os.path.exists(data_dir):
@@ -682,7 +681,7 @@ def pytest_configure(config):
         session_lock.acquire_run()
     except session_lock.SessionLockError as e:
         # UsageError exits before collection, before any database access and before the
-        # data_unittest/ wipe, and prints the message without a traceback
+        # data directory wipe, and prints the message without a traceback
         raise pytest.UsageError(str(e))
 
     SESSION_LOCK_HELD = True

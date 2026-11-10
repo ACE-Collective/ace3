@@ -13,6 +13,7 @@
 # loaded, and bin/cleanup-unittest-databases.py imports it from outside a session.
 #
 
+import hashlib
 import os
 import re
 import select
@@ -20,7 +21,8 @@ import threading
 
 import yaml
 
-DATA_DIR_NAME = "data_unittest"
+# not /tmp, which is a noexec tmpfs in the dev container
+DATA_DIR_BASE = "/var/tmp/ace-unittest"
 MAIN_SLOT = "main"
 WORKER_ENV_VAR = "PYTEST_XDIST_WORKER"
 
@@ -29,8 +31,6 @@ NETWORK_SEMAPHORE_BASE_PORT = 53560
 
 LOG_DIR = os.path.join("data", "logs")
 LOGGING_CONFIG_PATH = os.path.join("etc", "logging_configs", "unittest_logging.yaml")
-
-_SLOT_PATTERN = re.compile(r"^(main|gw\d+)$")
 
 
 def get_project_root() -> str:
@@ -76,18 +76,20 @@ def get_slot_index() -> int:
     return int(match.group(1))
 
 
-def is_slot_name(name: str) -> bool:
-    return _SLOT_PATTERN.match(name) is not None
-
-
 def is_xdist_worker(config) -> bool:
     """True inside an xdist worker process (the controller and a plain pytest run are not)."""
     return hasattr(config, "workerinput")
 
 
 def get_data_dir_root() -> str:
-    """The directory that holds one data directory per slot."""
-    return os.path.join(get_project_root(), DATA_DIR_NAME)
+    """The directory that holds one data directory per slot.
+
+    It is outside the checkout, in the container's own filesystem: the checkout is a bind
+    mount from the host, where every mkdir and unlink is a round trip out of the VM, and the
+    suite deletes and recreates a data directory before every integration test. One per
+    checkout, named by a hash of its path, so two checkouts never share one."""
+    checkout = os.path.realpath(get_project_root())
+    return os.path.join(DATA_DIR_BASE, hashlib.sha256(checkout.encode()).hexdigest()[:12])
 
 
 def get_session_data_dir() -> str:
@@ -105,23 +107,23 @@ def get_network_semaphore_port() -> int:
 def session_overrides() -> dict:
     """The configuration overlay that makes this slot's host-wide resources its own.
 
-    Paths are relative to SAQ_HOME (which is also the working directory): global.data_dir is
-    only the fallback when initialize_environment() is not handed a data_dir, storage.base_dir
-    is resolved against SAQ_HOME by saq/storage/factory.py, and the network semaphore's
-    stats_dir is used as-is by saq/network_semaphore/server.py."""
+    Paths are absolute: global.data_dir is only the fallback when initialize_environment() is
+    not handed a data_dir, storage.base_dir is joined to SAQ_HOME by saq/storage/factory.py
+    (which keeps an absolute path), and the network semaphore's stats_dir is used as-is by
+    saq/network_semaphore/server.py."""
     slot = get_slot()
-    relative_data_dir = os.path.join(DATA_DIR_NAME, slot)
+    data_dir = get_session_data_dir()
     api_port = get_api_port()
     semaphore_port = get_network_semaphore_port()
 
     return {
-        "global": {"data_dir": relative_data_dir},
-        "storage": {"base_dir": os.path.join(relative_data_dir, "storage")},
+        "global": {"data_dir": data_dir},
+        "storage": {"base_dir": os.path.join(data_dir, "storage")},
         "api": {"listen_port": api_port, "prefix": f"localhost:{api_port}"},
         "service_network_semaphore": {
             "bind_port": semaphore_port,
             "remote_port": semaphore_port,
-            "stats_dir": os.path.join(relative_data_dir, "var", "network_semaphore"),
+            "stats_dir": os.path.join(data_dir, "var", "network_semaphore"),
         },
         "qdrant": {"collection_prefix": f"ace3-alerts-unittest-{slot}"},
     }
