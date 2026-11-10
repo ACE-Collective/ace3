@@ -710,7 +710,8 @@ execution order — this ordering is the contract:
 | 1 | alert disposition re-check (throttled) | `_check_for_alert_disposition` | cancels the whole analysis |
 | 2 | cumulative analysis time | `_check_for_analysis_timeout` | warns, then raises `AnalysisTimeoutError` |
 | 3 | module generates no analysis type | `generated_analysis_type is None` | return (pre/post-only modules) |
-| 4 | `module.accepts(observable)` | `base_module.py::accepts` | return; fails any dependency |
+| 4 | a failed analysis the module would retry, but this work item does not (already retried here, or final analysis mode; §12) | `_check_module_acceptance` (`_retry_used_up`) | return; fails any dependency |
+| 4a | `module.accepts(observable)` | `base_module.py::accepts` | return; fails any dependency |
 | 5 | this module's analysis is already delayed | `_check_module_acceptance` | return |
 | 6 | declared dependencies unmet | `_seed_declared_dependencies` | seed dependency edges, defer |
 | 7 | `module.custom_requirement(observable)` | inline | return **without** a no-analysis sentinel, so the module is reconsidered later |
@@ -719,7 +720,7 @@ execution order — this ordering is the contract:
 | 10 | — | `NetworkSemaphore(semaphore_name)` | blocks until a slot is free |
 | 11 | **`module.analyze(observable, final_analysis, delayed_analysis)`** | | |
 
-`accepts()` (gate 4) is itself a long list, worth knowing because it is where
+`accepts()` (gate 4a) is itself a long list, worth knowing because it is where
 most "why didn't my module run?" answers live:
 
 `requires_detection_path` → `valid_observable_types`
@@ -728,7 +729,8 @@ most "why didn't my module run?" answers live:
 → module-level `observable_exclusions` → observable-level exclusions →
 `required_directives` → `required_tags` → already-analyzed check (including the
 `False` sentinel, and the `allow_reanalysis_on_failure` retry path that accepts a
-failed analysis without touching it) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
+failed analysis without touching it; gate 4 has already turned away one this work item
+does not retry, see §12) → `file_size_limit` → cooldown bookkeeping → `automation_limit`
 (bypassed by `DIRECTIVE_IGNORE_AUTOMATION_LIMITS`) → `should_analyze()`.
 
 `custom_requirement` is deliberately **not** in `accepts()`. It runs at gate 7
@@ -1064,7 +1066,10 @@ What an error does:
   limit a failure that persists reruns the module on every pass until
   `maximum_cumulative_analysis_fail_time` fails the root. A retry that fails is
   final until the next work item on the root (analyst requested analysis, a mode
-  change, a delayed analysis request), which retries it once more.
+  change), which retries it once more. Final analysis mode never retries, since the
+  module cannot run `execute_analysis()` there, so a delayed analysis request's work
+  item, which reaches the other observables only in final analysis mode, leaves the
+  failed analysis in place.
   Otherwise a failed analysis is final for that root, like any completed one.
 - **Delta.** The attribution log (`root.module_executions`) records the error
   with the analysis.

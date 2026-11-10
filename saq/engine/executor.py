@@ -880,6 +880,19 @@ class AnalysisExecutor:
             else:
                 raise AnalysisTimeoutError(f"ACE took too long to analyze {root}")
 
+    def _retry_used_up(self, context: EngineExecutionContext, observable: Observable, analysis: Analysis) -> bool:
+        """Returns True if this work item does not retry analysis, a failed analysis on
+        observable that its module would retry. A work item retries a failed analysis once:
+        each retry adds an analysis, which queues the observable again, so a failure that
+        persists would otherwise rerun the module on every pass until the cumulative
+        analysis time ran out. The next work item on the root retries it again. Final
+        analysis mode never retries: the module cannot run execute_analysis() there, so a
+        retry would delete the failed analysis and leave no analysis in its place."""
+        return (
+            context.final_analysis_mode
+            or (observable.uuid, analysis.module_path) in context.retried_analysis
+        )
+
     def _will_retry(
         self,
         context: EngineExecutionContext,
@@ -888,14 +901,11 @@ class AnalysisExecutor:
         analysis: Analysis | bool | None,
     ) -> bool:
         """Returns True if this work item will retry analysis, the failed analysis of
-        analysis_module on observable. A work item retries a failed analysis once: each
-        retry adds an analysis, which queues the observable again, so a failure that
-        persists would otherwise rerun the module on every pass until the cumulative
-        analysis time ran out. The next work item on the root retries it again."""
+        analysis_module on observable."""
         return (
             isinstance(analysis, Analysis)
             and analysis_module.will_retry(analysis)
-            and (observable.uuid, analysis.module_path) not in context.retried_analysis
+            and not self._retry_used_up(context, observable, analysis)
         )
 
     def _check_module_acceptance(
@@ -907,19 +917,19 @@ class AnalysisExecutor:
         """Checks to see if the analysis module accepts the work item."""
         if work_item.observable:
             # does this module accept this observable type? a failed analysis the module
-            # would retry, but which this work item already retried, is final for now
+            # would retry, but which this work item does not retry, is final for now
             existing_analysis = work_item.observable.get_analysis(
                 analysis_module.generated_analysis_type, instance=analysis_module.instance
             )
-            retried = (
+            retry_used_up = (
                 isinstance(existing_analysis, Analysis)
                 and analysis_module.will_retry(existing_analysis)
-                and not self._will_retry(context, work_item.observable, analysis_module, existing_analysis)
+                and self._retry_used_up(context, work_item.observable, existing_analysis)
             )
-            if retried:
-                logging.debug("%s already retried %s on %s", analysis_module, existing_analysis, work_item.observable)
+            if retry_used_up:
+                logging.debug("%s does not retry %s on %s in this work item", analysis_module, existing_analysis, work_item.observable)
 
-            if retried or not analysis_module.accepts(work_item.observable):
+            if retry_used_up or not analysis_module.accepts(work_item.observable):
                 if work_item.dependency:
                     work_item.dependency.set_status_failed("unaccepted for analysis")
                     work_item.dependency.increment_status()
