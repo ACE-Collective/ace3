@@ -28,7 +28,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode, EngineType
 from saq.engine.execution_context import EngineExecutionContext
 from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_dir, reset_node
-from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, DependsOnRetryAnalysis, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, RetryOnFailureAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
+from saq.modules.test import BasicTestAnalysis, ConfigurableModuleTestAnalysis, CrossDepTargetAnalysis, CrossReqSourceAnalysis, CustomReqFalseAnalysis, CustomReqFalseDependentAnalysis, CustomReqSeesDepAnalysis, DeclaredDepAnalysis_A, DeclaredDepAnalysis_B, DeclaredDepAnalysis_C, DeclaredDepOnNoProduceAnalysis, DelayedAnalysisTestAnalysis, DelayedAnalysisTestModule, DependsOnRetryAnalysis, DependsOnRetryModule, FileSizeLimitAnalysis, FinalAnalysisTestAnalysis, GenericTestAnalysis, GroupedByTimeRangeAnalysis, GroupingTargetAnalysis, RetryOnFailureAnalysis, TestInstanceAnalysis, WaitAnalysis_A, WaitAnalysis_B, WaitAnalysis_C, WaitAnalyzerModule_B
 from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
@@ -1166,9 +1166,11 @@ def test_declared_dependency_no_analysis_target():
     assert test_observable.get_and_load_analysis(DeclaredDepOnNoProduceAnalysis)
 
 @pytest.mark.integration
-def test_retry_on_failure_removes_what_the_failed_analysis_added(caplog):
-    # retry_on_failure fails on its first two runs and succeeds on the third. each retry
-    # replaces the failed analysis, and the observables a replaced analysis added go with it.
+def test_retry_on_failure_retries_once_per_work_item(caplog):
+    # retry_on_failure fails on its first two runs and succeeds on the third. a work item
+    # retries a failed analysis once, so a failure that persists cannot rerun the module on
+    # every pass; the next work item on the root retries it again. each retry replaces the
+    # failed analysis, and the observables a replaced analysis added go with it.
     # retry_child adds a hostname under each of those observables it analyzes: it must not run
     # on one a retry has already removed, or what it adds is saved with no way to reach it
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
@@ -1180,6 +1182,17 @@ def test_retry_on_failure_removes_what_the_failed_analysis_added(caplog):
     engine = Engine()
     engine.configuration_manager.enable_module('retry_on_failure', 'test_groups')
     engine.configuration_manager.enable_module('retry_child', 'test_groups')
+    with caplog.at_level(logging.INFO):
+        engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    analysis = root.get_observable(test_observable.uuid).get_and_load_analysis(RetryOnFailureAnalysis)
+    assert analysis.details == {"run": 2}
+    assert analysis.error == "run 2 failed"
+    assert [o.value for o in root.get_observables_by_type(F_USER)] == ["retry_run_2"]
+    assert [o.value for o in root.get_observables_by_type(F_HOSTNAME)] == ["child_of_retry_run_2"]
+
+    root.schedule()
     with caplog.at_level(logging.INFO):
         engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
@@ -1198,21 +1211,80 @@ def test_retry_on_failure_removes_what_the_failed_analysis_added(caplog):
     ] * 2
 
 @pytest.mark.integration
-def test_declared_dependency_check_leaves_failed_analysis_in_place():
-    # depends_on_retry declares a dependency on retry_on_failure, which fails on its
-    # first two runs, and the root comes in with a failed retry_on_failure analysis from an
-    # earlier execution. a failed analysis its module will retry does not satisfy the
-    # dependency, so the dependent waits for the run of its dependency edge: the engine
-    # retries retry_on_failure on its own pass (run 1), then again for the edge (run 2),
-    # and the dependent runs on what run 2 left. checking the dependency must not remove
-    # that analysis (the dependent would see none), and it must not take the earlier
-    # execution's failed analysis (run 0) or run 1 as the answer.
+def test_delayed_analysis_request_leaves_failed_analysis_in_place(monkeypatch):
+    # a delayed analysis request's work item reaches the observable with the failed analysis
+    # only in final analysis mode, where the module cannot run again: a retry there would
+    # delete the failed analysis and record no analysis in its place
+    monkeypatch.setattr(DelayedAnalysisTestModule, "should_analyze", lambda self, o: o.value != "retry_test")
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    retry_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
+    delayed_observable = root.add_observable_by_spec(F_TEST, '0:00|0:01')
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('retry_on_failure', 'test_groups')
+    engine.configuration_manager.enable_module('test_delayed_analysis', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    assert root.get_observable(delayed_observable.uuid).get_and_load_analysis(DelayedAnalysisTestAnalysis).delayed_request
+    analysis = root.get_observable(retry_observable.uuid).get_and_load_analysis(RetryOnFailureAnalysis)
+    assert isinstance(analysis, RetryOnFailureAnalysis)
+    assert analysis.details == {"run": 2}
+    assert analysis.error == "run 2 failed"
+    assert [o.value for o in root.get_observables_by_type(F_USER)] == ["retry_run_2"]
+
+@pytest.mark.integration
+@pytest.mark.parametrize("earlier_failure, dependent_saw, final_run", [
+    # the root comes in with a failed analysis (run 0) from an earlier work item:
+    # retry_on_failure's own pass runs first and retries it (run 1), which is final, so the
+    # dependent finds its dependency satisfied without seeding an edge
+    (True, 1, 1),
+    # run 1 is not a retry, so the dependent's edge retries it (run 2), and that is final
+    (False, 2, 2),
+])
+def test_declared_dependency_check_leaves_failed_analysis_in_place(earlier_failure, dependent_saw, final_run):
+    # depends_on_retry declares a dependency on retry_on_failure, which fails on its first
+    # two runs. a failed analysis its module will retry in this work item does not satisfy
+    # the dependency, so the dependent runs on what the retry left. checking the dependency
+    # must not remove that analysis (the dependent would see none).
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
+    if earlier_failure:
+        earlier = test_observable.add_analysis(RetryOnFailureAnalysis())
+        earlier.details = {"run": 0}
+        earlier.error = "an earlier work item failed"
+        earlier.completed = True
+    root.save()
+    root.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('retry_on_failure', 'test_groups')
+    engine.configuration_manager.enable_module('depends_on_retry', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root = load_root(get_storage_dir(root.uuid))
+    test_observable = root.get_observable(test_observable.uuid)
+    assert test_observable.get_and_load_analysis(DependsOnRetryAnalysis).details == {"saw_dependency_run": dependent_saw}
+    assert test_observable.get_and_load_analysis(RetryOnFailureAnalysis).details == {"run": final_run}
+
+@pytest.mark.integration
+def test_dependency_edge_completed_by_retried_analysis(monkeypatch):
+    # depends_on_retry runs first (lower priority number) on a root with a failed
+    # retry_on_failure analysis from an earlier work item, so it seeds its dependency edge
+    # before retry_on_failure's own pass uses the retry (run 1). the edge then finds run 1,
+    # which this work item already retried, and takes it as the answer rather than asking
+    # for another retry the work item would refuse ("unaccepted for analysis")
+    monkeypatch.setattr(DependsOnRetryModule, "priority", property(lambda self: 1))
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
     earlier = test_observable.add_analysis(RetryOnFailureAnalysis())
     earlier.details = {"run": 0}
-    earlier.error = "an earlier execution failed"
+    earlier.error = "an earlier work item failed"
     earlier.completed = True
     root.save()
     root.schedule()
@@ -1224,8 +1296,9 @@ def test_declared_dependency_check_leaves_failed_analysis_in_place():
 
     root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable.get_and_load_analysis(DependsOnRetryAnalysis).details == {"saw_dependency_run": 2}
-    assert test_observable.get_and_load_analysis(RetryOnFailureAnalysis).details == {"run": 3}
+    assert [(d.status, d.failure_reason) for d in test_observable.dependencies] == [("resolved", None)]
+    assert test_observable.get_and_load_analysis(DependsOnRetryAnalysis).details == {"saw_dependency_run": 1}
+    assert test_observable.get_and_load_analysis(RetryOnFailureAnalysis).details == {"run": 1}
 
 @pytest.mark.integration
 def test_declared_dependency_startup_cycle():

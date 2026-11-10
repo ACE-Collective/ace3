@@ -85,6 +85,8 @@ class EngineExecutionContext:
         self.last_root_save: datetime = datetime.now()
         self.final_analysis_mode: bool = False
         self.last_analyze_time_warning: Optional[datetime] = None
+        # (observable uuid, module path) of every failed analysis this work item retried
+        self.retried_analysis: set[tuple[str, str]] = set()
 
     @property
     def root(self) -> Optional[RootAnalysis]:
