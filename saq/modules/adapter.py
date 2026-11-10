@@ -149,6 +149,10 @@ class AnalysisModuleAdapter(AnalysisModuleInterface):
         """Returns True if this module can analyze the given observable."""
         return self._module.accepts(observable)
 
+    def will_retry(self, analysis: Analysis) -> bool:
+        """Returns True if this module runs again to replace the given analysis of its own."""
+        return self._module.will_retry(analysis)
+
     def custom_requirement(self, observable: Observable) -> bool:
         """Additional check evaluated by the engine as the final gate before the
         module runs. May raise WaitForAnalysisException to wait on another analysis."""

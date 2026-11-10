@@ -309,7 +309,8 @@ class AnalysisModule(FileWatcherMixin):
 
         When True, if an observable already has a completed analysis from this module
         but that analysis failed (Analysis.error is set), the module will be allowed
-        to run again (the failed analysis will be removed first).
+        to run again: the engine deletes the failed analysis, and what it added, right
+        before the module runs (see will_retry()).
 
         Override this property in subclasses to enable retry behavior.
         Defaults to False.
@@ -618,6 +619,11 @@ class AnalysisModule(FileWatcherMixin):
         """Put your custom "should I analyze this?" logic in this function."""
         return True
 
+    def will_retry(self, analysis: Analysis) -> bool:
+        """Returns True if this module runs again to replace the given analysis of its own:
+        it is completed, it failed, and the module allows reanalysis on failure."""
+        return self.allow_reanalysis_on_failure and analysis.completed and analysis.error is not None
+
     def accepts(self, observable: Observable) -> bool:
         """Returns True if this observable should be analyzed by this module, False otherwise."""
 
@@ -731,21 +737,12 @@ class AnalysisModule(FileWatcherMixin):
                 )
                 return False
 
-            # has this analysis completed?
-            if current_analysis.completed:
-                if self.allow_reanalysis_on_failure and current_analysis.error is not None:
-                    # Remove the failed analysis to allow retry
-                    logging.info(
-                        f"removing failed analysis {current_analysis} from {observable} "
-                        f"to allow retry by {self}"
-                    )
-                    module_path = current_analysis.module_path
-                    if module_path in observable.analysis:
-                        del observable.analysis[module_path]
-                    # Continue - don't return False, allow reanalysis
-                else:
-                    logging.debug("already analyzed {} with {}".format(observable, self))
-                    return False
+            # has this analysis completed? a failed one we retry is accepted and left in
+            # place: the engine replaces it only when it actually runs this module, since
+            # accepts() is also asked by checks that do not run it (declared dependencies)
+            if current_analysis.completed and not self.will_retry(current_analysis):
+                logging.debug("already analyzed {} with {}".format(observable, self))
+                return False
 
         # is this observable a file and do we have a file size limit for this module?
         if observable.type == F_FILE and self.file_size_limit > 0:

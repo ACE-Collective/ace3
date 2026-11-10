@@ -1068,6 +1068,63 @@ class DeclaredDepOnNoProduceModule(AnalysisModule):
         self.create_analysis(test)
         return AnalysisExecutionResult.COMPLETED
 
+class RetryOnFailureAnalysis(Analysis):
+    pass
+
+class RetryOnFailureModule(AnalysisModule):
+    """fails on its first two runs, succeeds on the third, and allows reanalysis on failure.
+    each run numbers itself and adds an observable of its own, so a test can tell which
+    run's analysis is in the tree and whether a replaced run's observable was cleaned up."""
+    @property
+    def generated_analysis_type(self):
+        return RetryOnFailureAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    @property
+    def allow_reanalysis_on_failure(self):
+        return True
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        self.initialize_state({"runs": 0})
+        state = self.state
+        state["runs"] += 1
+        self.state = state
+
+        analysis = self.create_analysis(test)
+        analysis.details = {"run": state["runs"]}
+        analysis.add_observable_by_spec(F_USER, f"retry_run_{state['runs']}")
+        if state["runs"] < 3:
+            analysis.error = f"run {state['runs']} failed"
+        return AnalysisExecutionResult.COMPLETED
+
+class DependsOnRetryAnalysis(Analysis):
+    pass
+
+class DependsOnRetryModule(AnalysisModule):
+    """declares a dependency on retry_on_failure and records which run of it it saw."""
+    @property
+    def generated_analysis_type(self):
+        return DependsOnRetryAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_TEST
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value == "retry_test"
+
+    def execute_analysis(self, test) -> AnalysisExecutionResult:
+        dependency = test.get_and_load_analysis(RetryOnFailureAnalysis)
+        analysis = self.create_analysis(test)
+        analysis.details = {"saw_dependency_run": dependency.details["run"] if dependency else None}
+        return AnalysisExecutionResult.COMPLETED
+
 class DeclaredCycleAnalysis_X(Analysis):
     pass
 

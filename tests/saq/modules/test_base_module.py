@@ -182,10 +182,10 @@ def test_accepts_retries_failed_analysis(root):
     analysis.error = "upstream timed out"
     analysis.completed = True
 
+    assert module.will_retry(analysis)
     assert module.accepts(observable)
-    # the failed analysis is gone, so the retry creates a new one
-    assert observable.get_analysis(_FailableAnalysis) is None
-    assert module.create_analysis(observable) is not analysis
+    # accepts() only answers: the engine deletes the failed analysis when it runs the module
+    assert observable.get_analysis(_FailableAnalysis) is analysis
 
 
 @pytest.mark.unit

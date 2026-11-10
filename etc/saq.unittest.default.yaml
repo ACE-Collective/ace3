@@ -274,6 +274,20 @@ analysis_module_declared_dep_on_no_produce:
   python_class: DeclaredDepOnNoProduceModule
   enabled: false
 
+analysis_module_retry_on_failure:
+  name: retry_on_failure
+  python_module: saq.modules.test
+  python_class: RetryOnFailureModule
+  enabled: false
+
+analysis_module_depends_on_retry:
+  name: depends_on_retry
+  dependencies:
+    - retry_on_failure
+  python_module: saq.modules.test
+  python_class: DependsOnRetryModule
+  enabled: false
+
 analysis_module_declared_cycle_x:
   name: declared_cycle_x
   dependencies:
@@ -538,6 +552,8 @@ module_group_unittest:
     - declared_dep_c
     - declared_no_produce
     - declared_dep_on_no_produce
+    - retry_on_failure
+    - depends_on_retry
     - declared_cycle_x
     - declared_cycle_y
     - custom_req_sees_dep
