@@ -311,7 +311,9 @@ class AnalysisModule(FileWatcherMixin):
         but that analysis failed (Analysis.error is set), the module will be allowed
         to run again: the engine deletes the failed analysis, and what it added, right
         before the module runs (see will_retry()). The engine retries a failed analysis
-        once per work item, so a retry that fails again waits for the next one.
+        once per work item, so a retry that fails again waits for the next one. It never
+        retries in final analysis mode, where execute_analysis() cannot run, so the work
+        item of a delayed analysis request leaves the failed analysis in place.
 
         Override this property in subclasses to enable retry behavior.
         Defaults to False.
