@@ -280,6 +280,12 @@ analysis_module_retry_on_failure:
   python_class: RetryOnFailureModule
   enabled: false
 
+analysis_module_retry_child:
+  name: retry_child
+  python_module: saq.modules.test
+  python_class: RetryChildModule
+  enabled: false
+
 analysis_module_depends_on_retry:
   name: depends_on_retry
   dependencies:
@@ -554,6 +560,7 @@ module_group_unittest:
     - declared_dep_on_no_produce
     - retry_on_failure
     - depends_on_retry
+    - retry_child
     - declared_cycle_x
     - declared_cycle_y
     - custom_req_sees_dep

@@ -773,9 +773,12 @@ class AnalysisModule(FileWatcherMixin):
             # this can be the case if an analyst is forcing analysis of something
             if not observable.has_directive(DIRECTIVE_IGNORE_AUTOMATION_LIMITS):
                 # how many times have we already generated analysis with this module?
+                # a failed analysis being retried is replaced, so it does not count
                 current_analysis_count = len(
                     self.get_root().get_analysis_by_type(self.generated_analysis_type)
                 )
+                if isinstance(current_analysis, Analysis) and self.will_retry(current_analysis):
+                    current_analysis_count -= 1
                 if current_analysis_count >= self.automation_limit:
                     logging.debug(
                         f"{self} reached automation limit of {self.automation_limit} for {self.get_root()}"

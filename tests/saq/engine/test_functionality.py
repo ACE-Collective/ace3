@@ -15,7 +15,7 @@ from saq.analysis.io_tracking import _get_io_read_count, _get_io_write_count
 from saq.analysis.observable import Observable
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_analysis_module_config, get_config, get_engine_config
-from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_FQDN, F_IPV4, NODE_STATUS_RUNNING, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
+from saq.constants import ANALYSIS_MODE_CORRELATION, ANALYSIS_MODE_DISPOSITIONED, DIRECTIVE_ARCHIVE, DIRECTIVE_IGNORE_AUTOMATION_LIMITS, DISPOSITION_FALSE_POSITIVE, DISPOSITION_IGNORE, F_FILE, F_FQDN, F_HOSTNAME, F_IPV4, NODE_STATUS_RUNNING, F_TEST, F_USER, STATE_POST_ANALYSIS_EXECUTED
 from saq.database.model import Alert, DelayedAnalysis, User, Workload, load_alert
 from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
@@ -1166,9 +1166,11 @@ def test_declared_dependency_no_analysis_target():
     assert test_observable.get_and_load_analysis(DeclaredDepOnNoProduceAnalysis)
 
 @pytest.mark.integration
-def test_retry_on_failure_removes_what_the_failed_analysis_added():
+def test_retry_on_failure_removes_what_the_failed_analysis_added(caplog):
     # retry_on_failure fails on its first two runs and succeeds on the third. each retry
-    # replaces the failed analysis, and the observables a replaced analysis added go with it
+    # replaces the failed analysis, and the observables a replaced analysis added go with it.
+    # retry_child adds a hostname under each of those observables it analyzes: it must not run
+    # on one a retry has already removed, or what it adds is saved with no way to reach it
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
     root.initialize_storage()
     test_observable = root.add_observable_by_spec(F_TEST, 'retry_test')
@@ -1177,13 +1179,23 @@ def test_retry_on_failure_removes_what_the_failed_analysis_added():
 
     engine = Engine()
     engine.configuration_manager.enable_module('retry_on_failure', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+    engine.configuration_manager.enable_module('retry_child', 'test_groups')
+    with caplog.at_level(logging.INFO):
+        engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root = load_root(get_storage_dir(root.uuid))
     analysis = root.get_observable(test_observable.uuid).get_and_load_analysis(RetryOnFailureAnalysis)
     assert analysis.details == {"run": 3}
     assert analysis.error is None
     assert [o.value for o in root.get_observables_by_type(F_USER)] == ["retry_run_3"]
+    assert [o.value for o in root.get_observables_by_type(F_HOSTNAME)] == ["child_of_retry_run_3"]
+
+    # each retry of a failed run is logged, with what an operator needs to find it
+    records = [r for r in caplog.records if "deleting its failed analysis" in r.getMessage()]
+    assert [r.levelno for r in records] == [logging.INFO, logging.INFO]
+    assert [(r.root_uuid, r.observable_uuid, r.module_name) for r in records] == [
+        (root.uuid, test_observable.uuid, "retry_on_failure")
+    ] * 2
 
 @pytest.mark.integration
 def test_declared_dependency_check_leaves_failed_analysis_in_place():
