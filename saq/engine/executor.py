@@ -641,6 +641,13 @@ class AnalysisExecutor:
         while len(context.work_stack) > 0:
             work_item = context.work_stack.popleft()
 
+            # a retry's delete_analysis() removes the observables the failed analysis added,
+            # but their work items are still queued: anything analyzed on them would be saved
+            # with no way to reach it from the tree
+            if work_item.observable and context.root.get_observable(work_item.observable.uuid) is not work_item.observable:
+                logging.debug("skipping %s: its observable was removed from the tree", work_item)
+                continue
+
             # is this work item waiting on a dependency?
             if work_item.observable:
                 # get the list of all non-resolved deps
@@ -1274,13 +1281,14 @@ class AnalysisExecutor:
         deferred to a later pass; False if all declared dependencies are satisfied
         and the module may run now.
 
-        A dependency is treated as satisfied (mirroring wait_for_analysis) when the
+        A dependency is treated as satisfied when the
         dependency module does not accept the observable, an existing dependency edge
         is completed/resolved/failed, or the target analysis is already present as a
         completed Analysis or the "no analysis" (False) sentinel. A present-but-not-
         completed (delayed) target analysis is NOT satisfied -- we keep waiting -- and
         neither is a failed one the dependency module will retry, until the edge the
-        retry runs through is terminal.
+        retry runs through is terminal. wait_for_analysis differs here: it only has the
+        analysis type, not the module, so it returns such a failed analysis.
         """
         dependency_modules = self.configuration_manager.get_declared_dependencies(
             analysis_module.config.name

@@ -18,7 +18,7 @@ from saq.analysis import Analysis
 from saq.analysis.observable import Observable
 from saq.configuration.config import get_config
 from saq.configuration.schema import SandboxConfig
-from saq.constants import F_FILE, F_FQDN, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
+from saq.constants import F_FILE, F_FQDN, F_HOSTNAME, F_TEST, F_URL, F_USER, R_DOWNLOADED_FROM, AnalysisExecutionResult
 from saq.environment import get_temp_dir
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -1101,6 +1101,28 @@ class RetryOnFailureModule(AnalysisModule):
         analysis.add_observable_by_spec(F_USER, f"retry_run_{state['runs']}")
         if state["runs"] < 3:
             analysis.error = f"run {state['runs']} failed"
+        return AnalysisExecutionResult.COMPLETED
+
+class RetryChildAnalysis(Analysis):
+    pass
+
+class RetryChildModule(AnalysisModule):
+    """adds a hostname under each user observable a retry_on_failure run added, so a test can
+    tell whether a module ran on an observable after a retry removed it from the tree."""
+    @property
+    def generated_analysis_type(self):
+        return RetryChildAnalysis
+
+    @property
+    def valid_observable_types(self):
+        return F_USER
+
+    def should_analyze(self, observable) -> bool:
+        return observable.value.startswith("retry_run_")
+
+    def execute_analysis(self, user) -> AnalysisExecutionResult:
+        analysis = self.create_analysis(user)
+        analysis.add_observable_by_spec(F_HOSTNAME, f"child_of_{user.value}")
         return AnalysisExecutionResult.COMPLETED
 
 class DependsOnRetryAnalysis(Analysis):

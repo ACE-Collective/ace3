@@ -189,6 +189,23 @@ def test_accepts_retries_failed_analysis(root):
 
 
 @pytest.mark.unit
+def test_accepts_retries_failed_analysis_at_automation_limit(root):
+    # the failed analysis is replaced by the retry, so it does not count toward the limit
+    observable = root.add_observable_by_spec(F_TEST, "test")
+    module = _module(root, cls=_RetryingModule, automation_limit=1)
+
+    analysis = module.create_analysis(observable)
+    analysis.error = "upstream timed out"
+    analysis.completed = True
+
+    assert module.accepts(observable)
+
+    # for any other observable the failed analysis still counts toward the limit
+    other = root.add_observable_by_spec(F_TEST, "other")
+    assert not module.accepts(other)
+
+
+@pytest.mark.unit
 def test_accepts_does_not_retry_successful_analysis(root):
     observable = root.add_observable_by_spec(F_TEST, "test")
     module = _module(root, cls=_RetryingModule)
