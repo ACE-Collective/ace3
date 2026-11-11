@@ -197,6 +197,98 @@ document.addEventListener("visibilitychange", function() {
     }
 });
 
+// Range selection of the row checkboxes: shift+click sets every row from the last one clicked
+// to the state of this one, and pressing on one and dragging over others sets the rows between
+// to the start box's new state, putting back the rows the pointer leaves again. A box changes
+// only through set_alert_checked(), whose change event is what updates $_sel.
+var range_anchor = null;    // uuid of the last row checkbox clicked or dragged to
+var range_drag = null;      // {start, state, original, moved} while the button is down on a box
+var range_drag_ended = false;
+
+function set_alert_checked(checkbox, state) {
+    if (checkbox.checked !== state) {
+        checkbox.checked = state;
+        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+}
+
+// sets the rows from uuid `from` to uuid `to` to state, and the others to their state in
+// `original` when given. Rows are looked up by uuid each time: a refresh may have morphed them.
+function set_alert_range(from, to, state, original) {
+    var boxes = Array.from(document.querySelectorAll("input[name^='detail_']"));
+    var uuids = boxes.map(box => box.value);
+    var i = uuids.indexOf(from), j = uuids.indexOf(to);
+    if (i === -1 || j === -1) {
+        return;
+    }
+    boxes.forEach(function(box, k) {
+        if (k >= Math.min(i, j) && k <= Math.max(i, j)) {
+            set_alert_checked(box, state);
+        } else if (original && box.value in original) {
+            set_alert_checked(box, original[box.value]);
+        }
+    });
+}
+
+document.addEventListener("mousedown", function(evt) {
+    if (evt.button !== 0 || !evt.target.matches("input[name^='detail_']")) {
+        return;
+    }
+    // stops a shift+click or a drag from selecting the text of the rows
+    evt.preventDefault();
+    if (!evt.shiftKey) {
+        var original = {};
+        document.querySelectorAll("input[name^='detail_']").forEach(box => original[box.value] = box.checked);
+        range_drag = { start: evt.target.value, state: !evt.target.checked, original: original, moved: false };
+    }
+});
+
+document.addEventListener("mousemove", function(evt) {
+    if (!range_drag) {
+        return;
+    }
+    if (!(evt.buttons & 1)) {
+        // released outside the window
+        range_drag = null;
+        return;
+    }
+    var row = evt.target.closest("tr");
+    var box = row && row.querySelector("input[name^='detail_']");
+    if (!box || (!range_drag.moved && box.value === range_drag.start)) {
+        return;
+    }
+    range_drag.moved = true;
+    set_alert_range(range_drag.start, box.value, range_drag.state, range_drag.original);
+    range_anchor = box.value;
+});
+
+document.addEventListener("mouseup", function() {
+    if (range_drag && range_drag.moved) {
+        // a release back on the start box clicks it, which would undo the drag there
+        range_drag_ended = true;
+        setTimeout(function() { range_drag_ended = false; });
+    }
+    range_drag = null;
+});
+
+document.addEventListener("click", function(evt) {
+    var box = evt.target;
+    if (!box.matches("input[name^='detail_']")) {
+        return;
+    }
+    if (range_drag_ended) {
+        evt.preventDefault();
+        return;
+    }
+    if (evt.shiftKey && range_anchor !== null && range_anchor !== box.value) {
+        // after the box's own change event has put it in $_sel: changing the others first
+        // re-runs every row's data-effect from a $_sel without it, which unchecks it again
+        var from = range_anchor;
+        setTimeout(function() { set_alert_range(from, box.value, box.checked); });
+    }
+    range_anchor = box.value;
+});
+
 $(document).ready(function() {
 
     document.getElementById("event_time").value = moment().utc().format("YYYY-MM-DD HH:mm:ss");
