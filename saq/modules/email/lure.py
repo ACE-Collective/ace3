@@ -4,10 +4,11 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Optional, Type, override
+from typing import Iterator, Optional, Type, override
 from urllib.parse import parse_qsl, urlparse
 
 import yaml
+from bs4 import NavigableString, Tag
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from urlfinderlib.url import URL
 
@@ -20,6 +21,7 @@ from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.rfc822 import EmailAnalysis
 from saq.modules.file_analysis.html_js_extraction import parse_document
+from saq.modules.file_analysis.pdf import PDFLinkTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
 from saq.modules.phishkit import PhishkitAnalysis
 from saq.modules.phishkit_chain import display_url
@@ -56,6 +58,37 @@ DEFAULT_CALL_TO_ACTION_KEYWORDS = [
     "log in", "update", "secure", "document", "pay", "invoice", "shared"]
 DEFAULT_NOISE_KEYWORDS = ["unsubscribe", "privacy", "terms", "preferences", "opt-out", "optout", "cookie", "legal"]
 DEFAULT_BENIGN_DOMAINS = ["fonts.googleapis.com", "fonts.gstatic.com"]
+# whole phrases: "attachments" is in the external sender banners and confidentiality notices on most mail
+DEFAULT_ATTACHMENT_REFERENCE_KEYWORDS = [
+    "please find attached", "attached", "enclosed", "see attachment", "see the attachment", "open the attachment",
+    "review the attachment"]
+DEFAULT_SIGN_OFF_PHRASES = [
+    "regards", "best regards", "kind regards", "warm regards", "respectfully", "sincerely", "thanks", "thank you",
+    "many thanks", "best", "cheers", "cordially"]
+
+# a line longer than this is not a sign-off
+SIGN_OFF_MAX_LEN = 80
+# how much of the newest message's text is kept to look for a reference to the attachment
+MAX_NEWEST_TEXT = 20_000
+# the containers mail clients put an earlier, quoted message of a thread in (Gmail, Yahoo, Thunderbird)
+QUOTE_CLASS_PREFIXES = ("gmail_quote", "yahoo_quoted", "moz-cite-prefix")
+# the line that starts an earlier message of a thread, other than a reply header
+QUOTE_MARKER_PATTERN = re.compile(
+    r"^(-{2,}\s*(original message|forwarded message)\s*-{2,}|begin forwarded message:?|on\s.{1,200}\swrote:)$", re.I)
+# a field of the header Outlook writes above an earlier message
+HEADER_FIELD_PATTERN = re.compile(r"^(from|sent|date|to|cc|subject):", re.I)
+# how many lines after its From: line a reply header's other fields can be (a table puts each value on its own)
+MAX_HEADER_LINES = 8
+SIGNATURE_PENDING = "pending"
+SIGNATURE_ON = "on"
+LINK_TAGS = ("a", "area", "form")
+# the elements that start or end a line where a mail client renders them
+LINE_BREAK_TAGS = frozenset((
+    "address", "article", "blockquote", "body", "br", "caption", "center", "dd", "div", "dl", "dt", "footer",
+    "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "html", "li", "ol", "p", "pre", "section",
+    "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"))
+TEXT_SKIP_PARENTS = ("script", "style", "head", "title")
+URL_TOKEN_PUNCTUATION = "<>()[]\"'.,;"
 
 
 class LureURLWeights(BaseModel):
@@ -67,13 +100,17 @@ class LureURLWeights(BaseModel):
     qr: int = 35
     body: int = 20
     attachment: int = 15
+    attachment_reference: int = 20
     clickable: int = 25
     button: int = 15
     call_to_action: int = 20
     only_domain: int = 10
+    only_link: int = 10
     unwrapped: int = 5
     detection: int = 30
     not_a_link: int = -15
+    signature_block: int = -25
+    quoted_message: int = 0
     sender_domain: int = -20
     noise: int = -30
     static: int = -40
@@ -95,12 +132,26 @@ class LureURLSettings(BaseModel):
     benign_domains: list[str] = Field(
         default_factory=lambda: list(DEFAULT_BENIGN_DOMAINS),
         description="Domains (and their subdomains) that are never the lure.")
+    attachment_reference_keywords: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ATTACHMENT_REFERENCE_KEYWORDS),
+        description="Phrases in the newest message of the email, before its signature, that refer to its attachment "
+                    "(whole words, case-insensitive).")
+    sign_off_phrases: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SIGN_OFF_PHRASES),
+        description="A line that starts with one of these, then ends or goes on after a comma, ends the message's "
+                    "text; the signature block below it runs to the next message.")
     max_candidates: int = Field(default=5, ge=1, description="How many ranked candidates to keep, the primary included.")
+    sentence_words: int = Field(
+        default=12, ge=1, description="A line of more words than this is a sentence: after a sign-off, it means the "
+                                      "sign-off was not one.")
+    sentence_end_words: int = Field(
+        default=8, ge=1, description="A line of at least this many words that ends in . ? ! or : is a sentence too.")
     crawl_primary: bool = Field(default=True, description="Add the crawl directive to the primary lure URL.")
     min_primary_score: int = Field(default=1, description="A candidate needs at least this score to be called the primary lure URL.")
     weights: LureURLWeights = Field(default_factory=LureURLWeights)
 
-    @field_validator("call_to_action_keywords", "noise_keywords", "benign_domains", mode="before")
+    @field_validator("call_to_action_keywords", "noise_keywords", "benign_domains", "attachment_reference_keywords",
+                     "sign_off_phrases", mode="before")
     @classmethod
     def _none_is_empty(cls, value):
         # a key left with nothing under it parses as None
@@ -135,8 +186,21 @@ class LureURLConfig(AnalysisModuleConfig):
 class Anchor:
     text: str
     button: bool
-    # where the link is in the body, the tie-break between equal scores
+    # where the link is in the body, or in its PDF, the tie-break between equal scores
     position: int = 0
+    signature: bool = False
+    quoted: bool = False
+    # a PDF's link annotation, whose text is what the PDF shows under it
+    pdf: bool = False
+
+
+@dataclass
+class ParsedBody:
+    anchors: dict[str, Anchor] = field(default_factory=dict)
+    # a plain text body's URLs, keyed as anchors are, each with whether it is in a signature block and in a
+    # quoted message
+    text_urls: dict[str, tuple[bool, bool]] = field(default_factory=dict)
+    newest_text: str = ""
 
 
 @dataclass
@@ -151,6 +215,11 @@ class Candidate:
     # set when a body part was parsed: whether the URL is a link there, and its anchor
     in_parsed_body: bool = False
     anchor: Optional[Anchor] = None
+    signature: bool = False
+    quoted: bool = False
+    # the PDF whose link annotation this is, and how many distinct links that PDF has
+    pdf_name: Optional[str] = None
+    pdf_link_count: int = 0
     score: int = 0
     reasons: list[str] = field(default_factory=list)
     # per reason, the values in it the alert page shows in bold (link text, attachment, carried URLs)
@@ -159,8 +228,9 @@ class Candidate:
     @property
     def rank_key(self) -> tuple:
         # extraction order is not stable (urlfinderlib returns a set), so ties go by position in
-        # the body, then by value
-        return (-self.score, self.anchor.position if self.anchor else float("inf"), self.observable.value)
+        # the body, then in a PDF, then by value
+        where = (self.anchor.pdf, self.anchor.position) if self.anchor else (True, float("inf"))
+        return (-self.score, where, self.observable.value)
 
     def to_dict(self) -> dict:
         return {
@@ -264,27 +334,261 @@ def _is_button(tag) -> bool:
     return False
 
 
-def parse_body_anchors(html: str) -> dict[str, Anchor]:
-    """Returns the body's clickable links, keyed by their normalized URL, first one wins."""
-    anchors: dict[str, Anchor] = {}
+def is_sign_off(line: str, phrases: list[str]) -> bool:
+    """Whether line closes a message: "Respectfully," or "Thanks, Sam", but not "Thanks for the bid"."""
+    if len(line) > SIGN_OFF_MAX_LEN:
+        return False
+    lower = line.lower()
+    for phrase in phrases:
+        phrase = phrase.lower()
+        if phrase and lower.startswith(phrase):
+            rest = lower[len(phrase):]
+            # "Thanks - Sam" is a sign-off, "Best-in-class pricing" is not
+            if not rest or rest[0] in ",.!:" or rest.startswith((" -", " –")):
+                return True
+    return False
+
+
+def is_sentence(line: str, settings: "LureURLSettings") -> bool:
+    """Whether line reads as a sentence of the message rather than a line of a signature (a name, title, address)."""
+    words = line.split()
+    return len(words) > settings.sentence_words or (
+        len(words) >= settings.sentence_end_words and line.endswith((".", "?", "!", ":")))
+
+
+class BodyRegions:
+    """Follows a body line by line, in reading order: whether it has reached an earlier message the email quotes,
+    and whether it is in a signature block.
+
+    A signature block starts after a sign-off line that is not the first line of its message ("<h2>Thank you!</h2>"
+    heads many phish), unless the first line after it with text of its own is a sentence, and runs to the start of
+    the next message. Lines of link text only between the two (a "View invoice" button) are decided with it."""
+
+    def __init__(self, settings: "LureURLSettings"):
+        self.settings = settings
+        self.quoted = False
+        self._signature: Optional[str] = None
+        # the flags of the link text lines after a pending sign-off, set once it is decided, and where they start in
+        # _newest
+        self._undecided: list[list[bool]] = []
+        self._undecided_start = 0
+        self._message_lines = 0
+        self._line_number = 0
+        # a "From:" line that may start a reply header: where it is in _newest, its line number and the fields seen
+        self._header: Optional[tuple[int, int, set[str]]] = None
+        self._newest: list[str] = []
+        self._newest_len = 0
+
+    def quote(self):
+        self.quoted = True
+        self._signature = None
+        self._undecided = []
+        self._message_lines = 0
+        self._header = None
+
+    def line(self, text: str, checked: bool = True) -> list[bool]:
+        """Takes the next line and returns [whether it is in a signature block, whether it is in a quoted message].
+        A line that is only link text is not checked: a link's own text never starts a message or a signature, nor
+        decides one. Its flags can change until the line that decides it, so read them once the body is done."""
+        line = " ".join(text.split())
+        self._line_number += 1
+        if checked and line and (QUOTE_MARKER_PATTERN.match(line) or self._completes_header(line)):
+            self.quote()
+            return [False, True]
+
+        flags = [False, self.quoted]
+        if self._signature == SIGNATURE_PENDING:
+            if line and not checked:
+                if not self._undecided:
+                    self._undecided_start = len(self._newest)
+                self._undecided.append(flags)
+            else:
+                # a line with no text is a linked logo, which a signature often starts with
+                self._signature = None if is_sentence(line, self.settings) else SIGNATURE_ON
+                for undecided in self._undecided:
+                    undecided[0] = self._signature == SIGNATURE_ON
+                if self._undecided and self._signature == SIGNATURE_ON:
+                    # they are the signature's, not the message's
+                    del self._newest[self._undecided_start:]
+                    self._newest_len = sum(len(kept) + 1 for kept in self._newest)
+                self._undecided = []
+        flags[0] = self._signature == SIGNATURE_ON
+        if checked and not self._signature and self._message_lines and is_sign_off(line, self.settings.sign_off_phrases):
+            self._signature = SIGNATURE_PENDING
+
+        if line:
+            self._message_lines += 1
+            if not self.quoted and not flags[0] and self._newest_len < MAX_NEWEST_TEXT:
+                self._newest.append(line)
+                self._newest_len += len(line) + 1
+        return flags
+
+    def _completes_header(self, line: str) -> bool:
+        """Whether line completes a reply header: From:, then Sent: or Date:, and To: or Subject:. A lone "From:"
+        line, as fake voicemail and file share notices have above their button, starts no message."""
+        match = HEADER_FIELD_PATTERN.match(line)
+        if match is None:
+            return False
+        name = match.group(1).lower()
+        if name == "from":
+            self._header = (len(self._newest), self._line_number, {name})
+            return False
+        if self._header is None or self._line_number - self._header[1] > MAX_HEADER_LINES:
+            return False
+
+        index, _, names = self._header
+        names.add(name)
+        if not (names & {"sent", "date"} and names & {"to", "subject"}):
+            return False
+        # the header is the earlier message's, not the newest one's
+        del self._newest[index:]
+        self._newest_len = sum(len(kept) + 1 for kept in self._newest)
+        return True
+
+    @property
+    def newest_text(self) -> str:
+        return "\n".join(self._newest)
+
+
+def _is_quote_container(tag: Tag) -> bool:
+    if tag.name == "blockquote" and (tag.get("type") or "").lower() == "cite":
+        return True
+    # Outlook's reply header; a message sent on from Outlook on the web prefixes it with x_
+    if (tag.get("id") or "").endswith("divRplyFwdMsg"):
+        return True
+    return any(c.startswith(QUOTE_CLASS_PREFIXES) for c in (tag.get("class") or []))
+
+
+def _walk(soup) -> Iterator[tuple[str, object]]:
+    """Yields ("start", tag), ("text", string) and ("end", tag) in document order, without recursion, so a deeply
+    nested body costs no more than a flat one."""
+    stack = [iter(soup.contents)]
+    tags = [None]
+    while stack:
+        node = next(stack[-1], None)
+        if node is None:
+            stack.pop()
+            tag = tags.pop()
+            if tag is not None:
+                yield "end", tag
+        elif isinstance(node, Tag):
+            yield "start", node
+            if node.name in TEXT_SKIP_PARENTS:
+                yield "end", node
+            else:
+                stack.append(iter(node.contents))
+                tags.append(node)
+        elif type(node) is NavigableString:
+            # comments, doctypes and CDATA are subclasses, and never shown
+            yield "text", node
+
+
+def parse_html_body(html: str, settings: "LureURLSettings") -> ParsedBody:
+    """Returns the body's clickable links, keyed by their normalized URL (first one wins), each with whether it is
+    in a signature block or a quoted message, and the text of the newest message."""
+    body = ParsedBody()
+    regions = BodyRegions(settings)
     position = 0
-    soup = parse_document(html)
-    for tag in soup.find_all(["a", "area", "form"]):
-        href = tag.get("action") if tag.name == "form" else tag.get("href")
+    link_depth = 0
+    line_parts: list[str] = []
+    line_anchors: list[Anchor] = []
+    # whether the line has text that is not a link's
+    line_checked = False
+    anchor_flags: list[tuple[Anchor, list[bool]]] = []
+
+    def end_line():
+        nonlocal line_parts, line_anchors, line_checked
+        if line_parts or line_anchors:
+            flags = regions.line(" ".join(line_parts), line_checked)
+            anchor_flags.extend((anchor, flags) for anchor in line_anchors)
+        line_parts, line_anchors, line_checked = [], [], False
+
+    for event, node in _walk(parse_document(html)):
+        if event == "text":
+            if node.strip():
+                line_parts.append(str(node))
+                line_checked = line_checked or not link_depth
+            continue
+
+        if node.name in LINE_BREAK_TAGS:
+            end_line()
+        if node.name not in LINK_TAGS:
+            if event == "start" and _is_quote_container(node):
+                end_line()
+                regions.quote()
+            continue
+        if event == "end":
+            link_depth -= 1
+            continue
+
+        link_depth += 1
+        href = node.get("action") if node.name == "form" else node.get("href")
         if not href or not href.strip():
             continue
 
-        text = tag.get_text(" ", strip=True)
+        text = node.get_text(" ", strip=True)
         if not text:
-            image = tag.find("img")
+            image = node.find("img")
             if image is not None:
                 text = f"[image{': ' + image.get('alt') if image.get('alt') else ''}]"
-        anchor = Anchor(text=text[:ANCHOR_TEXT_MAX_LEN], button=_is_button(tag), position=position)
+        anchor = Anchor(text=text[:ANCHOR_TEXT_MAX_LEN], button=_is_button(node), position=position)
         position += 1
+        line_anchors.append(anchor)
         for key in {href.strip(), normalize_url(href.strip())}:
-            anchors.setdefault(key, anchor)
+            body.anchors.setdefault(key, anchor)
 
-    return anchors
+    end_line()
+    for anchor, (signature, quoted) in anchor_flags:
+        anchor.signature, anchor.quoted = signature, quoted
+    body.newest_text = regions.newest_text
+    return body
+
+
+def parse_text_body(text: str, settings: "LureURLSettings") -> ParsedBody:
+    """Returns whether each URL in a plain text body is in a signature block or a quoted message, and the text of
+    the newest message."""
+    body = ParsedBody()
+    regions = BodyRegions(settings)
+    url_flags: dict[str, list[bool]] = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        tokens = [token.strip(URL_TOKEN_PUNCTUATION) for token in line.split()]
+        urls = [token for token in tokens if token.lower().startswith(("http://", "https://"))]
+        # a line quoted with ">" is an earlier message's, even between the lines of the reply; a line of URLs only
+        # is a plain text body's link text
+        flags = [False, True] if line.lstrip().startswith(">") else regions.line(line, len(urls) < len(tokens))
+        for url in urls:
+            for key in {url, normalize_url(url)}:
+                url_flags.setdefault(key, flags)
+
+    body.text_urls = {key: (signature, quoted) for key, (signature, quoted) in url_flags.items()}
+    body.newest_text = regions.newest_text
+    return body
+
+
+def find_phrase(phrases: list[str], text: str) -> Optional[re.Match]:
+    """Returns the first match of any of phrases in text as whole words, case-insensitive."""
+    found = [re.search(rf"\b{re.escape(phrase)}\b", text, re.I) for phrase in phrases if phrase]
+    found = [match for match in found if match]
+    return min(found, key=lambda match: match.start()) if found else None
+
+
+def phrase_around(text: str, start: int, end: int, width: int = 50) -> str:
+    """Returns the words around text[start:end], within its line."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    left, right = max(line_start, start - width), min(line_end, end + width)
+    # whole words only
+    if left > line_start:
+        space = text.find(" ", left, start)
+        left = space + 1 if space >= 0 else left
+    if right < line_end:
+        space = text.rfind(" ", end, right)
+        right = space if space >= 0 else right
+    return text[left:right].strip()
 
 
 def _read_body(observable: Observable, root_uuid: Optional[str]) -> Optional[str]:
@@ -299,6 +603,14 @@ def _read_body(observable: Observable, root_uuid: Optional[str]) -> Optional[str
         logging.exception(f"unable to read email body {path} in {root_uuid} for lure links",
                           extra={"root_uuid": root_uuid, "observable_uuid": observable.uuid, "path": path})
         return None
+
+
+def _lookup(mapping: dict, keys: list[str]):
+    for key in keys:
+        hit = mapping.get(key) or mapping.get(normalize_url(key))
+        if hit:
+            return hit
+    return None
 
 
 def carried_urls(url: str) -> list[str]:
@@ -346,15 +658,22 @@ class CandidateCollector:
     is skipped too: it gets its own LureURLAnalysis.
     """
 
-    def __init__(self, root_uuid: Optional[str] = None):
+    def __init__(self, root_uuid: Optional[str] = None, settings: Optional[LureURLSettings] = None):
         self.root_uuid = root_uuid
+        self.settings = settings or LureURLSettings()
         self.candidates: dict[str, Candidate] = {}
         self.wrappers: set[str] = set()
         self.visited: set[tuple[str, str]] = set()
         self.has_inner_email = False
+        # each PDF link annotation's anchor, the name of its PDF and how many distinct links that PDF has
+        self.pdf_links: dict[str, tuple[Anchor, str, int]] = {}
+        # the text of the newest message of the email, from its body parts
+        self.body_text = ""
 
     def collect(self, email_analysis: EmailAnalysis) -> list[Candidate]:
         anchors: dict[str, Anchor] = {}
+        text_urls: dict[str, tuple[bool, bool]] = {}
+        newest_text = []
         parsed_body = False
         parts = [o for o in email_analysis.observables
                  if o.type == F_FILE and not any(o.has_yara_meta("type", t) for t in NON_PART_YARA_TYPES)]
@@ -374,35 +693,63 @@ class CandidateCollector:
                 continue
 
             if is_body_part(part):
-                if ".unknown_text_html" in part.file_name:
-                    html = _read_body(part, self.root_uuid)
-                    if html is not None:
-                        try:
-                            anchors.update(parse_body_anchors(html))
-                            parsed_body = True
-                        except Exception:
-                            # the URLs are still scored, only without their anchors
-                            logging.exception(f"unable to parse email body {part.full_path} in {self.root_uuid} for lure links",
-                                              extra={"root_uuid": self.root_uuid, "observable_uuid": part.uuid,
-                                                     "path": part.full_path})
+                body = self._parse_body(part)
+                if body is not None:
+                    anchors.update(body.anchors)
+                    text_urls.update(body.text_urls)
+                    if body.newest_text:
+                        newest_text.append(body.newest_text)
+                    parsed_body = parsed_body or ".unknown_text_html" in part.file_name
                 self._walk(part, SOURCE_BODY, None, None, False)
             else:
                 self._walk(part, SOURCE_ATTACHMENT, part.file_name, None, False)
+        self.body_text = "\n".join(newest_text)
 
         result = [c for c in self.candidates.values() if c.observable.uuid not in self.wrappers]
         for candidate in result:
-            if SOURCE_BODY not in candidate.sources or not parsed_body:
-                continue
-            candidate.in_parsed_body = True
-            for value in (candidate.wrapped_by, candidate.observable.value):
-                if value is None:
-                    continue
-                anchor = anchors.get(value) or anchors.get(normalize_url(value))
-                if anchor:
-                    candidate.anchor = anchor
-                    break
+            keys = [value for value in (candidate.wrapped_by, candidate.observable.value) if value]
+            if SOURCE_BODY in candidate.sources:
+                candidate.in_parsed_body = parsed_body
+                if parsed_body:
+                    candidate.anchor = _lookup(anchors, keys)
+                if candidate.anchor:
+                    candidate.signature, candidate.quoted = candidate.anchor.signature, candidate.anchor.quoted
+                else:
+                    candidate.signature, candidate.quoted = _lookup(text_urls, keys) or (False, False)
+            if candidate.anchor is None and candidate.pdf_link:
+                pdf_link = _lookup(self.pdf_links, keys)
+                if pdf_link:
+                    candidate.anchor, candidate.pdf_name, candidate.pdf_link_count = pdf_link
 
         return fold_carried_urls(result)
+
+    def _parse_body(self, part: Observable) -> Optional[ParsedBody]:
+        content = _read_body(part, self.root_uuid)
+        if content is None:
+            return None
+        try:
+            if ".unknown_text_html" in part.file_name:
+                return parse_html_body(content, self.settings)
+            return parse_text_body(content, self.settings)
+        except Exception:
+            # the URLs are still scored, only without their anchors
+            logging.exception(f"unable to parse email body {part.full_path} in {self.root_uuid} for lure links",
+                              extra={"root_uuid": self.root_uuid, "observable_uuid": part.uuid,
+                                     "path": part.full_path})
+            return None
+
+    def _record_pdf_links(self, pdf: Observable, analysis: PDFLinkTextAnalysis):
+        # the details of an analysis loaded from disk stay there until they are loaded
+        if not analysis.details and analysis.external_details_path:
+            analysis.load_details()
+        links = analysis.links
+        count = len({link["url"] for link in links})
+        for position, link in enumerate(links):
+            text = link.get("text") or link.get("line") or ""
+            anchor = Anchor(text=text[:ANCHOR_TEXT_MAX_LEN], button=False, position=position, pdf=True)
+            url = link["url"].strip()
+            for key in {url, normalize_url(url)}:
+                self.pdf_links.setdefault(key, (anchor, pdf.file_name, count))
 
     def _walk(self, observable: Observable, source: str, attachment: Optional[str], wrapped_by: Optional[str],
               pdf_link: bool):
@@ -432,6 +779,8 @@ class CandidateCollector:
         for analysis in observable.all_analysis:
             if isinstance(analysis, (PhishkitAnalysis, EmailAnalysis)):
                 continue
+            if isinstance(analysis, PDFLinkTextAnalysis):
+                self._record_pdf_links(observable, analysis)
             child_source = SOURCE_QR if isinstance(analysis, QRCodeAnalysis) else source
             for child in analysis.observables:
                 self._walk(child, child_source, attachment, None, link_annotations)
@@ -461,11 +810,15 @@ def _matching_keyword(keywords: list[str], *values: Optional[str]) -> Optional[s
     return None
 
 
-def score_candidates(candidates: list[Candidate], sender_domains: set[str], settings: LureURLSettings):
-    """Scores each candidate in place, recording a reason for every signal that applied."""
+def score_candidates(candidates: list[Candidate], sender_domains: set[str], settings: LureURLSettings,
+                     body_text: str = ""):
+    """Scores each candidate in place, recording a reason for every signal that applied. body_text is the text of
+    the newest message of the email."""
     linked_domains = {registrable_domain(c.observable.value) for c in candidates if is_link(c)}
     linked_domains.discard("")
     external_domains = linked_domains - sender_domains
+    reference = find_phrase(settings.attachment_reference_keywords, body_text)
+    attachment_phrase = phrase_around(body_text, reference.start(), reference.end()) if reference else None
 
     for candidate in candidates:
         score = 0
@@ -491,9 +844,13 @@ def score_candidates(candidates: list[Candidate], sender_domains: set[str], sett
         elif SOURCE_ATTACHMENT in candidate.sources:
             signal(weights.attachment, f"found in attachment {', '.join(candidate.attachments)}",
                    *candidate.attachments)
+            if attachment_phrase:
+                signal(weights.attachment_reference, f"the email refers to its attachment: '{attachment_phrase}'",
+                       attachment_phrase)
 
         if candidate.anchor:
-            signal(weights.clickable, "clickable link" + (f" with text '{anchor_text}'" if anchor_text else ""),
+            where = " in a PDF" if candidate.anchor.pdf else ""
+            signal(weights.clickable, f"clickable link{where}" + (f" with text '{anchor_text}'" if anchor_text else ""),
                    *([anchor_text] if anchor_text else []))
             if candidate.anchor.button:
                 signal(weights.button, "styled as a button")
@@ -504,6 +861,13 @@ def score_candidates(candidates: list[Candidate], sender_domains: set[str], sett
             signal(weights.clickable, "clickable link in a PDF")
         elif candidate.in_parsed_body and SOURCE_QR not in candidate.sources:
             signal(weights.not_a_link, "not a clickable link in the body")
+
+        if candidate.pdf_name and candidate.pdf_link_count == 1:
+            signal(weights.only_link, f"the only link in {candidate.pdf_name}", candidate.pdf_name)
+        if candidate.signature:
+            signal(weights.signature_block, "in a signature block")
+        if candidate.quoted:
+            signal(weights.quoted_message, "in an earlier message the email quotes")
 
         if candidate.wrapped_by:
             signal(weights.unwrapped, f"unwrapped from {display_url(candidate.wrapped_by)}")
@@ -630,14 +994,14 @@ class LureURLAnalyzer(AnalysisModule):
             return AnalysisExecutionResult.COMPLETED
 
         root = self.get_root()
-        collector = CandidateCollector(root.uuid)
+        settings = self.settings
+        collector = CandidateCollector(root.uuid, settings)
         candidates = [c for c in collector.collect(email_analysis) if is_http_url(c.observable.value)]
         if not candidates:
             logging.debug(f"no lure url candidates in {_file}")
             return AnalysisExecutionResult.INCOMPLETE
 
-        settings = self.settings
-        score_candidates(candidates, sender_domains(email_analysis), settings)
+        score_candidates(candidates, sender_domains(email_analysis), settings, collector.body_text)
         ranked = sorted(candidates, key=lambda c: c.rank_key)
         primary = ranked[0] if ranked[0].score >= settings.min_primary_score else None
 

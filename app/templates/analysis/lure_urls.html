@@ -13,6 +13,7 @@
                         {% endif %}
                         <div class="small" style="word-break: break-all;">
                             <span class="badge text-bg-warning">lure</span>
+                            <span class="text-muted me-1" title="lure score">{{ entry.primary.score }}</span>
                             {% if entry.observable %}
                                 <a href="#{{ entry.observable.uuid }}">{{ entry.primary.url }}</a>
                             {% else %}

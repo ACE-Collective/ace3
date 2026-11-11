@@ -60,6 +60,8 @@ def test_alert_page_shows_lure_url(web_client, root_analysis, tmp_path):
     assert f'href="#{lure.uuid}"' in card
     # the whole URL, never shortened, and not bold
     assert f'href="#{lure.uuid}">{LURE}</a>' in card
+    # the lure's own score, as the other candidates show theirs
+    assert '<span class="text-muted me-1" title="lure score">90</span>' in card
     # the values a reason highlights are bold, and escaped: link text is the attacker's
     assert ("found in attachment <b>statement.pdf</b>; "
             "clickable link with text &#39;<b>&lt;i&gt;Review&lt;/i&gt;</b>&#39;; styled as a button") in card
