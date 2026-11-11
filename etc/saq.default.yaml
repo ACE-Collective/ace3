@@ -2098,6 +2098,25 @@ analysis_module_pdf_analyzer:
   # path to pdfparser
   pdfparser_path: bin/pdf-parser.py
 
+# the text a PDF shows under each of its links, which the lure url analyzer reads as the links' text;
+# in the correlation group, so pdftotext places the words of the PDFs of alerts only
+analysis_module_pdf_link_text:
+  name: pdf_link_text
+  python_module: saq.modules.file_analysis.pdf
+  python_class: PDFLinkTextAnalyzer
+  enabled: true
+  pdftotext_path: /usr/bin/pdftotext
+  # how many link annotations per PDF are recorded (a PDF can repeat one without limit)
+  max_links: 200
+  # only the links on the first this many pages get the text under them
+  link_text_pages: 3
+  # a page of more words than this is not placed, and its links get no text
+  max_page_words: 20000
+  # a link whose lines hold more words than this, across the page, covers a page, not a line, and gets no text
+  max_link_band_words: 500
+  # 30 days; a poppler upgrade invalidates the key via extended_version
+  cache_ttl: 2592000
+
 analysis_module_upx:
   name: upx
   python_module: saq.modules.file_analysis.upx
@@ -2628,6 +2647,7 @@ module_group_correlation:
     - message_id_analyzer_v2
     - network_identifier
     - parse_url
+    - pdf_link_text
     - phishkit_analyzer
     - rdap_analyzer
     - snort_signature_analysis_v1

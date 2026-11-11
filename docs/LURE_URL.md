@@ -57,7 +57,49 @@ carrying a tracker carrying a page), only the outermost link is left. Where the 
 leads is what its crawl shows, in the Crawl Chains section.
 
 URLs from a PDF's link annotations (the `document.pdf.annotation_uris` file `pdf.py` writes)
-are the PDF's equivalent of `<a href>`, so they count as clickable links.
+are the PDF's equivalent of `<a href>`, so they count as clickable links. The `pdf_link_text`
+module (`PDFLinkTextAnalyzer` in `pdf.py`, in the `correlation` module group, so it runs on the PDFs
+of alerts only) records each link's page and the text the PDF shows under it in a
+`PDFLinkTextAnalysis`: it runs `pdftotext -bbox` in the tool sandbox over the pages with links
+among the first `link_text_pages` (3) and keeps the words whose center is inside the link's
+`/Rect`, and the words of the line the link is on. That text is the link's text here, as an
+anchor's is in the body, so `call_to_action_keywords` and `noise_keywords` apply to it. A link
+with nothing under it gets the text of its line, or the annotation's `/Contents`, which is all a
+link on a later page, or on a rotated page, gets. A PDF `pdftotext` cannot read leaves its links
+without text (logged at WARNING with the traceback), and they are still scored as clickable; so
+does a PDF in an alert analyzed with `pdf_link_text` disabled.
+
+Each (URL, page, box) is recorded once, and at most `max_links` (200) links per PDF (logged at
+INFO when there are more), because a PDF can repeat one annotation object without limit. A page
+of more than `max_page_words` (20,000) words is not placed (logged at INFO), so a page of tiny
+print does not fill the worker's memory, and a link whose lines hold more than
+`max_link_band_words` (500) words across the page covers a page rather than a line and gets no
+text. These are settings of `analysis_module_pdf_link_text`, whose results are cached for 30 days
+(`cache_ttl`), keyed on the PDF, its settings and the `pdftotext` version.
+
+The body is read line by line, as a mail client lays it out (a block element or a `<br>` ends a
+line; `<b>` and `<span>` do not), to tell where each link is in a thread:
+
+- An earlier message the email quotes starts at Outlook's reply header (`divRplyFwdMsg`), a
+  Gmail, Yahoo or Thunderbird quote container, a `<blockquote type="cite">`, a line such as
+  `On ... wrote:` or `-----Original Message-----`, or a reply header written as text: `From:`,
+  then `Sent:` or `Date:` and `To:` or `Subject:` within 8 lines. A lone `From:` line, as fake
+  voicemail notices have above their button, starts nothing. In a plain text body, a line quoted
+  with `>` is also an earlier message's.
+- A line that starts with one of `sign_off_phrases` (`Respectfully,`, `Thanks, Sam`, but not
+  `Thanks for the bid`) ends the text of its message, and the lines below it are a signature
+  block, which runs to the start of the next message, so each message of a thread has its own.
+  It is not a sign-off when it is the first line of its message (a `Thank you!` heading), or when
+  the first line after it with text of its own is a sentence (more than `sentence_words` words,
+  default 12, or at least `sentence_end_words`, default 8, ending in `.`, `?`, `!` or `:`). Lines
+  of link text only in between (a `View invoice` button) are decided with it, and when nothing
+  decides it before the message ends, it was not a sign-off: `Thank you!` above a lone button is
+  not a signature. A linked logo with no text does decide it, as a signature. A link's own text
+  never starts a sign-off; in a plain text body, a line of URLs only is link text.
+- The text of the newest message, the part before its signature and before the first quoted
+  message, is what `attachment_reference_keywords` is matched against, as whole words, so the
+  "open attachments" of an external sender banner and the "any attachments" of a confidentiality
+  notice do not count.
 
 The HTML body is re-parsed to separate links (`<a href>`, `<area href>`, `<form action>`) from
 images and other resources, and to read each link's text and whether it is styled as a button.
@@ -71,23 +113,32 @@ scored, without their anchors.
 | decoded from a QR code | +35 (`qr`) |
 | found in the email body | +20 (`body`) |
 | found in an attachment (when not also in the body) | +15 (`attachment`) |
+| found in an attachment, and the newest message has an `attachment_reference_keywords` entry ("review the attached bid documents") | +20 (`attachment_reference`) |
 | clickable link in the body, or a PDF link annotation | +25 (`clickable`) |
 | styled as a button (`role=button`, a `btn`/`button` class, a background, padding or border-radius style, or a `bgcolor` cell) | +15 (`button`) |
-| link text contains a `call_to_action_keywords` entry | +20 (`call_to_action`) |
+| link text (in a PDF, the text under the link) contains a `call_to_action_keywords` entry | +20 (`call_to_action`) |
 | the only linked domain that is not the sender's | +10 (`only_domain`) |
+| the only link in its PDF | +10 (`only_link`) |
 | unwrapped from a protected URL | +5 (`unwrapped`) |
 | has detection points | +30 (`detection`) |
 | in a parsed HTML body, but not as a link | -15 (`not_a_link`) |
+| in a signature block | -25 (`signature_block`) |
+| in an earlier message the email quotes | 0 (`quoted_message`) |
 | same registered domain as the From or Return-Path address | -20 (`sender_domain`) |
 | URL or link text contains a `noise_keywords` entry | -30 (`noise`) |
 | path ends in an image, font or stylesheet extension | -40 (`static`) |
 | host is in `benign_domains` | -50 (`benign`) |
 
-The highest score wins. A tie goes to the link that comes first in the body, and then to the URL
-that sorts first. The order URLs were extracted in is never used, because urlfinderlib does not
+The highest score wins. A tie goes to the link that comes first in the body, then to the link that
+comes first in its PDF, and then to the URL that sorts first. The order URLs were extracted in is never used, because urlfinderlib does not
 keep it stable. A winner that scores
 below `min_primary_score` (default 1) is not called a lure, so a newsletter whose only links are footer links has no primary
-URL. Only `http` and `https` URLs are candidates.
+URL. Only `http` and `https` URLs are candidates. The alert page shows the score of the lure and
+of each other candidate.
+
+`quoted_message` is 0 by default, so the reason is shown but changes nothing: a phish forwarded
+inline has its lure in the part it quotes, and that part is the email the recipient was asked to
+act on.
 
 When `crawl_primary` is on, the primary URL gets the `crawl` directive. Adding the directive
 puts the URL back on the engine's work stack, so phishkit scans it (its deny patterns still
@@ -123,10 +174,14 @@ file.
 | `call_to_action_keywords` | words in link text that ask for a click (case-insensitive substring) |
 | `noise_keywords` | words in a URL or link text that mark a footer link |
 | `benign_domains` | domains (and subdomains) that are never the lure |
+| `attachment_reference_keywords` | phrases in the newest message, before its signature, that refer to its attachment (whole words, case-insensitive) |
+| `sign_off_phrases` | the start of a line that ends the message's text, with a signature block below it (case-insensitive) |
 | `max_candidates` | how many ranked candidates to keep, the primary included (default 5, at least 1) |
+| `sentence_words` | a line of more words than this is a sentence, which after a sign-off means it was not one (default 12) |
+| `sentence_end_words` | a line of at least this many words ending in `.`, `?`, `!` or `:` is a sentence too (default 8) |
 | `crawl_primary` | add the `crawl` directive to the primary URL (default true) |
 | `min_primary_score` | the lowest score that is called the lure (default 1) |
-| `weights` | the weight of each signal in the scoring table: `qr`, `body`, `attachment`, `clickable`, `button`, `call_to_action`, `only_domain`, `unwrapped`, `detection`, `not_a_link`, `sender_domain`, `noise`, `static`, `benign` |
+| `weights` | the weight of each signal in the scoring table: `qr`, `body`, `attachment`, `attachment_reference`, `clickable`, `button`, `call_to_action`, `only_domain`, `only_link`, `unwrapped`, `detection`, `not_a_link`, `signature_block`, `quoted_message`, `sender_domain`, `noise`, `static`, `benign` |
 
 A key left out of the file, or a weight left out of `weights`, keeps its built-in value. A list
 in the file replaces the built-in list; it does not add to it.

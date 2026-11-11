@@ -1,8 +1,10 @@
+import io
 import logging
 import os
 from email.message import EmailMessage
 from pathlib import Path
 
+import pikepdf
 import pytest
 
 from saq.analysis.root import RootAnalysis, load_root
@@ -27,13 +29,17 @@ from saq.modules.email.lure import (
     LureURLWeights,
     load_lure_settings,
     build_lure_urls,
-    parse_body_anchors,
+    find_phrase,
+    is_sign_off,
+    parse_html_body,
+    parse_text_body,
+    phrase_around,
     reason_segments,
     score_candidates,
     sender_domains,
 )
 from saq.modules.email.rfc822 import EmailAnalysis
-from saq.modules.file_analysis.pdf import PDFAnalysis
+from saq.modules.file_analysis.pdf import PDFAnalysis, PDFLinkTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
 from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 from saq.modules.phishkit import PhishkitAnalysis
@@ -71,12 +77,12 @@ SETTINGS = LureURLSettings(
 #
 
 @pytest.mark.unit
-def test_parse_body_anchors():
-    anchors = parse_body_anchors(LURE_HTML + """
+def test_parse_html_body_anchors():
+    anchors = parse_html_body(LURE_HTML + """
         <a href="https://img.example.net/x"><img src="https://img.example.net/x.png" alt="Open"></a>
         <form action="https://form.example.net/post"><input type="submit"></form>
         <a class="btn-primary" href="https://button.example.net/">Sign</a>
-        <a href="  ">empty</a>""")
+        <a href="  ">empty</a>""", SETTINGS).anchors
 
     assert anchors[LURE] == Anchor(text="Review Document", button=True, position=0)
     assert anchors[PRIVACY] == Anchor(text="Privacy", button=False, position=1)
@@ -86,6 +92,292 @@ def test_parse_body_anchors():
     assert anchors["https://button.example.net/"].button is True
     # an image is a resource, not a link
     assert LOGO not in anchors
+
+
+SIGNATURE_LINK = "https://www.estimating.example.org"
+EARLIER = "https://projects.example.org/bid/42"
+EARLIER_SIGNATURE = "https://www.example.org"
+
+# a reply in a thread: the newest message, then the earlier one Outlook quotes under its reply header
+THREAD_HTML = f"""<html><body>
+<p>Hi all,</p>
+<p>Please review the attached bid documents and confirm by Friday.</p>
+<p>Respectfully,</p>
+<p>Pat Doe<br>Estimator</p>
+<p><a href="{SIGNATURE_LINK}">signature</a></p>
+<div id="divRplyFwdMsg"><b>From:</b> Sam Roe &lt;sam@example.org&gt;<br><b>Sent:</b> Monday</div>
+<p>Here is the <a href="{EARLIER}">project page</a>.</p>
+<p>Regards,<br>Sam</p>
+<p><a href="{EARLIER_SIGNATURE}">www.example.org</a></p>
+</body></html>"""
+
+
+@pytest.mark.unit
+def test_parse_html_body_thread():
+    body = parse_html_body(THREAD_HTML, SETTINGS)
+
+    assert (body.anchors[SIGNATURE_LINK].signature, body.anchors[SIGNATURE_LINK].quoted) == (True, False)
+    # a new message ends the signature block above it
+    assert (body.anchors[EARLIER].signature, body.anchors[EARLIER].quoted) == (False, True)
+    # and each message has its own
+    assert (body.anchors[EARLIER_SIGNATURE].signature, body.anchors[EARLIER_SIGNATURE].quoted) == (True, True)
+    assert "Please review the attached bid documents and confirm by Friday." in body.newest_text
+    assert "Here is the" not in body.newest_text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("quote", [
+    '<div class="gmail_quote"><div class="gmail_attr">On Mon, Sam wrote:</div><blockquote class="gmail_quote">',
+    '<blockquote type="cite">',
+    '<div id="x_divRplyFwdMsg">',
+    "<p>On Mon, Oct 5, 2026 at 9:00 AM Sam Roe &lt;sam@example.org&gt; wrote:</p><div>",
+    "<p>---------- Forwarded message ---------</p><div>",
+])
+def test_parse_html_body_quote_markers(quote):
+    html = (f'<p>See the attached file.</p><p>Thanks,</p><p><a href="{SIGNATURE_LINK}">signature</a></p><p>Pat</p>'
+            f'{quote}<p>see <a href="{EARLIER}">this</a></p></div>')
+
+    anchors = parse_html_body(html, SETTINGS).anchors
+
+    assert (anchors[SIGNATURE_LINK].signature, anchors[SIGNATURE_LINK].quoted) == (True, False)
+    assert (anchors[EARLIER].signature, anchors[EARLIER].quoted) == (False, True)
+
+
+@pytest.mark.unit
+def test_parse_html_body_link_text_is_never_a_sign_off():
+    anchors = parse_html_body(f'<p><a href="{LURE}">Thanks!</a></p><p><a href="{EARLIER}">On it</a></p>',
+                              SETTINGS).anchors
+
+    assert not anchors[EARLIER].signature
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("html", [
+    # an inline tag does not make its text a line of its own
+    f'<p>Hello,</p><p><b>Thank you</b> for your payment. <a href="{LURE}">View invoice</a></p>',
+    f'<p>Hello,</p><p><span>Best</span> offers this week: <a href="{LURE}">Shop</a></p>',
+    # a heading that thanks the recipient before anything else is not a sign-off
+    f'<h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p>',
+    # nor is one that prose follows
+    (f'<p>Hello,</p><h2>Thank you!</h2><p>Your payment of $500 was received today and your receipt is ready to '
+     f'view. <a href="{LURE}">View invoice</a></p>'),
+    # nor is a sign-off inside a table cell's text
+    f'<table><tr><td>Hello, <b>Thanks</b>, your order shipped</td><td><a href="{LURE}">Track</a></td></tr></table>',
+    # a button's text does not decide a sign-off, and nothing after it does either
+    f'<p>Dear customer,</p><h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p>',
+    f'<p><a href="https://www.example.com/web">View in browser</a></p><h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p>',
+    # the sentence below the button does
+    (f'<p>Dear customer,</p><h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p>'
+     f'<p>Your payment of $500 was received today and your receipt is ready to view.</p>'),
+])
+def test_parse_html_body_thanks_is_not_always_a_sign_off(html):
+    body = parse_html_body(html, LureURLSettings())
+
+    assert body.anchors[LURE].signature is False
+
+
+@pytest.mark.unit
+def test_parse_html_body_signature_after_a_logo_link():
+    # a signature's first line can be a linked logo with no text
+    html = (f'<p>See the attached file.</p><p>Regards,</p><p><a href="{EARLIER_SIGNATURE}"><img src="logo.png"></a></p>'
+            f'<p><a href="{SIGNATURE_LINK}">www.estimating.example.org</a></p>')
+
+    anchors = parse_html_body(html, SETTINGS).anchors
+
+    assert anchors[EARLIER_SIGNATURE].signature is True
+    assert anchors[SIGNATURE_LINK].signature is True
+
+
+@pytest.mark.unit
+def test_parse_html_body_link_lines_are_decided_with_their_sign_off():
+    # the name line below decides the sign-off, and the link line between is part of the signature
+    html = (f'<p>See the attached file.</p><p>Thanks,</p><p><a href="{SIGNATURE_LINK}">www.estimating.example.org</a></p>'
+            f'<p>Pat Doe</p>')
+
+    assert parse_html_body(html, SETTINGS).anchors[SIGNATURE_LINK].signature is True
+
+
+@pytest.mark.unit
+def test_parse_html_body_signature_link_text_is_not_the_message():
+    # the link's text is the signature's once the name line decides it, so it refers to no attachment
+    html = ('<p>Please review the bid.</p><p>Thanks,</p><p><a href="https://www.example.org/terms">See the attached '
+            'terms</a></p><p>Pat Doe</p>')
+
+    body = parse_html_body(html, LureURLSettings())
+
+    assert body.newest_text == "Please review the bid.\nThanks,"
+    assert find_phrase(LureURLSettings().attachment_reference_keywords, body.newest_text) is None
+
+
+@pytest.mark.unit
+def test_parse_html_body_quoted_message_does_not_decide_a_sign_off():
+    # the earlier message's own signature is no answer to the newest message's "Thank you!"
+    html = (f'<p>Dear customer,</p><h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p>'
+            f'<div id="divRplyFwdMsg"><p>From: Sam</p></div><p>Can you send it?</p><p>Regards,</p><p>Sam Roe</p>')
+
+    anchors = parse_html_body(html, LureURLSettings()).anchors
+
+    assert (anchors[LURE].signature, anchors[LURE].quoted) == (False, False)
+
+
+@pytest.mark.unit
+def test_parse_html_body_head_is_not_a_line():
+    # the title would be the first line, and the heading a sign-off after it
+    html = (f'<html><head><title>Invoice</title><style>p {{ color: red; }}</style></head><body>'
+            f'<script>var x = 1;</script><h2>Thank you!</h2><p><a href="{LURE}">View invoice</a></p></body></html>')
+
+    body = parse_html_body(html, LureURLSettings())
+
+    assert body.anchors[LURE].signature is False
+    assert body.newest_text == "Thank you!\nView invoice"
+
+
+@pytest.mark.unit
+def test_parse_html_body_sentence_settings():
+    html = (f'<p>Hello,</p><h2>Thank you!</h2><p>Your receipt is ready.</p><p><a href="{LURE}">View invoice</a></p>')
+
+    # four words are not a sentence by default, so the heading is a sign-off
+    assert parse_html_body(html, LureURLSettings()).anchors[LURE].signature is True
+    assert parse_html_body(html, LureURLSettings(sentence_end_words=4)).anchors[LURE].signature is False
+    assert parse_html_body(html, LureURLSettings(sentence_words=3)).anchors[LURE].signature is False
+
+
+@pytest.mark.unit
+def test_parse_html_body_newest_text_stops_at_the_signature():
+    html = ("<p>Your account needs attention. <a href='https://evil.example.net/'>Verify</a></p><p>Regards,<br>Pat</p>"
+            "<p>This e-mail and any files attached to it are confidential and intended only for its addressee.</p>")
+
+    body = parse_html_body(html, SETTINGS)
+
+    assert "confidential" not in body.newest_text
+    assert find_phrase(LureURLSettings().attachment_reference_keywords, body.newest_text) is None
+
+
+@pytest.mark.unit
+def test_parse_text_body_thanks_first_line_is_not_a_sign_off():
+    body = parse_text_body(f"Thank you!\nView your invoice: {LURE}\n", LureURLSettings())
+
+    assert body.text_urls[LURE] == (False, False)
+
+
+@pytest.mark.unit
+def test_parse_text_body_url_lines_are_decided_with_their_sign_off():
+    # a line of URLs only does not decide a sign-off; a name line after it does
+    settings = LureURLSettings()
+    assert parse_text_body(f"Dear customer,\nThank you!\n{LURE}\n", settings).text_urls[LURE] == (False, False)
+    assert parse_text_body(f"See the attached file.\nThanks,\n{SIGNATURE_LINK}\nPat Doe\n",
+                           settings).text_urls[SIGNATURE_LINK] == (True, False)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("html", [
+    f'<p>From: IT Service Desk</p><p>You have a new voicemail. <a href="{LURE}">Listen</a></p>',
+    f'<table><tr><td>From:</td><td>IT Service Desk</td></tr><tr><td>Date:</td><td>Monday</td></tr></table>'
+    f'<p>You have a new voicemail. <a href="{LURE}">Listen</a></p>',
+])
+def test_parse_html_body_a_from_line_alone_starts_no_message(html):
+    body = parse_html_body(html, SETTINGS)
+
+    assert body.anchors[LURE].quoted is False
+    assert "You have a new voicemail." in body.newest_text
+
+
+@pytest.mark.unit
+def test_parse_text_body_reply_header_starts_an_earlier_message():
+    text = f"Please see the attached bid.\n\nFrom: Sam Roe\nSent: Monday\nTo: Pat Doe\nSubject: bid\nHere is {EARLIER}\n"
+
+    body = parse_text_body(text, SETTINGS)
+
+    assert body.text_urls[EARLIER] == (False, True)
+    # the header is the earlier message's
+    assert body.newest_text == "Please see the attached bid."
+
+
+@pytest.mark.unit
+def test_parse_html_body_ignores_comments():
+    # Outlook's conditional comments, with a reply header inside, are never shown
+    html = (f'<!--[if mso]><p>From: x</p><p>Sent: y</p><p>To: z</p><![endif]--><p>See the attached file.</p>'
+            f'<p><a href="{LURE}">View</a></p>')
+
+    body = parse_html_body(html, SETTINGS)
+
+    assert (body.anchors[LURE].signature, body.anchors[LURE].quoted) == (False, False)
+    assert body.newest_text == "See the attached file.\nView"
+
+
+@pytest.mark.unit
+def test_parse_html_body_deep_nesting():
+    html = "<div>" * 5000 + f'<a href="{LURE}">View</a>' + "</div>" * 5000
+
+    assert parse_html_body(html, SETTINGS).anchors[LURE].text == "View"
+
+
+@pytest.mark.unit
+def test_parse_text_body_thread():
+    text = f"""Please review the attached bid documents.
+> {LURE}
+
+Respectfully,
+Pat Doe
+<{SIGNATURE_LINK}>
+
+-----Original Message-----
+From: Sam Roe
+Here is {EARLIER}.
+"""
+
+    body = parse_text_body(text, SETTINGS)
+
+    # a line quoted with ">" is an earlier message's, even inside the newest one
+    assert body.text_urls[LURE] == (False, True)
+    assert body.text_urls[SIGNATURE_LINK] == (True, False)
+    assert body.text_urls[EARLIER] == (False, True)
+    assert body.newest_text.startswith("Please review the attached bid documents.")
+    assert LURE not in body.newest_text
+    assert "Here is" not in body.newest_text
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("line, expected", [
+    ("Respectfully,", True),
+    ("Thanks, Sam", True),
+    ("Best", True),
+    ("Kind regards.", True),
+    ("Thanks - Sam", True),
+    ("Thanks for the bid", False),
+    ("Best-in-class pricing", False),
+    ("Regards," + " x" * 50, False),
+])
+def test_is_sign_off(line, expected):
+    assert is_sign_off(line, LureURLSettings().sign_off_phrases) is expected
+
+
+@pytest.mark.unit
+def test_phrase_around():
+    text = "Hi\nPlease review the attached bid documents.\nThanks"
+    match = find_phrase(["attached"], text)
+    assert phrase_around(text, match.start(), match.end()) == "Please review the attached bid documents."
+    # whole words only, within the width
+    text = "x" * 10 + " one two three attached four five six " + "y" * 10
+    match = find_phrase(["attached"], text)
+    assert phrase_around(text, match.start(), match.end(), width=15) == "one two three attached four five six"
+
+
+@pytest.mark.unit
+def test_find_phrase():
+    phrases = LureURLSettings().attachment_reference_keywords
+
+    # the first one in the text, so the longer phrase wins where it is there
+    assert find_phrase(phrases, "Please find attached the bid.").group(0) == "Please find attached"
+    assert find_phrase(phrases, "The bid is attached.").group(0) == "attached"
+    assert find_phrase(phrases, "Please SEE ATTACHMENT for details").group(0) == "SEE ATTACHMENT"
+    # the first one in the text, whichever phrase it is
+    assert find_phrase(phrases, "enclosed is the form, see attachment").start() == 0
+    # a banner or disclaimer on most mail
+    assert find_phrase(phrases, "CAUTION: Do not click links or open attachments unless you know the sender.") is None
+    assert find_phrase(phrases, "This e-mail and any attachments are confidential.") is None
+    assert find_phrase(phrases, "unattached") is None
+    assert find_phrase([""], "anything") is None
 
 
 #
@@ -218,6 +510,78 @@ def test_score_candidates_pdf_link_carrying_urls():
     ]
 
 
+BID_PORTAL = "https://bids.example.net/portal/login"
+CONTRACTOR = "https://www.contractor.example.com"
+
+
+@pytest.mark.unit
+def test_score_candidates_pdf_link_beats_a_signature_link():
+    # the body asks for the attachment and signs off above a link; the PDF has two links, and its text says which
+    # one is the lure
+    root = RootAnalysis()
+    signature = _candidate(root, SIGNATURE_LINK, [SOURCE_BODY], in_parsed_body=True,
+                           anchor=Anchor("signature", False, signature=True), signature=True)
+    portal = _candidate(root, BID_PORTAL, [SOURCE_ATTACHMENT], attachments=["bid.pdf"], pdf_link=True,
+                        anchor=Anchor("View Bid Documents", False, position=0, pdf=True), pdf_name="bid.pdf",
+                        pdf_link_count=2)
+    contractor = _candidate(root, CONTRACTOR, [SOURCE_ATTACHMENT], attachments=["bid.pdf"], pdf_link=True,
+                            anchor=Anchor("www.contractor.example.com", False, position=1, pdf=True),
+                            pdf_name="bid.pdf", pdf_link_count=2)
+
+    score_candidates([signature, portal, contractor], set(), LureURLSettings(),
+                     "Hi all,\nPlease review the attached bid documents and confirm by Friday.\nRespectfully,")
+
+    assert portal.reasons == [
+        "found in attachment bid.pdf",
+        "the email refers to its attachment: 'Please review the attached bid documents and confirm by Friday.'",
+        "clickable link in a PDF with text 'View Bid Documents'",
+        "call-to-action text (view)",
+    ]
+    assert portal.highlights[1] == ["Please review the attached bid documents and confirm by Friday."]
+    # body + clickable + call_to_action ("sign" in "signature") + signature_block
+    assert "in a signature block" in signature.reasons
+    assert signature.score == 40
+    assert contractor.score == 60
+    assert portal.score == 80
+    assert sorted([signature, contractor, portal], key=lambda c: c.rank_key) == [portal, contractor, signature]
+
+
+@pytest.mark.unit
+def test_score_candidates_context_signals_use_their_weights():
+    settings = LureURLSettings(
+        call_to_action_keywords=[], noise_keywords=[], benign_domains=[],
+        weights={"qr": 0, "body": 0, "attachment": 0, "clickable": 0, "only_domain": 0, "attachment_reference": 1,
+                 "only_link": 2, "signature_block": 4, "quoted_message": 8})
+    root = RootAnalysis()
+    only_link = _candidate(root, "https://a.example.net/", [SOURCE_ATTACHMENT], attachments=["one.pdf"],
+                           pdf_link=True, pdf_name="one.pdf", pdf_link_count=1)
+    quoted_signature = _candidate(root, "https://b.example.org/", [SOURCE_BODY], signature=True, quoted=True)
+    in_body_and_attachment = _candidate(root, "https://c.example.com/", [SOURCE_BODY, SOURCE_ATTACHMENT],
+                                        attachments=["two.pdf"])
+
+    score_candidates([only_link, quoted_signature, in_body_and_attachment], set(), settings,
+                     "the documents are enclosed")
+
+    # attachment_reference + only_link
+    assert only_link.score == 3
+    assert "the only link in one.pdf" in only_link.reasons
+    # signature_block + quoted_message
+    assert quoted_signature.score == 12
+    assert "in an earlier message the email quotes" in quoted_signature.reasons
+    # a link the body has itself is scored as a body link
+    assert in_body_and_attachment.score == 0
+
+
+@pytest.mark.unit
+def test_score_candidates_no_attachment_reference():
+    root = RootAnalysis()
+    attached = _candidate(root, "https://attached.example.org/b", [SOURCE_ATTACHMENT], attachments=["statement.html"])
+
+    score_candidates([attached], set(), LureURLSettings(), "Your statement is ready.")
+
+    assert not any(r.startswith("the email refers to its attachment") for r in attached.reasons)
+
+
 @pytest.mark.unit
 def test_highlights_link_text():
     root = RootAnalysis()
@@ -310,6 +674,21 @@ def test_rank_key_is_stable():
     # equal scores: by position in the body, then by value, never by the order they came in
     ranked = sorted([no_anchor_z, second, no_anchor_a, first], key=lambda c: c.rank_key)
     assert ranked == [first, second, no_anchor_a, no_anchor_z]
+
+
+@pytest.mark.unit
+def test_rank_key_body_link_before_pdf_link():
+    root = RootAnalysis()
+    body_link = _candidate(root, "https://z.example.com/", [SOURCE_BODY], anchor=Anchor("body", False, position=3))
+    pdf_first = _candidate(root, "https://a.example.com/", [SOURCE_ATTACHMENT],
+                           anchor=Anchor("pdf", False, position=0, pdf=True))
+    pdf_second = _candidate(root, "https://b.example.com/", [SOURCE_ATTACHMENT],
+                            anchor=Anchor("pdf", False, position=1, pdf=True))
+    no_anchor = _candidate(root, "https://0.example.com/", [SOURCE_BODY])
+
+    # a PDF's link positions are not body positions: link 0 of a PDF does not come before link 3 of the body
+    ranked = sorted([no_anchor, pdf_second, pdf_first, body_link], key=lambda c: c.rank_key)
+    assert ranked == [body_link, pdf_first, pdf_second, no_anchor]
 
 
 @pytest.mark.unit
@@ -410,6 +789,94 @@ def test_collector_pdf_link_carrying_urls(root_analysis, tmp_path):
 
 
 @pytest.mark.integration
+def test_collector_pdf_link_text(root_analysis, tmp_path):
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, "<p>see the attached bid</p>")
+    pdf = _file(email_analysis, tmp_path, "bid.pdf", "%PDF-1.4")
+    pdf_analysis = PDFAnalysis()
+    pdf.add_analysis(pdf_analysis)
+    link_text = PDFLinkTextAnalysis()
+    pdf.add_analysis(link_text)
+    link_text.details = {"links": [
+        {"url": BID_PORTAL, "page": 1, "text": "View Bid Documents", "line": "Bids: View Bid Documents"},
+        # nothing under the link: the line it is on is the best there is
+        {"url": CONTRACTOR, "page": 2, "text": None, "line": "Visit www.contractor.example.com"},
+    ]}
+    annotations = _file(pdf_analysis, tmp_path, "bid.pdf.annotation_uris.txt", f"{BID_PORTAL}\n{CONTRACTOR}")
+    annotations.add_yara_meta("type", "document.pdf.annotation_uris")
+    _extracted(annotations, BID_PORTAL, CONTRACTOR)
+
+    collector = CandidateCollector(root_analysis.uuid)
+    candidates = {c.observable.value: c for c in collector.collect(email_analysis)}
+
+    portal = candidates[BID_PORTAL]
+    assert portal.anchor == Anchor("View Bid Documents", False, position=0, pdf=True)
+    assert (portal.pdf_name, portal.pdf_link_count) == ("bid.pdf", 2)
+    assert candidates[CONTRACTOR].anchor.text == "Visit www.contractor.example.com"
+    assert collector.body_text == "see the attached bid"
+
+
+@pytest.mark.integration
+def test_collector_pdf_link_text_after_a_reload(root_analysis, tmp_path):
+    # the lure's crawl delays the alert's analysis, so its later final passes read the tree back from disk
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, "<p>see the attached bid</p>")
+    pdf = _file(email_analysis, tmp_path, "bid.pdf", "%PDF-1.4")
+    pdf_analysis = PDFAnalysis()
+    pdf.add_analysis(pdf_analysis)
+    link_text = PDFLinkTextAnalysis()
+    pdf.add_analysis(link_text)
+    link_text.details = {"links": [{"url": BID_PORTAL, "page": 1, "text": "View Bid Documents", "line": None}]}
+    annotations = _file(pdf_analysis, tmp_path, "bid.pdf.annotation_uris.txt", BID_PORTAL)
+    annotations.add_yara_meta("type", "document.pdf.annotation_uris")
+    _extracted(annotations, BID_PORTAL)
+    root_analysis.save()
+
+    root = load_root(get_storage_dir(root_analysis.uuid))
+    reloaded = root.get_observable(email_file.uuid).get_and_load_analysis(EmailAnalysis)
+    [portal] = CandidateCollector(root.uuid).collect(reloaded)
+
+    assert portal.anchor == Anchor("View Bid Documents", False, position=0, pdf=True)
+
+
+@pytest.mark.integration
+def test_collector_pdf_analysis_without_links(root_analysis, tmp_path):
+    # an alert whose PDF has no link text analysis: pdf_link_text is disabled, or could not read the PDF
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, "<p>see the attached bid</p>")
+    pdf = _file(email_analysis, tmp_path, "bid.pdf", "%PDF-1.4")
+    pdf_analysis = PDFAnalysis()
+    pdf.add_analysis(pdf_analysis)
+    annotations = _file(pdf_analysis, tmp_path, "bid.pdf.annotation_uris.txt", BID_PORTAL)
+    annotations.add_yara_meta("type", "document.pdf.annotation_uris")
+    _extracted(annotations, BID_PORTAL)
+
+    [portal] = CandidateCollector().collect(email_analysis)
+
+    assert portal.pdf_link is True
+    assert portal.anchor is None and portal.pdf_name is None
+    score_candidates([portal], set(), SETTINGS)
+    assert "clickable link in a PDF" in portal.reasons
+
+
+@pytest.mark.integration
+def test_collector_signature_blocks(root_analysis, tmp_path):
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, THREAD_HTML)
+    _extracted(body, SIGNATURE_LINK, EARLIER, EARLIER_SIGNATURE)
+    # the plain text alternative of the same thread, with a URL the HTML part has only as an image
+    text = _file(email_analysis, tmp_path, "message.email.rfc822.unknown_text_plain_000.txt",
+                 f"Please review the attached bid documents.\nRespectfully,\nPat\n{LOGO}\n")
+    _extracted(text, LOGO)
+
+    collector = CandidateCollector(root_analysis.uuid)
+    candidates = {c.observable.value: c for c in collector.collect(email_analysis)}
+
+    assert (candidates[SIGNATURE_LINK].signature, candidates[SIGNATURE_LINK].quoted) == (True, False)
+    assert (candidates[EARLIER].signature, candidates[EARLIER].quoted) == (False, True)
+    assert (candidates[EARLIER_SIGNATURE].signature, candidates[EARLIER_SIGNATURE].quoted) == (True, True)
+    assert candidates[LOGO].signature is True
+    assert "Please review the attached bid documents and confirm by Friday." in collector.body_text
+    assert "Here is the" not in collector.body_text
+
+
+@pytest.mark.integration
 def test_collector_skips_inner_email(root_analysis, tmp_path):
     email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, "<p>see attached</p>")
     inner = _file(email_analysis, tmp_path, "message.email.rfc822.email.rfc822", "From: y")
@@ -432,10 +899,10 @@ def test_collector_unparseable_body(root_analysis, tmp_path, monkeypatch, caplog
     email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, LURE_HTML)
     _extracted(body, LURE)
 
-    def _fail(html):
+    def _fail(html, sign_offs):
         raise ValueError("bad markup")
 
-    monkeypatch.setattr(lure, "parse_body_anchors", _fail)
+    monkeypatch.setattr(lure, "parse_html_body", _fail)
     with caplog.at_level(logging.WARNING):
         [candidate] = CandidateCollector(root_analysis.uuid).collect(email_analysis)
 
@@ -760,6 +1227,43 @@ def test_engine_click_tracker_is_the_lure(root_analysis, tmp_path):
     for observable in root.get_observables_by_type(F_URL):
         if observable.value != TRACKER:
             assert not observable.has_directive(DIRECTIVE_CRAWL)
+
+
+def _bid_pdf() -> bytes:
+    """A PDF with two links, each over its own line of text."""
+    pdf = pikepdf.new()
+    font = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                                BaseFont=pikepdf.Name.Helvetica))
+    contents = pdf.make_stream(b"BT /F1 12 Tf 72 720 Td (View Bid Documents) Tj ET "
+                               b"BT /F1 12 Tf 72 680 Td (www.contractor.example.com) Tj ET")
+    links = [pdf.make_indirect(pikepdf.Dictionary(
+        Type=pikepdf.Name.Annot, Subtype=pikepdf.Name.Link, Rect=rect,
+        A=pikepdf.Dictionary(S=pikepdf.Name.URI, URI=pikepdf.String(url))))
+        for url, rect in ((BID_PORTAL, [70, 715, 300, 732]), (CONTRACTOR, [70, 675, 300, 692]))]
+    pdf.pages.append(pikepdf.Page(pikepdf.Dictionary(
+        Type=pikepdf.Name.Page, MediaBox=[0, 0, 612, 792], Resources=pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font)),
+        Contents=contents, Annots=pdf.make_indirect(pikepdf.Array(links)))))
+    output = io.BytesIO()
+    pdf.save(output)
+    return output.getvalue()
+
+
+@pytest.mark.integration
+def test_engine_bid_pdf_link_beats_the_signature_link(root_analysis, tmp_path):
+    message = _message("bid documents", html=THREAD_HTML,
+                       text="Please review the attached bid documents and confirm by Friday.\nRespectfully,\nPat")
+    message.add_attachment(_bid_pdf(), maintype="application", subtype="pdf", filename="bid.pdf")
+
+    root, analysis = _analyze(root_analysis, tmp_path, message, ("pdf_analyzer", "pdf_link_text"))
+
+    assert analysis.primary["url"] == BID_PORTAL
+    assert analysis.primary["anchor_text"] == "View Bid Documents"
+    assert "call-to-action text (view)" in analysis.primary["reasons"]
+    assert any(r.startswith("the email refers to its attachment") for r in analysis.primary["reasons"])
+    candidates = {c["url"]: c for c in analysis.candidates}
+    assert "in a signature block" in candidates[SIGNATURE_LINK]["reasons"]
+    assert candidates[CONTRACTOR]["anchor_text"] == "www.contractor.example.com"
+    assert candidates[CONTRACTOR]["score"] < analysis.primary["score"]
 
 
 @pytest.mark.integration
