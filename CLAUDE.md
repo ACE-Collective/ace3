@@ -82,25 +82,29 @@ ACE "integrations" tests are accessed through the `test_external_integration_*` 
 
 There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
-**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index) and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
+**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port and network semaphore port (`24443` and `53560`, plus 64 × the run's port block, plus the index), its Qdrant collection prefix `ace3-alerts-unittest-<checkout hash>-<slot>` and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-Start only one *run* of the test suite at a time per checkout and per container. The slots of one run are distinct, but a second run would reuse them: in the same checkout, their data directories; in the same container, their ports and their Qdrant collections, even from another checkout (a git worktree). Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+Start only one *run* of the test suite at a time per checkout. The slots of one run are distinct, but a second run of the same checkout would reuse their data directories and Qdrant collections. Runs of different checkouts (git worktrees in the same `dev` container) can run side by side: data directories and Qdrant collections are named after the checkout, and each run claims a port block of its own. Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
 
-This is enforced. `tests/session_lock.py` creates two marker files when a run starts (the
-xdist controller, or the only process of a plain run): `/tmp/ace-pytest-running`, in the
-container's own `/tmp`, and `$SAQ_HOME/.pytest-running`, in the checkout every container of
-the stack mounts. It removes both when the run ends (including on Ctrl-C and collection
-errors). While either file exists **no** other run that would see it may start —
+This is enforced. `tests/session_lock.py` creates a marker file, `$SAQ_HOME/.pytest-running`,
+when a run starts (the xdist controller, or the only process of a plain run), in the checkout
+every container of the stack mounts. It removes it when the run ends (including on Ctrl-C and
+collection errors). While it exists **no** other run of that checkout may start —
 `pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before collection,
 before any database access and before any data directory is wiped. There is no bypass flag.
-A marker records the pid, hostname, start time, checkout and command line of the process that
+The marker records the pid, hostname, start time, checkout and command line of the process that
 created it, and the error message says whether that process is still running or whether the
 marker was left behind by a run that was killed. In the latter case, clear it with the `rm`
 the message prints. Holding the checkout's marker is also what makes it safe for a run to drop
 the databases an earlier, killed run of that checkout left behind: the holder sweeps the
-checkout's registry in `pytest_configure`, before any of its workers provision.
+checkout's registry in `pytest_configure`, before any of its workers provision. The same process
+claims the run's port block (1 to 63) with an `flock` on `/tmp/ace-pytest-ports-<n>.lock`, trying
+the block its checkout hash picks first, and its workers inherit it through
+`ACE_UNITTEST_PORT_BLOCK`. The kernel drops the lock when the run dies, so a killed run never
+keeps a block. Block 0 is never claimed: it has the ports of a checkout whose suite predates
+port blocks.
 
-**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. While another checkout's run holds the container's marker, a worktree run is refused, and the message names that run's checkout.
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run does not wait for the main checkout's, or another worktree's.
 
 ### The standard analysis-module test
 

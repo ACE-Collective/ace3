@@ -4,10 +4,13 @@
 #
 # under pytest-xdist every worker is its own pytest session, and several things a session
 # uses are host-wide: the data directory, the API server port, the network semaphore port,
-# the log file. each pytest process therefore gets a slot -- its xdist worker id (gw0, gw1,
-# ...) or "main" when not running under xdist -- and everything per-process is derived from
-# it here. the values reach the configuration through the same SAQ_UNITTEST_CONFIG_PATHS
-# overlay that tests/unittest_database.py writes for the per-session database names.
+# the Qdrant collections, the log file. each pytest process therefore gets a slot -- its xdist
+# worker id (gw0, gw1, ...) or "main" when not running under xdist -- and everything
+# per-process is derived from it here, together with what keeps one run's slots apart from
+# another's: the checkout's path (data directory, Qdrant collections; the log file is inside
+# the checkout) and the port block the run claimed (tests/session_lock.py). the values reach
+# the configuration through the same SAQ_UNITTEST_CONFIG_PATHS overlay that
+# tests/unittest_database.py writes for the per-session database names.
 #
 # this module deliberately imports nothing from saq: it runs before the configuration is
 # loaded, and bin/cleanup-unittest-databases.py imports it from outside a session.
@@ -28,6 +31,13 @@ WORKER_ENV_VAR = "PYTEST_XDIST_WORKER"
 
 API_BASE_PORT = 24443
 NETWORK_SEMAPHORE_BASE_PORT = 53560
+
+# a run's ports are base + block * PORT_BLOCK_SIZE + slot index, so PORT_BLOCK_SIZE is also the
+# most xdist workers a run can have. 64 blocks keep the ports below 28539 and 57656.
+PORT_BLOCK_SIZE = 64
+PORT_BLOCK_COUNT = 64
+# the block the run's controller claimed, inherited by its xdist workers
+PORT_BLOCK_ENV_VAR = "ACE_UNITTEST_PORT_BLOCK"
 
 LOG_DIR = os.path.join("data", "logs")
 LOGGING_CONFIG_PATH = os.path.join("etc", "logging_configs", "unittest_logging.yaml")
@@ -88,20 +98,43 @@ def get_data_dir_root() -> str:
     mount from the host, where every mkdir and unlink is a round trip out of the VM, and the
     suite deletes and recreates a data directory before every integration test. One per
     checkout, named by a hash of its path, so two checkouts never share one."""
+    return os.path.join(DATA_DIR_BASE, get_checkout_hash())
+
+
+def get_checkout_hash() -> str:
+    """Names what belongs to this checkout in resources other checkouts share."""
     checkout = os.path.realpath(get_project_root())
-    return os.path.join(DATA_DIR_BASE, hashlib.sha256(checkout.encode()).hexdigest()[:12])
+    return hashlib.sha256(checkout.encode()).hexdigest()[:12]
 
 
 def get_session_data_dir() -> str:
     return os.path.join(get_data_dir_root(), get_slot())
 
 
+def get_port_block() -> int:
+    value = os.environ.get(PORT_BLOCK_ENV_VAR)
+    if value is None:
+        raise RuntimeError(f"{PORT_BLOCK_ENV_VAR} is not set: the run claims its port block in "
+                           "pytest_configure (tests/session_lock.py), before its xdist workers start")
+
+    return int(value)
+
+
+def get_port_offset() -> int:
+    index = get_slot_index()
+    if index >= PORT_BLOCK_SIZE:
+        raise ValueError(f"slot {get_slot()} does not fit in a port block of {PORT_BLOCK_SIZE} "
+                         f"slots: run with at most {PORT_BLOCK_SIZE} xdist workers")
+
+    return get_port_block() * PORT_BLOCK_SIZE + index
+
+
 def get_api_port() -> int:
-    return API_BASE_PORT + get_slot_index()
+    return API_BASE_PORT + get_port_offset()
 
 
 def get_network_semaphore_port() -> int:
-    return NETWORK_SEMAPHORE_BASE_PORT + get_slot_index()
+    return NETWORK_SEMAPHORE_BASE_PORT + get_port_offset()
 
 
 def session_overrides() -> dict:
@@ -125,7 +158,8 @@ def session_overrides() -> dict:
             "remote_port": semaphore_port,
             "stats_dir": os.path.join(data_dir, "var", "network_semaphore"),
         },
-        "qdrant": {"collection_prefix": f"ace3-alerts-unittest-{slot}"},
+        # the stack's Qdrant is shared by every checkout
+        "qdrant": {"collection_prefix": f"ace3-alerts-unittest-{get_checkout_hash()}-{slot}"},
     }
 
 
