@@ -657,17 +657,18 @@ def pytest_sessionstart(session):
         load_integration_component_src(dir_path)
 
 #
-# one *run* of the test suite at a time per checkout and per container: a run may spread over
-# pytest-xdist workers (each one its own databases, data directory, ports and log file, keyed
-# by its slot -- see tests/unittest_session.py), but two runs would collide on the slot's
-# data directory, ports and Qdrant collections, and the stale-database sweep below is only
-# safe when nothing else is provisioning. marker files make that constraint mechanical
-# instead of a rule people remember; see tests/session_lock.py. under xdist the controller
-# takes them and the workers ride on them.
+# one *run* of the test suite at a time per checkout: a run may spread over pytest-xdist
+# workers (each one its own databases, data directory, ports and log file, keyed by its slot --
+# see tests/unittest_session.py), but two runs of one checkout would collide on the slot's data
+# directory and Qdrant collections, and the stale-database sweep below is only safe when
+# nothing else is provisioning. a marker file makes that constraint mechanical instead of a
+# rule people remember, and a claimed port block keeps the ports of runs of different
+# checkouts apart; see tests/session_lock.py. under xdist the controller takes both and the
+# workers ride on them.
 #
 
-# True only if *this* process created the marker files. pytest_unconfigure runs even when
-# pytest_configure raised, so without this a blocked session would delete the live session's markers.
+# True only if *this* process created the marker file. pytest_unconfigure runs even when
+# pytest_configure raised, so without this a blocked session would delete the live session's marker.
 SESSION_LOCK_HELD = False
 
 def pytest_configure(config):

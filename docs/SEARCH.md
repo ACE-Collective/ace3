@@ -318,7 +318,7 @@ ai_api:
   search_limits: { max_concurrency, requests_per_minute, hourly_budget, max_query_timeout }
 ```
 
-The unittest overlay disables the service and uses the `ace3-alerts-unittest` prefix.
+The unittest overlay disables the service and uses the `ace3-alerts-unittest` prefix, which each test process extends with its checkout's hash and its slot (`tests/unittest_session.py`), so runs of different checkouts never share a collection.
 
 ## 6. Operations
 
