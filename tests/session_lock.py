@@ -1,22 +1,22 @@
 # vim: sw=4:ts=4:et
 #
-# the ACE test suite is not safe to run more than once at a time
+# the ACE test suite is not safe to run more than once at a time in one checkout
 #
 # every pytest process owns a slot (tests/unittest_session.py) that decides its data directory
-# (under get_data_dir_root()), its API and network semaphore ports and its log file; the
-# process deletes and recreates that data directory at session start and again before every
-# integration/system test. the slots of a pytest-xdist run are distinct, but a second run would
-# reuse them, so two runs at the same time destroy each other's state, and (with pytest-randomly
-# shuffling order) the resulting failures land somewhere unrelated and look like ordinary test
-# bugs.
+# (under get_data_dir_root()), its API and network semaphore ports, its Qdrant collections and
+# its log file; the process deletes and recreates that data directory at session start and
+# again before every integration/system test. the slots of a pytest-xdist run are distinct, but
+# a second run of the same checkout would reuse them, so two runs at the same time destroy each
+# other's state, and (with pytest-randomly shuffling order) the resulting failures land
+# somewhere unrelated and look like ordinary test bugs.
 #
-# so a run takes a marker file on the way in and drops it on the way out: the xdist controller,
-# or the only process of a plain run. while that file exists no other run is allowed to start.
+# so a run takes a marker file in $SAQ_HOME on the way in and drops it on the way out: the
+# xdist controller, or the only process of a plain run. while that file exists no other run of
+# the checkout is allowed to start, from any container the checkout is bind mounted into.
 #
-# it takes two. the one in $SAQ_HOME guards the checkout's own data directories, and every
-# container the checkout is bind mounted into sees it. the one in /tmp guards what every checkout
-# run in the same container shares: the slots' ports, and the slots' collections in the stack's
-# Qdrant. git worktrees of the main checkout run the suite in the same dev container.
+# runs of different checkouts (git worktrees run the suite in the same dev container) may run
+# side by side. the data directory, the log file and the Qdrant collections are named after the
+# checkout; the ports, which are the container's, come from a port block the run claims here.
 #
 # the databases are not part of this: every session provisions its own set (see
 # tests/unittest_database.py). the marker is still what makes their cleanup safe, though --
@@ -25,15 +25,21 @@
 #
 
 import datetime
+import fcntl
 import json
 import os
 import socket
 import sys
 from typing import Optional
 
+from tests import unittest_session
+
 MARKER_FILENAME = ".pytest-running"
-# the container's own /tmp, which every checkout run in it shares and nothing outside it sees
-HOST_MARKER_PATH = "/tmp/ace-pytest-running"
+# the container's own /tmp, which every checkout run in it shares, as the ports are
+PORT_BLOCK_LOCK_PATH_FORMAT = "/tmp/ace-pytest-ports-{}.lock"
+
+# the open lock file of the port block this process claimed for its run
+_port_block_fd: Optional[int] = None
 
 
 class SessionLockError(Exception):
@@ -49,30 +55,64 @@ def get_marker_path() -> str:
     return os.path.join(os.environ.get("SAQ_HOME", os.getcwd()), MARKER_FILENAME)
 
 
-def get_marker_paths() -> list[str]:
-    """Returns the marker files a run takes: the host's, then its checkout's."""
-    return [HOST_MARKER_PATH, get_marker_path()]
-
-
 def acquire_run():
-    """Creates every marker file a run takes, or none of them.
+    """Creates the checkout's marker file and claims a port block for the run, or does neither.
 
-    Raises SessionLockError, explaining the run that holds it, for the first one that exists."""
-    acquired = []
+    Raises SessionLockError, explaining the run that holds it, if the marker exists, or if every
+    port block is taken."""
+    global _port_block_fd
+
+    path = get_marker_path()
+    acquire(path)
     try:
-        for path in get_marker_paths():
-            acquire(path)
-            acquired.append(path)
+        block, _port_block_fd = claim_port_block()
     except SessionLockError:
-        for path in acquired:
-            release(path)
+        release(path)
         raise
+
+    # the xdist workers, which start after pytest_configure, inherit it
+    os.environ[unittest_session.PORT_BLOCK_ENV_VAR] = str(block)
 
 
 def release_run():
-    """Removes every marker file a run takes. Only for the process that acquire_run() succeeded in."""
-    for path in get_marker_paths():
-        release(path)
+    """Undoes acquire_run(). Only for the process that acquire_run() succeeded in."""
+    global _port_block_fd
+
+    release(get_marker_path())
+    if _port_block_fd is not None:
+        os.close(_port_block_fd)
+        _port_block_fd = None
+
+    os.environ.pop(unittest_session.PORT_BLOCK_ENV_VAR, None)
+
+
+def claim_port_block() -> tuple[int, int]:
+    """Locks the first free port block, trying the checkout's own block first, and returns the
+    block and the open lock file, which holds the block until it is closed.
+
+    An flock and not a marker file: the kernel drops it when its holder dies, so a run that was
+    killed never keeps a block. Starting at the checkout's block keeps each checkout on its own
+    ports unless two checkouts' hashes pick the same block, and then the second takes the next.
+
+    Block 0 is never claimed: it has the ports of a checkout whose suite predates port blocks,
+    which knows nothing of these locks."""
+    blocks = unittest_session.PORT_BLOCK_COUNT - 1
+    first = int(unittest_session.get_checkout_hash(), 16) % blocks
+    for offset in range(blocks):
+        block = 1 + (first + offset) % blocks
+        fd = os.open(PORT_BLOCK_LOCK_PATH_FORMAT.format(block), os.O_RDONLY | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # another run holds this block
+            os.close(fd)
+            continue
+
+        return block, fd
+
+    raise SessionLockError(
+        f"\nevery one of the {blocks} test suite port blocks is held by a "
+        f"running test suite ({PORT_BLOCK_LOCK_PATH_FORMAT.format('*')}): wait for one of them to finish\n")
 
 
 def acquire(path: Optional[str] = None) -> bool:
@@ -168,10 +208,10 @@ def describe_holder(path: str) -> str:
         "",
         f"the ACE test suite marker file exists: {path}",
         "",
-        "the test suite is not safe to run more than once at a time in one checkout or one",
-        "container -- each run deletes and recreates its per-slot data directories, binds",
-        "fixed per-slot ports and writes per-slot Qdrant collections, so concurrent runs corrupt",
-        "each other. (a single run may use pytest-xdist: pytest -n auto)",
+        "the test suite is not safe to run more than once at a time in one checkout -- each",
+        "run deletes and recreates the checkout's per-slot data directories and writes its",
+        "per-slot Qdrant collections, so concurrent runs corrupt each other. (a single run may",
+        "use pytest-xdist: pytest -n auto, and other checkouts may run at the same time)",
         "",
     ]
 

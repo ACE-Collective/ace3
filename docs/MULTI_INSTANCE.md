@@ -155,15 +155,15 @@ file's directory, which is the behaviour such a deployment already has.
 
 Two instances can run the suite at the same time. They do not share state:
 
-- the run markers live at `$SAQ_HOME/.pytest-running`, which is each stack's own
-  bind-mounted checkout, and `/tmp/ace-pytest-running`, which is each container's own
-  (`tests/session_lock.py`);
+- the run marker lives at `$SAQ_HOME/.pytest-running`, which is each stack's own
+  bind-mounted checkout, and the port block locks at `/tmp/ace-pytest-ports-<n>.lock`, which
+  are each container's own (`tests/session_lock.py`);
 - each session provisions its own databases on its own `ace-db`;
 - the suite's API (24443+) and network-semaphore (53560+) ports are internal to the container
   and never published to the host.
 
-`CLAUDE.md`'s rule against starting more than one run at a time is about one checkout and one
-container, not one host.
+`CLAUDE.md`'s rule against starting more than one run at a time is about one checkout, not one
+container or one host.
 
 ## Upgrading an existing environment
 
