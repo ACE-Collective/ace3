@@ -67,7 +67,7 @@ api:
   ssl_cert: ssl/ace.cert.pem
   ssl_key: ssl/ace.key.pem
   # listen on a different port since apache already has 443 taken (most likely)
-  # (the test suite adds the pytest-xdist worker index to this port per slot)
+  # (the test suite overrides this port per slot -- see tests/unittest_session.py)
   listen_port: 24443
   prefix: localhost:24443
   api_key: dcef0db0-556f-44b3-9e1b-3d97b435d264
@@ -586,7 +586,7 @@ module_group_queues:
     #- analysis_cache_test
 
 service_network_semaphore:
-  # (the test suite adds the pytest-xdist worker index to these ports per slot)
+  # (the test suite overrides these ports per slot -- see tests/unittest_session.py)
   bind_address: 127.0.0.1
   bind_port: 53560
   remote_address: 127.0.0.1
