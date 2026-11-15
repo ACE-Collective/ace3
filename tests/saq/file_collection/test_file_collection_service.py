@@ -99,6 +99,11 @@ def test_start_single_threaded_stops_on_shutdown(db_alert, file_collector_sectio
     service.stop()
     service.wait()
 
+    # the two left in the queue are released for the next start rather than left locked
+    get_db().expire_all()
+    rows = get_db().query(FileCollection).filter(FileCollection.id.in_(ids), FileCollection.status != FileCollectionStatus.COMPLETED.value).all()
+    assert [(row.lock, row.lock_time) for row in rows] == [(None, None)] * 2
+
 
 @pytest.mark.integration
 def test_service_lifecycle(db_alert, file_collector_sections, service_config):

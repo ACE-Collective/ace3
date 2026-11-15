@@ -52,6 +52,7 @@ def build_work_item(row: ExternalRemediationCheck) -> CheckWorkItem:
         max_retries=row.max_retries,
         deadline=row.deadline,
         context=_decode_context(row),
+        lock=row.lock,
     )
 
 

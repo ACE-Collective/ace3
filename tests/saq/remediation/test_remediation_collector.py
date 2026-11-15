@@ -1,3 +1,4 @@
+import logging
 from uuid import uuid4
 import pytest
 from sqlalchemy import func
@@ -167,3 +168,74 @@ def test_collection_loop_processes_multiple_listeners():
     # verify each listener received their work items
     assert {item.id for item in listener1.remediations} == {id_1, id_3}
     assert [item.id for item in listener2.remediations] == [id_2]
+
+
+def _lock(remediation_id: int) -> tuple:
+    get_db().expire_all()
+    remediation = get_db().query(Remediation).filter(Remediation.id == remediation_id).one()
+    return remediation.lock, remediation.lock_time
+
+
+@pytest.mark.integration
+def test_release_unlocks_rows_still_holding_the_collectors_lock(caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    target = RemediationTarget("custom", F_TEST, "test")
+    ids = [target.queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id) for _ in range(2)]
+    work_items = collector.collect_work_items()
+    assert sorted(work_item.id for work_item in work_items) == sorted(ids)
+    assert all(work_item.lock is not None for work_item in work_items)
+
+    # the second row's lock timed out and another node locked it again
+    get_db().execute(Remediation.__table__.update().values(lock="other node").where(Remediation.id == ids[1]))
+    get_db().commit()
+    caplog.set_level(logging.INFO)
+
+    collector.release(work_items)
+
+    assert _lock(ids[0]) == (None, None)
+    assert _lock(ids[1])[0] == "other node"
+    assert any(r.levelno == logging.INFO and "released 1 of 2 queued remediation rows" in r.getMessage() for r in caplog.records)
+    # the released row is collected again without waiting out the lock timeout
+    assert [work_item.id for work_item in collector.collect_work_items()] == [ids[0]]
+
+
+@pytest.mark.integration
+def test_release_logs_failure_and_leaves_rows_locked(monkeypatch, caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    work_items = collector.collect_work_items()
+
+    class _UnreachableDatabase:
+        def execute(self, statement):
+            raise RuntimeError("database is gone")
+
+    monkeypatch.setattr("saq.queue_service.get_db", lambda: _UnreachableDatabase())
+
+    collector.release(work_items)
+
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert f"unable to release queued remediation rows [{remediation_id}]: database is gone" in errors[0].getMessage()
+    assert _lock(remediation_id)[0] == work_items[0].lock
+
+
+@pytest.mark.integration
+def test_release_logs_failed_session_reset(monkeypatch, caplog):
+    collector = RemediationCollector()
+    collector.register_listener("custom", TestRemediationListener())
+    remediation_id = RemediationTarget("custom", F_TEST, "test").queue_remediation(RemediationAction.REMOVE, get_config().global_settings.automation_user_id)
+    work_items = collector.collect_work_items()
+
+    def _fail():
+        raise RuntimeError("pool gone")
+
+    monkeypatch.setattr("saq.queue_service.remove_all_sessions", _fail)
+
+    collector.release(work_items)
+
+    assert _lock(remediation_id) == (None, None)
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
+    assert len(errors) == 1
+    assert "error removing database connection: pool gone" in errors[0].getMessage()

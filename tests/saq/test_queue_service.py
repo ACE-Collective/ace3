@@ -14,6 +14,7 @@ from tests.saq.helpers import wait_for_condition
 class Item:
     id: int
     name: str
+    lock: Optional[str] = None
 
 
 class FakeCollector(QueueCollector[Item]):
@@ -24,6 +25,8 @@ class FakeCollector(QueueCollector[Item]):
         # what each call to collect_work_items returns (or raises), then nothing
         self.batches = list(batches or [])
         self.calls = 0
+        # what each call to release was given
+        self.released: list[list[Item]] = []
 
     def collect_work_items(self) -> list[Item]:
         self.calls += 1
@@ -36,6 +39,9 @@ class FakeCollector(QueueCollector[Item]):
 
     def build_work_item(self, row) -> Item:
         return row
+
+    def release(self, work_items: list[Item]):
+        self.released.append(work_items)
 
 
 class FakeWorker(QueueWorker[Item]):
@@ -320,6 +326,17 @@ def test_worker_start_single_threaded_stops_on_shutdown(session_resets, monkeypa
     assert worker.work_queue.qsize() == 2
 
 
+@pytest.mark.unit
+def test_worker_take_queued_empties_the_queue():
+    worker = FakeWorker()
+    for id in range(3):
+        worker.handle_request(Item(id, "fake"))
+
+    assert [item.id for item in worker.take_queued()] == [0, 1, 2]
+    assert worker.work_queue.empty()
+    assert worker.take_queued() == []
+
+
 #
 # manager and service
 #
@@ -383,3 +400,40 @@ def test_service_start_single_threaded_collects_once_and_drains(session_resets):
     assert collector.collector_thread is None
     assert not a.worker_threads and not b.worker_threads
     service.wait()
+
+
+@pytest.mark.unit
+def test_manager_wait_releases_items_queued_after_the_workers_exited(session_resets):
+    a, b = FakeWorker("a"), FakeWorker("b")
+    collector = FakeCollector([[Item(1, "a"), Item(2, "b"), Item(3, "a")]], loop_interval_seconds=0.01)
+    manager = FakeManager(collector, [a, b])
+    manager.load_workers()
+    a.start()
+    b.start()
+    assert a.wait_for_start(5) and b.wait_for_start(5)
+
+    manager.stop()
+    for worker in (a, b):
+        for thread in worker.worker_threads:
+            thread.join(5)
+    # a collection pass that was running during the stop hands out its items after the workers are gone
+    collector.collection_loop()
+    manager.wait()
+
+    assert a.processed == [] and b.processed == []
+    assert [[item.id for item in items] for items in collector.released] == [[1, 3], [2]]
+    assert a.work_queue.empty() and b.work_queue.empty()
+
+
+@pytest.mark.unit
+def test_release_without_locked_items_touches_no_database(monkeypatch, session_resets):
+    # an item with no lock has no row of this collector's to release
+    def _no_database():
+        raise AssertionError("release() reached the database")
+
+    monkeypatch.setattr("saq.queue_service.get_db", _no_database)
+
+    QueueCollector.release(FakeCollector(), [Item(1, "fake")])
+    QueueCollector.release(FakeCollector(), [])
+
+    assert session_resets == []
