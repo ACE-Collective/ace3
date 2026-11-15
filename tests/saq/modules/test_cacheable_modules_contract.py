@@ -26,8 +26,11 @@ Two-layer enforcement:
 """
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
 from typing import NamedTuple
 
+import pikepdf
 import pytest
 import yaml
 
@@ -48,6 +51,7 @@ from saq.constants import (
     FILE_SUBDIR,
     AnalysisExecutionResult,
 )
+from saq.modules.file_analysis.pdf import PDFLinkTextAnalysis, PDFLinkTextAnalyzer
 from saq.util.hashing import is_sha256_hex
 from tests.saq.helpers import create_root_analysis
 from tests.saq.test_util import create_test_context
@@ -382,6 +386,41 @@ class ContractCheck(NamedTuple):
     file_capable: bool  # True: module may spawn file observables (Phase 4)
 
 
+def _check_pdf_link_text(monkeypatch):
+    """Runs PDFLinkTextAnalyzer against a synthetic one-page PDF with one link annotation. pdftotext runs for real
+    in the sandbox: its output is a pure function of the file."""
+    pdf = pikepdf.new()
+    font = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1,
+                                                BaseFont=pikepdf.Name.Helvetica))
+    link = pdf.make_indirect(pikepdf.Dictionary(
+        Type=pikepdf.Name.Annot, Subtype=pikepdf.Name.Link, Rect=[72, 700, 300, 740],
+        A=pikepdf.Dictionary(S=pikepdf.Name.URI, URI=pikepdf.String("https://example.com/portal"))))
+    pdf.pages.append(pikepdf.Page(pikepdf.Dictionary(
+        Type=pikepdf.Name.Page, MediaBox=[0, 0, 612, 792],
+        Resources=pikepdf.Dictionary(Font=pikepdf.Dictionary(F1=font)),
+        Contents=pdf.make_stream(b"BT /F1 24 Tf 72 720 Td (View Documents) Tj ET"),
+        Annots=pdf.make_indirect(pikepdf.Array([link])))))
+    path = Path(tempfile.mkdtemp()) / "contract.pdf"
+    pdf.save(path)
+
+    root = _contract_root()
+    obs = root.add_file_observable(str(path))
+
+    analyzer = PDFLinkTextAnalyzer(
+        context=create_test_context(root=root),
+        config=get_analysis_module_config("pdf_link_text"),
+    )
+
+    before = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+    result = analyzer.execute_analysis(obs)
+    after = ModuleExecutionSnapshot.narrow(root, obs, analyzer)
+
+    assert result == AnalysisExecutionResult.COMPLETED
+    analysis = obs.get_analysis(PDFLinkTextAnalysis)
+    assert analysis.error is None and analysis.links[0]["text"] == "View Documents", "pdf_link_text placed no text"
+    return ModuleExecutionSnapshot.diff(before, after, analyzer, obs), root
+
+
 # Registry of contract checkers — one entry per module with cache_ttl
 # set in any deployed YAML. Adding a new ``cache_ttl`` to a module
 # without registering it here fails
@@ -396,6 +435,7 @@ CONTRACT_CHECKERS: dict[str, ContractCheck] = {
     "analysis_module_ocr": ContractCheck(_check_ocr, file_capable=True),
     "analysis_module_qrcode": ContractCheck(_check_qrcode, file_capable=True),
     "analysis_module_phishkit_analyzer": ContractCheck(_check_phishkit, file_capable=True),
+    "analysis_module_pdf_link_text": ContractCheck(_check_pdf_link_text, file_capable=False),
 }
 
 

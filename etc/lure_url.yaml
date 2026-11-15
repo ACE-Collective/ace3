@@ -53,8 +53,45 @@ benign_domains:
   - fonts.googleapis.com
   - fonts.gstatic.com
 
+# phrases in the newest message of the email, before its signature, that refer to its attachment,
+# e.g. "review the attached documents" (whole words, case-insensitive: "attached" does not match
+# the "open attachments" of an external sender banner). Links found in attachments then get the
+# attachment_reference weight
+attachment_reference_keywords:
+  - please find attached
+  - attached
+  - enclosed
+  - see attachment
+  - see the attachment
+  - open the attachment
+  - review the attachment
+
+# a line that starts with one of these, and either ends there or goes on after a comma or other
+# punctuation ("Respectfully," "Thanks, Sam"), ends the text of its message: the lines below it
+# are a signature block, which runs to the start of the next message of the thread
+# (case-insensitive). The first line of a message, or one followed by a sentence, is not a sign-off
+sign_off_phrases:
+  - regards
+  - best regards
+  - kind regards
+  - warm regards
+  - respectfully
+  - sincerely
+  - thanks
+  - thank you
+  - many thanks
+  - best
+  - cheers
+  - cordially
+
 # how many ranked candidates to keep, the primary included
 max_candidates: 5
+
+# a line of more words than this is a sentence; a line of at least sentence_end_words words that
+# ends in . ? ! or : is one too. A sentence right after a sign-off line means it was not one ("Thank
+# you!" above "Your payment was received and your receipt is ready.")
+sentence_words: 12
+sentence_end_words: 8
 
 # add the crawl directive to the primary lure URL so phishkit records its landing page
 crawl_primary: true
@@ -69,20 +106,28 @@ weights:
   body: 20
   # found in an attachment (when not also in the body)
   attachment: 15
+  # found in an attachment, and the newest message refers to the attachment
+  attachment_reference: 20
   # a clickable link in the body, or a PDF link annotation
   clickable: 25
   # the link is styled as a button
   button: 15
-  # the link text contains a call_to_action_keywords entry
+  # the link text (in a PDF, the text under the link) contains a call_to_action_keywords entry
   call_to_action: 20
   # the only linked domain that is not the sender's
   only_domain: 10
+  # the only link in its PDF
+  only_link: 10
   # unwrapped from a protected URL (safelinks, urldefense, ...)
   unwrapped: 5
   # the URL has detection points
   detection: 30
   # in a parsed HTML body, but not as a link
   not_a_link: -15
+  # in a signature block, below a sign_off_phrases line
+  signature_block: -25
+  # in an earlier message the email quotes; 0 because a phish forwarded inline has its lure there
+  quoted_message: 0
   # same registered domain as the From or Return-Path address
   sender_domain: -20
   # the URL or link text contains a noise_keywords entry
