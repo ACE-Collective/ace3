@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from subprocess import PIPE
-from typing import Optional, Type, override
+from typing import Iterator, Optional, Type, override
 from pydantic import Field
 from saq.analysis.analysis import Analysis
 from saq.constants import AnalysisExecutionResult, DIRECTIVE_EXTRACT_URLS, F_FILE, R_EXTRACTED_FROM
@@ -88,6 +88,17 @@ def link_text(rect: list[float], mediabox: list[float], index: WordIndex,
             under.append(text)
 
     return " ".join(under)[:LINK_TEXT_MAX_LEN] or None, " ".join(line)[:LINK_TEXT_MAX_LEN] or None
+
+
+def iter_uri_annotations(pdf) -> Iterator[tuple[int, object, object, str]]:
+    """Yields (page number, page, annotation, URI) for each annotation of pdf whose action opens a URI: the links
+    pdf_analyzer extracts and pdf_link_text finds the text of, which the lure analyzer matches by URL."""
+    for number, page in enumerate(pdf.pages, start=1):
+        for annot in page.get("/Annots") or []:
+            action = annot.get("/A")
+            uri = action.get("/URI") if action else None
+            if uri:
+                yield number, page, annot, str(uri)
 
 
 def _annotation_rect(annot) -> Optional[list[float]]:
@@ -218,17 +229,7 @@ class PDFAnalyzer(AnalysisModule):
             # this handles AES-encrypted PDFs that ghostscript may not fully decrypt
             uris_output_file = f"{local_file_path}.annotation_uris.txt"
             try:
-                uris = []
-                for page in pdf.pages:
-                    annots = page.get('/Annots')
-                    if not annots:
-                        continue
-                    for annot in annots:
-                        action = annot.get('/A')
-                        if action:
-                            uri = action.get('/URI')
-                            if uri:
-                                uris.append(str(uri))
+                uris = [uri for _, _, _, uri in iter_uri_annotations(pdf)]
 
                 if uris:
                     with open(uris_output_file, 'w') as fp:
@@ -617,8 +618,9 @@ class PDFLinkTextAnalyzer(AnalysisModule):
         try:
             failure = self.place_link_text(_file, links)
         except Exception as e:
-            # the sender's doing as well; the links are kept without their text
-            logging.warning(f"cannot place the link text of {local_file_path}", exc_info=True, extra=extra)
+            # pdftotext's failures are returned, and pikepdf hands over a valid media box, so this is a bug or a node
+            # that cannot start the sandbox: an error report, and the links are kept without their text
+            logging.exception(f"cannot place the link text of {local_file_path}", extra=extra)
             failure = f"placing the link text raised {type(e).__name__}"
         if failure:
             # not an answer to cache: the next alert with this PDF tries again
@@ -630,25 +632,20 @@ class PDFLinkTextAnalyzer(AnalysisModule):
         """Returns the PDF's link annotations, each (URL, page, box) once and at most max_links of them, and whether
         there were more."""
         links, seen, truncated = [], set(), False
-        for number, page in enumerate(pdf.pages, start=1):
-            for annot in page.get("/Annots") or []:
-                action = annot.get("/A")
-                uri = action.get("/URI") if action else None
-                if not uri:
-                    continue
-                rect = _annotation_rect(annot)
-                key = (str(uri), number, tuple(rect) if rect else None)
-                if key in seen:
-                    continue
-                if len(links) >= self.config.max_links:
-                    truncated = True
-                    continue
-                seen.add(key)
-                links.append({"url": str(uri), "page": number, "rect": rect,
-                              # pdftotext places the words of a rotated page in the rotated frame
-                              "rotated": bool(int(page.get("/Rotate", 0)) % 360),
-                              "mediabox": [float(value) for value in page.mediabox],
-                              "text": _annotation_contents(annot), "line": None})
+        for number, page, annot, uri in iter_uri_annotations(pdf):
+            rect = _annotation_rect(annot)
+            key = (uri, number, tuple(rect) if rect else None)
+            if key in seen:
+                continue
+            if len(links) >= self.config.max_links:
+                truncated = True
+                continue
+            seen.add(key)
+            links.append({"url": uri, "page": number, "rect": rect,
+                          # pdftotext places the words of a rotated page in the rotated frame
+                          "rotated": bool(int(page.get("/Rotate", 0)) % 360),
+                          "mediabox": [float(value) for value in page.mediabox],
+                          "text": _annotation_contents(annot), "line": None})
         return links, truncated
 
     def place_link_text(self, _file: FileObservable, links: list[dict]) -> Optional[str]:

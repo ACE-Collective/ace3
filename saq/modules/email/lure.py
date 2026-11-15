@@ -68,6 +68,8 @@ DEFAULT_SIGN_OFF_PHRASES = [
 
 # a line longer than this is not a sign-off
 SIGN_OFF_MAX_LEN = 80
+# what follows a sign-off phrase on its line is a name of at most this many words ("Thanks, Pat Doe")
+SIGN_OFF_NAME_WORDS = 4
 # how much of the newest message's text is kept to look for a reference to the attachment
 MAX_NEWEST_TEXT = 20_000
 # the containers mail clients put an earlier, quoted message of a thread in (Gmail, Yahoo, Thunderbird)
@@ -335,7 +337,8 @@ def _is_button(tag) -> bool:
 
 
 def is_sign_off(line: str, phrases: list[str]) -> bool:
-    """Whether line closes a message: "Respectfully," or "Thanks, Sam", but not "Thanks for the bid"."""
+    """Whether line closes a message: "Respectfully," or "Thanks, Sam", but neither "Thanks for the bid" nor
+    "Thanks, please review the attached invoice.", which goes on with the message."""
     if len(line) > SIGN_OFF_MAX_LEN:
         return False
     lower = line.lower()
@@ -345,8 +348,15 @@ def is_sign_off(line: str, phrases: list[str]) -> bool:
             rest = lower[len(phrase):]
             # "Thanks - Sam" is a sign-off, "Best-in-class pricing" is not
             if not rest or rest[0] in ",.!:" or rest.startswith((" -", " –")):
-                return True
+                return _is_name(rest.lstrip(",.!:-– "))
     return False
+
+
+def _is_name(text: str) -> bool:
+    """Whether the text after a sign-off phrase is a name ("Sam.", "J. Smith") rather than a sentence of the
+    message ("Your document is ready.")."""
+    words = text.split()
+    return len(words) <= SIGN_OFF_NAME_WORDS and not (len(words) > 1 and text.endswith((".", "?", "!", ":")))
 
 
 def is_sentence(line: str, settings: "LureURLSettings") -> bool:
@@ -409,8 +419,7 @@ class BodyRegions:
                     undecided[0] = self._signature == SIGNATURE_ON
                 if self._undecided and self._signature == SIGNATURE_ON:
                     # they are the signature's, not the message's
-                    del self._newest[self._undecided_start:]
-                    self._newest_len = sum(len(kept) + 1 for kept in self._newest)
+                    self._truncate_newest(self._undecided_start)
                 self._undecided = []
         flags[0] = self._signature == SIGNATURE_ON
         if checked and not self._signature and self._message_lines and is_sign_off(line, self.settings.sign_off_phrases):
@@ -441,9 +450,13 @@ class BodyRegions:
         if not (names & {"sent", "date"} and names & {"to", "subject"}):
             return False
         # the header is the earlier message's, not the newest one's
-        del self._newest[index:]
-        self._newest_len = sum(len(kept) + 1 for kept in self._newest)
+        self._truncate_newest(index)
         return True
+
+    def _truncate_newest(self, index: int):
+        # subtract what is removed: re-counting what is kept costs a body of many headers seconds per thousand
+        self._newest_len -= sum(len(removed) + 1 for removed in self._newest[index:])
+        del self._newest[index:]
 
     @property
     def newest_text(self) -> str:

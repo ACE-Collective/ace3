@@ -87,7 +87,8 @@ line; `<b>` and `<span>` do not), to tell where each link is in a thread:
   voicemail notices have above their button, starts nothing. In a plain text body, a line quoted
   with `>` is also an earlier message's.
 - A line that starts with one of `sign_off_phrases` (`Respectfully,`, `Thanks, Sam`, but not
-  `Thanks for the bid`) ends the text of its message, and the lines below it are a signature
+  `Thanks for the bid`, nor `Thanks, please review the attached invoice.`, where a sentence
+  rather than a name of at most 4 words follows the phrase) ends the text of its message, and the lines below it are a signature
   block, which runs to the start of the next message, so each message of a thread has its own.
   It is not a sign-off when it is the first line of its message (a `Thank you!` heading), or when
   the first line after it with text of its own is a sentence (more than `sentence_words` words,

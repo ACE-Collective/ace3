@@ -221,15 +221,18 @@ def test_link_text_box_over_a_page_gets_no_text():
 
 def _pdf_with_links(tmp_path: Path, pages: list[list], rotate: int = 0, texts: list[str] = None) -> Path:
     """A PDF with TEXT (or the given text) on each page and, on each page, the link annotations given for it as
-    (uri, rect, contents)."""
+    (uri, rect, contents); with no uri the link goes to a page of the PDF, and with no rect it has none."""
     pdf = pikepdf.new()
     font = pdf.make_indirect(pikepdf.Dictionary(Type=pikepdf.Name.Font, Subtype=pikepdf.Name.Type1, BaseFont=pikepdf.Name.Helvetica))
     for number, annotations in enumerate(pages):
         text = texts[number] if texts else TEXT
         links = []
         for uri, rect, contents in annotations:
-            link = pikepdf.Dictionary(Type=pikepdf.Name.Annot, Subtype=pikepdf.Name.Link, Rect=rect,
-                                      A=pikepdf.Dictionary(S=pikepdf.Name.URI, URI=pikepdf.String(uri)))
+            action = (pikepdf.Dictionary(S=pikepdf.Name.URI, URI=pikepdf.String(uri)) if uri
+                      else pikepdf.Dictionary(S=pikepdf.Name.GoTo, D=pikepdf.Array([0, pikepdf.Name.Fit])))
+            link = pikepdf.Dictionary(Type=pikepdf.Name.Annot, Subtype=pikepdf.Name.Link, A=action)
+            if rect is not None:
+                link.Rect = rect
             if contents:
                 link.Contents = pikepdf.String(contents)
             links.append(pdf.make_indirect(link))
@@ -281,6 +284,24 @@ def test_pdf_link_text_records_each_link_once_up_to_a_cap(root_analysis, tmp_pat
     assert links[0]["text"] == TEXT
     [record] = [r for r in caplog.records if "only the first are recorded" in r.getMessage()]
     assert record.levelno == logging.INFO and record.path.endswith("links.pdf")
+
+
+@pytest.mark.integration
+def test_pdf_link_text_links_without_a_box_or_a_uri(root_analysis, tmp_path):
+    # the sender writes the annotations: a link with no box, or one that is not numbers, keeps its /Contents
+    links = _links(root_analysis, _pdf_with_links(tmp_path, [[
+        (None, LINK_BOX, None),
+        ("https://no-box.example.com/", None, "Open the portal"),
+        ("https://bad-box.example.com/", pikepdf.Array([pikepdf.Name.Top, 700, 300, 740]), "Sign in"),
+        ("https://link0.example.com/", LINK_BOX, None),
+    ]]))
+
+    # a link to a page of the PDF is not a URL
+    assert links == [
+        {"url": "https://no-box.example.com/", "page": 1, "text": "Open the portal", "line": None},
+        {"url": "https://bad-box.example.com/", "page": 1, "text": "Sign in", "line": None},
+        {"url": "https://link0.example.com/", "page": 1, "text": TEXT, "line": TEXT},
+    ]
 
 
 @pytest.mark.integration
@@ -353,8 +374,9 @@ def test_pdf_link_text_keeps_links_whose_text_it_cannot_place(root_analysis, tmp
     assert analysis.links == [{"url": "https://annotation.example.com/click", "page": 1, "text": None, "line": None}]
     # an error keeps the result out of the analysis cache
     assert analysis.error == "placing the link text raised ValueError, without the text under the links"
+    # not the sender's doing: a bug, or a node that cannot run the sandbox, gets an error report
     [record] = [r for r in caplog.records if "cannot place the link text" in r.getMessage()]
-    assert record.levelno == logging.WARNING and record.exc_info
+    assert record.levelno == logging.ERROR and record.exc_info
     assert record.path == pdf.full_path
 
 

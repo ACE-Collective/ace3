@@ -1,6 +1,7 @@
 import io
 import logging
 import os
+import time
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -254,6 +255,17 @@ def test_parse_html_body_newest_text_stops_at_the_signature():
 
 
 @pytest.mark.unit
+def test_parse_html_body_a_sentence_after_thanks_is_the_message():
+    html = (f"<p>Hi John,</p><p>Thanks, please review the attached invoice.</p><p><a href='{LURE}'>View Invoice</a></p>"
+            f"<p>Regards,</p><p>Accounts Team</p>")
+
+    body = parse_html_body(html, SETTINGS)
+
+    assert body.anchors[LURE].signature is False
+    assert "View Invoice" in body.newest_text
+
+
+@pytest.mark.unit
 def test_parse_text_body_thanks_first_line_is_not_a_sign_off():
     body = parse_text_body(f"Thank you!\nView your invoice: {LURE}\n", LureURLSettings())
 
@@ -291,6 +303,25 @@ def test_parse_text_body_reply_header_starts_an_earlier_message():
     assert body.text_urls[EARLIER] == (False, True)
     # the header is the earlier message's
     assert body.newest_text == "Please see the attached bid."
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("repeated", [
+    "From: a\nSent: b\nTo: c\n",
+    "-----Original Message-----\nHello\nThanks,\nhttps://a.example.com/\nPat\n",
+])
+def test_parse_text_body_many_reply_headers_after_a_full_message(repeated):
+    # each reply header or signature used to re-count the whole newest message: 20,000 of them after 10,000 lines
+    # took 10 s
+    text = "x\n" * 10_000 + repeated * 20_000 + f"{EARLIER}\n"
+
+    start = time.monotonic()
+    body = parse_text_body(text, SETTINGS)
+    elapsed = time.monotonic() - start
+
+    # quoted
+    assert body.text_urls[EARLIER][1] is True
+    assert elapsed < 2
 
 
 @pytest.mark.unit
@@ -347,6 +378,14 @@ Here is {EARLIER}.
     ("Thanks for the bid", False),
     ("Best-in-class pricing", False),
     ("Regards," + " x" * 50, False),
+    ("Regards, Pat Doe", True),
+    ("Thanks, Sam.", True),
+    ("Best, J. Smith", True),
+    # a sentence after the phrase is the message's, not a name
+    ("Thanks, please review the attached invoice.", False),
+    ("Thank you! Your document is ready.", False),
+    # more words than a name has, with no final punctuation
+    ("Thanks, please review the invoice below", False),
 ])
 def test_is_sign_off(line, expected):
     assert is_sign_off(line, LureURLSettings().sign_off_phrases) is expected
@@ -813,6 +852,31 @@ def test_collector_pdf_link_text(root_analysis, tmp_path):
     assert (portal.pdf_name, portal.pdf_link_count) == ("bid.pdf", 2)
     assert candidates[CONTRACTOR].anchor.text == "Visit www.contractor.example.com"
     assert collector.body_text == "see the attached bid"
+
+
+@pytest.mark.integration
+def test_collector_pdf_link_repeated_is_still_the_only_link(root_analysis, tmp_path):
+    # pdf_link_text records a link once per page and box: the same lure on two pages is two of them
+    email_file, email_analysis, body = _email_tree(root_analysis, tmp_path, "<p>see the attached bid</p>")
+    pdf = _file(email_analysis, tmp_path, "bid.pdf", "%PDF-1.4")
+    pdf_analysis = PDFAnalysis()
+    pdf.add_analysis(pdf_analysis)
+    link_text = PDFLinkTextAnalysis()
+    pdf.add_analysis(link_text)
+    link_text.details = {"links": [
+        {"url": BID_PORTAL, "page": 1, "text": "View Bid Documents", "line": None},
+        {"url": BID_PORTAL, "page": 2, "text": "View Bid Documents", "line": None},
+    ]}
+    annotations = _file(pdf_analysis, tmp_path, "bid.pdf.annotation_uris.txt", BID_PORTAL)
+    annotations.add_yara_meta("type", "document.pdf.annotation_uris")
+    _extracted(annotations, BID_PORTAL)
+
+    collector = CandidateCollector(root_analysis.uuid)
+    [portal] = collector.collect(email_analysis)
+    score_candidates([portal], set(), LureURLSettings(), collector.body_text)
+
+    assert portal.pdf_link_count == 1
+    assert "the only link in bid.pdf" in portal.reasons
 
 
 @pytest.mark.integration
