@@ -13,6 +13,8 @@ from saq.database.retry import execute_with_retry
 from saq.email import normalize_email_address
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
+from saq.modules.email.archive import EmailArchiveResults
+from saq.modules.email.rfc822 import EmailAnalysis
 
 from fluent import sender
 
@@ -101,8 +103,6 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
     def process_email(self, email_file):
 
-        from saq.modules.email.rfc822 import EmailAnalysis
-        from saq.modules.email.archive import EmailArchiveResults
         # url_extraction imports urlfinderlib, which only the engine needs
         from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 

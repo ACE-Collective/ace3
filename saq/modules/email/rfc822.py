@@ -1018,6 +1018,7 @@ class EmailAnalyzer(AnalysisModule):
 
     def analyze_rfc822(self, _file):
         assert isinstance(_file, FileObservable)
+        # local import: saq.modules.email.message_id imports EmailAnalysis from this module
         from saq.modules.email.message_id import MessageIDAnalyzerV2
 
         # if this is a headers file then we skip it

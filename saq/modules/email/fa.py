@@ -10,6 +10,7 @@ from saq.brocess import query_brocess_by_email_conversation, query_brocess_by_so
 from saq.constants import DIRECTIVE_SANDBOX, F_EMAIL_CONVERSATION, F_FILE, F_URL, parse_email_conversation, AnalysisExecutionResult
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.email.rfc822 import EmailAnalysis
 
 
 def _tree_has_tag(target, tag: str) -> bool:
@@ -150,7 +151,6 @@ class EmailConversationAttachmentAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         from saq.modules.file_analysis import FileTypeAnalysis
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # the file that we are looking at is word documents and the like
         file_analysis = self.wait_for_analysis(_file, FileTypeAnalysis)
@@ -228,8 +228,6 @@ class EmailConversationLinkAnalyzer(AnalysisModule):
         return F_URL
 
     def execute_analysis(self, url) -> AnalysisExecutionResult:
-
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this URL match one of our patterns?
         matches = False

@@ -6,6 +6,7 @@ codebase before any test runs, so an import cycle or a heavy import is invisible
 
 import importlib
 import os
+import pkgutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import saq.database
+import saq.modules.email
 from saq.configuration.config import get_config
 from saq.constants import F_TEST
 from saq.environment import get_base_dir
@@ -221,8 +223,8 @@ def test_the_gui_registers_the_core_observable_presenters_and_actions():
                "assert _OBSERVABLE_ACTION_REGISTRY[F_URL]\n", timeout=180)
 
 
-@pytest.mark.parametrize("package", ["saq.analysis", "saq.gui", "saq.collectors.hunter", "saq.modules.file_analysis",
-                                     "saq.observables"])
+@pytest.mark.parametrize("package", ["saq.analysis", "saq.gui", "saq.collectors.hunter", "saq.modules.email",
+                                     "saq.modules.file_analysis", "saq.observables"])
 def test_package_exports_load_on_first_use(package):
     module = importlib.import_module(package)
     for name, module_name in module._EXPORTS.items():
@@ -238,6 +240,15 @@ def test_one_file_analysis_module_imports_only_itself():
     _assert_loads_none("import saq.modules.file_analysis.yara, saq.modules.file_analysis.xml\n",
                        ["saq.modules.file_analysis.ocr", "saq.modules.file_analysis.olevba",
                         "saq.modules.file_analysis.pdf", "pytesseract", "oletools"])
+
+
+def test_one_email_module_imports_only_itself():
+    # every email module imports EmailAnalysis, and the encryption analyzers bring in saq.cracking, which imports
+    # it too: while importing one email module imported them all, none of them could import it at module level
+    _assert_loads_none("import saq.modules.email.rfc822\n",
+                       ["saq.cracking", "saq.modules.email.encryption.msoffice", "saq.modules.email.encryption.zip",
+                        "saq.modules.email.fa", "saq.modules.email.logging", "saq.modules.email.archive",
+                        "msoffcrypto"])
 
 
 def test_ocr_does_not_import_pandas():
@@ -359,6 +370,15 @@ def _entry_points() -> list[str]:
 
 def test_entry_points_import_first():
     failures = _import_failures(_entry_points(), _integration_paths())
+    assert not failures, failures
+
+
+def test_email_modules_import_first():
+    # a worker imports its analysis modules in config order, and reading an alert imports the module of each
+    # analysis in it, so any email module, or saq.cracking that the encryption analyzers import, can come first
+    modules = ["saq.cracking"] + sorted(info.name for info in pkgutil.walk_packages(saq.modules.email.__path__,
+                                                                                    "saq.modules.email."))
+    failures = _import_failures(modules, "")
     assert not failures, failures
 
 

@@ -7,6 +7,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.search import search_down
 from saq.constants import F_MESSAGE_ID, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.modules.email.rfc822 import EmailAnalysis
 
 KEY_EXTRACTED_EMAIL = "extracted_email"
 
@@ -54,7 +55,6 @@ class MessageIDAnalyzerV2(AnalysisModule):
     def execute_analysis(self, message_id) -> AnalysisExecutionResult:
 
         # if we've already analyzed this email then we don't need to extract it
-        from saq.modules.email import EmailAnalysis
         email_analysis = search_down(message_id, 
                 lambda x: isinstance(x, EmailAnalysis) and x.message_id == message_id.value)
 

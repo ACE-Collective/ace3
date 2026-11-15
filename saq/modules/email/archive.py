@@ -17,6 +17,7 @@ from saq.email_archive import archive_email, index_email_archive
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.email.rfc822 import EmailAnalysis
 from saq.observables.file import FileObservable
 from saq.util.time import local_time
 
@@ -166,7 +167,6 @@ class EmailArchiveAction(AnalysisModule):
 
     def execute_analysis(self, _file: Observable) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # has this been whitelisted?
         if _file.whitelisted:
@@ -238,8 +238,6 @@ class EmailArchiveAction(AnalysisModule):
     # initially record the archive analysis
 
     def execute_post_analysis(self):
-        from saq.modules.email.rfc822 import EmailAnalysis
-
         for _file in self.get_root().find_observables(lambda o: o.type == F_FILE):
             email_analysis = _file.get_and_load_analysis(EmailAnalysis)
             if not email_analysis:
