@@ -63,14 +63,28 @@ class TestSubmit:
             assert submit_index_task("u") is False
         mock_redis.assert_not_called()
 
-    def test_missing_service_section_is_a_noop(self, monkeypatch, caplog):
-        def raise_(name):
-            raise ValueError("no such service")
+    def test_missing_service_section_is_a_noop(self, caplog):
+        del get_config().raw._data["service_search_indexer"]
+        get_config().load_service_configs()
 
-        monkeypatch.setattr("saq.search.tasks.get_service_config", raise_)
-        assert submit_index_task("u") is False
+        with patch("saq.search.tasks.get_redis_connection") as mock_redis:
+            assert submit_index_task("u") is False
+        mock_redis.assert_not_called()
         # a site without the section is not failing: submit_task's catch-all would log it at ERROR
         assert [record for record in caplog.records if record.levelno >= logging.ERROR] == []
+
+    def test_invalid_service_section_is_reported(self, caplog):
+        # a section that is there but fails to validate must not read as "no indexer on this site"
+        get_config().raw._data["service_search_indexer"]["worker_count"] = "two"
+        get_config().load_service_configs()
+
+        with patch("saq.search.tasks.get_redis_connection") as mock_redis, patch("saq.error.reporting.write_error_report"):
+            assert submit_index_task("u") is False
+        mock_redis.assert_not_called()
+
+        (record,) = [record for record in caplog.records if record.levelno >= logging.ERROR]
+        assert isinstance(record.exc_info[1], ValidationError)
+        assert "worker_count" in str(record.exc_info[1])
 
     @pytest.mark.parametrize("submit,op", [(submit_index_task, OP_INDEX), (submit_payload_task, OP_PAYLOAD), (submit_delete_task, OP_DELETE)])
     def test_ops_are_queued(self, enable_indexer, submit, op):

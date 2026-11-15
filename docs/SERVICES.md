@@ -143,6 +143,8 @@ service_myservice:
 
 The `name` field is what `ace service start <name>` and `get_service_config(<name>)` look up.
 
+`get_service_config()` raises `ValueError` when there is no `service_<name>` section. Code that runs on sites without the service (a cron task, a hook another subsystem calls) uses `find_service_config(<name>)`, which returns `None` for a missing section and still raises for a section that fails to validate. Do not catch the `ValueError` instead: pydantic's `ValidationError` is a `ValueError` too, so a broken section would read as an absent one.
+
 ### 3. Add a Docker Compose service
 
 There are two compose files to update:
