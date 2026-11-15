@@ -14,7 +14,12 @@ Known flaws in ACE's design that changes have had to work around are GitHub issu
 
 ## Environment
 
-Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. Claude Code runs either in that container (`ls /.dockerenv` succeeds) or on the host, where the desktop app runs it in a git worktree under `.claude/worktrees/`. Run container commands through `bin/exec-in-container.sh`: from the host it runs them in `dev`, and in a container of the stack, which has no `docker`, it runs them in place, so the same command works on both sides. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
+Development happens **inside the `dev` container**, where `SAQ_HOME=/opt/ace`, Python 3.14 is in `/venv` and the user is `ace`. Claude Code runs either in that container or on the host, where the desktop app runs it in a git worktree under `.claude/worktrees/`. On a macOS host the shell is zsh, which fails a command whose glob matches nothing, so quote patterns (`grep --include='*.py'`), and there is no `timeout` command.
+
+**Where a command runs.** Check once per session with `ls /.dockerenv`:
+
+- **It exists: you are in `dev`.** Run every command directly, as written in this file: `pytest ...`, `ace ...`, `/venv/bin/python ...`, `make db-check`. Never use `bin/exec-in-container.sh`; it exits 1 there. In a git worktree, `SAQ_HOME` and `PYTHONPATH` must name the worktree and it must come first on `PATH` (`echo $SAQ_HOME`). A worktree made with `source bin/enter-worktree.sh` has all three; in any other, run `export SAQ_HOME=$PWD PYTHONPATH=$PWD PATH=$PWD:$PWD/bin:$PATH` from the worktree first. pytest refuses to start when `SAQ_HOME` or `saq` belong to another checkout. `ace` and the other commands do not check, and run the main checkout's code or configuration.
+- **It does not exist: you are on the host.** Anything that needs `/venv`, the databases or the stack (pytest, `ace`, `python`, `alembic`, `diff-cover`) goes through `bin/exec-in-container.sh <command> [args...]`, which runs it in `dev` at the checkout's path there with `SAQ_HOME` and `PYTHONPATH` on it. git, file edits, `docker compose` and `make` run on the host as they are (the Makefile goes through the script itself). The script passes its arguments unchanged, like `docker exec`, and runs no second shell over them: quote them as you would for the command itself, and wrap a pipe, `&&`, glob or redirect that must run in the container in `bash -c '...'` (`bin/exec-in-container.sh bash -c 'pytest -q tests/saq | tail -5'`). A path is relative to the checkout root, not to the directory you ran it from.
 
 From the host:
 ```bash
@@ -24,9 +29,9 @@ bin/exec-in-container.sh pytest tests/saq/test_util.py   # one-shot command in d
 ```
 GUI: https://localhost:5000/ace (analyst/analyst).
 
-**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From a worktree, `bin/exec-in-container.sh` and the Makefile targets run there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code, whether they are started on the host or in `dev`. `docker compose exec dev` runs the main checkout's code. A worktree outside the checkout, like the ones T3 Code keeps under `~/.t3/worktrees/`, needs a mount of its own for the `dev` service; `bin/exec-in-container.sh` finds it with `docker inspect` (`docs/MULTI_INSTANCE.md`).
+**From a git worktree.** A worktree under `.claude/worktrees/<name>/` shares the main checkout's stack. The `dev` container mounts the main checkout at `/opt/ace`, so the worktree is at `/opt/ace/.claude/worktrees/<name>` in it. From the host, `bin/exec-in-container.sh` and the Makefile targets run a worktree's commands there, with `SAQ_HOME` and `PYTHONPATH` set to that path, so they run the worktree's code; in `dev`, the Makefile does the same in place. `docker compose exec dev` runs the main checkout's code. A worktree outside the checkout, like the ones T3 Code keeps under `~/.t3/worktrees/`, needs a mount of its own for the `dev` service; `bin/exec-in-container.sh` finds it with `docker inspect` (`docs/MULTI_INSTANCE.md`).
 
-**A worktree is used from the side that created it.** A worktree's `.git` file names its repository by absolute path, and the host and `dev` see the checkout at different paths, so `git` works in a worktree only on the side where it was created (unless the host checkout is itself at `/opt/ace`). Do its git work there. On the host, `bin/get-dev-container.sh`, and so `bin/exec-in-container.sh` and the Makefile, refuse a worktree created in `dev` rather than run the main checkout's code. In `dev`, a worktree created on the host still runs its own code through them, since that needs no `git`; it is how a host worktree's tests run.
+**A worktree is used from the side that created it.** A worktree's `.git` file names its repository by absolute path, and the host and `dev` see the checkout at different paths, so `git` works in a worktree only on the side where it was created (unless the host checkout is itself at `/opt/ace`). Do its git work there. On the host, `bin/get-dev-container.sh`, and so `bin/exec-in-container.sh` and the Makefile, refuse a worktree created in `dev` rather than run the main checkout's code. A worktree created on the host runs its tests from the host through `bin/exec-in-container.sh`, which needs no `git` in `dev`; from a shell in `dev` it runs them directly, with the environment exported as above.
 
 The SessionStart hook in `.claude/settings.json` runs `bin/setup-worktree.sh`, which adds what git does not track:
 
@@ -58,7 +63,7 @@ before this: the volume names changed, so an existing stack has to be brought do
 
 ## Testing
 
-Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below work as written from a shell in that container; from the host, run each one through `bin/exec-in-container.sh`, which in a git worktree runs the worktree's code.
+Tests must run inside the `dev` container, in the `/venv` virtualenv. The commands below are written for a shell in that container, where they run as they are; from the host, prefix each one with `bin/exec-in-container.sh` (see *Where a command runs*).
 
 ```bash
 pytest                                    # default: -m "unit or integration or system" over tests/
@@ -104,7 +109,7 @@ the block its checkout hash picks first, and its workers inherit it through
 keeps a block. Block 0 is never claimed: it has the ports of a checkout whose suite predates
 port blocks.
 
-**From a git worktree.** A worktree runs the suite in the same `dev` container: `bin/exec-in-container.sh pytest -n auto` from the worktree (see *From a git worktree* under Environment). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run does not wait for the main checkout's, or another worktree's.
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `pytest -n auto` from the worktree in `dev`, with its environment exported, or `bin/exec-in-container.sh pytest -n auto` from the host (see *Where a command runs*). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run does not wait for the main checkout's, or another worktree's.
 
 ### The standard analysis-module test
 
@@ -155,7 +160,7 @@ The email archive and analysis result cache tables are RANGE-partitioned by date
 
 `bin/upgrade_databases.py` runs `upgrade head` for any subset of the chains against named databases in one process (the alembic package is shadowed by the repo's `alembic/` directory, so it removes the project root from `sys.path` first); the test suite uses it to build its per-session databases, and so does the drift check.
 
-Use the Makefile targets (they exec into the `dev` container from the host):
+Use the Makefile targets (from the host they run in the `dev` container through `bin/exec-in-container.sh`; in `dev` they run in place):
 
 ```bash
 make db-revision MESSAGE="what changed"   # autogenerate

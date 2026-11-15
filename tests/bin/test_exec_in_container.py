@@ -1,5 +1,5 @@
-"""Tests for bin/exec-in-container.sh, which runs a command in the dev container from the path the
-calling checkout has there.
+"""Tests for bin/exec-in-container.sh, which runs a command from the host in the dev container, at the path
+the calling checkout has there, and for the Makefile, which runs its commands the same way.
 
 Each test builds a throwaway main checkout holding the real scripts. Run from the host, docker is a
 bash function that answers from what the test says is mounted and records the docker exec. Run from
@@ -30,29 +30,38 @@ def main(tmp_path) -> Path:
     (main / "bin").mkdir(parents=True)
     for script in ("exec-in-container.sh", "get-dev-container.sh", "get-ace-container.sh"):
         shutil.copy2(BIN / script, main / "bin" / script)
+    shutil.copy2(BIN.parent / "Makefile", main / "Makefile")
     # records which checkout's copy was sourced
-    (main / "load_environment").write_text('export SOURCED_LOAD_ENVIRONMENT="${BASH_SOURCE[0]}"\n')
+    (main / "load_environment").write_text(
+        'export SOURCED_LOAD_ENVIRONMENT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/load_environment"\n')
     _git(main, "init", "--quiet", "--initial-branch=main")
     _git(main, "add", ".")
     _git(main, "commit", "--quiet", "-m", "initial")
     return main
 
 
-def _run(tmp_path: Path, checkout: Path, mounts: dict[Path, str], container: str = "container-id"):
-    """Runs the script in checkout. Returns its result and the arguments of the docker exec it ran,
-    None if it ran none."""
+# a docker exec that runs the command it was given here, in the calling checkout, rather than recording it
+_EXEC_HERE = 'exec) while [ "$1" != container-id ]; do shift; done; shift; "$@" ;;'
+
+
+def _run(tmp_path: Path, checkout: Path, mounts: dict[Path, str], container: str = "container-id",
+         args: tuple[str, ...] = ("pytest", "-q"), exec_here: bool = False,
+         extra_env: dict[str, str] | None = None):
+    """Runs the script in checkout from the host. Returns its result and the arguments of the docker exec
+    it ran, None if it ran none (or if exec_here ran the command instead)."""
     record = tmp_path / "docker-exec"
     lines = "".join(f"{source}\\t{destination}\\n" for source, destination in mounts.items())
+    exec_case = _EXEC_HERE if exec_here else f'exec) printf "%s\\n" "$@" > "{record}" ;;'
     docker = (
         '() { case "$1" in\n'
         f"  compose) echo {container} ;;\n"
         f"  inspect) printf '{lines}' ;;\n"
-        f'  exec) printf "%s\\n" "$@" > "{record}" ;;\n'
+        f"  {exec_case}\n"
         "esac; }"
     )
-    env = {**os.environ, "BASH_FUNC_docker%%": docker}
+    env = {**os.environ, **(extra_env or {}), "BASH_FUNC_docker%%": docker}
     # through bash, because the dev container mounts /tmp noexec
-    result = subprocess.run(["bash", str(checkout / "bin" / "exec-in-container.sh"), "pytest", "-q"],
+    result = subprocess.run(["bash", str(checkout / "bin" / "exec-in-container.sh"), *args],
                             env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     return result, record.read_text().splitlines() if record.exists() else None
 
@@ -74,8 +83,30 @@ def test_main_checkout_runs_at_opt_ace(main, tmp_path):
     assert _workdir(exec_args) == "/opt/ace"
     assert "SAQ_HOME=/opt/ace" in exec_args
     assert "PYTHONPATH=/opt/ace" in exec_args
-    assert "container-id" in exec_args
-    assert exec_args[-1].endswith("pytest -q")
+    # the command follows the script that bash -c runs, as that script's arguments
+    assert exec_args[exec_args.index("container-id") + 1:][-3:] == ["bash", "pytest", "-q"]
+
+
+def test_the_arguments_and_exit_status_pass_through(main, tmp_path):
+    result, _ = _run(tmp_path, main, {main: "/opt/ace"}, exec_here=True,
+                     args=("bash", "-c", 'printf "[%s]\\n" "$@"; exit 3', "bash", "two words", "a;b", "$HOME", "*"))
+
+    assert result.returncode == 3, result.stderr
+    assert result.stdout.splitlines() == ["[two words]", "[a;b]", "[$HOME]", "[*]"]
+
+
+def test_the_checkout_s_own_load_environment_is_sourced(main, tmp_path):
+    # the dev container's PATH has /opt/ace on it, and source searches PATH first
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "load_environment").write_text("export SOURCED_LOAD_ENVIRONMENT=elsewhere\n")
+
+    result, _ = _run(tmp_path, main, {main: "/opt/ace"}, exec_here=True,
+                     extra_env={"PATH": f"{elsewhere}:{os.environ['PATH']}"},
+                     args=("bash", "-c", 'echo "$SOURCED_LOAD_ENVIRONMENT|$VIRTUAL_ENV"'))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"{main}/load_environment|/venv"
 
 
 def test_worktree_inside_the_checkout(main, tmp_path):
@@ -179,61 +210,74 @@ def test_ace_container_lookup_refuses_a_worktree_created_on_the_other_side(main)
     assert "/the/other/side/.git/worktrees/wt" in result.stderr
 
 
-REPORT = 'echo "$PWD|$SAQ_HOME|$PYTHONPATH|$VIRTUAL_ENV|$SOURCED_LOAD_ENVIRONMENT"'
-
-
-def _run_in_container(checkout: Path, *args: str) -> subprocess.CompletedProcess:
+def _run_in_container(checkout: Path, *args: str, saq_home: str | None = None) -> subprocess.CompletedProcess:
     """Runs the script in checkout the way it runs inside the dev container, with no docker."""
     assert Path("/.dockerenv").exists(), "the test suite runs in the dev container"
     env = {name: value for name, value in os.environ.items() if not name.startswith("BASH_FUNC_docker")}
+    if saq_home is not None:
+        env["SAQ_HOME"] = saq_home
     return subprocess.run(["bash", str(checkout / "bin" / "exec-in-container.sh"), *args],
                           env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
 
 
-def test_in_the_container_the_main_checkout_runs_here(main):
-    result = _run_in_container(main, REPORT)
+@pytest.mark.parametrize("location", ["main", "inside", "outside"])
+def test_in_the_container_it_refuses_and_runs_nothing(main, tmp_path, location):
+    checkout = {"main": main,
+                "inside": main / ".claude" / "worktrees" / "wt",
+                "outside": tmp_path / "elsewhere" / "wt"}[location]
+    if location != "main":
+        _worktree(main, checkout)
+    ran = tmp_path / "ran"
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f"{main}|{main}|{main}|/venv|{main}/load_environment"
-
-
-@pytest.mark.parametrize("location", ["inside", "outside"])
-def test_in_the_container_a_worktree_runs_its_own_code(main, tmp_path, location):
-    path = main / ".claude" / "worktrees" / "wt" if location == "inside" else tmp_path / "elsewhere" / "wt"
-    worktree = _worktree(main, path)
-
-    # the dev container's PATH has /opt/ace on it, so a bare `source load_environment` would source
-    # the main checkout's
-    result = _run_in_container(worktree, REPORT)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == f"{worktree}|{worktree}|{worktree}|/venv|{worktree}/load_environment"
-
-
-def test_in_the_container_the_arguments_and_exit_status_pass_through(main):
-    result = _run_in_container(main, "echo", "two words;", "exit 3")
-
-    assert result.returncode == 3
-    assert result.stdout.strip() == "two words"
-
-
-def test_in_the_container_the_interactive_flags_are_accepted(main):
-    result = _run_in_container(main, "-i", "-t", "echo ran")
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "ran"
-
-
-def test_in_the_container_another_user_is_refused(main):
-    result = _run_in_container(main, "-u", "root", "echo ran")
+    result = _run_in_container(checkout, "-u", getpass.getuser(), "touch", str(ran), "two words",
+                               saq_home=str(checkout))
 
     assert result.returncode == 1
-    assert "ran" not in result.stdout
-    assert "root" in result.stderr
+    assert not ran.exists()
+    assert "already a container" in result.stderr
+    # the command to run instead, from where to run it
+    assert f"touch {ran} two\\ words" in result.stderr
+    assert str(checkout) in result.stderr
+    assert "export SAQ_HOME" not in result.stderr
 
 
-def test_in_the_container_the_current_user_is_accepted(main):
-    result = _run_in_container(main, "-u", getpass.getuser(), "echo ran")
+def test_in_the_container_a_command_line_in_one_argument_is_shown_as_it_is(main):
+    result = _run_in_container(main, 'pytest -k "a or b"', saq_home=str(main))
+
+    assert result.returncode == 1
+    assert '    pytest -k "a or b"\n' in result.stderr
+
+
+def test_in_the_container_it_says_when_saq_home_is_another_checkout(main):
+    worktree = _worktree(main, main / ".claude" / "worktrees" / "wt")
+
+    result = _run_in_container(worktree, "pytest", saq_home=str(main))
+
+    assert result.returncode == 1
+    assert f"SAQ_HOME is {main}" in result.stderr
+    assert f"export SAQ_HOME={worktree} PYTHONPATH={worktree} PATH={worktree}:{worktree}/bin:$PATH" in result.stderr
+
+
+def _make_in_container(checkout: Path, command: str) -> subprocess.CompletedProcess:
+    """Runs command the way the Makefile's targets run theirs, through its EXEC, with make in the dev
+    container."""
+    env = {name: value for name, value in os.environ.items() if not name.startswith("BASH_FUNC_docker")}
+    env["SAQ_HOME"] = "/opt/ace"
+    return subprocess.run(["make", "--no-print-directory", "-C", str(checkout), "--eval", f"probe:\n\t$(EXEC) {command}", "probe"],
+                          env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+
+def test_make_in_the_container_runs_in_place_as_the_checkout(main, tmp_path):
+    worktree = _worktree(main, main / ".claude" / "worktrees" / "wt")
+
+    result = _make_in_container(worktree, 'bash -c \'echo "$$PWD|$$SAQ_HOME|$$PYTHONPATH|$$SOURCED_LOAD_ENVIRONMENT"\'')
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "ran"
+    assert result.stdout.splitlines()[-1] == f"{worktree}|{worktree}|{worktree}|{worktree}/load_environment"
+
+
+def test_make_in_the_container_passes_the_arguments_through(main):
+    result = _make_in_container(main, 'printf "[%s]\\n" "two words" "a;b"')
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines()[-2:] == ["[two words]", "[a;b]"]

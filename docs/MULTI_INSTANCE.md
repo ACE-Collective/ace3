@@ -110,14 +110,16 @@ cd /opt/ace2 && bin/ace-shutdown.sh
 A git worktree under a checkout has no stack of its own. In a worktree, `get-dev-container.sh` and
 `get-ace-container.sh` find the stack of the checkout the worktree was made from, and
 `exec-in-container.sh` runs its command from the worktree's own path in the container, with
-`SAQ_HOME` set to that path. Started inside the container, which has no `docker`, it runs the
-command in place, from the worktree.
+`SAQ_HOME` set to that path. It is for the host only: inside the container, which has no `docker`,
+it exits 1, and commands run directly, with `SAQ_HOME` and `PYTHONPATH` exported to the worktree and
+the worktree first on `PATH` (a worktree made with `bin/enter-worktree.sh` has them). The `Makefile`
+runs its commands in place there.
 
 A worktree's `.git` file names its repository by absolute path, and the host sees the checkout at a
 different path than the container's `/opt/ace`, so `git` works in a worktree only on the side that
 created it, and its git work is done there. On the host, the scripts refuse a worktree that git
-cannot open rather than fall back to the main checkout's stack and code; in the container,
-`exec-in-container.sh` runs a host worktree's command in place, which needs no git.
+cannot open rather than fall back to the main checkout's stack and code. A host worktree's
+commands run in the container without git, through `exec-in-container.sh` from the host.
 
 A worktree outside its checkout (T3 Code keeps them under `~/.t3/worktrees/<repo>/`) is not visible
 in the container until you mount it. In the checkout's `docker-compose.override.yml`, mount the

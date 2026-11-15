@@ -43,6 +43,7 @@ from saq.modules.context import AnalysisModuleContext
 from saq.monitor import reset_emitter
 from saq.permissions.user import add_user_permission
 from saq.remediation.target import reset_observable_remediation_interface_registry
+import saq
 import saq.observables.generator as observable_generator
 from saq.util.uuid import storage_dir_from_uuid
 from tests.saq.helpers import (
@@ -677,6 +678,11 @@ def pytest_configure(config):
     if unittest_session.is_xdist_worker(config):
         # the controller holds the lock for the whole run and has already swept
         return
+
+    # before the lock, which is taken in SAQ_HOME
+    mismatch = unittest_session.get_checkout_mismatch(os.path.dirname(saq.__file__))
+    if mismatch:
+        raise pytest.UsageError(mismatch)
 
     try:
         session_lock.acquire_run()
