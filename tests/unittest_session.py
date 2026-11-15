@@ -43,8 +43,33 @@ LOG_DIR = os.path.join("data", "logs")
 LOGGING_CONFIG_PATH = os.path.join("etc", "logging_configs", "unittest_logging.yaml")
 
 
+# the checkout this suite's code is in
+CHECKOUT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
 def get_project_root() -> str:
     return os.environ.get("SAQ_HOME", os.getcwd())
+
+
+def get_checkout_mismatch(saq_package_dir: str) -> str | None:
+    """Says how the run is set up for a checkout other than the one its tests are in, or None.
+
+    The dev image sets SAQ_HOME to /opt/ace, so a run started from a git worktree in dev without
+    SAQ_HOME on the worktree would take the main checkout's run marker, configuration and data
+    directory while it runs the worktree's tests. saq_package_dir is where saq was imported from:
+    this module imports nothing from saq."""
+    problems = []
+    project_root = os.path.realpath(get_project_root())
+    if project_root != CHECKOUT:
+        problems.append(f"SAQ_HOME is {project_root}")
+    saq_checkout = os.path.dirname(os.path.realpath(saq_package_dir))
+    if saq_checkout != CHECKOUT:
+        problems.append(f"saq is imported from {saq_checkout}")
+    if not problems:
+        return None
+
+    return (f"the tests are in {CHECKOUT}, but {' and '.join(problems)}. First run\n"
+            f"    export SAQ_HOME={CHECKOUT} PYTHONPATH={CHECKOUT} PATH={CHECKOUT}:{CHECKOUT}/bin:$PATH")
 
 
 def exit_with(pid: int) -> None:

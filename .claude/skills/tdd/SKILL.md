@@ -7,7 +7,7 @@ description: "Write ACE tests that can fail: red before green, one behavior at a
 
 A test is a claim about what the code does for the code, user or service that calls it. Nobody has evidence for that claim until they have seen the test fail. Most of the test findings /ace-review raises are of two kinds: tests that still pass with the code they cover removed, and failure branches that no test runs. This loop prevents both. Write the test, watch it fail for the reason you expect, make it pass, and put the failure in the PR.
 
-CLAUDE.md § Testing says how to run tests: in the `dev` container, through `bin/exec-in-container.sh`, which works from the host, in `dev` and from a worktree, with run markers, one run at a time. § Engineering values → Tests says what must be covered.
+CLAUDE.md § Testing says how to run tests: in the `dev` container, with run markers, one run at a time. § Environment → *Where a command runs* says how: directly in `dev`, through `bin/exec-in-container.sh` only from the host. The commands below are written for `dev`. § Engineering values → Tests says what must be covered.
 
 Adapted from Matt Pocock's `tdd` skill and the `tdd` and `principle-test-behavior-not-implementation` skills of Lauren Tan's pstack (MIT, see `LICENSE`).
 
@@ -16,7 +16,7 @@ Adapted from Matt Pocock's `tdd` skill and the `tdd` and `principle-test-behavio
 1. **List the behaviors and where they are seen.** Write one line for each behavior the change adds or fixes, and name the interface a caller sees it through (see *Where to test* below). Failure paths are behaviors too: each new `except`, refusal, timeout and fallback gets a line. Ask the user only when the code doesn't make the interface clear.
 2. **Red.** Write the test for one behavior and run only that test:
    ```bash
-   bin/exec-in-container.sh /venv/bin/pytest tests/saq/path/test_x.py::test_name -q
+   /venv/bin/pytest tests/saq/path/test_x.py::test_name -q
    ```
    It must fail on an assertion about that behavior. An ImportError, a fixture error or a typo doesn't count. A test that passes before the code exists is testing something else.
 3. **Green.** Write only the code that test needs. Run it again and see it pass.
@@ -81,7 +81,7 @@ Mock only what ACE doesn't own: network peers and outside services, the clock, r
 ## Before asking for a review
 
 ```bash
-bin/exec-in-container.sh /venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check
+/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check
 ```
 
 It lists the lines the branch adds that ACE's review flags (a missing traceback, an unbounded wait, a sleep in a test, an assert that cannot fail, a test with no assertion, a copied function, an unmarked test), each with the fix it expects. Fix them or add the comment it asks for, then run it again until it prints nothing.
