@@ -5,7 +5,7 @@ service_file_collection.retention_days; the daily cron task runs it on every nod
 """
 
 from saq.cli.cli_main import get_cli_subparsers
-from saq.configuration.config import get_service_config
+from saq.configuration.config import find_service_config
 from saq.constants import SERVICE_FILE_COLLECTION
 from saq.file_collection.storage import prune_unattached_files
 
@@ -15,13 +15,13 @@ file_collection_sp = file_collection_parser.add_subparsers(dest="file_collection
 
 
 def cli_prune(args):
-    try:
-        retention_days = get_service_config(SERVICE_FILE_COLLECTION).retention_days
-    except ValueError:
+    config = find_service_config(SERVICE_FILE_COLLECTION)
+    if config is None:
         # a site without the file collection service has nothing to prune
         print("skipping file-collection prune: the file_collection service is not configured")
         return 0
 
+    retention_days = config.retention_days
     removed = prune_unattached_files(retention_days, dry_run=args.dry_run)
     print(f"{'would remove' if args.dry_run else 'removed'} {removed} collection(s) older than {retention_days} days")
     return 0

@@ -5,10 +5,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, text, update
 
 from saq.cli.commands import file_collection as file_collection_cli
-from saq.constants import F_FILE_LOCATION
+from saq.configuration.config import get_config
+from saq.constants import F_FILE_LOCATION, SERVICE_FILE_COLLECTION
 from saq.database.model import FileCollection
 from saq.database.pool import get_db
 from saq.environment import get_base_dir, get_global_runtime_settings
@@ -162,24 +164,52 @@ def test_prune_continues_past_a_failure(data_dir, monkeypatch, caplog):
     assert any(r.levelno == logging.ERROR and r.exc_info and "unable to remove" in r.getMessage() for r in caplog.records)
 
 
+CONFIG_SERVICE_FILE_COLLECTION = f"service_{SERVICE_FILE_COLLECTION}"
+
+
+def _set_file_collection_section(section: dict | None):
+    """Replaces service_file_collection (None removes it); tests/conftest.py restores the configuration."""
+    raw = get_config().raw._data
+    raw.pop(CONFIG_SERVICE_FILE_COLLECTION, None)
+    if section is not None:
+        raw[CONFIG_SERVICE_FILE_COLLECTION] = {
+            "name": SERVICE_FILE_COLLECTION,
+            "python_module": "saq.file_collection.service",
+            "python_class": "FileCollectionService",
+            "description": "file collection",
+            "enabled": True,
+            **section,
+        }
+    get_config().load_service_configs()
+
+
 @pytest.mark.integration
-def test_cli_prune(data_dir, monkeypatch, capsys):
+def test_cli_prune(data_dir, capsys):
     _collection_dir(data_dir, completed_days_ago=8)
-    monkeypatch.setattr(file_collection_cli, "get_service_config", lambda name: SimpleNamespace(retention_days=7))
+    _set_file_collection_section({"retention_days": 7})
 
     assert file_collection_cli.cli_prune(SimpleNamespace(dry_run=False)) == 0
     assert "removed 1 collection(s) older than 7 days" in capsys.readouterr().out
 
 
 @pytest.mark.integration
-def test_cli_prune_without_service(data_dir, monkeypatch, capsys):
+def test_cli_prune_without_service(data_dir, capsys):
     old = _collection_dir(data_dir, completed_days_ago=8)
-
-    def not_configured(name):
-        raise ValueError(f"service config for {name} not found")
-
-    monkeypatch.setattr(file_collection_cli, "get_service_config", not_configured)
+    _set_file_collection_section(None)
 
     assert file_collection_cli.cli_prune(SimpleNamespace(dry_run=False)) == 0
     assert "not configured" in capsys.readouterr().out
+    assert old.exists()
+
+
+@pytest.mark.integration
+def test_cli_prune_with_invalid_section_raises(data_dir, capsys):
+    # a section that is there but wrong is a configuration error, not a site without the service
+    old = _collection_dir(data_dir, completed_days_ago=8)
+    _set_file_collection_section({"retention_days": "a week"})
+
+    with pytest.raises(ValidationError, match="retention_days"):
+        file_collection_cli.cli_prune(SimpleNamespace(dry_run=False))
+
+    assert "not configured" not in capsys.readouterr().out
     assert old.exists()

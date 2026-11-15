@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select, update
 
 from saq.cli.commands.svs import cli_coverage_refresh, cli_coverage_snapshot, cli_coverage_status
-from saq.configuration.config import get_service_config
+from saq.configuration.config import get_config, get_service_config
 from saq.constants import ENV_ACE_IS_PRIMARY_NODE, SERVICE_YARA_SCANNER
 from saq.database.model import (
     SVSCatalogTest,
@@ -241,6 +241,13 @@ class TestSignatureTechniques:
         missing = str(yara_dir / "missing")
         monkeypatch.setattr(get_service_config(SERVICE_YARA_SCANNER), "signature_dir", missing)
         with pytest.raises(SignatureTagsUnavailable, match=f"{missing} is not a directory"):
+            signature_techniques()
+
+    def test_an_invalid_yara_config_raises(self, hunt_dir, yara_dir):
+        # technique_detail() turns SignatureTagsUnavailable into the page's error, anything else is a 500
+        get_config().raw._data["service_yara"]["git_repo_dirs"] = "unittest"
+        get_config().load_service_configs()
+        with pytest.raises(SignatureTagsUnavailable, match="git_repo_dirs"):
             signature_techniques()
 
     def test_no_yara_location_is_not_an_error(self, hunt_dir, monkeypatch):
