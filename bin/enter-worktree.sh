@@ -1,12 +1,15 @@
 # Source this from a shell in the dev container, from anywhere in the main checkout:
 #
 #     source bin/enter-worktree.sh <branch> [<start point>]
+#     source bin/enter-worktree.sh --pr <number>
 #
-# It creates <branch> (from <start point>, default the main checkout's HEAD) in a new git worktree at
-# .claude/worktrees/<topic>, where <topic> is the branch name without its initials prefix
-# (jd/fix-thing -> fix-thing), sets the worktree up with bin/setup-worktree.sh, moves into it, and
-# points SAQ_HOME, PYTHONPATH and PATH at it, so pytest and `ace` run the worktree's code. The prompt
-# shows (wt:<topic>) until you leave with
+# It checks <branch> out in a new git worktree at .claude/worktrees/<topic>, where <topic> is the
+# branch name without its initials prefix (jd/fix-thing -> fix-thing). A branch that exists locally,
+# or on exactly one remote (which git then tracks), is checked out as it is; any other is created from
+# <start point>, default the main checkout's HEAD. With --pr, <branch> is the pull request's head
+# branch, which `gh pr checkout` creates or brings up to date. It then sets the worktree up with
+# bin/setup-worktree.sh, moves into it, and points SAQ_HOME, PYTHONPATH and PATH at it, so pytest and
+# `ace` run the worktree's code. The prompt shows (wt:<topic>) until you leave with
 #
 #     wtx [-f]
 #
@@ -18,20 +21,45 @@
 # The worktree is created in dev, so its git works only in dev (CLAUDE.md).
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    echo "source this script instead of running it: source $0 <branch> [<start point>]" >&2
+    echo "source this script instead of running it: source $0 <branch> [<start point>] | --pr <number>" >&2
     exit 1
 fi
 
 _ace_wt_enter() {
-    local script_dir=$1 branch=$2 start=${3:-HEAD} common_dir main name worktree
+    local script_dir=$1 usage branch start pr common_dir main name worktree
+    shift
+    usage="usage: source bin/enter-worktree.sh <branch> [<start point>] | --pr <number>"
 
-    if [ -z "$branch" ]; then
-        echo "usage: source bin/enter-worktree.sh <branch> [<start point>]" >&2
-        return 1
-    fi
+    case ${1:-} in
+        -p|--pr)
+            pr=${2:-}
+            if ! [[ $pr =~ ^[0-9]+$ ]] || [ $# -ne 2 ]; then
+                echo "$usage" >&2
+                return 1
+            fi
+            ;;
+        ""|-*)
+            echo "$usage" >&2
+            return 1
+            ;;
+        *)
+            branch=$1 start=${2:-}
+            if [ $# -gt 2 ]; then
+                echo "$usage" >&2
+                return 1
+            fi
+            ;;
+    esac
     if [ -n "${ACE_WORKTREE:-}" ]; then
         echo "already in the worktree $ACE_WORKTREE: leave it with wtx first" >&2
         return 1
+    fi
+
+    common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir) || return 1
+    main=$(dirname "$common_dir")
+
+    if [ -n "$pr" ]; then
+        branch=$(cd "$main" && gh pr view "$pr" --json headRefName --jq .headRefName) || return 1
     fi
     # the name goes into PS1, which the shell expands, so allow nothing it would expand
     if ! [[ $branch =~ ^[A-Za-z0-9._/-]+$ ]] || ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
@@ -39,22 +67,30 @@ _ace_wt_enter() {
         return 1
     fi
 
-    common_dir=$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir) || return 1
-    main=$(dirname "$common_dir")
     name=${branch#*/}
     name=${name//\//-}
     worktree=$main/.claude/worktrees/$name
-
-    if git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
-        echo "the branch $branch already exists" >&2
-        return 1
-    fi
     if [ -e "$worktree" ]; then
         echo "$worktree already exists" >&2
         return 1
     fi
 
-    git -C "$main" worktree add -b "$branch" "$worktree" "$start" || return 1
+    if [ -n "$pr" ]; then
+        # gh fetches the head (from a fork too), creates the branch or fast-forwards the existing one,
+        # and sets its upstream; it leaves no worktree behind when it fails
+        (cd "$main" && gh pr checkout "$pr" --branch "$branch" --worktree "$worktree") || return 1
+    elif git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
+        if [ -n "$start" ]; then
+            echo "the branch $branch already exists, so a start point does not apply to it" >&2
+            return 1
+        fi
+        git -C "$main" worktree add "$worktree" "$branch" || return 1
+    elif [ -z "$start" ] && [ "$(git -C "$main" for-each-ref --format=x "refs/remotes/*/$branch" | wc -l)" -eq 1 ]; then
+        # git creates the branch from the remote's and tracks it
+        git -C "$main" worktree add "$worktree" "$branch" || return 1
+    else
+        git -C "$main" worktree add -b "$branch" "$worktree" "${start:-HEAD}" || return 1
+    fi
     # integrations, ssl/ and the local/ link, which the tests need and git does not track
     if ! "$worktree/bin/setup-worktree.sh"; then
         echo "bin/setup-worktree.sh failed: the worktree may be missing integrations or ssl/" >&2
