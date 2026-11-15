@@ -12,6 +12,7 @@ from saq.constants import DIRECTIVE_EXTRACT_URLS, F_FILE, AnalysisExecutionResul
 from saq.cracking import crack_password, generate_wordlist
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
+from saq.modules.email.rfc822 import EmailAnalysis
 from saq.observables.file import FileObservable
 
 
@@ -145,7 +146,6 @@ class ZipEncryptionAnalyzer(AnalysisModule):
 
     def execute_analysis(self, _file) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
-        from saq.modules.email.rfc822 import EmailAnalysis
 
         # does this file exist as an attachment?
         if not _file.exists:

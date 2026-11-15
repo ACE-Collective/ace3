@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from html2text import html2text
 
 from saq.analysis.search import search_down
+from saq.modules.email.rfc822 import EmailAnalysis
 
 if TYPE_CHECKING:
     from saq.modules.base_module import AnalysisModule
@@ -25,10 +26,6 @@ def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_l
     the html-to-text email body (truncated to byte_limit) or None, and the wordlist generated
     from it.
     """
-    # local import: saq.modules.email imports saq.cracking, so importing it at module level
-    # here would be a circular import
-    from saq.modules.email.rfc822 import EmailAnalysis
-
     email = search_down(file_observable, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
     if not email:
         return False, None, []
