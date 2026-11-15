@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from threading import Event
+from threading import Event, Thread
 from typing import Optional
 
 import pytest
@@ -90,6 +90,15 @@ def session_resets(monkeypatch) -> list:
     calls = []
     monkeypatch.setattr("saq.queue_service.remove_all_sessions", lambda: calls.append(True))
     return calls
+
+
+@pytest.fixture
+def pending_at_session_reset(monkeypatch) -> list:
+    """The ids each worker in `workers` held at every remove_all_sessions() call."""
+    calls = []
+    workers: list[FakeWorker] = []
+    monkeypatch.setattr("saq.queue_service.remove_all_sessions", lambda: calls.append([w.pending_ids() for w in workers]))
+    return calls, workers
 
 
 def _failing_session_reset(monkeypatch):
@@ -201,6 +210,7 @@ def test_handle_request_queues_item(caplog):
     worker.handle_request(Item(1, "fake"))
 
     assert worker.work_queue.get_nowait() == Item(1, "fake")
+    assert worker.pending_ids() == {1}
     assert any("received fake item 1" in r.getMessage() for r in caplog.records)
 
 
@@ -212,6 +222,32 @@ def test_handle_request_rejects_item_for_another_worker():
         worker.handle_request(Item(1, "other"))
 
     assert worker.work_queue.empty()
+    assert worker.pending_ids() == set()
+
+
+@pytest.mark.unit
+def test_handle_request_releases_id_processed_before_put_returns(session_resets):
+    worker = FakeWorker()
+    worker.queue_wait_timeout = 0.1
+
+    # a worker thread takes the item and finishes with it before put() returns
+    put = worker.work_queue.put
+    def _put_then_process(work_item):
+        put(work_item)
+        wait_for_condition(lambda: worker.processed and session_resets)
+
+    worker.work_queue.put = _put_then_process
+    thread = Thread(target=worker.worker_loop, args=(Event(),))
+    thread.start()
+    try:
+        worker.handle_request(Item(7, "fake"))
+    finally:
+        worker.stop()
+        thread.join(5)
+
+    assert not thread.is_alive()
+    # an id left behind would keep the row from ever being collected again
+    assert worker.pending_ids() == set()
 
 
 @pytest.mark.unit
@@ -240,6 +276,23 @@ def test_worker_wait_for_start_reports_thread_that_did_not_start(caplog):
 
     assert not worker.wait_for_start(0.01)
     assert any(r.levelno == logging.ERROR and "FakeWorker fake thread 0 did not start" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_worker_loop_releases_pending_id_after_session_reset(pending_at_session_reset):
+    resets, workers = pending_at_session_reset
+    worker = FakeWorker(fail_ids=(1,))
+    workers.append(worker)
+    worker.handle_request(Item(1, "fake"))
+    worker.handle_request(Item(2, "fake"))
+
+    worker.stop()
+    worker.worker_loop(Event())
+    worker.worker_loop(Event())
+
+    # held until the item's transaction is over, failed or not, and released after
+    assert resets == [[{1, 2}], [{2}]]
+    assert worker.pending_ids() == set()
 
 
 @pytest.mark.unit
@@ -302,6 +355,7 @@ def test_worker_loop_logs_failed_session_reset(monkeypatch, caplog):
     worker.worker_loop(Event())
 
     assert worker.processed == [Item(1, "fake")]
+    assert worker.pending_ids() == set()
     assert len(_errors_with_traceback(caplog, "error removing database connection")) == 1
 
 
