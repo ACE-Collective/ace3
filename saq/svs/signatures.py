@@ -70,10 +70,9 @@ def _yara_inventory_or_raise() -> dict:
     from saq.signatures.yara_inventory import get_yara_inventory
     from saq.signatures.yara_meta import is_qa_signature
 
-    if not get_signature_locations(SignatureType.YARA):
-        return {}
-
     try:
+        if not get_signature_locations(SignatureType.YARA):
+            return {}
         inventory = get_yara_inventory(get_config().svs.samples.inventory_refresh_seconds)
     except Exception as e:
         raise SignatureTagsUnavailable(f"unable to read the yara rule inventory: {e}") from e

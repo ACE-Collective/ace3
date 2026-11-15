@@ -188,6 +188,20 @@ async def test_list_includes_rules_that_never_matched(client: AsyncClient, sessi
 
 
 @pytest.mark.asyncio
+async def test_list_with_an_invalid_service_yara_reports_it(client: AsyncClient, session: AsyncSession):
+    await _counters(session, MATCHED_UUID, VERSION_A, 10, 2, datetime(2026, 9, 1))
+    get_config().raw._data["service_yara"]["git_repo_dirs"] = "unittest"
+    get_config().load_service_configs()
+
+    response = await client.get("/signatures/yara-qa/")
+    assert response.status_code == 200
+    page = response.json()
+    assert "git_repo_dirs" in page["inventory_error"]
+    # the recorded matches do not depend on the rule files
+    assert [s["signature_uuid"] for s in page["data"]] == [MATCHED_UUID]
+
+
+@pytest.mark.asyncio
 async def test_list_filters_and_pages(client: AsyncClient, session: AsyncSession):
     await _counters(session, MATCHED_UUID, VERSION_A, 3, 1, datetime(2026, 9, 1))
     # a rule that left qa mode but has recorded matches
