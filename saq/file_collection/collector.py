@@ -7,7 +7,6 @@ from sqlalchemy.sql import func
 
 from saq.database.model import Alert, FileCollection
 from saq.database.pool import get_db
-from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
 from saq.queue_service import QueueCollector
@@ -99,28 +98,12 @@ class FileCollectionCollector(QueueCollector[FileCollectionWorkItem]):
         self.initial_retry_delay_seconds = initial_retry_delay_seconds
         self.max_retry_delay_seconds = max_retry_delay_seconds
         self.max_collection_time_seconds = max_collection_time_seconds
-        self.listeners: dict[str, FileCollectionListener] = {}
-
-    def pending_collection_ids(self) -> set[int]:
-        """Returns the ids of every file collection currently held by a listener (queued or in progress)."""
-        pending: set[int] = set()
-        for listener in self.listeners.values():
-            pending.update(listener.pending_collection_ids())
-        return pending
 
     def ready(self, rows: list[FileCollection]) -> list[FileCollection]:
-        # Skip anything a listener already holds. A worker's queue can hold an item longer than
-        # lock_timeout_seconds when collections are slow, and re-locking it here would push a
-        # duplicate copy into that queue.
-        pending_ids = self.pending_collection_ids()
-
         # Filter by per-record exponential backoff delay
         ready_for_retry = []
         now = datetime.now(UTC)
         for c in rows:
-            if c.id in pending_ids:
-                continue
-
             # Calculate the required delay for this record based on its retry_count
             required_delay = calculate_backoff_delay(
                 c.retry_count,

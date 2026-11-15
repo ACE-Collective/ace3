@@ -3,12 +3,15 @@ import logging
 
 import pytest
 
+from saq.database.model import ExternalRemediationCheck
 from saq.database.pool import get_db
 from saq.remediation.external.collector import (
     ExternalRemediationCheckCollector,
     build_work_item,
 )
-from saq.remediation.external.types import CheckStatus
+from saq.remediation.external.types import CheckResult, CheckStatus, ProbeOutcome
+from saq.remediation.external.worker import ExternalRemediationCheckWorker
+from tests.saq.remediation.external.conftest import FakeProbe
 
 
 class CollectingListener:
@@ -18,6 +21,10 @@ class CollectingListener:
 
     def handle_request(self, work_item):
         self.received.append(work_item)
+
+    def pending_ids(self) -> set[int]:
+        # done with each item as soon as it has it
+        return set()
 
 
 @pytest.fixture
@@ -199,3 +206,30 @@ def test_build_work_item_handles_non_dict_context(make_check, caplog):
 
     assert work.context is None
     assert any("context_json is not a dict" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.integration
+def test_collect_skips_check_still_queued_after_lock_timeout(make_check, db_alert):
+    # the probe is behind: the row waits in its worker's queue past the lock timeout
+    probe = FakeProbe(outcome_factory=lambda target: ProbeOutcome(not_found=True))
+    worker = ExternalRemediationCheckWorker(probe)
+    collector = ExternalRemediationCheckCollector(lock_timeout_seconds=0)
+    collector.register_listener("fake_probe", worker)
+    # the loops below remove the session the fixtures' rows belong to
+    alert_uuid = db_alert.uuid
+    check_id = make_check().id
+
+    collector.start_single_threaded()
+    collector.collection_loop()
+
+    assert worker.work_queue.qsize() == 1
+
+    worker.start_single_threaded()
+
+    assert len(probe.calls) == 1
+    check = get_db().get(ExternalRemediationCheck, check_id)
+    assert check.status == CheckStatus.COMPLETED.value
+    assert check.result == CheckResult.NOT_FOUND.value
+    # finished, it is not collected again, and a new check is
+    new_check_id = make_check(alert_uuid=alert_uuid).id
+    assert [item.id for item in collector.collect_work_items()] == [new_check_id]

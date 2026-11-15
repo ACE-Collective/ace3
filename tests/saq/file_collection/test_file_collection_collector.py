@@ -15,12 +15,11 @@ from saq.file_collection.database import (
     resolve_duplicate_pending_file_collection,
     retry_file_collection,
 )
-from saq.file_collection.interface import FileCollectionListener
 from saq.file_collection.storage import unattached_storage_dir
 from saq.file_collection.types import FileCollectionStatus, FileCollectionWorkItem, FileCollectorStatus
 
 
-class TestFileCollectionListener(FileCollectionListener):
+class TestFileCollectionListener:
     __test__ = False
 
     def __init__(self):
@@ -32,7 +31,7 @@ class TestFileCollectionListener(FileCollectionListener):
         self.collections.append(work_item)
         self.pending.add(work_item.id)
 
-    def pending_collection_ids(self) -> set[int]:
+    def pending_ids(self) -> set[int]:
         return set(self.pending)
 
     def finish(self, collection_id: int):
