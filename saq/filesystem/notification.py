@@ -7,9 +7,15 @@ when modifications are detected.
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Generic, Optional, TypeVar
+
+import yaml
+from pydantic import BaseModel
 
 from saq.configuration.config import get_config
+from saq.util.filesystem import abs_path
+
+SettingsModel = TypeVar("SettingsModel", bound=BaseModel)
 
 
 class WatchedFile:
@@ -25,6 +31,44 @@ class WatchedFile:
         self.path = path
         self.callback = callback
         self.last_mtime = 0
+        # reported once per disappearance, not on every check
+        self.missing_reported = False
+
+
+class WatchedSettings(Generic[SettingsModel]):
+    """An analyst-editable YAML settings file, validated with a pydantic model and reloaded when it
+    changes. ``value`` is the last version of the file that validated, or the model's defaults
+    until one has: a bad edit is logged and rejected whole rather than undoing the tuning already
+    in effect. A blank path never watches anything and stays on the defaults."""
+
+    def __init__(self, watcher: "FileWatcher", path: str, model_class: type[SettingsModel]):
+        self.path = abs_path(path) if path else None
+        self.model_class = model_class
+        self._watcher = watcher
+        self._watched = False
+        self._value = model_class()
+
+    @property
+    def value(self) -> SettingsModel:
+        # loaded on first use, so a worker that builds the module but never runs it never reads the file
+        if not self._watched and self.path:
+            self._watched = True
+            # loads the file now, and again whenever it changes
+            self._watcher.watch_file(self.path, self.reload)
+
+        return self._value
+
+    def reload(self) -> None:
+        try:
+            with open(self.path, "r", encoding="utf-8") as fp:
+                value = self.model_class.model_validate(yaml.safe_load(fp) or {})
+        except Exception:
+            logging.exception(f"unable to load settings file {self.path}; the settings already in effect are kept",
+                              extra={"path": self.path})
+            return
+
+        self._value = value
+        logging.info(f"loaded settings file {self.path}", extra={"path": self.path})
 
 
 class FileWatcher:
@@ -52,6 +96,11 @@ class FileWatcher:
         # Go ahead and load it up - reset the check timer to force immediate check
         self.next_check_watched_files = None
         self.check_watched_files()
+
+    def watch_settings(self, path: str, model_class: type[SettingsModel]) -> WatchedSettings[SettingsModel]:
+        """Watch an analyst-editable YAML settings file (see WatchedSettings). ``path`` is relative to
+        SAQ_HOME unless absolute. Nothing is read until ``value`` is first used."""
+        return WatchedSettings(self, path, model_class)
     
     def unwatch_file(self, path: str) -> bool:
         """Stop watching a file.
@@ -80,10 +129,20 @@ class FileWatcher:
         
         for watched_file in self.watched_files.values():
             try:
-                if not os.path.exists(watched_file.path):
+                try:
+                    current_mtime = os.stat(watched_file.path).st_mtime
+                except OSError:
+                    # whatever reads the file keeps running on what it last loaded, so say so once
+                    if not watched_file.missing_reported:
+                        watched_file.missing_reported = True
+                        logging.exception(f"watched file {watched_file.path} does not exist or cannot be read",
+                                          extra={"path": watched_file.path})
+                    # a file put back with the mtime it had before it went away (cp -p, a restore from
+                    # backup) is still a change
+                    watched_file.last_mtime = 0
                     continue
-                
-                current_mtime = os.stat(watched_file.path).st_mtime
+
+                watched_file.missing_reported = False
                 if watched_file.last_mtime != current_mtime:
                     logging.info("detected change to {}".format(watched_file.path))
                     
@@ -125,6 +184,10 @@ class FileWatcherMixin:
     def watch_file(self, path, callback):
         """Watches the given file and executes callback when it detects that the file has been modified."""
         self._file_watcher.watch_file(path, callback)
+
+    def watch_settings(self, path: str, model_class: type[SettingsModel]) -> WatchedSettings[SettingsModel]:
+        """Watch an analyst-editable YAML settings file; see FileWatcher.watch_settings."""
+        return self._file_watcher.watch_settings(path, model_class)
 
     def check_watched_files(self):
         """Check watched files for changes."""

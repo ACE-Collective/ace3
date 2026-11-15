@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Iterator, Optional, Type, override
 from urllib.parse import parse_qsl, urlparse
 
-import yaml
 from bs4 import NavigableString, Tag
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from urlfinderlib.url import URL
@@ -27,7 +26,6 @@ from saq.modules.phishkit import PhishkitAnalysis
 from saq.modules.phishkit_chain import display_url
 from saq.modules.url.protected import ProtectedURLAnalysis
 from saq.nrd.util import registrable_domain
-from saq.util import abs_path
 from saq.util.networking import is_subdomain
 
 KEY_PRIMARY = "primary"
@@ -163,19 +161,6 @@ class LureURLSettings(BaseModel):
     @classmethod
     def _none_is_default(cls, value):
         return {} if value is None else value
-
-
-def load_lure_settings(config_path: str) -> Optional[LureURLSettings]:
-    """Load the settings file. Returns None when it cannot be read or does not validate."""
-    path = abs_path(config_path)
-    try:
-        with open(path, "r", encoding="utf-8") as fp:
-            return LureURLSettings.model_validate(yaml.safe_load(fp) or {})
-    except Exception:
-        logging.exception(f"unable to load lure url settings {path}; the settings already in effect are kept",
-                          extra={"path": path})
-
-    return None
 
 
 class LureURLConfig(AnalysisModuleConfig):
@@ -948,36 +933,15 @@ class LureURLAnalyzer(AnalysisModule):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._settings = LureURLSettings()
-        self._settings_watched = False
+        self._settings = self.watch_settings(self.config.config_path, LureURLSettings)
 
     @classmethod
     def get_config_class(cls) -> Type[AnalysisModuleConfig]:
         return LureURLConfig
 
-    def _load_settings(self):
-        # a file that fails to load keeps the settings already in effect, so a bad edit does not
-        # undo the analysts' tuning
-        settings = load_lure_settings(self.config.config_path)
-        if settings is not None:
-            self._settings = settings
-            logging.info(f"loaded lure url settings from {abs_path(self.config.config_path)}")
-
     @property
     def settings(self) -> LureURLSettings:
-        if not self._settings_watched and self.config.config_path:
-            self._settings_watched = True
-            path = abs_path(self.config.config_path)
-            # the file watcher skips a missing file without a word
-            try:
-                os.stat(path)
-            except OSError:
-                logging.exception(f"lure url settings file {path} does not exist or cannot be read; using the built-in defaults until it does",
-                                  extra={"path": path})
-            # loads the settings now if the file exists, and again whenever it changes
-            self.watch_file(path, self._load_settings)
-
-        return self._settings
+        return self._settings.value
 
     @property
     def generated_analysis_type(self):

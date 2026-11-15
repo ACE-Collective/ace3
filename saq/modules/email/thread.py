@@ -15,8 +15,6 @@ import logging
 from functools import cached_property
 from typing import Optional, Type
 
-import yaml
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from saq.analysis.analysis import Analysis
@@ -37,7 +35,6 @@ from saq.modules.email.conversation import (
     Conversation,
     get_conversation,
 )
-from saq.util import abs_path
 
 # Roles that mean mail actually ORIGINATED from a domain. Deliberately narrower than
 # conversation.SENDER_ROLES, which also contains reply_to: Reply-To only says where replies are
@@ -190,20 +187,6 @@ class EmailThreadSettings(BaseModel):
         return frozenset((registrable_domain(first), registrable_domain(second))) in self._ignored_pairs
 
 
-def load_settings(config_path: str) -> Optional[EmailThreadSettings]:
-    """Load the settings file. Returns None when it cannot be read or does not validate."""
-    path = abs_path(config_path)
-    try:
-        with open(path, "r", encoding="utf-8") as fp:
-            return EmailThreadSettings.model_validate(yaml.safe_load(fp) or {})
-    except FileNotFoundError:
-        logging.warning("email thread analysis settings not found: %s", path)
-    except Exception as e:
-        logging.error("unable to load email thread analysis settings %s: %s", path, e)
-
-    return None
-
-
 class EmailThreadSettingsConfigMixin(BaseModel):
     """Config field for any module that honors the email thread settings file."""
     config_path: str = Field(
@@ -217,24 +200,11 @@ class EmailThreadSettingsMixin:
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._settings = EmailThreadSettings()
-        self._settings_watched = False
-
-    def _load_settings(self):
-        # a file that fails to load keeps the settings already in effect, so a bad edit does not
-        # bring back every pair the analysts have ignored
-        settings = load_settings(self.config.config_path)
-        if settings is not None:
-            self._settings = settings
+        self._settings = self.watch_settings(self.config.config_path, EmailThreadSettings)
 
     @property
     def settings(self) -> EmailThreadSettings:
-        if not self._settings_watched and self.config.config_path:
-            # watch_file loads the settings immediately and reloads them on change
-            self.watch_file(abs_path(self.config.config_path), self._load_settings)
-            self._settings_watched = True
-
-        return self._settings
+        return self._settings.value
 
 
 class EmailThreadAnalyzerConfig(EmailThreadSettingsConfigMixin, AnalysisModuleConfig):

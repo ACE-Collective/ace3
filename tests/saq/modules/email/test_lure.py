@@ -13,6 +13,7 @@ from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import ANALYSIS_TYPE_MAILBOX, DIRECTIVE_CRAWL, F_FILE, F_URL, AnalysisExecutionResult
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.filesystem.notification import FileWatcher
 from saq.modules.email import lure
 from saq.modules.email.lure import (
     SOURCE_ATTACHMENT,
@@ -28,7 +29,6 @@ from saq.modules.email.lure import (
     LureURLAnalyzer,
     LureURLSettings,
     LureURLWeights,
-    load_lure_settings,
     build_lure_urls,
     find_phrase,
     is_sign_off,
@@ -1070,10 +1070,14 @@ def test_module_crawl_primary_off_and_max_candidates(root_analysis, tmp_path, mo
     assert not any(url.has_directive(DIRECTIVE_CRAWL) for url in urls)
 
 
+def _load_settings(path) -> LureURLSettings:
+    return FileWatcher().watch_settings(str(path), LureURLSettings).value
+
+
 @pytest.mark.unit
 def test_shipped_settings_file_holds_the_builtin_defaults():
     assert get_analysis_module_config("lure_url_analyzer").config_path == "etc/lure_url.yaml"
-    settings = load_lure_settings("etc/lure_url.yaml")
+    settings = _load_settings("etc/lure_url.yaml")
 
     # the file deployments copy into analyst_data must start from the same values ACE uses without it
     assert settings == LureURLSettings()
@@ -1087,7 +1091,7 @@ def test_settings_file_keys_left_out_keep_their_defaults(tmp_path):
     path = tmp_path / "lure_url.yaml"
     path.write_text("benign_domains: [example.net]\nnoise_keywords:\nweights:\n  qr: 50\n")
 
-    settings = load_lure_settings(str(path))
+    settings = _load_settings(str(path))
 
     assert settings.benign_domains == ["example.net"]
     assert settings.noise_keywords == []
@@ -1103,7 +1107,7 @@ def test_settings_file_blank_weights_keep_their_defaults(tmp_path):
     path = tmp_path / "lure_url.yaml"
     path.write_text("weights:\n")
 
-    assert load_lure_settings(str(path)).weights == LureURLWeights()
+    assert _load_settings(str(path)).weights == LureURLWeights()
 
 
 @pytest.mark.unit
@@ -1117,9 +1121,9 @@ def test_settings_file_that_does_not_load(tmp_path, caplog, text):
     path = tmp_path / "lure_url.yaml"
     path.write_text(text)
 
-    assert load_lure_settings(str(path)) is None
+    assert _load_settings(path) == LureURLSettings()
 
-    [record] = [r for r in caplog.records if "unable to load lure url settings" in r.getMessage()]
+    [record] = [r for r in caplog.records if "unable to load settings file" in r.getMessage()]
     assert record.levelno == logging.ERROR and record.exc_info
     assert record.path == str(path)
 
@@ -1146,12 +1150,12 @@ def test_module_reloads_the_settings_file_and_keeps_the_last_good_one(root_analy
     # a bad edit is rejected whole, and the tuning already in effect stays (the defaults would
     # call LURE the primary)
     assert edit("min_primary_score: [\n", 1_000_000) is None
-    assert any(r.levelno == logging.ERROR and "unable to load lure url settings" in r.getMessage()
+    assert any(r.levelno == logging.ERROR and "unable to load settings file" in r.getMessage()
                for r in caplog.records)
 
     with caplog.at_level(logging.INFO):
         assert edit("min_primary_score: 1\n", 2_000_000)["url"] == LURE
-    assert f"loaded lure url settings from {path}" in caplog.text
+    assert f"loaded settings file {path}" in caplog.text
 
 
 @pytest.mark.integration
