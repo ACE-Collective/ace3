@@ -50,6 +50,7 @@ from saq.signatures.loaders.yara import (
     attach_rule_details,
     compiled_rule_details,
 )
+from saq.yara_scanning.include_guard import guard_includes
 from saq.yara_scanning import protocol
 from saq.yara_scanning.qa import QASpooler, run_recorder
 
@@ -308,8 +309,10 @@ class _Generation:
                 git_repo_dirs=list(self.settings.git_repo_dirs),
                 default_timeout=self.settings.default_timeout)
 
-            # a rule file that cannot be read or does not compile is logged and left out; the rest are loaded
-            self.scanner.load_rules()
+            # a rule file that cannot be read or does not compile is logged and left out; the rest are loaded.
+            # an include is held inside the signature directory (saq.yara_scanning.include_guard)
+            with guard_includes(self.settings.signature_dir):
+                self.scanner.load_rules()
         except Exception as e:
             self._report(b"E" + str(e).encode(errors="replace")[:4096])
             return 1

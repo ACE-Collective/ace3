@@ -22,6 +22,7 @@ meta filters (file_ext, file_name, mime_type, meta_tags, ...) and the timeout be
 service.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -46,6 +47,57 @@ def _error_text(e: BaseException) -> str:
 
 def _is_under(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _is_allowed_read(path: str, signature_dir: str) -> bool:
+    """Whether a rule file or include at ``path`` may be read while compiling ``signature_dir``: a
+    regular file inside it, reached through no symbolic link. A copy of
+    ``saq.yara_scanning.include_guard.is_allowed_read``; this file runs in the SVS sandbox and
+    cannot import ACE, so a change there is mirrored here. Landlock already holds reads to the
+    replay directory, so this is a second line that does not depend on it."""
+    given = os.path.abspath(signature_dir)
+    rel = os.path.relpath(os.path.abspath(path), given)
+    candidate = os.path.normpath(os.path.join(given, rel))
+    if not _is_under(candidate, given):
+        return False  # absolute path or a `../` escape -- arithmetic only, no filesystem touch
+    root = os.path.realpath(given)
+    current = root
+    tail = os.path.relpath(os.path.normpath(os.path.join(root, rel)), root)
+    for part in [] if tail == os.curdir else tail.split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return False
+    try:
+        return os.path.isfile(current) and not os.path.islink(current)
+    except OSError:
+        return False
+
+
+@contextlib.contextmanager
+def _guard_includes(signature_dir: str):
+    """Hold yara_scanner's rule-file and include reads inside ``signature_dir`` for one compile, by
+    binding its module-level ``open``. Mirrors ``saq.yara_scanning.include_guard.guard_includes``."""
+    real_open = open
+    had_own = "open" in yara_scanner.__dict__
+    previous = yara_scanner.__dict__.get("open")
+
+    def guarded_open(file, mode="r", *args, **kwargs):
+        if isinstance(file, (str, bytes, os.PathLike)) and "w" not in mode and "a" not in mode and "x" not in mode:
+            path = os.fspath(file)
+            if isinstance(path, bytes):
+                path = os.fsdecode(path)
+            if not _is_allowed_read(path, signature_dir):
+                raise PermissionError("include is outside the signature directory or not a regular file")
+        return real_open(file, mode, *args, **kwargs)
+
+    yara_scanner.open = guarded_open
+    try:
+        yield
+    finally:
+        if had_own:
+            yara_scanner.open = previous
+        else:
+            yara_scanner.__dict__.pop("open", None)
 
 
 def _write_json(workdir: str, name: str, data: dict) -> None:
@@ -127,7 +179,10 @@ def run(workdir: str) -> dict:
         # the files the service loads were listed by the caller, which knows the layout
         scanner.tracked_dirs[keys[namespace["name"]]] = dict.fromkeys(namespace["files"])
         start = time.monotonic()
-        scanner.load_rules()
+        # an include is held inside the signature directory (the parent of the set directories, the
+        # same boundary the yara service enforces); a sibling set's file still works, an escape does not
+        with _guard_includes(os.path.dirname(os.path.realpath(namespace["directory"]))):
+            scanner.load_rules()
         compile_seconds = time.monotonic() - start
 
         rules = {} if scanner.rules is None else {rule["name"]: rule for rule in _rule_entries(scanner.rules)}

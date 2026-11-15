@@ -94,6 +94,66 @@ def test_matches_agree_with_the_yara_service(tmp_path, file_path, meta_tags):
 
 
 @pytest.mark.unit
+def test_an_include_that_leaves_the_signature_dir_is_refused_and_read_nothing(tmp_path):
+    # a "secret" rule file one directory above the signature directory; were the include followed
+    # it would compile in and match the sample
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "r.yar": 'include "../../secret.yar"\nrule own { meta: uuid = "u-own" strings: $a = "evil" condition: $a }\n',
+    }})
+    _write(os.path.join(os.path.dirname(signature_dir), "secret.yar"),
+           'rule include_escape_marker { meta: uuid = "u-leak" strings: $a = "evil" condition: $a }\n')
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    # the file's own rule still loads, so the escaping include compiled as empty rather than failing
+    assert [rule["name"] for rule in files["r.yar"]["rules"]] == ["own"]
+    matched = {match["rule"] for match in result["units"]["0"]["matches"]}
+    assert matched == {"own"}
+    assert "include_escape_marker" not in matched               # the secret rule was never read
+    # the refusal is recorded against the file, so a reviewer can see the include did not apply
+    assert any(w["file"].endswith("r.yar") and w["include"] == "../../secret.yar"
+               for w in result["include_warnings"])
+
+    # and the yara service (production) compiles it the same way: no leaked rule
+    production = _production(signature_dir)
+
+
+@pytest.mark.unit
+def test_a_symlink_include_is_refused(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "r.yar": 'include "link.yar"\nrule own { meta: uuid = "u-own" strings: $a = "evil" condition: $a }\n',
+    }})
+    _write(os.path.join(os.path.dirname(signature_dir), "secret.yar"),
+           'rule include_escape_marker { meta: uuid = "u-leak" strings: $a = "evil" condition: $a }\n')
+    os.symlink(os.path.join(os.path.dirname(signature_dir), "secret.yar"),
+               os.path.join(signature_dir, "acme", "link.yar"))
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    matched = {match["rule"] for match in result["units"]["0"]["matches"]}
+    assert "include_escape_marker" not in matched
+    assert "own" in matched
+
+
+@pytest.mark.unit
+def test_an_include_inside_the_signature_dir_still_works(tmp_path):
+    # a sibling rule set of the same signature directory is reachable, as the yara service allows
+    signature_dir = _signature_dir(str(tmp_path), {
+        "common": {"shared.yar": 'rule shared { meta: uuid = "u-shared" condition: false }\n'},
+        "acme": {"r.yar": 'include "../common/shared.yar"\n'
+                 'rule uses_shared { meta: uuid = "u-uses" strings: $a = "evil" condition: $a and not shared }\n'},
+    })
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["ruleset_error"] is None
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    assert "uses_shared" in [rule["name"] for rule in files["r.yar"]["rules"]]
+    assert "uses_shared" in {match["rule"] for match in result["units"]["0"]["matches"]}
+
+
+@pytest.mark.unit
 def test_a_file_that_does_not_compile_drops_only_its_rules(tmp_path):
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
         "good.yar": 'rule good { meta: uuid = "u-good" strings: $a = "evil" condition: $a }\n',
@@ -170,7 +230,8 @@ def test_a_namespace_without_rule_files_is_left_out(tmp_path):
 
 
 @pytest.mark.unit
-def test_an_include_outside_the_repository_is_reported(tmp_path):
+def test_an_include_with_an_absolute_path_is_refused(tmp_path):
+    # the included file is valid yara: were the absolute include followed, its rule would load
     outside = os.path.join(str(tmp_path), "outside", "strings.inc")
     _write(outside, "rule shared { condition: false }\n")
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
@@ -179,8 +240,11 @@ def test_an_include_outside_the_repository_is_reported(tmp_path):
 
     result = _run(tmp_path, signature_dir, [])
     assert result["ruleset_error"] is None
-    assert [(os.path.basename(w["file"]), w["include"], w["error"]) for w in result["include_warnings"]] == [
-        ("rules.yar", outside, "the include is outside the repository: it resolves differently in production")]
+    (entry,) = result["files"]
+    assert [rule["name"] for rule in entry["rules"]] == ["uses"]   # the absolute include was not read
+    # the refusal is reported against the file, so a reviewer sees the include did not apply
+    assert any(os.path.basename(w["file"]) == "rules.yar" and w["include"] == outside
+               for w in result["include_warnings"])
 
 
 @pytest.mark.unit
@@ -242,7 +306,9 @@ def test_a_nested_include_resolves_as_the_yara_service_resolves_it(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_missing_include_compiles_and_is_reported(tmp_path):
+def test_a_missing_include_and_one_leaving_the_signature_dir_are_reported(tmp_path):
+    # common.yar is missing inside the set; ../../shared/strings.yar leaves the signature directory
+    # (it would resolve inside the exported tree but outside what the yara service compiles)
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
         "inc.yar": 'include "common.yar"\nrule uses { strings: $a = "evil" condition: $a }\n',
         "local.yar": 'include "../../shared/strings.yar"\nrule shared { condition: false }\n',
@@ -251,7 +317,10 @@ def test_a_missing_include_compiles_and_is_reported(tmp_path):
 
     result = _run(tmp_path, signature_dir, [])
     assert result["ruleset_error"] is None
-    assert [(os.path.basename(w["file"]), w["include"]) for w in result["include_warnings"]] == [("inc.yar", "common.yar")]
+    # both includes compile as empty and are reported; the file's own rules still load
+    reported = {(os.path.basename(w["file"]), w["include"]) for w in result["include_warnings"]}
+    assert ("inc.yar", "common.yar") in reported
+    assert ("local.yar", "../../shared/strings.yar") in reported
     assert _production(signature_dir).rules is not None
 
 

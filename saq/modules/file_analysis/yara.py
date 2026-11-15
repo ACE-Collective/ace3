@@ -32,6 +32,7 @@ from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
 from saq.yara_scanning.service import get_validated_git_repo_dirs
+from saq.yara_scanning.include_guard import guard_includes
 
 import yara
 import yara_scanner
@@ -241,7 +242,9 @@ class YaraScanner_v3_4(AnalysisModule):
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
-        self.scanner.load_rules()
+        # an include is held inside the signature directory (saq.yara_scanning.include_guard)
+        with guard_includes(self.signature_dir):
+            self.scanner.load_rules()
         self.local_rule_details = compiled_rule_details(self.scanner)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
@@ -273,7 +276,8 @@ class YaraScanner_v3_4(AnalysisModule):
         if self.scanner:
             if self.scanner.check_rules():
                 logging.info("detected yara rules modification - reloading")
-                self.scanner.load_rules()
+                with guard_includes(self.signature_dir):
+                    self.scanner.load_rules()
 
         # did the blacklist change?
         #try:

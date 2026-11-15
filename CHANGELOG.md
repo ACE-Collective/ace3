@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Keep a YARA rule's `include` inside the signature directory being compiled: a relative include of another file in the signature directory still works, while an absolute path, a path that leaves the directory, or one that passes through a symbolic link is refused before the file is read, in every compile path (the yara service, the file-analysis scanner and the SVS replay).
+
 ## [3.0.139] - 2026-11-06
 
 - [Keep the observable presenter tests to core's actions, and give integrations a hook test helper](https://github.com/ACE-Collective/ace3/pull/1170)
