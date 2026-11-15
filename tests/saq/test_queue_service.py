@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import logging
-from threading import Event
+from threading import Event, Thread
 from typing import Optional
 
 import pytest
@@ -423,6 +423,49 @@ def test_manager_wait_releases_items_queued_after_the_workers_exited(session_res
     assert a.processed == [] and b.processed == []
     assert [[item.id for item in items] for items in collector.released] == [[1, 3], [2]]
     assert a.work_queue.empty() and b.work_queue.empty()
+
+
+class BlockingWorker(FakeWorker):
+    """Holds each item in process_one until unblock is set, like a remediator call that outlasts
+    the shutdown deadline."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.entered = Event()
+        self.unblock = Event()
+
+    def process_one(self, work_item: Item):
+        self.entered.set()
+        # bounded, so a failing test cannot hang the run
+        self.unblock.wait(10)
+        super().process_one(work_item)
+
+
+@pytest.mark.unit
+def test_manager_wait_releases_queued_items_while_a_worker_is_still_busy(session_resets):
+    a, b = BlockingWorker("a"), FakeWorker("b")
+    collector = FakeCollector(loop_interval_seconds=0.01)
+    manager = FakeManager(collector, [a, b])
+    manager.start()
+    assert manager.wait_for_start(5)
+    a.handle_request(Item(1, "a", "lock"))
+    assert a.entered.wait(5)
+    a.handle_request(Item(2, "a", "lock"))
+    a.handle_request(Item(3, "a", "lock"))
+
+    manager.stop()
+    waiter = Thread(target=manager.wait)
+    waiter.start()
+    try:
+        # `ace service start` exits at its deadline, so the release cannot wait for item 1
+        wait_for_condition(lambda: len(collector.released) == 2)
+        assert [[item.id for item in items] for items in collector.released] == [[2, 3], []]
+    finally:
+        a.unblock.set()
+        waiter.join(5)
+
+    assert not waiter.is_alive()
+    assert [item.id for item in a.processed] == [1]
 
 
 @pytest.mark.unit
