@@ -187,24 +187,23 @@ The working directory is deleted when the validation ends, whether it succeeded 
 
 ### Compiling the way the yara service does
 
-`saq/svs/yara/child.py` follows `YaraScanner.compile_and_load_rules` (yara_scanner 3.0.0), which
-the yara service runs for each generation, but calls `yara.compile()` itself so the errors and the
-compiler warnings are kept:
+`saq/svs/yara/child.py` loads each namespace into a `YaraScanner` of its own with `load_rules()`,
+which is what the yara service runs for each generation, and reports what the library recorded of
+the compile (`scanner.compiled_sources`, yara_scanner 3.1.0+):
 
-1. Each rule file is compiled on its own, with the library's include callback. A file that does not
-   compile is dropped with its rules, and the report says which rules went with it. An include that
-   cannot be read becomes empty text, as in the service, and is reported. So is an include that
-   resolves outside the repository, because it reads something else in production.
-2. The surviving files are compiled together, one source per namespace. If that fails (two files
-   in one namespace defining the same rule name, for instance), **the ruleset would not load**: the
-   service keeps serving its previous generation. Nothing is compared, and the report says so. A
-   file that is not UTF-8 text fails the whole load the same way, because the service reads it
-   before it compiles it.
-3. Each namespace is then compiled on its own and every unit is scanned with it, which is what
-   gives the scan time per namespace. Namespaces are independent in YARA (a global rule applies
-   only to its own namespace), so together these match what the combined rules match. Each scan
-   goes through `YaraScanner.scan()`, with the yara service's `default_timeout` per file and
-   namespace, so the externals and the meta filters behave as in production.
+1. Each rule file is compiled on its own. A file that cannot be read (not UTF-8 text, for instance)
+   or does not compile is dropped with its rules, and the report says which rules went with it. An
+   include that cannot be read becomes empty text, as in the service, and is reported. So is an
+   include that resolves outside the repository, because it reads something else in production.
+2. The surviving files of the namespace are compiled together. If that fails (two files in one
+   namespace defining the same rule name, for instance), **the ruleset would not load**: the
+   service keeps serving its previous generation. Nothing is compared, and the report says so.
+3. Every unit is scanned with each namespace's rules. The service compiles all namespaces together,
+   but namespaces are independent in YARA (a global rule applies only to its own namespace), so a
+   namespace compiles the same on its own and together these match what the combined rules match.
+   A namespace's compile time is both passes, what the service spends on it. Each scan goes through
+   `YaraScanner.scan()`, with the yara service's `default_timeout` per file and namespace, so the
+   externals and the meta filters behave as in production.
 
 The scan applies the `enabled` meta and the `qa` and `no_alert` modifiers the way the YARA module
 does (`saq/signatures/yara_meta.py`): a **match** means the rule would make a detection. The raw

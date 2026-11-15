@@ -49,7 +49,6 @@ from saq.signatures.loaders.yara import (
     CompiledRuleDetails,
     attach_rule_details,
     compiled_rule_details,
-    read_rule_details,
 )
 from saq.yara_scanning import protocol
 from saq.yara_scanning.qa import QASpooler, run_recorder
@@ -309,8 +308,7 @@ class _Generation:
                 git_repo_dirs=list(self.settings.git_repo_dirs),
                 default_timeout=self.settings.default_timeout)
 
-            details_read = read_rule_details(self.scanner)
-            # a rule file that does not compile is logged and left out; the rest are loaded
+            # a rule file that cannot be read or does not compile is logged and left out; the rest are loaded
             self.scanner.load_rules()
         except Exception as e:
             self._report(b"E" + str(e).encode(errors="replace")[:4096])
@@ -320,7 +318,7 @@ class _Generation:
             self._report(b"Eno yara rules could be loaded")
             return 1
 
-        self.rule_details = compiled_rule_details(details_read)
+        self.rule_details = compiled_rule_details(self.scanner)
 
         logging.info("yara scanner generation %d compiled its rules in %.1f seconds",
                      self.generation_id, time.monotonic() - start)
