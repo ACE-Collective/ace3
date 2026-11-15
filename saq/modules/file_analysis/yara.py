@@ -24,7 +24,7 @@ from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
-from saq.signatures.loaders.yara import attach_rule_details, compiled_rule_details, read_rule_details
+from saq.signatures.loaders.yara import attach_rule_details, compiled_rule_details
 from saq.signatures.model import SignatureType
 from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
@@ -241,9 +241,8 @@ class YaraScanner_v3_4(AnalysisModule):
         self.scanner = yara_scanner.YaraScanner(
             signature_dir=self.signature_dir, git_repo_dirs=self.git_repo_dirs,
             default_timeout=get_service_config(SERVICE_YARA_SCANNER).default_timeout)
-        details_read = read_rule_details(self.scanner)
         self.scanner.load_rules()
-        self.local_rule_details = compiled_rule_details(details_read)
+        self.local_rule_details = compiled_rule_details(self.scanner)
         self.scanner_start_time = datetime.now()
         #self.load_blacklist()
 

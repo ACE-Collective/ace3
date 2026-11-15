@@ -82,9 +82,10 @@ Matched string data is binary. It travels as `[offset, identifier, base64]` and 
 it back into the `(offset, identifier, bytes)` tuple, so a match looks exactly like
 `YaraScanner.scan_results`. Nothing is pickled in either direction.
 
-Yara can't return a rule's source or the pattern a string was written with, so a generation reads
-the rules in the files it is about to compile (plyara, `read_rule_details()` in
-`saq/signatures/loaders/yara.py`), and the workers add three keys to each match:
+Yara can't return a rule's source or the pattern a string was written with, so after a generation
+loads its rules it parses the text the library compiled (`scanner.compiled_sources`, with plyara,
+`compiled_rule_details()` in `saq/signatures/loaders/yara.py`), and the workers add three keys to
+each match:
 
 - `string_patterns`: identifier → pattern (e.g. `"$a": "\"foo\" nocase"`), for the strings that
   matched. Anonymous (`$`) strings get no pattern.
@@ -95,13 +96,13 @@ the rules in the files it is about to compile (plyara, `read_rule_details()` in
   (`Signature.content_hash`), including for a rule over 50 KB. YARA QA files its matches under it
   ([YARA_QA.md](YARA_QA.md), *Versions*).
 
-All three come from the rules that matched, not the file as it is on disk later: a file that changed
-between being read and compiled gets none of them. The local fallback scanner does the same. The module
-saves them with the match. The GUI shows each pattern next to its string match, and shows the meta
-with a button that swaps it for the full rule, with the lines of the strings that matched marked.
-With `gui.hide_intel` set, the rule is not shown. Results saved before this have neither key. A rule
-file plyara can't parse, though yara compiles it, is logged at WARNING and its rules are shown
-without them. Rules pulled in with `include` get neither.
+All three come from the text the rules were compiled from, not the file as it is on disk later,
+and rules pulled in with `include` get them too, with the include's file name. The local fallback
+scanner does the same. The module saves them with the match. The GUI shows each pattern next to its
+string match, and shows the meta with a button that swaps it for the full rule, with the lines of
+the strings that matched marked. With `gui.hide_intel` set, the rule is not shown. Results saved
+before this have neither key. A rule file plyara can't parse, though yara compiles it, is logged at
+WARNING and its rules are shown without them.
 
 The module also saves, for each string match, the bytes around it (`match_context`: base64 `data`,
 `match_offset`, `match_length`), from which the GUI draws the hex dump with the match marked.

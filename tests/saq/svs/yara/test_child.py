@@ -47,8 +47,10 @@ def _namespaces(signature_dir) -> list[dict]:
     result = []
     for name in sorted(os.listdir(signature_dir)):
         directory = os.path.join(signature_dir, name)
+        # the rule files directly inside it, as saq.svs.yara.layout lists them
         result.append({"name": name, "directory": directory, "files": [
-            os.path.join(directory, file_name) for file_name in sorted(os.listdir(directory))]})
+            os.path.join(directory, file_name) for file_name in sorted(os.listdir(directory))
+            if file_name.endswith((".yar", ".yara")) and os.path.isfile(os.path.join(directory, file_name))]})
     return result
 
 
@@ -136,16 +138,107 @@ def test_a_ruleset_that_does_not_compile_together_would_not_load(tmp_path):
 
 
 @pytest.mark.unit
-def test_a_file_that_is_not_utf8_fails_the_whole_load(tmp_path):
+def test_a_ruleset_that_does_not_load_still_lists_each_files_rules(tmp_path):
+    # the report's "no uuid" and full_path diagnostics are read from them
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "one.yar": 'include "common.inc"\nrule same { meta: uuid = "u-one" condition: helper }\n',
+        "common.inc": 'private rule helper { condition: true }\n',
+        "two.yar": 'rule same { meta: full_path = "x" condition: true }\n',
+    }})
+
+    result = _run(tmp_path, signature_dir, [])
+    assert "duplicated identifier" in result["ruleset_error"]
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    assert {rule["name"]: (rule["private"], rule["meta"]) for rule in files["one.yar"]["rules"]} == {
+        "same": (False, {"uuid": "u-one"}), "helper": (True, {})}
+    assert [(rule["name"], rule["meta"]) for rule in files["two.yar"]["rules"]] == [("same", {"full_path": "x"})]
+
+
+@pytest.mark.unit
+def test_a_namespace_without_rule_files_is_left_out(tmp_path):
+    # tree_layout makes a namespace of every directory, so one can hold only includes
+    signature_dir = _signature_dir(str(tmp_path), {
+        "acme": {"rules.yar": 'rule good { strings: $a = "evil" condition: $a }\n'},
+        "shared": {"common.inc": 'rule unused { condition: true }\n'},
+    })
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["ruleset_error"] is None
+    assert list(result["namespaces"]) == ["acme"]
+    assert [(match["namespace"], match["rule"]) for match in result["units"]["0"]["matches"]] == [("acme", "good")]
+
+
+@pytest.mark.unit
+def test_an_include_outside_the_repository_is_reported(tmp_path):
+    outside = os.path.join(str(tmp_path), "outside", "strings.inc")
+    _write(outside, "rule shared { condition: false }\n")
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "rules.yar": f'include "{outside}"\nrule uses {{ condition: true }}\n',
+    }})
+
+    result = _run(tmp_path, signature_dir, [])
+    assert result["ruleset_error"] is None
+    assert [(os.path.basename(w["file"]), w["include"], w["error"]) for w in result["include_warnings"]] == [
+        ("rules.yar", outside, "the include is outside the repository: it resolves differently in production")]
+
+
+@pytest.mark.unit
+def test_a_unit_that_cannot_be_scanned_is_reported_and_the_rest_are_scanned(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "rules.yar": 'rule good { strings: $a = "evil" condition: $a }\n',
+    }})
+    path = _sample(str(tmp_path), 0, "x.bin")
+    missing = os.path.join(str(tmp_path), "u", "1", "files", "gone.bin")
+
+    # a scan that raises leaves the scanner's results of the unit before it, which must not be
+    # credited to the unit that failed
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []},
+                                            {"id": 1, "path": missing, "meta_tags": []}])
+    assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["good"]
+    (error,) = result["units"]["1"]["errors"]
+    assert (error["namespace"], error["type"]) == ("acme", "error")
+    assert result["units"]["1"]["matches"] == []
+
+
+@pytest.mark.unit
+def test_a_file_that_is_not_utf8_drops_only_its_rules(tmp_path):
     signature_dir = _signature_dir(str(tmp_path), {"acme": {
         "good.yar": 'rule good { strings: $a = "evil" condition: $a }\n',
         "latin1.yar": 'rule caf\xe9 { condition: false }\n'.encode("latin-1"),
     }})
-    result = _run(tmp_path, signature_dir, [])
-    assert "not UTF-8" in result["ruleset_error"]
+    path = _sample(str(tmp_path), 0, "x.bin")
 
-    with pytest.raises(UnicodeDecodeError):
-        _production(signature_dir)
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    files = {os.path.basename(entry["path"]): entry for entry in result["files"]}
+    assert "can't decode" in files["latin1.yar"]["error"]
+    assert result["ruleset_error"] is None
+    assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["good"]
+
+    production = _production(signature_dir)
+    production.scan(path)
+    assert [match["rule"] for match in production.scan_results] == ["good"]
+
+
+@pytest.mark.unit
+def test_a_nested_include_resolves_as_the_yara_service_resolves_it(tmp_path):
+    signature_dir = _signature_dir(str(tmp_path), {"acme": {
+        "main.yar": 'include "inc/outer.inc"\nrule main_rule { condition: outer_rule }\n',
+        "inc/outer.inc": 'include "inner.inc"\nrule outer_rule { condition: inner_rule }\n',
+        "inc/inner.inc": 'rule inner_rule { strings: $a = "evil" condition: $a }\n',
+    }})
+    path = _sample(str(tmp_path), 0, "x.bin")
+
+    result = _run(tmp_path, signature_dir, [{"id": 0, "path": path, "meta_tags": []}])
+    assert result["include_warnings"] == []
+    (entry,) = result["files"]
+    assert entry["error"] is None
+    assert sorted(rule["name"] for rule in entry["rules"]) == ["inner_rule", "main_rule", "outer_rule"]
+
+    production = _production(signature_dir)
+    production.scan(path)
+    assert sorted(match["rule"] for match in result["units"]["0"]["matches"]) == \
+        sorted(match["rule"] for match in production.scan_results) == ["inner_rule", "main_rule", "outer_rule"]
 
 
 @pytest.mark.unit
@@ -194,7 +287,7 @@ def test_the_sandboxed_scan_cannot_read_saq_home(tmp_path):
                         SandboxConfig(allowed_tcp_ports=None))
 
     errors = [warning["error"] for warning in result["include_warnings"]]
-    assert any("PermissionError" in error for error in errors), errors
+    assert any("Permission denied" in error for error in errors), errors
     assert [match["rule"] for match in result["units"]["0"]["matches"]] == ["x"]
 
 

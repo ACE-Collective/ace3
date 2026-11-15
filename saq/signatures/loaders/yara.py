@@ -87,14 +87,18 @@ def _rule_source(source_lines: list[str], parsed_rule: dict) -> str | None:
     return "".join(source_lines[start_line - 1:stop_line])
 
 
+def _parse(source: str) -> list[dict]:
+    # plyara accumulates parsed rules across calls, so it needs to be a new
+    # instance per file (see saq.submission_filter for the same pattern)
+    return plyara.Plyara().parse_string(source)
+
+
 def _read_and_parse(path: str) -> tuple[str, list[dict]]:
     """The source of a rule file and the rules plyara parses out of it."""
     with open(path, "r", encoding="utf-8", errors="surrogateescape") as fp:
         source = fp.read()
 
-    # plyara accumulates parsed rules across calls, so it needs to be a new
-    # instance per file (see saq.submission_filter for the same pattern)
-    return source, plyara.Plyara().parse_string(source)
+    return source, _parse(source)
 
 
 def parse_rule_file(path: str, git_context: GitContext) -> list[Signature]:
@@ -188,24 +192,21 @@ RuleDetails = dict[str, dict]
 # (namespace, rule name) -> the details of the rules a scanner compiled
 CompiledRuleDetails = dict[tuple[str, str], dict]
 
-# rule file path -> (identity when read, namespace, the details of its rules)
-RuleDetailsRead = dict[str, tuple[FileIdentity, str, RuleDetails]]
 
-
-def _parse_rule_details(path: str) -> RuleDetails:
-    """The string patterns, source and content hash of every rule in one rule file. Anonymous
-    strings ($) get no pattern: a match names them only as $, so a match can't tell them apart. A
-    rule whose source is over MAX_RULE_SOURCE_BYTES gets no source, but still gets its hash."""
-    source, parsed_rules = _read_and_parse(path)
+def _parse_rule_details(path: str, source: str) -> RuleDetails:
+    """The string patterns, source and content hash of every rule in the text compiled from one
+    rule file. Anonymous strings ($) get no pattern: a match names them only as $, so a match can't
+    tell them apart. A rule whose source is over MAX_RULE_SOURCE_BYTES gets no source, but still
+    gets its hash."""
     source_lines = source.splitlines(keepends=True)
     result = {}
-    for parsed_rule in parsed_rules:
+    for parsed_rule in _parse(source):
         name = parsed_rule.get("rule_name")
         rule_source = _rule_source(source_lines, parsed_rule)
         # the same slice and hash parse_rule_file() gives the inventory, so a match names the version
         # of the rule the scanner compiled (YARA QA keys its versions on it, docs/YARA_QA.md)
         rule_hash = None if rule_source is None else content_hash(rule_source)
-        if rule_source is not None and len(rule_source.encode("utf-8", errors="surrogateescape")) > MAX_RULE_SOURCE_BYTES:
+        if rule_source is not None and len(rule_source.encode("utf-8")) > MAX_RULE_SOURCE_BYTES:
             logging.info("yara rule %s in %s is over %d bytes: its source is not shown", name, path,
                          MAX_RULE_SOURCE_BYTES, extra={"path": path, "yara_rule": name})
             rule_source = None
@@ -217,8 +218,7 @@ def _parse_rule_details(path: str) -> RuleDetails:
             "source": None if rule_source is None else {
                 "file": os.path.basename(path),
                 "start_line": parsed_rule["start_line"],
-                # surrogates stand for bytes that aren't utf-8, which the alert's JSON can't hold
-                "text": rule_source.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace"),
+                "text": rule_source,
             },
             "content_hash": rule_hash,
         }
@@ -226,49 +226,35 @@ def _parse_rule_details(path: str) -> RuleDetails:
     return result
 
 
-def read_rule_details(scanner) -> RuleDetailsRead:
-    """Reads the string patterns and source of the rules in the files a yara_scanner.YaraScanner is
-    about to compile, because yara can't return them with a match. Call it right before
-    load_rules() and pass the result to compiled_rule_details() right after. The details are only
-    shown to analysts, so this never raises: a failure must not keep the rules from loading."""
-    try:
-        namespaces = scanner.get_namespace_dict()
-    except Exception:
-        logging.exception("unable to list the yara rule files to read their rules")
-        return {}
-
+def compiled_rule_details(scanner) -> CompiledRuleDetails:
+    """The string patterns and source of the rules a yara_scanner.YaraScanner loaded, because yara
+    can't return them with a match. Call it right after load_rules(): they are parsed from the text
+    the scanner compiled (scanner.compiled_sources), not from the files, which may have changed
+    since. The details are only shown to analysts, so this never raises: a failure must not keep
+    the rules from loading."""
     result = {}
-    for namespace, paths in namespaces.items():
-        for path in paths:
-            try:
-                result[path] = (_file_identity(path), namespace, _parse_rule_details(path))
-            except (plyara.exceptions.ParseError, OSError) as e:
-                # plyara lags yara's grammar, so a file yara compiles can still fail here, and a file
-                # can go away between being listed and read: its rules are shown without details
-                logging.warning("unable to read the yara rules in %s: %s", path, e, extra={"path": path})
-            except Exception:
-                logging.exception("unable to read the yara rules in %s", path, extra={"path": path})
-
-    return result
-
-
-def compiled_rule_details(read: RuleDetailsRead) -> CompiledRuleDetails:
-    """The details read_rule_details() read, without those of any file that changed since, because
-    the scanner may have compiled the changed file instead."""
-    result = {}
-    for path, (identity, namespace, rules) in read.items():
-        try:
-            unchanged = _file_identity(path) == identity
-        except OSError:
-            unchanged = False
-
-        if not unchanged:
-            logging.info("yara rule file %s changed while its rules compiled: its rules are shown without details",
-                         path, extra={"path": path})
+    for compiled in scanner.compiled_sources:
+        if compiled.error is not None:
+            # the file was left out of the rules
             continue
 
-        for rule_name, details in rules.items():
-            result[(namespace, rule_name)] = details
+        # an include's rules are compiled into the namespace of the file that includes it
+        texts = [(compiled.path, compiled.source)]
+        texts.extend((included.path, included.source) for included in compiled.includes if included.error is None)
+        for path, source in texts:
+            try:
+                rules = _parse_rule_details(path, source)
+            except plyara.exceptions.ParseError as e:
+                # plyara lags yara's grammar, so a file yara compiles can still fail here: its rules
+                # are shown without details
+                logging.warning("unable to parse the yara rules in %s: %s", path, e, extra={"path": path})
+                continue
+            except Exception:
+                logging.exception("unable to parse the yara rules in %s", path, extra={"path": path})
+                continue
+
+            for rule_name, details in rules.items():
+                result[(compiled.namespace, rule_name)] = details
 
     return result
 
