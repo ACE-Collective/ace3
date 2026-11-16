@@ -14,13 +14,16 @@ from whoisit.errors import (
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
+    ANALYSIS_MODULE_APEX_DOMAIN_ANALYZER,
     ANALYSIS_MODULE_RDAP_ANALYZER,
     F_EMAIL_FIRST_HOP_IP,
     F_FQDN,
     F_IP,
     AnalysisExecutionResult,
 )
+from saq.environment import get_global_runtime_settings
 from saq.json_encoding import _JSONEncoder
+from saq.modules.apex_domain import ApexDomainAnalysis, ApexDomainAnalyzer
 from saq.modules.rdap import RdapAnalysis, RdapAnalyzer, _age_in_days_as_string, _registrable_domain
 from tests.saq.helpers import create_root_analysis
 
@@ -347,6 +350,47 @@ def test_rdap_analyzer_custom_requirement_ignores_fqdn():
     root = create_root_analysis()
     root.initialize_storage()
     observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is True
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_skips_subdomain_with_apex():
+    """A subdomain that apex_domain_analyzer gave an apex observable is left to the apex's lookup."""
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+    analysis = ApexDomainAnalysis()
+    observable.add_analysis(analysis)
+    analysis.add_observable_by_spec(F_FQDN, "example.com")
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is False
+
+
+@pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_looks_up_subdomain_when_apex_not_added(test_context, monkeypatch):
+    """At the fqdn observable limit apex_domain_analyzer records the apex but cannot add it, so RDAP must
+    still look the subdomain up or the domain gets no registration data at all."""
+    monkeypatch.setattr(get_global_runtime_settings(), "observable_limits", {F_FQDN: 1})
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+
+    apex_analyzer = ApexDomainAnalyzer(
+        context=test_context,
+        config=get_analysis_module_config(ANALYSIS_MODULE_APEX_DOMAIN_ANALYZER),
+    )
+    apex_analyzer.root = root
+    apex_analyzer.execute_analysis(observable)
+    analysis = observable.get_analysis(ApexDomainAnalysis)
+    assert isinstance(analysis, ApexDomainAnalysis)
+    assert analysis.get_observable_by_type(F_FQDN) is None
 
     analyzer = RdapAnalyzer(
         config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)

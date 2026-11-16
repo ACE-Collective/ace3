@@ -1,26 +1,28 @@
-"""One run of the test suite at a time per checkout, each on ports of its own (tests/session_lock.py)."""
+"""One run of the test suite at a time per container and per checkout (tests/session_lock.py)."""
 
-import glob
+import fcntl
 import os
+import select
 import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
-from tests import session_lock, unittest_session
+from tests import session_lock
 
 # the checkout the suite is running from, which SAQ_HOME no longer names once a test changes it
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(session_lock.__file__)))
 
-# a run of another checkout in a process of its own: it claims its run, reports its port block
-# and holds the run until its stdin closes or it is killed
-_RUN_ELSEWHERE = """
-import os, sys
-from tests import session_lock, unittest_session
-session_lock.PORT_BLOCK_LOCK_PATH_FORMAT = sys.argv[1]
+# a run in a process of its own: it takes its run, says so and holds it until its stdin closes
+# or it is killed
+_RUN = """
+import sys
+from tests import session_lock
+session_lock.RUN_LOCK_PATH = sys.argv[1]
 session_lock.acquire_run()
-print(os.environ[unittest_session.PORT_BLOCK_ENV_VAR], flush=True)
+print("started", flush=True)
 sys.stdin.read()
 session_lock.release_run()
 """
@@ -28,11 +30,10 @@ session_lock.release_run()
 
 @pytest.fixture
 def checkouts(tmp_path, monkeypatch) -> dict[str, str]:
-    """Two checkouts in one container, with port block locks of their own: the running suite
-    holds a real block, and its process's claim and environment are put back afterwards."""
-    monkeypatch.setattr(session_lock, "PORT_BLOCK_LOCK_PATH_FORMAT", str(tmp_path / "ports-{}.lock"))
-    monkeypatch.setattr(session_lock, "_port_block_fd", None)
-    monkeypatch.setenv(unittest_session.PORT_BLOCK_ENV_VAR, "running suite's block")
+    """Two checkouts in one container, with a run lock of their own: the running suite holds the
+    real one, and its process's hold on it is put back afterwards."""
+    monkeypatch.setattr(session_lock, "RUN_LOCK_PATH", str(tmp_path / "run.lock"))
+    monkeypatch.setattr(session_lock, "_run_lock_fd", None)
     result = {}
     for name in ("main", "worktree"):
         result[name] = str(tmp_path / name)
@@ -41,74 +42,94 @@ def checkouts(tmp_path, monkeypatch) -> dict[str, str]:
     return result
 
 
-def _start_run_elsewhere(checkout: str) -> tuple[subprocess.Popen, int]:
-    process = subprocess.Popen(
-        [sys.executable, "-c", _RUN_ELSEWHERE, session_lock.PORT_BLOCK_LOCK_PATH_FORMAT],
-        cwd=_PROJECT_ROOT, env={**os.environ, "SAQ_HOME": checkout},
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    # bounded by the process: it prints its block or exits
-    line = process.stdout.readline()
-    assert line, f"the run of {checkout} did not start"
-    return process, int(line)
+@pytest.fixture
+def runs():
+    """Starts runs in processes of their own, and kills any a failed test left running."""
+    started = []
+
+    def start(checkout: str) -> subprocess.Popen:
+        process = subprocess.Popen(
+            [sys.executable, "-c", _RUN, session_lock.RUN_LOCK_PATH],
+            cwd=_PROJECT_ROOT, env={**os.environ, "SAQ_HOME": checkout},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        started.append(process)
+        return process
+
+    yield start
+
+    for process in started:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=30)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
 
 
-def _stop(process: subprocess.Popen):
+def _read_until(stream, text: str, timeout: float = 30) -> str:
+    """Reads a run's stdout or stderr until text turns up in it, and returns what it read."""
+    data = b""
+    deadline = time.monotonic() + timeout
+    while text.encode() not in data:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"{text!r} never came: {data!r}"
+        ready, _, _ = select.select([stream], [], [], remaining)
+        if ready:
+            chunk = os.read(stream.fileno(), 65536)
+            assert chunk, f"the run's output ended before {text!r} came: {data!r}"
+            data += chunk
+
+    return data.decode()
+
+
+def _stop(process: subprocess.Popen) -> int:
     process.stdin.close()
-    process.wait(timeout=30)
-    process.stdout.close()
+    return process.wait(timeout=30)
 
 
-@pytest.mark.unit
-def test_runs_of_two_checkouts_in_one_container_take_different_ports(checkouts, monkeypatch):
-    monkeypatch.setenv("SAQ_HOME", checkouts["worktree"])
-    other, other_block = _start_run_elsewhere(checkouts["main"])
+def _is_run_lock_free() -> bool:
+    fd = os.open(session_lock.RUN_LOCK_PATH, os.O_RDONLY)
     try:
-        session_lock.acquire_run()
-        block = int(os.environ[unittest_session.PORT_BLOCK_ENV_VAR])
-        api_port = unittest_session.get_api_port()
-        semaphore_port = unittest_session.get_network_semaphore_port()
-        session_lock.release_run()
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
     finally:
-        _stop(other)
+        os.close(fd)
 
-    assert other.returncode == 0
-    assert block != other_block
-    monkeypatch.setenv(unittest_session.PORT_BLOCK_ENV_VAR, str(other_block))
-    assert unittest_session.get_api_port() != api_port
-    assert unittest_session.get_network_semaphore_port() != semaphore_port
+    return True
 
 
 @pytest.mark.unit
-def test_a_second_run_of_a_checkout_is_refused(checkouts, monkeypatch):
-    monkeypatch.setenv("SAQ_HOME", checkouts["main"])
-    session_lock.acquire_run()
-    block = os.environ[unittest_session.PORT_BLOCK_ENV_VAR]
+@pytest.mark.parametrize("second_checkout", ["worktree", "main"])
+def test_a_second_run_in_the_container_waits_for_the_first(checkouts, runs, second_checkout):
+    """Another checkout's run, or another run of the same checkout: either waits its turn."""
+    first = runs(checkouts["main"])
+    _read_until(first.stdout, "started")
 
-    with pytest.raises(session_lock.SessionLockError) as error:
-        session_lock.acquire_run()
+    second = runs(checkouts[second_checkout])
+    waiting = _read_until(second.stderr, "Ctrl-C stops waiting")
+    assert f"pid:      {first.pid}" in waiting
+    assert f"checkout: {checkouts['main']}" in waiting
+    assert session_lock.RUN_LOCK_PATH in waiting
+    # it is still waiting, and has not taken the checkout's marker
+    assert second.poll() is None
+    if second_checkout == "worktree":
+        assert not os.path.exists(os.path.join(checkouts["worktree"], session_lock.MARKER_FILENAME))
 
-    message = str(error.value)
-    assert session_lock.get_marker_path() in message
-    assert f"checkout: {checkouts['main']}" in message
-    # the refused run took nothing of the first run's
-    assert os.path.exists(session_lock.get_marker_path())
-    assert os.environ[unittest_session.PORT_BLOCK_ENV_VAR] == block
+    assert _stop(first) == 0
+    _read_until(second.stdout, "started")
+    assert "the test suite run lock is free after" in _read_until(second.stderr, ": starting")
+    assert os.path.exists(os.path.join(checkouts[second_checkout], session_lock.MARKER_FILENAME))
 
-    session_lock.release_run()
-    assert not os.path.exists(session_lock.get_marker_path())
-    assert unittest_session.PORT_BLOCK_ENV_VAR not in os.environ
-
-    # its block is free again, and the next run starts
-    claimed, fd = session_lock.claim_port_block()
-    os.close(fd)
-    assert str(claimed) == block
-    session_lock.acquire_run()
-    session_lock.release_run()
+    assert _stop(second) == 0
+    for checkout in checkouts.values():
+        assert not os.path.exists(os.path.join(checkout, session_lock.MARKER_FILENAME))
+    assert _is_run_lock_free()
 
 
 @pytest.mark.unit
-def test_a_run_refused_by_its_checkout_claims_no_port_block(checkouts, monkeypatch):
-    """The same checkout running in another container, which has its own /tmp."""
+def test_a_run_of_a_checkout_running_in_another_container_is_refused(checkouts, monkeypatch):
+    """The same checkout running in another container, which has a run lock of its own: the
+    refused run lets go of this container's lock."""
     monkeypatch.setenv("SAQ_HOME", checkouts["main"])
     session_lock.acquire(session_lock.get_marker_path())
 
@@ -116,58 +137,68 @@ def test_a_run_refused_by_its_checkout_claims_no_port_block(checkouts, monkeypat
         session_lock.acquire_run()
 
     assert session_lock.get_marker_path() in str(error.value)
-    assert session_lock._port_block_fd is None
-    assert os.environ[unittest_session.PORT_BLOCK_ENV_VAR] == "running suite's block"
-    assert not glob.glob(session_lock.PORT_BLOCK_LOCK_PATH_FORMAT.format("*"))
+    assert session_lock._run_lock_fd is None
+    assert _is_run_lock_free()
     # the other run's marker is still its own
     assert os.path.exists(session_lock.get_marker_path())
 
 
 @pytest.mark.unit
-def test_a_checkout_whose_block_is_taken_takes_another(checkouts, monkeypatch):
-    """Two checkouts whose hashes pick the same block."""
-    monkeypatch.setenv("SAQ_HOME", checkouts["main"])
-    first, first_fd = session_lock.claim_port_block()
-    second, second_fd = session_lock.claim_port_block()
-    os.close(first_fd)
-    os.close(second_fd)
-
-    assert second != first
-    # block 0 is the ports of a checkout that predates port blocks
-    assert 0 not in (first, second)
-
-
-@pytest.mark.unit
-def test_a_run_is_refused_when_every_port_block_is_taken(checkouts, monkeypatch):
-    monkeypatch.setattr(unittest_session, "PORT_BLOCK_COUNT", 3)
-    monkeypatch.setenv("SAQ_HOME", checkouts["main"])
-    held = [session_lock.claim_port_block() for _ in range(2)]
-    assert sorted(block for block, _ in held) == [1, 2]
-
-    try:
-        with pytest.raises(session_lock.SessionLockError) as error:
-            session_lock.acquire_run()
-    finally:
-        for _, fd in held:
-            os.close(fd)
-
-    assert "every one of the 2 test suite port blocks is held" in str(error.value)
-    assert not os.path.exists(session_lock.get_marker_path())
-    assert os.environ[unittest_session.PORT_BLOCK_ENV_VAR] == "running suite's block"
-
-
-@pytest.mark.unit
-def test_the_port_block_of_a_killed_run_is_free(checkouts, monkeypatch):
-    """No stale lock to clear by hand: the kernel drops a dead process's flock."""
-    killed, killed_block = _start_run_elsewhere(checkouts["main"])
+def test_a_killed_run_leaves_the_lock_free_and_its_marker_behind(checkouts, runs, monkeypatch, capfd):
+    """No lock to clear by hand: the kernel drops a dead process's flock. The checkout's marker
+    is left, and refuses the checkout's next run until it is removed."""
+    killed = runs(checkouts["main"])
+    _read_until(killed.stdout, "started")
     killed.send_signal(signal.SIGKILL)
     killed.wait(timeout=30)
-    killed.stdin.close()
-    killed.stdout.close()
 
-    # the killed run left its checkout's marker behind, but not its block
+    # another checkout's run starts at once
+    monkeypatch.setenv("SAQ_HOME", checkouts["worktree"])
+    session_lock.acquire_run()
+    session_lock.release_run()
+    assert "waiting for" not in capfd.readouterr().err
+
     monkeypatch.setenv("SAQ_HOME", checkouts["main"])
-    assert os.path.exists(session_lock.get_marker_path())
-    block, fd = session_lock.claim_port_block()
-    os.close(fd)
-    assert block == killed_block
+    with pytest.raises(session_lock.SessionLockError) as error:
+        session_lock.acquire_run()
+
+    assert "that process is no longer running" in str(error.value)
+    assert f"rm {session_lock.get_marker_path()}" in str(error.value)
+    assert _is_run_lock_free()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can write a read-only file")
+def test_a_read_only_lock_file_still_locks(checkouts, runs, monkeypatch):
+    """A lock file created by a run as another user, which this user cannot write to."""
+    with open(session_lock.RUN_LOCK_PATH, "w"):
+        pass
+    os.chmod(session_lock.RUN_LOCK_PATH, 0o444)
+
+    monkeypatch.setenv("SAQ_HOME", checkouts["main"])
+    session_lock.acquire_run()
+    try:
+        waiting_run = runs(checkouts["worktree"])
+        waiting = _read_until(waiting_run.stderr, "Ctrl-C stops waiting")
+    finally:
+        session_lock.release_run()
+
+    # this run could not record itself in the lock file
+    assert "(who it is could not be read)" in waiting
+    _read_until(waiting_run.stdout, "started")
+    assert _stop(waiting_run) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("record", [b"", b'{"pid": 12', b"[1, 2]"])
+def test_a_waiting_run_is_told_when_the_holder_cannot_be_read(tmp_path, record):
+    """The holder was killed while it wrote its record, or has not written it yet."""
+    path = tmp_path / "run.lock"
+    path.write_bytes(record)
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        message = session_lock.describe_run_lock_holder(fd)
+    finally:
+        os.close(fd)
+
+    assert "(who it is could not be read)" in message

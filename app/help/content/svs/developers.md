@@ -523,7 +523,7 @@ pytest tests/app/help
 Use `-n auto` unless there is a technical reason not to, and never `-p no:cacheprovider`. Each session provisions its own databases, so a fresh run takes a few seconds per worker to migrate and seed.
 
 > [!IMPORTANT]
-> Start only one run of the test suite per checkout at a time. A second run would reuse the first one's slots; `tests/session_lock.py` refuses it with exit code 4 while `$SAQ_HOME/.pytest-running` exists.
+> One run of the test suite runs at a time per container. A second run, from any checkout, waits for the first to end (`tests/session_lock.py`); two `-n auto` runs at once would run the container out of memory. A run of a checkout whose `$SAQ_HOME/.pytest-running` exists (a run of it in another container, or a killed run's marker) is refused with exit code 4.
 
 **The two-twin rules.** Where a rule exists as SQL and as Python (effective verdicts, labels), add your case to the agreement test, not only to one side. Where a status is derived by one function (`derive_status`, `needs_attention_condition`), test through that function.
 
