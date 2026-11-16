@@ -189,12 +189,20 @@ The working directory is deleted when the validation ends, whether it succeeded 
 
 `saq/svs/yara/child.py` loads each namespace into a `YaraScanner` of its own with `load_rules()`,
 which is what the yara service runs for each generation, and reports what the library recorded of
-the compile (`scanner.compiled_sources`, yara_scanner 3.1.0+):
+the compile (`scanner.compiled_sources`, yara_scanner 3.2.0+). Its includes are held to an
+include boundary, as the service's are. For a contained layout that is the signature directory, the
+service's own boundary, so a rule set can include a file of the set next to it. For a linked layout
+it is the namespace's own directory, because the service's signature directory is not in the
+exported tree. That is narrower than the service, which bounds a linked namespace by the signature
+directory and follows the links in it: an include of another namespace (`../other/x.yar`) loads in
+the service but is refused here, and the file with it fails to compile. A validation of a linked
+repository that has such includes does not show what the service loads.
 
 1. Each rule file is compiled on its own. A file that cannot be read (not UTF-8 text, for instance)
    or does not compile is dropped with its rules, and the report says which rules went with it. An
    include that cannot be read becomes empty text, as in the service, and is reported. So is an
-   include that resolves outside the repository, because it reads something else in production.
+   include the boundary refuses (an absolute path, one that leaves the boundary, one through a
+   symbolic link), which the library refuses before reading it, in the service as here.
 2. The surviving files of the namespace are compiled together. If that fails (two files in one
    namespace defining the same rule name, for instance), **the ruleset would not load**: the
    service keeps serving its previous generation. Nothing is compared, and the report says so.

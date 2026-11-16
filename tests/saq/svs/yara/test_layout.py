@@ -62,6 +62,8 @@ def test_tree_layout_lists_namespaces_and_what_is_not_loaded(tmp_path):
 
     assert [(namespace.name, [os.path.basename(path) for path in namespace.files]) for namespace in result.namespaces] == [
         ("acme", ["B.YARA", "a.yar"]), ("empty", [])]
+    # the yara service holds includes to its signature directory, so a set can include its neighbor's file
+    assert {namespace.include_boundary for namespace in result.namespaces} == {str(tree / "yara")}
     assert {(item.path, item.reason.split(":")[0]) for item in result.not_loaded} == {
         ("yara/acme/deeper/c.yar", "nested below a namespace directory"),
         ("yara/loose.yar", "loose in the signature directory"),
@@ -85,5 +87,7 @@ def test_tree_layout_of_a_linked_repository(tmp_path):
     result = tree_layout(layout, str(tree))
 
     assert [namespace.name for namespace in result.namespaces] == ["acme"]
+    # the signature directory is not in the tree, so the namespace's includes stay inside it
+    assert result.namespaces[0].include_boundary == str(tree / "rules" / "acme")
     assert result.absent == ["gone"]
     assert [item.path for item in result.not_loaded] == ["rules/new/b.yar"]

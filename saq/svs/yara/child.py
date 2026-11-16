@@ -31,7 +31,7 @@ import time
 import yara
 import yara_scanner
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 JOB_FILE = "job.json"
 RESULT_FILE = "result.json"
 # rewritten after each namespace is scanned, so a run that times out still says how far it got
@@ -42,10 +42,6 @@ _ERROR_MAX_LENGTH = 2048
 
 def _error_text(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"[:_ERROR_MAX_LENGTH]
-
-
-def _is_under(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def _write_json(workdir: str, name: str, data: dict) -> None:
@@ -121,11 +117,14 @@ def run(workdir: str) -> dict:
 
     # 1. load each namespace as the service does
     scanners: dict[str, yara_scanner.YaraScanner] = {}
-    tree_root = os.path.realpath(job["tree_root"])
     for namespace in job["namespaces"]:
         scanner = yara_scanner.YaraScanner()
-        # the files the service loads were listed by the caller, which knows the layout
-        scanner.tracked_dirs[keys[namespace["name"]]] = dict.fromkeys(namespace["files"])
+        # the files the service loads, and the directory it holds their includes to, come from the
+        # caller, which knows the layout. The library refuses an include that leaves the boundary
+        # before reading it, as the service does, so nothing outside the tree is compiled in
+        key = keys[namespace["name"]]
+        scanner.tracked_dirs[key] = dict.fromkeys(namespace["files"])
+        scanner.include_boundaries[key] = namespace["include_boundary"]
         start = time.monotonic()
         scanner.load_rules()
         compile_seconds = time.monotonic() - start
@@ -140,10 +139,6 @@ def run(workdir: str) -> dict:
                 "path": compiled.path, "namespace": namespace["name"], "error": compiled.error,
                 "rules": file_rules})
             for included in compiled.includes:
-                if not _is_under(os.path.realpath(included.path), tree_root):
-                    result["include_warnings"].append({
-                        "file": compiled.path, "include": included.name,
-                        "error": "the include is outside the repository: it resolves differently in production"})
                 if included.error is not None:
                     result["include_warnings"].append(
                         {"file": compiled.path, "include": included.name, "error": included.error[:_ERROR_MAX_LENGTH]})
