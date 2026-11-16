@@ -12,9 +12,10 @@ import pytest
 
 from saq.cli.commands.crash import _iter_report_dirs, cli_index, cli_list, cli_prune, cli_sync
 from saq.configuration.config import get_config
-from saq.crash_replication import list_replicated_ids, remote_report_exists
+from saq.crash_replication import remote_report_exists
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
+    METADATA_FILE,
     find_crash_report_dir,
     get_hang_stacks_dir,
     get_index_pending_dir,
@@ -60,24 +61,24 @@ def test_sync_uploads_an_unreplicated_report(root_analysis, shared_storage):
     """The catch-up path: reports the background upload missed, including every timeout-path
     report, which skips replication deliberately."""
     crash_id = _make_crash(root_analysis)
-    assert crash_id not in list_replicated_ids()
+    assert remote_report_exists(crash_id) is False
 
     assert cli_sync(Namespace(dry_run=False)) == 0
-    assert crash_id in list_replicated_ids()
+    assert remote_report_exists(crash_id) is True
 
 
 @pytest.mark.unit
 def test_sync_dry_run_uploads_nothing(root_analysis, shared_storage):
     crash_id = _make_crash(root_analysis)
     assert cli_sync(Namespace(dry_run=True)) == 0
-    assert crash_id not in list_replicated_ids()
+    assert remote_report_exists(crash_id) is False
 
 
 @pytest.mark.unit
 def test_sync_skips_reports_already_replicated(root_analysis, shared_storage, monkeypatch):
     crash_id = _make_crash(root_analysis)
     cli_sync(Namespace(dry_run=False))
-    assert crash_id in list_replicated_ids()
+    assert remote_report_exists(crash_id) is True
 
     # a second pass must not re-upload THIS report. the assertion is scoped to it on purpose:
     # cli_sync sweeps every local crash report, and other tests in the same worker leave their own
@@ -438,3 +439,57 @@ def test_sync_warns_about_a_report_it_cannot_replicate(private_root, root_analys
 
     assert f"unable to replicate crash report {crash_id}" in caplog.text
     assert "replicated 0 crash report(s); 0 already in shared storage" in capsys.readouterr().out
+
+
+def _make_incomplete_crash(root_analysis) -> tuple[str, str]:
+    """A report whose worker was killed before it wrote metadata.json. It stays that way: no
+    process is left to finish it. Returns the crash id and the metadata.json it lost."""
+    crash_id = _make_crash(root_analysis)
+    metadata_path = os.path.join(find_crash_report_dir(crash_id), METADATA_FILE)
+    with open(metadata_path) as fp:
+        metadata = fp.read()
+    os.remove(metadata_path)
+    return crash_id, metadata
+
+
+def _record_uploads(shared_storage, monkeypatch) -> list[str]:
+    uploads = []
+    original = shared_storage.upload_file
+    monkeypatch.setattr(
+        shared_storage, "upload_file",
+        lambda *a, **k: (uploads.append(a[2]), original(*a, **k))[1],
+    )
+    return uploads
+
+
+@pytest.mark.unit
+def test_sync_uploads_an_incomplete_report_once(private_root, root_analysis, shared_storage, monkeypatch, caplog, capsys):
+    """Every hourly sync uploaded an incomplete report again, and warned that it could not
+    replicate it, because only a metadata.json in the bucket counted as replicated."""
+    crash_id, _ = _make_incomplete_crash(root_analysis)
+
+    assert cli_sync(Namespace(dry_run=False)) == 0
+    assert "replicated 1 crash report(s); 0 already in shared storage" in capsys.readouterr().out
+    assert f"unable to replicate crash report {crash_id}" not in caplog.text
+    assert remote_report_exists(crash_id) is False
+
+    uploads = _record_uploads(shared_storage, monkeypatch)
+    assert cli_sync(Namespace(dry_run=False)) == 0
+    assert uploads == []
+    assert "replicated 0 crash report(s); 1 already in shared storage" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_sync_uploads_what_an_incomplete_report_gained(private_root, root_analysis, shared_storage, monkeypatch):
+    """A report sync found incomplete can still be being written: the watchdog's report is copied
+    while sync runs."""
+    crash_id, metadata = _make_incomplete_crash(root_analysis)
+    assert cli_sync(Namespace(dry_run=False)) == 0
+
+    with open(os.path.join(find_crash_report_dir(crash_id), METADATA_FILE), "w") as fp:
+        fp.write(metadata)
+
+    uploads = _record_uploads(shared_storage, monkeypatch)
+    assert cli_sync(Namespace(dry_run=False)) == 0
+    assert f"{crash_id}/{METADATA_FILE}" in uploads
+    assert remote_report_exists(crash_id) is True
