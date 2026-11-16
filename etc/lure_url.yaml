@@ -5,7 +5,7 @@
 #
 # This is the committed DEFAULT and holds ACE's built-in values. Deployments point the module's
 # `config_path` (see analysis_module_lure_url_analyzer in saq config) at their own copy of this
-# file, for example signatures/analyst_data/lure_url.yaml, which ACE live-reloads (watch_file)
+# file, for example signatures/analyst_data/lure_url.yaml, which ACE live-reloads (watch_settings)
 # without a production release.
 #
 # A key left out of the file keeps its built-in default; a list given here replaces the default

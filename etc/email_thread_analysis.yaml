@@ -5,7 +5,7 @@
 #
 # This is the committed DEFAULT and ships empty. Deployments point the module's `config_path`
 # (see analysis_module_email_thread_analyzer in saq config) at their own copy of this file,
-# which ACE live-reloads (watch_file) without a production release.
+# which ACE live-reloads (watch_settings) without a production release.
 #
 # A file that fails to parse or validate (including an unknown key) is rejected as a whole and
 # the settings already in effect stay in place; the error is logged.

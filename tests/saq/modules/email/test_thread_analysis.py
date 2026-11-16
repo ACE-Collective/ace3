@@ -1,21 +1,22 @@
 import logging
+import os
 from datetime import datetime
 
 import pytest
 
 from saq.analysis.root import load_root
-from saq.configuration.config import get_analysis_module_config
+from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import F_MESSAGE_ID
 from saq.database import get_db_connection
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
+from saq.filesystem.notification import FileWatcher
 from saq.modules.email.conversation import Participant, ThreadContext, record_thread
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.email.thread import (
     EmailThreadAnalysis,
     EmailThreadAnalyzer,
     EmailThreadSettings,
-    load_settings,
 )
 from saq.util.uuid import get_storage_dir
 from tests.saq.test_util import create_test_context
@@ -586,7 +587,8 @@ def test_thread_analysis_without_a_settings_file(root_analysis, config_path):
 
 
 @pytest.mark.integration
-def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_path):
+def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(get_config().global_settings, "check_watched_files_frequency", 0)
     settings_path = tmp_path / "email_thread_analysis.yaml"
     settings_path.write_text(f"ignored_domain_pairs:\n  - [example.com, {LOOKALIKE_DOMAIN}]\n")
 
@@ -597,8 +599,13 @@ def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_p
 
     # a misspelled key is rejected rather than read as "nothing is ignored"
     settings_path.write_text(f"ignored_pairs:\n  - [example.com, {LOOKALIKE_DOMAIN}]\n")
-    analyzer._load_settings()
+    # the watcher notices a change by its mtime, which can be unchanged within one tick
+    os.utime(settings_path, (1_000_000, 1_000_000))
+    analyzer.check_watched_files()
     assert analyzer.settings.is_ignored_pair("example.com", LOOKALIKE_DOMAIN)
+    # the pair is still there because the reload was rejected, not because it never ran
+    assert any(r.levelno == logging.ERROR and "unable to load settings file" in r.getMessage()
+               and r.path == str(settings_path) for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -612,17 +619,23 @@ def test_settings_match_on_the_registrable_domain():
     assert not settings.is_ignored_pair("example.com", "example.com")
 
 
+def _load_settings(path) -> EmailThreadSettings:
+    return FileWatcher().watch_settings(str(path), EmailThreadSettings).value
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("content,expected_pairs", [
     ("", []),
     ("ignored_domain_pairs:\n", []),
     ("ignored_domain_pairs:\n  - [a.com, b.com]\n", [("a.com", "b.com")]),
 ])
-def test_load_settings(tmp_path, content, expected_pairs):
+def test_load_settings(tmp_path, caplog, content, expected_pairs):
     settings_path = tmp_path / "email_thread_analysis.yaml"
     settings_path.write_text(content)
 
-    assert load_settings(str(settings_path)).ignored_domain_pairs == expected_pairs
+    assert _load_settings(settings_path).ignored_domain_pairs == expected_pairs
+    # rejecting the file would give no pairs too
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 @pytest.mark.unit
@@ -631,19 +644,17 @@ def test_load_settings(tmp_path, content, expected_pairs):
     "ignored_domain_pairs:\n  - [a.com]\n",           # not a pair
     "ignored_domain_pairs: [\n",                      # not YAML
 ])
-def test_load_settings_rejects_an_invalid_file(tmp_path, content):
+def test_load_settings_rejects_an_invalid_file(tmp_path, caplog, content):
     settings_path = tmp_path / "email_thread_analysis.yaml"
     settings_path.write_text(content)
 
-    assert load_settings(str(settings_path)) is None
+    assert _load_settings(settings_path) == EmailThreadSettings()
+    assert any(r.levelno == logging.ERROR and "unable to load settings file" in r.getMessage()
+               for r in caplog.records)
 
 
 @pytest.mark.unit
-def test_load_settings_missing_file(tmp_path):
-    assert load_settings(str(tmp_path / "missing.yaml")) is None
-
-
-@pytest.mark.unit
-def test_default_settings_file_is_valid():
+def test_default_settings_file_is_valid(caplog):
     # the file the default config_path points at
-    assert load_settings("etc/email_thread_analysis.yaml").ignored_domain_pairs == []
+    assert _load_settings("etc/email_thread_analysis.yaml").ignored_domain_pairs == []
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
