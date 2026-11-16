@@ -645,6 +645,27 @@ UNDECODABLE_NAME = b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
 ESCAPED_NAME = "\\udce9\\udce9.pdf"
 
 
+@pytest.mark.unit
+def test_record_crash_for_an_exception_naming_an_undecodable_file(root_analysis):
+    root_analysis.save()
+
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        module_name="basic_test",
+        root=root_analysis,
+        exception=_raise(f"unable to parse {UNDECODABLE_NAME}"),
+        index=False,
+    )
+
+    assert crash_id is not None
+    crash_dir = find_crash_report_dir(crash_id)
+    with open(os.path.join(crash_dir, STACK_TRACE_FILE)) as fp:
+        assert f"unable to parse {ESCAPED_NAME}" in fp.read()
+
+    assert _read_metadata(crash_id)["exception_message"] == f"unable to parse {UNDECODABLE_NAME}"
+
+
 class _EmptyBody:
     def stream(self, **kwargs):
         return iter([b""])

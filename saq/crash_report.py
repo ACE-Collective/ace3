@@ -347,7 +347,8 @@ def _relative_report_dir(crash_dir: str) -> str:
 def _write_atomic(path: str, content: str):
     """Write via a temp sibling and rename, so a reader never sees a half written file."""
     temp_path = f"{path}.tmp"
-    with open(temp_path, "w") as fp:
+    # a traceback can name a file whose name is not UTF-8; escape it the way utf8_safe() does
+    with open(temp_path, "w", errors="backslashreplace") as fp:
         fp.write(content)
 
     os.replace(temp_path, path)
