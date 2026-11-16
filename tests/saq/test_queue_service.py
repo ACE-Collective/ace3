@@ -524,6 +524,61 @@ def test_manager_wait_releases_queued_items_while_a_worker_is_still_busy(session
     assert [item.id for item in a.processed] == [1]
 
 
+class SlowReleaseCollector(FakeCollector):
+    """Holds each release() of queued items until proceed is set, like UPDATE batches that take a
+    while to commit."""
+
+    def __init__(self):
+        super().__init__()
+        self.entered = Event()
+        self.proceed = Event()
+        self.committed = False
+
+    def release(self, work_items: list[Item]):
+        super().release(work_items)
+        if work_items:
+            self.entered.set()
+            # bounded, so a failing test cannot hang the run
+            self.proceed.wait(10)
+            self.committed = True
+
+
+@pytest.mark.unit
+def test_manager_wait_returns_only_after_the_release_when_called_twice_at_once(session_resets):
+    # `ace service start` calls wait() from its service-wait thread and again from _shutdown, and
+    # exits once _shutdown's call returns, so neither call may return while the other is releasing
+    collector = SlowReleaseCollector()
+    worker = FakeWorker("a")
+    manager = FakeManager(collector, [worker])
+    manager.load_workers()
+    worker.handle_request(Item(1, "a", "lock"))
+    worker.handle_request(Item(2, "a", "lock"))
+    manager.stop()
+    released_when_returned = []
+
+    def _wait():
+        manager.wait()
+        released_when_returned.append(collector.committed)
+
+    first, second = Thread(target=_wait), Thread(target=_wait)
+    first.start()
+    try:
+        assert collector.entered.wait(5)
+        second.start()
+        # without the release finished, the second call has nothing that should keep it waiting
+        second.join(1)
+    finally:
+        collector.proceed.set()
+        first.join(5)
+        # joining a thread that never started raises
+        if second.ident is not None:
+            second.join(5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert released_when_returned == [True, True]
+    assert [[item.id for item in items] for items in collector.released if items] == [[1, 2]]
+
+
 @pytest.mark.unit
 def test_release_without_locked_items_touches_no_database(monkeypatch, session_resets):
     # an item with no lock has no row of this collector's to release

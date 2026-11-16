@@ -366,6 +366,9 @@ class QueueManager(ABC, Generic[WorkerT]):
         # mapped by name, which keeps the names unique
         self.workers: dict[str, WorkerT] = {}
         self.collector = collector
+        # `ace service start` calls wait() from two threads at once and exits when one returns,
+        # so each call waits until the queued rows are released, whichever call releases them
+        self._release_lock = Lock()
 
     @abstractmethod
     def create_workers(self) -> Iterable[WorkerT]:
@@ -423,8 +426,10 @@ class QueueManager(ABC, Generic[WorkerT]):
         # would stay locked until lock_timeout_seconds passes. It is released before the workers
         # are joined, because one item still being worked can outlast the shutdown deadline; an
         # item a worker thread takes first is worked under its lock, as it was before
-        for worker in self.workers.values():
-            self.collector.release(worker.take_queued())
+        # bounded by release()'s database updates, which `ace service start` bounds
+        with self._release_lock:
+            for worker in self.workers.values():
+                self.collector.release(worker.take_queued())
 
         for worker in self.workers.values():
             # bounded by the item each thread is working, as QueueWorker.wait() says
