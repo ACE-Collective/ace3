@@ -23,7 +23,7 @@ from saq.modules.email import logging as email_logging
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.constants import KEY_LOG_ENTRY
 from saq.modules.email.logging import EmailLoggingAnalyzer, FluentBitTags
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 from saq.modules.file_analysis.url_extraction import URLExtractionAnalysis
 from saq.util.uuid import get_storage_dir
 from tests.saq.helpers import inject_deadlock
@@ -272,9 +272,9 @@ def test_without_separate_sources_everything_goes_to_main(root_analysis, emitted
 @pytest.mark.unit
 @pytest.mark.parametrize("setup, warning", [
     ("no_analysis", "missing EmailAnalysis for"),
-    ("no_analysis_whitelisted", None),
+    # scan_inbound_only skipped its email analysis on purpose
+    ("no_analysis_outbound", None),
     ("no_email", "missing analysis.email for"),
-    ("whitelisted", None),
     ("no_log_entry", "missing log entry for"),
 ])
 def test_emails_that_are_not_logged(root_analysis, emitted, caplog, setup, warning):
@@ -291,8 +291,8 @@ def test_emails_that_are_not_logged(root_analysis, emitted, caplog, setup, warni
     else:
         observable = add_email(root_analysis, log_entry())
 
-    if setup.endswith("whitelisted"):
-        observable.add_tag("whitelisted")
+    if setup.endswith("outbound"):
+        observable.add_tag(TAG_OUTBOUND_EMAIL)
 
     with caplog.at_level(logging.WARNING):
         make_analyzer(root_analysis).execute_post_analysis()
@@ -303,6 +303,17 @@ def test_emails_that_are_not_logged(root_analysis, emitted, caplog, setup, warni
         assert any(m.startswith(warning) for m in warnings)
     else:
         assert warnings == []
+
+
+@pytest.mark.unit
+def test_an_email_tagged_whitelisted_is_still_logged(root_analysis, emitted):
+    observable = add_email(root_analysis, log_entry())
+    observable.add_tag("whitelisted")
+
+    assert make_analyzer(root_analysis).execute_post_analysis()
+
+    [main] = records_for(emitted, "main")
+    assert main["message_id"] == "<test@example.com>"
 
 
 @pytest.mark.unit

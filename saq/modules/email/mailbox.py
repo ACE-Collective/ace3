@@ -33,12 +33,6 @@ class MailboxEmailAnalyzer(AnalysisModule):
         if self.get_root().alert_type != ANALYSIS_TYPE_MAILBOX:
             return AnalysisExecutionResult.COMPLETED
 
-        # did we end up whitelisting the email?
-        # this actually shouldn't even fire because if the email is whitelisted then the work queue is ignored
-        # for this analysis
-        if self.get_root().whitelisted:
-            return AnalysisExecutionResult.COMPLETED
-
         email_analysis = _file.get_and_load_analysis(EmailAnalysis)
 
         analysis = self.create_analysis(_file)

@@ -406,7 +406,7 @@ file observable as ACE tags. Two tag values trigger additional behavior:
 
 | Tag           | Effect |
 |---------------|--------|
-| `whitelisted` | The file (and its analysis) is **whitelisted** in ACE — i.e. suppressed. Use this to carve out known-good content. |
+| `whitelisted` | Marks known-good content: the rule's own match is **not a detection**, as with the `no_alert` modifier. It never stops other rules or modules from alerting on the file or anything else in the alert. |
 | `asm`         | Triggers **disassembly** of the matched bytes in the analysis view. The matched string's identifier selects the architecture by suffix (see below). |
 
 When a rule is tagged `asm`, ACE disassembles the bytes around each matched string

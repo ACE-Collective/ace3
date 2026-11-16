@@ -15,7 +15,7 @@ from saq.analysis.analysis import Analysis
 from saq.analysis.detection_point import DetectionPoint
 from saq.analysis.presenter.analysis_presenter import AnalysisPresenter, register_analysis_presenter
 from saq.configuration.config import get_service_config
-from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
+from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTIVE_NO_SCAN, DIRECTIVE_SANDBOX, TAG_WHITELISTED, F_FILE, F_INDICATOR, F_SIGNATURE_ID, F_YARA_RULE, F_YARA_STRING, create_yara_string
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_data_dir
@@ -387,8 +387,14 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 alertable = False # initially set to False until we hit at least one rule that does NOT have the no_alert modifier
                 for match_result in analysis.scan_results:
+                    # a rule tagged whitelisted marks known-good content: its own match is no detection, as
+                    # with no_alert, but it never stops the other rules or modules from alerting
+                    whitelisted = TAG_WHITELISTED in match_result['tags']
+                    if whitelisted:
+                        no_alert_rules.add(match_result['rule'])
+
                     if META_MODIFIERS in match_result['meta']:
-                        modifier_no_alert = False
+                        modifier_no_alert = whitelisted
                         modifier_qa = False
 
                         modifiers = meta_modifiers(match_result['meta'])
@@ -429,7 +435,7 @@ class YaraScanner_v3_4(AnalysisModule):
                         # did at least one rule NOT have the no_alert modifier?
                         if not modifier_no_alert:
                             alertable = True
-                    else:
+                    elif not whitelisted:
                         # no modifiers at all?
                         alertable = True
 
@@ -611,9 +617,6 @@ class YaraScanner_v3_4(AnalysisModule):
             for tag in yara_result['tags']:
                 #rule_observable.add_tag(tag)
                 _file.add_tag(tag)
-                # if the yara rule is whitelisted, we need to make sure the analysis is whitelisted in ACE
-                if tag == "whitelisted":
-                    _file.whitelist()
 
         return AnalysisExecutionResult.COMPLETED
 

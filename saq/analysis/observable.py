@@ -124,16 +124,6 @@ class Observable(BaseNode):
     # observable properties and methods
     # ------------------------------------------------------------------------
 
-    @property
-    def whitelisted(self) -> bool:
-        """Returns True if this observable has been whitelisted."""
-        return self.has_tag('whitelisted') or self.has_directive('whitelisted')
-
-    def whitelist(self):
-        """Utility function to mark this Observable as whitelisted by adding the tag 'whitelisted'."""
-        self.add_tag('whitelisted')
-        self.add_directive('whitelisted')
-
     def matches(self, value: str) -> bool:
         """Returns True if the given value matches this value of this observable.
         This can be overridden to provide more advanced matching such as CIDR for ipv4."""

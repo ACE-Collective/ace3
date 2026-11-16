@@ -383,11 +383,6 @@ class AnalysisOrchestrator:
         if execution_context.root.analysis_mode in self.config.non_detectable_modes:
             return
 
-        # has this analysis been whitelisted?
-        if not get_global_runtime_settings().forced_alerts and execution_context.root.whitelisted:
-            logging.info(f"{execution_context.root} has been whitelisted")
-            return
-
         if (execution_context.root.has_detections() or get_global_runtime_settings().forced_alerts) and self.config.alerting_enabled:
             reason = f"{len(execution_context.root.all_detection_points)} detection points" if execution_context.root.has_detections() else "forced alerts enabled"
             logging.info(

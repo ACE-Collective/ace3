@@ -98,10 +98,6 @@ class Analysis(BaseNode):
     # analysis properties and methods
     # ------------------------------------------------------------------------
 
-    @property
-    def whitelisted(self) -> bool:
-        return self.has_tag("whitelisted")
-
     def set_details_modified(self):
         """Calling this function indicates that the details have become modified and thus need to be saved."""
         # this is called automatically when you add an Analysis object to an Observable

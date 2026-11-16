@@ -175,15 +175,15 @@ def test_exclusion_fails_waiting_dependency(tmp_path):
 
 
 @pytest.mark.unit
-def test_whitelisted_observable_is_excluded(tmp_path):
-    """The whitelist check sits above the exclusion check and is unaffected."""
+def test_an_observable_tagged_whitelisted_is_analyzed(tmp_path):
     executor = _make_executor({})
     work_item = _make_work_item(tmp_path, F_FQDN, "google.com")
-    work_item.observable.whitelist()
+    work_item.observable.add_tag("whitelisted")
+    work_item.observable.add_directive("whitelisted")
 
     assert (
         executor._process_observable_exclusions(work_item)
-        == ObservableExclusionResult.EXCLUDED
+        == ObservableExclusionResult.OK
     )
 
 

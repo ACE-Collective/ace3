@@ -25,13 +25,6 @@ class RootAnalysisAdapter:
         return self._root.alert_type
 
     @property
-    def whitelisted(self) -> bool:
-        return self._root.whitelisted
-
-    def whitelist(self):
-        self._root.whitelist()
-
-    @property
     def uuid(self) -> str:
         return self._root.uuid
 

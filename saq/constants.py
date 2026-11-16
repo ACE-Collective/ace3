@@ -384,7 +384,6 @@ DIRECTIVE_SCAN_URLSCAN = 'scan_urlscan'
 DIRECTIVE_SUBMIT_AS_NEW = 'submit_as_new'
 DIRECTIVE_TRACKED = 'tracked'
 DIRECTIVE_TRIAGE = 'triage'
-DIRECTIVE_WHITELISTED = 'whitelisted'
 DIRECTIVE_YARA_META_PREFIX = "yara_meta:"
 
 DIRECTIVE_DESCRIPTIONS = {
@@ -422,7 +421,6 @@ DIRECTIVE_DESCRIPTIONS = {
     DIRECTIVE_SUBMIT_AS_NEW: 'submit the observable as new with flag to bypass any existing analysis',
     DIRECTIVE_TRACKED: 'indicates this observable should be tracked across different analysis requests',
     DIRECTIVE_TRIAGE: 'send this observable to tria.ge for analysis',
-    DIRECTIVE_WHITELISTED: 'indicates this observable was whitelisted, causing the entire analysis to also become whitelisted',
 }
 
 VALID_DIRECTIVES = list(DIRECTIVE_DESCRIPTIONS.keys())
@@ -492,6 +490,7 @@ TAG_LEVEL_CRITICAL = 'critical'
 TAG_LEVEL_HIDDEN = 'hidden'
 
 TAG_DECRYPTED_EMAIL = "decrypted_email"
+TAG_WHITELISTED = "whitelisted"
 
 # --- EVENTS
 # fired when we add a tag to something
