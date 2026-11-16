@@ -1075,9 +1075,11 @@ def _load_settings(path) -> LureURLSettings:
 
 
 @pytest.mark.unit
-def test_shipped_settings_file_holds_the_builtin_defaults():
+def test_shipped_settings_file_holds_the_builtin_defaults(caplog):
     assert get_analysis_module_config("lure_url_analyzer").config_path == "etc/lure_url.yaml"
     settings = _load_settings("etc/lure_url.yaml")
+    # a rejected file is the defaults too, so the comparison below says nothing unless it loaded
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     # the file deployments copy into analyst_data must start from the same values ACE uses without it
     assert settings == LureURLSettings()
@@ -1102,12 +1104,14 @@ def test_settings_file_keys_left_out_keep_their_defaults(tmp_path):
 
 
 @pytest.mark.unit
-def test_settings_file_blank_weights_keep_their_defaults(tmp_path):
+def test_settings_file_blank_weights_keep_their_defaults(tmp_path, caplog):
     # an analyst who comments out every weight leaves `weights:` with nothing under it
     path = tmp_path / "lure_url.yaml"
     path.write_text("weights:\n")
 
     assert _load_settings(str(path)).weights == LureURLWeights()
+    # rejecting the file would give the default weights too
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 @pytest.mark.unit

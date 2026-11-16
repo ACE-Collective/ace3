@@ -102,6 +102,8 @@ def test_watch_settings_missing_file_is_the_defaults(tmp_path, check_every_time,
     assert settings.value == Settings()
     [record] = _errors(caplog, f"watched file {path} does not exist")
     assert record.exc_info and record.path == str(path)
+    # the operator reading the error report needs to know the module is still running, and on what
+    assert "last loaded, or its defaults" in record.getMessage()
 
     path.write_text("limit: 9\n")
     watcher.check_watched_files()

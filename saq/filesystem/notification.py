@@ -135,7 +135,8 @@ class FileWatcher:
                     # whatever reads the file keeps running on what it last loaded, so say so once
                     if not watched_file.missing_reported:
                         watched_file.missing_reported = True
-                        logging.exception(f"watched file {watched_file.path} does not exist or cannot be read",
+                        logging.exception(f"watched file {watched_file.path} does not exist or cannot be read; "
+                                          "whatever reads it keeps the version it last loaded, or its defaults",
                                           extra={"path": watched_file.path})
                     # a file put back with the mtime it had before it went away (cp -p, a restore from
                     # backup) is still a change

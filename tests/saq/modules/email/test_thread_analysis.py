@@ -587,7 +587,7 @@ def test_thread_analysis_without_a_settings_file(root_analysis, config_path):
 
 
 @pytest.mark.integration
-def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_path, monkeypatch):
+def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(get_config().global_settings, "check_watched_files_frequency", 0)
     settings_path = tmp_path / "email_thread_analysis.yaml"
     settings_path.write_text(f"ignored_domain_pairs:\n  - [example.com, {LOOKALIKE_DOMAIN}]\n")
@@ -603,6 +603,9 @@ def test_thread_analysis_keeps_settings_when_a_reload_fails(root_analysis, tmp_p
     os.utime(settings_path, (1_000_000, 1_000_000))
     analyzer.check_watched_files()
     assert analyzer.settings.is_ignored_pair("example.com", LOOKALIKE_DOMAIN)
+    # the pair is still there because the reload was rejected, not because it never ran
+    assert any(r.levelno == logging.ERROR and "unable to load settings file" in r.getMessage()
+               and r.path == str(settings_path) for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -626,11 +629,13 @@ def _load_settings(path) -> EmailThreadSettings:
     ("ignored_domain_pairs:\n", []),
     ("ignored_domain_pairs:\n  - [a.com, b.com]\n", [("a.com", "b.com")]),
 ])
-def test_load_settings(tmp_path, content, expected_pairs):
+def test_load_settings(tmp_path, caplog, content, expected_pairs):
     settings_path = tmp_path / "email_thread_analysis.yaml"
     settings_path.write_text(content)
 
     assert _load_settings(settings_path).ignored_domain_pairs == expected_pairs
+    # rejecting the file would give no pairs too
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 @pytest.mark.unit
