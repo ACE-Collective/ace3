@@ -535,6 +535,16 @@ def root_analysis(tmpdir) -> RootAnalysis:
     return root
 
 @pytest.fixture
+def unlogged():
+    """Drops every log record during the test, for a test whose records name a file that is not
+    UTF-8: pytest-xdist cannot send the controller a report whose captured log holds one."""
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(logging.NOTSET)
+
+@pytest.fixture
 def declare_integration(monkeypatch):
     """Replaces the integrations apply_integration_hooks() reads with the ones declared here, so a test
     does not see the integrations installed in this checkout. Takes the integration's name and its

@@ -16,7 +16,7 @@ from saq.modules import AnalysisModule
 from saq.modules.email.archive import EmailArchiveResults
 from saq.modules.email.rfc822 import EmailAnalysis
 
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 
 from saq.modules.config import AnalysisModuleConfig
 
@@ -50,31 +50,31 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         # brocess log settings
         self.brocess_logging_enabled = self.config.brocess_logging_enabled
-        self.fluent_bit_main_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_urls_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_headers_sender: Optional[sender.FluentSender] = None
-        self.fluent_bit_lookalike_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_main_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_urls_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_headers_sender: Optional[UTF8SafeFluentSender] = None
+        self.fluent_bit_lookalike_sender: Optional[UTF8SafeFluentSender] = None
 
         if self.config.fluent_bit_logging_enabled:
-            self.fluent_bit_main_sender = sender.FluentSender(
+            self.fluent_bit_main_sender = UTF8SafeFluentSender(
                 self.config.fluent_bit_tags.main,
                 host=self.config.fluent_bit_hostname,
                 port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.urls:
-                self.fluent_bit_urls_sender = sender.FluentSender(
+                self.fluent_bit_urls_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.urls,
                     host=self.config.fluent_bit_hostname,
                     port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.headers:
-                self.fluent_bit_headers_sender = sender.FluentSender(
+                self.fluent_bit_headers_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.headers,
                     host=self.config.fluent_bit_hostname,
                     port=self.config.fluent_bit_port)
 
             if self.config.fluent_bit_tags.lookalike:
-                self.fluent_bit_lookalike_sender = sender.FluentSender(
+                self.fluent_bit_lookalike_sender = UTF8SafeFluentSender(
                     self.config.fluent_bit_tags.lookalike,
                     host=self.config.fluent_bit_hostname,
                     port=self.config.fluent_bit_port)

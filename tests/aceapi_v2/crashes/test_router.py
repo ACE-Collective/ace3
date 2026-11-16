@@ -28,9 +28,11 @@ from tests.saq.helpers import audit_actor_of, audit_record
 pytestmark = pytest.mark.integration
 
 MALWARE_BYTES = "definitely not a real macro"
+# a file name that is not UTF-8, as ACE decodes it (surrogateescape)
+UNDECODABLE_NAME = b"\xe9\xe9.doc".decode("utf-8", "surrogateescape")
 
 
-def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
+def _write_report(crash_id: str, *, node: str, with_file: bool = True, file_name: str = "malware.doc") -> str:
     """Write a real crash report directory on disk and return its path."""
     crash_dir = get_crash_report_dir(crash_id)
     os.makedirs(os.path.join(crash_dir, FILE_DIR), exist_ok=True)
@@ -50,7 +52,7 @@ def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
         "observable_value": "a" * 64,
         "exception_type": "RuntimeError",
         "exception_message": "testing failure case",
-        "file_name": "malware.doc" if with_file else None,
+        "file_name": file_name if with_file else None,
         "omitted": [],
     }
 
@@ -61,7 +63,7 @@ def _write_report(crash_id: str, *, node: str, with_file: bool = True) -> str:
         fp.write("EXCEPTION\ntesting failure case\n")
 
     if with_file:
-        with open(os.path.join(crash_dir, FILE_DIR, "malware.doc"), "w") as fp:
+        with open(os.path.join(crash_dir, FILE_DIR, file_name), "w") as fp:
             fp.write(MALWARE_BYTES)
 
     return crash_dir
@@ -155,6 +157,18 @@ class TestGetCrashReport:
         assert os.path.join(FILE_DIR, "malware.doc") in listed
 
     @pytest.mark.asyncio
+    async def test_detail_with_an_undecodable_file_name(self, client: AsyncClient, local_node: str):
+        crash_id = str(uuid.uuid4())
+        _write_report(crash_id, node=local_node, file_name=UNDECODABLE_NAME)
+
+        response = await client.get(f"/crashes/{crash_id}")
+        assert response.status_code == 200
+
+        body = response.json()
+        assert body["file_name"] == "\\udce9\\udce9.doc"
+        assert os.path.join(FILE_DIR, "\\udce9\\udce9.doc") in {f["path"] for f in body["files"]}
+
+    @pytest.mark.asyncio
     async def test_detail_without_index_row(self, client: AsyncClient, local_node: str):
         """A report whose index insert failed is still fetchable by id."""
         crash_id = str(uuid.uuid4())
@@ -211,6 +225,19 @@ class TestDownloadCrashReport:
 
         extracted = tmp_path / crash_id / FILE_DIR / "malware.doc"
         assert extracted.read_text() == MALWARE_BYTES
+
+    @pytest.mark.asyncio
+    async def test_download_with_an_undecodable_file_name(self, client: AsyncClient, local_node: str, tmp_path):
+        crash_id = str(uuid.uuid4())
+        _write_report(crash_id, node=local_node, file_name=UNDECODABLE_NAME)
+
+        response = await client.get(f"/crashes/{crash_id}/download")
+        assert response.status_code == 200
+
+        # zip stores the name's own bytes, without the UTF-8 flag, so zipfile reads it as cp437
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            names = [name.encode("cp437") for name in archive.namelist()]
+        assert f"{crash_id}/{FILE_DIR}/".encode() + b"\xe9\xe9.doc" in names
 
     @pytest.mark.asyncio
     async def test_download_is_encrypted(

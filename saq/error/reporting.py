@@ -30,7 +30,9 @@ def write_error_report(exc_info: ExcInfo, record: Optional[logging.LogRecord]=No
         message = record.getMessage() if record is not None else None
         transaction_id = getattr(record, "transactionId", None)
 
-        with open(error_report_path, 'w') as fp:
+        # a file name ACE did not choose can hold lone surrogates (surrogateescape); escaped the way
+        # saq.logging.utf8_safe escapes them, rather than losing the report
+        with open(error_report_path, 'w', errors='backslashreplace') as fp:
             if record is not None:
                 fp.write("LOG MESSAGE\n")
                 fp.write(message)
