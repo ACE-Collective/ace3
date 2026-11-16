@@ -1034,9 +1034,9 @@ def test_the_system_path_writes_as_the_automation_user_for_whoever_acted(two_ana
 
 
 @pytest.mark.integration
-def test_the_system_path_takes_an_alert_as_the_automation_user(two_analysts, caplog):
+def test_the_system_path_takes_an_alert_as_the_automation_user(two_analysts):
     """The automation user owns a SIMULATED alert, so ACE giving it back (unassigning it) is no
-    take from another analyst; the AUDIT record still names who acted."""
+    take from another analyst."""
     _, analyst = two_analysts
     alert = insert_alert()
     make_simulated(alert)

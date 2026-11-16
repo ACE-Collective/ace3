@@ -704,13 +704,11 @@ class TestSelfServiceApiKeyRoutes:
         await check_permission(session, ApiAuthResult(**as_user, credential=API_CREDENTIAL_SESSION), "user", "self")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("user_id", [None, 1], ids=["nobody", "the automation user"])
-    async def test_ace_itself_never_passes_a_permission_check(self, session: AsyncSession, user_id):
+    async def test_ace_itself_never_passes_a_permission_check(self, session: AsyncSession):
         """ACE's own actors (ApiAuthResult.system) are not users, so the account half of the check
-        lets them by as it does a config key: their empty key scope is what refuses them, even one
-        that acts as the automation user, who holds *:*."""
+        lets them by as it does a config key: their empty key scope is what refuses them."""
         with pytest.raises(HTTPException) as denied:
-            await check_permission(session, ApiAuthResult.system("svs", user_id), "alert", "read")
+            await check_permission(session, ApiAuthResult.system("svs"), "alert", "read")
         assert denied.value.status_code == 403
 
     @pytest.mark.asyncio

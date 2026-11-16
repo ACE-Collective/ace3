@@ -37,7 +37,7 @@ class ApiAuthResult:
         return self.auth_type is not None
 
     @classmethod
-    def system(cls, name: str, user_id: int | None = None) -> "ApiAuthResult":
-        """One of ACE's own actors: the svs timers and router, or ACE acting for nobody in
-        particular. Its key scope is empty, so a permission check never passes it."""
-        return cls(auth_type=AUTH_TYPE_SYSTEM, auth_name=name, auth_user_id=user_id, key_scope=[])
+    def system(cls, name: str) -> "ApiAuthResult":
+        """One of ACE's own actors: the svs timers and router, or an alert router. It is no user,
+        and its key scope is empty, so a permission check never passes it."""
+        return cls(auth_type=AUTH_TYPE_SYSTEM, auth_name=name, key_scope=[])
