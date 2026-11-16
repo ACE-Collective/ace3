@@ -206,6 +206,21 @@ class TestYaraScannerMetaTags:
         assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body"}
 
     @pytest.mark.integration
+    def test_local_scanner_scans_a_file_with_an_undecodable_name(self, socket_dir, write_rules, root_analysis, unlogged):
+        """A file whose name is not UTF-8 (an archive member, as os.listdir returns it), which
+        yara-python cannot take as a path."""
+        write_rules(_rule("always_match"), _rule("by_extension", condition='any of them and extension == "txt"'))
+        file_path = root_analysis.create_file_path(b"\xe9\xe9.txt".decode("utf-8", "surrogateescape"))
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+        result = self._create_module(root_analysis).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert self._matched_rules(observable) == {"always_match", "by_extension"}
+
+    @pytest.mark.integration
     def test_no_scan_directive_skips_scanning(self, yara_service, root_analysis):
         """FileObservable with DIRECTIVE_NO_SCAN skips scanning entirely."""
         yara_service(*META_TAGGED_RULES)
@@ -332,7 +347,7 @@ class TestYaraScannerServiceFailures:
         class TimingOutLocalScanner:
             scan_results = []
 
-            def scan(self, path, meta_tags=None):
+            def scan(self, path, **kwargs):
                 raise yara.TimeoutError("scanning timed out")
 
         def mock_initialize_local_scanner(self):

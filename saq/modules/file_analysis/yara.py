@@ -31,6 +31,7 @@ from saq.svs.marker_rule import install_marker_rule
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.server import scan_file
 from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 import yara
@@ -355,7 +356,7 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 scanned_locally = True
                 try:
-                    matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
+                    matches_found = scan_file(self.scanner, local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
                     attach_rule_details(result, self.local_rule_details)
                 except yara.TimeoutError as e:

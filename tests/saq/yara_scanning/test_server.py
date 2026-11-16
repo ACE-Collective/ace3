@@ -11,6 +11,7 @@ import uuid
 
 import psutil
 import pytest
+from yara_scanner import RulesNotLoadedError, YaraScanner
 
 from saq.configuration.config import get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
@@ -22,7 +23,7 @@ from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
-from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker
+from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker, scan_file
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
@@ -51,6 +52,19 @@ rule rule_b {
         $b = "MATCH_B"
     condition:
         $b
+}
+"""
+
+# what the rules see of a file name that is not UTF-8 is its escaped form (saq.logging.utf8_safe):
+# yara takes only UTF-8 strings
+RULE_NAMED = r"""
+rule rule_named {
+    meta:
+        file_ext = "combined"
+    strings:
+        $a = "MATCH_A"
+    condition:
+        $a and extension == "combined" and filename == "\\udce9\\udce9.combined"
 }
 """
 
@@ -216,6 +230,32 @@ def test_scan_file(make_server, rules_dir, target):
     assert match["string_patterns"] == {"$a": '"MATCH_A"'}
     assert match["rule_source"] == {"file": "a.yar", "start_line": RULE_A.splitlines().index("rule rule_a {") + 1,
                                     "text": RULE_A.lstrip("\n")}
+
+
+@pytest.mark.integration
+def test_scan_file_with_an_undecodable_name(make_server, rules_dir, tmp_path):
+    """A file whose name is not UTF-8 (an archive member, as os.listdir returns it) is scanned, with
+    its name in the rules' variables and meta filters, although yara-python cannot take it as a path."""
+    _write(os.path.join(rules_dir, "named.yar"), RULE_NAMED)
+    target = str(tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape"))
+    with open(target, "wb") as fp:
+        fp.write(b"0123456789MATCH_A")
+
+    server = make_server()
+    assert server.wait_for_start(30)
+
+    matches = _scan(server, target)
+    assert _rules(matches) == {"rule_named"}
+    assert matches[0]["target"] == target
+
+
+@pytest.mark.unit
+def test_scan_file_with_an_undecodable_name_needs_loaded_rules(tmp_path):
+    target = tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape")
+    target.write_bytes(b"MATCH_A")
+
+    with pytest.raises(RulesNotLoadedError):
+        scan_file(YaraScanner(), str(target))
 
 
 @pytest.mark.unit
