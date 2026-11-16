@@ -288,16 +288,17 @@ def audit_actor(auth: Optional[ApiAuthResult]) -> dict:
     """The extra={} fields naming who did an audited thing, the same on every log_audit() record so
     one Splunk field finds what a user (actor_user_id) or an API key (actor_key_id) did. The user
     id alone is not enough: it does not say which of the user's keys acted, and a config key has no
-    user at all. None is a change nobody authenticated for (an internal caller)."""
+    user at all. ACE's own actors (the svs timers, a router: ApiAuthResult.system) have auth_type
+    "system"."""
     if auth is None:
         return {"actor": None, "actor_user_id": None, "actor_key_id": None, "actor_key_name": None, "auth_type": None}
     return {"actor": auth.auth_name, "actor_user_id": auth.auth_user_id, "actor_key_id": auth.key_id,
             "actor_key_name": auth.key_name, "auth_type": auth.auth_type}
 
 
-def log_audit(message: str, *args, auth: Optional[ApiAuthResult], **fields) -> None:
-    """Log an INFO "AUDIT: <message>" record of something done through the API, with the actor's
-    audit_actor() fields and `fields` in extra={}."""
+def log_audit(message: str, *args, auth: ApiAuthResult, **fields) -> None:
+    """Log an INFO "AUDIT: <message>" record of something auth did, with its audit_actor() fields and
+    `fields` in extra={}. The actor fields come from auth alone: `fields` never names the actor."""
     logging.getLogger().info(f"AUDIT: {message}", *args, extra={**audit_actor(auth), **fields}, stacklevel=2)
 
 

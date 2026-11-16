@@ -86,8 +86,7 @@ AttributionsChangedSinceParam = Annotated[datetime | None, Query(
 
 
 def caller_of(auth: ApiAuthResult, request: Request) -> Caller:
-    return Caller(name=auth.auth_name, user_id=auth.auth_user_id, key_id=auth.key_id,
-                  address=request.client.host if request.client is not None else None, auth=auth)
+    return Caller(auth, address=request.client.host if request.client is not None else None)
 
 
 #

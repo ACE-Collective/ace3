@@ -38,7 +38,7 @@ from tests.saq.svs.conftest import add_catalog_test, add_test_host, attribute_to
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
-LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+LAUNCHER = Caller(person(None, "art-launcher"), address="10.1.2.3")
 HUNT_UUID = "11111111-aaaa-4aaa-8aaa-111111111111"
 
 
@@ -215,7 +215,9 @@ def test_the_timers_expire_a_window(caplog):
     window = _window(window.uuid)
     assert (window.ended_at, window.end_reason, window.ended_by) == (window.ends_at, "expired", "svs")
     (record,) = [r for r in caplog.records if r.getMessage().startswith("AUDIT: svs maintenance window expired")]
-    assert record.svs_maintenance == window.uuid
+    # the timer is the actor: ACE itself, with no user
+    assert (record.svs_maintenance, record.actor, record.auth_type, record.actor_user_id) == (
+        window.uuid, "svs", "system", None)
     assert maintenance.run_timers(now) == (0, 0)
 
 
@@ -302,10 +304,10 @@ def test_a_window_whose_alerts_fail_to_close_doesnt_stop_the_others(monkeypatch,
 
     close = maintenance._close_window_alerts
 
-    def failing_on_win10(window, records, automation_user_id):
+    def failing_on_win10(window, records):
         if window.host == "win10-01":
             raise RuntimeError("deadlock")
-        return close(window, records, automation_user_id)
+        return close(window, records)
 
     monkeypatch.setattr(maintenance, "_close_window_alerts", failing_on_win10)
     with caplog.at_level(logging.ERROR):
@@ -476,6 +478,10 @@ def test_an_alert_of_a_window_is_routed_recorded_and_closed(caplog):
     assert record.closed_at is not None
     (closed,) = [r for r in caplog.records if " closed as IGNORE" in r.getMessage()]
     assert (closed.svs_maintenance, closed.alert_uuid) == (window_uuid, root.uuid)
+    # closed by the timer, as the automation user; the AUDIT record names the timer
+    assert alert.disposition_user_id == get_config().global_settings.automation_user_id
+    (audit,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert dispositioned"]
+    assert (audit.alert_uuid, audit.actor, audit.auth_type) == (root.uuid, "svs", "system")
     assert maintenance.close_alerts() == 0
 
 

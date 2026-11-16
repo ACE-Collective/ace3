@@ -24,6 +24,7 @@ from saq.svs.yara.diff import Category
 from saq.svs.yara.replay import ReplayCancelled, ReplayResult, SideReport
 from tests.saq.svs.conftest import RULE_UUID
 from tests.saq.svs.yara.conftest import REPOSITORY, rule, stored_sample
+from tests.saq.helpers import person
 
 BASE = "a" * 40
 HEAD = "b" * 40
@@ -73,7 +74,7 @@ def test_the_config_refuses_timings_that_cannot_work():
 def test_the_service_runs_a_queued_validation(svs_repository):
     validation_uuid = _request()
     sha256 = stored_sample("DELIVERY", b"svs service sample", [RULE_UUID])
-    actions.retire(sha256, RULE_UUID, _user_id(), "intended")
+    actions.retire(sha256, RULE_UUID, person(_user_id()), "intended")
 
     with patch.object(svs_service, "run_replay", return_value=_empty_result()) as run_replay:
         SVSService().start_single_threaded()

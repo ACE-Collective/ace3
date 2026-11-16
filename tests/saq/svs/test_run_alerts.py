@@ -131,12 +131,32 @@ class TestClosingARun:
         assert event == {**event, "disposition": DISPOSITION_SIMULATED, "late": False}
         assert not _needs_attention(run.uuid)
 
+    def test_a_person_who_closes_a_run_is_the_actor_of_its_closing(self, run, caplog):
+        """The alerts are written as the automation user, but the event log and the AUDIT records
+        name the person who closed the run, with their user id."""
+        alert_uuid = _alert(marker=run.marker)
+        runs.cancel(run.uuid, LAUNCHER)
+        user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
+
+        with caplog.at_level(logging.INFO):
+            runs.close_by_person(run.uuid, person(user_id, "unittest", key_id=9), "the VM was rebuilt")
+
+        assert _alert_row(alert_uuid).disposition_user_id == get_config().global_settings.automation_user_id
+        db = get_db()
+        db.expire_all()
+        (event,) = db.execute(select(SVSRunEvent).where(
+            SVSRunEvent.run_id == run.id, SVSRunEvent.kind == RunEventKind.ALERTS_CLOSED.value)).scalars()
+        assert (event.actor, event.actor_user_id) == ("unittest", user_id)
+        (audit,) = [r for r in caplog.records if r.getMessage() == "AUDIT: alert dispositioned"]
+        assert (audit.alert_uuid, audit.actor, audit.actor_user_id, audit.actor_key_id) == (
+            alert_uuid, "unittest", user_id, 9)
+
     def test_partial_taken_and_dispositioned_alerts_are_left_alone(self, run, caplog):
         partial = _alert(marker=run.marker, partial=True)
         taken = _alert(marker=run.marker)
         _set_owner(taken, "unittest")
         dispositioned = _alert(marker=run.marker)
-        set_dispositions([dispositioned], DISPOSITION_FALSE_POSITIVE, get_config().global_settings.automation_user_id)
+        set_dispositions([dispositioned], DISPOSITION_FALSE_POSITIVE, person(get_config().global_settings.automation_user_id))
         mine = _alert(marker=run.marker)
         # the automation user owns what it dispositioned before; it counts as nobody
         _set_owner(mine, "ace")
@@ -162,7 +182,7 @@ class TestClosingARun:
         chosen = runs._closable_alerts(SVSAttribution.run_id == run.id)
 
         def analyst_first(*conditions):
-            set_dispositions([alert_uuid], DISPOSITION_FALSE_POSITIVE, get_config().global_settings.automation_user_id)
+            set_dispositions([alert_uuid], DISPOSITION_FALSE_POSITIVE, person(get_config().global_settings.automation_user_id))
             return chosen
 
         monkeypatch.setattr(runs, "_closable_alerts", analyst_first)

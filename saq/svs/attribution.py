@@ -917,7 +917,7 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
         if attribution is None:
             if row.removed_at is None and _update_own_row(
                     session, row.id, SVSAttribution.removed_at.is_(None), removed_at=now,
-                    removed_by=ROUTER_ACTOR, removal_reason=REMOVAL_NO_LONGER_APPLIES):
+                    removed_by=ROUTER_ACTOR.auth_name, removal_reason=REMOVAL_NO_LONGER_APPLIES):
                 result.removed.append(RemovedAttribution(row.run_id, row.content_hash, row.confidence, row.late))
             continue
 
@@ -945,7 +945,7 @@ def _write_attributions(session, alert_uuid: str, evaluation: Evaluation,
             confidence=attribution.confidence.value, late=attribution.late, event_time=evaluation.event_time,
             event_time_source=evaluation.event_time_source.value if evaluation.event_time_source else None,
             source=AttributionSource.ROUTER.value, scan_point=attribution.scan_point.value if attribution.scan_point else None,
-            actor=ROUTER_ACTOR, created_at=now))
+            actor=ROUTER_ACTOR.auth_name, created_at=now))
         if inserted.rowcount == 1:
             result.written.append(attribution)
     result.first = bool(result.written) and all(row.source != AttributionSource.ROUTER for row in rows.values())

@@ -46,22 +46,21 @@ def list_comments(run_uuid: str) -> list[SVSRunComment]:
         select(SVSRunComment).where(SVSRunComment.run_id == run.id).order_by(SVSRunComment.id)).scalars())
 
 
-def add_comment(run_uuid: str, user_id: int, actor: str, comment: str, now: Optional[datetime] = None, *,
-                auth: Optional[ApiAuthResult] = None) -> SVSRunComment:
-    """Raises UnknownRun, InvalidComment. auth is who acted, for the AUDIT record."""
+def add_comment(run_uuid: str, auth: ApiAuthResult, comment: str, now: Optional[datetime] = None) -> SVSRunComment:
+    """auth's comment on the run. Raises UnknownRun, InvalidComment."""
     run = get_run(run_uuid)
-    row = SVSRunComment(run_id=run.id, user_id=user_id, comment=_text(comment), created_at=now or datetime.now())
+    row = SVSRunComment(run_id=run.id, user_id=auth.auth_user_id, comment=_text(comment),
+                        created_at=now or datetime.now())
     db = get_db()
     db.add(row)
     db.commit()
     db.refresh(row)
-    _audit("svs run comment added", run, row.id, auth, actor, user_id)
+    _audit("svs run comment added", run, row.id, auth)
     return row
 
 
-def _audit(message: str, run, comment_id: int, auth: Optional[ApiAuthResult], actor: str, user_id: int) -> None:
-    # actor and actor_user_id name the author even for a caller that passes no auth
-    log_audit(message, auth=auth, **run_log_fields(run), comment_id=comment_id, actor=actor, actor_user_id=user_id)
+def _audit(message: str, run, comment_id: int, auth: ApiAuthResult) -> None:
+    log_audit(message, auth=auth, **run_log_fields(run), comment_id=comment_id)
 
 
 def _own_comment(run_uuid: str, comment_id: int, user_id: int):
@@ -75,23 +74,21 @@ def _own_comment(run_uuid: str, comment_id: int, user_id: int):
     return run, row
 
 
-def update_comment(run_uuid: str, comment_id: int, user_id: int, actor: str, comment: str, *,
-                   auth: Optional[ApiAuthResult] = None) -> SVSRunComment:
+def update_comment(run_uuid: str, comment_id: int, auth: ApiAuthResult, comment: str) -> SVSRunComment:
     """Raises UnknownRun, UnknownComment, NotTheAuthor, InvalidComment."""
-    run, row = _own_comment(run_uuid, comment_id, user_id)
+    run, row = _own_comment(run_uuid, comment_id, auth.auth_user_id)
     row.comment = _text(comment)
     db = get_db()
     db.commit()
     db.refresh(row)
-    _audit("svs run comment changed", run, row.id, auth, actor, user_id)
+    _audit("svs run comment changed", run, row.id, auth)
     return row
 
 
-def delete_comment(run_uuid: str, comment_id: int, user_id: int, actor: str, *,
-                   auth: Optional[ApiAuthResult] = None) -> None:
+def delete_comment(run_uuid: str, comment_id: int, auth: ApiAuthResult) -> None:
     """Raises UnknownRun, UnknownComment, NotTheAuthor."""
-    run, row = _own_comment(run_uuid, comment_id, user_id)
+    run, row = _own_comment(run_uuid, comment_id, auth.auth_user_id)
     db = get_db()
     db.delete(row)
     db.commit()
-    _audit("svs run comment deleted", run, comment_id, auth, actor, user_id)
+    _audit("svs run comment deleted", run, comment_id, auth)

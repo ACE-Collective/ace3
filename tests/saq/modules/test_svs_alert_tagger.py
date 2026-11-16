@@ -20,7 +20,7 @@ from saq.signatures.builtin import SVS_MARKER_MISMATCH
 from saq.svs import attribution, maintenance, windows
 from saq.svs.constants import TAG_MAINTENANCE, TAG_MARKER_MISMATCH, TAG_SVS_TEST
 from saq.svs.refusals import Caller
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run
 
 pytestmark = pytest.mark.integration
@@ -124,7 +124,7 @@ def test_nothing_while_no_run_is_open():
 
 
 def test_an_alert_in_a_maintenance_window_is_tagged_until_it_is_not():
-    maintenance.open_window("win10-01", 30, "staging", Caller(name="art"), now=datetime.now() - timedelta(minutes=5))
+    maintenance.open_window("win10-01", 30, "staging", Caller(person(None, "art")), now=datetime.now() - timedelta(minutes=5))
     root = create_root_analysis(uuid=str(uuid.uuid4()), event_time=datetime.now(), analysis_mode="correlation")
     root.initialize_storage()
     root.add_observable_by_spec(F_HOSTNAME, "win10-01")

@@ -17,7 +17,7 @@ from saq.database.model import Alert, DetectionPoint, User
 from saq.database.pool import get_db
 from saq.detection_verdicts.store import clear_verdict, set_verdict
 from saq.signatures.builtin import BUILTIN_SIGNATURE_UUID
-from tests.saq.helpers import insert_alert_with_detections
+from tests.saq.helpers import insert_alert_with_detections, person
 from tests.aceapi_v2.conftest import v2_app
 
 pytestmark = pytest.mark.integration
@@ -139,7 +139,7 @@ class TestFilters:
 
         noise = get_db().query(DetectionPoint.content_hash).filter(
             DetectionPoint.alert_id == tp.id, DetectionPoint.signature_uuid == SIG_A).scalar()
-        set_verdict(tp.id, noise, "fp", _user_id())
+        set_verdict(tp.id, noise, "fp", person(_user_id()))
         return {"tp": tp, "fp": fp, "open": open_, "old": old}
 
     @staticmethod
@@ -195,8 +195,8 @@ class TestChangedSince:
 
         # setting and clearing a verdict both show up; the cleared verdict leaves only history
         content_hash = (await _get(client))[0]["content_hash"]
-        set_verdict(a.id, content_hash, "fp", _user_id())
-        clear_verdict(a.id, content_hash, _user_id())
+        set_verdict(a.id, content_hash, "fp", person(_user_id()))
+        clear_verdict(a.id, content_hash, person(_user_id()))
         assert [row["content_hash"] for row in await _get(client, changed_since=since)] == [content_hash]
 
         # a disposition change re-derives every verdict of the alert

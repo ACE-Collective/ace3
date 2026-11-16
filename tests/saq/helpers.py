@@ -19,8 +19,10 @@ from typing import Union
 import uuid
 
 
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
+from saq.auth import ApiAuthResult
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import (
@@ -580,12 +582,16 @@ def insert_alert():
     assert alert.id is not None
     return alert
 
+def person(user_id: int | None, name: str = "unittest", key_id: int | None = None) -> ApiAuthResult:
+    """A user calling the API with one of their keys, as the routes pass the caller to a write."""
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=name, auth_user_id=user_id, key_id=key_id,
+                         key_name=f"key-{key_id}" if key_id is not None else None, credential=API_CREDENTIAL_USER_KEY)
+
 def make_simulated(alert: Alert) -> None:
     """Gives the alert the disposition SVS sets on a test-run alert (SIMULATED), through the
     system path, and drops the workload entry that queued, so a test sees only what the code
     under test schedules."""
-    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
-                     system=True)
+    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, ApiAuthResult.system("svs"), system=True)
     db = get_db()
     db.query(Workload).filter(Workload.uuid == alert.uuid).delete()
     db.commit()

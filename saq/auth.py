@@ -1,11 +1,17 @@
-"""Who is acting: the credential a request or a caller authenticated with."""
+"""Who is acting: the credential a request or a caller authenticated with, or one of ACE's own
+actors (ApiAuthResult.system)."""
 
 from dataclasses import dataclass
+
+# the auth_type of ACE's own actors, which no credential authenticates as
+AUTH_TYPE_SYSTEM = "system"
 
 
 @dataclass
 class ApiAuthResult:
-    """Result of API authentication (API key or session cookie)."""
+    """Who did something: the result of API authentication (API key or session cookie), or one of
+    ACE's own actors (system()). A write that records who acted takes one of these: rows store its
+    auth_user_id, run events and named fields its auth_name, and log_audit() every actor field."""
 
     auth_type: str | None = None
     auth_name: str | None = None
@@ -29,3 +35,9 @@ class ApiAuthResult:
         # that `if result:` checks in get_current_auth fall through to the next
         # auth method instead of treating an unverified request as authenticated.
         return self.auth_type is not None
+
+    @classmethod
+    def system(cls, name: str, user_id: int | None = None) -> "ApiAuthResult":
+        """One of ACE's own actors: the svs timers and router, or ACE acting for nobody in
+        particular. Its key scope is empty, so a permission check never passes it."""
+        return cls(auth_type=AUTH_TYPE_SYSTEM, auth_name=name, auth_user_id=user_id, key_scope=[])

@@ -479,12 +479,10 @@ def create_sample_zip(label: str, download: SampleDownload, actor: Optional[str]
 # actions (docs/SVS_SAMPLES.md, *Actions*): saq.svs.actions does the work
 #
 
-def _require_user(user_id: int | None) -> int:
+def _require_user(user_id: int | None) -> None:
     # every action records who took it; a config API key belongs to nobody
     if user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
-
-    return user_id
 
 
 def _label_result(change: LabelChange) -> LabelActionResult:
@@ -496,10 +494,10 @@ def _label_result(change: LabelChange) -> LabelActionResult:
 
 
 def _label_action(action, sha256: str, rule_uuid: str, auth: ApiAuthResult, *args) -> LabelActionResult:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     sha256 = validate_sample_key(sha256, rule_uuid)
     try:
-        return _label_result(action(sha256, rule_uuid, *args, user_id, auth=auth))
+        return _label_result(action(sha256, rule_uuid, *args, auth))
     except SampleNotFound:
         raise HTTPException(status_code=404, detail="sample not found")
     except VerdictNotAllowed as e:
@@ -530,10 +528,10 @@ def _retirement(row: SVSSampleRetirement) -> Retirement:
 
 
 def retire_sample(sha256: str, rule_uuid: str, reason: str, auth: ApiAuthResult) -> Retirement:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     sha256 = validate_sample_key(sha256, rule_uuid)
     try:
-        actions.retire(sha256, rule_uuid, user_id, reason, auth=auth)
+        actions.retire(sha256, rule_uuid, auth, reason)
     except SampleNotFound:
         raise HTTPException(status_code=404, detail="sample not found")
     except ValueError as e:
@@ -545,10 +543,10 @@ def retire_sample(sha256: str, rule_uuid: str, reason: str, auth: ApiAuthResult)
 
 
 def unretire_sample(sha256: str, rule_uuid: str, auth: ApiAuthResult) -> Retirement:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     sha256 = validate_sample_key(sha256, rule_uuid)
     try:
-        actions.unretire(sha256, rule_uuid, user_id, auth=auth)
+        actions.unretire(sha256, rule_uuid, auth)
     except NotRetired:
         raise HTTPException(status_code=404, detail="the sample is not retired")
 
@@ -564,10 +562,10 @@ def _deletion(row: SVSSampleDeletion) -> SampleDeletion:
 
 
 def delete_sample_file(sha256: str, reason: str, auth: ApiAuthResult) -> SampleDeletion:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     sha256 = _validate_sha256(sha256)
     try:
-        return _deletion(actions.delete_sample(sha256, user_id, reason, actor=auth.auth_name, auth=auth))
+        return _deletion(actions.delete_sample(sha256, auth, reason))
     except SampleNotFound:
         raise HTTPException(status_code=404, detail="sample not found")
     except ValueError as e:

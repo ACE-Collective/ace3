@@ -10,7 +10,7 @@ from saq.permissions.logic import user_has_permission
 
 
 def current_user_auth() -> ApiAuthResult:
-    """The logged-in user as the actor of a saq.logging.log_audit() record."""
+    """The logged-in user as the actor of a write and its saq.logging.log_audit() records."""
     return session_auth(current_user.id, current_user.username)
 
 

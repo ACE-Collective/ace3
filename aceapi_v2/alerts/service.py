@@ -186,7 +186,7 @@ def set_alert_owner(alert_uuids: list[str], owner_id: int | None, auth: ApiAuthR
         if new_owner is None or not new_owner.enabled:
             raise HTTPException(status_code=422, detail=f"user {owner_id} does not exist or is disabled")
 
-    ownership = change_alert_owner(alert_uuids, owner_id, acting_user_id, take_owned, auth=auth)
+    ownership = change_alert_owner(alert_uuids, owner_id, auth, take_owned)
 
     skipped = describe_skipped(ownership)
     message = None

@@ -17,7 +17,7 @@ from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.svs.capture import CaptureState, capture_hold
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -43,7 +43,7 @@ def _alert_with_yara_matches():
 
 
 def _disposition(root, disposition):
-    set_dispositions([root.uuid], disposition, get_db().query(User).first().id)
+    set_dispositions([root.uuid], disposition, person(get_db().query(User).first().id))
     get_db().close()
 
 

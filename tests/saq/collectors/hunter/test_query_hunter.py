@@ -54,7 +54,7 @@ from saq.svs import attribution, maintenance
 from saq.svs.markers import new_marker
 from saq.svs.refusals import Caller
 from saq.util.time import create_timedelta, local_time
-from tests.saq.helpers import create_submission_file_manager, log_count, wait_for_log_count
+from tests.saq.helpers import create_submission_file_manager, log_count, person, wait_for_log_count
 from tests.saq.svs.conftest import add_catalog_test, add_test_host
 
 
@@ -4548,7 +4548,7 @@ def test_a_runs_matches_are_suppressed_under_the_runs_own_key(hunt_manager, capl
 def test_a_maintenance_windows_matches_are_suppressed_under_the_windows_own_key(hunt_manager, caplog):
     """A host's staging never suppresses production or a run (docs/SVS_RUNS.md, *Maintenance windows*)."""
     add_test_host("win10-01")
-    window = maintenance.open_window("win10-01", 30, "staging", Caller(name="art-launcher"),
+    window = maintenance.open_window("win10-01", 30, "staging", Caller(person(None, "art-launcher")),
                                      now=datetime.now() - timedelta(minutes=10))
     hunt = _svs_grouped_hunt(hunt_manager)
     with caplog.at_level(logging.INFO):

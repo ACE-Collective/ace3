@@ -191,10 +191,10 @@ def _current_row(signature_uuid: str, technique: str) -> Optional[WorklistRow]:
 
 def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest, auth: ApiAuthResult,
                    precondition: Precondition = NONE) -> WorklistRow:
-    user_id = require_user(auth.auth_user_id)
+    require_user(auth.auth_user_id)
     try:
-        row = worklist.resolve(signature_uuid, technique, body.resolution, body.reason, user_id,
-                               reference=body.reference, actor=auth.auth_name, precondition=precondition, auth=auth)
+        row = worklist.resolve(signature_uuid, technique, body.resolution, body.reason, auth,
+                               reference=body.reference, precondition=precondition)
     except (worklist.UnknownWorklistRow, worklist.WorklistConflict, worklist.InvalidResolution) as e:
         raise _errors(e)
     except StaleWrite as e:
@@ -204,9 +204,9 @@ def set_resolution(signature_uuid: str, technique: str, body: ResolutionRequest,
 
 def clear_resolution(signature_uuid: str, technique: str, auth: ApiAuthResult,
                      precondition: Precondition = NONE) -> None:
-    user_id = require_user(auth.auth_user_id)
+    require_user(auth.auth_user_id)
     try:
-        worklist.reopen(signature_uuid, technique, user_id, actor=auth.auth_name, precondition=precondition, auth=auth)
+        worklist.reopen(signature_uuid, technique, auth, precondition=precondition)
     except worklist.UnknownWorklistRow as e:
         raise _errors(e)
     except StaleWrite as e:
@@ -214,10 +214,10 @@ def clear_resolution(signature_uuid: str, technique: str, auth: ApiAuthResult,
 
 
 def bulk_resolve(body: BulkResolutionRequest, auth: ApiAuthResult) -> BulkResolutionResult:
-    user_id = require_user(auth.auth_user_id)
+    require_user(auth.auth_user_id)
     try:
         result = worklist.resolve_many([(key.signature_uuid, key.technique) for key in body.rows], body.resolution,
-                                       body.reason, user_id, reference=body.reference, actor=auth.auth_name, auth=auth)
+                                       body.reason, auth, reference=body.reference)
     except worklist.InvalidResolution as e:
         raise _errors(e)
     return BulkResolutionResult(

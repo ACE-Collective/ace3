@@ -420,8 +420,10 @@ def review(persona: str, run_id: str):
 
 
 def disposition(uuids: list[str], value: str, persona: str, note: str):
+    from saq.auth import ApiAuthResult  # after ace_environment(), see there
     from saq.database.util.alert import set_dispositions  # after ace_environment(), see there
-    set_dispositions(uuids, value, user_id(persona), user_comment=note)
+    set_dispositions(uuids, value, ApiAuthResult(auth_type="user", auth_name=persona, auth_user_id=user_id(persona)),
+                     user_comment=note)
 
 
 def phase_one(m: dict):
