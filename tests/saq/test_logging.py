@@ -1,11 +1,14 @@
 """Tests for the extra-aware formatters and the transaction id correlation field."""
+import importlib
 import logging
 import logging.config
 from logging.handlers import BufferingHandler
+import os
 import threading
 import uuid
 
 import pytest
+import yaml
 
 from aceapi_v2.auth.schemas import ApiAuthResult
 from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
@@ -22,7 +25,8 @@ from saq.logging import (
     set_transaction_id,
     transaction_id,
 )
-from tests.saq.helpers import unconfigured_logging
+from saq.environment import get_base_dir
+from tests.saq.helpers import fluent_receiver, unconfigured_logging
 
 
 def _make_formatter():
@@ -438,3 +442,85 @@ def test_audit_actor_without_auth_has_every_field():
     depends on which caller wrote it."""
     assert audit_actor(None) == {"actor": None, "actor_user_id": None, "actor_key_id": None,
                                  "actor_key_name": None, "auth_type": None}
+
+
+# a file name that is not UTF-8, as os.listdir() and every other surrogateescape decode hands it to ACE
+UNDECODABLE_PATH = "/opt/ace/data/crash_reports/file/" + b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
+# what Splunk receives in its place: the escapes repr() shows
+ESCAPED_PATH = "/opt/ace/data/crash_reports/file/\\udce9\\udce9.pdf"
+
+
+@pytest.fixture
+def production_fluent_logger():
+    """A logger with the fluent handler etc/logging_configs/ace_logging.yaml gives the root logger,
+    sending to a local socket in place of fluent-bit. Yields ``(logger, receive)``."""
+    with open(os.path.join(get_base_dir(), "etc", "logging_configs", "ace_logging.yaml")) as fp:
+        handler_config = yaml.safe_load(fp)["handlers"]["fluent"]
+
+    module_name, _, class_name = handler_config["class"].rpartition(".")
+    handler_class = getattr(importlib.import_module(module_name), class_name)
+
+    with fluent_receiver() as (port, receive):
+        handler = handler_class(handler_config["tag"], host="127.0.0.1", port=port,
+                                nanosecond_precision=handler_config["nanosecond_precision"])
+        handler.setFormatter(_make_formatter())
+        handler.addFilter(TransactionIdFilter())
+        # outside the logger hierarchy, so pytest's capture, which attaches to the root and to every
+        # registered logger that does not propagate, never holds these records: pytest-xdist cannot
+        # send a report with surrogates in it to the controller
+        logger = logging.Logger(f"test_fluent_{uuid.uuid4().hex}")
+        logger.addHandler(handler)
+        try:
+            yield logger, receive
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+
+
+@pytest.mark.unit
+def test_fluent_logging_an_exception_with_undecodable_text_does_not_raise(production_fluent_logger):
+    """The shape of saq/crash_replication.py's handler: the caught exception names an undecodable
+    path, so the record does, and so does the traceback the fluent library's fallback record
+    carries. That fallback failed to encode as well, and the logging call raised."""
+    logger, receive = production_fluent_logger
+    try:
+        raise RuntimeError(f"unexpected error uploading file {UNDECODABLE_PATH}")
+    except RuntimeError as e:
+        logger.warning("unable to replicate crash report %s: %s", "abc", e)
+
+    data = receive()
+    assert data["severity"] == "WARNING"
+    assert data["message"] == f"unable to replicate crash report abc: unexpected error uploading file {ESCAPED_PATH}"
+
+
+@pytest.mark.unit
+def test_fluent_logging_exception_keeps_a_traceback_with_undecodable_text(production_fluent_logger):
+    logger, receive = production_fluent_logger
+    try:
+        raise RuntimeError(UNDECODABLE_PATH)
+    except RuntimeError:
+        logger.exception("failed")
+
+    message = receive()["message"]
+    assert message.startswith("failed\nTraceback (most recent call last):")
+    assert message.endswith(f"RuntimeError: {ESCAPED_PATH}")
+
+
+@pytest.mark.unit
+def test_fluent_logging_keeps_a_record_whose_extra_field_is_undecodable(production_fluent_logger):
+    """Without an exception being handled the fluent library did not raise, but it sent
+    "Can't output to log" in place of the record."""
+    logger, receive = production_fluent_logger
+    logger.warning("uploaded", extra={"path": UNDECODABLE_PATH, "files": [UNDECODABLE_PATH], "count": 3})
+
+    data = receive()
+    assert (data["message"], data.get("path"), data.get("files"), data.get("count")) == ("uploaded", ESCAPED_PATH, [ESCAPED_PATH], 3)
+
+
+@pytest.mark.unit
+def test_fluent_logging_leaves_encodable_text_alone(production_fluent_logger):
+    logger, receive = production_fluent_logger
+    logger.warning("uploaded %s", "/tmp/café \\udce9.pdf", extra={"path": "naïve"})
+
+    data = receive()
+    assert (data["message"], data["path"]) == ("uploaded /tmp/café \\udce9.pdf", "naïve")

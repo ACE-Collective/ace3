@@ -37,6 +37,7 @@ from saq.environment import get_data_dir, get_global_runtime_settings, get_temp_
 import pytest
 from saq.integration.integration_loader import load_integration_component_src
 from saq.integration.integration_util import get_valid_integration_dirs
+from saq.error.reporting import ErrorReportHandler
 from saq.modules import base_module
 from saq.sandbox import runner as sandbox_runner
 from saq.modules.context import AnalysisModuleContext
@@ -418,9 +419,12 @@ def global_function_setup(request):
     threat_types_router = sys.modules.get("aceapi_v2.threat_types.router")
     if threat_types_router is not None:
         threat_types_router._cache.clear()
-    # a sandboxed tool's failure is reported once per process, and each work root swept once
-    base_module._REPORTED_SANDBOX_FAILURES.clear()
+    # each work root is swept once per process
     base_module._SWEPT_WORK_ROOTS.clear()
+    # a cause is reported once per window, and a test expects its own report
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, ErrorReportHandler):
+            handler._causes.clear()
     sandbox_runner._LANDLOCK_AVAILABLE = None
 
     # XXX we're initializing AND THEN we're resetting the database
@@ -533,6 +537,16 @@ def root_analysis(tmpdir) -> RootAnalysis:
         analysis_mode=ANALYSIS_MODE_ANALYSIS)
     root.initialize_storage()
     return root
+
+@pytest.fixture
+def unlogged():
+    """Drops every log record during the test, for a test whose records name a file that is not
+    UTF-8: pytest-xdist cannot send the controller a report whose captured log holds one."""
+    logging.disable(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logging.disable(logging.NOTSET)
 
 @pytest.fixture
 def declare_integration(monkeypatch):
@@ -658,17 +672,18 @@ def pytest_sessionstart(session):
         load_integration_component_src(dir_path)
 
 #
-# one *run* of the test suite at a time per checkout: a run may spread over pytest-xdist
-# workers (each one its own databases, data directory, ports and log file, keyed by its slot --
-# see tests/unittest_session.py), but two runs of one checkout would collide on the slot's data
+# one *run* of the test suite at a time per container and per checkout: a run may spread over
+# pytest-xdist workers (each one its own databases, data directory, ports and log file, keyed
+# by its slot -- see tests/unittest_session.py), but two runs in one container run it out of
+# memory and take the same ports, two runs of one checkout would collide on the slot's data
 # directory and Qdrant collections, and the stale-database sweep below is only safe when
-# nothing else is provisioning. a marker file makes that constraint mechanical instead of a
-# rule people remember, and a claimed port block keeps the ports of runs of different
-# checkouts apart; see tests/session_lock.py. under xdist the controller takes both and the
-# workers ride on them.
+# nothing else is provisioning. a lock that a second run in the container waits for, and a
+# marker file that refuses a second run of the checkout from another container, make that
+# constraint mechanical instead of a rule people remember; see tests/session_lock.py. under
+# xdist the controller takes both and the workers ride on them.
 #
 
-# True only if *this* process created the marker file. pytest_unconfigure runs even when
+# True only if *this* process holds the run lock and the marker. pytest_unconfigure runs even when
 # pytest_configure raised, so without this a blocked session would delete the live session's marker.
 SESSION_LOCK_HELD = False
 

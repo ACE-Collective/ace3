@@ -8,7 +8,14 @@ import saq.error.reporting
 import saq.shutdown
 from saq.configuration.config import get_config
 from saq.environment import get_base_dir, get_data_dir
-from saq.error.reporting import ErrorReportHandler, log_loop_exception, log_peer_unavailable, write_error_report
+from saq.error.reporting import (
+    MAX_REMEMBERED_CAUSES,
+    REPEAT_WINDOW_SECONDS,
+    ErrorReportHandler,
+    log_loop_exception,
+    log_peer_unavailable,
+    write_error_report,
+)
 from saq.logging import _install_error_report_handler, suppress_external_logging, transaction_id
 from saq.monitor import enable_monitor_cache, get_emitter
 from saq.monitor_definitions import MONITOR_ERROR_REPORT
@@ -23,7 +30,8 @@ def _error_reporting_dir() -> str:
 def reports(monkeypatch) -> list[logging.LogRecord]:
     """The records ErrorReportHandler asked for a report on, in place of writing one."""
     records = []
-    monkeypatch.setattr(saq.error.reporting, "write_error_report", lambda exc_info, record=None: records.append(record))
+    monkeypatch.setattr(saq.error.reporting, "write_error_report",
+                        lambda exc_info, record=None, skipped=0: records.append(record))
     return records
 
 
@@ -122,7 +130,7 @@ def test_no_report_while_external_logging_suppressed(reports):
 def test_report_that_logs_a_traceback_does_not_recurse(monkeypatch):
     calls = []
 
-    def _write_error_report(exc_info, record=None):
+    def _write_error_report(exc_info, record=None, skipped=0):
         calls.append(record)
         _log_exception()
 
@@ -131,9 +139,136 @@ def test_report_that_logs_a_traceback_does_not_recurse(monkeypatch):
 
     assert len(calls) == 1
 
-    # the guard is cleared afterwards
-    _log_exception()
+    # the guard is cleared afterwards (logged from another line, which is another cause)
+    _log_critical_after_except()
     assert len(calls) == 2
+
+
+def _fail(message: str):
+    """Logs RuntimeError(message) with its traceback, always from the same line."""
+    try:
+        raise RuntimeError(message)
+    except RuntimeError:
+        logging.exception("work failed")
+
+
+@pytest.fixture
+def reported(monkeypatch) -> list[tuple[str, int]]:
+    """(exception text, repeats skipped before it) of each report the handler asked for."""
+    calls = []
+    monkeypatch.setattr(saq.error.reporting, "write_error_report",
+                        lambda exc_info, record=None, skipped=0: calls.append((str(exc_info[1]), skipped)))
+    return calls
+
+
+@pytest.fixture
+def clock(monkeypatch) -> list[float]:
+    """The handler's monotonic clock, which a test moves by changing clock[0]."""
+    now = [1000.0]
+    monkeypatch.setattr(saq.error.reporting, "_monotonic", lambda: now[0])
+    return now
+
+
+@pytest.mark.unit
+def test_a_repeated_cause_is_reported_once_per_window(reported, clock):
+    """A failure that hits every item the same way writes one report, not one per item, and the next
+    report after the window says how many it skipped."""
+    for _ in range(3):
+        _fail("peer is down")
+    clock[0] += REPEAT_WINDOW_SECONDS - 1
+    _fail("peer is down")
+    assert reported == [("peer is down", 0)]
+
+    clock[0] += 1
+    _fail("peer is down")
+    assert reported == [("peer is down", 0), ("peer is down", 3)]
+
+    # the count starts again from each report
+    _fail("peer is down")
+    clock[0] += REPEAT_WINDOW_SECONDS
+    _fail("peer is down")
+    assert reported[-1] == ("peer is down", 1)
+
+
+@pytest.mark.unit
+def test_every_record_is_still_logged_while_its_report_is_skipped(reported, caplog):
+    _fail("peer is down")
+    _fail("peer is down")
+
+    assert len(reported) == 1
+    assert [r.levelno for r in caplog.records if r.getMessage() == "work failed"] == [logging.ERROR, logging.ERROR]
+
+
+@pytest.mark.unit
+def test_another_exception_text_or_line_is_another_cause(reported, clock):
+    _fail("peer is down")
+    _fail("disk is full")
+    # the same exception logged from another line
+    try:
+        raise RuntimeError("peer is down")
+    except RuntimeError:
+        logging.exception("work failed")
+
+    assert reported == [("peer is down", 0), ("disk is full", 0), ("peer is down", 0)]
+
+
+@pytest.mark.unit
+def test_the_causes_remembered_are_bounded(reported, clock):
+    for index in range(MAX_REMEMBERED_CAUSES + 1):
+        _fail(f"item {index} failed")
+
+    # the oldest cause was forgotten, so it is reported again; the newest is still remembered
+    _fail("item 0 failed")
+    _fail(f"item {MAX_REMEMBERED_CAUSES} failed")
+    assert len(reported) == MAX_REMEMBERED_CAUSES + 2
+    assert reported[-1] == ("item 0 failed", 0)
+
+
+@pytest.mark.unit
+def test_the_cause_reported_longest_ago_is_forgotten_first(reported, clock):
+    _fail("peer is down")
+    _fail("disk is full")
+    clock[0] += REPEAT_WINDOW_SECONDS
+    # reported again, so it is now the newest report and "disk is full" the oldest
+    _fail("peer is down")
+    for index in range(MAX_REMEMBERED_CAUSES - 1):
+        _fail(f"item {index} failed")
+
+    count = len(reported)
+    _fail("peer is down")
+    assert len(reported) == count
+
+
+@pytest.mark.unit
+def test_an_exception_whose_text_cannot_be_read_is_still_reported(reports):
+    class _Unprintable(Exception):
+        def __str__(self):
+            raise ValueError("no text")
+
+    for _ in range(2):
+        try:
+            raise _Unprintable()
+        except _Unprintable:
+            logging.exception("work failed")
+
+    # not known to be a repeat, so both are reported
+    assert len(reports) == 2
+
+
+@pytest.mark.unit
+def test_a_report_names_the_repeats_it_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(saq.error.reporting, "get_data_dir", lambda: str(tmp_path))
+    os.makedirs(tmp_path / get_config().global_settings.error_reporting_dir)
+    enable_monitor_cache()
+
+    try:
+        raise RuntimeError("peer is down")
+    except RuntimeError:
+        path = write_error_report(sys.exc_info(), skipped=7)
+
+    with open(path) as fp:
+        assert "SKIPPED REPEATS: 7 since the last report of this cause\n\nEXCEPTION\npeer is down" in fp.read()
+    assert get_emitter().cache[MONITOR_ERROR_REPORT.path].value["skipped_repeats"] == 7
 
 
 @pytest.mark.unit
@@ -186,6 +321,34 @@ def test_logged_exception_report_contents():
 
 
 @pytest.mark.unit
+def test_report_for_an_exception_naming_an_undecodable_file():
+    """A file name that is not UTF-8 reaches ACE with lone surrogates (surrogateescape). The report
+    is written with them escaped, and its monitor event is emitted."""
+    enable_monitor_cache()
+    existing = set(os.listdir(_error_reporting_dir()))
+    path = "/opt/ace/data/" + b"\xe9.pdf".decode("utf-8", "surrogateescape")
+
+    # outside the logger hierarchy: pytest-xdist cannot send the controller a report whose captured
+    # log holds a surrogate
+    logger = logging.Logger("test_undecodable_error_report")
+    logger.addHandler(ErrorReportHandler())
+    try:
+        raise RuntimeError(f"unable to open {path}")
+    except RuntimeError:
+        logger.exception("failed on %s", path)
+
+    new_reports = set(os.listdir(_error_reporting_dir())) - existing
+    assert len(new_reports) == 1
+    with open(os.path.join(_error_reporting_dir(), new_reports.pop())) as fp:
+        content = fp.read()
+    assert content.startswith("LOG MESSAGE\nfailed on /opt/ace/data/\\udce9.pdf\n")
+    assert "EXCEPTION\nunable to open /opt/ace/data/\\udce9.pdf" in content
+    assert "EXCEPTION SOURCE" in content
+
+    assert get_emitter().cache[MONITOR_ERROR_REPORT.path].value["message"] == f"failed on {path}"
+
+
+@pytest.mark.unit
 def test_log_loop_exception_reports_once_with_traceback(reports, caplog):
     error = RuntimeError("loop failed")
     log_loop_exception(error, "doing work")
@@ -195,6 +358,16 @@ def test_log_loop_exception_reports_once_with_traceback(reports, caplog):
     assert record.levelno == logging.ERROR
     assert record.getMessage() == "doing work: loop failed"
     assert record.exc_info[1] is error
+
+
+@pytest.mark.unit
+def test_log_loop_exception_callers_are_separate_causes(reports):
+    """Two loops that fail the same way are each reported, and each report says where its loop logged it."""
+    log_loop_exception(KeyError("uuid"), "catalog refresh failed")
+    log_loop_exception(KeyError("uuid"), "coverage refresh failed")
+
+    assert [r.getMessage() for r in reports] == ["catalog refresh failed: 'uuid'", "coverage refresh failed: 'uuid'"]
+    assert all(r.pathname == __file__ for r in reports)
 
 
 @pytest.mark.unit

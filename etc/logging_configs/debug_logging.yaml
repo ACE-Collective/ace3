@@ -30,7 +30,7 @@ handlers:
     formatter: base
     stream: ext://sys.stderr
   fluent:
-    class: fluent.handler.FluentHandler
+    class: saq.logging.UTF8SafeFluentHandler
     host: fluent-bit
     port: 24224
     # NOTE this gets overridden by the FLUENT_BIT_TAG environment variable
