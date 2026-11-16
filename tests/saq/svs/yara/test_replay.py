@@ -95,6 +95,25 @@ def test_a_validation_reports_what_the_change_does(svs_repository):
 
 
 @pytest.mark.integration
+def test_an_include_of_the_rule_set_next_to_it_loads_as_in_the_yara_service(svs_repository):
+    # the yara service bounds includes by its signature directory, so a rule set can include a
+    # file of the set next to it; were the replay bounded by the namespace directory instead,
+    # r.yar would fail to compile and rule one would drop out of head
+    a = stored_sample("DELIVERY", b"alpha evil", [R1])
+    shared = {"yara/common/shared.yar": "rule shared { condition: false }\n"}
+    base = svs_repository.commit({**shared, "yara/acme/r.yar": rule("one", R1, '$a = "nothing here"')})
+    head = svs_repository.commit({**shared, "yara/acme/r.yar": 'include "../common/shared.yar"\n'
+                                  + rule("one", R1, '$a = "evil"', condition="$a and not shared")})
+
+    result = run_replay(REPOSITORY, base, head)
+
+    assert result.diffed
+    assert result.head.include_warnings == []
+    assert result.head.file_errors == []
+    assert (_rows(result)[(a, R1)].base, _rows(result)[(a, R1)].head) == (Outcome.MISS, Outcome.MATCH)
+
+
+@pytest.mark.integration
 def test_retired_samples_are_only_counted(svs_repository):
     a = stored_sample("DELIVERY", b"alpha evil", [R1])
     base = svs_repository.commit({"yara/acme/rules.yar": rule("one", R1, '$a = "evil"')})

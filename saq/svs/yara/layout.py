@@ -65,9 +65,10 @@ class TreeNamespace:
     name: str
     # absolute path of its directory in the exported tree
     directory: str
-    # the directory its includes must stay inside, the one the yara service bounds them to: the
-    # signature directory of a contained layout, so a rule set can include a file of the set next to
-    # it. A linked layout's signature directory is not in the tree, so there it is the namespace's own
+    # the directory its includes must stay inside: the signature directory of a contained layout, as
+    # in the yara service, so a rule set can include a file of the set next to it. A linked layout's
+    # signature directory is not in the tree, so there it is the namespace's own, narrower than the
+    # service's (docs/SVS_VALIDATION.md)
     include_boundary: str
     # absolute paths of its rule files, in name order
     files: list[str] = field(default_factory=list)
