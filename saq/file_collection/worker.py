@@ -1,6 +1,5 @@
 from datetime import UTC, datetime
 import logging
-from threading import Lock
 from typing import Optional
 
 from sqlalchemy.sql import func
@@ -24,9 +23,6 @@ class FileCollectionWorker(QueueWorker[FileCollectionWorkItem]):
     def __init__(self, file_collector: FileCollector):
         super().__init__()
         self.file_collector = file_collector
-        # ids of the collections we have accepted but not yet finished (queued or in progress)
-        self._pending_ids: set[int] = set()
-        self._pending_ids_lock = Lock()
 
     @property
     def name(self) -> str:
@@ -42,23 +38,8 @@ class FileCollectionWorker(QueueWorker[FileCollectionWorkItem]):
     def log_extra(self, work_item: FileCollectionWorkItem) -> dict:
         return {"alert_uuid": work_item.alert_uuid}
 
-    def handle_request(self, work_item: FileCollectionWorkItem):
-        # holding the lock while the item is queued keeps a worker thread from finishing it and
-        # discarding its id before the id is added
-        with self._pending_ids_lock:
-            super().handle_request(work_item)
-            self._pending_ids.add(work_item.id)
-
-    def pending_collection_ids(self) -> set[int]:
-        with self._pending_ids_lock:
-            return set(self._pending_ids)
-
     def process_one(self, work_item: FileCollectionWorkItem):
-        try:
-            self.collect(work_item)
-        finally:
-            with self._pending_ids_lock:
-                self._pending_ids.discard(work_item.id)
+        self.collect(work_item)
 
     def claim(self, target: FileCollectionWorkItem) -> bool:
         """Re-reads the database record for the work item and decides whether to collect it.

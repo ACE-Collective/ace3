@@ -122,7 +122,7 @@ class MyService(ACEServiceInterface):
         self.manager.wait()
 ```
 
-A service that works through the rows of a database table is built on `saq/queue_service.py` instead, as remediation, external remediation checks and file collection are. A `QueueCollector` thread locks the rows that are due and hands each one to the `QueueWorker` registered under its name, and the worker runs its own threads over an in-memory queue. The subclasses supply the table, which rows are due (`filter_candidates()`, `ready()`), the work item (`build_work_item()`, which finishes a row itself when there is no work for it) and what is done with it (`process_one()`). A `QueueManager` lists the workers the configuration asks for, and a `QueueService` needs only `create_manager()`. When the service stops, the manager waits for the collector, unlocks the rows still in the workers' queues (`QueueCollector.release()`, only where the row still holds the lock the collector put on it), and only then waits for the workers, so an item still being worked at the shutdown deadline does not keep the queued rows locked. A restart takes them at once instead of after `lock_timeout_seconds`. The work item carries that lock as `lock`.
+A service that works through the rows of a database table is built on `saq/queue_service.py` instead, as remediation, external remediation checks and file collection are. A `QueueCollector` thread locks the rows that are due and hands each one to the `QueueWorker` registered under its name, and the worker runs its own threads over an in-memory queue. A row is locked again once its lock times out (`lock_timeout_seconds`), unless a worker of this collector still holds it, queued or in progress (`QueueWorker.pending_ids()`): a worker that falls behind would otherwise be handed a second copy of each row it has not reached. The subclasses supply the table, which rows are due (`filter_candidates()`, `ready()`), the work item (`build_work_item()`, which finishes a row itself when there is no work for it) and what is done with it (`process_one()`). A `QueueManager` lists the workers the configuration asks for, and a `QueueService` needs only `create_manager()`. When the service stops, the manager waits for the collector, unlocks the rows still in the workers' queues (`QueueCollector.release()`, only where the row still holds the lock the collector put on it), and only then waits for the workers, so an item still being worked at the shutdown deadline does not keep the queued rows locked. A restart takes them at once instead of after `lock_timeout_seconds`. The work item carries that lock as `lock`.
 
 Add a `SERVICE_MYSERVICE = "myservice"` constant in `saq/constants.py` alongside the other `SERVICE_*` entries and use it instead of a string literal.
 
@@ -142,6 +142,8 @@ service_myservice:
 ```
 
 The `name` field is what `ace service start <name>` and `get_service_config(<name>)` look up.
+
+`get_service_config()` raises `ValueError` when there is no `service_<name>` section. Code that runs on sites without the service (a cron task, a hook another subsystem calls) uses `find_service_config(<name>)`, which returns `None` for a missing section and still raises for a section that fails to validate. Do not catch the `ValueError` instead: pydantic's `ValidationError` is a `ValueError` too, so a broken section would read as an absent one.
 
 ### 3. Add a Docker Compose service
 

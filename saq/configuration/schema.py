@@ -1285,14 +1285,23 @@ class ACEConfig(BaseModel):
             # loaded here -- see saq.configuration.lazy_registry
             self.__services.add_raw(key, value)
 
-    def get_service_config(self, name: str) -> ServiceConfig:
+    def find_service_config(self, name: str) -> ServiceConfig | None:
+        """Returns None when there is no service_<name> section, which is normal on a site that does
+        not run that service. A section that is present but fails to validate still raises."""
         if self.__services is None:
             self._raise_raw_data_error()
 
         if name not in self.__services:
-            raise ValueError(f"service config for {name} not found")
+            return None
 
         return self.__services.get(name)
+
+    def get_service_config(self, name: str) -> ServiceConfig:
+        config = self.find_service_config(name)
+        if config is None:
+            raise ValueError(f"service config for {name} not found")
+
+        return config
 
     #
     # analysis modules

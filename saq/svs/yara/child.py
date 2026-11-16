@@ -7,21 +7,19 @@ so it imports nothing from ACE (the sandbox cannot read SAQ_HOME): only the stan
 and yara_scanner, whose import applies the same yara.set_config() limits it does in the service. It
 reads job.json from the working directory and writes result.json there.
 
-Compiling follows YaraScanner.compile_and_load_rules (yara_scanner 3.0.0), which the yara service
-runs when it starts a generation, through yara.compile() directly so that the errors and the
-compiler warnings are kept rather than logged:
+Each namespace is loaded by a YaraScanner of its own, with load_rules(), which is what the yara
+service runs when it starts a generation: every rule file is compiled on its own and a file that
+cannot be read or fails is dropped with its rules, then the files left are compiled together. What
+it compiled comes from scanner.compiled_sources, so the errors, warnings and includes reported are
+the library's own. If the files of a namespace do not compile together, the ruleset would not load
+and the service keeps its previous generation, so nothing is scanned.
 
-1. every rule file is compiled on its own, with the library's include callback (an include that
-   cannot be read becomes "" and is reported). A file that fails is dropped with its rules;
-2. the surviving files are compiled together, one source per namespace keyed by the namespace's
-   directory. If that fails, the ruleset would not load and the service keeps its previous
-   generation, so nothing is scanned.
-
-Then each namespace is compiled on its own and every sample is scanned with it, which is what
-times each namespace. Namespaces are independent in YARA (a global rule applies only to its own
-namespace), so the union of the per-namespace matches is what the combined rules would match.
-Each match call goes through YaraScanner.scan(), so the path externals, the meta filters
-(file_ext, file_name, mime_type, meta_tags, ...) and the timeout behave as in the service.
+The service compiles all namespaces together, but namespaces are independent in YARA (a global rule
+applies only to its own namespace), so a namespace compiles the same on its own and the union of
+the per-namespace matches is what the combined rules would match. Compiling them apart is what
+times each namespace. Each match call goes through YaraScanner.scan(), so the path externals, the
+meta filters (file_ext, file_name, mime_type, meta_tags, ...) and the timeout behave as in the
+service.
 """
 
 import json
@@ -29,7 +27,6 @@ import logging
 import os
 import sys
 import time
-from typing import Optional
 
 import yara
 import yara_scanner
@@ -65,56 +62,6 @@ def _plain(value):
     return value
 
 
-class Compiler:
-    def __init__(self, tree_root: str):
-        self.tree_root = os.path.realpath(tree_root)
-        self.current_file_path: Optional[str] = None
-        self.include_warnings: list[dict] = []
-        # every file was compiled on its own first, so its includes are reported once, from there
-        self.report_includes = True
-
-    def include_callback(self, requested_filename: str, filename: Optional[str], namespace: str) -> str:
-        """YaraScanner.compile_and_load_rules' callback, which also reports a failed include."""
-        if namespace != "default":
-            dir_name = namespace
-        elif filename is not None:
-            dir_name = os.path.dirname(filename)
-        else:
-            dir_name = os.path.dirname(self.current_file_path)
-
-        relative_path = os.path.join(dir_name, requested_filename)
-        if self.report_includes and not _is_under(os.path.realpath(relative_path), self.tree_root):
-            self.include_warnings.append({
-                "file": self.current_file_path, "include": requested_filename,
-                "error": "the include is outside the repository: it resolves differently in production"})
-
-        try:
-            with open(relative_path, "r") as fp:
-                return fp.read()
-        except Exception as e:
-            if self.report_includes:
-                self.include_warnings.append({
-                    "file": self.current_file_path, "include": requested_filename, "error": _error_text(e)})
-            return ""
-
-    def compile_file(self, path: str) -> tuple[Optional[str], Optional[yara.Rules]]:
-        """(source, rules) of one file compiled on its own. Raises UnicodeDecodeError for a file
-        that is not UTF-8 text, and whatever yara.compile() raises."""
-        self.current_file_path = path
-        with open(path, "r", encoding="utf-8") as fp:
-            source = fp.read()
-
-        rules = yara.compile(source=source, externals=yara_scanner.DEFAULT_YARA_EXTERNALS,
-                             include_callback=self.include_callback)
-        return source, rules
-
-    def compile_sources(self, sources: dict[str, str]) -> yara.Rules:
-        self.current_file_path = None
-        self.report_includes = False
-        return yara.compile(sources=sources, externals=yara_scanner.DEFAULT_YARA_EXTERNALS,
-                            include_callback=self.include_callback)
-
-
 def _rule_entries(rules: yara.Rules) -> list[dict]:
     return [
         {
@@ -128,6 +75,21 @@ def _rule_entries(rules: yara.Rules) -> list[dict]:
     ]
 
 
+def _file_rules(compiled: yara_scanner.CompiledSource) -> list[dict]:
+    """The rules of a file that compiled on its own, compiled again from the text the scanner read.
+    Only needed when its namespace did not compile together, which leaves scanner.rules None."""
+    # yara asks for the includes in the order it asked the first time
+    includes = iter(compiled.includes)
+    try:
+        rules = yara.compile(source=compiled.source, externals=yara_scanner.DEFAULT_YARA_EXTERNALS,
+                             include_callback=lambda *_: next(includes).source)
+    except Exception:
+        # it compiled the same way once, so this is not expected; the ruleset error is still
+        # reported, and the rules are only listed for the report's diagnostics
+        return []
+    return _rule_entries(rules)
+
+
 def run(workdir: str) -> dict:
     with open(os.path.join(workdir, JOB_FILE)) as fp:
         job = json.load(fp)
@@ -135,7 +97,6 @@ def run(workdir: str) -> dict:
     if job.get("version") != PROTOCOL_VERSION:
         raise RuntimeError(f"job protocol version {job.get('version')} is not {PROTOCOL_VERSION}")
 
-    compiler = Compiler(job["tree_root"])
     result = {
         "version": PROTOCOL_VERSION,
         "yara_python_version": yara.__version__,
@@ -143,7 +104,7 @@ def run(workdir: str) -> dict:
         "files": [],
         "ruleset_error": None,
         "warnings": [],
-        "include_warnings": compiler.include_warnings,
+        "include_warnings": [],
         "namespaces": {},
         "units": {},
     }
@@ -158,76 +119,70 @@ def run(workdir: str) -> dict:
             key += "/."
         keys[namespace["name"]] = key
 
-    # 1. each file on its own
-    sources: dict[str, list[str]] = {}
+    # 1. load each namespace as the service does
+    scanners: dict[str, yara_scanner.YaraScanner] = {}
+    tree_root = os.path.realpath(job["tree_root"])
     for namespace in job["namespaces"]:
-        for path in namespace["files"]:
-            entry = {"path": path, "namespace": namespace["name"], "error": None, "rules": []}
-            result["files"].append(entry)
-            try:
-                source, rules = compiler.compile_file(path)
-            except UnicodeDecodeError as e:
-                # the service reads a file before its try: this fails the whole load
-                entry["error"] = _error_text(e)
-                result["ruleset_error"] = f"{path} is not UTF-8 text, which fails the whole load"
-                continue
-            except Exception as e:
-                entry["error"] = _error_text(e)
-                continue
+        scanner = yara_scanner.YaraScanner()
+        # the files the service loads were listed by the caller, which knows the layout
+        scanner.tracked_dirs[keys[namespace["name"]]] = dict.fromkeys(namespace["files"])
+        start = time.monotonic()
+        scanner.load_rules()
+        compile_seconds = time.monotonic() - start
 
-            entry["rules"] = _rule_entries(rules)
-            sources.setdefault(keys[namespace["name"]], []).append(source)
+        rules = {} if scanner.rules is None else {rule["name"]: rule for rule in _rule_entries(scanner.rules)}
+        for compiled in scanner.compiled_sources:
+            if scanner.rules is None and compiled.error is None:
+                file_rules = _file_rules(compiled)
+            else:
+                file_rules = [rules[name] for name in compiled.rules if name in rules]
+            result["files"].append({
+                "path": compiled.path, "namespace": namespace["name"], "error": compiled.error,
+                "rules": file_rules})
+            for included in compiled.includes:
+                if not _is_under(os.path.realpath(included.path), tree_root):
+                    result["include_warnings"].append({
+                        "file": compiled.path, "include": included.name,
+                        "error": "the include is outside the repository: it resolves differently in production"})
+                if included.error is not None:
+                    result["include_warnings"].append(
+                        {"file": compiled.path, "include": included.name, "error": included.error[:_ERROR_MAX_LENGTH]})
+
+        if scanner.compile_error is not None:
+            if result["ruleset_error"] is None:
+                result["ruleset_error"] = scanner.compile_error[:_ERROR_MAX_LENGTH]
+            continue
+
+        # with no file left, this repository adds no rules to the namespace; the service still loads the others
+        if not any(compiled.error is None for compiled in scanner.compiled_sources):
+            continue
+
+        result["warnings"].extend(scanner.rules.warnings or [])
+        result["namespaces"][namespace["name"]] = {
+            "compile_seconds": compile_seconds, "scan_seconds": 0.0, "rules": len(rules)}
+        scanners[namespace["name"]] = scanner
 
     if result["ruleset_error"] is not None:
         return result
 
-    # with no file left, this repository adds no rules; the service still loads the others
-    joined = {directory: "\r\n".join(parts) for directory, parts in sources.items()}
-    if not joined:
-        return result
-
-    # 2. the survivors together, as the service loads them
-    start = time.monotonic()
-    try:
-        combined = compiler.compile_sources(joined)
-    except Exception as e:
-        result["ruleset_error"] = _error_text(e)
-        return result
-
-    result["warnings"] = list(combined.warnings or [])
-    result["combined_compile_seconds"] = time.monotonic() - start
-    del combined
-
-    # 3. each namespace on its own, scanning every unit
-    scanner = yara_scanner.YaraScanner()
-    for namespace in job["namespaces"]:
-        key = keys[namespace["name"]]
-        source = joined.get(key)
-        if source is None:
-            continue
-
-        timing = {"compile_seconds": 0.0, "scan_seconds": 0.0, "rules": 0}
-        result["namespaces"][namespace["name"]] = timing
-        start = time.monotonic()
-        scanner.rules = compiler.compile_sources({key: source})
-        timing["compile_seconds"] = time.monotonic() - start
-        timing["rules"] = sum(1 for _ in scanner.rules)
-
+    # 2. scan every unit with each namespace
+    for name, scanner in scanners.items():
+        timing = result["namespaces"][name]
         start = time.monotonic()
         for unit in job["units"]:
             outcome = result["units"].setdefault(str(unit["id"]), {"matches": [], "errors": []})
             try:
                 scanner.scan(unit["path"], timeout=job["file_timeout"], meta_tags=unit["meta_tags"] or None)
             except yara.TimeoutError as e:
-                outcome["errors"].append({"namespace": namespace["name"], "type": "timeout", "message": _error_text(e)})
+                outcome["errors"].append({"namespace": name, "type": "timeout", "message": _error_text(e)})
                 continue
             except Exception as e:
-                outcome["errors"].append({"namespace": namespace["name"], "type": "error", "message": _error_text(e)})
+                outcome["errors"].append({"namespace": name, "type": "error", "message": _error_text(e)})
                 continue
 
             for match in scanner.scan_results:
                 outcome["matches"].append({
-                    "namespace": namespace["name"],
+                    "namespace": name,
                     "rule": match["rule"],
                     "meta": {key: _plain(value) for key, value in match["meta"].items()},
                 })
@@ -240,6 +195,9 @@ def run(workdir: str) -> dict:
 
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+    # the library logs each file and include that fails, which the result already carries, and
+    # output past the sandbox's cap stops the scan
+    logging.getLogger("yara-scanner").setLevel(logging.CRITICAL)
     workdir = sys.argv[1]
     _write_json(workdir, RESULT_FILE, run(workdir))
     return 0

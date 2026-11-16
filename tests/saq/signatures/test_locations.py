@@ -8,6 +8,7 @@ import os
 import subprocess
 
 import pytest
+from pydantic import ValidationError
 
 from saq.configuration.config import get_config, get_service_config
 from saq.constants import ANALYSIS_MODULE_OBSERVABLE_MODIFIER, SERVICE_YARA_SCANNER
@@ -15,6 +16,7 @@ from saq.configuration.schema import HuntRuleDirConfig, HuntTypeConfig
 from saq.environment import get_global_runtime_settings
 from saq.signatures.locations import (
     CONFIG_ANALYSIS_MODULE_OBSERVABLE_MODIFIER,
+    CONFIG_SERVICE_YARA,
     get_all_signature_locations,
     get_signature_locations,
 )
@@ -81,6 +83,27 @@ def test_yara_location(tmp_path, monkeypatch):
     assert locations[0].git_dirs == ()
     assert locations[0].source == "service_yara"
     assert locations[0].exists()
+
+
+@pytest.mark.unit
+def test_missing_yara_config_has_no_locations(caplog):
+    del get_config().raw._data[CONFIG_SERVICE_YARA]
+    get_config().load_service_configs()
+
+    with caplog.at_level(logging.WARNING):
+        assert get_signature_locations(SignatureType.YARA) == []
+
+    assert any("no service_yara configuration" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.unit
+def test_invalid_yara_config_raises():
+    # a section that is there but fails to validate is not "no yara signatures are loaded"
+    get_config().raw._data[CONFIG_SERVICE_YARA]["git_repo_dirs"] = "bv"
+    get_config().load_service_configs()
+
+    with pytest.raises(ValidationError, match="git_repo_dirs"):
+        get_signature_locations(SignatureType.YARA)
 
 
 @pytest.fixture

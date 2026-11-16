@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from itertools import batched
 import logging
 from queue import Empty, Queue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any, Generic, Iterable, Optional, Protocol, TypeVar
 from uuid import uuid4
 
@@ -39,6 +39,11 @@ ItemT = TypeVar("ItemT", bound=WorkItem)
 
 class QueueListener(Protocol[ItemT]):
     def handle_request(self, work_item: ItemT):
+        ...
+
+    def pending_ids(self) -> set[int]:
+        """The ids of the work items this listener has accepted and not finished, queued or in
+        progress. The collector does not hand them out again, even after their lock times out."""
         ...
 
 
@@ -117,6 +122,12 @@ class QueueCollector(ABC, Generic[ItemT]):
         model = self.model
         lock_uuid = str(uuid4())
 
+        # A worker can hold an item past the lock timeout, queued or in progress, and locking its
+        # row again would queue a second copy and run it twice. This is read before the query:
+        # read after it, it could miss an id a worker finished after the query read the row
+        # unfinished, and locking that row would reopen it.
+        pending_ids = set().union(*(listener.pending_ids() for listener in self.listeners.values()))
+
         query = get_db().query(model)
         # only rows that are ...
         # ... for the listeners we have
@@ -131,7 +142,8 @@ class QueueCollector(ABC, Generic[ItemT]):
         query = self.filter_candidates(query)
         query = query.order_by(model.insert_date.desc())
 
-        target_ids = [row.id for row in self.ready(query.all())]
+        candidates = [row for row in query.all() if row.id not in pending_ids]
+        target_ids = [row.id for row in self.ready(candidates)]
         if not target_ids:
             return []
 
@@ -223,6 +235,9 @@ class QueueWorker(ABC, Generic[ItemT]):
         self.shutdown_event = Event()
         # the timeout for the work queue get operation
         self.queue_wait_timeout = 1
+        # the ids of the items accepted and not finished, queued or in progress
+        self._pending_ids: set[int] = set()
+        self._pending_ids_lock = Lock()
 
     @property
     @abstractmethod
@@ -251,7 +266,14 @@ class QueueWorker(ABC, Generic[ItemT]):
             raise ValueError(f"work item name {work_item.name} does not match worker name {self.name}")
 
         logging.info(f"received {self.describe(work_item)}")
+        # added before the item is queued, so no thread can finish it and discard its id first
+        with self._pending_ids_lock:
+            self._pending_ids.add(work_item.id)
         self.work_queue.put(work_item)
+
+    def pending_ids(self) -> set[int]:
+        with self._pending_ids_lock:
+            return set(self._pending_ids)
 
     def start(self):
         logging.info(f"starting {self.thread_count} threads for {type(self).__name__} {self.name}")
@@ -286,13 +308,18 @@ class QueueWorker(ABC, Generic[ItemT]):
             thread.join()
 
     def take_queued(self) -> list[ItemT]:
-        """Empties the work queue and returns what was in it."""
+        """Empties the work queue and returns what was in it. The worker no longer holds those items."""
         work_items = []
         while True:
             try:
                 work_items.append(self.work_queue.get_nowait())
             except Empty:
-                return work_items
+                break
+
+        with self._pending_ids_lock:
+            self._pending_ids.difference_update(work_item.id for work_item in work_items)
+
+        return work_items
 
     def worker_loop(self, startup_event: Event):
         startup_event.set()
@@ -319,6 +346,11 @@ class QueueWorker(ABC, Generic[ItemT]):
                         remove_all_sessions()
                     except Exception as e:
                         log_loop_exception(e, "error removing database connection")
+
+                    # only now that the item's transaction is over, committed or rolled back, may
+                    # the collector lock its row again
+                    with self._pending_ids_lock:
+                        self._pending_ids.discard(work_item.id)
 
             if self.shutdown_event.is_set():
                 break

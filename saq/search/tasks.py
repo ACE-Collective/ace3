@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from saq.configuration.config import get_service_config
+from saq.configuration.config import find_service_config
 from saq.constants import REDIS_DB_BG_TASKS, SERVICE_SEARCH_INDEXER
 from saq.redis_client import get_redis_connection
 
@@ -34,11 +34,8 @@ class SearchIndexTask(BaseModel):
 
 def indexer_enabled() -> bool:
     """True when the search indexer service is configured and enabled."""
-    try:
-        return bool(get_service_config(SERVICE_SEARCH_INDEXER).enabled)
-    except ValueError:
-        # no service_search_indexer section at all
-        return False
+    config = find_service_config(SERVICE_SEARCH_INDEXER)
+    return config is not None and bool(config.enabled)
 
 
 def submit_task(alert_uuid: str, op: TaskOp) -> bool:

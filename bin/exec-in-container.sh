@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-
+#
+# From the host, runs a command in this checkout's dev container, at this checkout's path there, with
+# SAQ_HOME and PYTHONPATH on it. Inside a container it refuses: run the command directly there.
+#
 # resolve everything relative to this script rather than the caller's cwd, so that
 # bin/get-dev-container.sh below finds this checkout's compose project (and therefore this ACE
 # instance) no matter where the script is invoked from
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
 USER="ace"
-USER_GIVEN=""
 INTERACTIVE=""
 TTY=""
 
@@ -15,7 +17,6 @@ while getopts "u:it" opt; do
     case ${opt} in
         u)
             USER="$OPTARG"
-            USER_GIVEN=1
             ;;
         i)
             INTERACTIVE="-i"
@@ -42,16 +43,26 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-# Already in a container of the stack (the dev container has no docker): run the command here, from
-# this checkout, which is then already at its path in the container. Its own load_environment, because
-# the dev container's PATH has /opt/ace on it.
+# Already in a container of the stack (the dev container has no docker): there is no container to run
+# the command in. Refuse rather than run it here, so that what runs in dev is always the command as typed,
+# with the shell's own quoting, and not one that went through this script.
 if ! command -v docker >/dev/null && [ -e /.dockerenv ]; then
-    if [ -n "$USER_GIVEN" ] && [ "$USER" != "$(id -un)" ]; then
-        echo "Error: already in the container as $(id -un), and it has no sudo to run as $USER" >&2
-        exit 1
-    fi
-    WORKDIR=$(pwd -P)
-    SAQ_HOME="$WORKDIR" PYTHONPATH="$WORKDIR" exec bash -c "source \"$WORKDIR/load_environment\" && source /venv/bin/activate && $*"
+    checkout=$(pwd -P)
+    {
+        echo "Error: bin/exec-in-container.sh runs a command in the dev container from the host, and this is already a container."
+        echo "Run the command directly, from $checkout:"
+        # one argument is usually a whole command line, written for the shell this script used to run
+        if [ $# -eq 1 ]; then
+            echo "    $1"
+        else
+            printf '   '; printf ' %q' "$@"; echo
+        fi
+        if [ "${SAQ_HOME:-}" != "$checkout" ]; then
+            echo "SAQ_HOME is ${SAQ_HOME:-unset}, not this checkout. First run"
+            echo "    export SAQ_HOME=$checkout PYTHONPATH=$checkout PATH=$checkout:$checkout/bin:\$PATH"
+        fi
+    } >&2
+    exit 1
 fi
 
 # Get the container name
@@ -107,5 +118,9 @@ fi
 #echo "User: $USER"
 #echo ""
 
-# Execute the command in the container, sourcing load_environment first
-docker exec $INTERACTIVE $TTY -u $USER -w "$WORKDIR" -e SAQ_HOME="$WORKDIR" -e PYTHONPATH="$WORKDIR" "$CONTAINER" bash -c "source load_environment && source /venv/bin/activate && $*"
+# Execute the command in the container, sourcing load_environment first. The arguments are passed as
+# they are, as docker exec passes them, so a shell construct (a pipe, &&, a redirect) inside the container
+# needs an explicit bash -c '...'. ./ because the dev container's PATH has /opt/ace on it, and source
+# searches PATH first, so a bare `source load_environment` would source the main checkout's.
+docker exec $INTERACTIVE $TTY -u $USER -w "$WORKDIR" -e SAQ_HOME="$WORKDIR" -e PYTHONPATH="$WORKDIR" "$CONTAINER" \
+    bash -c 'source ./load_environment && source /venv/bin/activate && exec "$@"' bash "$@"

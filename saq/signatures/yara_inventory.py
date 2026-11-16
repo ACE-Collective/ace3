@@ -39,9 +39,16 @@ class _InventoryCache:
     def _build(self) -> YaraInventory:
         by_uuid: dict[str, Signature] = {}
         errors = []
-        locations = get_signature_locations(SignatureType.YARA)
-        if not locations:
-            errors.append("no yara signature location is configured")
+        try:
+            locations = get_signature_locations(SignatureType.YARA)
+        except Exception as e:
+            # an invalid service_yara section: the callers show the error instead of failing
+            logging.exception("unable to read the yara signature locations: %s", e)
+            errors.append(f"unable to read the yara signature locations: {e}")
+            locations = []
+        else:
+            if not locations:
+                errors.append("no yara signature location is configured")
 
         for location in locations:
             parse_cache = self._parse_caches.setdefault(location.path, {})

@@ -1,8 +1,10 @@
+import logging
 import os
 
 import pytest
+from pydantic import ValidationError
 
-from saq.configuration.config import get_service_config
+from saq.configuration.config import get_config, get_service_config
 from saq.constants import SERVICE_YARA_SCANNER
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.yara_inventory import get_yara_inventory
@@ -143,3 +145,17 @@ def test_inventory_reports_a_missing_signature_dir(tmp_path, monkeypatch):
 
     assert inventory.by_uuid == {}
     assert "unable to load yara signatures" in inventory.error
+
+
+@pytest.mark.integration
+def test_inventory_reports_an_invalid_service_yara(signature_dir, caplog):
+    # the Yara QA Results page shows this error instead of failing
+    get_config().raw._data["service_yara"]["git_repo_dirs"] = "unittest"
+    get_config().load_service_configs()
+
+    inventory = get_yara_inventory(max_age_seconds=0)
+
+    assert inventory.by_uuid == {}
+    assert "git_repo_dirs" in inventory.error
+    (record,) = [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert isinstance(record.exc_info[1], ValidationError)

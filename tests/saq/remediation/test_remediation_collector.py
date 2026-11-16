@@ -2,14 +2,18 @@ import logging
 from uuid import uuid4
 import pytest
 from sqlalchemy import func
+from sqlalchemy.orm import Query
 
 from saq.constants import F_TEST
 from saq.database.model import Remediation
 from saq.database.pool import get_db
 from saq.configuration.config import get_config
+from saq.configuration.schema import RemediatorConfig
 from saq.remediation.collector import RemediationCollector
 from saq.remediation.target import RemediationTarget
-from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem, RemediatorStatus
+from saq.remediation.types import RemediationAction, RemediationStatus, RemediationWorkItem, RemediatorResult, RemediatorStatus
+from saq.remediation.worker import RemediationWorker
+from tests.saq.remediation.test_remediator import TestRemediator
 
 class TestRemediationListener:
     __test__ = False
@@ -19,6 +23,21 @@ class TestRemediationListener:
 
     def handle_request(self, work_item: RemediationWorkItem):
         self.remediations.append(work_item)
+
+    def pending_ids(self) -> set[int]:
+        # done with each item as soon as it has it
+        return set()
+
+class CountingRemediator(TestRemediator):
+    __test__ = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.removed: list[RemediationWorkItem] = []
+
+    def remove(self, target: RemediationWorkItem) -> RemediatorResult:
+        self.removed.append(target)
+        return super().remove(target)
 
 @pytest.mark.integration
 def test_collect_single_work_item():
@@ -300,3 +319,71 @@ def test_release_logs_failed_session_reset(monkeypatch, caplog):
     errors = [r for r in caplog.records if r.levelno == logging.ERROR and r.exc_info]
     assert len(errors) == 1
     assert "error removing database connection: pool gone" in errors[0].getMessage()
+
+
+@pytest.mark.integration
+def test_collect_skips_remediation_still_queued_after_lock_timeout():
+    # the remediator is behind: the row waits in its worker's queue past the lock timeout
+    remediator = CountingRemediator(RemediatorConfig(
+        name="custom",
+        display_name="Custom Remediator",
+        description="Custom remediator for testing",
+        observable_type=F_TEST,
+        python_module="value",
+        python_class="value",
+    ))
+    worker = RemediationWorker(remediator)
+    collector = RemediationCollector(lock_timeout_seconds=0)
+    collector.register_listener("custom", worker)
+    id = _queue("custom", "test")
+
+    collector.start_single_threaded()
+    collector.collection_loop()
+
+    assert worker.work_queue.qsize() == 1
+
+    worker.start_single_threaded()
+
+    assert [target.id for target in remediator.removed] == [id]
+    # finished, it is not collected again, and a new remediation is
+    new_id = _queue("custom", "test_2")
+    assert [item.id for item in collector.collect_work_items()] == [new_id]
+
+@pytest.mark.integration
+def test_collect_does_not_reopen_remediation_finished_during_collection(monkeypatch):
+    class HoldingListener(TestRemediationListener):
+        __test__ = False
+
+        def __init__(self):
+            super().__init__()
+            self.held: set[int] = set()
+
+        def pending_ids(self) -> set[int]:
+            return set(self.held)
+
+    listener = HoldingListener()
+    collector = RemediationCollector(lock_timeout_seconds=0)
+    collector.register_listener("custom", listener)
+    id = _queue("custom", "test")
+    assert [item.id for item in collector.collect_work_items()] == [id]
+    listener.held.add(id)
+
+    # the worker finishes the remediation and lets go of it right after the collector's query has
+    # read it unfinished
+    query_all = Query.all
+    def all_then_finish(query):
+        rows = query_all(query)
+        if listener.held:
+            get_db().execute(Remediation.__table__.update().values(
+                status=RemediationStatus.COMPLETED.value, lock=None).where(Remediation.id == id))
+            get_db().commit()
+            listener.held.clear()
+        return rows
+
+    monkeypatch.setattr(Query, "all", all_then_finish)
+
+    assert not collector.collect_work_items()
+    get_db().expire_all()
+    remediation = get_db().get(Remediation, id)
+    assert remediation.status == RemediationStatus.COMPLETED.value
+    assert remediation.lock is None

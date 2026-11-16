@@ -1,6 +1,5 @@
 import logging
 from datetime import UTC, datetime, timedelta
-from threading import Event, Thread
 from unittest.mock import Mock, patch
 
 import pytest
@@ -46,73 +45,6 @@ class MockFileCollector(FileCollector):
         return self.result_to_return
 
 
-class _SignalingSet(set):
-    """The pending ids, with an event set on each discard."""
-
-    def __init__(self):
-        super().__init__()
-        self.discarded = Event()
-
-    def discard(self, item):
-        super().discard(item)
-        self.discarded.set()
-
-
-@pytest.mark.unit
-def test_worker_handle_request_releases_id_collected_before_put_returns():
-    worker = FileCollectionWorker(MockFileCollector())
-    worker.queue_wait_timeout = 0.1
-    worker._pending_ids = _SignalingSet()
-    collected = Event()
-    worker.collect = Mock(side_effect=lambda work_item: collected.set())
-
-    # a worker thread takes the item, collects it and finishes with it before put() returns
-    put = worker.work_queue.put
-    def _put_then_collect(work_item):
-        put(work_item)
-        assert collected.wait(5)
-        # bounded: the worker thread cannot discard the id while handle_request holds the lock
-        worker._pending_ids.discarded.wait(1)
-
-    worker.work_queue.put = _put_then_collect
-    thread = Thread(target=worker.worker_loop, args=(Event(),))
-    with patch("saq.queue_service.remove_all_sessions"):
-        thread.start()
-        try:
-            worker.handle_request(FileCollectionWorkItem(
-                id=7,
-                name="mock_collector",
-                type=F_FILE_LOCATION,
-                key="host@/file",
-                alert_uuid="test-alert-uuid",
-                storage_dir="/opt/ace/data/test-alert",
-            ))
-        finally:
-            worker.stop()
-            thread.join(5)
-
-    assert not thread.is_alive()
-    # an id left behind would keep the collection from ever being handed out again
-    assert worker.pending_collection_ids() == set()
-
-
-@pytest.mark.unit
-def test_worker_handle_request_rejects_item_for_another_collector():
-    worker = FileCollectionWorker(MockFileCollector())
-
-    with pytest.raises(ValueError, match="work item name other does not match worker name mock_collector"):
-        worker.handle_request(FileCollectionWorkItem(
-            id=1,
-            name="other",
-            type=F_FILE_LOCATION,
-            key="host@/file",
-            alert_uuid="test-alert-uuid",
-            storage_dir="/opt/ace/data/test-alert",
-        ))
-
-    assert worker.pending_collection_ids() == set()
-    assert worker.work_queue.empty()
-
 @pytest.mark.integration
 def test_worker_loop_releases_pending_id():
     collector = MockFileCollector()
@@ -135,13 +67,13 @@ def test_worker_loop_releases_pending_id():
     )
 
     worker.handle_request(work_item)
-    assert worker.pending_collection_ids() == {collection_id}
+    assert worker.pending_ids() == {collection_id}
 
     worker.shutdown_event.set()
     worker.worker_loop(Mock())
 
     assert len(collector.collect_calls) == 1
-    assert worker.pending_collection_ids() == set()
+    assert worker.pending_ids() == set()
 
 
 @pytest.mark.integration
@@ -485,4 +417,4 @@ def test_worker_loop_logs_failed_collection_and_releases_pending_id(caplog):
     assert "file collection 7 (mock_collector file_location host@/file)" in errors[0].getMessage()
     assert errors[0].alert_uuid == "test-alert-uuid"
     # a collection that failed is handed out again once it is due
-    assert worker.pending_collection_ids() == set()
+    assert worker.pending_ids() == set()
