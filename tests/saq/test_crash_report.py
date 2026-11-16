@@ -1008,6 +1008,32 @@ def test_watchdog_report_is_spooled_then_indexed(root_analysis, empty_spool):
 
 
 @pytest.mark.integration
+def test_report_naming_an_undecodable_file_is_indexed_and_does_not_block_the_spool(root_analysis, empty_spool):
+    root_analysis.save()
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        observable_type="file_name",
+        observable_value=UNDECODABLE_NAME,
+        exception=_raise(f"unable to parse {UNDECODABLE_NAME}"),
+        index=False,
+        replicate=False,
+    )
+    # spooled after it, so it is drained only if the first one does not stop the drain
+    timeout_crash_id = _timeout_crash(root_analysis)
+
+    assert {m.crash_id for m in drain_index_spool()} == {crash_id, timeout_crash_id}
+
+    rows = _rows(crash_id)
+    assert len(rows) == 1
+    assert rows[0].exception_message == f"unable to parse {ESCAPED_NAME}"
+    assert rows[0].observable_value == ESCAPED_NAME
+    assert len(_rows(timeout_crash_id)) == 1
+    assert _spooled() == set()
+
+
+@pytest.mark.integration
 def test_drain_is_idempotent(root_analysis, empty_spool):
     """Several workers can start at once and all drain the same spool."""
     crash_id = _timeout_crash(root_analysis)
