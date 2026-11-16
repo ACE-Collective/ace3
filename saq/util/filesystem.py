@@ -12,6 +12,11 @@ from saq.environment import get_base_dir, get_temp_dir
 # Per-component byte limit on ext4/xfs and most Linux filesystems.
 NAME_MAX_BYTES = 255
 
+def name_bytes(name: str) -> bytes:
+    """The bytes the filesystem stores for name. A name read from the filesystem need not be UTF-8
+    (Python decodes its undecodable bytes to lone surrogates), and strict UTF-8 refuses to encode it."""
+    return name.encode("utf-8", "surrogateescape")
+
 def delete_file(path: str) -> bool:
     try:
         os.unlink(path)
@@ -152,7 +157,7 @@ def map_mimetype_to_file_ext(target_mime_type: str, default="bin") -> str:
 
 def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAME_MAX_BYTES) -> str:
     """Return ``basename + suffix``, truncating ``basename`` so the result fits within
-    ``max_bytes`` when UTF-8 encoded.
+    ``max_bytes`` as the filesystem stores it (``name_bytes``).
 
     When truncation is needed, an 8-char sha1 of the original basename is interpolated
     before the suffix so distinct inputs that share a truncated prefix do not collide.
@@ -161,17 +166,19 @@ def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAM
     assert os.sep not in basename, "shorten_basename_for_suffix expects a bare basename"
 
     combined = basename + suffix
-    if len(combined.encode("utf-8")) <= max_bytes:
+    if len(name_bytes(combined)) <= max_bytes:
         return combined
 
-    digest = hashlib.sha1(basename.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha1(name_bytes(basename)).hexdigest()[:8]
     tail = f".{digest}{suffix}"
-    available = max_bytes - len(tail.encode("utf-8"))
+    available = max_bytes - len(name_bytes(tail))
     if available < 0:
         available = 0
 
-    truncated_bytes = basename.encode("utf-8")[:available]
-    truncated_stem = truncated_bytes.decode("utf-8", errors="ignore")
+    # a character cut in half decodes to lone surrogates that basename does not have there, so the
+    # common prefix ends before it
+    truncated = name_bytes(basename)[:available].decode("utf-8", "surrogateescape")
+    truncated_stem = os.path.commonprefix([truncated, basename])
     return f"{truncated_stem}{tail}"
 
 def get_local_file_path(root, _file):

@@ -1,12 +1,13 @@
 import logging
 import os
+import re
 import shutil
 from typing import Any, Optional
 
-from saq.analysis.file_manager.file_manager_interface import FileManagerInterface
+from saq.analysis.file_manager.file_manager_interface import FileManagerInterface, FileRefusedError
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
-from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, name_bytes, shorten_basename_for_suffix
 from saq.util.hashing import sha256_file
 
 
@@ -19,10 +20,14 @@ MAX_EXTENSION_BYTES = 32
 # well under PATH_MAX (4096) once the storage directory is in front, and the _NNN of each renamed directory
 MAX_RELATIVE_PATH_BYTES = 1024
 
+# a lone surrogate (half of a UTF-16 pair, as a name decoded from JSON can hold) has bytes on no
+# filesystem, except one in the range that stands for an undecodable byte (name_bytes)
+RE_UNSTORABLE = re.compile(r"[\ud800-\udc7f\udd00-\udfff]")
+
 
 def clean_file_name(name: str) -> str:
     """Returns name as a path relative to a files directory that cannot leave it: every / separated
-    component is a plain file name (no .., backslash or NUL, and short enough for the filesystem), and empty
+    component is a plain file name (no .., backslash, NUL or unstorable surrogate, and short enough for the filesystem), and empty
     and . components are dropped. The leading directories of a path longer than MAX_RELATIVE_PATH_BYTES are dropped.
     Cleaning a clean name returns it unchanged."""
     components: list[str] = []
@@ -33,15 +38,15 @@ def clean_file_name(name: str) -> str:
         if component == "..":
             component = "_"
 
-        component = component.replace("\\", "_").replace("\0", "_")
+        component = RE_UNSTORABLE.sub("_", component.replace("\\", "_").replace("\0", "_"))
         stem, ext = os.path.splitext(component)
-        if len(ext.encode("utf-8")) > MAX_EXTENSION_BYTES:
+        if len(name_bytes(ext)) > MAX_EXTENSION_BYTES:
             stem, ext = component, ""
 
         components.append(shorten_basename_for_suffix(stem, ext, NAME_MAX_BYTES - UNIQUE_SUFFIX_BYTES))
 
     # the leading directories go first, since the file name is the part that says what the file is
-    while len(components) > 1 and len("/".join(components).encode("utf-8")) > MAX_RELATIVE_PATH_BYTES:
+    while len(components) > 1 and len(name_bytes("/".join(components))) > MAX_RELATIVE_PATH_BYTES:
         components.pop(0)
 
     return os.path.join(*components) if components else "_"
@@ -119,7 +124,7 @@ class LocalFileManager(FileManagerInterface):
             os.makedirs(os.path.join(get_base_dir(), self._storage_dir, '.ace'))
 
     def _refuse_outside_file_dir(self, target_path: str, name: str):
-        """Raises ValueError when target_path is not a file inside the files directory. Names come
+        """Raises FileRefusedError when target_path is not a file inside the files directory. Names come
         from submitters and from analyzed content (upload, attachment and archive member names), so
         an absolute name, a ../ or a symlink out of the files directory must never be written to."""
         resolved = os.path.realpath(target_path)
@@ -128,7 +133,7 @@ class LocalFileManager(FileManagerInterface):
 
         logging.warning("refusing file path %r (resolves to %s) outside of the files directory of %s", name, resolved,
                         self._storage_dir, extra={"storage_dir": self._storage_dir, "path": name, "resolved_path": resolved})
-        raise ValueError(f"file path {name!r} is outside of the files directory {self.file_dir}")
+        raise FileRefusedError(f"file path {name!r} is outside of the files directory {self.file_dir}")
 
     def create_file_path(self, relative_path: str) -> str:
         """
@@ -142,7 +147,7 @@ class LocalFileManager(FileManagerInterface):
             Full path to the file
 
         Raises:
-            ValueError: If the path is not inside the file directory
+            FileRefusedError: If the path is not inside the file directory
         """
         if os.path.dirname(relative_path) == self.file_dir:
             # already a full path within the files dir
@@ -169,7 +174,7 @@ class LocalFileManager(FileManagerInterface):
             Full path to the new, empty file
 
         Raises:
-            ValueError: If the path still resolves outside the file directory (a symlinked subdirectory)
+            FileRefusedError: If the path still resolves outside the file directory (a symlinked subdirectory)
         """
         relative_path = clean_file_name(name)
         directory = self._output_directory(os.path.dirname(relative_path), name)
@@ -209,7 +214,7 @@ class LocalFileManager(FileManagerInterface):
         than keeping the file from being written.
 
         Raises:
-            ValueError: If a component is a symlink that resolves outside the files directory
+            FileRefusedError: If a component is a symlink that resolves outside the files directory
         """
         directory = self.file_dir
         os.makedirs(directory, exist_ok=True)
@@ -258,7 +263,7 @@ class LocalFileManager(FileManagerInterface):
             
         Raises:
             FileNotFoundError: If source file doesn't exist
-            ValueError: If the target path is not inside the file directory
+            FileRefusedError: If the target path is not inside the file directory
             Exception: If file operations fail
         """
         # Convert to string path

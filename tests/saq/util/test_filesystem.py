@@ -1,8 +1,9 @@
+import hashlib
 import os
 
 import pytest
 
-from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, name_bytes, shorten_basename_for_suffix
 
 
 class TestShortenBasenameForSuffix:
@@ -50,6 +51,19 @@ class TestShortenBasenameForSuffix:
         # Round-trip — confirms no broken codepoint snuck through.
         result.encode("utf-8").decode("utf-8")
         assert result.endswith(".headers")
+
+    @pytest.mark.unit
+    def test_undecodable_basename_is_measured_in_filesystem_bytes(self):
+        """A name read from the filesystem that is not UTF-8 (each undecodable byte a lone surrogate)
+        is kept and shortened by the bytes the filesystem stores."""
+        short = b"\xe9\xe9.eml".decode("utf-8", "surrogateescape")
+        assert shorten_basename_for_suffix(short, ".headers") == short + ".headers"
+
+        long = (b"\xe9" * 300).decode("utf-8", "surrogateescape")
+        result = shorten_basename_for_suffix(long, ".headers")
+        digest = hashlib.sha1(b"\xe9" * 300).hexdigest()[:8]
+        assert result == long[:238] + f".{digest}.headers"
+        assert len(name_bytes(result)) == NAME_MAX_BYTES
 
 
 class TestIsPathUnder:
