@@ -569,9 +569,17 @@ class RdapAnalyzer(AnalysisModule):
     def custom_requirement(self, observable) -> bool:
         """Skip IP observables that are not globally routable (RFC1918,
         loopback, link-local, CGNAT, multicast, reserved) — they have no
-        public RDAP registration data."""
+        public RDAP registration data.
+
+        Skip a subdomain FQDN that apex_domain_analyzer gave an apex
+        observable: registration data belongs to the apex, so RDAP runs once
+        there instead of once per subdomain. apex_domain_analyzer is a declared
+        dependency, so its result is known here; when it is disabled or did not
+        run on this observable, the subdomain is still looked up as before."""
         if not _is_ip(observable):
-            return True
+            from saq.modules.apex_domain import ApexDomainAnalysis
+
+            return not isinstance(observable.get_analysis(ApexDomainAnalysis), ApexDomainAnalysis)
         try:
             return ipaddress.ip_address(observable.value).is_global
         except ValueError:

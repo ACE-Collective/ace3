@@ -2,8 +2,8 @@
 
 ``abc.example.com`` yields ``example.com``, so an analyst can pivot to every alert that involves
 ``example.com`` whatever subdomain it was reached through. The reduction is the one RDAP already
-queries with (``saq.domain_similarity.registrable_domain``), so the apex observable carries the same
-domain the registration data describes.
+queries with (``saq.domain_similarity.registrable_domain``), and rdap_analyzer declares this module a
+dependency so it looks the apex up once instead of once per subdomain.
 """
 
 import logging

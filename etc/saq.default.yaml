@@ -1748,6 +1748,9 @@ analysis_module_idna_analyzer:
 
 analysis_module_rdap_analyzer:
   name: rdap_analyzer
+  # runs on the apex observable apex_domain_analyzer adds rather than on each subdomain
+  dependencies:
+    - apex_domain_analyzer
   python_module: saq.modules.rdap
   python_class: RdapAnalyzer
   enabled: true

@@ -355,6 +355,22 @@ def test_rdap_analyzer_custom_requirement_ignores_fqdn():
 
 
 @pytest.mark.unit
+def test_rdap_analyzer_custom_requirement_skips_subdomain_with_apex():
+    """A subdomain that apex_domain_analyzer gave an apex observable is left to the apex's lookup."""
+    from saq.modules.apex_domain import ApexDomainAnalysis
+
+    root = create_root_analysis()
+    root.initialize_storage()
+    observable = root.add_observable_by_spec(F_FQDN, "intranet.example.com")
+    observable.add_analysis(ApexDomainAnalysis())
+
+    analyzer = RdapAnalyzer(
+        config=get_analysis_module_config(ANALYSIS_MODULE_RDAP_ANALYZER)
+    )
+    assert analyzer.custom_requirement(observable) is False
+
+
+@pytest.mark.unit
 def test_rdap_analyzer_custom_requirement_unparseable_ip():
     # IPObservable validates its value, so this can't happen through the
     # normal observable path — defensive branch only.
