@@ -1734,6 +1734,12 @@ analysis_module_fqdn_analyzer:
   python_class: FQDNAnalyzer
   enabled: true
 
+analysis_module_apex_domain_analyzer:
+  name: apex_domain_analyzer
+  python_module: saq.modules.apex_domain
+  python_class: ApexDomainAnalyzer
+  enabled: true
+
 analysis_module_idna_analyzer:
   name: idna_analyzer
   python_module: saq.modules.url.idna
@@ -2639,6 +2645,7 @@ analysis_module_clicker_detection_splunk:
 module_group_correlation:
   name: correlation
   modules:
+    - apex_domain_analyzer
     - clicker_detection_splunk
     - email_thread_analyzer
     - fqdn_analyzer
