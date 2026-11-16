@@ -11,7 +11,6 @@ from typing import Optional
 
 from saq.analysis.analysis import Analysis
 from saq.constants import F_FQDN, AnalysisExecutionResult
-from saq.domain_similarity import registrable_domain
 from saq.modules import AnalysisModule
 
 KEY_APEX_DOMAIN = "apex_domain"
@@ -21,6 +20,10 @@ DISPLAY_TYPE_APEX_DOMAIN = "Apex Domain"
 
 def apex_domain_of(fqdn: str) -> Optional[str]:
     """The apex of ``fqdn``, or None when ``fqdn`` is already its own apex or has no public suffix."""
+    # saq.domain_similarity loads tldextract, requests and jellyfish (~11 MB), and every process that reads an alert
+    # imports this module to load ApexDomainAnalysis
+    from saq.domain_similarity import registrable_domain
+
     normalized = (fqdn or "").strip().lower().rstrip(".")
     apex = registrable_domain(normalized)
     # registrable_domain falls back to its input when no public suffix is identifiable (bare

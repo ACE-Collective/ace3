@@ -56,6 +56,7 @@ from saq.analysis.presenter.analysis_presenter import (
 )
 from saq.constants import F_FQDN, F_IP, AnalysisExecutionResult
 from saq.modules import AnalysisModule
+from saq.modules.apex_domain import ApexDomainAnalysis
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.util.strings import format_item_list_for_summary
 
@@ -577,9 +578,9 @@ class RdapAnalyzer(AnalysisModule):
         dependency, so its result is known here; when it is disabled or did not
         run on this observable, the subdomain is still looked up as before."""
         if not _is_ip(observable):
-            from saq.modules.apex_domain import ApexDomainAnalysis
-
-            return not isinstance(observable.get_analysis(ApexDomainAnalysis), ApexDomainAnalysis)
+            apex_analysis = observable.get_analysis(ApexDomainAnalysis)
+            # the analysis is kept when the observable limit stopped the apex from being added
+            return not (isinstance(apex_analysis, ApexDomainAnalysis) and apex_analysis.get_observable_by_type(F_FQDN))
         try:
             return ipaddress.ip_address(observable.value).is_global
         except ValueError:
