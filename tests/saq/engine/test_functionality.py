@@ -1977,7 +1977,7 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
     monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
 
     # mock the fluent sender
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         # record statistics
         elapsed_time = 10.0
         stats_dir = str(tmpdir)
@@ -1990,7 +1990,7 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
 def _record_metrics(context, elapsed_time, tmpdir):
     """Runs record_execution_statistics against a mocked fluent sender and returns
     (root event, {module name: module event}), checking there is exactly one root event."""
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender = MagicMock()
         mock_sender_class.return_value = mock_sender
         context.record_execution_statistics(elapsed_time, str(tmpdir))
@@ -2128,7 +2128,7 @@ def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, cap
     _enable_fluent_metrics(monkeypatch)
 
     # mock the fluent sender to raise an exception
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_class.side_effect = Exception("connection failed")
 
         # record statistics - should not raise an exception

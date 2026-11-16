@@ -7,7 +7,7 @@ import re
 from saq.configuration.schema import MonitorDefinitionConfig
 from saq.monitor import emit_monitor, enable_monitor_cache, enable_monitor_fluent_bit, enable_monitor_logging, enable_monitor_stderr, enable_monitor_stdout, get_emitter, reset_emitter, set_monitor_definitions
 from saq.monitor_definitions import MONITOR_TEST
-from tests.saq.helpers import log_count
+from tests.saq.helpers import fluent_receiver, log_count
 
 LOG_TEST = "log test"
 LOG_TEST_2 = "log test 2"
@@ -98,7 +98,7 @@ def test_fluent_bit_not_called_when_disabled():
 @pytest.mark.unit
 def test_fluent_bit_emits_structured_data():
     """fluent-bit emits structured data with correct fields when enabled"""
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.monitor.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_instance = MagicMock()
         mock_sender_class.return_value = mock_sender_instance
 
@@ -117,7 +117,7 @@ def test_fluent_bit_emits_structured_data():
 @pytest.mark.unit
 def test_fluent_bit_emits_with_identifier():
     """fluent-bit includes identifier in structured data when provided"""
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.monitor.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_instance = MagicMock()
         mock_sender_class.return_value = mock_sender_instance
 
@@ -131,7 +131,7 @@ def test_fluent_bit_emits_with_identifier():
 @pytest.mark.unit
 def test_fluent_bit_error_does_not_crash():
     """errors in fluent-bit emission are logged but do not crash the emitter"""
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.monitor.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_instance = MagicMock()
         mock_sender_instance.emit.side_effect = Exception("connection refused")
         mock_sender_class.return_value = mock_sender_instance
@@ -141,9 +141,22 @@ def test_fluent_bit_error_does_not_crash():
         assert result is True
 
 @pytest.mark.unit
+def test_fluent_bit_emits_value_with_undecodable_text():
+    """An error report monitor carries the exception text, which can name a file whose name is not
+    UTF-8. The fluent library sent "Can't output to log" in place of such an event."""
+    path = "/opt/ace/data/" + b"\xe9.pdf".decode("utf-8", "surrogateescape")
+    with fluent_receiver() as (port, receive):
+        enable_monitor_fluent_bit("127.0.0.1", port, "ace.monitor")
+        assert emit_monitor(MONITOR_TEST, f"unable to open {path}", "id")
+        data = receive()
+
+    assert (data["path"], data["value"], data["identifier"]) == (
+        MONITOR_TEST.path, "unable to open /opt/ace/data/\\udce9.pdf", "id")
+
+@pytest.mark.unit
 def test_fluent_bit_sender_created_with_correct_params():
     """FluentSender is created with the correct host, port, and tag"""
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.monitor.UTF8SafeFluentSender") as mock_sender_class:
         enable_monitor_fluent_bit("fb-host", 12345, "my.tag")
 
         mock_sender_class.assert_called_once_with("my.tag", host="fb-host", port=12345)
@@ -152,7 +165,7 @@ def test_fluent_bit_sender_created_with_correct_params():
 @pytest.mark.unit
 def test_reset_emitter_closes_sender():
     """reset_emitter closes the fluent-bit sender before replacing the emitter"""
-    with patch("saq.monitor.sender.FluentSender") as mock_sender_class:
+    with patch("saq.monitor.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_instance = MagicMock()
         mock_sender_class.return_value = mock_sender_instance
 
