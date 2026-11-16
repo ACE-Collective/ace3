@@ -64,7 +64,8 @@ directory as hostile, as it did before.
   a program the sandbox cannot start (exit 125, 126 or 127 with no output), and a runtime it keeps
   from starting: the JVM, CoreCLR or OpenCV exits with its own start-up error (`startup_errors`) when a
   directory it needs is not readable or the memory limit is too small for it. It is logged at ERROR
-  with an error report once per module and program per process, then at WARNING.
+  on every file, and `ErrorReportHandler` writes its error report once per module, program and reason
+  every ten minutes (`REPEAT_WINDOW_SECONDS` in `saq/error/reporting.py`).
 
 On a kernel older than 6.7 the TCP rule cannot be enforced and every tool fails. Set
 `tool_sandbox.allowed_tcp_ports: null` there. A node without Landlock runs none of these tools.

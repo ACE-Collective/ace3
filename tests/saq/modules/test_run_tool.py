@@ -15,6 +15,7 @@ import rarfile
 from saq.configuration.config import get_analysis_module_config, get_config
 from saq.constants import ANALYSIS_MODULE_CVE_2021_30657_ANALYZER, AnalysisExecutionResult
 from saq.environment import get_base_dir, get_data_dir
+from saq.error import reporting as error_reporting
 from saq.modules import base_module
 from saq.modules.base_module import TOOL_TIMEOUT_MARGIN_SECONDS
 from saq.modules.email.encryption.rar import RarEncryptionAnalysis, RarEncryptionAnalyzer
@@ -662,20 +663,25 @@ def test_a_multithreaded_tool_runs_until_its_timeout(root_analysis):
     # the directory of a program is made readable to it, never one that holds SAQ_HOME
     ("ace", "which cannot be made readable to the tool"),
 ])
-def test_a_tool_that_cannot_run_is_reported_once(root_analysis, caplog, program, reason):
+def test_a_tool_that_cannot_run_is_reported_once(root_analysis, caplog, monkeypatch, program, reason):
     if program == "ace":
         program = os.path.join(get_base_dir(), "ace")
     module = _module(SsdeepAnalyzer, "ssdeep", root_analysis)
+    reports = []
+    monkeypatch.setattr(error_reporting, "write_error_report",
+                        lambda exc_info, record=None, skipped=0: reports.append(record.getMessage()))
 
     with caplog.at_level(logging.WARNING):
         assert module.run_sandboxed_tool([program], "first") is None
         assert module.run_sandboxed_tool([program], "second") is None
 
     records = [r for r in caplog.records if f"cannot run {program} in the sandbox" in r.getMessage()]
-    assert [r.levelno for r in records] == [logging.ERROR, logging.WARNING]
+    # an operator's problem, logged with its traceback on every file
+    assert [r.levelno for r in records] == [logging.ERROR, logging.ERROR]
+    assert all(r.exc_info for r in records)
     assert reason in records[0].getMessage()
-    # an operator's problem, so it gets an error report
-    assert records[0].exc_info
+    # and it fails the same way on every file, so it gets one error report
+    assert reports == [records[0].getMessage()]
 
 
 @pytest.mark.unit
@@ -709,8 +715,6 @@ def test_a_landlock_probe_that_could_not_run_is_not_blamed_on_the_node(root_anal
     [record] = [r for r in caplog.records if "SsdeepAnalyzer" in r.getMessage()]
     assert record.levelno == logging.WARNING
     assert "the Landlock probe could not run" in record.getMessage()
-    # the next tool that cannot run on this node is still reported
-    assert not base_module._REPORTED_SANDBOX_FAILURES
 
 
 @pytest.mark.unit

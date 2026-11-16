@@ -49,10 +49,6 @@ if TYPE_CHECKING:
 # still returns before the engine's watchdog kills the whole worker
 TOOL_TIMEOUT_MARGIN_SECONDS = 5
 
-# the tools run_sandboxed_tool() could not run, as "<module>:<program>": each is reported with an
-# error report once per process, not once per file
-_REPORTED_SANDBOX_FAILURES: set[str] = set()
-
 # the sandbox work roots swept for directories a killed worker left behind, once per process
 _SWEPT_WORK_ROOTS: set[str] = set()
 
@@ -534,14 +530,9 @@ class AnalysisModule(FileWatcherMixin):
         return path if os.access(path, os.X_OK) else None
 
     def _sandbox_failed(self, program: str, target: str, reason: str):
-        """A tool this node cannot run in the sandbox is an operator's problem, reported once per process."""
-        key = f"{self.config.name}:{program}"
+        """A tool this node cannot run in the sandbox is an operator's problem. It fails the same way on every
+        file, and ErrorReportHandler writes its report once per cause, not once per file."""
         message = f"{self} cannot run {program} in the sandbox: {reason}"
-        if key in _REPORTED_SANDBOX_FAILURES:
-            logging.warning("%s (on %s)", message, target, extra={"path": target})
-            return
-
-        _REPORTED_SANDBOX_FAILURES.add(key)
         logging.error("%s (on %s)", message, target, exc_info=RuntimeError(message), extra={"path": target})
 
     def get_root(self) -> RootAnalysisInterface:

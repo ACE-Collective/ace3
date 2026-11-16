@@ -321,8 +321,9 @@ the operator's read-only views.
 ## Error reports
 
 Error reports are a separate mechanism: a stack-trace file under `data/error_reports/`,
-written for every record logged at ERROR or above with a traceback (`logging.exception()`)
-by the root logger's `ErrorReportHandler`. Crash reports are the analyst-facing record of a
+written for a record logged at ERROR or above with a traceback (`logging.exception()`)
+by the root logger's `ErrorReportHandler`, once per cause (where it was logged, the exception's
+type and text) every ten minutes; the next report of a cause gives the repeats it skipped. Crash reports are the analyst-facing record of a
 *module* failure; error reports are the process-local traceback dump used everywhere else. The
 engine's per-module exception handler logs at WARNING, so a module failure gets a crash report
 and no error report.
