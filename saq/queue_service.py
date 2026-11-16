@@ -2,6 +2,7 @@
 collection are built on (docs/SERVICES.md)."""
 
 from abc import ABC, abstractmethod
+from itertools import batched
 import logging
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
@@ -21,11 +22,16 @@ from saq.shutdown import is_shutting_down
 STATUS_IN_PROGRESS = "IN_PROGRESS"
 STATUS_COMPLETED = "COMPLETED"
 
+# the most ids one UPDATE of QueueCollector.release() names
+RELEASE_BATCH_SIZE = 500
+
 
 class WorkItem(Protocol):
     id: int
     # the name of the worker the item is for
     name: str
+    # the lock the collector put on the item's row
+    lock: Optional[str]
 
 
 ItemT = TypeVar("ItemT", bound=WorkItem)
@@ -164,6 +170,41 @@ class QueueCollector(ABC, Generic[ItemT]):
         get_db().commit()
         return [work_item for work_item in work_items if work_item is not None]
 
+    def release(self, work_items: list[ItemT]):
+        """Unlocks the rows of work items this collector handed out that were never worked, so the
+        next collection pass, on this node or another, takes them without waiting out
+        lock_timeout_seconds. A row locked again since keeps its new lock. Never raises: it runs
+        while the service stops."""
+        ids_by_lock: dict[str, list[int]] = {}
+        for work_item in work_items:
+            if work_item.lock is not None:
+                ids_by_lock.setdefault(work_item.lock, []).append(work_item.id)
+
+        if not ids_by_lock:
+            return
+
+        ids = [id for lock_ids in ids_by_lock.values() for id in lock_ids]
+        model = self.model
+        released = 0
+        try:
+            for lock, lock_ids in ids_by_lock.items():
+                for batch in batched(lock_ids, RELEASE_BATCH_SIZE):
+                    update = model.__table__.update().values(lock=None, lock_time=None)
+                    update = update.where(model.id.in_(batch), model.lock == lock)
+                    released += get_db().execute(update).rowcount
+                    get_db().commit()
+
+            logging.info(f"released {released} of {len(ids)} queued {self.label} rows", extra={"row_ids": ids})
+        except Exception as e:
+            # the rows not yet released stay locked until lock_timeout_seconds passes, as they would
+            # have without this
+            logging.exception(f"unable to release queued {self.label} rows ({released} of {len(ids)} released before the failure): {e}", extra={"row_ids": ids})
+        finally:
+            try:
+                remove_all_sessions()
+            except Exception as e:
+                logging.exception(f"error removing database connection: {e}")
+
     def collection_loop(self):
         self.collector_startup_event.set()
         while True:
@@ -266,6 +307,20 @@ class QueueWorker(ABC, Generic[ItemT]):
         for thread in self.worker_threads:
             thread.join()
 
+    def take_queued(self) -> list[ItemT]:
+        """Empties the work queue and returns what was in it. The worker no longer holds those items."""
+        work_items = []
+        while True:
+            try:
+                work_items.append(self.work_queue.get_nowait())
+            except Empty:
+                break
+
+        with self._pending_ids_lock:
+            self._pending_ids.difference_update(work_item.id for work_item in work_items)
+
+        return work_items
+
     def worker_loop(self, startup_event: Event):
         startup_event.set()
         while True:
@@ -311,6 +366,9 @@ class QueueManager(ABC, Generic[WorkerT]):
         # mapped by name, which keeps the names unique
         self.workers: dict[str, WorkerT] = {}
         self.collector = collector
+        # `ace service start` calls wait() from two threads at once and exits when one returns,
+        # so each call waits until the queued rows are released, whichever call releases them
+        self._release_lock = Lock()
 
     @abstractmethod
     def create_workers(self) -> Iterable[WorkerT]:
@@ -354,17 +412,28 @@ class QueueManager(ABC, Generic[WorkerT]):
         return True
 
     def stop(self):
+        # the collector first, so that it stops locking rows for workers on their way out
+        self.collector.stop()
         for worker in self.workers.values():
             worker.stop()
 
-        self.collector.stop()
-
     def wait(self):
-        # each wait() is bounded the way it says, and `ace service start` bounds this one
-        for worker in self.workers.values():
-            worker.wait()
-
+        # `ace service start` bounds this one, including the database updates of release();
+        # the collector's wait() is bounded by its pass, as it says
         self.collector.wait()
+
+        # with the collector's thread gone nothing adds to the queues, and what is left in them
+        # would stay locked until lock_timeout_seconds passes. It is released before the workers
+        # are joined, because one item still being worked can outlast the shutdown deadline; an
+        # item a worker thread takes first is worked under its lock, as it was before
+        # bounded by release()'s database updates, which `ace service start` bounds
+        with self._release_lock:
+            for worker in self.workers.values():
+                self.collector.release(worker.take_queued())
+
+        for worker in self.workers.values():
+            # bounded by the item each thread is working, as QueueWorker.wait() says
+            worker.wait()
 
 
 class QueueService(ACEServiceInterface):

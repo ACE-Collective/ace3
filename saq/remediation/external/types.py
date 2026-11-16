@@ -119,6 +119,8 @@ class CheckWorkItem(BaseModel):
     max_retries: int
     deadline: datetime
     context: Optional[dict] = None
+    # the lock uuid the collector placed on the row when it handed out this work item
+    lock: Optional[str] = None
 
     @property
     def name(self) -> str:

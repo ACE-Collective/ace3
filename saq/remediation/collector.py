@@ -13,7 +13,8 @@ def create_remediation_work_item(remediation: Remediation) -> RemediationWorkIte
         name=remediation.name,
         type=remediation.type,
         key=remediation.key,
-        restore_key=remediation.restore_key)
+        restore_key=remediation.restore_key,
+        lock=remediation.lock)
 
 class RemediationCollector(QueueCollector[RemediationWorkItem]):
     """Responsible for collecting remediation jobs from the database and sending them to the appropriate queues."""
