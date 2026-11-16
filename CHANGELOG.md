@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.140] - 2026-11-16
+
+- [Give the loader tests' hand-built namespaces an include boundary](https://github.com/ACE-Collective/ace3/pull/1219)
+- [bump to yara scanner 3.2.1](https://github.com/ACE-Collective/ace3/pull/1217)
+- [Hold the SVS replay's includes to the yara service's boundary](https://github.com/ACE-Collective/ace3/pull/1216)
+- [update to yara scanner 3.2.0](https://github.com/ACE-Collective/ace3/pull/1215)
+- [Take rule details and the SVS compile from what yara_scanner compiled](https://github.com/ACE-Collective/ace3/pull/1212)
+- [Check out existing branches and PRs in bin/enter-worktree.sh](https://github.com/ACE-Collective/ace3/pull/1211)
+- [Give analysis modules one loader for a live-reloaded settings file](https://github.com/ACE-Collective/ace3/pull/1209)
+- [Release queued rows when a queue service stops](https://github.com/ACE-Collective/ace3/pull/1208)
+- [Queue services skip rows a worker still holds (#1069)](https://github.com/ACE-Collective/ace3/pull/1207)
+- [Refuse bin/exec-in-container.sh inside the container](https://github.com/ACE-Collective/ace3/pull/1206)
+- [Add find_service_config() for a service a site may not run](https://github.com/ACE-Collective/ace3/pull/1205)
+- [added a little script for the way im working](https://github.com/ACE-Collective/ace3/pull/1204)
+- [Load the email package's modules on first use](https://github.com/ACE-Collective/ace3/pull/1202)
+- [Let runs of different checkouts share a container](https://github.com/ACE-Collective/ace3/pull/1201)
+- [Select ranges of alerts by shift+click or drag on the manage page](https://github.com/ACE-Collective/ace3/pull/1198)
+- [Score lure URLs by their context: PDF link text, attachment references and signature blocks](https://github.com/ACE-Collective/ace3/pull/1197)
+- [Retry a failed analysis once per work item](https://github.com/ACE-Collective/ace3/pull/1194)
+- [Add a Sepia GUI theme](https://github.com/ACE-Collective/ace3/pull/1192)
+- [Speed up the test suite on the dev stack: data dirs off the bind mount, cheap bcrypt](https://github.com/ACE-Collective/ace3/pull/1190)
+- [Emit one per-root metrics event with observable counts](https://github.com/ACE-Collective/ace3/pull/1189)
+- [Set Analysis.error in the modules that fail after creating their analysis](https://github.com/ACE-Collective/ace3/pull/1188)
+- [Make the worktree tooling work inside the dev container](https://github.com/ACE-Collective/ace3/pull/1186)
+- [Test audit, Phase 2: remove tests that repeat each other across the suite](https://github.com/ACE-Collective/ace3/pull/1182)
+- [Add an error status to Analysis and show failed modules in the alert](https://github.com/ACE-Collective/ace3/pull/1175)
+- [Finish file collections that pass max_collection_time_seconds](https://github.com/ACE-Collective/ace3/pull/1174)
+- [Delete the flaky GIL-held hang dump test](https://github.com/ACE-Collective/ace3/pull/1172)
+
 ## [3.0.139] - 2026-11-06
 
 - [Keep the observable presenter tests to core's actions, and give integrations a hook test helper](https://github.com/ACE-Collective/ace3/pull/1170)
