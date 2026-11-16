@@ -741,6 +741,10 @@ def _load(namespaces: dict[str, list[str]]) -> yara_scanner.YaraScanner:
     scanner = yara_scanner.YaraScanner()
     for namespace, paths in namespaces.items():
         scanner.tracked_dirs[namespace] = dict.fromkeys(paths)
+        # the namespace is a bare name, not a directory, so yara_scanner 3.2+ would hold its files to
+        # ./<namespace> and refuse them all: hold them to the directory they are in, as
+        # saq/svs/yara/child.py does for the namespaces it fills in by hand
+        scanner.include_boundaries[namespace] = os.path.commonpath([os.path.dirname(_) for _ in paths])
     scanner.load_rules()
     return scanner
 
