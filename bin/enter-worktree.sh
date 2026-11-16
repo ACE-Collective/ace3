@@ -7,16 +7,19 @@
 # branch name without its initials prefix (jd/fix-thing -> fix-thing). A branch that exists locally,
 # or on exactly one remote (which git then tracks), is checked out as it is; any other is created from
 # <start point>, default the main checkout's HEAD. With --pr, <branch> is the pull request's head
-# branch, which `gh pr checkout` creates or brings up to date. It then sets the worktree up with
-# bin/setup-worktree.sh, moves into it, and points SAQ_HOME, PYTHONPATH and PATH at it, so pytest and
-# `ace` run the worktree's code. The prompt shows (wt:<topic>) until you leave with
+# branch, which `gh pr checkout` creates or brings up to date. When the worktree is already there,
+# from an earlier shell or from Claude Code, the work in it is resumed: nothing is checked out or
+# created, so its changes stay as they are, and the worktree's branch must be <branch> unless you name
+# the worktree by its topic. Either way it then sets the worktree up with bin/setup-worktree.sh, moves
+# into it, and points SAQ_HOME, PYTHONPATH and PATH at it, so pytest and `ace` run the worktree's
+# code. The prompt shows (wt:<topic>) until you leave with
 #
 #     wtx [-f]
 #
 # which puts SAQ_HOME, PYTHONPATH, PATH and the prompt back, moves to the main checkout and deletes the
 # worktree, its integration worktrees and its test data directory. The branch is kept. wtx refuses
 # while the worktree or one of its integration worktrees has uncommitted changes or commits no branch
-# holds; -f deletes it anyway.
+# holds; -f deletes it anyway. To keep the worktree for later, close the shell instead.
 #
 # The worktree is created in dev, so its git works only in dev (CLAUDE.md).
 
@@ -26,7 +29,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 fi
 
 _ace_wt_enter() {
-    local script_dir=$1 usage branch start pr common_dir main name worktree
+    local script_dir=$1 usage branch start pr common_dir main name worktree current resumed=
     shift
     usage="usage: source bin/enter-worktree.sh <branch> [<start point>] | --pr <number>"
 
@@ -71,11 +74,28 @@ _ace_wt_enter() {
     name=${name//\//-}
     worktree=$main/.claude/worktrees/$name
     if [ -e "$worktree" ]; then
-        echo "$worktree already exists" >&2
-        return 1
-    fi
-
-    if [ -n "$pr" ]; then
+        if [ -n "$start" ]; then
+            echo "$worktree already exists, so a start point does not apply to it" >&2
+            return 1
+        fi
+        # a directory git finds the main checkout from is not necessarily a worktree of it, and git
+        # cannot read a worktree created on the host at all here (CLAUDE.md)
+        if [ "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" != "$common_dir" ] ||
+            [ "$(git -C "$worktree" rev-parse --show-toplevel 2>/dev/null)" != "$worktree" ]; then
+            echo "$worktree already exists and is not a worktree of $main that git can read here" \
+                 "(a worktree created on the host is not)" >&2
+            return 1
+        fi
+        current=$(git -C "$worktree" branch --show-current)
+        # naming the worktree by its topic resumes it whatever it has checked out; a pull request
+        # names its branch
+        if [ "$current" != "$branch" ] && { [ -n "$pr" ] || [ "$branch" != "$name" ]; }; then
+            echo "$worktree already exists on ${current:-a detached HEAD}, not on $branch" >&2
+            return 1
+        fi
+        branch=${current:-"a detached HEAD at $(git -C "$worktree" rev-parse --short HEAD)"}
+        resumed=1
+    elif [ -n "$pr" ]; then
         # gh fetches the head (from a fork too), creates the branch or fast-forwards the existing one,
         # and sets its upstream; it leaves no worktree behind when it fails
         (cd "$main" && gh pr checkout "$pr" --branch "$branch" --worktree "$worktree") || return 1
@@ -114,7 +134,7 @@ _ace_wt_enter() {
     alias wtx=_ace_wt_exit
 
     cd "$worktree" || return 1
-    echo "in $worktree on $branch; wtx deletes the worktree and takes you back to $main"
+    echo "${resumed:+resumed }in $worktree on $branch; wtx deletes the worktree and takes you back to $main"
 }
 
 # Prints why the checkout $1 cannot be deleted without losing work, and nothing if it can.
