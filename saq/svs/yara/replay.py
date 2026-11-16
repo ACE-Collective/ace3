@@ -193,10 +193,10 @@ def _run_child(workdir: str, side_dir: str, tree: str, layout: TreeLayout, corpu
                sandbox_config: SandboxConfig, cancel: Optional[threading.Event] = None) -> dict:
     job = {
         "version": child.PROTOCOL_VERSION,
-        "tree_root": tree,
         "file_timeout": get_service_config(SERVICE_YARA_SCANNER).default_timeout,
         "namespaces": [
-            {"name": namespace.name, "directory": namespace.directory, "files": namespace.files}
+            {"name": namespace.name, "directory": namespace.directory, "include_boundary": namespace.include_boundary,
+             "files": namespace.files}
             for namespace in layout.namespaces
         ],
         "units": [

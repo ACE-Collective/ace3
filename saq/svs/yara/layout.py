@@ -65,6 +65,10 @@ class TreeNamespace:
     name: str
     # absolute path of its directory in the exported tree
     directory: str
+    # the directory its includes must stay inside, the one the yara service bounds them to: the
+    # signature directory of a contained layout, so a rule set can include a file of the set next to
+    # it. A linked layout's signature directory is not in the tree, so there it is the namespace's own
+    include_boundary: str
     # absolute paths of its rule files, in name order
     files: list[str] = field(default_factory=list)
 
@@ -151,12 +155,12 @@ def tree_layout(layout: RepoLayout, tree_root: str) -> TreeLayout:
             for entry in sorted(os.listdir(signature_dir)):
                 directory = os.path.join(signature_dir, entry)
                 if os.path.isdir(directory):
-                    result.namespaces.append(TreeNamespace(entry, directory))
+                    result.namespaces.append(TreeNamespace(entry, directory, signature_dir))
     else:
         for namespace in layout.namespaces:
             directory = os.path.join(tree_root, namespace.path)
             if os.path.isdir(directory):
-                result.namespaces.append(TreeNamespace(namespace.name, directory))
+                result.namespaces.append(TreeNamespace(namespace.name, directory, directory))
             else:
                 result.absent.append(namespace.name)
 
