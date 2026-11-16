@@ -88,8 +88,14 @@ def object_key(crash_id: str, relative_path: str) -> str:
     The report keeps the crashed file under the observable's own name, which need not be UTF-8
     (ACE decodes it with ``surrogateescape``), and an S3 key must be: botocore refuses to send it.
     Such a name is escaped (``utf8_safe``), so a fetched report has that file under the escaped
-    name. Escaping a key twice leaves it unchanged, so the read path can pass a fetched name back."""
+    name. Only for keys being written: a file listed in storage is read and deleted by
+    ``_listed_key``, because a report replicated before keys were escaped holds the raw name."""
     return utf8_safe(f"{crash_id}/{relative_path.replace(os.sep, '/')}")
+
+
+def _listed_key(crash_id: str, relative_path: str) -> str:
+    """The key of a file ``list_remote_files`` returned, exactly as storage holds it."""
+    return f"{crash_id}/{relative_path}"
 
 
 def _iter_report_files(crash_dir: str) -> list[str]:
@@ -244,7 +250,7 @@ def fetch_report(crash_id: str, dest_parent: str) -> Optional[str]:
         for relative_path in relative_paths:
             local_path = os.path.join(crash_dir, relative_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            storage.download_file(bucket, object_key(crash_id, relative_path), local_path)
+            storage.download_file(bucket, _listed_key(crash_id, relative_path), local_path)
 
         return crash_dir
 
@@ -286,7 +292,7 @@ def remote_file_sizes(crash_id: str) -> dict[str, int]:
         storage = _storage()
         bucket = _bucket()
         for relative_path in list_remote_files(crash_id):
-            info = storage.get_object_info(bucket, object_key(crash_id, relative_path))
+            info = storage.get_object_info(bucket, _listed_key(crash_id, relative_path))
             if info and info.get("size") is not None:
                 sizes[relative_path] = int(info["size"])
     except Exception as e:
@@ -348,7 +354,7 @@ def delete_report(crash_id: str) -> bool:
         ordered += [p for p in relative_paths if p != METADATA_FILE]
 
         for relative_path in ordered:
-            storage.delete_object(bucket, object_key(crash_id, relative_path))
+            storage.delete_object(bucket, _listed_key(crash_id, relative_path))
 
         return True
 

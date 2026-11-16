@@ -243,6 +243,13 @@ is finished, and objects without it mean an interrupted upload, which is served 
 Keys are derivable from the crash id, so **no database column and no migration** — the
 `analysis_module_crashes` row is unchanged.
 
+The crashed file keeps the observable's own name, which need not be UTF-8, and an S3 key must be.
+A name that is not is uploaded with each undecodable byte written as its `\udcXX` escape
+(`utf8_safe()` in `saq/logging.py`), so a report fetched from shared storage, and the
+`GET /api/v2/crashes/{crash_id}` detail of any report, name that file in escaped form. The download
+of a local report keeps the raw bytes. Reads and deletes use each key exactly as storage lists it,
+so a report replicated under the raw name before keys were escaped is still fetched and pruned.
+
 The upload runs on a **daemon thread that is never joined**. S3 requests are bounded — `S3Config`
 sets `connect_timeout`, `read_timeout` and `max_attempts` — but bounded is not instant: a report is
 several objects, each a multipart transfer of several requests, and the caller is a worker holding

@@ -186,6 +186,34 @@ def test_logged_exception_report_contents():
 
 
 @pytest.mark.unit
+def test_report_for_an_exception_naming_an_undecodable_file():
+    """A file name that is not UTF-8 reaches ACE with lone surrogates (surrogateescape). The report
+    is written with them escaped, and its monitor event is emitted."""
+    enable_monitor_cache()
+    existing = set(os.listdir(_error_reporting_dir()))
+    path = "/opt/ace/data/" + b"\xe9.pdf".decode("utf-8", "surrogateescape")
+
+    # outside the logger hierarchy: pytest-xdist cannot send the controller a report whose captured
+    # log holds a surrogate
+    logger = logging.Logger("test_undecodable_error_report")
+    logger.addHandler(ErrorReportHandler())
+    try:
+        raise RuntimeError(f"unable to open {path}")
+    except RuntimeError:
+        logger.exception("failed on %s", path)
+
+    new_reports = set(os.listdir(_error_reporting_dir())) - existing
+    assert len(new_reports) == 1
+    with open(os.path.join(_error_reporting_dir(), new_reports.pop())) as fp:
+        content = fp.read()
+    assert content.startswith("LOG MESSAGE\nfailed on /opt/ace/data/\\udce9.pdf\n")
+    assert "EXCEPTION\nunable to open /opt/ace/data/\\udce9.pdf" in content
+    assert "EXCEPTION SOURCE" in content
+
+    assert get_emitter().cache[MONITOR_ERROR_REPORT.path].value["message"] == f"failed on {path}"
+
+
+@pytest.mark.unit
 def test_log_loop_exception_reports_once_with_traceback(reports, caplog):
     error = RuntimeError("loop failed")
     log_loop_exception(error, "doing work")

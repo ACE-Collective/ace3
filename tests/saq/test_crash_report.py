@@ -20,13 +20,18 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import unquote, urlsplit
 
-from botocore.awsrequest import AWSResponse
 import pytest
 
 from saq import crash_report
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, HARDCOPY_SUBDIR
-from saq.crash_replication import fetch_report, replicate_report
+from saq.crash_replication import (
+    delete_report,
+    fetch_report,
+    list_remote_files,
+    remote_file_sizes,
+    replicate_report,
+)
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     CRASH_TYPE_KILLED,
@@ -651,6 +656,8 @@ def s3_shared_storage(monkeypatch):
     production, and gets an empty 200 at its before-send hook instead of a network round trip.
     Returns the keys of the objects put, in order. The local backend takes any file name, so only
     this reaches the UTF-8 requirement S3 keys have."""
+    # boto3 is optional (saq/storage/s3.py), so only this fixture's tests need it
+    AWSResponse = pytest.importorskip("botocore.awsrequest").AWSResponse
     monkeypatch.setattr(get_config(), "s3", None)
     storage = S3Storage(host="s3.invalid", port=9000, access_key="key", secret_key="secret")
     put_keys = []
@@ -705,6 +712,38 @@ def test_fetched_report_has_an_undecodable_file_under_its_escaped_name(root_anal
     fetched = fetch_report(crash_id, str(tmp_path / "staging"))
     assert os.listdir(os.path.join(fetched, FILE_DIR)) == [ESCAPED_NAME]
     with open(os.path.join(fetched, FILE_DIR, ESCAPED_NAME)) as fp:
+        assert fp.read() == "payload"
+
+
+def _replicate_under_the_raw_name(shared_storage, root_analysis):
+    """A report replicated to the local backend before object_key() escaped keys: its file is
+    stored under the observable's raw, surrogateescape-decoded name."""
+    crash_id = _crash_on_undecodable_file(root_analysis)
+    crash_dir = find_crash_report_dir(crash_id)
+    for relative_path in (os.path.join(FILE_DIR, UNDECODABLE_NAME), METADATA_FILE):
+        shared_storage.upload_file(os.path.join(crash_dir, relative_path), _bucket_name(),
+                                   f"{crash_id}/{relative_path}")
+    shutil.rmtree(crash_dir)
+    return crash_id
+
+
+@pytest.mark.unit
+def test_delete_report_removes_a_file_replicated_under_its_raw_name(root_analysis, shared_storage, unlogged):
+    """Prune deletes the remote copy with the local one: a file left behind has no metadata.json,
+    so nothing ever looks at it again."""
+    crash_id = _replicate_under_the_raw_name(shared_storage, root_analysis)
+
+    assert delete_report(crash_id) is True
+    assert list_remote_files(crash_id) == []
+
+
+@pytest.mark.unit
+def test_fetch_report_reads_a_file_replicated_under_its_raw_name(root_analysis, shared_storage, tmp_path, unlogged):
+    crash_id = _replicate_under_the_raw_name(shared_storage, root_analysis)
+
+    assert remote_file_sizes(crash_id).get(f"{FILE_DIR}/{UNDECODABLE_NAME}") == len("payload")
+    fetched = fetch_report(crash_id, str(tmp_path / "staging"))
+    with open(os.path.join(fetched, FILE_DIR, UNDECODABLE_NAME)) as fp:
         assert fp.read() == "payload"
 
 
