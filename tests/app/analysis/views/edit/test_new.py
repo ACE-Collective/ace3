@@ -236,16 +236,22 @@ def test_new_alert_multiple_observables_multi_submit(web_client, mock_api_call, 
 
 
 @pytest.mark.integration
-def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node):
-    """Test new alert creation with invalid timezone."""
-    response = web_client.post(url_for('analysis.new_alert'), data=_form(
-        target_node,
-        timezone='Invalid/Timezone'))
+def test_new_alert_invalid_timezone(web_client, mock_api_call, target_node, analyst, caplog):
+    """An unknown timezone is refused, and the refusal is logged as client input, not as a fault."""
+    with caplog.at_level(logging.WARNING):
+        response = web_client.post(url_for('analysis.new_alert'), data=_form(
+            target_node,
+            timezone='Invalid/Timezone'))
 
     # Should redirect to manage page due to timezone error
     assert response.status_code == 302
     assert 'manage' in response.location
     assert _alerts() == []
+    assert _flashes(web_client) == ["unknown timezone Invalid/Timezone"]
+    records = [r for r in caplog.records if getattr(r, 'timezone', None) == 'Invalid/Timezone']
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert records[0].user == 'john'
 
 
 @pytest.mark.integration

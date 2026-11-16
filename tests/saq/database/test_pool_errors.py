@@ -28,6 +28,10 @@ def _logged(caplog, level, text):
     return any(r.levelno == level and text in r.getMessage() for r in caplog.records)
 
 
+def _databases_logged(caplog, level, text) -> list[str]:
+    return [getattr(r, "database", None) for r in caplog.records if r.levelno == level and text in r.getMessage()]
+
+
 @pytest.fixture
 def ace_config(monkeypatch):
     """The ace database config, restored after the test."""
@@ -95,7 +99,8 @@ def test_get_connection_replaces_a_connection_that_cannot_roll_back(monkeypatch,
         assert second is not first
         assert get_pool().in_use_count == 1
 
-    assert _logged(caplog, logging.WARNING, "unable to rollback connection on get_connection")
+    assert _databases_logged(caplog, logging.WARNING, "unable to rollback connection on get_connection") == [
+        get_pool().name]
     get_pool().clear()
 
 
@@ -107,7 +112,7 @@ def test_return_connection_destroys_a_connection_that_cannot_roll_back(monkeypat
 
     assert get_pool().in_use_count == 0
     assert get_pool().available_count == 0
-    assert _logged(caplog, logging.WARNING, "on return to pool")
+    assert _databases_logged(caplog, logging.WARNING, "on return to pool") == [get_pool().name]
 
     # destroying one the pool doesn't know about is logged, not raised
     get_pool().destroy_connection(connection)
@@ -127,7 +132,8 @@ def test_close_and_clear_survive_failures(monkeypatch, caplog):
             monkeypatch.setattr(connection, "_force_close", _explode)
 
         database_pool.clear()
-        assert _logged(caplog, logging.WARNING, "unable to close database connection")
+        assert set(_databases_logged(caplog, logging.WARNING, "unable to close database connection")) == {
+            database_pool.name}
 
         database_pool.in_use.append(in_use)
         database_pool.available.append(available)
@@ -162,9 +168,10 @@ def test_log_pool_issue_during_shutdown(monkeypatch, caplog):
     monkeypatch.setattr("saq.shutdown.is_shutting_down", lambda: True)
     caplog.set_level(logging.DEBUG)
 
-    _log_pool_issue("unable to close", OSError("the database went away"))
+    _log_pool_issue("brocess", "unable to close", OSError("the database went away"))
 
-    assert _logged(caplog, logging.DEBUG, "unable to close (shutting down): the database went away")
+    assert _databases_logged(caplog, logging.DEBUG, "unable to close for database brocess (shutting down): "
+                                                    "the database went away") == ["brocess"]
     assert not _logged(caplog, logging.WARNING, "unable to close")
 
 

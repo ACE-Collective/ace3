@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import time
 
 from pydantic import Field
 
@@ -14,6 +15,7 @@ from saq.constants import (
     R_EXTRACTED_FROM,
     AnalysisExecutionResult,
 )
+from saq.error.reporting import log_peer_unavailable
 from saq.js_deobfuscator import deobfuscate_file
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
@@ -186,6 +188,12 @@ class JavaScriptDeobfuscationAnalyzerConfig(AnalysisModuleConfig):
     )
 
 
+# a result that does not come back in celery_timeout means no manager answered (it is down, or none reads the broker
+# this client sends to), and every JavaScript file fails the same way until one does: the first timeout in this
+# interval is logged with its traceback, which writes the error report, and the rest at WARNING
+RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS = 600
+
+
 class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
     """Runs obfuscated JavaScript in a throwaway scanner container whose
     sandbox harness traces every write to a browser global, and emits a
@@ -238,6 +246,36 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
 
         return None, None
 
+    _last_timeout_report: float | None = None
+
+    def _log_extra(self, _file: FileObservable) -> dict:
+        return {"path": _file.full_path, "root_uuid": self.get_root().uuid, "observable_uuid": _file.uuid}
+
+    def _log_call_failure(self, e: Exception, _file: FileObservable):
+        """Logs a failed deobfuscate_file() call by what failed: the broker or result backend could not be reached,
+        no manager answered in time, or the task or the copy of its results failed."""
+        # imported here like the client's own celery imports, since only a failed call needs them
+        import redis.exceptions  # local, see above
+        from celery.exceptions import TimeoutError as ResultTimeoutError  # local, see above
+        from kombu.exceptions import OperationalError  # local, see above
+
+        extra = self._log_extra(_file)
+        if isinstance(e, ResultTimeoutError):
+            message = f"no js deobfuscator manager answered for {_file.full_path} in {self.config.celery_timeout} seconds"
+            now, last = time.monotonic(), self._last_timeout_report
+            if last is None or now - last >= RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS:
+                self._last_timeout_report = now
+                logging.exception(message, extra=extra)
+            else:
+                logging.warning(message, extra=extra)
+            return
+
+        if log_peer_unavailable(e, f"js deobfuscator for {_file.full_path}",
+                                unreachable=(OperationalError, redis.exceptions.ConnectionError), extra=extra):
+            return
+
+        logging.exception(f"js deobfuscator failed for {_file.full_path}", extra=extra)
+
     def execute_analysis(self, _file: FileObservable) -> AnalysisExecutionResult:
         local_file_path = _file.full_path
 
@@ -282,8 +320,8 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                 dom_snapshot_path=dom_snapshot_path,
             )
         except Exception as e:
-            analysis.error = f"js deobfuscator call failed: {e}"
-            logging.warning(f"js deobfuscator failed for {local_file_path}: {e}")
+            analysis.error = f"js deobfuscator call failed: {str(e) or type(e).__name__}"
+            self._log_call_failure(e, _file)
             return AnalysisExecutionResult.COMPLETED
 
         # parse std.out / std.err / exit.code / report.json and pick out
@@ -326,8 +364,11 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
                         b for b in (report.get("blob_files") or [])
                         if isinstance(b, str)
                     ]
-                except (OSError, json.JSONDecodeError) as e:
-                    logging.debug(f"failed to read report.json from deobfuscator: {e}")
+                except (OSError, json.JSONDecodeError):
+                    # the manager always writes it with json.dump, so a report that cannot be read is a fault, and
+                    # without it the webcrack result and the blob files are lost
+                    logging.exception(f"unable to read the js deobfuscator's report.json for {local_file_path}",
+                                      extra={**self._log_extra(_file), "report_path": result_file})
             elif basename == "deobfuscated.js":
                 deobfuscated_src = result_file
 

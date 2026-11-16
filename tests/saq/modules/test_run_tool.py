@@ -29,6 +29,7 @@ from saq.modules.file_analysis.rtf import RTFOLEObjectAnalysis, RTFOLEObjectAnal
 from saq.modules.file_analysis.ssdeep import SsdeepAnalysis, SsdeepAnalyzer
 from saq.modules.file_analysis.upx import UPXAnalysis, UPXAnalyzer
 from saq.sandbox.runner import SandboxResult, landlock_available, sandbox_python
+from tests.saq.helpers import the_error_with_traceback
 from tests.saq.modules.conftest import HANG, fake_tool_pids, fake_tools_running
 from tests.saq.modules.file_analysis.test_cve import MACOS_MEMBER, _add_dmg_analysis, _create_img
 from tests.saq.test_util import create_test_context
@@ -246,7 +247,7 @@ def test_upx_unpack(root_analysis, fake_tools, caplog):
 
 
 @pytest.mark.integration
-def test_upx_failure_without_a_message_is_named_by_its_type(root_analysis, monkeypatch):
+def test_upx_failure_without_a_message_is_named_by_its_type(root_analysis, monkeypatch, caplog):
     """An exception whose str() is empty still gives the analysis an error, which needs a message."""
     module = _module(UPXAnalyzer, "upx", root_analysis)
     monkeypatch.setattr(module, "test_upx", lambda path: True)
@@ -259,6 +260,7 @@ def test_upx_failure_without_a_message_is_named_by_its_type(root_analysis, monke
 
     _run(module, observable)
     assert observable.get_analysis(UPXAnalysis).error == "TimeoutError"
+    assert the_error_with_traceback(caplog, path=observable.full_path).root_uuid == root_analysis.uuid
 
 
 @pytest.mark.integration

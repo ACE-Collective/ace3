@@ -124,7 +124,8 @@ class AutoItAnalyzer(AnalysisModule):
                 return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             analysis.error = str(e) or type(e).__name__
-            logging.info(f'AutoIt decompilation failed for {local_file_path}')
+            logging.exception(f"AutoIt decompilation failed for {local_file_path}",
+                              extra={"path": local_file_path, "root_uuid": self.get_root().uuid})
 
         # Add any decompiled .au3 scripts as file observables
         for f in os.listdir(output_path):

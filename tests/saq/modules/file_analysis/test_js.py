@@ -17,11 +17,14 @@ the module handles them.
 
 import base64
 import json
+import logging
 import os
 import shutil
 import subprocess
 
 import pytest
+from celery.exceptions import TimeoutError as ResultTimeoutError
+from kombu.exceptions import OperationalError
 
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import (
@@ -36,10 +39,11 @@ from saq.constants import (
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.js import (
     DEOBFUSCATED_PREFIX,
+    RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS,
     JavaScriptDeobfuscationAnalysis,
     JavaScriptDeobfuscationAnalyzer,
 )
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, logged_with, the_error_with_traceback
 from tests.saq.test_util import create_test_context
 
 YARA_META_JS = f"{DIRECTIVE_YARA_META_PREFIX}type=script.javascript"
@@ -369,7 +373,7 @@ def test_harness_crash_still_emits_observable(tmpdir, monkeypatch):
 
 
 @pytest.mark.unit
-def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
+def test_deobfuscator_error_does_not_crash(datadir, monkeypatch, caplog):
     """If the celery client raises, the analyzer should record the error
     and return COMPLETED without a derived file observable."""
     def _exploding(*args, **kwargs):
@@ -389,6 +393,87 @@ def test_deobfuscator_error_does_not_crash(datadir, monkeypatch):
     assert analysis is not None
     assert analysis.error and "simulated manager unavailable" in analysis.error
     assert [o for o in analysis.observables if o.type == F_FILE] == []
+    # a task that raised is a fault in ACE or the manager
+    record = the_error_with_traceback(caplog, path=observable.full_path)
+    assert (record.root_uuid, record.observable_uuid) == (root.uuid, observable.uuid)
+
+
+def _js_observable(root, tmpdir, name: str):
+    path = tmpdir / name
+    path.write("var x = 1;")
+    observable = root.add_file_observable(str(path))
+    observable.add_directive(YARA_META_JS)
+    return observable
+
+
+@pytest.mark.unit
+def test_an_unreachable_broker_is_logged_as_unavailable(tmpdir, monkeypatch, caplog):
+    def _unreachable(*args, **kwargs):
+        raise OperationalError("[Errno 111] Connection refused")
+    monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _unreachable)
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = _js_observable(root, tmpdir, "sample.js")
+
+    assert _build_analyzer(root).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    analysis = observable.get_and_load_analysis(JavaScriptDeobfuscationAnalysis)
+    assert analysis.error == "js deobfuscator call failed: [Errno 111] Connection refused"
+    (record,) = logged_with(caplog, logging.WARNING, path=observable.full_path)
+    assert record.getMessage() == f"js deobfuscator for {observable.full_path} unavailable: [Errno 111] Connection refused"
+    assert logged_with(caplog, logging.ERROR, path=observable.full_path) == []
+
+
+@pytest.mark.unit
+def test_result_timeouts_are_reported_once_per_interval(tmpdir, monkeypatch, caplog):
+    """No manager answering fails every file the same way, so only the first timeout in an interval writes an
+    error report, and the rest are logged at WARNING."""
+    def _no_answer(*args, **kwargs):
+        raise ResultTimeoutError("The operation timed out.")
+    monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _no_answer)
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    analyzer = _build_analyzer(root)
+    observables = [_js_observable(root, tmpdir, f"sample{i}.js") for i in range(3)]
+
+    analyzer.execute_analysis(observables[0])
+    analyzer.execute_analysis(observables[1])
+    # the interval has passed since the first one was reported
+    analyzer._module._last_timeout_report -= RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS
+    analyzer.execute_analysis(observables[2])
+
+    def _level(observable):
+        (record,) = [r for r in caplog.records if getattr(r, "path", None) == observable.full_path]
+        return record.levelno
+
+    assert [_level(o) for o in observables] == [logging.ERROR, logging.WARNING, logging.ERROR]
+    the_error_with_traceback(caplog, path=observables[0].full_path)
+    assert observables[1].get_and_load_analysis(JavaScriptDeobfuscationAnalysis).error == (
+        "js deobfuscator call failed: The operation timed out.")
+
+
+@pytest.mark.unit
+def test_an_unreadable_report_is_logged(tmpdir, monkeypatch, caplog):
+    def _truncated_report(file_path, output_dir, timeout=60, scanner_timeout=30, dom_snapshot_path=None):
+        os.makedirs(output_dir, exist_ok=True)
+        files = {"report.json": '{"event_count": ', "exit.code": "0"}
+        for name, content in files.items():
+            with open(os.path.join(output_dir, name), "w") as fp:
+                fp.write(content)
+        return [os.path.join(output_dir, name) for name in files]
+
+    monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _truncated_report)
+
+    root = create_root_analysis(analysis_mode="test_single")
+    root.initialize_storage()
+    observable = _js_observable(root, tmpdir, "sample.js")
+
+    assert _build_analyzer(root).execute_analysis(observable) == AnalysisExecutionResult.COMPLETED
+
+    record = the_error_with_traceback(caplog, path=observable.full_path)
+    assert record.report_path.endswith("report.json")
+    assert record.root_uuid == root.uuid
 
 
 @pytest.mark.unit

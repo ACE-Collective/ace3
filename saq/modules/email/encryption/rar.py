@@ -206,12 +206,14 @@ class RarEncryptionAnalyzer(AnalysisModule):
                                                            f'--wordlist={os.path.abspath(wordlist_path)}',
                                                            read_files=[wordlist_path])
                     except Exception as e:
-                        logging.error(f"Error encountered when trying to crack password for {_file}: {e}")
+                        logging.exception(f"unable to crack the password for {_file}",
+                                          extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
                         analysis.error = f"unable to crack the password: {str(e) or type(e).__name__}"
                         return AnalysisExecutionResult.COMPLETED
 
             except Exception as e:
-                logging.error(f"Error encountered when building password wordlist for {_file}: {e}")
+                logging.exception(f"unable to build the password wordlist for {_file}",
+                                  extra={"path": _file.full_path, "root_uuid": self.get_root().uuid})
                 analysis.error = f"unable to build the password wordlist: {str(e) or type(e).__name__}"
                 return AnalysisExecutionResult.COMPLETED
 

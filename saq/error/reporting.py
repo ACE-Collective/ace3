@@ -198,7 +198,8 @@ def _is_peer_unavailable(e: BaseException, unreachable: tuple[type[BaseException
     return False
 
 
-def log_peer_unavailable(e: Exception, context: str, unreachable: tuple[type[BaseException], ...] = ()) -> bool:
+def log_peer_unavailable(e: Exception, context: str, unreachable: tuple[type[BaseException], ...] = (),
+                         extra: Optional[dict] = None) -> bool:
     """Log a connection-level failure to a peer service, returning True if it was one.
 
     Use for the narrower case of a call to a specific peer (redis, qdrant, a remote ACE
@@ -221,8 +222,8 @@ def log_peer_unavailable(e: Exception, context: str, unreachable: tuple[type[Bas
         return False
 
     if is_shutting_down():
-        logging.info("%s unavailable during shutdown: %s", context, e)
+        logging.info("%s unavailable during shutdown: %s", context, e, extra=extra)
     else:
-        logging.warning("%s unavailable: %s", context, e)
+        logging.warning("%s unavailable: %s", context, e, extra=extra)
 
     return True
