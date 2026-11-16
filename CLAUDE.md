@@ -285,7 +285,7 @@ default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
 trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
-Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
+Error reports (`data/error_reports`, written for a record logged at ERROR with a traceback, once per cause every ten minutes) are a
 separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
 #### Content-addressed storage

@@ -197,11 +197,13 @@ def log_loop_exception(e: Exception, context: str, extra: Optional[dict] = None)
     # import creates a cycle through saq.environment
     from saq.shutdown import is_shutting_down
 
+    # stacklevel=2: the record names the loop that caught e, which is part of the cause ErrorReportHandler
+    # reports once per window, so two loops that fail the same way are each reported
     if is_shutting_down():
-        logging.info("%s during shutdown: %s", context, e, extra=extra)
+        logging.info("%s during shutdown: %s", context, e, extra=extra, stacklevel=2)
         return
 
-    logging.error("%s: %s", context, e, exc_info=e, extra=extra)
+    logging.error("%s: %s", context, e, exc_info=e, extra=extra, stacklevel=2)
 
 
 # OSErrors that a misconfigured local path raises (a client certificate, a key file). A peer

@@ -183,6 +183,12 @@ def test_a_repeated_cause_is_reported_once_per_window(reported, clock):
     _fail("peer is down")
     assert reported == [("peer is down", 0), ("peer is down", 3)]
 
+    # the count starts again from each report
+    _fail("peer is down")
+    clock[0] += REPEAT_WINDOW_SECONDS
+    _fail("peer is down")
+    assert reported[-1] == ("peer is down", 1)
+
 
 @pytest.mark.unit
 def test_every_record_is_still_logged_while_its_report_is_skipped(reported, caplog):
@@ -216,6 +222,21 @@ def test_the_causes_remembered_are_bounded(reported, clock):
     _fail(f"item {MAX_REMEMBERED_CAUSES} failed")
     assert len(reported) == MAX_REMEMBERED_CAUSES + 2
     assert reported[-1] == ("item 0 failed", 0)
+
+
+@pytest.mark.unit
+def test_the_cause_reported_longest_ago_is_forgotten_first(reported, clock):
+    _fail("peer is down")
+    _fail("disk is full")
+    clock[0] += REPEAT_WINDOW_SECONDS
+    # reported again, so it is now the newest report and "disk is full" the oldest
+    _fail("peer is down")
+    for index in range(MAX_REMEMBERED_CAUSES - 1):
+        _fail(f"item {index} failed")
+
+    count = len(reported)
+    _fail("peer is down")
+    assert len(reported) == count
 
 
 @pytest.mark.unit
@@ -309,6 +330,16 @@ def test_log_loop_exception_reports_once_with_traceback(reports, caplog):
     assert record.levelno == logging.ERROR
     assert record.getMessage() == "doing work: loop failed"
     assert record.exc_info[1] is error
+
+
+@pytest.mark.unit
+def test_log_loop_exception_callers_are_separate_causes(reports):
+    """Two loops that fail the same way are each reported, and each report says where its loop logged it."""
+    log_loop_exception(KeyError("uuid"), "catalog refresh failed")
+    log_loop_exception(KeyError("uuid"), "coverage refresh failed")
+
+    assert [r.getMessage() for r in reports] == ["catalog refresh failed: 'uuid'", "coverage refresh failed: 'uuid'"]
+    assert all(r.pathname == __file__ for r in reports)
 
 
 @pytest.mark.unit

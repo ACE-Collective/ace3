@@ -36,7 +36,7 @@ If you can't build a check, stop and say what you tried. Ask for access to where
 ## 2. Evidence from where it happened
 
 - **Logs.** Records carry their identifiers as `extra={}` fields: root uuid, observable, module, path, `crash_id`.
-- **Error reports.** `data/error_reports/` has one for each record logged at ERROR with a traceback.
+- **Error reports.** `data/error_reports/` has one for each cause logged at ERROR with a traceback (where it was logged, the exception's type and text) every ten minutes. Its `SKIPPED REPEATS` line counts the repeats since the last report of that cause, so count occurrences from the log records or those lines, not from the number of reports.
 - **Crash reports.** For an analysis module that failed or hung, `data/crash_reports/YYYY/MM/DD/<crash_id>/` holds the traceback, the analysis tree and the file. For a hang it holds every thread's stack instead of a traceback. From another node, use `GET /api/v2/crashes/{crash_id}/download` (`docs/CRASH_REPORTS.md`).
 - **When it started.** A regression has a first release. Compare how often it happens before and after each release; `CHANGELOG.md` lists each release's PRs. Read the diff of the release where it starts for code on the failing path. Over a wide window, run `git bisect run` with the check.
 
