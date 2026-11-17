@@ -32,6 +32,7 @@ from saq.svs.yara.diff import Category, Outcome, ResultRow
 from saq.svs.yara.replay import FileError, ReplayResult, SideReport
 from tests.saq.svs.conftest import RULE_UUID, graded_alert, set_disposition
 from tests.saq.svs.yara.conftest import REPOSITORY, stored_sample
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -141,12 +142,12 @@ def test_the_corpus_version_follows_every_input(svs_repository):
         versions.append(corpus_version())
         assert versions[-1] != versions[-2]
 
-    actions.relabel(sha256, RULE_UUID, "fp", _user_id())
+    actions.relabel(sha256, RULE_UUID, "fp", person(_user_id()))
     _changed()
     # clearing a verdict bumps no change time; the history count catches it
-    actions.reset_label(sha256, RULE_UUID, _user_id())
+    actions.reset_label(sha256, RULE_UUID, person(_user_id()))
     _changed()
-    actions.retire(sha256, RULE_UUID, _user_id(), "intended")
+    actions.retire(sha256, RULE_UUID, person(_user_id()), "intended")
     _changed()
     set_disposition(alert.uuid, "FALSE_POSITIVE")
     _changed()
@@ -285,7 +286,7 @@ def test_deleting_a_sample_removes_it_from_every_report(svs_repository):
     validation_uuid, _ = _request()
     _complete(validation_uuid, [_result_row(Category.REGRESSION, sha256), _result_row(Category.REGRESSION)])
 
-    actions.delete_sample(sha256, _user_id(), "privacy request", actor="unittest")
+    actions.delete_sample(sha256, person(_user_id(), "unittest"), "privacy request")
 
     remaining = get_db().execute(select(SVSValidationResult.sha256)).scalars().all()
     assert remaining == ["ab" * 32]

@@ -92,32 +92,14 @@ def test_each_checkout_gets_its_own_data_dir_outside_it(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
-def test_a_slot_takes_its_ports_from_the_run_port_block(monkeypatch):
-    monkeypatch.setenv(unittest_session.PORT_BLOCK_ENV_VAR, "3")
+def test_a_slot_takes_its_ports_from_its_index(monkeypatch):
     monkeypatch.setenv(unittest_session.WORKER_ENV_VAR, "gw2")
-    offset = 3 * unittest_session.PORT_BLOCK_SIZE + 2
 
     overrides = unittest_session.session_overrides()
-    assert overrides["api"]["listen_port"] == unittest_session.API_BASE_PORT + offset
-    assert overrides["api"]["prefix"] == f"localhost:{unittest_session.API_BASE_PORT + offset}"
-    assert overrides["service_network_semaphore"]["bind_port"] == unittest_session.NETWORK_SEMAPHORE_BASE_PORT + offset
-    assert overrides["service_network_semaphore"]["remote_port"] == unittest_session.NETWORK_SEMAPHORE_BASE_PORT + offset
-
-
-@pytest.mark.unit
-def test_a_slot_past_the_port_block_is_refused(monkeypatch):
-    # it would take the first port of the next block, another run's
-    monkeypatch.setenv(unittest_session.PORT_BLOCK_ENV_VAR, "3")
-    monkeypatch.setenv(unittest_session.WORKER_ENV_VAR, f"gw{unittest_session.PORT_BLOCK_SIZE}")
-    with pytest.raises(ValueError, match="at most 64 xdist workers"):
-        unittest_session.get_api_port()
-
-
-@pytest.mark.unit
-def test_ports_without_a_claimed_port_block_are_refused(monkeypatch):
-    monkeypatch.delenv(unittest_session.PORT_BLOCK_ENV_VAR)
-    with pytest.raises(RuntimeError, match=unittest_session.PORT_BLOCK_ENV_VAR):
-        unittest_session.session_overrides()
+    assert overrides["api"]["listen_port"] == unittest_session.API_BASE_PORT + 2
+    assert overrides["api"]["prefix"] == f"localhost:{unittest_session.API_BASE_PORT + 2}"
+    assert overrides["service_network_semaphore"]["bind_port"] == unittest_session.NETWORK_SEMAPHORE_BASE_PORT + 2
+    assert overrides["service_network_semaphore"]["remote_port"] == unittest_session.NETWORK_SEMAPHORE_BASE_PORT + 2
 
 
 @pytest.mark.unit

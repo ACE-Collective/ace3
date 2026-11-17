@@ -34,6 +34,7 @@ from typing import Optional
 from sqlalchemy import Integer, and_, case, cast, func, select, update
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
+from saq.auth import ApiAuthResult
 from saq.database.model import (
     Alert,
     DetectionPoint,
@@ -79,7 +80,7 @@ UNTRACKED_SIGNATURES = frozenset({
 COMPUTED_STATES = (RunState.ENDED.value, RunState.REVIEWED.value)
 
 # the actor of a computed result's event
-RESULT_ACTOR = "svs"
+RESULT_ACTOR = ApiAuthResult.system("svs")
 
 # how many stale results one timer pass recomputes at most; the next pass does the rest
 RECOMPUTE_BATCH = 200

@@ -216,6 +216,9 @@ class PDFAnalyzer(AnalysisModule):
         # and the GUI import this module only to read PDFTextAnalysis
         import pikepdf
 
+        # a PDF pikepdf cannot read is the sender's doing, not a fault an operator can fix: these stay at WARNING,
+        # with the traceback for the one that turns out to be a pikepdf bug
+        extra = {"path": local_file_path, "root_uuid": self.get_root().uuid}
         try:
             pdf = pikepdf.open(local_file_path)
 
@@ -243,7 +246,8 @@ class PDFAnalyzer(AnalysisModule):
                         file_observable.exclude_analysis(self)
                         file_observable.add_yara_meta("type", "document.pdf.annotation_uris")
             except Exception as e:
-                logging.warning(f"pikepdf annotation extraction failed for {local_file_path}: {e}")
+                logging.warning(f"pikepdf annotation extraction failed for {local_file_path}: {e}", exc_info=True,
+                                extra=extra)
 
             # extract base64-encoded form field values from AcroForm
             try:
@@ -280,7 +284,8 @@ class PDFAnalyzer(AnalysisModule):
                             file_observable.exclude_analysis(self)
                             file_observable.add_yara_meta("type", "document.pdf.form_field")
             except Exception as e:
-                logging.warning(f"pikepdf form field extraction failed for {local_file_path}: {e}")
+                logging.warning(f"pikepdf form field extraction failed for {local_file_path}: {e}", exc_info=True,
+                                extra=extra)
 
             # extract JavaScript from /Names /JavaScript tree
             try:
@@ -313,11 +318,15 @@ class PDFAnalyzer(AnalysisModule):
                                 file_observable.exclude_analysis(self)
                                 file_observable.add_yara_meta("type", "script.javascript")
             except Exception as e:
-                logging.warning(f"pikepdf JavaScript extraction failed for {local_file_path}: {e}")
+                logging.warning(f"pikepdf JavaScript extraction failed for {local_file_path}: {e}", exc_info=True,
+                                extra=extra)
 
             pdf.close()
+        except pikepdf.PasswordError:
+            # left to PDFEncryptionAnalyzer
+            logging.info(f"pikepdf cannot open {local_file_path} without its user password", extra=extra)
         except Exception as e:
-            logging.warning(f"pikepdf failed to open {local_file_path}: {e}")
+            logging.warning(f"pikepdf failed to open {local_file_path}: {e}", exc_info=True, extra=extra)
 
         return AnalysisExecutionResult.COMPLETED
 

@@ -224,11 +224,11 @@ def _commit(host: SVSTestHost) -> None:
     db.refresh(host)
 
 
-def create_host(spec: HostSpec, auth: Optional[ApiAuthResult] = None) -> SVSTestHost:
+def create_host(spec: HostSpec, auth: ApiAuthResult) -> SVSTestHost:
     """Adds a test host. Raises DuplicateTestHost when its short name is taken."""
     # created_at is stored to the second and MySQL rounds a fraction up: floored, it is never after
     # the updated_at the server stamps on the same insert
-    host = SVSTestHost(created_by=auth.auth_user_id if auth else None, created_at=datetime.now().replace(microsecond=0))
+    host = SVSTestHost(created_by=auth.auth_user_id, created_at=datetime.now().replace(microsecond=0))
     _apply(host, spec)
     get_db().add(host)
     _commit(host)
@@ -236,7 +236,7 @@ def create_host(spec: HostSpec, auth: Optional[ApiAuthResult] = None) -> SVSTest
     return host
 
 
-def update_host(host_id: int, spec: HostSpec, auth: Optional[ApiAuthResult] = None,
+def update_host(host_id: int, spec: HostSpec, auth: ApiAuthResult,
                 precondition: Precondition = NONE) -> SVSTestHost:
     """Replaces a test host's fields. Raises UnknownTestHost, DuplicateTestHost, StaleWrite."""
     # a write from a form loaded before someone else changed the host is refused, not applied over it
@@ -253,7 +253,7 @@ def update_host(host_id: int, spec: HostSpec, auth: Optional[ApiAuthResult] = No
     return host
 
 
-def delete_host(host_id: int, auth: Optional[ApiAuthResult] = None) -> None:
+def delete_host(host_id: int, auth: ApiAuthResult) -> None:
     """Removes a test host and ends its open maintenance window. Runs keep the targets they were
     registered with. Raises UnknownTestHost."""
     # imported here: saq.svs.maintenance imports this module
@@ -263,7 +263,7 @@ def delete_host(host_id: int, auth: Optional[ApiAuthResult] = None) -> None:
     host = get_host(host_id, lock=True)
     extra = _audit_extra(host)
     db = get_db()
-    with ending_host_windows(host, auth.auth_name if auth else "unknown", auth=auth) as windows:
+    with ending_host_windows(host, auth) as windows:
         db.delete(host)
         db.commit()
     log_audit("svs test host removed", auth=auth, **extra, ended_maintenance=[w.uuid for w in windows])

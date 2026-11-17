@@ -38,7 +38,7 @@ Then run `/venv/bin/python $S/scripts/findings.py known $B`, which writes the kn
 
 Start the test run first; it is the slow part.
 
-- **The test lock.** If `$SAQ_HOME/.pytest-running` exists, a test run of that checkout is in progress (maybe the user's own): don't start another, and report the tests as not run. A run of another checkout (the main checkout, another worktree) does not stop one here.
+- **The test lock.** A run started while another run is going on in the container (maybe the user's own, maybe another checkout's) waits for it, printing whose run it is; that is why the run below goes in the background. Say in the report if it waited. If it exits 4 because `$SAQ_HOME/.pytest-running` exists, a run of that checkout is going on in another container, or a killed run left the marker: don't remove it, and report the tests as not run.
 - **Running the tests.** If `tests.txt` is non-empty, run this from `/opt/ace` with `run_in_background`:
   ```bash
   /venv/bin/pytest $(cat $B/tests.txt) -n auto $(cat $B/cov_sources.txt) --cov-report=xml:$B/coverage.xml --cov-report= -q -rfE > $B/pytest.txt 2>&1; echo "exit=$?" >> $B/pytest.txt

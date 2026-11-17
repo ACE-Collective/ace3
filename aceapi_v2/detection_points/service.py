@@ -76,19 +76,17 @@ def _detection_point(alert_id: int, content_hash: str) -> DetectionPointRow:
     return _to_row(record)
 
 
-def _require_user(user_id: int | None) -> int:
+def _require_user(user_id: int | None) -> None:
     # a verdict records who set it; a config API key belongs to nobody
     if user_id is None:
         raise HTTPException(status_code=422, detail="setting a verdict requires a user's API key or session")
 
-    return user_id
-
 
 def set_detection_verdict(alert_uuid: str, content_hash: str, verdict: str, auth: ApiAuthResult) -> DetectionPointRow:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        set_verdict(alert_id, content_hash, verdict, user_id, auth=auth)
+        set_verdict(alert_id, content_hash, verdict, auth)
     except DetectionNotFound:
         raise HTTPException(status_code=404, detail="detection not found")
     except VerdictNotAllowed as e:
@@ -98,10 +96,10 @@ def set_detection_verdict(alert_uuid: str, content_hash: str, verdict: str, auth
 
 
 def clear_detection_verdict(alert_uuid: str, content_hash: str, auth: ApiAuthResult) -> DetectionPointRow:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        clear_verdict(alert_id, content_hash, user_id, auth=auth)
+        clear_verdict(alert_id, content_hash, auth)
     except DetectionNotFound:
         raise HTTPException(status_code=404, detail="detection not found")
     except VerdictNotAllowed as e:
@@ -111,10 +109,10 @@ def clear_detection_verdict(alert_uuid: str, content_hash: str, auth: ApiAuthRes
 
 
 def confirm_detection_verdicts(alert_uuid: str, auth: ApiAuthResult) -> ConfirmResult:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     alert_id = _resolve_alert_id(alert_uuid)
     try:
-        return ConfirmResult(confirmed=confirm_alert(alert_id, user_id, auth=auth))
+        return ConfirmResult(confirmed=confirm_alert(alert_id, auth))
     except VerdictNotAllowed as e:
         raise HTTPException(status_code=409, detail=str(e))
 

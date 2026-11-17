@@ -9,7 +9,7 @@ from saq.configuration import get_config
 from saq.constants import DISPOSITION_DELIVERY, F_ASSET, F_EMAIL_ADDRESS, F_EMAIL_DELIVERY, F_EMAIL_FROM, F_FILE, F_FILE_LOCATION, F_FILE_NAME, F_FILE_PATH, F_FQDN, F_HOSTNAME, F_INDICATOR, F_IP, F_MAC_ADDRESS, F_MD5, F_MESSAGE_ID, F_SHA256, F_SNORT_SIGNATURE, F_TEST, F_URL, F_USER, F_YARA_RULE, create_email_delivery
 from saq.database import get_db
 from saq.observables import create_observable
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 
 
 @pytest.mark.unit
@@ -66,7 +66,7 @@ def test_ingest_does_not_stamp_observable_expiration(db_event):
         # the type has a configured delta, and it is still not applied here
         assert current_expires_on() is None
 
-        set_dispositions([root.uuid], DISPOSITION_DELIVERY, get_db().query(User).first().id)
+        set_dispositions([root.uuid], DISPOSITION_DELIVERY, person(get_db().query(User).first().id))
 
         # dispositioning malicious does not rewrite it either
         assert current_expires_on() is None

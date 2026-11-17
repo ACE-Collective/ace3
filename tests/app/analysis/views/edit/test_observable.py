@@ -13,7 +13,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.gui.alert import GUIAlert
-from tests.saq.helpers import audit_actor_of, audit_record
+from tests.saq.helpers import audit_actor_of, audit_record, logged_with, the_error_with_traceback
 
 
 @pytest.fixture
@@ -126,8 +126,8 @@ class TestAddObservable:
         assert _saved_root(alert).get_observables_by_type('ipv4') == []
         assert _workload_modes(alert) == []
 
-    def test_alert_not_found_in_database(self, web_client):
-        """Test when alert cannot be found in database."""
+    def test_alert_not_found_in_database(self, web_client, caplog):
+        """An unknown alert uuid is client input: refused with a WARNING that names it, not an error."""
         missing_uuid = str(uuid4())
         response = web_client.post(url_for('analysis.add_observable'), data={
             'alert_uuid': missing_uuid,
@@ -139,6 +139,17 @@ class TestAddObservable:
         assert response.status_code == 302
         assert f'direct={missing_uuid}' in response.location
         assert _is_unlocked(missing_uuid)
+        assert [r.user for r in logged_with(caplog, logging.WARNING, alert_uuid=missing_uuid)] == ['john']
+        assert logged_with(caplog, logging.ERROR, alert_uuid=missing_uuid) == []
+
+    def test_alert_database_error(self, web_client, alert, basic_form_data, caplog):
+        """A failing alert query is logged at ERROR with its traceback and the alert uuid."""
+        with patch('app.analysis.views.edit.observable.get_db', side_effect=Exception("db down")):
+            response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
+
+        assert response.status_code == 302
+        assert 'from database' in the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage()
+        assert _is_unlocked(alert.uuid)
 
     def test_unable_to_acquire_lock(self, web_client, alert, basic_form_data):
         """Test when unable to acquire lock on alert."""
@@ -153,21 +164,23 @@ class TestAddObservable:
         assert _saved_root(alert).get_observable_by_type('ipv4') is None
         assert _workload_modes(alert) == []
 
-    def test_alert_load_error(self, web_client, alert, basic_form_data):
+    def test_alert_load_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.load() raises an exception."""
         with patch.object(GUIAlert, 'load', side_effect=Exception("Load failed")):
             response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
+        assert 'from filesystem' in the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage()
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
 
-    def test_alert_sync_error(self, web_client, alert, basic_form_data):
+    def test_alert_sync_error(self, web_client, alert, basic_form_data, caplog):
         """Test when alert.sync() raises an exception."""
         with patch.object(GUIAlert, 'sync', side_effect=Exception("Sync failed")):
             response = web_client.post(url_for('analysis.add_observable'), data=basic_form_data)
 
         assert response.status_code == 302
+        assert the_error_with_traceback(caplog, alert_uuid=alert.uuid).getMessage() == f"unable to sync alert {alert.uuid}"
         assert _saved_root(alert).get_observable_by_type('ipv4') is None
         assert _workload_modes(alert) == []
         assert _is_unlocked(alert.uuid)
@@ -227,7 +240,7 @@ class TestAddObservable:
         assert observables[0].added_by is None
         assert observables[0].added_time is None
 
-    def test_lock_release_error_handling(self, web_client, alert, basic_form_data):
+    def test_lock_release_error_handling(self, web_client, alert, basic_form_data, caplog):
         """Test that lock release errors are handled gracefully."""
         with patch('app.analysis.views.edit.observable.release_lock',
                    side_effect=Exception("Release failed")) as mock_release_lock:
@@ -237,6 +250,8 @@ class TestAddObservable:
         assert response.status_code == 302
         mock_release_lock.assert_called_once()
         assert mock_release_lock.call_args.args[0] == alert.uuid
+        record = the_error_with_traceback(caplog, alert_uuid=alert.uuid)
+        assert record.lock_uuid == mock_release_lock.call_args.args[1]
         assert _saved_root(alert).get_observable_by_type('ipv4') is not None
         assert _workload_modes(alert) == [ANALYSIS_MODE_CORRELATION]
 

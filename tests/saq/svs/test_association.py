@@ -157,7 +157,7 @@ class TestAssociate:
 
     def test_a_dispositioned_alert_is_not_moved(self, run, user_id):
         root = _alert(host="srv-01")
-        set_dispositions([root.uuid], DISPOSITION_FALSE_POSITIVE, user_id)
+        set_dispositions([root.uuid], DISPOSITION_FALSE_POSITIVE, person(user_id))
         result = association.associate(run.uuid, root.uuid, person(user_id))
         assert (result.svs_status, result.moved, result.queue) == ("test", False, QUEUE_DEFAULT)
 

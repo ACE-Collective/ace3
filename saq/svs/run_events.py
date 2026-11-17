@@ -7,21 +7,22 @@ import json
 from datetime import datetime
 from typing import Optional
 
+from saq.auth import ApiAuthResult
 from saq.database.model import SVSRun, SVSRunEvent
 from saq.svs.constants import RunEventKind
 
 
-def new_run_event(run_id: int, kind: RunEventKind, actor: str, *, actor_user_id: Optional[int] = None,
+def new_run_event(run_id: int, kind: RunEventKind, auth: ApiAuthResult, *,
                   from_state: Optional[str] = None, to_state: Optional[str] = None,
                   details: Optional[dict] = None, now: Optional[datetime] = None) -> SVSRunEvent:
-    """An event row for the caller to add to its session."""
+    """An event row, by auth, for the caller to add to its session."""
     return SVSRunEvent(
         run_id=run_id,
         kind=kind.value,
         from_state=from_state,
         to_state=to_state,
-        actor=actor[:256],
-        actor_user_id=actor_user_id,
+        actor=auth.auth_name[:256],
+        actor_user_id=auth.auth_user_id,
         details=json.dumps(details, sort_keys=True, default=str) if details is not None else None,
         created_at=now or datetime.now())
 

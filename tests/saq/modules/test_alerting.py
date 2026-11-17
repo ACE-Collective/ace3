@@ -13,7 +13,7 @@ from saq.engine.engine_configuration import EngineConfiguration
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.test import BasicTestAnalysis
 from saq.util.uuid import get_storage_dir
-from tests.saq.helpers import create_root_analysis, log_count, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, log_count, person, wait_for_log_count, wait_for_process
 
 @pytest.mark.integration
 def test_detection(root_analysis):
@@ -135,7 +135,7 @@ def test_alert_dispositioned():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_FALSE_POSITIVE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # AnalysisExecutor._check_for_alert_disposition cancels the analysis mid-module
     assert wait_for_log_count("stopping analysis on dispositioned alert", 1)
@@ -230,7 +230,7 @@ def test_alert_continue_specific_disposition():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_DELIVERY,
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # DELIVERY is not in stop_analysis_on_dispositions, so
     # AnalysisExecutor._check_for_alert_disposition lets the analysis run on

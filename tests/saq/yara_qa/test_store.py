@@ -88,6 +88,21 @@ def test_stores_file_and_full_record(qa_pool, make_file, root_analysis):
     assert (counters.rule_name, counters.match_count, counters.stored_count) == ("qa_rule", 1, 1)
 
 
+def test_stores_a_file_with_an_undecodable_name(root_analysis, unlogged):
+    """MySQL rejects the lone surrogates of a name that is not UTF-8 (an archive member, as
+    os.listdir returns it), so the match names the file by its escaped form."""
+    path = root_analysis.create_file_path(b"\xe9\xe9.bin".decode("utf-8", "surrogateescape"))
+    with open(path, "wb") as fp:
+        fp.write(b"qa sample with an undecodable name")
+    file_observable = root_analysis.add_file_observable(path)
+
+    result = record_qa_match(qa_match_result(), QATarget.from_file_observable(file_observable, root_analysis.uuid))
+
+    assert result.status == QARecordStatus.STORED
+    (row,) = match_rows()
+    assert row.file_name == "\\udce9\\udce9.bin"
+
+
 def test_rematch_renews_instead_of_storing_again(qa_pool, make_file, root_analysis):
     file_observable = make_file()
     first = record_qa_match(qa_match_result(), QATarget.from_file_observable(file_observable, root_analysis.uuid))

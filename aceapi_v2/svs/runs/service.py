@@ -906,11 +906,10 @@ def change_association(action: str, run_id: str, alert_uuid: str, body: Associat
 # a person's actions on runs (svs:run_manage): ownership, cancel, close, review, comments
 #
 
-def _require_user(user_id: int | None) -> int:
+def _require_user(user_id: int | None) -> None:
     # every action records who took it; a config API key belongs to nobody
     if user_id is None:
         raise HTTPException(status_code=422, detail="this action records who took it: it requires a user's API key or session")
-    return user_id
 
 
 def _user_ids(usernames) -> dict[str, int]:
@@ -940,40 +939,36 @@ def _run_ids(body: BulkRunRequest) -> list[str]:
 
 
 def take_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
-    user_id = _require_user(auth.auth_user_id)
-    return _bulk_result(review.take_ownership(_run_ids(body), user_id, auth.auth_name, _confirmed_takes(body),
-                                              auth=auth))
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.take_ownership(_run_ids(body), auth, _confirmed_takes(body)))
 
 
 def cancel_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
-    user_id = _require_user(auth.auth_user_id)
-    return _bulk_result(review.cancel_runs(_run_ids(body), user_id, auth.auth_name, _confirmed_takes(body),
-                                           auth=auth))
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.cancel_runs(_run_ids(body), auth, _confirmed_takes(body)))
 
 
 def end_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
-    user_id = _require_user(auth.auth_user_id)
-    return _bulk_result(review.end_runs(_run_ids(body), user_id, auth.auth_name, body.reason,
-                                        _confirmed_takes(body), auth=auth))
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.end_runs(_run_ids(body), auth, body.reason, _confirmed_takes(body)))
 
 
 def close_runs(body: BulkRunRequest, auth: ApiAuthResult) -> BulkRunResult:
-    user_id = _require_user(auth.auth_user_id)
-    return _bulk_result(review.close_runs(_run_ids(body), user_id, auth.auth_name, body.reason,
-                                          _confirmed_takes(body), auth=auth))
+    _require_user(auth.auth_user_id)
+    return _bulk_result(review.close_runs(_run_ids(body), auth, body.reason, _confirmed_takes(body)))
 
 
 def review_run(run_id: str, body: ReviewRequest | None, auth: ApiAuthResult) -> ReviewResult:
     """404 for an unknown run; 409 with what stands in the way: another person's ownership, the
     run's state, a stale result, undecided candidates or context-only alerts."""
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     confirmed_from = None
     if body is not None and body.confirmed_take_from:
         confirmed_from = _user_ids([body.confirmed_take_from]).get(body.confirmed_take_from)
 
     try:
-        result = review.review(run_uuid, user_id, auth.auth_name, confirmed_from, auth=auth)
+        result = review.review(run_uuid, auth, confirmed_from)
     except runs.UnknownRun as e:
         raise HTTPException(status_code=404, detail=str(e))
     except review.RunOwned as e:
@@ -1015,29 +1010,27 @@ def list_run_comments(run_id: str) -> list[RunComment]:
 
 
 def add_run_comment(run_id: str, body: RunCommentRequest, auth: ApiAuthResult) -> RunComment:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        return _comment(run_comments.add_comment(run_uuid, user_id, auth.auth_name, body.comment, auth=auth),
-                        run_uuid)
+        return _comment(run_comments.add_comment(run_uuid, auth, body.comment), run_uuid)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)
 
 
 def update_run_comment(run_id: str, comment_id: int, body: RunCommentRequest, auth: ApiAuthResult) -> RunComment:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        return _comment(run_comments.update_comment(run_uuid, comment_id, user_id, auth.auth_name, body.comment,
-                                                    auth=auth), run_uuid)
+        return _comment(run_comments.update_comment(run_uuid, comment_id, auth, body.comment), run_uuid)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)
 
 
 def delete_run_comment(run_id: str, comment_id: int, auth: ApiAuthResult) -> None:
-    user_id = _require_user(auth.auth_user_id)
+    _require_user(auth.auth_user_id)
     run_uuid = _validate_run_id(run_id)
     try:
-        run_comments.delete_comment(run_uuid, comment_id, user_id, auth.auth_name, auth=auth)
+        run_comments.delete_comment(run_uuid, comment_id, auth)
     except COMMENT_ERRORS as e:
         raise _comment_errors(e)

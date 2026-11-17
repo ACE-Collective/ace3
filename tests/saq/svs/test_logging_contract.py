@@ -29,7 +29,7 @@ from tests.saq.svs.conftest import add_catalog_test, person, write_hunt
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
-LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+LAUNCHER = Caller(person(None, "art-launcher"), address="10.1.2.3")
 T0 = datetime(2026, 10, 14, 12, 0, 0)
 
 RUN_FIELDS = ("svs_run", "svs_test", "svs_marker")
@@ -41,7 +41,7 @@ REFUSAL_FIELDS = ("caller", "host", "reason", "launcher", "svs_test")
 @pytest.fixture(autouse=True)
 def setup(no_hunts):
     add_catalog_test(GUID)
-    create_host(build_spec("win10-01"), None)
+    create_host(build_spec("win10-01"), person(None))
 
 
 def _registration(hostname: str = "win10-01") -> Registration:
@@ -227,7 +227,7 @@ def test_a_run_changed_since_review(caplog, routed):
 def test_a_result(caplog):
     missing = "22222222-bbbb-4bbb-8bbb-222222222222"
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-    set_expectation(GUID, missing, "expected", user_id, platform="windows")
+    set_expectation(GUID, missing, "expected", person(user_id), platform="windows")
     run = register(_registration(), LAUNCHER, now=T0)
     start(run.uuid, LAUNCHER, now=T0)
     with caplog.at_level(logging.INFO):
@@ -294,7 +294,7 @@ def test_a_review(caplog):
     start(run.uuid, LAUNCHER, now=T0)
     run_timers(T0 + timedelta(days=2))
     with caplog.at_level(logging.INFO):
-        review.review(run.uuid, user_id, "unittest")
+        review.review(run.uuid, person(user_id, "unittest"))
 
     (transition,) = [r for r in _records(caplog, f"svs run {run.uuid}: ended -> reviewed")]
     _assert_fields(transition, TRANSITION_FIELDS)
@@ -340,11 +340,11 @@ def test_worklist_records(caplog, monkeypatch, attack_catalog, hunt_dir, yara_di
     user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
     monkeypatch.setattr(coverage, "get_attack_catalog", lambda: attack_catalog)
     write_hunt(hunt_dir, signature, tags=["mitre:T1547"])
-    set_expectation(GUID, signature, "expected", user_id, platform="windows")
+    set_expectation(GUID, signature, "expected", person(user_id), platform="windows")
     refresh_coverage("unittest")
 
     with caplog.at_level(logging.INFO):
-        worklist.resolve(signature, "T1547", "remove", "why", user_id, actor="unittest")
+        worklist.resolve(signature, "T1547", "remove", "why", person(user_id, "unittest"))
         write_hunt(hunt_dir, signature)
         windows.clear_cache()
         refresh_coverage("unittest")

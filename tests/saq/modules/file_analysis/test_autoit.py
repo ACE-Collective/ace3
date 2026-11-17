@@ -1,3 +1,4 @@
+import logging
 import os
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ import pytest
 from saq.configuration.config import get_analysis_module_config
 from saq.constants import ANALYSIS_MODULE_AUTOIT, F_FILE, AnalysisExecutionResult
 from saq.modules.file_analysis.autoit import AutoItAnalysis, AutoItAnalyzer, KEY_STDERR
+from tests.saq.helpers import the_error_with_traceback
 from tests.saq.test_util import create_test_context
 
 
@@ -118,7 +120,8 @@ class TestAutoItAnalyzer:
 
         assert analyzer.custom_requirement(file_observable) is False
 
-    def test_execute_analysis_failure_without_a_message_is_named_by_its_type(self, root_analysis, datadir, monkeypatch):
+    def test_execute_analysis_failure_without_a_message_is_named_by_its_type(self, root_analysis, datadir, monkeypatch,
+                                                                            caplog):
         """An exception whose str() is empty still gives the analysis an error, which needs a message."""
         analyzer = AutoItAnalyzer(
             context=create_test_context(root=root_analysis),
@@ -136,6 +139,9 @@ class TestAutoItAnalyzer:
 
         assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
         assert file_observable.get_analysis(AutoItAnalysis).error == "TimeoutError"
+        # the failure is ACE's (run_tool never raises for the tool's own exit status): logged with its traceback
+        record = the_error_with_traceback(caplog, path=file_observable.full_path)
+        assert record.root_uuid == root_analysis.uuid
 
     def test_execute_analysis_autoit_file(self, root_analysis, datadir, tmpdir, monkeypatch):
         analyzer = AutoItAnalyzer(

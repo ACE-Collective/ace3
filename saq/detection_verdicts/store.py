@@ -80,9 +80,9 @@ def _alert_disposition(session, alert_id: int) -> Optional[str]:
     return session.execute(select(Alert.disposition).where(Alert.id == alert_id)).scalar_one()
 
 
-def _write(session, detection: DetectionPoint, new_verdict: Optional[str], user_id: int,
-           auth: Optional[ApiAuthResult]) -> bool:
-    """Stores new_verdict (None clears it) and records the change. False if nothing changed."""
+def _write(session, detection: DetectionPoint, new_verdict: Optional[str], auth: ApiAuthResult) -> bool:
+    """Stores new_verdict (None clears it) as auth's and records the change. False if nothing changed."""
+    user_id = auth.auth_user_id
     current = session.execute(
         select(DetectionPointVerdict)
         .where(DetectionPointVerdict.alert_id == detection.alert_id)
@@ -112,21 +112,19 @@ def _write(session, detection: DetectionPoint, new_verdict: Optional[str], user_
         new_verdict=new_verdict,
         user_id=user_id))
 
-    # actor_user_id is the verdict's writer even for a caller that passes no auth
     log_audit("detection verdict changed", auth=auth, alert_id=detection.alert_id, content_hash=detection.content_hash,
-              signature_uuid=detection.signature_uuid, old_verdict=old_verdict, new_verdict=new_verdict,
-              actor_user_id=user_id)
+              signature_uuid=detection.signature_uuid, old_verdict=old_verdict, new_verdict=new_verdict)
     return True
 
 
-def _change(alert_id: int, content_hash: str, new_verdict: Optional[str], user_id: int, analyst: bool,
-            auth: Optional[ApiAuthResult]) -> bool:
+def _change(alert_id: int, content_hash: str, new_verdict: Optional[str], auth: ApiAuthResult,
+            analyst: bool) -> bool:
     session = get_db()
     try:
         detection = _lock_detection(session, alert_id, content_hash)
         _check_alert(_alert_disposition(session, alert_id), analyst)
         _check_detection(detection)
-        changed = _write(session, detection, new_verdict, user_id, auth)
+        changed = _write(session, detection, new_verdict, auth)
         session.commit()
         return changed
     except Exception:
@@ -134,22 +132,21 @@ def _change(alert_id: int, content_hash: str, new_verdict: Optional[str], user_i
         raise
 
 
-def set_verdict(alert_id: int, content_hash: str, verdict: str, user_id: int, *, analyst: bool = True,
-                auth: Optional[ApiAuthResult] = None) -> bool:
-    """Stores an explicit verdict ('tp' or 'fp') on one detection. Returns False if it was already
-    stored. analyst=False is for ACE itself (the test run review), which may write verdicts on
-    alerts whose disposition analysts cannot set. auth is who acted, for the AUDIT record."""
+def set_verdict(alert_id: int, content_hash: str, verdict: str, auth: ApiAuthResult, *,
+                analyst: bool = True) -> bool:
+    """Stores auth's explicit verdict ('tp' or 'fp') on one detection. Returns False if it was
+    already stored. analyst=False is for ACE itself (the test run review), which may write verdicts
+    on alerts whose disposition analysts cannot set."""
     if verdict not in VERDICTS:
         raise ValueError(f"invalid verdict {verdict!r}")
 
-    return _change(alert_id, content_hash, verdict, user_id, analyst, auth)
+    return _change(alert_id, content_hash, verdict, auth, analyst)
 
 
-def clear_verdict(alert_id: int, content_hash: str, user_id: int, *, analyst: bool = True,
-                  auth: Optional[ApiAuthResult] = None) -> bool:
+def clear_verdict(alert_id: int, content_hash: str, auth: ApiAuthResult, *, analyst: bool = True) -> bool:
     """Removes the explicit verdict on one detection, so it inherits from the alert again. Returns
     False if there was none."""
-    return _change(alert_id, content_hash, None, user_id, analyst, auth)
+    return _change(alert_id, content_hash, None, auth, analyst)
 
 
 class SkipCause(StrEnum):
@@ -188,17 +185,16 @@ def _source_of(session, detection: DetectionPoint) -> Optional[str]:
         .where(DetectionPoint.id == detection.id)).scalar_one()
 
 
-def set_verdicts(targets: list[tuple[int, str]], verdict: Optional[str], user_id: int, *, analyst: bool = True,
-                 only_source: Optional[str] = None, refuse: frozenset[SkipCause] = frozenset(),
-                 auth: Optional[ApiAuthResult] = None) -> VerdictBatch:
+def set_verdicts(targets: list[tuple[int, str]], verdict: Optional[str], auth: ApiAuthResult, *,
+                 analyst: bool = True, only_source: Optional[str] = None,
+                 refuse: frozenset[SkipCause] = frozenset()) -> VerdictBatch:
     """Stores verdict ('tp' or 'fp'; None clears) on every (alert_id, content_hash) detection of
     targets, in one transaction: any error rolls back the whole batch. A detection that cannot take
     the verdict (its alert is not a tp alert analysts can grade, it predates detection identity,
     or it is gone) is skipped with the reason, not an error. With only_source, a detection whose
     verdict source is not that one once it is locked is skipped too, so a Confirm (only_source
     inherited_multi) never overwrites a verdict someone set in the meantime. A skip whose cause is
-    in refuse raises VerdictNotAllowed instead, and nothing is written. auth is who acted, for the
-    AUDIT records."""
+    in refuse raises VerdictNotAllowed instead, and nothing is written. The verdicts are auth's."""
     if verdict is not None and verdict not in VERDICTS:
         raise ValueError(f"invalid verdict {verdict!r}")
 
@@ -252,7 +248,7 @@ def set_verdicts(targets: list[tuple[int, str]], verdict: Optional[str], user_id
                 raise VerdictNotAllowed(skip[1])
             if skip is not None:
                 batch.skipped.append(SkippedDetection(alert_id, content_hash, *skip))
-            elif _write(session, detection, verdict, user_id, auth):
+            elif _write(session, detection, verdict, auth):
                 batch.changed += 1
             else:
                 batch.unchanged += 1
@@ -264,7 +260,7 @@ def set_verdicts(targets: list[tuple[int, str]], verdict: Optional[str], user_id
         raise
 
 
-def confirm_alert(alert_id: int, user_id: int, *, analyst: bool = True, auth: Optional[ApiAuthResult] = None) -> int:
+def confirm_alert(alert_id: int, auth: ApiAuthResult, *, analyst: bool = True) -> int:
     """Confirms every unconfirmed (inherited_multi) TP on the alert: stores an explicit TP on each,
     which does not change the verdict but upgrades its source. Returns how many were confirmed."""
     session = get_db()
@@ -288,7 +284,7 @@ def confirm_alert(alert_id: int, user_id: int, *, analyst: bool = True, auth: Op
 
     # a detection that is gone, or no longer unconfirmed (someone set it meanwhile), has nothing
     # to confirm; anything else refuses the whole confirm, as it always has
-    batch = set_verdicts([(alert_id, content_hash) for content_hash in hashes], VERDICT_TP, user_id,
+    batch = set_verdicts([(alert_id, content_hash) for content_hash in hashes], VERDICT_TP, auth,
                          analyst=analyst, only_source=SOURCE_INHERITED_MULTI,
-                         refuse=frozenset({SkipCause.ALERT, SkipCause.DETECTION}), auth=auth)
+                         refuse=frozenset({SkipCause.ALERT, SkipCause.DETECTION}))
     return batch.changed

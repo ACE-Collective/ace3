@@ -6,7 +6,7 @@ import sys
 from threading import RLock
 from typing import Any, Optional, TYPE_CHECKING
 
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 
 if TYPE_CHECKING:
     from saq.configuration.schema import MonitorDefinitionConfig
@@ -199,7 +199,7 @@ def set_monitor_definitions(definitions: list["MonitorDefinitionConfig"]):
 
 def enable_monitor_fluent_bit(hostname, port, tag):
     emitter = get_emitter()
-    emitter.fluent_bit_sender = sender.FluentSender(tag, host=hostname, port=port)
+    emitter.fluent_bit_sender = UTF8SafeFluentSender(tag, host=hostname, port=port)
     emitter.use_fluent_bit = True
 
 def initialize_monitoring():

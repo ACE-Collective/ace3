@@ -56,6 +56,7 @@ from saq.database.model import YaraQAMatch, YaraQASignature
 from saq.database.private_session import private_transaction, run_private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.json_encoding import _JSONEncoder
+from saq.logging import utf8_safe
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.signatures.model import SIGNATURE_UUID_MAX_LENGTH
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
@@ -380,7 +381,8 @@ def record_qa_match_or_raise(match_result: dict, target: QATarget) -> QARecordRe
             match = YaraQAMatch(
                 signature_uuid=signature_uuid, signature_version=signature_version, version_kind=version_kind,
                 sha256=sha256,
-                file_name=_truncate(target.file_name, _FILE_NAME_MAX_LENGTH),
+                # MySQL rejects the lone surrogates of a name that is not UTF-8
+                file_name=_truncate(utf8_safe(target.file_name), _FILE_NAME_MAX_LENGTH),
                 file_size=target.file_size, root_uuid=target.root_uuid,
                 observable_uuid=target.observable_uuid, node=_local_node(), match_digest=None,
                 match_summary=summary, hit_count=1, first_seen=now, last_seen=now, expires_at=expires_at)

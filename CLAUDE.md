@@ -87,29 +87,31 @@ ACE "integrations" tests are accessed through the `test_external_integration_*` 
 
 There is no configured linter/formatter in the repo. Before asking for a review, `/venv/bin/python .claude/skills/ace-review/scripts/prepare.py --check` lists the lines the branch adds that the review flags (a missing traceback, an unbounded wait, a copied function, an unmarked test), each with its fix, and exits 1 while there are any.
 
-**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port and network semaphore port (`24443` and `53560`, plus 64 × the run's port block, plus the index), its Qdrant collection prefix `ace3-alerts-unittest-<checkout hash>-<slot>` and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
+**Parallel runs.** `pytest -n auto` (or `-n 4`) runs the suite under pytest-xdist; it is opt-in, the default is serial. Every pytest process has a *slot* (`tests/unittest_session.py`): its xdist worker id (`gw0`, `gw1`, ...) or `main`. The slot decides the process's databases, its data directory `/var/tmp/ace-unittest/<checkout hash>/<slot>/`, its API port (`24443` + index), its network semaphore port (`53560` + index), its Qdrant collection prefix `ace3-alerts-unittest-<checkout hash>-<slot>` and its log file `data/logs/unittest-<slot>.log`, all applied through the `SAQ_UNITTEST_CONFIG_PATHS` overlay. Each worker pays the session start cost (four alembic chains plus seeding, a few seconds).
 
-Start only one *run* of the test suite at a time per checkout. The slots of one run are distinct, but a second run of the same checkout would reuse their data directories and Qdrant collections. Runs of different checkouts (git worktrees in the same `dev` container) can run side by side: data directories and Qdrant collections are named after the checkout, and each run claims a port block of its own. Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host.
+One *run* of the test suite runs at a time per container, and one per checkout. Under xdist each worker loads all of ACE and an engine of its own, so two `pytest -n auto` runs in one container (the main checkout and a worktree, or two worktrees) run it out of memory; they would also take the same ports. And a second run of the same checkout would reuse the first one's data directories and Qdrant collections. Two ACE instances can each run the suite concurrently, because each has its own checkout, containers and Qdrant, the databases are provisioned on that instance's own `ace-db`, and the suite's ports are never published to the host, but nothing stops their runs from sharing the host's memory.
 
-This is enforced. `tests/session_lock.py` creates a marker file, `$SAQ_HOME/.pytest-running`,
-when a run starts (the xdist controller, or the only process of a plain run), in the checkout
-every container of the stack mounts. It removes it when the run ends (including on Ctrl-C and
-collection errors). While it exists **no** other run of that checkout may start —
-`pytest_configure` in `tests/conftest.py` fails the run with exit code 4 before collection,
-before any database access and before any data directory is wiped. There is no bypass flag.
-The marker records the pid, hostname, start time, checkout and command line of the process that
-created it, and the error message says whether that process is still running or whether the
-marker was left behind by a run that was killed. In the latter case, clear it with the `rm`
-the message prints. Holding the checkout's marker is also what makes it safe for a run to drop
-the databases an earlier, killed run of that checkout left behind: the holder sweeps the
-checkout's registry in `pytest_configure`, before any of its workers provision. The same process
-claims the run's port block (1 to 63) with an `flock` on `/tmp/ace-pytest-ports-<n>.lock`, trying
-the block its checkout hash picks first, and its workers inherit it through
-`ACE_UNITTEST_PORT_BLOCK`. The kernel drops the lock when the run dies, so a killed run never
-keeps a block. Block 0 is never claimed: it has the ports of a checkout whose suite predates
-port blocks.
+This is enforced by `tests/session_lock.py`, in `pytest_configure` in `tests/conftest.py`, by
+the xdist controller or the only process of a plain run, before collection, before any
+database access and before any data directory is wiped. There is no bypass flag.
 
-**From a git worktree.** A worktree runs the suite in the same `dev` container: `pytest -n auto` from the worktree in `dev`, with its environment exported, or `bin/exec-in-container.sh pytest -n auto` from the host (see *Where a command runs*). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run does not wait for the main checkout's, or another worktree's.
+- **Per container, a run waits.** A run first takes an `flock` on `/tmp/ace-pytest-run.lock`,
+  in the container's own `/tmp`. A run that finds it taken prints the pid, start time, checkout
+  and command line of the run holding it and waits for that run to end; Ctrl-C stops waiting.
+  The kernel drops the lock when its holder exits, however it exits, so a killed run leaves no
+  lock behind. From an agent, a run that may have to wait goes in the background.
+- **Per checkout, a run is refused.** Holding the lock, the run creates a marker file,
+  `$SAQ_HOME/.pytest-running`, in the checkout every container of the stack mounts, and removes
+  it when the run ends (including on Ctrl-C and collection errors). If the marker already
+  exists, the run fails with exit code 4: either a run of the checkout is going on in another
+  container, or a killed run left the marker behind. The marker records the pid, hostname,
+  start time, checkout and command line of the process that created it, and the error message
+  says whether that process is still running. If it is not, clear the marker with the `rm` the
+  message prints. Holding the checkout's marker is also what makes it safe for a run to drop
+  the databases an earlier, killed run of that checkout left behind: the holder sweeps the
+  checkout's registry in `pytest_configure`, before any of its workers provision.
+
+**From a git worktree.** A worktree runs the suite in the same `dev` container: `pytest -n auto` from the worktree in `dev`, with its environment exported, or `bin/exec-in-container.sh pytest -n auto` from the host (see *Where a command runs*). It needs the main checkout's `ssl/`, which `.worktreeinclude` names and `bin/setup-worktree.sh` copies. Tests must not depend on what differs from `/opt/ace`: the worktree has no `data/` volume (nothing under `data/etc/`), `git` cannot read a worktree created on the host inside the container without the `.git` mount above (its `.git` file names a host path), and its path has a `.` in it (SVS replay refuses such a `work_dir`) and is long enough to push a unix socket under the data directory past the 108-byte `AF_UNIX` limit. A worktree's run waits for a run of the main checkout, or of another worktree, in the same container.
 
 ### The standard analysis-module test
 
@@ -285,7 +287,7 @@ default and size-capped. `crash_reporting.replicate` (off by default, `saq/crash
 copies each report to a shared bucket through `saq/storage/` so any node can serve any report; the
 upload runs on a never-joined daemon thread (S3 requests are bounded, but an object store round
 trip still does not belong on the crash path), and `ace crash sync` is the catch-up sweeper (hourly, from `etc/cron/hourly/crash-reports`).
-Error reports (`data/error_reports`, written for any record logged at ERROR with a traceback) are a
+Error reports (`data/error_reports`, written for a record logged at ERROR with a traceback, once per cause every ten minutes) are a
 separate mechanism; a module failure is logged at WARNING and gets only the crash report.
 
 #### Content-addressed storage
@@ -361,7 +363,7 @@ ACE is never down for more than a few minutes, and when something is wrong someo
 
 The goal is that a production failure can be diagnosed from the logs alone, without a shell on the node. Message formatting style (f-string, `%s`, `.format()`) is not a concern.
 
-- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, and skips both during shutdown. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
+- A caught exception that should be logged is logged at ERROR with its traceback: `logging.exception(...)` (or `exc_info=` at ERROR). `ErrorReportHandler` (`saq/error/reporting.py`), which `initialize_logging()` puts on the root logger, writes the error report and emits the monitor event for every such record, once per cause (where it was logged, the exception's type and text) every ten minutes, and skips both during shutdown, so a failure that hits every item the same way needs no throttle of its own. In a long-running loop's catch-all use `log_loop_exception(e, context)`, which also drops the record to INFO without the traceback during shutdown. A connection failure to a peer (redis, qdrant, a remote node) goes through `log_peer_unavailable()` instead.
 - Every `except` either logs as above, or re-raises (with `from e`), or carries a comment saying why silence is correct. Never use a bare `except:` or `traceback.print_exc()`.
 - Each `context` string or log record carries the identifiers needed to find the thing that failed: alert/root uuid, observable, module, path, crash_id. Prefer putting them in `extra={}` (`saq/logging.py` turns these into Splunk fields).
 - A state change worth knowing about later (work claimed, item retired, fallback taken) gets an INFO record. Per-item chatter in a hot loop goes at DEBUG.

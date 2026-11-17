@@ -3,6 +3,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from saq.analysis.base_node import BaseNode
+from saq.analysis.file_manager.file_manager_interface import FileRefusedError
 from saq.analysis.module_path import MODULE_PATH, SPLIT_MODULE_PATH
 from saq.analysis.pivot_link import PivotLink
 from saq.analysis.search import search_down
@@ -359,7 +360,7 @@ class Analysis(BaseNode):
             # Use file manager to store the file
             try:
                 sha256_hash, relative_path = self.file_manager.store_file(path, target_path, move)
-            except ValueError:
+            except FileRefusedError:
                 # refused (and logged) by the file manager: a name or link out of the files
                 # directory, such as an archive's symlink member, costs only this one file
                 return None

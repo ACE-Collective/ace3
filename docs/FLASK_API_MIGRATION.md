@@ -118,6 +118,7 @@ An integration's routes move into the integration, not into `aceapi_v2/`: a pack
 
 - `Security(get_current_auth)` accepts API key (`x-ace-auth` header), JWT bearer token, or Flask session cookie.
 - `get_current_auth` (`aceapi_v2/dependencies.py`) relies on `ApiAuthResult.__bool__` (defined in `saq/auth.py`) returning false for the empty sentinel returned by `verify_api_key` on unmatched credentials — otherwise invalid API keys would pass the dependency.
+- A core write that records who acted takes the route's `ApiAuthResult` as its one actor argument, never a user id and a name beside it: the row stores its `auth_user_id`, a run event its `auth_name`, and `log_audit()` derives every actor field from it. ACE's own actors (the svs timers and router, an alert router) are `ApiAuthResult.system(name)`, whose empty key scope fails every permission check. A route whose write needs a user still refuses a config key (422) before it calls the write.
 
 ### CSRF — read this before migrating a GUI route
 

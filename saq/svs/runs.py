@@ -67,7 +67,7 @@ from saq.svs.run_events import new_run_event, run_log_fields
 from saq.svs.windows import attribution_window
 
 # the actor of a timer's transitions
-TIMER_ACTOR = "svs"
+TIMER_ACTOR = ApiAuthResult.system("svs")
 
 # how many runs one timer pass moves per kind of transition
 TIMER_BATCH = 500
@@ -191,18 +191,17 @@ class Registration:
 # logging and the event log
 #
 
-def _add_event(run: SVSRun, kind: RunEventKind, actor: str, *, actor_user_id: Optional[int] = None,
-               from_state: Optional[str] = None, to_state: Optional[str] = None, details: Optional[dict] = None,
-               now: Optional[datetime] = None) -> None:
-    get_db().add(new_run_event(run.id, kind, actor, actor_user_id=actor_user_id, from_state=from_state,
-                               to_state=to_state, details=details, now=now))
+def _add_event(run: SVSRun, kind: RunEventKind, auth: ApiAuthResult, *, from_state: Optional[str] = None,
+               to_state: Optional[str] = None, details: Optional[dict] = None, now: Optional[datetime] = None) -> None:
+    get_db().add(new_run_event(run.id, kind, auth, from_state=from_state, to_state=to_state, details=details, now=now))
 
 
-def log_transition(run: SVSRun, from_state: Optional[str], to_state: str, actor: str, reason: Optional[str] = None):
-    logging.info("svs run %s: %s -> %s by %s%s", run.uuid, from_state, to_state, actor,
+def log_transition(run: SVSRun, from_state: Optional[str], to_state: str, auth: ApiAuthResult,
+                   reason: Optional[str] = None):
+    logging.info("svs run %s: %s -> %s by %s%s", run.uuid, from_state, to_state, auth.auth_name,
                  f" ({reason})" if reason else "",
-                 extra={**run_log_fields(run), "from_state": from_state, "to_state": to_state, "actor": actor,
-                        "reason": reason})
+                 extra={**run_log_fields(run), "from_state": from_state, "to_state": to_state, "actor": auth.auth_name,
+                        "actor_user_id": auth.auth_user_id, "reason": reason})
 
 
 def _log_call(run: Optional[SVSRun], call: str, launcher: Optional[str], outcome: str, caller: Caller,
@@ -230,9 +229,8 @@ def get_run(run_uuid: str) -> SVSRun:
 # transitions
 #
 
-def _transition(run: SVSRun, from_state: RunState, to_state: RunState, actor: str, *,
-                actor_user_id: Optional[int] = None, values: Optional[dict] = None, reason: Optional[str] = None,
-                now: Optional[datetime] = None) -> bool:
+def _transition(run: SVSRun, from_state: RunState, to_state: RunState, auth: ApiAuthResult, *,
+                values: Optional[dict] = None, reason: Optional[str] = None, now: Optional[datetime] = None) -> bool:
     """Moves the run from from_state to to_state, with values, and appends the transition to its
     event log, in the caller's transaction. Returns False, changing nothing, when the run is not in
     from_state (anymore). The state is the caller's to name, never read back from the run, which a
@@ -245,19 +243,19 @@ def _transition(run: SVSRun, from_state: RunState, to_state: RunState, actor: st
     if result.rowcount != 1:
         return False
 
-    _add_event(run, RunEventKind.TRANSITION, actor, actor_user_id=actor_user_id, from_state=from_state.value,
-               to_state=to_state.value, details={"reason": reason} if reason else None, now=now)
+    _add_event(run, RunEventKind.TRANSITION, auth, from_state=from_state.value, to_state=to_state.value,
+               details={"reason": reason} if reason else None, now=now)
     run.state = to_state.value
     for key, value in (values or {}).items():
         setattr(run, key, value)
     return True
 
 
-def _close(run: SVSRun, from_state: RunState, actor: str, reason: str, *, actor_user_id: Optional[int] = None,
+def _close(run: SVSRun, from_state: RunState, auth: ApiAuthResult, reason: str, *,
            now: Optional[datetime] = None) -> bool:
     """Closes the run; the caller commits and then calls _after_close."""
     now = now or datetime.now()
-    return _transition(run, from_state, RunState.CLOSED, actor, actor_user_id=actor_user_id, reason=reason, now=now,
+    return _transition(run, from_state, RunState.CLOSED, auth, reason=reason, now=now,
                        values={"closed_at": now, "close_reason": reason})
 
 
@@ -288,50 +286,50 @@ def _still_fully_attributed(alert_uuids: list[str]) -> set[str]:
             select(Alert.uuid).where(Alert.uuid.in_(alert_uuids), fully_attributed_condition())).scalars())
 
 
-def _close_alerts(run: SVSRun, alert_uuids: list[str], actor: str, late: bool, *, comment: Optional[str] = None,
-                  reviewed: bool = False, auth: Optional[ApiAuthResult] = None) -> int:
+def _close_alerts(run: SVSRun, alert_uuids: list[str], auth: ApiAuthResult, late: bool, *,
+                  comment: Optional[str] = None, reviewed: bool = False) -> int:
     """Gives the alerts SIMULATED, through the disposition writer analysts use, as the automation
-    user. An alert dispositioned or taken by an analyst in the meantime is left alone, and so is
-    one no longer fully attributed: checked again under the alert's row lock, which disassociating
-    takes too, so an alert disassociated while its run closes is never frozen without a run."""
+    user, for auth (a person or the timer). An alert dispositioned or taken by an analyst in the
+    meantime is left alone, and so is one no longer fully attributed: checked again under the
+    alert's row lock, which disassociating takes too, so an alert disassociated while its run
+    closes is never frozen without a run."""
     if not alert_uuids:
         return 0
 
     result = set_dispositions(
-        alert_uuids, DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
-        user_comment=comment or f"closed with SVS test run {run.uuid}", system=True,
-        expected_dispositions={DISPOSITION_OPEN}, eligible=_still_fully_attributed, auth=auth)
+        alert_uuids, DISPOSITION_SIMULATED, auth, user_comment=comment or f"closed with SVS test run {run.uuid}",
+        system=True, expected_dispositions={DISPOSITION_OPEN}, eligible=_still_fully_attributed)
     closed = result.permitted
     left_alone = sorted(set(result.skipped) | set(result.unexpected) | set(result.ineligible))
     if closed:
-        get_db().add(new_run_event(run.id, RunEventKind.ALERTS_CLOSED, actor, details={
+        get_db().add(new_run_event(run.id, RunEventKind.ALERTS_CLOSED, auth, details={
             "alerts": closed, "disposition": DISPOSITION_SIMULATED, "late": late, "reviewed": reviewed}))
         get_db().commit()
 
     logging.info("svs run %s: %d %salerts closed as %s, %d left alone", run.uuid, len(closed),
                  "late " if late else "", DISPOSITION_SIMULATED, len(left_alone),
                  extra={**run_log_fields(run), "alert_uuids": closed, "left_alone": left_alone, "late": late,
-                        "actor": actor})
+                        "actor": auth.auth_name})
     return len(closed)
 
 
-def close_run_alerts(run: SVSRun, actor: str = TIMER_ACTOR, *, auth: Optional[ApiAuthResult] = None) -> int:
+def close_run_alerts(run: SVSRun, auth: ApiAuthResult = TIMER_ACTOR) -> int:
     """Gives SIMULATED to the alerts of a run that was just closed: those fully attributed, open
     and not taken by an analyst (docs/SVS.md, Part 3, *Test alerts downstream*). Nothing is learned
     from them: an alert attributed to a run that is not reviewed has no verdicts and no capture.
     An alert attributed after this is closed by the timers' sweep (close_late_alerts). Returns how
     many it closed."""
     return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
-                         actor, late=False, auth=auth)
+                         auth, late=False)
 
 
-def close_reviewed_run_alerts(run: SVSRun, actor: str, *, auth: Optional[ApiAuthResult] = None) -> int:
+def close_reviewed_run_alerts(run: SVSRun, auth: ApiAuthResult) -> int:
     """Gives SIMULATED to the alerts of a run that was just reviewed (saq/svs/review.py), as closing
     it would, with a comment naming the review. Their YARA hits are captured now that the run is
     reviewed, so the review must be committed first. Returns how many it closed."""
     return _close_alerts(run, [alert_uuid for _, alert_uuid in _closable_alerts(SVSAttribution.run_id == run.id)],
-                         actor, late=False, comment=f"reviewed with SVS test run {run.uuid} by {actor}", reviewed=True,
-                         auth=auth)
+                         auth, late=False, comment=f"reviewed with SVS test run {run.uuid} by {auth.auth_name}",
+                         reviewed=True)
 
 
 def close_late_alerts() -> int:
@@ -365,11 +363,11 @@ def on_run_ended(run: SVSRun) -> None:
         logging.exception("unable to compute the result of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
 
-def _after_close(run: SVSRun, actor: str = TIMER_ACTOR, *, auth: Optional[ApiAuthResult] = None) -> None:
+def _after_close(run: SVSRun, auth: ApiAuthResult = TIMER_ACTOR) -> None:
     """Closes the alerts of a run whose close was committed. A failure never undoes the close: the
     timers' late-alert sweep closes those alerts on its next pass."""
     try:
-        close_run_alerts(run, actor, auth=auth)
+        close_run_alerts(run, auth)
     except Exception as e:
         get_db().rollback()
         logging.exception("unable to close the alerts of svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
@@ -618,13 +616,13 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
     db = get_db()
     db.add(run)
     db.flush()
-    _add_event(run, RunEventKind.REGISTERED, caller.name, actor_user_id=caller.user_id, to_state=run.state,
+    _add_event(run, RunEventKind.REGISTERED, caller.auth, to_state=run.state,
                details={**payload, "platform": run.platform, "observation_source": decision.observation_source.value,
                         "holds_host": run.holds_host},
                now=now)
     db.commit()
 
-    log_transition(run, None, run.state, caller.name)
+    log_transition(run, None, run.state, caller.auth)
     _log_call(run, CALL_REGISTER, run.launcher, "created", caller, platform=run.platform)
     return run
 
@@ -635,7 +633,7 @@ def register(registration: Registration, caller: Caller, now: Optional[datetime]
 
 def _launcher_call(run: SVSRun, call: str, caller: Caller, outcome: str, payload: Optional[dict] = None,
                    now: Optional[datetime] = None) -> None:
-    _add_event(run, RunEventKind.LAUNCHER_CALL, caller.name, actor_user_id=caller.user_id,
+    _add_event(run, RunEventKind.LAUNCHER_CALL, caller.auth,
                details={"call": call, "outcome": outcome, "payload": payload or {}}, now=now)
 
 
@@ -677,7 +675,7 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
             raise _host_busy(run, caller, busy)
 
     if run.state != RunState.CREATED or not _transition(
-            run, RunState.CREATED, RunState.STARTED, caller.name, actor_user_id=caller.user_id, now=now,
+            run, RunState.CREATED, RunState.STARTED, caller.auth, now=now,
             values={"started_at": now,
                     "observation_ends_at": now + timedelta(seconds=run.observation_seconds),
                     "attribution_ends_at": now + timedelta(seconds=run.attribution_seconds)}):
@@ -685,7 +683,7 @@ def start(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSR
 
     _launcher_call(run, CALL_START, caller, "started", now=now)
     get_db().commit()
-    log_transition(run, RunState.CREATED.value, run.state, caller.name)
+    log_transition(run, RunState.CREATED.value, run.state, caller.auth)
     _log_call(run, CALL_START, run.launcher, "started", caller)
     return run
 
@@ -726,8 +724,8 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     if failed:
         reason = f"the launcher reported a failure (exit code {exit_code}{f': {error}' if error else ''})"
         values["error_reason"] = reason
-        moved = _transition(run, RunState.STARTED, RunState.ERROR, caller.name, actor_user_id=caller.user_id,
-                            values=values, reason=reason, now=now)
+        moved = _transition(run, RunState.STARTED, RunState.ERROR, caller.auth, values=values, reason=reason,
+                            now=now)
     else:
         moved = get_db().execute(
             update(SVSRun)
@@ -745,7 +743,7 @@ def executed(run_uuid: str, caller: Caller, exit_code: int, error: Optional[str]
     _launcher_call(run, CALL_EXECUTED, caller, outcome, payload, now=now)
     get_db().commit()
     if failed:
-        log_transition(run, RunState.STARTED.value, run.state, caller.name, run.error_reason)
+        log_transition(run, RunState.STARTED.value, run.state, caller.auth, run.error_reason)
     _log_call(run, CALL_EXECUTED, run.launcher, outcome, caller, exit_code=exit_code,
               output_bytes=payload.get("output_bytes"), output_truncated=payload.get("output_truncated"))
     return run
@@ -773,27 +771,26 @@ def cleanup(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SV
     return run
 
 
-def _cancel(run: SVSRun, actor: str, user_id: Optional[int], now: datetime) -> Optional[tuple[RunState, bool]]:
+def _cancel(run: SVSRun, auth: ApiAuthResult, now: datetime) -> Optional[tuple[RunState, bool]]:
     """Created or Started -> Canceled, in the caller's transaction; a run canceled before it
     started is also closed. Returns the state it was canceled from and whether it was closed, or
     None when it is in neither state (anymore)."""
     if run.state not in (RunState.CREATED, RunState.STARTED):
         return None
     from_state = RunState(run.state)
-    if not _transition(run, from_state, RunState.CANCELED, actor, actor_user_id=user_id, now=now,
-                       values={"canceled_at": now}):
+    if not _transition(run, from_state, RunState.CANCELED, auth, now=now, values={"canceled_at": now}):
         return None
 
     closed = from_state == RunState.CREATED and _close(
-        run, RunState.CANCELED, actor, CLOSE_REASON_CANCELED_BEFORE_START, actor_user_id=user_id, now=now)
+        run, RunState.CANCELED, auth, CLOSE_REASON_CANCELED_BEFORE_START, now=now)
     return from_state, closed
 
 
-def _log_cancel(run: SVSRun, from_state: RunState, closed: bool, actor: str) -> None:
-    log_transition(run, from_state.value, RunState.CANCELED.value, actor)
+def _log_cancel(run: SVSRun, from_state: RunState, closed: bool, auth: ApiAuthResult) -> None:
+    log_transition(run, from_state.value, RunState.CANCELED.value, auth)
     if closed:
-        log_transition(run, RunState.CANCELED.value, RunState.CLOSED.value, actor, CLOSE_REASON_CANCELED_BEFORE_START)
-        _after_close(run, actor)
+        log_transition(run, RunState.CANCELED.value, RunState.CLOSED.value, auth, CLOSE_REASON_CANCELED_BEFORE_START)
+        _after_close(run, auth)
 
 
 def cancel(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVSRun:
@@ -802,33 +799,33 @@ def cancel(run_uuid: str, caller: Caller, now: Optional[datetime] = None) -> SVS
     started has no windows, so it is closed at once. Raises UnknownRun, RunStateConflict."""
     now = now or datetime.now()
     run = get_run(run_uuid)
-    canceled = _cancel(run, caller.name, caller.user_id, now)
+    canceled = _cancel(run, caller.auth, now)
     if canceled is None:
         raise _conflict(run, CALL_CANCEL, caller)
 
     _launcher_call(run, CALL_CANCEL, caller, "canceled", now=now)
     get_db().commit()
-    _log_cancel(run, *canceled, caller.name)
+    _log_cancel(run, *canceled, caller.auth)
     _log_call(run, CALL_CANCEL, run.launcher, "canceled", caller)
     return run
 
 
-def cancel_by_person(run_uuid: str, actor: str, user_id: int, now: Optional[datetime] = None) -> SVSRun:
+def cancel_by_person(run_uuid: str, auth: ApiAuthResult, now: Optional[datetime] = None) -> SVSRun:
     """A person's cancel (saq/svs/review.py), the same as the launcher's. Raises UnknownRun,
     RunStateConflict."""
     now = now or datetime.now()
     run = get_run(run_uuid)
-    canceled = _cancel(run, actor, user_id, now)
+    canceled = _cancel(run, auth, now)
     if canceled is None:
         get_db().rollback()
         raise RunStateConflict(run.uuid, run.state, "cancel")
 
     get_db().commit()
-    _log_cancel(run, *canceled, actor)
+    _log_cancel(run, *canceled, auth)
     return run
 
 
-def end_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
+def end_by_person(run_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None,
                   now: Optional[datetime] = None) -> SVSRun:
     """A person ends a Started run now rather than waiting out its observation window, because they
     know nothing more will fire: Started -> Ended, as the timer would, so it is reviewed like any
@@ -848,14 +845,14 @@ def end_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str]
 
     # the timers may not have ended a run whose window already passed: that end stands
     ends_at = min(now, run.observation_ends_at)
-    if not _end(run, now, actor, actor_user_id=user_id, reason=reason,
+    if not _end(run, now, auth, reason=reason,
                 values={"observation_ends_at": ends_at, "end_reason": reason}):
         raise RunStateConflict(run.uuid, run.state, "end")
     return run
 
 
-def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[str] = None,
-                    now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> SVSRun:
+def close_by_person(run_uuid: str, auth: ApiAuthResult, reason: Optional[str] = None,
+                    now: Optional[datetime] = None) -> SVSRun:
     """A person discards a run (saq/svs/review.py): Ended, Canceled or Error -> Closed, and its
     alerts are closed as SIMULATED. Nothing is learned from it. An Ended run needs a reason, since
     it waited for a review [MGT-3]. Raises UnknownRun, RunStateConflict, ReasonRequired."""
@@ -868,12 +865,12 @@ def close_by_person(run_uuid: str, actor: str, user_id: int, reason: Optional[st
     if from_state == RunState.ENDED and reason is None:
         raise ReasonRequired(f"run {run.uuid} ended and waits for a review: closing it instead needs a reason")
 
-    if not _close(run, from_state, actor, reason or CLOSE_REASON_BY_PERSON, actor_user_id=user_id, now=now):
+    if not _close(run, from_state, auth, reason or CLOSE_REASON_BY_PERSON, now=now):
         get_db().rollback()
         raise RunStateConflict(run.uuid, run.state, "close")
     get_db().commit()
-    log_transition(run, from_state.value, RunState.CLOSED.value, actor, run.close_reason)
-    _after_close(run, actor, auth=auth)
+    log_transition(run, from_state.value, RunState.CLOSED.value, auth, run.close_reason)
+    _after_close(run, auth)
     return run
 
 
@@ -928,17 +925,17 @@ def _time_out(run: SVSRun, now: datetime) -> bool:
     return True
 
 
-def _end(run: SVSRun, now: datetime, actor: str = TIMER_ACTOR, *, actor_user_id: Optional[int] = None,
-         reason: Optional[str] = None, values: Optional[dict] = None) -> bool:
+def _end(run: SVSRun, now: datetime, auth: ApiAuthResult = TIMER_ACTOR, *, reason: Optional[str] = None,
+         values: Optional[dict] = None) -> bool:
     """Started -> Ended, by the timers or by a person (end_by_person). Returns False, changing
     nothing, when the run is not Started (anymore)."""
-    if not _transition(run, RunState.STARTED, RunState.ENDED, actor, actor_user_id=actor_user_id, reason=reason,
+    if not _transition(run, RunState.STARTED, RunState.ENDED, auth, reason=reason,
                        now=now, values={"ended_at": now, **(values or {})}):
         get_db().rollback()
         return False
     mark_runs_stale(get_db(), run_ids=[run.id])
     get_db().commit()
-    log_transition(run, RunState.STARTED.value, RunState.ENDED.value, actor, reason)
+    log_transition(run, RunState.STARTED.value, RunState.ENDED.value, auth, reason)
     on_run_ended(run)
     return True
 

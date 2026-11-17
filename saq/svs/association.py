@@ -210,7 +210,7 @@ def associate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Optio
                    .on_duplicate_key_update(**manual))
 
     hashes = [content_hash for content_hash, _, _ in detections]
-    db.add(new_run_event(run.id, RunEventKind.ASSOCIATED, actor, actor_user_id=user_id, now=now,
+    db.add(new_run_event(run.id, RunEventKind.ASSOCIATED, auth, now=now,
                          details={"alert_uuid": alert.uuid, "detections": hashes, "late": late, "reason": reason}))
     _changed(run, db)
     db.commit()
@@ -274,7 +274,7 @@ def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Op
                .values(removed_at=now, removed_by=actor[:256], removed_by_user_id=user_id,
                        removal_reason=removal_reason)
                .execution_options(synchronize_session=False))
-    db.add(new_run_event(run.id, RunEventKind.DISASSOCIATED, actor, actor_user_id=user_id, now=now, details={
+    db.add(new_run_event(run.id, RunEventKind.DISASSOCIATED, auth, now=now, details={
         "alert_uuid": alert.uuid, "detections": [content_hash for _, content_hash, _ in rows], "reason": reason,
         "not_a_test": not_a_test}))
     _changed(run, db)
@@ -289,18 +289,17 @@ def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Op
 
     reopened = False
     if alert.disposition == DISPOSITION_SIMULATED:
-        # the automation user set SIMULATED and owns the alert, so it is the writer; the comment
-        # names the person
-        automation_user_id = get_config().global_settings.automation_user_id
+        # the automation user set SIMULATED and owns the alert, so it is the writer (system); the
+        # comment names the person
         result = set_dispositions(
-            [alert.uuid], DISPOSITION_OPEN, automation_user_id,
+            [alert.uuid], DISPOSITION_OPEN, auth,
             user_comment=f"disassociated from SVS test run {run.uuid} by {actor}", system=True,
-            expected_dispositions={DISPOSITION_SIMULATED}, auth=auth)
+            expected_dispositions={DISPOSITION_SIMULATED})
         reopened = alert.uuid in result.permitted
         if reopened:
             # nobody is working the alert it gives back: unowned, it is picked up like a new one. An
             # analyst who took it meanwhile keeps it
-            change_alert_owner([alert.uuid], None, automation_user_id, auth=auth)
+            change_alert_owner([alert.uuid], None, auth, system=True)
         alert = _read_alert(alert.id)
 
     moved = False
@@ -319,7 +318,6 @@ def disassociate(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, reason: Op
 def keep(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, now: Optional[datetime] = None) -> AssociationResult:
     """Confirms the alert's context attributions to the run: it is the run's. Raises UnknownRun,
     UnknownAlert, AssociationConflict (no context attribution to keep)."""
-    user_id, actor = auth.auth_user_id, auth.auth_name
     now = now or datetime.now()
     run = get_run(run_uuid)
     db = get_db()
@@ -329,13 +327,13 @@ def keep(run_uuid: str, alert_uuid: str, auth: ApiAuthResult, now: Optional[date
         .where(SVSAttribution.run_id == run.id, SVSAttribution.alert_uuid == alert.uuid,
                SVSAttribution.removed_at.is_(None),
                SVSAttribution.confidence == AttributionConfidence.CONTEXT.value)
-        .values(kept_at=now, kept_by_user_id=user_id)
+        .values(kept_at=now, kept_by_user_id=auth.auth_user_id)
         .execution_options(synchronize_session=False))
     if kept.rowcount == 0:
         db.rollback()
         raise AssociationConflict(f"alert {alert.uuid} has no context attribution to run {run.uuid} to keep")
 
-    db.add(new_run_event(run.id, RunEventKind.CONTEXT_KEPT, actor, actor_user_id=user_id, now=now,
+    db.add(new_run_event(run.id, RunEventKind.CONTEXT_KEPT, auth, now=now,
                          details={"alert_uuid": alert.uuid}))
     db.commit()
     _audit("svs context attribution kept", run, alert.uuid, auth)

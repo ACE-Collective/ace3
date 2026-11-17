@@ -21,6 +21,7 @@ from tests.saq.svs.conftest import (
     insert_capture,
     set_disposition,
 )
+from tests.saq.helpers import person
 
 
 @pytest.mark.unit
@@ -89,7 +90,7 @@ def test_a_tp_alert_with_several_signatures_labels_inherited_multi():
 @pytest.mark.integration
 def test_an_explicit_override_decides():
     alert, files = graded_alert("DELIVERY", {"a.bin": [RULE_UUID, OTHER_RULE_UUID]})
-    set_verdict(alert.id, _hash_of(alert, files["a.bin"]), "fp", _user_id())
+    set_verdict(alert.id, _hash_of(alert, files["a.bin"]), "fp", person(_user_id()))
 
     sample = _sample(files["a.bin"])
     assert (sample["label"], sample["label_source"]) == ("fp", SOURCE_EXPLICIT)
@@ -110,7 +111,7 @@ def test_disagreeing_votes_of_one_strength_conflict():
     _assert_sql_agrees(sample)
 
     # an explicit vote outweighs both
-    set_verdict(first.id, _hash_of(first, first_files["a.bin"]), "tp", _user_id())
+    set_verdict(first.id, _hash_of(first, first_files["a.bin"]), "tp", person(_user_id()))
     sample = _sample(first_files["a.bin"])
     assert (sample["label"], sample["label_source"]) == ("tp", SOURCE_EXPLICIT)
     _assert_sql_agrees(sample)
@@ -195,7 +196,7 @@ def test_sql_agrees_with_python_over_the_whole_corpus():
                                 contents={"a.bin": content})
     graded_alert("FALSE_POSITIVE", {"b.bin": [RULE_UUID]}, contents={"b.bin": content})
     graded_alert("REVIEWED", {"d.bin": [OTHER_RULE_UUID]})
-    set_verdict(first.id, _hash_of(first, files["a.bin"], OTHER_RULE_UUID), "fp", _user_id())
+    set_verdict(first.id, _hash_of(first, files["a.bin"], OTHER_RULE_UUID), "fp", person(_user_id()))
 
     samples = samples_subquery()
     rows = [dict(row) for row in get_db().execute(select(samples)).mappings()]

@@ -68,16 +68,17 @@ ORDER BY
     insert_date = request.form.get('new_alert_insert_date', datetime.now().strftime('%m-%d-%Y %H:%M:%S'))
     # reformat date
     event_time = datetime.strptime(insert_date, '%m-%d-%Y %H:%M:%S')
-    # set the timezone
+    # the form offers only pytz.common_timezones, so an unknown one is a crafted request, not a fault
+    timezone_str = request.form.get('timezone', 'UTC')
     try:
-        timezone_str = request.form.get('timezone', 'UTC')
         timezone = pytz.timezone(timezone_str)
-        event_time = timezone.localize(event_time)
-    except Exception as e:
-        error_message = f"unable to set timezone to {timezone_str}: {e}"
-        logging.error(error_message)
-        flash(error_message)
+    except pytz.UnknownTimeZoneError:
+        logging.warning(f"user {current_user.username} submitted unknown timezone {timezone_str}",
+                        extra={"timezone": timezone_str, "user": current_user.username})
+        flash(f"unknown timezone {timezone_str}")
         return redirect(url_for('analysis.manage'))
+
+    event_time = timezone.localize(event_time)
 
     comment = ''
 

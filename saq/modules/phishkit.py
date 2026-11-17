@@ -9,7 +9,7 @@ from urlfinderlib import find_urls
 from urlfinderlib.url import URL
 
 import yaml
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 from pydantic import Field
 from saq.analysis import Analysis
 from saq.analysis.observable import Observable
@@ -248,9 +248,9 @@ class PhishkitAnalyzer(AnalysisModule):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fluent_bit_metrics_sender: Optional[sender.FluentSender] = None
+        self.fluent_bit_metrics_sender: Optional[UTF8SafeFluentSender] = None
         if self.config.fluent_bit_metrics_enabled:
-            self.fluent_bit_metrics_sender = sender.FluentSender(
+            self.fluent_bit_metrics_sender = UTF8SafeFluentSender(
                 self.config.fluent_bit_metrics_tag,
                 host=self.config.fluent_bit_hostname,
                 port=self.config.fluent_bit_port,

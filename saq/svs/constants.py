@@ -4,6 +4,7 @@ and the API can use them."""
 
 from enum import StrEnum
 
+from saq.auth import ApiAuthResult
 from saq.detection_verdicts.constants import VERDICT_FP, VERDICT_TP
 from saq.signatures.builtin import SVS_MARKER_MISMATCH, SVS_REGISTRATION_REFUSED
 
@@ -166,7 +167,7 @@ TAG_MARKER_MISMATCH = "svs:marker_mismatch"
 TAG_MAINTENANCE = "svs:maintenance"
 
 # the actor of what the marker router writes
-ROUTER_ACTOR = "svs"
+ROUTER_ACTOR = ApiAuthResult.system("svs")
 
 # the router name (alert_queue_changes.router) of every queue move a person makes through SVS:
 # associating an alert, or disassociating it. The marker router never moves an alert whose latest

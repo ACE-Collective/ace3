@@ -28,7 +28,7 @@ from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
 from saq.svs.constants import CaptureState, MissingReason
 from saq.yara_scanning.match_record import serialize_match_record, summarize_match_record
 from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
-from tests.saq.helpers import audit_actor_of, audit_actors, audit_record
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, person
 from tests.saq.svs.conftest import (
     OTHER_RULE_UUID,
     RULE_UUID,
@@ -323,8 +323,8 @@ async def test_changed_since(client: AsyncClient):
     # setting and clearing a verdict both show up; the cleared verdict leaves only history
     content_hash = get_db().query(DetectionPoint.content_hash).filter(
         DetectionPoint.alert_id == a_alert.id, DetectionPoint.signature_uuid == RULE_UUID).scalar()
-    set_verdict(a_alert.id, content_hash, "fp", _user_id())
-    clear_verdict(a_alert.id, content_hash, _user_id())
+    set_verdict(a_alert.id, content_hash, "fp", person(_user_id()))
+    clear_verdict(a_alert.id, content_hash, person(_user_id()))
     assert _keys(await _get(client, changed_since=since)) == [(a, RULE_UUID)]
 
     # a disposition change relabels every sample of the alert

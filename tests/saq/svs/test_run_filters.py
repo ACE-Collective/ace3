@@ -14,7 +14,7 @@ from saq.svs.hosts import build_spec, create_host
 from saq.svs.refusals import Caller
 from saq.svs.run_filters import needs_attention_condition, run_filter_conditions
 from saq.svs.runs import Registration, TargetSpec
-from tests.saq.helpers import insert_alert
+from tests.saq.helpers import insert_alert, person
 from tests.saq.svs.conftest import add_catalog_test, attribute_to_run, set_disposition
 
 # several runs on one test host are fixtures here; the host's claim is tested in test_runs.py
@@ -26,12 +26,12 @@ GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 @pytest.fixture(autouse=True)
 def setup(no_hunts):
     add_catalog_test(GUID)
-    create_host(build_spec("win10-01"), None)
+    create_host(build_spec("win10-01"), person(None))
 
 
 def _run(state: str, changed_since_review: bool = False) -> str:
     run_uuid = runs.register(Registration(test_guid=GUID, targets=[TargetSpec("win10-01")], launcher="art"),
-                             Caller(name="art-launcher")).uuid
+                             Caller(person(None, "art-launcher"))).uuid
     db = get_db()
     db.execute(update(SVSRun).where(SVSRun.uuid == run_uuid)
                .values(state=state, changed_since_review=changed_since_review))

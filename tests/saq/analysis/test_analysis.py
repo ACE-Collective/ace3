@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import pytest
@@ -22,6 +23,54 @@ def test_add_file_observable_skips_a_refused_file(root_analysis, tmp_path):
     assert root_analysis.add_file_observable(link) is None
     assert not [o for o in root_analysis.all_observables if o.type == "file"]
     assert not os.path.exists(root_analysis.hardcopy_dir) or not os.listdir(root_analysis.hardcopy_dir)
+
+@pytest.mark.unit
+def test_add_file_observable_raises_a_failure_that_is_not_a_refusal(root_analysis, tmp_path, monkeypatch, caplog):
+    """Only a refusal skips the file: any other ValueError is logged and raised, not taken for one."""
+    source = tmp_path / "payload.pdf"
+    source.write_bytes(b"payload")
+
+    def _fail(path):
+        raise ValueError("unreadable")
+
+    monkeypatch.setattr("saq.analysis.file_manager.local_file_manager.sha256_file", _fail)
+
+    with pytest.raises(ValueError, match="unreadable"):
+        root_analysis.add_file_observable(str(source))
+
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
+        f"unable to add file observable {source}: unreadable (<class 'ValueError'>)"]
+
+@pytest.mark.unit
+def test_add_file_observable_with_a_name_no_filesystem_can_hold(root_analysis, tmp_path):
+    """Half of a UTF-16 surrogate pair, which a name decoded from JSON can hold, has no bytes on any
+    filesystem, so it is replaced and the file is stored."""
+    source = tmp_path / "payload.pdf"
+    source.write_bytes(b"payload")
+
+    file_observable = root_analysis.add_file_observable(str(source), target_path=json.loads('"\\ud83d report.pdf"'))
+
+    assert isinstance(file_observable, FileObservable)
+    assert file_observable.file_path == "_ report.pdf"
+    assert os.listdir(root_analysis.file_dir) == ["_ report.pdf"]
+
+@pytest.mark.unit
+def test_add_file_observable_with_an_undecodable_name(root_analysis, tmp_path, unlogged):
+    """A file whose name is not UTF-8 (an archive member, as os.listdir returns it) is stored under
+    that name, not dropped."""
+    name = b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
+    source = tmp_path / name
+    source.write_bytes(b"payload")
+
+    file_observable = root_analysis.add_file_observable(str(source))
+
+    assert isinstance(file_observable, FileObservable)
+    assert file_observable.file_path == name
+    assert os.listdir(os.fsencode(root_analysis.file_dir)) == [b"\xe9\xe9.pdf"]
+
+    root_analysis.save()
+    loaded = load_root(root_analysis.storage_dir)
+    assert loaded.get_observable(file_observable.uuid).file_path == name
 
 @pytest.mark.unit
 def test_add_file_observable(root_analysis, tmpdir):

@@ -19,6 +19,7 @@ from saq.constants import SERVICE_YARA_SCANNER, AnalysisExecutionResult, DIRECTI
 from saq.database import Observable as db_Observable, ObservableDetection as db_ObservableDetection
 from saq.database.pool import get_db
 from saq.environment import get_data_dir
+from saq.logging import utf8_safe
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.file_analysis.disassembly import disassemble
@@ -31,6 +32,7 @@ from saq.svs.marker_rule import install_marker_rule
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraScanTimeout, YaraServiceUnavailable
+from saq.yara_scanning.server import scan_path
 from saq.yara_scanning.service import get_validated_git_repo_dirs
 
 import yara
@@ -355,7 +357,7 @@ class YaraScanner_v3_4(AnalysisModule):
 
                 scanned_locally = True
                 try:
-                    matches_found = self.scanner.scan(local_file_path, meta_tags=meta_tags)
+                    matches_found = scan_path(self.scanner, local_file_path, meta_tags=meta_tags)
                     result = self.scanner.scan_results
                     attach_rule_details(result, self.local_rule_details)
                 except yara.TimeoutError as e:
@@ -547,7 +549,8 @@ class YaraScanner_v3_4(AnalysisModule):
             if yara_result['rule'] not in no_alert_rules:
                 detection_signature_uuid, detection_signature_version = _yara_detection_signature(yara_result)
                 _file.add_detection_point(
-                    "{} matched yara rule {}".format(_file, yara_result['rule']),
+                    # MySQL rejects the lone surrogates of a name that is not UTF-8
+                    "{} matched yara rule {}".format(utf8_safe(str(_file)), yara_result['rule']),
                     details=_yara_detection_details(_file, yara_result, self.signature_dir),
                     queue=_rule_queue(yara_result),
                     signature_uuid=detection_signature_uuid,

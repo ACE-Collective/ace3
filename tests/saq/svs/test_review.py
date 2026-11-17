@@ -122,7 +122,7 @@ class TestOwnership:
         db.execute(update(User).where(User.id == ghost.id).values(enabled=False))
         db.commit()
 
-        result = review.take_ownership([free.uuid, bobs.uuid, disabled.uuid, str(uuid.uuid4())], user_id, ACTOR)
+        result = review.take_ownership([free.uuid, bobs.uuid, disabled.uuid, str(uuid.uuid4())], person(user_id, ACTOR))
         assert sorted(result.done) == sorted([free.uuid, disabled.uuid])
         assert result.left_alone == {bobs.uuid: "bob"} and len(result.unknown) == 1
         assert _run_row(free).owner_id == user_id
@@ -130,7 +130,7 @@ class TestOwnership:
         assert json.loads(event.details) == {"from": "ghost"}
 
         # confirmed: taken from bob
-        result = review.take_ownership([bobs.uuid], user_id, ACTOR, {bobs.uuid: bob.id})
+        result = review.take_ownership([bobs.uuid], person(user_id, ACTOR), {bobs.uuid: bob.id})
         assert result.done == [bobs.uuid] and _run_row(bobs).owner_id == user_id
 
 
@@ -141,7 +141,7 @@ class TestCancelAndClose:
         started = _run()
         created = runs.register(runs.Registration(test_guid=GUID, targets=[runs.TargetSpec("win10-01")],
                                                   launcher="art"), LAUNCHER)
-        result = review.cancel_runs([started.uuid, created.uuid, ended.uuid], user_id, ACTOR)
+        result = review.cancel_runs([started.uuid, created.uuid, ended.uuid], person(user_id, ACTOR))
         assert sorted(result.done) == sorted([started.uuid, created.uuid])
         assert ended.uuid in result.conflicts
         assert (_run_row(started).state, _run_row(created).state) == (RunState.CANCELED, RunState.CLOSED)
@@ -152,10 +152,10 @@ class TestCancelAndClose:
         run = _run()
         alert_uuid = _alert(run)
         run = _ended(run)
-        result = review.close_runs([run.uuid], user_id, ACTOR)
+        result = review.close_runs([run.uuid], person(user_id, ACTOR))
         assert "needs a reason" in result.conflicts[run.uuid]
 
-        result = review.close_runs([run.uuid], user_id, ACTOR, reason="the test VM was rebuilt mid-run")
+        result = review.close_runs([run.uuid], person(user_id, ACTOR), reason="the test VM was rebuilt mid-run")
         assert result.done == [run.uuid]
         closed = _run_row(run)
         assert (closed.state, closed.close_reason) == (RunState.CLOSED, "the test VM was rebuilt mid-run")
@@ -165,21 +165,21 @@ class TestCancelAndClose:
         ended = _ended(_run())
         started, bobs = _run(), _run()
         _set_owner(bobs, bob.id)
-        assert "needs a reason" in review.end_runs([started.uuid], user_id, ACTOR).conflicts[started.uuid]
+        assert "needs a reason" in review.end_runs([started.uuid], person(user_id, ACTOR)).conflicts[started.uuid]
 
-        result = review.end_runs([started.uuid, ended.uuid, bobs.uuid], user_id, ACTOR, reason="the test failed")
+        result = review.end_runs([started.uuid, ended.uuid, bobs.uuid], person(user_id, ACTOR), reason="the test failed")
         assert (result.done, list(result.conflicts), result.left_alone) == ([started.uuid], [ended.uuid], {bobs.uuid: "bob"})
         run = _run_row(started)
         assert (run.state, run.end_reason) == (RunState.ENDED, "the test failed")
         # its result was computed: it can be reviewed now
-        assert review.review(started.uuid, user_id, ACTOR).run.state == RunState.REVIEWED
+        assert review.review(started.uuid, person(user_id, ACTOR)).run.state == RunState.REVIEWED
 
     def test_a_run_someone_else_owns_needs_confirmation(self, user_id, bob):
         run = _run()
         runs.cancel(run.uuid, LAUNCHER)
         _set_owner(run, bob.id)
-        assert review.close_runs([run.uuid], user_id, ACTOR).left_alone == {run.uuid: "bob"}
-        result = review.close_runs([run.uuid], user_id, ACTOR, confirmed_takes={run.uuid: bob.id})
+        assert review.close_runs([run.uuid], person(user_id, ACTOR)).left_alone == {run.uuid: "bob"}
+        result = review.close_runs([run.uuid], person(user_id, ACTOR), confirmed_takes={run.uuid: bob.id})
         assert result.done == [run.uuid]
         assert (_run_row(run).state, _run_row(run).owner_id) == (RunState.CLOSED, user_id)
 
@@ -194,7 +194,7 @@ class TestTakingWhileActing:
         threads = []
 
         def take():
-            review.take_ownership([run.uuid], bob.id, "bob")
+            review.take_ownership([run.uuid], person(bob.id, "bob"))
             get_db().remove()
             taken.set()
 
@@ -209,9 +209,9 @@ class TestTakingWhileActing:
 
         monkeypatch.setattr(review, "_claim", bob_takes_it_meanwhile)
         if action == "close":
-            review.close_runs([run.uuid], user_id, ACTOR, reason="not needed")
+            review.close_runs([run.uuid], person(user_id, ACTOR), reason="not needed")
         else:
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         threads[0].join(10)
         assert taken.is_set()
 
@@ -236,10 +236,10 @@ class TestReview:
         run = _run()
         alert_uuid = _alert(run, RULE)
         run = _ended(run)
-        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, RULE, "expected", person(user_id), platform="windows")
         results.recompute_stale_results()
 
-        result = review.review(run.uuid, user_id, ACTOR)
+        result = review.review(run.uuid, person(user_id, ACTOR))
         assert (result.re_review, result.counts, result.alerts_closed) == (False, {"hit": 1}, 1)
         reviewed = _run_row(run)
         assert (reviewed.state, reviewed.reviewer_id, reviewed.owner_id) == (RunState.REVIEWED, user_id, user_id)
@@ -260,25 +260,25 @@ class TestReview:
         _alert(run, RULE)
         run = _ended(run)
         with pytest.raises(review.ReviewBlocked) as e:
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         assert e.value.blockers == {"candidates": [RULE]}
 
-        expectations.set_expectation(GUID, RULE, "rejected", user_id, platform="windows")
+        expectations.set_expectation(GUID, RULE, "rejected", person(user_id), platform="windows")
         with pytest.raises(review.ReviewBlocked) as e:
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         # the stale result still shows the candidate; the recompute settles it
         assert e.value.blockers["stale"] is True
         assert _run_row(run).state == RunState.ENDED
 
         results.recompute_stale_results()
-        assert review.review(run.uuid, user_id, ACTOR).counts == {"rejected": 1}
+        assert review.review(run.uuid, person(user_id, ACTOR)).counts == {"rejected": 1}
 
     def test_a_blocked_review_takes_nothing(self, user_id):
         run = _run()
         _alert(run, RULE)
         run = _ended(run)
         with pytest.raises(review.ReviewBlocked):
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         assert _run_row(run).owner_id is None
         assert _events(run, RunEventKind.OWNERSHIP_TAKEN) == []
 
@@ -287,11 +287,11 @@ class TestReview:
         context = _alert(run, marker=False)
         run = _ended(run)
         with pytest.raises(review.ReviewBlocked) as e:
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         assert e.value.blockers == {"context_alerts": [context]}
 
         association.keep(run.uuid, context, person(user_id))
-        assert review.review(run.uuid, user_id, ACTOR).alerts_closed == 1
+        assert review.review(run.uuid, person(user_id, ACTOR)).alerts_closed == 1
 
     def test_a_result_never_computed_is_marked_stale(self, user_id):
         run = _ended(_run())
@@ -299,18 +299,18 @@ class TestReview:
         db.execute(SVSRunResultState.__table__.delete().where(SVSRunResultState.run_id == run.id))
         db.commit()
         with pytest.raises(review.ReviewBlocked):
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         db.expire_all()
         assert db.get(SVSRunResultState, run.id).stale
 
     def test_ignored_detections_get_an_fp_verdict(self, user_id):
         run = _run()
         alert_uuid = _alert(run, RULE, NOISE)
-        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
-        expectations.set_ignore(NOISE, user_id, test_guid=GUID)
+        expectations.set_expectation(GUID, RULE, "expected", person(user_id), platform="windows")
+        expectations.set_ignore(NOISE, person(user_id), test_guid=GUID)
         run = _ended(run)
 
-        assert review.review(run.uuid, user_id, ACTOR).fp_verdicts == 1
+        assert review.review(run.uuid, person(user_id, ACTOR)).fp_verdicts == 1
         db = get_db()
         db.expire_all()
         verdicts = db.execute(select(DetectionPointVerdict.signature_uuid, DetectionPointVerdict.verdict,
@@ -322,7 +322,7 @@ class TestReview:
     def test_a_verdict_someone_set_is_left_alone(self, user_id):
         run = _run()
         alert_uuid = _alert(run, NOISE)
-        expectations.set_ignore(NOISE, user_id, test_guid=GUID)
+        expectations.set_ignore(NOISE, person(user_id), test_guid=GUID)
         run = _ended(run)
         alert_id = _row(alert_uuid).id
         targets = review.ignored_detections(get_db(), run)
@@ -330,11 +330,11 @@ class TestReview:
         db = get_db()
         db.execute(update(Alert).where(Alert.id == alert_id).values(disposition="DELIVERY"))
         db.commit()
-        set_verdicts(targets, "tp", user_id)
+        set_verdicts(targets, "tp", person(user_id))
         db.execute(update(Alert).where(Alert.id == alert_id).values(disposition=DISPOSITION_OPEN))
         db.commit()
 
-        assert review.review(run.uuid, user_id, ACTOR).fp_verdicts == 0
+        assert review.review(run.uuid, person(user_id, ACTOR)).fp_verdicts == 0
         db.expire_all()
         assert db.execute(select(DetectionPointVerdict.verdict).where(
             DetectionPointVerdict.alert_id == alert_id)).scalars().all() == ["tp"]
@@ -343,21 +343,21 @@ class TestReview:
         run = _run()
         _alert(run, RULE)
         run = _ended(run)
-        expectations.set_expectation(GUID, RULE, "expected", user_id, platform="windows")
+        expectations.set_expectation(GUID, RULE, "expected", person(user_id), platform="windows")
         results.recompute_stale_results()
-        review.review(run.uuid, user_id, ACTOR)
+        review.review(run.uuid, person(user_id, ACTOR))
 
         # a late alert after the review, of a signature since rejected
         late = _alert(run, NOISE)
         assert _run_row(run).changed_since_review is True
-        expectations.set_expectation(GUID, NOISE, "rejected", user_id, platform="windows")
+        expectations.set_expectation(GUID, NOISE, "rejected", person(user_id), platform="windows")
         results.recompute_stale_results()
         # an older reviewed row that left the live result is dropped with the old sign-off
         with private_transaction() as session:
             session.add(SVSRunResult(run_id=run.id, signature_uuid=str(uuid.uuid4()), status=None,
                                      reviewed_status="missing"))
 
-        result = review.review(run.uuid, user_id, ACTOR)
+        result = review.review(run.uuid, person(user_id, ACTOR))
         assert (result.re_review, result.counts, result.alerts_closed) == (True, {"hit": 1, "rejected": 1}, 1)
         assert _row(late).disposition == DISPOSITION_SIMULATED
         assert _run_row(run).changed_since_review is False
@@ -369,16 +369,16 @@ class TestReview:
     def test_refused(self, user_id, bob):
         started = _run()
         with pytest.raises(runs.RunStateConflict):
-            review.review(started.uuid, user_id, ACTOR)
+            review.review(started.uuid, person(user_id, ACTOR))
         with pytest.raises(runs.UnknownRun):
-            review.review(str(uuid.uuid4()), user_id, ACTOR)
+            review.review(str(uuid.uuid4()), person(user_id, ACTOR))
 
         run = _ended(_run())
         _set_owner(run, bob.id)
         with pytest.raises(review.RunOwned) as e:
-            review.review(run.uuid, user_id, ACTOR)
+            review.review(run.uuid, person(user_id, ACTOR))
         assert e.value.owner == "bob"
-        result = review.review(run.uuid, user_id, ACTOR, confirmed_from=bob.id)
+        result = review.review(run.uuid, person(user_id, ACTOR), confirmed_from=bob.id)
         assert _run_row(run).owner_id == user_id and result.counts == {}
 
     def test_a_failure_after_the_sign_off_keeps_it(self, user_id, monkeypatch):
@@ -392,31 +392,31 @@ class TestReview:
 
         close_reviewed_run_alerts = runs.close_reviewed_run_alerts
         monkeypatch.setattr(runs, "close_reviewed_run_alerts", down)
-        review.review(run.uuid, user_id, ACTOR)
+        review.review(run.uuid, person(user_id, ACTOR))
         assert _run_row(run).state == RunState.REVIEWED
         assert _row(alert_uuid).disposition == DISPOSITION_OPEN
 
         # reviewing again finishes the job
         monkeypatch.setattr(runs, "close_reviewed_run_alerts", close_reviewed_run_alerts)
-        assert review.review(run.uuid, user_id, ACTOR).alerts_closed == 1
+        assert review.review(run.uuid, person(user_id, ACTOR)).alerts_closed == 1
 
 
 class TestComments:
     def test_comments(self, user_id, bob):
         run = _run()
-        comment = run_comments.add_comment(run.uuid, user_id, ACTOR, "  rerun after the agent update\r\n")
+        comment = run_comments.add_comment(run.uuid, person(user_id, ACTOR), "  rerun after the agent update\r\n")
         assert comment.comment == "rerun after the agent update"
-        run_comments.update_comment(run.uuid, comment.id, user_id, ACTOR, "rerun tomorrow")
+        run_comments.update_comment(run.uuid, comment.id, person(user_id, ACTOR), "rerun tomorrow")
         assert [c.comment for c in run_comments.list_comments(run.uuid)] == ["rerun tomorrow"]
 
         with pytest.raises(run_comments.NotTheAuthor):
-            run_comments.update_comment(run.uuid, comment.id, bob.id, "bob", "mine now")
+            run_comments.update_comment(run.uuid, comment.id, person(bob.id, "bob"), "mine now")
         with pytest.raises(run_comments.NotTheAuthor):
-            run_comments.delete_comment(run.uuid, comment.id, bob.id, "bob")
+            run_comments.delete_comment(run.uuid, comment.id, person(bob.id, "bob"))
         with pytest.raises(run_comments.InvalidComment):
-            run_comments.add_comment(run.uuid, user_id, ACTOR, "   ")
+            run_comments.add_comment(run.uuid, person(user_id, ACTOR), "   ")
         with pytest.raises(run_comments.UnknownComment):
-            run_comments.delete_comment(run.uuid, 999999, user_id, ACTOR)
+            run_comments.delete_comment(run.uuid, 999999, person(user_id, ACTOR))
 
-        run_comments.delete_comment(run.uuid, comment.id, user_id, ACTOR)
+        run_comments.delete_comment(run.uuid, comment.id, person(user_id, ACTOR))
         assert run_comments.list_comments(run.uuid) == []

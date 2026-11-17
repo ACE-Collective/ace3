@@ -704,6 +704,14 @@ class TestSelfServiceApiKeyRoutes:
         await check_permission(session, ApiAuthResult(**as_user, credential=API_CREDENTIAL_SESSION), "user", "self")
 
     @pytest.mark.asyncio
+    async def test_ace_itself_never_passes_a_permission_check(self, session: AsyncSession):
+        """ACE's own actors (ApiAuthResult.system) are not users, so the account half of the check
+        lets them by as it does a config key: their empty key scope is what refuses them."""
+        with pytest.raises(HTTPException) as denied:
+            await check_permission(session, ApiAuthResult.system("svs"), "alert", "read")
+        assert denied.value.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_a_session_only_route_refuses_a_credential_that_is_not_a_session(self, caplog):
         """A user credential with no key id is not thereby a GUI session; only the session passes."""
         caplog.set_level(logging.WARNING)
