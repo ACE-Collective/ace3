@@ -66,11 +66,10 @@ def _log_fields(window: SVSMaintenanceWindow) -> dict:
     return {"svs_maintenance": window.uuid, "host": window.host, "reason": window.reason}
 
 
-def _audit(message: str, window: SVSMaintenanceWindow, actor: str, auth: Optional[ApiAuthResult], **fields) -> None:
-    # actor is the name the window records, the timer's included, which has no auth
-    log_audit("%s: %s on test host %s by %s", message, window.uuid, window.host, actor, auth=auth,
-              **_log_fields(window), actor=actor, opened_at=window.opened_at.isoformat(),
-              ends_at=window.ends_at.isoformat(), **fields)
+def _audit(message: str, window: SVSMaintenanceWindow, auth: ApiAuthResult, **fields) -> None:
+    log_audit("%s: %s on test host %s by %s", message, window.uuid, window.host, auth.auth_name, auth=auth,
+              **_log_fields(window), opened_at=window.opened_at.isoformat(), ends_at=window.ends_at.isoformat(),
+              **fields)
 
 
 def _resolve(host_ref: str, caller: Caller, what: str, payload: dict, now: datetime) -> SVSTestHost:
@@ -128,7 +127,7 @@ def open_window(host_ref: str, minutes: int, reason: str, caller: Caller,
         ends_at=now + timedelta(minutes=minutes))
     db.add(window)
     db.commit()
-    _audit("svs maintenance window opened", window, caller.name, caller.auth, minutes=minutes,
+    _audit("svs maintenance window opened", window, caller.auth, minutes=minutes,
            caller_address=caller.address)
     return window
 
@@ -152,7 +151,7 @@ def end_window(host_ref: str, caller: Caller, now: Optional[datetime] = None) ->
 
     _end(window, caller.name, now)
     db.commit()
-    _audit("svs maintenance window ended", window, caller.name, caller.auth, ended_at=window.ended_at.isoformat())
+    _audit("svs maintenance window ended", window, caller.auth, ended_at=window.ended_at.isoformat())
     return window
 
 
@@ -165,8 +164,8 @@ def _end(window: SVSMaintenanceWindow, actor: str, now: datetime) -> None:
 
 
 @contextmanager
-def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] = None, *,
-                        auth: Optional[ApiAuthResult] = None) -> Iterator[list[SVSMaintenanceWindow]]:
+def ending_host_windows(host: SVSTestHost, auth: ApiAuthResult,
+                        now: Optional[datetime] = None) -> Iterator[list[SVSMaintenanceWindow]]:
     """Ends the test host's open windows on the caller's session, for hosts.delete_host, which
     removes the host and commits inside the block while it holds the host's row lock. A window
     outliving its host would go on closing the alerts of a host nobody tests, and nothing could end
@@ -181,10 +180,10 @@ def ending_host_windows(host: SVSTestHost, actor: str, now: Optional[datetime] =
         .order_by(SVSMaintenanceWindow.id)
         .with_for_update()).scalars())
     for window in windows:
-        _end(window, actor, now)
+        _end(window, auth.auth_name, now)
     yield windows
     for window in windows:
-        _audit("svs maintenance window ended", window, actor, auth, ended_at=window.ended_at.isoformat(),
+        _audit("svs maintenance window ended", window, auth, ended_at=window.ended_at.isoformat(),
                ended_because="test host removed")
 
 
@@ -260,13 +259,13 @@ def expire_windows(now: Optional[datetime] = None) -> int:
         if db.execute(
                 update(SVSMaintenanceWindow)
                 .where(SVSMaintenanceWindow.id == window.id, SVSMaintenanceWindow.ended_at.is_(None))
-                .values(ended_at=window.ends_at, ended_by=TIMER_ACTOR, end_reason=END_REASON_EXPIRED)
+                .values(ended_at=window.ends_at, ended_by=TIMER_ACTOR.auth_name, end_reason=END_REASON_EXPIRED)
                 .execution_options(synchronize_session=False)).rowcount != 1:
             db.rollback()
             continue
         db.commit()
         count += 1
-        _audit("svs maintenance window expired", window, TIMER_ACTOR, None)
+        _audit("svs maintenance window expired", window, TIMER_ACTOR)
     return count
 
 
@@ -275,7 +274,6 @@ def close_alerts() -> int:
     maintenance window. An alert an analyst took, dispositioned or associated with a run meanwhile
     is left alone. Either way its record is closed, so it isn't looked at again. Returns how many alerts it closed."""
     db = get_db()
-    automation_user_id = get_config().global_settings.automation_user_id
     rows = db.execute(
         select(SVSMaintenanceAlert.id, SVSMaintenanceAlert.alert_uuid, SVSMaintenanceWindow)
         .join(SVSMaintenanceWindow, SVSMaintenanceWindow.id == SVSMaintenanceAlert.window_id)
@@ -294,7 +292,7 @@ def close_alerts() -> int:
     count = 0
     for window_id, window in windows.items():
         try:
-            count += _close_window_alerts(window, records[window_id], automation_user_id)
+            count += _close_window_alerts(window, records[window_id])
         except Exception as e:
             db.rollback()
             log_loop_exception(e, f"unable to close the alerts of svs maintenance window {window.uuid}")
@@ -314,11 +312,11 @@ def _still_in_maintenance(alert_uuids: list[str]) -> set[str]:
                                    SVSAttribution.removed_at.is_(None)))).scalars())
 
 
-def _close_window_alerts(window: SVSMaintenanceWindow, records: list[tuple[int, str]], automation_user_id) -> int:
+def _close_window_alerts(window: SVSMaintenanceWindow, records: list[tuple[int, str]]) -> int:
     db = get_db()
     alert_uuids = [alert_uuid for _, alert_uuid in records]
     result = set_dispositions(
-        alert_uuids, DISPOSITION_IGNORE, automation_user_id, system=True,
+        alert_uuids, DISPOSITION_IGNORE, TIMER_ACTOR, system=True,
         expected_dispositions={DISPOSITION_OPEN}, eligible=_still_in_maintenance,
         user_comment=f"closed: SVS maintenance window {window.uuid} on test host {window.host}: {window.reason}")
     closed = result.permitted

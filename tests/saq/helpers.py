@@ -19,8 +19,10 @@ from typing import Union
 import uuid
 
 
+from aceapi_v2.auth.utils import API_AUTH_TYPE_USER, API_CREDENTIAL_USER_KEY
 from saq.analysis.io_tracking import _disable_io_tracker, _enable_io_tracker
 from saq.analysis.root import RootAnalysis, Submission
+from saq.auth import ApiAuthResult
 from saq.configuration import config as config_module
 from saq.configuration.config import get_config
 from saq.constants import (
@@ -42,6 +44,7 @@ from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 import certifi
+import msgpack
 import psutil
 import pymysql
 import pymysql.cursors
@@ -524,6 +527,35 @@ def unconfigured_logging():
         root_logger.handlers[:] = handlers
         root_logger.setLevel(level)
 
+@contextmanager
+def fluent_receiver():
+    """A local socket standing in for fluent-bit. Yields ``(port, receive)``; ``receive()`` returns
+    the data dict of the next record a fluent sender delivered to the port. A sender connects on
+    its first send, which the listen backlog accepts before ``receive()`` does."""
+    server = socket.create_server(("127.0.0.1", 0))
+    server.settimeout(5)
+    connections = []
+    unpacker = msgpack.Unpacker(raw=False)
+
+    def receive() -> dict:
+        if not connections:
+            connection, _ = server.accept()
+            connection.settimeout(5)
+            connections.append(connection)
+        while True:
+            for _tag, _time, data in unpacker:
+                return data
+            chunk = connections[0].recv(65536)
+            assert chunk, "the fluent sender closed the connection without sending a record"
+            unpacker.feed(chunk)
+
+    try:
+        yield server.getsockname()[1], receive
+    finally:
+        for connection in connections:
+            connection.close()
+        server.close()
+
 # test comms pipe is used to communicate between test process and child processes
 test_comms_p = None
 test_comms_pid = None
@@ -580,12 +612,16 @@ def insert_alert():
     assert alert.id is not None
     return alert
 
+def person(user_id: int | None, name: str = "unittest", key_id: int | None = None) -> ApiAuthResult:
+    """A user calling the API with one of their keys, as the routes pass the caller to a write."""
+    return ApiAuthResult(auth_type=API_AUTH_TYPE_USER, auth_name=name, auth_user_id=user_id, key_id=key_id,
+                         key_name=f"key-{key_id}" if key_id is not None else None, credential=API_CREDENTIAL_USER_KEY)
+
 def make_simulated(alert: Alert) -> None:
     """Gives the alert the disposition SVS sets on a test-run alert (SIMULATED), through the
     system path, and drops the workload entry that queued, so a test sees only what the code
     under test schedules."""
-    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, get_config().global_settings.automation_user_id,
-                     system=True)
+    set_dispositions([alert.uuid], DISPOSITION_SIMULATED, ApiAuthResult.system("svs"), system=True)
     db = get_db()
     db.query(Workload).filter(Workload.uuid == alert.uuid).delete()
     db.commit()
@@ -747,6 +783,19 @@ def audit_actor_of(record: logging.LogRecord) -> tuple:
 def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
     """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
     return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+
+
+def logged_with(caplog: pytest.LogCaptureFixture, level: int, **fields) -> list[logging.LogRecord]:
+    """The records caplog captured at level whose extra={} fields include fields."""
+    return [r for r in caplog.records
+            if r.levelno == level and all(getattr(r, key, None) == value for key, value in fields.items())]
+
+
+def the_error_with_traceback(caplog: pytest.LogCaptureFixture, **fields) -> logging.LogRecord:
+    """The one ERROR record with fields in its extra={}, which carries a traceback, as an error report needs."""
+    (record,) = logged_with(caplog, logging.ERROR, **fields)
+    assert record.exc_info is not None and record.exc_info[0] is not None
+    return record
 
 
 def _requests_error_from_local_server(handle) -> requests.exceptions.RequestException:

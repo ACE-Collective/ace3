@@ -40,6 +40,7 @@ from saq.svs.runs import (
 )
 from saq.svs.service import SVSService
 from tests.saq.svs.conftest import add_catalog_test
+from tests.saq.helpers import person
 
 pytestmark = pytest.mark.integration
 
@@ -48,7 +49,7 @@ LINUX_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
 REMOVED_GUID = "cccccccc-3333-4333-8333-333333333333"
 IAAS_GUID = "eeeeeeee-5555-4555-8555-555555555555"
 
-LAUNCHER = Caller(name="art-launcher", address="10.1.2.3")
+LAUNCHER = Caller(person(None, "art-launcher"), address="10.1.2.3")
 
 T0 = datetime(2026, 10, 14, 12, 0, 0)
 
@@ -59,10 +60,10 @@ def setup(no_hunts, monkeypatch):
     add_catalog_test(LINUX_GUID, platforms=("linux", "macos"))
     add_catalog_test(REMOVED_GUID, removed=True)
     add_catalog_test(IAAS_GUID, platforms=("iaas:aws", "iaas:azure"))
-    create_host(build_spec("win10-01.lab.example", usernames=["LAB\\svc_art"], platform="windows"), None)
-    create_host(build_spec("anyuser-01"), None)
-    create_host(build_spec("ubuntu-01", platform="linux"), None)
-    create_host(build_spec("mac-01", platform="macos"), None)
+    create_host(build_spec("win10-01.lab.example", usernames=["LAB\\svc_art"], platform="windows"), person(None))
+    create_host(build_spec("anyuser-01"), person(None))
+    create_host(build_spec("ubuntu-01", platform="linux"), person(None))
+    create_host(build_spec("mac-01", platform="macos"), person(None))
     monkeypatch.setattr(runs, "close_run_alerts", _record("closed", runs.close_run_alerts))
     monkeypatch.setattr(runs, "on_run_ended", _record("ended", runs.on_run_ended))
     HOOKS.clear()
@@ -277,7 +278,7 @@ def test_a_started_run_holds_its_hosts_until_its_observation_window_ends():
 
 
 def test_a_test_that_holds_the_host_holds_it_for_the_attribution_window():
-    set_test_settings(GUID, None, holds_host=True)
+    set_test_settings(GUID, person(None), holds_host=True)
     first = register(_registration(), LAUNCHER, now=T0)
     assert _state(first.uuid).holds_host
     start(first.uuid, LAUNCHER, now=T0)
@@ -287,7 +288,7 @@ def test_a_test_that_holds_the_host_holds_it_for_the_attribution_window():
     assert error.value.holders[0].until == T0 + timedelta(hours=25)
 
     # a test's settings apply to runs registered after them: this run doesn't hold the host
-    set_test_settings(GUID, None, holds_host=False)
+    set_test_settings(GUID, person(None), holds_host=False)
     second = register(_registration(), LAUNCHER, now=T0 + timedelta(hours=25, seconds=1))
     assert not _state(second.uuid).holds_host
     assert json.loads(_events(second.uuid)[0].details)["holds_host"] is False
@@ -507,7 +508,7 @@ def test_a_person_ends_a_started_run_early(caplog):
     caplog.set_level(logging.INFO)
 
     # to the second, as start is
-    runs.end_by_person(run.uuid, "alice", _user_id(), "  the test failed: nothing will fire ",
+    runs.end_by_person(run.uuid, person(_user_id(), "alice"), "  the test failed: nothing will fire ",
                        now=T0 + timedelta(minutes=10, milliseconds=600))
 
     run = _state(run.uuid)
@@ -531,19 +532,19 @@ def test_a_person_ends_a_started_run_early(caplog):
 def test_ending_a_run_early_needs_a_started_run_and_a_reason():
     run = register(_registration(), LAUNCHER, now=T0)
     with pytest.raises(RunStateConflict):
-        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0)
+        runs.end_by_person(run.uuid, person(_user_id(), "alice"), "nothing fired", now=T0)
 
     start(run.uuid, LAUNCHER, now=T0)
     with pytest.raises(runs.ReasonRequired):
-        runs.end_by_person(run.uuid, "alice", _user_id(), "  ", now=T0 + timedelta(minutes=1))
+        runs.end_by_person(run.uuid, person(_user_id(), "alice"), "  ", now=T0 + timedelta(minutes=1))
     assert _state(run.uuid).state == RunState.STARTED
 
     run_timers(T0 + timedelta(hours=1))
     with pytest.raises(RunStateConflict):
-        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1, minutes=1))
+        runs.end_by_person(run.uuid, person(_user_id(), "alice"), "nothing fired", now=T0 + timedelta(hours=1, minutes=1))
     assert _state(run.uuid).end_reason is None
     with pytest.raises(UnknownRun):
-        runs.end_by_person("00000000-0000-4000-8000-000000000000", "alice", _user_id(), "nothing fired")
+        runs.end_by_person("00000000-0000-4000-8000-000000000000", person(_user_id(), "alice"), "nothing fired")
 
 
 def test_ending_a_run_the_timers_end_meanwhile_is_a_conflict(monkeypatch):
@@ -568,7 +569,7 @@ def test_ending_a_run_the_timers_end_meanwhile_is_a_conflict(monkeypatch):
 
     monkeypatch.setattr(runs, "get_run", read_then_the_timers_end_it)
     with pytest.raises(RunStateConflict):
-        runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1))
+        runs.end_by_person(run.uuid, person(_user_id(), "alice"), "nothing fired", now=T0 + timedelta(hours=1))
     monkeypatch.undo()
 
     # the timers' end stands, once
@@ -581,7 +582,7 @@ def test_ending_a_run_whose_window_passed_before_the_timers_ended_it_keeps_its_w
     run = register(_registration(), LAUNCHER, now=T0)
     start(run.uuid, LAUNCHER, now=T0)
 
-    runs.end_by_person(run.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(hours=1, minutes=5))
+    runs.end_by_person(run.uuid, person(_user_id(), "alice"), "nothing fired", now=T0 + timedelta(hours=1, minutes=5))
     run = _state(run.uuid)
     assert (run.observation_ends_at, run.ended_at) == (T0 + timedelta(hours=1), T0 + timedelta(hours=1, minutes=5))
 
@@ -589,7 +590,7 @@ def test_ending_a_run_whose_window_passed_before_the_timers_ended_it_keeps_its_w
 def test_a_run_ended_early_frees_its_hosts():
     first = register(_registration(), LAUNCHER, now=T0)
     start(first.uuid, LAUNCHER, now=T0)
-    runs.end_by_person(first.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(minutes=10))
+    runs.end_by_person(first.uuid, person(_user_id(), "alice"), "nothing fired", now=T0 + timedelta(minutes=10))
 
     second = register(_registration(), LAUNCHER, now=T0 + timedelta(minutes=11))
     start(second.uuid, LAUNCHER, now=T0 + timedelta(minutes=11))
@@ -597,10 +598,10 @@ def test_a_run_ended_early_frees_its_hosts():
 
 
 def test_a_run_ended_early_whose_test_holds_the_host_still_holds_it():
-    set_test_settings(GUID, None, holds_host=True)
+    set_test_settings(GUID, person(None), holds_host=True)
     first = register(_registration(), LAUNCHER, now=T0)
     start(first.uuid, LAUNCHER, now=T0)
-    runs.end_by_person(first.uuid, "alice", _user_id(), "nothing fired", now=T0 + timedelta(minutes=10))
+    runs.end_by_person(first.uuid, person(_user_id(), "alice"), "nothing fired", now=T0 + timedelta(minutes=10))
 
     with pytest.raises(HostBusy) as error:
         register(_registration(), LAUNCHER, now=T0 + timedelta(hours=2))

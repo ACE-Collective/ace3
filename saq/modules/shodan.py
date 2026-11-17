@@ -101,9 +101,16 @@ class ShodanAnalyzer(AnalysisModule):
                 analysis.shodan_results = self.search_host(observable.value)
             elif observable.type == F_SHA1:
                 analysis.shodan_results = self.search_cert(observable.value)
+        except shodan.APIError as e:
+            # Shodan's own answer (no information for the host, a bad key, a rate limit, or it could not be
+            # reached), which is about Shodan and not a fault in ACE
+            analysis.error = str(e) or type(e).__name__
+            logging.warning(f"unable to query shodan for {observable.value}: {e}", exc_info=True,
+                            extra=self._log_extra(observable))
+            return AnalysisExecutionResult.COMPLETED
         except Exception as e:
             analysis.error = str(e) or type(e).__name__
-            logging.warning(f"unable to query shodan: {e}")
+            logging.exception(f"unable to query shodan for {observable.value}", extra=self._log_extra(observable))
             return AnalysisExecutionResult.COMPLETED
 
         file_path = os.path.join(self._context.root.storage_dir, f'{observable.value}.shodan')
@@ -160,9 +167,14 @@ class ShodanAnalyzer(AnalysisModule):
 
         except Exception as e:
             analysis.error = str(e) or type(e).__name__
-            logging.warning(f"unable to parse shodan results: {e}")
+            logging.exception(f"unable to parse shodan results for {observable.value}",
+                              extra=self._log_extra(observable))
 
         return AnalysisExecutionResult.COMPLETED
+
+    def _log_extra(self, observable: Observable) -> dict:
+        return {"root_uuid": self.get_root().uuid, "observable_uuid": observable.uuid,
+                "observable_value": observable.value}
         
     def _add_cert_observable(self, analysis: ShodanAnalysis, filename: str, cert: str):
         file_path = os.path.join(self._context.root.storage_dir, f'{filename}.x509')

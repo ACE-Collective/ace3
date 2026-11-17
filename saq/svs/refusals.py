@@ -14,7 +14,7 @@ The table is written here only.
 import ipaddress
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -46,14 +46,22 @@ MAX_HOST = 255
 
 @dataclass(frozen=True)
 class Caller:
-    """Who called the run API: the user or API key, and where from."""
+    """Who called the run API (the user or API key), and where from."""
 
-    name: str
-    user_id: Optional[int] = None
-    key_id: Optional[int] = None
+    auth: ApiAuthResult
     address: Optional[str] = None
-    # the credential, for the actor fields of an AUDIT record (saq.logging.log_audit)
-    auth: Optional[ApiAuthResult] = field(default=None, compare=False)
+
+    @property
+    def name(self) -> str:
+        return self.auth.auth_name
+
+    @property
+    def user_id(self) -> Optional[int]:
+        return self.auth.auth_user_id
+
+    @property
+    def key_id(self) -> Optional[int]:
+        return self.auth.key_id
 
 
 def _host_key(hostname: str) -> str:

@@ -65,6 +65,7 @@ from saq.svs.marker_rule import MARKER_RULE_NAME
 from saq.svs.markers import new_marker
 from saq.svs.runs import Registration, TargetSpec, end_by_person, register, start
 from tests.saq.svs.conftest import LAUNCHER, add_catalog_test, add_test_host, started_run
+from tests.saq.helpers import person
 
 MARKER = "svs-" + "a" * 26
 OTHER_MARKER = "svs-" + "b" * 26
@@ -363,7 +364,7 @@ class TestEvaluate:
 
     @pytest.mark.usefixtures("overlapping_runs")
     def test_context_refuses_runs_whose_claims_overlap(self):
-        set_test_settings(GUID, None, holds_host=True)
+        set_test_settings(GUID, person(None), holds_host=True)
         first = _run()
         assert first.holds_host
         # inside the first run's claim, which a test that holds the host keeps for its attribution window
@@ -584,7 +585,7 @@ class TestDatabase:
         # cached with the observation window the run started with
         resolve_markers([run.marker])
         user_id = get_db().execute(select(User.id).where(User.username == "unittest")).scalar_one()
-        end_by_person(run.uuid, "unittest", user_id, "nothing fired", now=started + timedelta(minutes=10))
+        end_by_person(run.uuid, person(user_id, "unittest"), "nothing fired", now=started + timedelta(minutes=10))
 
         evaluation = evaluate(root, started + timedelta(minutes=20))
         assert not any(a.late for a in evaluation.attributions)
@@ -762,7 +763,7 @@ class TestDatabase:
         evaluation = evaluate(root, _soon())
         assert evaluation.status == SVSStatus.MISMATCH
         assert len(write_attributions(root.uuid, evaluation).removed) == 2
-        assert {by for _, _, by, _ in self._rows(root.uuid)} == {ROUTER_ACTOR}
+        assert {by for _, _, by, _ in self._rows(root.uuid)} == {ROUTER_ACTOR.auth_name}
 
 
 #

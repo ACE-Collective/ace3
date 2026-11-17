@@ -40,6 +40,7 @@ from saq.svs.service import CoverageRefresher, SVSService
 from saq.svs.signatures import SignatureTags, SignatureTagsUnavailable, signature_techniques
 from saq.svs.test_state import Evaluation, TestState
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, write_hunt, write_yara_rule
+from tests.saq.helpers import person
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 OTHER_GUID = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -290,7 +291,7 @@ def _state() -> SVSCoverageState:
 
 def _validated_run(guid: str, user_id: int):
     """A reviewed run of guid on win10-01 that hit SIGNATURE, which is expected of it."""
-    expectations.set_expectation(guid, SIGNATURE, "expected", user_id, platform="windows")
+    expectations.set_expectation(guid, SIGNATURE, "expected", person(user_id), platform="windows")
     run = started_run(guid)
     db = get_db()
     db.execute(update(SVSRun).where(SVSRun.id == run.id).values(state="reviewed", reviewed_at=T0))

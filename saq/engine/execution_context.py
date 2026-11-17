@@ -9,7 +9,7 @@ from saq.constants import ANALYSIS_MODE_CORRELATION
 from saq.engine.delayed_analysis import DelayedAnalysisRequest
 from saq.util import local_time
 
-from fluent import sender
+from saq.logging import UTF8SafeFluentSender
 
 if TYPE_CHECKING:
     from saq.engine.work_stack import WorkStack, WorkTarget
@@ -169,7 +169,7 @@ class EngineExecutionContext:
             if not engine_config.metrics_logging.enabled:
                 return
 
-            fluent_bit_sender = sender.FluentSender(
+            fluent_bit_sender = UTF8SafeFluentSender(
                 engine_config.metrics_logging.fluent_bit_tag,
                 host=engine_config.metrics_logging.fluent_bit_hostname,
                 port=engine_config.metrics_logging.fluent_bit_port)

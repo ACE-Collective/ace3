@@ -243,6 +243,13 @@ is finished, and objects without it mean an interrupted upload, which is served 
 Keys are derivable from the crash id, so **no database column and no migration** — the
 `analysis_module_crashes` row is unchanged.
 
+The crashed file keeps the observable's own name, which need not be UTF-8, and an S3 key must be.
+A name that is not is uploaded with each undecodable byte written as its `\udcXX` escape
+(`utf8_safe()` in `saq/logging.py`), so a report fetched from shared storage, and the
+`GET /api/v2/crashes/{crash_id}` detail of any report, name that file in escaped form. The download
+of a local report keeps the raw bytes. Reads and deletes use each key exactly as storage lists it,
+so a report replicated under the raw name before keys were escaped is still fetched and pruned.
+
 The upload runs on a **daemon thread that is never joined**. S3 requests are bounded — `S3Config`
 sets `connect_timeout`, `read_timeout` and `max_attempts` — but bounded is not instant: a report is
 several objects, each a multipart transfer of several requests, and the caller is a worker holding
@@ -252,7 +259,9 @@ best-effort; at most two uploads run at once per process and the rest are left t
 thread.
 
 **`ace crash sync`** is the catch-up: it lists the bucket once, compares against the local reports,
-and uploads the difference. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
+and uploads the difference. A report whose `metadata.json` is in the bucket is replicated. A local
+report without one, which no process will ever finish, is replicated once every file it has is in
+the bucket, and is uploaded again only if it gains a file. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
 a run never uploads reports it is about to delete. It is stateless — it asks the bucket rather than
 tracking a marker file locally, which would have leaked into the API's file inventory, into the
 archive handed to the analyst, and (worst) would have refreshed the directory mtime that prune ages
@@ -314,8 +323,9 @@ the operator's read-only views.
 ## Error reports
 
 Error reports are a separate mechanism: a stack-trace file under `data/error_reports/`,
-written for every record logged at ERROR or above with a traceback (`logging.exception()`)
-by the root logger's `ErrorReportHandler`. Crash reports are the analyst-facing record of a
+written for a record logged at ERROR or above with a traceback (`logging.exception()`)
+by the root logger's `ErrorReportHandler`, once per cause (where it was logged, the exception's
+type and text) every ten minutes; the next report of a cause gives the repeats it skipped. Crash reports are the analyst-facing record of a
 *module* failure; error reports are the process-local traceback dump used everywhere else. The
 engine's per-module exception handler logs at WARNING, so a module failure gets a crash report
 and no error report.

@@ -9,6 +9,9 @@ from saq.analysis.file_manager.local_file_manager import MAX_RELATIVE_PATH_BYTES
 from saq.util.filesystem import NAME_MAX_BYTES
 from saq.constants import FILE_SUBDIR
 
+# a name that is not UTF-8, as os.listdir returns it
+UNDECODABLE_NAME = b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
+
 
 @pytest.fixture
 def temp_storage_dir():
@@ -395,6 +398,10 @@ def test_store_file_with_a_target_inside_the_file_dir(contained_file_manager, so
     ("", "_"),
     ("/", "_"),
     ("Quarterly Report é.pdf", "Quarterly Report é.pdf"),
+    (UNDECODABLE_NAME, UNDECODABLE_NAME),
+    # lone surrogates that are not undecodable bytes have no bytes on any filesystem
+    ("\ud83d report.pdf", "_ report.pdf"),
+    ("a\ud800\udfffb.pdf", "a__b.pdf"),
 ])
 def test_clean_file_name(name, expected):
     assert clean_file_name(name) == expected
@@ -403,11 +410,12 @@ def test_clean_file_name(name, expected):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("name", ["a" * 1000 + ".txt", "é" * 300 + ".txt", "a" * 300, "a." + "b" * 300])
+@pytest.mark.parametrize("name", ["a" * 1000 + ".txt", "é" * 300 + ".txt", "a" * 300, "a." + "b" * 300,
+                                  b"\xe9".decode("utf-8", "surrogateescape") * 300 + ".txt"])
 def test_clean_file_name_fits_the_filesystem(name):
     cleaned = clean_file_name(name)
     # with room for the suffix that tells same-named files apart
-    assert len(cleaned.encode("utf-8")) <= NAME_MAX_BYTES - 8
+    assert len(os.fsencode(cleaned)) <= NAME_MAX_BYTES - 8
     assert clean_file_name(cleaned) == cleaned
     if name.endswith(".txt"):
         assert cleaned.endswith(".txt")
@@ -445,6 +453,14 @@ def test_create_output_file_keeps_the_name_inside(contained_file_manager, outsid
     assert os.path.isfile(path)
     assert os.path.getsize(path) == 0
     assert os.listdir(outside_dir) == []
+
+
+@pytest.mark.unit
+def test_create_output_file_with_an_undecodable_name(contained_file_manager):
+    path = contained_file_manager.create_output_file(UNDECODABLE_NAME)
+
+    assert path == os.path.join(contained_file_manager.file_dir, UNDECODABLE_NAME)
+    assert os.listdir(os.fsencode(contained_file_manager.file_dir)) == [b"\xe9\xe9.pdf"]
 
 
 @pytest.mark.unit

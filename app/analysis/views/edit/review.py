@@ -56,9 +56,8 @@ def review_disposition():
     logging.debug("user %s reviewing %s alerts as %s", current_user.username, len(alert_uuids), review_result)
     try:
         frozen = set_disposition_reviews(
-            alert_uuids, review_result, current_user.id,
-            corrected_disposition=corrected_disposition, review_comment=review_comment,
-            auth=current_user_auth())
+            alert_uuids, review_result, current_user_auth(),
+            corrected_disposition=corrected_disposition, review_comment=review_comment)
         reviewed = [alert_uuid for alert_uuid in alert_uuids if alert_uuid not in frozen]
         comment_clause = f"with comment {review_comment}" if review_comment else "without a comment"
         log_audit("user %s reviewed disposition of alerts %s as %s (corrected disposition %s) %s",

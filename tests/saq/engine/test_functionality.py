@@ -33,7 +33,7 @@ from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
 from saq.util.uuid import get_storage_dir, workload_storage_dir
-from tests.saq.helpers import create_root_analysis, create_test_orchestrator, log_count, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator, log_count, person, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
 
 @pytest.mark.system
 def test_signal_TERM():
@@ -1977,7 +1977,7 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
     monkeypatch.setattr(get_engine_config().metrics_logging, "enabled", False)
 
     # mock the fluent sender
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         # record statistics
         elapsed_time = 10.0
         stats_dir = str(tmpdir)
@@ -1990,7 +1990,7 @@ def test_record_execution_statistics_basic(tmpdir, monkeypatch):
 def _record_metrics(context, elapsed_time, tmpdir):
     """Runs record_execution_statistics against a mocked fluent sender and returns
     (root event, {module name: module event}), checking there is exactly one root event."""
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender = MagicMock()
         mock_sender_class.return_value = mock_sender
         context.record_execution_statistics(elapsed_time, str(tmpdir))
@@ -2106,7 +2106,7 @@ def test_root_metric_event_emitted_when_no_module_ran(tmpdir, monkeypatch):
 def _engine_root_events(root: RootAnalysis) -> list[dict]:
     """Runs one single shot engine pass over root with basic_test enabled and returns the root
     metric events it emitted."""
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender = MagicMock()
         mock_sender_class.return_value = mock_sender
         engine = Engine()
@@ -2165,7 +2165,7 @@ def test_root_metric_event_emitted_when_analysis_fails(monkeypatch):
     context = EngineExecutionContext(root)
 
     with patch.object(orchestrator.analysis_executor, "execute", side_effect=RuntimeError("module blew up")), \
-            patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+            patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender = MagicMock()
         mock_sender_class.return_value = mock_sender
         with pytest.raises(RuntimeError, match="module blew up"):
@@ -2203,7 +2203,7 @@ def test_record_execution_statistics_exception_handling(tmpdir, monkeypatch, cap
     _enable_fluent_metrics(monkeypatch)
 
     # mock the fluent sender to raise an exception
-    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender_class.side_effect = Exception("connection failed")
 
         # record statistics - should not raise an exception
@@ -3460,7 +3460,7 @@ def test_analysis_mode_dispositioned():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_FALSE_POSITIVE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # check the disposition
     get_db().close()
@@ -3530,7 +3530,7 @@ def test_analysis_mode_dispositioned_ignore():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_IGNORE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # check the disposition
     get_db().close()

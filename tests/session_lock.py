@@ -1,27 +1,34 @@
 # vim: sw=4:ts=4:et
 #
-# the ACE test suite is not safe to run more than once at a time in one checkout
+# the ACE test suite runs once at a time per container, and once at a time per checkout
 #
-# every pytest process owns a slot (tests/unittest_session.py) that decides its data directory
-# (under get_data_dir_root()), its API and network semaphore ports, its Qdrant collections and
-# its log file; the process deletes and recreates that data directory at session start and
-# again before every integration/system test. the slots of a pytest-xdist run are distinct, but
-# a second run of the same checkout would reuse them, so two runs at the same time destroy each
-# other's state, and (with pytest-randomly shuffling order) the resulting failures land
-# somewhere unrelated and look like ordinary test bugs.
+# per container: a run under pytest-xdist (pytest -n auto) starts a worker per cpu, and each
+# worker loads the whole of ACE, the search model and an engine of its own. two such runs at
+# once, from two checkouts (git worktrees run the suite in the same dev container), run the
+# container out of memory. so a run first takes an flock on RUN_LOCK_PATH, in the container's
+# own /tmp, and a run that finds it taken waits for it, saying whose run it is waiting on. an
+# flock and not a marker file: the kernel drops it when its holder dies, so a killed run never
+# leaves a lock behind for the next one to trip over.
 #
-# so a run takes a marker file in $SAQ_HOME on the way in and drops it on the way out: the
-# xdist controller, or the only process of a plain run. while that file exists no other run of
-# the checkout is allowed to start, from any container the checkout is bind mounted into.
-#
-# runs of different checkouts (git worktrees run the suite in the same dev container) may run
-# side by side. the data directory, the log file and the Qdrant collections are named after the
-# checkout; the ports, which are the container's, come from a port block the run claims here.
+# per checkout: every pytest process owns a slot (tests/unittest_session.py) that decides its
+# data directory (under get_data_dir_root()), its API and network semaphore ports, its Qdrant
+# collections and its log file; the process deletes and recreates that data directory at
+# session start and again before every integration/system test. the slots of a pytest-xdist
+# run are distinct, but a second run of the same checkout would reuse them, so two runs at the
+# same time destroy each other's state, and (with pytest-randomly shuffling order) the
+# resulting failures land somewhere unrelated and look like ordinary test bugs. the container
+# lock already keeps a second run of a checkout out of the container, but the checkout is bind
+# mounted into every container of the stack, and each has its own /tmp. so once it holds the
+# container lock a run creates a marker file in $SAQ_HOME, and a run that finds the marker
+# there is refused: either a run of the checkout is going on in another container, or a killed
+# run left the marker behind.
 #
 # the databases are not part of this: every session provisions its own set (see
 # tests/unittest_database.py). the marker is still what makes their cleanup safe, though --
 # the process that holds it knows, before its own workers start, that every set an earlier
 # session recorded belongs to a session that is dead.
+#
+# the xdist controller, or the only process of a plain run, takes both; its workers ride on them.
 #
 
 import datetime
@@ -30,16 +37,15 @@ import json
 import os
 import socket
 import sys
+import time
 from typing import Optional
 
-from tests import unittest_session
-
 MARKER_FILENAME = ".pytest-running"
-# the container's own /tmp, which every checkout run in it shares, as the ports are
-PORT_BLOCK_LOCK_PATH_FORMAT = "/tmp/ace-pytest-ports-{}.lock"
+# the container's own /tmp, which every checkout run in it shares
+RUN_LOCK_PATH = "/tmp/ace-pytest-run.lock"
 
-# the open lock file of the port block this process claimed for its run
-_port_block_fd: Optional[int] = None
+# the open lock file of the container's run lock, while this process holds it
+_run_lock_fd: Optional[int] = None
 
 
 class SessionLockError(Exception):
@@ -56,63 +62,144 @@ def get_marker_path() -> str:
 
 
 def acquire_run():
-    """Creates the checkout's marker file and claims a port block for the run, or does neither.
+    """Takes the container's run lock, waiting for it if another run holds it, then creates the
+    checkout's marker file. Takes both or neither.
 
-    Raises SessionLockError, explaining the run that holds it, if the marker exists, or if every
-    port block is taken."""
-    global _port_block_fd
+    Raises SessionLockError, explaining the run that holds it, if the marker exists."""
+    global _run_lock_fd
 
-    path = get_marker_path()
-    acquire(path)
+    fd = wait_for_run_lock()
     try:
-        block, _port_block_fd = claim_port_block()
-    except SessionLockError:
-        release(path)
+        acquire(get_marker_path())
+    except BaseException:
+        os.close(fd)
         raise
 
-    # the xdist workers, which start after pytest_configure, inherit it
-    os.environ[unittest_session.PORT_BLOCK_ENV_VAR] = str(block)
+    _run_lock_fd = fd
 
 
 def release_run():
     """Undoes acquire_run(). Only for the process that acquire_run() succeeded in."""
-    global _port_block_fd
+    global _run_lock_fd
 
+    # the marker first: a run waiting for the lock takes the marker as soon as it has the lock
     release(get_marker_path())
-    if _port_block_fd is not None:
-        os.close(_port_block_fd)
-        _port_block_fd = None
-
-    os.environ.pop(unittest_session.PORT_BLOCK_ENV_VAR, None)
+    if _run_lock_fd is not None:
+        os.close(_run_lock_fd)
+        _run_lock_fd = None
 
 
-def claim_port_block() -> tuple[int, int]:
-    """Locks the first free port block, trying the checkout's own block first, and returns the
-    block and the open lock file, which holds the block until it is closed.
+def _open_run_lock() -> tuple[int, bool]:
+    """Opens the run lock file, and says whether this process can record itself in it."""
+    try:
+        fd = os.open(RUN_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o666)
+    except PermissionError:
+        # created by another user (a run as root, through bin/exec-in-container.sh -u root),
+        # whose umask left it read-only to us. a read-only descriptor locks just the same.
+        return os.open(RUN_LOCK_PATH, os.O_RDONLY), False
 
-    An flock and not a marker file: the kernel drops it when its holder dies, so a run that was
-    killed never keeps a block. Starting at the checkout's block keeps each checkout on its own
-    ports unless two checkouts' hashes pick the same block, and then the second takes the next.
+    try:
+        # so that a run as another user can record itself in it too; the umask took the bits
+        os.fchmod(fd, 0o666)
+    except PermissionError:
+        # not ours, but writable to us all the same
+        pass
 
-    Block 0 is never claimed: it has the ports of a checkout whose suite predates port blocks,
-    which knows nothing of these locks."""
-    blocks = unittest_session.PORT_BLOCK_COUNT - 1
-    first = int(unittest_session.get_checkout_hash(), 16) % blocks
-    for offset in range(blocks):
-        block = 1 + (first + offset) % blocks
-        fd = os.open(PORT_BLOCK_LOCK_PATH_FORMAT.format(block), os.O_RDONLY | os.O_CREAT, 0o644)
+    return fd, True
+
+
+def wait_for_run_lock() -> int:
+    """Takes the container's run lock and returns its open lock file, which holds the lock until
+    it is closed. If another run holds it, says so on stderr and waits for that run to end."""
+    fd, writable = _open_run_lock()
+    try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            # another run holds this block
-            os.close(fd)
-            continue
+            sys.stderr.write(describe_run_lock_holder(fd))
+            sys.stderr.flush()
+            started = time.monotonic()
+            # bounded by the run that holds the lock: the kernel drops it when that run exits,
+            # however it exits. Ctrl-C ends the wait.
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            sys.stderr.write(f"the test suite run lock is free after {_format_wait(time.monotonic() - started)}: starting\n")
+            sys.stderr.flush()
 
-        return block, fd
+        if writable:
+            # whoever waits next reads who holds the lock from here
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, json.dumps(_describe_this_run(), indent=4).encode(), 0)
+    except BaseException:
+        os.close(fd)
+        raise
 
-    raise SessionLockError(
-        f"\nevery one of the {blocks} test suite port blocks is held by a "
-        f"running test suite ({PORT_BLOCK_LOCK_PATH_FORMAT.format('*')}): wait for one of them to finish\n")
+    return fd
+
+
+def _format_wait(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    return f"{minutes}m{seconds:02d}s" if minutes else f"{seconds}s"
+
+
+def _describe_this_run() -> dict:
+    return {
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "started": datetime.datetime.now().isoformat(),
+        "argv": sys.argv,
+        "checkout": os.environ.get("SAQ_HOME", os.getcwd()),
+    }
+
+
+def _describe_run(record: Optional[dict]) -> list[str]:
+    if record is None:
+        return ["    (who it is could not be read)", ""]
+
+    return [
+        f"    pid:      {record.get('pid', 'unknown')}",
+        f"    hostname: {record.get('hostname', 'unknown')}",
+        f"    started:  {record.get('started', 'unknown')}",
+        f"    checkout: {record.get('checkout', 'unknown')}",
+        f"    command:  {' '.join(record.get('argv') or []) or 'unknown'}",
+        "",
+    ]
+
+
+def describe_run_lock_holder(fd: int) -> str:
+    """Returns what a run waiting for the run lock tells the user."""
+    try:
+        record = _parse_record(os.pread(fd, 65536, 0))
+    except OSError:
+        # only what the message says about the holder: the wait goes ahead without it
+        record = None
+
+    lines = [
+        "",
+        "waiting for the test suite run that is going on in this container to finish:",
+        "",
+    ]
+    lines += _describe_run(record)
+    lines += [
+        "one run at a time per container: two runs' xdist workers run it out of memory.",
+        f"this run starts when that one ends (the lock is {RUN_LOCK_PATH}). Ctrl-C stops waiting.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _parse_record(data: bytes) -> Optional[dict]:
+    """Returns a run's record as a dict, or None. A run can be SIGKILLed part way through
+    writing one, so anything here can fail."""
+    try:
+        result = json.loads(data)
+    except ValueError:
+        # a partial or empty record: the caller says the holder could not be read
+        return None
+
+    if not isinstance(result, dict):
+        return None
+
+    return result
 
 
 def acquire(path: Optional[str] = None) -> bool:
@@ -132,13 +219,7 @@ def acquire(path: Optional[str] = None) -> bool:
         raise SessionLockError(describe_holder(path))
 
     with os.fdopen(fd, "w") as fp:
-        json.dump({
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "started": datetime.datetime.now().isoformat(),
-            "argv": sys.argv,
-            "checkout": os.environ.get("SAQ_HOME", os.getcwd()),
-        }, fp, indent=4)
+        json.dump(_describe_this_run(), fp, indent=4)
 
     return True
 
@@ -156,20 +237,14 @@ def release(path: Optional[str] = None):
 
 
 def _read_marker(path: str) -> Optional[dict]:
-    """Returns the contents of the marker file as a dict, or None if it cannot be read.
-
-    A session can be SIGKILLed part way through writing the marker, so anything here can fail."""
+    """Returns the contents of the marker file as a dict, or None if it cannot be read."""
 
     try:
-        with open(path, "r") as fp:
-            result = json.load(fp)
-    except (OSError, ValueError):
+        with open(path, "rb") as fp:
+            return _parse_record(fp.read())
+    except OSError:
+        # describe_holder() says the marker could not be read
         return None
-
-    if not isinstance(result, dict):
-        return None
-
-    return result
 
 
 def _is_pytest_still_running(marker: dict) -> Optional[bool]:
@@ -211,7 +286,8 @@ def describe_holder(path: str) -> str:
         "the test suite is not safe to run more than once at a time in one checkout -- each",
         "run deletes and recreates the checkout's per-slot data directories and writes its",
         "per-slot Qdrant collections, so concurrent runs corrupt each other. (a single run may",
-        "use pytest-xdist: pytest -n auto, and other checkouts may run at the same time)",
+        "use pytest-xdist: pytest -n auto. a run in this container would have waited for the",
+        "other instead, so this marker is another container's, or a killed run's)",
         "",
     ]
 
@@ -222,14 +298,7 @@ def describe_holder(path: str) -> str:
             "",
         ]
     else:
-        lines += [
-            f"    pid:      {marker.get('pid', 'unknown')}",
-            f"    hostname: {marker.get('hostname', 'unknown')}",
-            f"    started:  {marker.get('started', 'unknown')}",
-            f"    checkout: {marker.get('checkout', 'unknown')}",
-            f"    command:  {' '.join(marker.get('argv') or []) or 'unknown'}",
-            "",
-        ]
+        lines += _describe_run(marker)
 
         running = _is_pytest_still_running(marker)
         if running is True:

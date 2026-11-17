@@ -4,6 +4,7 @@ import shutil
 import time
 
 from saq.alert_routing import RouteStage, route_alert
+from saq.auth import ApiAuthResult
 from saq.analysis.root import RootAnalysis
 from saq.configuration.config import (
     get_config,
@@ -553,7 +554,8 @@ class AnalysisOrchestrator:
             return
 
         # checked again as the row is written: an analyst may take the alert while it is analyzed
-        if not move_alert_to_queue(alert, decision.queue, decision.reason, router=decision.router, root=root,
+        if not move_alert_to_queue(alert, decision.queue, decision.reason, ApiAuthResult.system(decision.router),
+                                   router=decision.router, root=root,
                                    open_unless_owned_by_others={get_config().global_settings.automation_user_id}):
             logging.info(f"not moving alert {root} to queue {decision.queue}: it was taken or dispositioned meanwhile",
                          extra={"alert_uuid": root.uuid, "queue": decision.queue, "router": decision.router})
