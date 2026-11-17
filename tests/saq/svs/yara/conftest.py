@@ -88,14 +88,16 @@ def svs_repository(rule_repo, tmp_path, monkeypatch) -> RuleRepo:
     return rule_repo
 
 
-def rule(name: str, rule_uuid: Optional[str], strings: str, condition: str = "any of them", **meta) -> str:
-    """The source of one rule."""
+def rule(name: str, rule_uuid: Optional[str], strings: str, condition: str = "any of them", tags: str = "",
+         **meta) -> str:
+    """The source of one rule. tags: its yara tags, space separated."""
     meta_lines = [f'        uuid = "{rule_uuid}"'] if rule_uuid else []
     for key, value in meta.items():
         meta_lines.append(f'        {key} = "{value}"' if isinstance(value, str) else f"        {key} = {str(value).lower()}")
 
     meta_block = ("    meta:\n" + "\n".join(meta_lines) + "\n") if meta_lines else ""
-    return f"rule {name} {{\n{meta_block}    strings:\n        {strings}\n    condition:\n        {condition}\n}}\n"
+    tag_list = f" : {tags}" if tags else ""
+    return f"rule {name}{tag_list} {{\n{meta_block}    strings:\n        {strings}\n    condition:\n        {condition}\n}}\n"
 
 
 def stored_sample(disposition: str, content: bytes, rule_uuids: list[str], name: str = "sample.bin") -> str:

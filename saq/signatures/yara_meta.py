@@ -1,18 +1,20 @@
 """How ACE reads the meta block of a YARA rule (docs/YARA_RULES.md).
 
-One place for the interpretation, because two things read the same meta: the scanner module
-(saq/modules/file_analysis/yara.py) acts on a match's meta, and the signature inventory
-(saq/signatures/loaders/yara.py) reads it from rule source to answer "which rules are in QA mode".
-If they parsed it differently, a rule could be listed as in QA mode while its matches alert, or the
-other way round.
+One place for the interpretation, because three things read the same meta: the scanner module
+(saq/modules/file_analysis/yara.py) acts on a match's meta, the signature inventory
+(saq/signatures/loaders/yara.py) reads it from rule source to answer "which rules are in QA mode",
+and SVS validation (saq/svs/yara/diff.py) decides whether a replayed match would be a detection.
+If they parsed it differently, a rule could be listed as in QA mode while its matches alert, or a
+validation could count a match the scanner never turns into a detection.
 
 Meta values arrive as bool, int or str depending on how the author wrote them (`enabled = false`
 vs `enabled = "false"`), from yara-python at match time and from plyara in the inventory.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
+from saq.constants import TAG_WHITELISTED
 from saq.signatures.model import Signature
 
 META_ENABLED = "enabled"
@@ -57,3 +59,20 @@ def is_qa_signature(signature: Signature) -> bool:
     """True when an inventoried rule runs in QA mode. The inventory has already read its
     `modifiers` meta with meta_modifiers()."""
     return MODIFIER_QA in signature.modifiers
+
+
+def detection_blocker(meta: Mapping[str, Any] | None, tags: Iterable[str] | None) -> str | None:
+    """Why a match of a rule with this meta and these yara tags makes no detection, or None when it
+    makes one."""
+    if not meta_enabled(meta):
+        return "enabled = false"
+
+    modifiers = meta_modifiers(meta)
+    if MODIFIER_QA in modifiers:
+        return "in QA mode"
+    if MODIFIER_NO_ALERT in modifiers:
+        return "no_alert"
+    if TAG_WHITELISTED in (tags or ()):
+        return "tagged whitelisted"
+
+    return None

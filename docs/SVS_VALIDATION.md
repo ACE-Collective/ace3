@@ -213,8 +213,9 @@ repository that has such includes does not show what the service loads.
    `YaraScanner.scan()`, with the yara service's `default_timeout` per file and namespace, so the
    externals and the meta filters behave as in production.
 
-The scan applies the `enabled` meta and the `qa` and `no_alert` modifiers the way the YARA module
-does (`saq/signatures/yara_meta.py`): a **match** means the rule would make a detection. The raw
+The scan applies the `enabled` meta, the `qa` and `no_alert` modifiers and the `whitelisted` tag
+the way the YARA module does (`detection_blocker()` in `saq/signatures/yara_meta.py`, which both
+call): a **match** means the rule would make a detection. The raw
 match is kept too, so a rule that still matches but was switched to QA mode reads as what it is.
 
 ### The sandbox

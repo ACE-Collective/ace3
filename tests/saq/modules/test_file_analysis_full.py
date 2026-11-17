@@ -503,6 +503,28 @@ def test_file_analysis_004_yara_006_whitelist_does_not_suppress_other_rules(yss_
     assert _file.has_directive(DIRECTIVE_SANDBOX)
 
 @pytest.mark.integration
+def test_file_analysis_004_yara_006_whitelist_with_modifiers(yss_server, root_analysis, datadir):
+    # a rule tagged whitelisted that has modifiers still applies its directives, and is still no detection
+
+    root_analysis.analysis_mode = "test_groups"
+    _file = root_analysis.add_file_observable(str(datadir / 'scan_targets/whitelist_with_modifiers'))
+    root_analysis.save()
+    root_analysis.schedule()
+
+    engine = Engine()
+    engine.configuration_manager.enable_module('yara_scanner_v3_4', 'test_groups')
+    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
+
+    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
+    _file = root_analysis.get_observable(_file.uuid)
+    assert _file.get_and_load_analysis(YaraScanResults_v3_4)
+
+    assert _file.has_tag("whitelisted")
+    assert _file.has_directive(DIRECTIVE_EXTRACT_URLS)
+    assert not _file.detections
+    assert not _file.has_directive(DIRECTIVE_SANDBOX)
+
+@pytest.mark.integration
 def test_file_analysis_004_yara_007_qa_modifier(yss_server, root_analysis, datadir):
 
     root_analysis.analysis_mode = "test_groups"
