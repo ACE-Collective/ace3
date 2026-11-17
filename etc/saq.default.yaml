@@ -2059,7 +2059,7 @@ analysis_module_msoffice_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 11
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
@@ -2412,7 +2412,7 @@ analysis_module_zip_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 10
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
@@ -2432,7 +2432,7 @@ analysis_module_rar_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 10
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000
@@ -2449,7 +2449,7 @@ analysis_module_pdf_encryption_analyzer:
   range_low: 4
   # and maximum size of the passwords to try
   range_high: 11
-  # how many bytes into the email do you want to look?
+  # how many characters of each email body part (html converted to text) to read for candidate passwords
   byte_limit: 1024
   # and what is the maximum size of the word list created?
   list_limit: 5000

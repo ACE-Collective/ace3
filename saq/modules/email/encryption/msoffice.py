@@ -130,8 +130,8 @@ class MSOfficeEncryptionAnalyzer(EmailPasswordAnalyzer):
             analysis.password = crack_password(self, self.john_bin_path, hash_file, _file.full_path,
                                                f'--wordlist={os.path.abspath(wordlist_path)}', read_files=[wordlist_path])
 
+            # none of the candidates was the password: the summary says so, and it is not an error
             if not analysis.password:
-                analysis.error = "could not crack password"
                 return AnalysisExecutionResult.COMPLETED
 
             # got the password!

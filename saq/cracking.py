@@ -2,7 +2,7 @@
 
 import logging
 import os
-import re
+import string
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Optional
@@ -10,72 +10,89 @@ from typing import TYPE_CHECKING, Optional
 from html2text import html2text
 
 from saq.analysis.search import search_down
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import EmailAnalysis, is_html_body_part
 
 if TYPE_CHECKING:
     from saq.modules.base_module import AnalysisModule
 
-whitespace_re = re.compile(r'\s')
-
 
 def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_limit: int,
                         list_limit: int) -> tuple[bool, Optional[str], list[str]]:
-    """Harvest candidate passwords from the body of the email that carried the given file.
+    """Harvest candidate passwords from every body part of the email that carried the given file.
 
-    Returns (email_present, email_body, words): whether a carrying EmailAnalysis was found,
-    the html-to-text email body (truncated to byte_limit) or None, and the wordlist generated
-    from it.
+    Every part is read, not only the one EmailAnalysis.body picks: the html alternative can leave
+    out the password the text/plain one carries, and a gateway banner can be the first html part.
+
+    Returns (email_present, email_body, words): whether a carrying EmailAnalysis was found, the
+    text of its distinct body parts (html converted to text, each part cut at byte_limit) or None
+    when it has none, and the wordlist generated from that text.
     """
     email = search_down(file_observable, lambda obj: isinstance(obj, EmailAnalysis) and obj.email is not None)
     if not email:
         return False, None, []
 
-    if not email.body:
+    texts = []
+    for part in email.body_parts:
+        with open(part.full_path, 'r', errors='ignore') as fp:
+            content = fp.read()
+
+        if is_html_body_part(part):
+            content = html2text(content)
+
+        text = content.strip()[:byte_limit]
+        # the html part is often the text/plain part again
+        if text and text not in texts:
+            texts.append(text)
+
+    if not texts:
         return True, None, []
 
-    with open(email.body.full_path, 'r', errors='ignore') as fp:
-        logging.debug("parsing {} for html".format(email.body.value))
-        email_body = html2text(fp.read())[:byte_limit]
-
-    words = generate_wordlist(text_content=email_body, range_low=range_low,
-                              range_high=range_high, byte_limit=byte_limit, list_limit=list_limit)
+    email_body = '\n\n'.join(texts)
+    words = generate_wordlist(text_content=email_body, range_low=range_low, range_high=range_high,
+                              byte_limit=len(email_body), list_limit=list_limit)
     return True, email_body, words
 
 def generate_wordlist(
-        text_file: Optional[str]=None, 
-        text_content: Optional[str]=None, 
-        range_low: int=4, 
-        range_high: int=14, 
-        byte_limit: int=1024, 
+        text_file: Optional[str]=None,
+        text_content: Optional[str]=None,
+        range_low: int=4,
+        range_high: int=14,
+        byte_limit: int=1024,
         list_limit: int=1000,
         ) -> list[str]:
-    """Given a text file or string, return a list of all the likely passwords, assuming the password is in there somewhere."""
+    """Given a text file or string, return a list of all the likely passwords, assuming the password is in there somewhere.
+
+    A password is assumed to have no whitespace in it. The candidates are every word, as written
+    and without the punctuation around it, then every substring of a word, shortest first, so
+    list_limit drops the substrings of long words before it drops a word."""
     if text_content is None:
         with open(text_file, 'rb') as fp:
             data = fp.read(byte_limit).decode(errors='ignore')
     else:
         data = text_content[:byte_limit]
 
-    # if we don't have anything to work with, return an empty list
-    if not data:
-        return []
+    words = data.split()
+    # a dict keeps the candidates in the order they were added
+    candidates: dict[str, None] = {}
 
-    password_list = set()
+    def _add(candidate: str) -> bool:
+        """Adds the candidate if its length is in range; returns whether the list is full."""
+        if range_low <= len(candidate) <= range_high:
+            candidates.setdefault(candidate)
+        return len(candidates) >= list_limit
+
+    for word in words:
+        for candidate in (word, word.strip(string.punctuation)):
+            if _add(candidate):
+                return list(candidates)
+
     for r in range(range_low, range_high + 1):
-        for i in range(0, len(data) - r + 1):
-            password = data[i:i + r]
-            if not password:
-                continue
+        for word in words:
+            for i in range(0, len(word) - r + 1):
+                if _add(word[i:i + r]):
+                    return list(candidates)
 
-            # assume whitespace characters are not going to be in passwords
-            if whitespace_re.search(password):
-                continue
-
-            password_list.add(password)
-            if len(password_list) >= list_limit:
-                return list(password_list)
-
-    return list(password_list)
+    return list(candidates)
 
 def crack_password(module: "AnalysisModule", john_bin_path: str, hash_file: str, filename: str, mode: str,
                    login: str | None = None, read_files: Sequence[str] = ()) -> str | None:

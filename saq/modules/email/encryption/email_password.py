@@ -76,7 +76,7 @@ class EmailPasswordAnalysis(Analysis):
 class EmailPasswordAnalyzerConfig(AnalysisModuleConfig):
     range_low: int = Field(..., description="The minimum size of the passwords to try.")
     range_high: int = Field(..., description="The maximum size of the passwords to try.")
-    byte_limit: int = Field(..., description="How many bytes into the email do you want to look?")
+    byte_limit: int = Field(..., description="How many characters of each email body part (html converted to text) to read for candidate passwords.")
     list_limit: int = Field(..., description="The maximum size of the word list created.")
     john_bin_path: str = Field(..., description="Full path to john the ripper binary.")
 

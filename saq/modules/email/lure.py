@@ -18,7 +18,7 @@ from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, AnalysisExecutionResul
 from saq.email import get_email_domain, normalize_email_address
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import EmailAnalysis, is_body_part, is_html_body_part
 from saq.modules.file_analysis.html_js_extraction import parse_document
 from saq.modules.file_analysis.pdf import PDFLinkTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
@@ -37,8 +37,6 @@ SOURCE_BODY = "body"
 SOURCE_QR = "qr"
 SOURCE_ATTACHMENT = "attachment"
 
-# the email body parts are the unnamed text parts EmailAnalyzer extracts
-BODY_PART_MARKERS = (".unknown_text_html", ".unknown_text_plain")
 NON_PART_YARA_TYPES = ("email.headers", "email.combined")
 # pdf.py writes a PDF's link annotations, the PDF equivalent of <a href>, to a file of this type
 PDF_LINK_ANNOTATIONS_YARA_TYPE = "document.pdf.annotation_uris"
@@ -278,10 +276,6 @@ class LureURLAnalysis(Analysis):
             return f"{self.display_name}: no lure URL identified"
 
         return f"{self.display_name}: {self.primary['url']} ({'; '.join(self.primary['reasons'])})"
-
-
-def is_body_part(observable: Observable) -> bool:
-    return any(marker in (observable.file_name or "") for marker in BODY_PART_MARKERS)
 
 
 def normalize_url(value: str) -> str:
@@ -697,7 +691,7 @@ class CandidateCollector:
                     text_urls.update(body.text_urls)
                     if body.newest_text:
                         newest_text.append(body.newest_text)
-                    parsed_body = parsed_body or ".unknown_text_html" in part.file_name
+                    parsed_body = parsed_body or is_html_body_part(part)
                 self._walk(part, SOURCE_BODY, None, None, False)
             else:
                 self._walk(part, SOURCE_ATTACHMENT, part.file_name, None, False)
@@ -726,7 +720,7 @@ class CandidateCollector:
         if content is None:
             return None
         try:
-            if ".unknown_text_html" in part.file_name:
+            if is_html_body_part(part):
                 return parse_html_body(content, self.settings)
             return parse_text_body(content, self.settings)
         except Exception:
