@@ -114,11 +114,13 @@ def _iter_report_files(crash_dir: str) -> list[str]:
 #
 
 def replicate_report(crash_dir: str, crash_id: str) -> bool:
-    """Upload one crash report to shared storage. Returns True if the report is now complete there.
+    """Upload one crash report to shared storage. Returns True if every file of the report is now
+    there.
 
     Synchronous, and the seam tests drive. ``metadata.json`` goes last so the remote copy has the
     same completeness sentinel as the local one; if anything fails partway, what landed is still
-    useful and still identifiably incomplete.
+    useful and still identifiably incomplete. A report without ``metadata.json`` (its worker was
+    killed while writing it) is uploaded as it is, and is incomplete remotely as well.
     """
     try:
         if not is_valid_crash_id(crash_id):
@@ -149,9 +151,10 @@ def replicate_report(crash_dir: str, crash_id: str) -> bool:
 
         logging.info(
             "replicated crash report to shared storage",
-            extra={"crash_id": crash_id, "files": len(relative_paths), "bucket": bucket},
+            extra={"crash_id": crash_id, "files": len(relative_paths), "bucket": bucket,
+                   "complete": has_metadata},
         )
-        return has_metadata
+        return True
 
     except Exception as e:
         # a failed replication costs cross-node availability, never the report itself
@@ -305,35 +308,48 @@ def remote_file_sizes(crash_id: str) -> dict[str, int]:
 # maintenance
 #
 
-def list_replicated_ids() -> set[str]:
-    """The crash ids that have a *complete* copy in the bucket, from one listing.
+def list_replicated_files() -> dict[str, set[str]]:
+    """The relative paths each crash id has in the bucket, from one listing.
 
     This is what makes the sweeper stateless: no marker file to write into the report directory
     (which would leak into the API's file inventory, into the analyst's archive, and -- worst --
     would refresh the directory mtime that `ace crash prune` ages reports by).
 
-    Ids are derived from ``<id>/metadata.json`` keys rather than from a delimiter listing of
-    prefixes. A prefix listing looks cheaper, but the local backend maps objects to real
-    directories and leaves an empty one behind after a delete, so a deleted report would keep
-    showing up as replicated forever. Keying off the completeness marker answers the question the
-    sweeper actually asks -- "is there a finished copy up there" -- and is correct on every backend.
+    Built from object keys rather than from a delimiter listing of prefixes. A prefix listing looks
+    cheaper, but the local backend maps objects to real directories and leaves an empty one behind
+    after a delete, so a deleted report would keep showing up as replicated forever.
     """
     try:
         keys = _storage().list_objects(_bucket(), prefix="", recursive=True) or []
-        results = set()
-        suffix = f"/{METADATA_FILE}"
+        results: dict[str, set[str]] = {}
         for key in keys:
             key = getattr(key, "object_name", key)
-            if not isinstance(key, str) or not key.endswith(suffix):
+            if not isinstance(key, str):
                 continue
-            candidate = key[: -len(suffix)]
-            if is_valid_crash_id(candidate):
-                results.add(candidate)
+            crash_id, _, relative_path = key.partition("/")
+            if relative_path and is_valid_crash_id(crash_id):
+                results.setdefault(crash_id, set()).add(relative_path)
 
         return results
     except Exception as e:
         logging.warning("unable to list replicated crash reports: %s", e)
-        return set()
+        return {}
+
+
+def is_replicated(crash_dir: str, crash_id: str, remote_files: set[str]) -> bool:
+    """True if the report in ``crash_dir`` needs nothing uploaded, given the relative paths it has
+    in the bucket (``list_replicated_files``).
+
+    ``metadata.json`` is uploaded last, so a remote one means the whole report is there. A local
+    report without one is never finished, since the worker writing it was killed, so it is there
+    once every file it has is, under the key ``object_key`` gave it; one that gains a file, such as
+    a watchdog report still being written when sync ran, is uploaded again.
+    """
+    if METADATA_FILE in remote_files:
+        return True
+
+    local_files = {object_key(crash_id, p).partition("/")[2] for p in _iter_report_files(crash_dir)}
+    return local_files <= remote_files
 
 
 def delete_report(crash_id: str) -> bool:
