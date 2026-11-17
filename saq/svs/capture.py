@@ -43,6 +43,7 @@ from saq.database.model import SVSYaraCapture
 from saq.database.private_session import private_transaction
 from saq.environment import get_global_runtime_settings
 from saq.json_encoding import _JSONEncoder
+from saq.logging import utf8_safe
 from saq.modules.file_analysis.yara import YaraScanResults_v3_4, is_yara_detection
 from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN
@@ -169,7 +170,8 @@ def _claim_row(alert_uuid: str, candidate: CaptureCandidate, now: datetime) -> t
                 rule_name=_truncate(candidate.rule_name, _RULE_NAME_MAX_LENGTH),
                 namespace=_truncate(candidate.namespace, _NAMESPACE_MAX_LENGTH),
                 signature_version=candidate.signature_version,
-                file_path=_truncate(candidate.file_path, _FILE_PATH_MAX_LENGTH),
+                # MySQL rejects the lone surrogates of a name that is not UTF-8
+                file_path=_truncate(utf8_safe(candidate.file_path), _FILE_PATH_MAX_LENGTH),
                 yara_meta_tags=json.dumps(list(candidate.yara_meta_tags)),
                 node=get_global_runtime_settings().saq_node,
                 state=CaptureState.PENDING,

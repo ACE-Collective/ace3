@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import logging
@@ -6,6 +7,7 @@ import re
 import shlex
 import shutil
 import tempfile
+from typing import Iterator
 
 from saq.environment import get_base_dir, get_temp_dir
 
@@ -16,6 +18,26 @@ def name_bytes(name: str) -> bytes:
     """The bytes the filesystem stores for name. A name read from the filesystem need not be UTF-8
     (Python decodes its undecodable bytes to lone surrogates), and strict UTF-8 refuses to encode it."""
     return name.encode("utf-8", "surrogateescape")
+
+@contextmanager
+def utf8_path(path: str) -> Iterator[str]:
+    """Yields a path to the file at path that encodes as UTF-8, for a library that takes nothing else
+    (yara-python): path itself, or for a name that is not UTF-8 (Python decodes its undecodable bytes
+    to lone surrogates), /proc/self/fd/N of the file opened here, which the kernel resolves to the
+    same file."""
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        pass  # not UTF-8: the file is opened below
+    else:
+        yield path
+        return
+
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        yield f"/proc/self/fd/{fd}"
+    finally:
+        os.close(fd)
 
 def delete_file(path: str) -> bool:
     try:

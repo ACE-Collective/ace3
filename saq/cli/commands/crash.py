@@ -204,7 +204,8 @@ def cli_sync(args):
     API's file inventory, into the archive handed to the analyst, and -- worst -- would refresh the
     directory mtime that `ace crash prune` ages reports by, silently extending retention.
     """
-    from saq.crash_replication import list_replicated_ids, replicate_report, replication_enabled
+    # local for the reason the NOTE at the top of this module gives: it imports saq.crash_report
+    from saq.crash_replication import is_replicated, list_replicated_files, replicate_report, replication_enabled
     from saq.crash_report import get_crash_report_root_dir
 
     if not replication_enabled():
@@ -215,17 +216,16 @@ def cli_sync(args):
     if not os.path.isdir(root_dir):
         return 0
 
-    already = list_replicated_ids()
+    replicated = list_replicated_files()
     uploaded = 0
     skipped = 0
 
     for crash_dir, _ in _iter_report_dirs(root_dir):
         crash_id = os.path.basename(crash_dir)
 
-        # list_replicated_ids() keys off the <id>/metadata.json completeness marker, so a report
-        # in this set is finished up there. Anything else -- never uploaded, or uploaded until the
-        # worker died partway -- gets (re)uploaded, which is idempotent.
-        if crash_id in already:
+        # a report never uploaded, or uploaded until the upload died partway, is (re)uploaded,
+        # which is idempotent
+        if is_replicated(crash_dir, crash_id, replicated.get(crash_id, set())):
             skipped += 1
             continue
 

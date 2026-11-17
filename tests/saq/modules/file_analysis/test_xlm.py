@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -137,6 +138,20 @@ def test_deobfuscates_macro(root_analysis, tmp_path):
     assert [url.value for url in urls] == [PAYLOAD_URL]
     assert urls[0].has_directive("crawl")
     assert [d.signature_uuid for d in file_observable.detections] == [XLM_MACRO_URL.uuid]
+
+
+@pytest.mark.integration
+def test_deobfuscates_macro_in_a_file_with_an_undecodable_name(root_analysis, tmp_path, unlogged):
+    """A file whose name is not UTF-8 (an archive member, as os.listdir returns it), which yara-python
+    cannot take as a path. It is created in the root's files directory, where an extractor writes it."""
+    path = Path(root_analysis.create_file_path(b"\xe9\xe9.xlsm".decode("utf-8", "surrogateescape")))
+    shutil.move(_xlsm(tmp_path), path)
+
+    file_observable, analysis = _analyze(root_analysis, path)
+
+    assert analysis
+    assert analysis.cell_count == 2
+    assert file_observable.has_tag("xlm4")
 
 
 @pytest.mark.integration

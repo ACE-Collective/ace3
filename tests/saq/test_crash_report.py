@@ -897,16 +897,16 @@ def test_incomplete_report_replicates_without_metadata(root_analysis, shared_sto
     crash_dir = find_crash_report_dir(crash_id)
     os.remove(os.path.join(crash_dir, METADATA_FILE))
 
-    # returns False: the remote copy is not complete, because the local one is not either
-    assert replicate_report(crash_dir, crash_id) is False
+    # every file it has is uploaded, and the remote copy is incomplete like the local one
+    assert replicate_report(crash_dir, crash_id) is True
     assert remote_report_exists(crash_id) is False
     assert STACK_TRACE_FILE in list_remote_files(crash_id)
 
 
 @pytest.mark.unit
-def test_list_replicated_ids_and_delete(root_analysis, shared_storage):
+def test_list_replicated_files_and_delete(root_analysis, shared_storage):
     from saq.crash_replication import (
-        delete_report, list_replicated_ids, remote_report_exists, replicate_report,
+        delete_report, list_replicated_files, remote_report_exists, replicate_report,
     )
 
     root_analysis.save()
@@ -917,12 +917,13 @@ def test_list_replicated_ids_and_delete(root_analysis, shared_storage):
     )
     replicate_report(find_crash_report_dir(crash_id), crash_id)
 
-    assert crash_id in list_replicated_ids()
+    assert METADATA_FILE in list_replicated_files()[crash_id]
     assert remote_report_exists(crash_id) is True
 
     assert delete_report(crash_id) is True
     assert remote_report_exists(crash_id) is False
-    assert crash_id not in list_replicated_ids()
+    # the local backend leaves the report's emptied directory behind
+    assert crash_id not in list_replicated_files()
 
 
 @pytest.mark.unit
@@ -1683,7 +1684,7 @@ def test_replication_read_path_never_raises_on_a_broken_store(root_analysis, sha
     assert crash_replication.remote_report_exists(crash_id) is False
     assert crash_replication.list_remote_files(crash_id) == []
     assert crash_replication.fetch_metadata(crash_id, str(tmp_path)) is None
-    assert crash_replication.list_replicated_ids() == set()
+    assert crash_replication.list_replicated_files() == {}
     for message in ("unable to check shared storage for crash report",
                     "unable to list shared storage for crash report",
                     "unable to fetch crash metadata",

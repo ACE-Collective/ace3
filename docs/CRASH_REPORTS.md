@@ -259,7 +259,9 @@ best-effort; at most two uploads run at once per process and the rest are left t
 thread.
 
 **`ace crash sync`** is the catch-up: it lists the bucket once, compares against the local reports,
-and uploads the difference. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
+and uploads the difference. A report whose `metadata.json` is in the bucket is replicated. A local
+report without one, which no process will ever finish, is replicated once every file it has is in
+the bucket, and is uploaded again only if it gains a file. It runs hourly from `etc/cron/hourly/crash-reports` **after** `ace crash prune`, so
 a run never uploads reports it is about to delete. It is stateless — it asks the bucket rather than
 tracking a marker file locally, which would have leaked into the API's file inventory, into the
 archive handed to the analyst, and (worst) would have refreshed the directory mtime that prune ages
@@ -321,8 +323,9 @@ the operator's read-only views.
 ## Error reports
 
 Error reports are a separate mechanism: a stack-trace file under `data/error_reports/`,
-written for every record logged at ERROR or above with a traceback (`logging.exception()`)
-by the root logger's `ErrorReportHandler`. Crash reports are the analyst-facing record of a
+written for a record logged at ERROR or above with a traceback (`logging.exception()`)
+by the root logger's `ErrorReportHandler`, once per cause (where it was logged, the exception's
+type and text) every ten minutes; the next report of a cause gives the repeats it skipped. Crash reports are the analyst-facing record of a
 *module* failure; error reports are the process-local traceback dump used everywhere else. The
 engine's per-module exception handler logs at WARNING, so a module failure gets a crash report
 and no error report.

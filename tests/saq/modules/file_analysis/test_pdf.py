@@ -22,7 +22,7 @@ from saq.modules.file_analysis.pdf import (
 from saq.modules.file_analysis.qrcode import QRCodeAnalyzer
 from saq.sandbox.runner import SandboxResult
 from saq.util.uuid import get_storage_dir, storage_dir_from_uuid
-from tests.saq.helpers import wait_for_condition
+from tests.saq.helpers import logged_with, wait_for_condition
 
 TEXT = "Your invoice is ready"
 FORM_PAYLOAD = b"<script>location='https://form.example.com/landing'</script>" * 2
@@ -637,7 +637,8 @@ def test_pdf_analyzer_writes_the_same_decrypted_copy_every_time(root_analysis, t
 
 
 @pytest.mark.integration
-def test_pdf_analyzer_leaves_pdf_that_needs_a_user_password(root_analysis, tmp_path):
+def test_pdf_analyzer_leaves_pdf_that_needs_a_user_password(root_analysis, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
     pdf = _analyze(root_analysis, _encrypted_pdf(tmp_path, pikepdf.Encryption(owner="owner", user="user", R=6)),
                    "pdf_analyzer")
 
@@ -645,6 +646,11 @@ def test_pdf_analyzer_leaves_pdf_that_needs_a_user_password(root_analysis, tmp_p
     assert analysis.encryption is None
     assert not pdf.has_tag("encrypted_pdf_empty_password")
     assert not [name for name in _outputs(analysis) if name.endswith(".decrypted.pdf")]
+    # the PDF is not broken, so it is not logged as a pikepdf failure
+    (record,) = logged_with(caplog, logging.INFO, path=pdf.full_path)
+    assert record.getMessage() == f"pikepdf cannot open {pdf.full_path} without its user password"
+    assert record.root_uuid == root_analysis.uuid
+    assert logged_with(caplog, logging.WARNING, path=pdf.full_path) == []
 
 
 @pytest.mark.integration
@@ -718,6 +724,15 @@ def test_pdf_analyzer_ignores_files_that_are_not_pdfs(root_analysis, tmp_path):
 
 
 @pytest.mark.integration
+def _the_pikepdf_warning(caplog, root_analysis, pdf) -> logging.LogRecord:
+    """The one WARNING about the PDF, which names its alert and carries the traceback."""
+    (record,) = logged_with(caplog, logging.WARNING, path=pdf.full_path)
+    assert record.root_uuid == root_analysis.uuid
+    assert record.exc_info is not None
+    return record
+
+
+@pytest.mark.integration
 def test_pdf_analyzer_survives_a_pdf_pikepdf_cannot_open(root_analysis, tmp_path, caplog):
     path = tmp_path / "broken.pdf"
     path.write_bytes(b"%PDF-1.7\n garbage that is not a pdf body")
@@ -725,7 +740,48 @@ def test_pdf_analyzer_survives_a_pdf_pikepdf_cannot_open(root_analysis, tmp_path
     pdf = _analyze(root_analysis, path, "pdf_analyzer")
 
     assert pdf.get_and_load_analysis(PDFAnalysis)
-    assert any(r.levelno == logging.WARNING and "pikepdf failed to open" in r.getMessage() for r in caplog.records)
+    assert "pikepdf failed to open" in _the_pikepdf_warning(caplog, root_analysis, pdf).getMessage()
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_survives_annotations_it_cannot_read(root_analysis, tmp_path, monkeypatch, caplog):
+    def _iter(pdf):
+        raise pikepdf.PdfError("damaged annotation")
+
+    monkeypatch.setattr(pdf_module, "iter_uri_annotations", _iter)
+    pdf = _analyze(root_analysis, _pdf(tmp_path, annotation_uri="https://example.com/"), "pdf_analyzer")
+
+    assert pdf.get_and_load_analysis(PDFAnalysis)
+    assert "pikepdf annotation extraction failed" in _the_pikepdf_warning(caplog, root_analysis, pdf).getMessage()
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_survives_form_fields_it_cannot_read(root_analysis, tmp_path, caplog):
+    path = _pdf(tmp_path)
+    with pikepdf.open(path, allow_overwriting_input=True) as document:
+        # /Fields is an array in a well formed PDF
+        document.Root.AcroForm = pikepdf.Dictionary(Fields=5)
+        document.save(path)
+
+    pdf = _analyze(root_analysis, path, "pdf_analyzer")
+
+    assert pdf.get_and_load_analysis(PDFAnalysis)
+    assert "pikepdf form field extraction failed" in _the_pikepdf_warning(caplog, root_analysis, pdf).getMessage()
+
+
+@pytest.mark.integration
+def test_pdf_analyzer_survives_javascript_it_cannot_read(root_analysis, tmp_path, caplog):
+    path = _pdf(tmp_path)
+    with pikepdf.open(path, allow_overwriting_input=True) as document:
+        # each name is followed by an action dictionary in a well formed PDF
+        document.Root.Names = pikepdf.Dictionary(JavaScript=pikepdf.Dictionary(
+            Names=pikepdf.Array([pikepdf.String("broken"), 5])))
+        document.save(path)
+
+    pdf = _analyze(root_analysis, path, "pdf_analyzer")
+
+    assert pdf.get_and_load_analysis(PDFAnalysis)
+    assert "pikepdf JavaScript extraction failed" in _the_pikepdf_warning(caplog, root_analysis, pdf).getMessage()
 
 
 #
