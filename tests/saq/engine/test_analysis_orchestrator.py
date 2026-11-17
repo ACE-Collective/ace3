@@ -82,21 +82,16 @@ class TestAnalysisOrchestratorHandleDetectionPoints:
 
         assert execution_context.root.analysis_mode == ANALYSIS_MODE_DISPOSITIONED
 
-    @pytest.mark.parametrize("forced_alerts,expected_mode", [
-        (False, "test_groups"),
-        (True, ANALYSIS_MODE_CORRELATION)
-    ])
-    def test_handle_detection_points_whitelisted_analysis(self, orchestrator, execution_context, monkeypatch, forced_alerts, expected_mode):
-        """Test whitelisted analysis behavior with and without forced alerts."""
-        # a detection the whitelist has to override, or the mode stays put without it
+    def test_handle_detection_points_alerts_on_a_root_tagged_whitelisted(self, orchestrator, execution_context, monkeypatch):
+        """A whitelisted tag on the root or an observable is only a tag: the detection still alerts."""
         self._add_detection(execution_context.root)
         execution_context.root.add_tag("whitelisted")
-
-        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", forced_alerts)
+        execution_context.root.add_observable_by_spec(F_TEST, "other").add_tag("whitelisted")
+        monkeypatch.setattr(get_global_runtime_settings(), "forced_alerts", False)
 
         orchestrator._handle_detection_points(execution_context)
 
-        assert execution_context.root.analysis_mode == expected_mode
+        assert execution_context.root.analysis_mode == ANALYSIS_MODE_CORRELATION
 
     def test_handle_detection_points_with_detections(self, orchestrator, execution_context, monkeypatch):
         """Test analysis with detections changes to correlation mode."""

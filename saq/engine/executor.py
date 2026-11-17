@@ -685,15 +685,6 @@ class AnalysisExecutor:
         if not work_item.observable:
             return ObservableExclusionResult.OK
 
-        # has this thing been whitelisted?
-        if work_item.observable.whitelisted:
-            logging.info(f"{work_item.observable} was whitelisted -- not analyzing")
-            if work_item.dependency:
-                work_item.dependency.set_status_failed("whitelisted")
-                work_item.dependency.increment_status()
-
-            return ObservableExclusionResult.EXCLUDED
-
         # is this observable globally excluded? matches() is exact for most
         # observable types, CIDR-aware for ip/ipv4 and notation-blind for mac_address
         excluded = any(
@@ -1832,20 +1823,9 @@ class AnalysisExecutor:
             )
 
         # when analyze() executes it populates the work_stack_buffer with things that need to be analyzed
-        # if the thing that was just analyzed turned out to be whitelisted (tagged with 'whitelisted')
-        # then we stop analyzing this entire analysis tree (the whole thing is considered whitelisted)
-        if work_item.observable and work_item.observable.whitelisted:
-            logging.info(
-                "{} was whitelisted - ignoring {} items on work stack buffer and stopping analysis".format(
-                    work_item, len(work_stack_buffer)
-                )
-            )
-            work_stack_buffer.clear()
-            context.cancel_analysis()
-        else:
-            self._drain_work_stack_buffer(
-                context, root, work_stack, work_stack_buffer
-            )
+        self._drain_work_stack_buffer(
+            context, root, work_stack, work_stack_buffer
+        )
 
     def _record_module_exception(
         self,

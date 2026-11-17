@@ -133,7 +133,8 @@ thirteen unit tests over `_process_observable_exclusions` with a mocked
 configuration manager: exact match, the `oogle.com` near-miss, the
 `mail.google.com` subdomain, `ipv4` exact and CIDR (in and out of range), an
 exclusion value containing a colon, unlisted types, the dependency-failure
-bookkeeping, and the untouched `whitelisted` / `DIRECTIVE_EXCLUDE_ALL` branches.
+bookkeeping, a `whitelisted` tag (which excludes nothing), and the untouched
+`DIRECTIVE_EXCLUDE_ALL` branch.
 Config parsing is covered by
 `test_engine_configuration_observable_exclusions*` in
 `tests/saq/engine/test_configuration_manager.py` (including

@@ -302,7 +302,8 @@ def _side(sha: str, tree: str, layout: TreeLayout, skipped_members: list, output
                 RuleInfo(rule_uuid, rule["name"], entry["namespace"], relative, rule["meta"]))
 
     for unit_id, outcome in output["units"].items():
-        scan.matches[int(unit_id)] = [(match["namespace"], match["rule"], match["meta"]) for match in outcome["matches"]]
+        scan.matches[int(unit_id)] = [(match["namespace"], match["rule"], match["meta"], match["tags"])
+                                     for match in outcome["matches"]]
         if outcome["errors"]:
             scan.errors[int(unit_id)] = {error["namespace"] for error in outcome["errors"]}
 

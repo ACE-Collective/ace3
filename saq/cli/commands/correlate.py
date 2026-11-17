@@ -249,10 +249,6 @@ def correlate(args):
         display_analysis(root, include_context=True)
 
         if args.alert or args.submit_alerts_local:
-            if root.whitelisted:
-                logging.info("{} was whitelisted".format(root))
-                continue
-
             if args.force or get_global_runtime_settings().forced_alerts or root.has_detections():
                 # need to switch the mode to correlation
                 root.analysis_mode = ANALYSIS_MODE_CORRELATION

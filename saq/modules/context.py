@@ -110,5 +110,5 @@ class AnalysisModuleContext:
 
     @property
     def engine_canceled(self) -> bool:
-        """Returns True if the engine cancelled the analysis (a lost lock, an immediate shutdown, a disposition, a whitelist)."""
+        """Returns True if the engine cancelled the analysis (a lost lock, an immediate shutdown, a disposition)."""
         return self._engine_canceled() if self._engine_canceled else False

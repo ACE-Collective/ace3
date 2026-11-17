@@ -21,7 +21,7 @@ from saq.database.pool import get_db, get_db_connection
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock
 from saq.database.util.node import get_node_excluded_analysis_modes, get_node_included_analysis_modes, node_supports_any_analysis_mode, set_node_status
-from saq.database.util.tag_mapping import add_observable_tag_mapping, remove_observable_tag_mapping
+from saq.database.util.tag_mapping import add_observable_tag_mapping
 from saq.database.util.workload import add_workload
 from saq.engine.core import Engine
 from saq.engine.engine_configuration import EngineConfiguration
@@ -3540,7 +3540,7 @@ def test_analysis_mode_dispositioned_ignore():
     assert get_db().query(Workload.id).count() == 0
 
 @pytest.mark.integration
-def test_observable_whitelisting():
+def test_a_stored_whitelisted_tag_mapping_is_only_a_tag():
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
     root.initialize_storage()
@@ -3555,34 +3555,12 @@ def test_observable_whitelisting():
     engine.configuration_manager.enable_module('user_defined_tagging', "test_single")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # we should only see the user-defined tagging analysis
+    # the mapping tags the observable, and the observable is still analyzed
     root = load_root(get_storage_dir(root.uuid))
     test_observable = root.get_observable(test_observable.uuid)
     assert test_observable
-    assert len(test_observable.analysis) == 1
-    assert test_observable.all_analysis[0].module_path == 'saq.modules.tag:UserDefinedTaggingAnalysis'
-
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
-    root.initialize_storage()
-    test_observable = root.add_observable_by_spec(F_TEST, 'test_1')
-    assert test_observable
-    # remove the whitelisting
-    remove_observable_tag_mapping(test_observable, 'whitelisted')
-    assert not test_observable.has_tag('whitelisted')
-    root.save()
-    root.schedule()
-
-    engine = Engine(config=EngineConfiguration(default_analysis_mode="test_single"))
-    engine.configuration_manager.enable_module('basic_test', "test_single")
-    engine.configuration_manager.enable_module('user_defined_tagging', "test_single")
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # we should see any one analysis for this observable
-    root = load_root(get_storage_dir(root.uuid))
-    test_observable = root.get_observable(test_observable.uuid)
-    assert test_observable
-    assert len(test_observable.analysis) == 2
+    assert test_observable.has_tag('whitelisted')
+    assert test_observable.get_and_load_analysis(BasicTestAnalysis)
 
 @pytest.mark.integration
 def test_global_observable_exclusion():
@@ -3626,12 +3604,8 @@ def test_global_observable_exclusion():
     assert test_observable
     assert test_observable.get_and_load_analysis(BasicTestAnalysis)
 
-# XXX review this for due to changes to F_FILE
 @pytest.mark.integration
-def test_file_observable_whitelisting():
-
-    # add a user-defined whitelisting
-    #add_observable_tag_mapping(F_FILE, "315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94c75894edd3", None, 'whitelisted')
+def test_a_stored_whitelisted_tag_mapping_on_a_file_is_only_a_tag():
 
     root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
     root.initialize_storage()
@@ -3650,37 +3624,11 @@ def test_file_observable_whitelisting():
     engine.configuration_manager.enable_module('user_defined_tagging', "test_single")
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
-    # we should NOT see any analysis for this observable
+    # the mapping tags the file, and generic_test still analyzes it
     root = load_root(get_storage_dir(root.uuid))
     file_observable = root.get_observable(file_observable.uuid)
     assert file_observable
     assert file_observable.has_tag('whitelisted')
-    assert len(file_observable.analysis) == 1
-    assert file_observable.all_analysis[0].module_path == 'saq.modules.tag:UserDefinedTaggingAnalysis'
-
-    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_single')
-    root.initialize_storage()
-    test_file = root.create_file_path("test2")
-    with open(test_file, "w") as fp:
-        fp.write("Hello, world!")
-
-    file_observable = root.add_file_observable(test_file)
-    assert file_observable
-    # remove the whitelisting
-    remove_observable_tag_mapping(file_observable, 'whitelisted')
-    root.save()
-    root.schedule()
-
-    engine = Engine(config=EngineConfiguration(default_analysis_mode="test_single"))
-    engine.configuration_manager.enable_module('generic_test', 'test_single')
-    engine.configuration_manager.enable_module('user_defined_tagging', "test_single")
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    # we should see analysis for this observable
-    root = load_root(get_storage_dir(root.uuid))
-    file_observable = root.get_observable(file_observable.uuid)
-    assert file_observable
-    assert not file_observable.has_tag('whitelisted')
     assert len(file_observable.analysis) == 2
 
 @pytest.mark.integration

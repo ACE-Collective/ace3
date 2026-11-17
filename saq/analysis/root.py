@@ -544,24 +544,6 @@ class RootAnalysis(Analysis):
         self._state = value
 
     @property
-    def whitelisted(self):
-        for observable in self.all_observables:
-            if observable.whitelisted:
-                return True
-
-        for analysis in self.all_non_root_analysis:
-            if analysis.whitelisted:
-                return True
-
-        if self.has_tag("whitelisted"):
-            return True
-
-        return False
-
-    def whitelist(self):
-        self.add_tag("whitelisted")
-
-    @property
     def company_name(self):
         """The organzaition this analysis belongs to."""
         return self._company_name

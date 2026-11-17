@@ -24,15 +24,6 @@ class RootAnalysisInterface(Protocol):
         ...
 
     @property
-    def whitelisted(self) -> bool:
-        """Returns True if the entire analysis is whitelisted."""
-        ...
-
-    def whitelist(self):
-        """Mark the entire analysis as whitelisted."""
-        ...
-
-    @property
     def uuid(self) -> str:
         """Returns the UUID of the analysis."""
         ...

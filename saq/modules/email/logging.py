@@ -14,7 +14,7 @@ from saq.email import normalize_email_address
 from saq.environment import get_base_dir
 from saq.modules import AnalysisModule
 from saq.modules.email.archive import EmailArchiveResults
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 
 from saq.logging import UTF8SafeFluentSender
 
@@ -108,17 +108,13 @@ class EmailLoggingAnalyzer(AnalysisModule):
 
         analysis = email_file.get_and_load_analysis(EmailAnalysis)
         if not analysis:
-            # XXX hack - make MUCH better support for whitelisting :-(
-            if not email_file.has_tag('whitelisted'):
+            # scan_inbound_only skips the email analysis of outbound mail on purpose
+            if not email_file.has_tag(TAG_OUTBOUND_EMAIL):
                 logging.warning("missing EmailAnalysis for {} - not logging".format(email_file))
             return
 
         if not analysis.email:
             logging.warning("missing analysis.email for {} - not logging".format(email_file))
-            return
-
-        # has this been whitelisted?
-        if email_file.has_tag('whitelisted'):
             return
 
         if not analysis.log_entry:

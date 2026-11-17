@@ -4,6 +4,7 @@ import json
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -162,6 +163,15 @@ def test_the_engine_fingerprint_follows_the_disposition_classification(svs_repos
     assert engine_fingerprint(REPOSITORY) == fingerprint
 
     monkeypatch.setitem(get_config().disposition_classification, "REVIEWED", "fp")
+    assert engine_fingerprint(REPOSITORY) != fingerprint
+
+
+def test_the_engine_fingerprint_follows_the_detection_rules(svs_repository, monkeypatch):
+    # detection_blocker() in saq/signatures/yara_meta.py decides what a replayed match is, so a change
+    # to it must not be answered with a validation completed before it
+    fingerprint = engine_fingerprint(REPOSITORY)
+    read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read_bytes(path) + (b"\n# changed" if path.name == "yara_meta.py" else b""))
     assert engine_fingerprint(REPOSITORY) != fingerprint
 
 

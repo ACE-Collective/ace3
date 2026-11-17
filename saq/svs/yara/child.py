@@ -180,6 +180,7 @@ def run(workdir: str) -> dict:
                     "namespace": name,
                     "rule": match["rule"],
                     "meta": {key: _plain(value) for key, value in match["meta"].items()},
+                    "tags": list(match["tags"]),
                 })
 
         timing["scan_seconds"] = time.monotonic() - start

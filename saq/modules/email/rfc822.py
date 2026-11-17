@@ -7,7 +7,6 @@ import re
 import shutil
 import uuid
 from datetime import datetime
-from functools import cached_property
 from ipaddress import ip_address
 from typing import Optional, Type, override
 
@@ -63,7 +62,7 @@ from saq.email import (
     normalize_email_address,
     normalize_message_id,
 )
-from saq.environment import get_base_dir, get_data_dir, get_local_timezone
+from saq.environment import get_data_dir, get_local_timezone
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
 from saq.modules.email.constants import (
@@ -113,11 +112,6 @@ from saq.modules.email.constants import (
 from saq.observables.file import FileObservable
 from saq.util.filesystem import shorten_basename_for_suffix
 from saq.util.networking import is_subdomain
-from saq.whitelist import (
-    WHITELIST_TYPE_SMTP_FROM,
-    WHITELIST_TYPE_SMTP_TO,
-    BrotexWhitelist,
-)
 
 TAG_OUTBOUND_EMAIL = 'outbound_email'
 TAG_OUTBOUND_EXCEPTION_EMAIL = 'outbound_email_exception'
@@ -936,9 +930,6 @@ class EmailAnalysis(Analysis):
         if self.parsing_error:
             return self.parsing_error
 
-        if self.observable.has_tag('whitelisted'):
-            return "Email Analysis: (whitelisted email)"
-
         if self.email:
             result = "Email Analysis:"
             if self.extraction_errors:
@@ -967,8 +958,7 @@ class EmailAnalysis(Analysis):
 _PATTERN_RECEIVED_IPADDR = re.compile(r'from\s\S+\s\(([^)]+)\)\s', re.M)
 
 class EmailAnalyzerConfig(AnalysisModuleConfig):
-    whitelist_path: str = Field(..., description="Relative path to the brotex custom whitelist file.")
-    scan_inbound_only: bool = Field(..., description="Office365 journaling will cause outbound emails to also get journaled. Set this to no to scan outbound office365 emails.")
+    scan_inbound_only: bool = Field(..., description="Office365 journaling will cause outbound emails to also get journaled. Set this to yes to skip the email analysis of outbound office365 emails; the other modules still analyze the file.")
     outbound_exceptions: str = Field(..., description="When only scanning inbound emails from office365, scan the following outbound emails found in outbound_exceptions. Comma separated list!")
     provider_headers: EmailProviderHeaders = Field(
         default_factory=EmailProviderHeaders,
@@ -985,23 +975,6 @@ class EmailAnalyzer(AnalysisModule):
     def get_presenter_class(self) -> Type[AnalysisPresenter]:
         return EmailAnalysisPresenter
 
-    def verify_environment(self):
-        self.verify_path_exists(self.config.whitelist_path)
-
-    @cached_property
-    def whitelist(self) -> BrotexWhitelist:
-        result = BrotexWhitelist(os.path.join(get_base_dir(), self.config.whitelist_path))
-        result.check_whitelist()
-        return result
-
-    #def load_config(self):
-        #self.whitelist = BrotexWhitelist(os.path.join(get_base_dir(), self.config.whitelist_path))
-        #self.auto_reload()
-
-    def auto_reload(self):
-        # make sure the whitelist if up-to-date
-        self.whitelist.check_whitelist()
-        
     @property
     def generated_analysis_type(self):
         return EmailAnalysis
@@ -1159,17 +1132,6 @@ class EmailAnalyzer(AnalysisModule):
         # at this point target_email either points at the original parse email
         # or it points to a MIME part (an attachment inside the email)
 
-        # START WHITELISTING
-
-        # check to see if the sender or receiver has been whitelisted
-        # this is useful to filter out internally sourced garbage
-        if 'from' in target_email:
-            file_path, address = email.utils.parseaddr(decode_rfc2822(target_email['from']))
-            if address != '':
-                if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_FROM, address):
-                    _file.whitelist()
-                    return False
-
         header_tos = [] # list of header-to addresses
         env_rcpt_to = [] # list of env-to addresses 
         env_mail_from = None # the smtp envelope MAIL FROM
@@ -1222,11 +1184,6 @@ class EmailAnalyzer(AnalysisModule):
             if address:
                 header_tos.append(address)
 
-        for address in header_tos + env_rcpt_to:
-            if self.whitelist.is_whitelisted(WHITELIST_TYPE_SMTP_TO, address):
-                _file.whitelist()
-                return False
-
         # for journaled provider mail we check to see if this email is inbound
         # this only applies to the original email, not email attachments
         if is_office365 and _file.has_directive(DIRECTIVE_ORIGINAL_EMAIL):
@@ -1245,16 +1202,12 @@ class EmailAnalyzer(AnalysisModule):
                                 logging.info("Outbound office365 email exception found: {}".format(email_exception))
                                 break
                         else:
+                            # only the email analysis is skipped: everything else still runs on the
+                            # file, and a detection on it still alerts
                             logging.info("skipping outbound office365 email {}".format(_file))
-                            _file.whitelist()
                             return False
 
-        # END WHITELISTING
-
         analysis = self.create_analysis(_file)
-
-        # if it's not whitelisted we'll want to archive it
-        #_file.add_directive(DIRECTIVE_ARCHIVE)
 
         # parse out important email header information and add observables
 

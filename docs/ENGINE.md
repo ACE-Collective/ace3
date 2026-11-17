@@ -652,8 +652,6 @@ the waiting source observable (§9).
 
 `_process_observable_exclusions` drops a work item when the observable is:
 
-- `whitelisted` (any observable tagged `whitelisted` also makes the whole root
-  whitelisted — `RootAnalysis.whitelisted`);
 - matched by `self.config.observable_exclusions[type]`, the globally excluded
   observables from the `observable_exclusions:` config section (§16.5).
   Comparison is `Observable.matches()` — exact for most types, CIDR membership
@@ -689,9 +687,7 @@ Then the caller sorts by `AnalysisModuleConfig.priority` (lower runs first).
 
 Then the tail of `_execute_module_analysis`:
 
-- if the observable is now `whitelisted` → clear the buffer and cancel the entire
-  analysis;
-- otherwise `_drain_work_stack_buffer`: the buffer is deliberately mixed, so every
+- `_drain_work_stack_buffer`: the buffer is deliberately mixed, so every
   `Analysis` in it is flushed (`analysis_tree_manager.flush_analysis_details` —
   writes `details` to its own file and drops it from memory) and *not* queued,
   while every `Observable` moves onto the work stack. A non-empty buffer of any
@@ -972,12 +968,11 @@ alert, in the Landlock sandbox (`docs/TOOL_SANDBOX.md`).
 ### 12.2 Cancellation
 
 `EngineExecutionContext.cancel_analysis()` sets a flag the main loop tests at the
-top of each iteration and between modules. Four things set it:
+top of each iteration and between modules. Three things set it:
 
 - an analyst dispositioned the alert mid-analysis (`_check_for_alert_disposition`);
 - the module itself called `cancel_analysis()` (checked via
   `module.is_canceled_analysis()` right after the call);
-- an observable came back `whitelisted`;
 - the lock was lost (`Worker._handle_lock_lost` → `context.cancel_analysis()`).
 
 Because the context is created by the worker when it claims the item rather than
@@ -1206,11 +1201,10 @@ is passed to all three (§19.8). Two things follow from that:
 
 ### 13.2 Detection → alert
 
-`_handle_detection_points` runs only when there is no outstanding work, and skips:
-
-- roots whose mode is in `non_detectable_modes` (default `correlation`,
-  `dispositioned`, `event` — this is what stops an alert from re-alerting);
-- whitelisted roots (unless `forced_alerts`).
+`_handle_detection_points` runs only when there is no outstanding work, and skips
+roots whose mode is in `non_detectable_modes` (default `correlation`,
+`dispositioned`, `event` — this is what stops an alert from re-alerting). Nothing
+else stops a detection from alerting: a `whitelisted` tag is an ordinary tag.
 
 If `root.has_detections()` (or `forced_alerts`) and `alerting_enabled`, the mode
 is set to `correlation`, and `_convert_to_alert` creates the alert through

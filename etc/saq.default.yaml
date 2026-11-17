@@ -1633,10 +1633,9 @@ analysis_module_email_analyzer:
   python_module: saq.modules.email.rfc822
   python_class: EmailAnalyzer
   enabled: true
-  # relative path to the brotex custom whitelist file
-  whitelist_path: etc/brotex.whitelist
   # office365 journaling will cause outbound emails to also get journaled
-  # set this to no to scan outbound office365 emails
+  # set this to yes to skip the email analysis of outbound office365 emails (the other modules
+  # still analyze the email file, and a detection on it still alerts)
   scan_inbound_only: false
   # When only scanning inbound emails from office365, scan the following outbound emails
   # found in outbound_exceptions. Comma separated list!
