@@ -779,6 +779,19 @@ def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
     return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
 
 
+def logged_with(caplog: pytest.LogCaptureFixture, level: int, **fields) -> list[logging.LogRecord]:
+    """The records caplog captured at level whose extra={} fields include fields."""
+    return [r for r in caplog.records
+            if r.levelno == level and all(getattr(r, key, None) == value for key, value in fields.items())]
+
+
+def the_error_with_traceback(caplog: pytest.LogCaptureFixture, **fields) -> logging.LogRecord:
+    """The one ERROR record with fields in its extra={}, which carries a traceback, as an error report needs."""
+    (record,) = logged_with(caplog, logging.ERROR, **fields)
+    assert record.exc_info is not None and record.exc_info[0] is not None
+    return record
+
+
 def _requests_error_from_local_server(handle) -> requests.exceptions.RequestException:
     """The exception requests raises over HTTPS to a one-connection local server that runs handle(conn)."""
     with socket.create_server(("127.0.0.1", 0)) as server:

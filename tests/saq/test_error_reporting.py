@@ -409,6 +409,13 @@ def test_log_peer_unavailable_accepts_the_callers_client_errors(reports, caplog)
     assert [(r.levelno, r.getMessage()) for r in records] == [(logging.WARNING, "reading x unavailable: connect failed")]
 
 
+@pytest.mark.unit
+def test_log_peer_unavailable_carries_the_callers_extra(reports, caplog):
+    assert log_peer_unavailable(ConnectionRefusedError("refused"), "reading x", extra={"path": "/x"})
+
+    assert [r.path for r in caplog.records if r.getMessage().startswith("reading x")] == ["/x"]
+
+
 class _ClientAuthenticationError(Exception):
     """What a client raises in place of the transport error it hit (azure-identity's credentials)."""
 

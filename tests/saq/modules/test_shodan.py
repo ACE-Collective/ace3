@@ -19,6 +19,7 @@ from saq.engine.enums import EngineExecutionMode
 from saq.modules.file_analysis import FileHashAnalyzer
 from saq.modules.shodan import DIRECTIVE_QUERY_SHODAN, SHODAN_REQUEST_TIMEOUT, ShodanAnalysis, ShodanAnalyzer
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import logged_with, the_error_with_traceback
 
 
 def _pem(common_name: str) -> str:
@@ -181,11 +182,15 @@ def test_query_error(root_analysis, fake_shodan, caplog):
     assert analysis.error == "Invalid API key"
     assert analysis.summary == "Shodan Query Error: Invalid API key"
     assert not _files(analysis)
-    assert any(r.levelno == logging.WARNING and "unable to query shodan: Invalid API key" in r.getMessage() for r in caplog.records)
+    # Shodan's answer is not a fault in ACE: a WARNING that names the observable, and no error report
+    (record,) = logged_with(caplog, logging.WARNING, observable_value="198.51.100.9")
+    assert record.getMessage() == "unable to query shodan for 198.51.100.9: Invalid API key"
+    assert record.observable_uuid == observable.uuid
+    assert logged_with(caplog, logging.ERROR, observable_value="198.51.100.9") == []
 
 
 @pytest.mark.integration
-def test_query_error_without_a_message_is_named_by_its_type(root_analysis, fake_shodan):
+def test_query_error_without_a_message_is_named_by_its_type(root_analysis, fake_shodan, caplog):
     # the analysis error needs a message, and str(ConnectionError()) is empty
     fake_shodan.error = ConnectionError()
 
@@ -193,6 +198,8 @@ def test_query_error_without_a_message_is_named_by_its_type(root_analysis, fake_
 
     analysis = observable.get_and_load_analysis(ShodanAnalysis)
     assert analysis.error == "ConnectionError"
+    # anything but shodan's own APIError is a fault in the query, logged with its traceback
+    assert the_error_with_traceback(caplog, observable_value="198.51.100.11").observable_uuid == observable.uuid
 
 
 @pytest.mark.integration
@@ -206,7 +213,8 @@ def test_unexpected_results(root_analysis, fake_shodan, caplog):
     assert analysis.error == "'data'"
     # the results are still kept
     assert set(_files(analysis)) == {"198.51.100.10.shodan"}
-    assert any(r.levelno == logging.WARNING and "unable to parse shodan results" in r.getMessage() for r in caplog.records)
+    record = the_error_with_traceback(caplog, observable_value="198.51.100.10")
+    assert record.getMessage() == "unable to parse shodan results for 198.51.100.10"
 
 
 @pytest.mark.integration
