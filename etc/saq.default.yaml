@@ -212,9 +212,9 @@ cas:
     # compresses well. ttl: an email lives for ttl_days after the last time it was archived. archive
     # rows go a weekly partition at a time, so a message-id can outlive its email by up to a week;
     # it is then reported as not archived. the index is high churn, so it lives in the email archive
-    # database, not the main one. backend: local keeps the bytes on the node that archived them; a
-    # site where more than one node archives email gives this pool a backend every node can reach
-    # (an integration's custom backend) and shared: true.
+    # database, not the main one. backend: local is for a single-node install; a multi-node site
+    # gives this pool a backend every node can reach (an integration's custom backend) and
+    # shared: true, or every node but the primary fills its disk (docs/CAS.md, "Sharing between nodes").
     email_archive:
       backend: local
       encryption: system

@@ -1,7 +1,10 @@
 """What the CAS looks like right now, for monitoring (docs/CAS.md, "Observability").
 
 pool_health() reads the index, which is shared, so it describes the whole cluster: the cas.pool
-monitor runs it from the monitoring service on one node. node_stats() describes this node only
+monitor runs it from the monitoring service on one node. It also says, per pool, whether the pool's
+backend is node-local and how many nodes are live: a node-local backend is for single-node installs
+(docs/CAS.md, "Sharing between nodes"), and on a cluster of more than one its bytes are never
+collected on any node but the primary. node_stats() describes this node only
 (the read cache, and the disks under local-backend pools): `ace cas node-stats` runs it hourly on
 every node.
 """
@@ -10,9 +13,14 @@ import os
 import shutil
 from typing import Optional
 
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import Session
+
 from saq.cas import index
 from saq.cas.backend import LocalBackend
 from saq.cas.registry import CAS, get_cas
+from saq.configuration.config import get_engine_config
+from saq.database.model import Nodes
 from saq.environment import get_global_runtime_settings
 
 VERIFIED_WITHIN_SECONDS = 7 * 24 * 3600
@@ -22,6 +30,16 @@ _OBJECT_FIELDS = ("objects_present", "objects_deleting", "size_bytes", "stored_b
 _HOLD_FIELDS = ("holds_live", "holds_expired", "legal_holds", "objects_held")
 # what a ttl pool's record leaves out, because only a scan of every object row could count it
 _TTL_UNCOUNTED_FIELDS = ("objects_present", "size_bytes", "stored_bytes", "never_verified", "verified_last_7d")
+
+
+def live_node_count(session: Session) -> int:
+    """Nodes whose heartbeat (nodes.last_update) is fresh, by the same measure the engine uses to
+    pick a remote node: written within two status updates. A node in local mode never writes one,
+    so a single-node install counts zero or one."""
+    freshness = get_engine_config().node_status_update_frequency * 2
+    return session.execute(
+        select(func.count()).select_from(Nodes)
+        .where(Nodes.last_update >= func.date_sub(func.now(), text(f"INTERVAL {int(freshness)} SECOND")))).scalar()
 
 
 def pool_health(cas: Optional[CAS] = None) -> list[dict]:
@@ -46,6 +64,9 @@ def pool_health(cas: Optional[CAS] = None) -> list[dict]:
 
     for name in cas.pool_names():
         record(name)
+
+    with index.transaction() as session:
+        live_nodes = live_node_count(session)
 
     purges: dict[str, int] = {}
     overdue: dict[str, int] = {}
@@ -88,6 +109,7 @@ def pool_health(cas: Optional[CAS] = None) -> list[dict]:
             entry.update(holds_live=int(live), holds_expired=int(expired), legal_holds=int(legal), objects_held=int(held))
 
     # no node field: the index is shared, so this describes the cluster, not the node reporting it
+    node_local = {pool.name: pool.backend.node_local for pool in pools}
     for name, entry in records.items():
         configured = name in cas.config.pools
         config = cas.config.pools.get(name)
@@ -97,7 +119,9 @@ def pool_health(cas: Optional[CAS] = None) -> list[dict]:
             encryption=config.encryption if configured else None,
             retention=config.retention if configured else None,
             purges_last_24h=purges.get(name, 0),
-            gc_overdue=overdue.get(name))
+            gc_overdue=overdue.get(name),
+            node_local=node_local.get(name),
+            live_nodes=live_nodes)
 
     return [records[name] for name in sorted(records)]
 

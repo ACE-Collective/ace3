@@ -307,6 +307,9 @@ Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticate
 A `retention: ttl` pool keeps its index in its own chain (never the main one) with a day-partitioned
 `cas_touches` table that every `put` appends to; GC collects an object with no touch within
 `ttl_days` and `ace partitions maintain` drops old touch partitions. `compression: gzip` is per pool.
+A node-local backend (`local`) means a single-node install: GC runs on the primary only, so on a
+cluster every pool needs a backend every node can reach, and the `cas.pool` monitor logs an ERROR
+(and reports `node_local` and `live_nodes`) for a node-local pool while more than one node is live.
 There is no object-store backend in the tree; an integration provides one as a `custom` backend.
 
 #### Email archive

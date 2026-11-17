@@ -287,8 +287,20 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
     decides existence.
 - **Custom.** `python_module` / `python_class` / `config`, following the pattern `saq/storage` and
   the analysis cache already use. The class declares `node_local` and `get_config_class()`.
-- **Sharing between nodes.** A pool declared `shared: true` refuses the `local` backend at config
-  validation, and a custom backend that says `node_local` when the pool is built.
+- **Sharing between nodes.** A node-local backend (`local`, or a custom class that says
+  `node_local`) means a **single-node install**. The index is shared and the bytes are on one disk,
+  so the two agree only when there is one node. The maintenance commands rely on that: `gc`,
+  `verify` and `orphans` run on the primary only, and a single node is the primary
+  (`ACE_IS_PRIMARY_NODE` defaults to `1`).
+  - On a cluster of more than one node, every pool needs a backend every node can reach. Otherwise
+    the primary's GC deletes the row of an object another node stored, finds no bytes of its own
+    to delete, and that node keeps the bytes until its disk fills.
+  - The `cas.pool` monitor reports `node_local` and `live_nodes` for each pool, and logs an ERROR
+    every run for a node-local pool while more than one node is live. A node counts as live when
+    its heartbeat (`nodes.last_update`) was written within two `engine.node_status_update_frequency`
+    periods.
+  - A pool declared `shared: true` refuses the `local` backend at config validation, and a custom
+    backend that says `node_local` when the pool is built.
 - **Read cache.** `materialize` and `open` of anything that cannot be hardlinked out of the backend
   (encrypted pools, non-local backends) go through a bounded node-local LRU directory
   (`cas.read_cache`), because most tools (YARA included) need a file path. The verified plaintext
@@ -388,6 +400,9 @@ message text, so the monitor records are the place to look. Definitions are in
     `ACE_IS_PRIMARY_NODE=1` every cron record says success.
   - `objects_deleting` that stays above zero across samples is a deletion GC keeps failing to
     finish (each attempt also logs an ERROR).
+  - **`node_local`** (the pool's backend keeps its bytes on one node) and **`live_nodes`** (the
+    nodes with a fresh heartbeat). `node_local` true with `live_nodes` above 1 is a misconfiguration
+    that fills disks; the monitor also logs it at ERROR (see "Sharing between nodes").
 - **`cas.node`** (`node_stats()`): `kind: read_cache` with `entries`, `bytes`, `max_bytes`; and
   `kind: pool` per local-backend pool. Both carry `path`, `fs_free_bytes` and `fs_total_bytes` of
   the filesystem underneath (measured at the nearest existing directory), and `node`.

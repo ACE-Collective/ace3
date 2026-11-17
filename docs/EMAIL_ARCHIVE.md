@@ -41,12 +41,18 @@ The pool's index (`cas_objects`, `cas_touches`, ...) is in the email archive dat
 one (`index_database: email_archive`). The email archive is the high-churn store that motivated
 keeping a ttl pool's index out of the main database (`docs/SVS_REVIEW.md`, CAS-7).
 
-## More than one node
+## Single node and multi-node
 
-`backend: local` keeps an email on the node that archived it. That is enough when one node archives
-email. When more than one node archives email, give the pool a backend every node can reach and
-`shared: true`, in the site's own configuration. The CAS has no object-store backend of its own, but
-an integration can provide one as a `custom` backend (`docs/CAS.md`, "Backends"):
+`backend: local` means a single-node install: a developer's stack, a test install or a small site.
+The CAS index is shared, but a local backend's bytes are on one node's disk, and only the primary
+node runs GC. So a cluster of more than one node can't use the local backend for this pool. If it
+does, every node except the primary keeps every email it archives until its disk fills. The
+`cas.pool` monitor reports `node_local` and `live_nodes` for each pool, and logs an ERROR every run
+while a node-local pool has more than one live node (`docs/CAS.md`, "Sharing between nodes").
+
+A multi-node site gives the pool a backend every node can reach, and `shared: true`, in its own
+configuration. The CAS has no object-store backend of its own; an integration provides one as a
+`custom` backend (`docs/CAS.md`, "Backends"):
 
 ```yaml
 cas:
@@ -61,7 +67,8 @@ cas:
 ```
 
 S3 archiving through `email_archive.target: s3` was removed. A configuration that still sets it
-fails to load, so an S3 site does not fall back to local storage without anyone noticing.
+fails to load, so an S3 site does not fall back to local storage without anyone noticing. Such a
+site configures its integration's backend for this pool before it upgrades.
 
 ## Migrating from the old archive
 

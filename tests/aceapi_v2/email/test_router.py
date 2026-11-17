@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aceapi_v2.email import service
 from saq.cas import IntegrityError
 from saq.email_archive import archive_email, get_email_archive_pool
 from saq.environment import get_global_runtime_settings
@@ -69,7 +70,7 @@ async def test_an_expired_email_is_404(client: AsyncClient, archived_email):
 
 
 @pytest.mark.asyncio
-async def test_a_corrupt_email_fails_the_request_before_it_starts(client: AsyncClient, archived_email):
+async def test_a_corrupt_email_fails_before_the_response_starts(archived_email):
     pool = get_email_archive_pool()
     with open(pool.backend.path(pool.key(archived_email.hash)), "r+b") as fp:
         fp.seek(-1, 2)
@@ -77,9 +78,12 @@ async def test_a_corrupt_email_fails_the_request_before_it_starts(client: AsyncC
         fp.seek(-1, 2)
         fp.write(bytes([last[0] ^ 0xFF]))
 
-    # verified before the response starts, so the status says so rather than a truncated body
+    # the service, not the client: the test client re-raises an app exception whether it comes before
+    # the response starts or in the middle of the body, so only this tells the two apart. Raised here,
+    # the router never builds the streaming response, and the request fails with a 500 instead of a
+    # 200 whose body stops short
     with pytest.raises(IntegrityError):
-        await client.get(ARCHIVE_PATH, params={"message_id": TEST_MESSAGE_ID})
+        await service.open_archived_email(TEST_MESSAGE_ID)
 
 
 @pytest.mark.asyncio
