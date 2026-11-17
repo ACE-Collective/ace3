@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from saq.cas.errors import CASError
 from saq.cas.hold import LEGAL_HOLD_KIND, Hold
-from saq.constants import DB_EMAIL_ARCHIVE
+from saq.constants import DB_ACE, DB_EMAIL_ARCHIVE
 from saq.database.model import (
     CASHold,
     CASObject,
@@ -36,8 +36,6 @@ from saq.database.pool import get_db
 STATE_PRESENT = "present"
 STATE_DELETING = "deleting"
 
-MAIN_DATABASE = "ace"
-
 
 @dataclass(frozen=True)
 class IndexTables:
@@ -50,7 +48,7 @@ class IndexTables:
 
 # index_database (CASPoolConfig) -> its tables
 TABLES = {
-    MAIN_DATABASE: IndexTables(CASObject, CASHold, CASPurge, None),
+    DB_ACE: IndexTables(CASObject, CASHold, CASPurge, None),
     DB_EMAIL_ARCHIVE: IndexTables(EmailArchiveCASObject, EmailArchiveCASHold, EmailArchiveCASPurge, EmailArchiveCASTouch),
 }
 
@@ -58,7 +56,7 @@ _TABLES_KEY = "cas_index_tables"
 
 
 @contextmanager
-def transaction(database: str = MAIN_DATABASE) -> Iterator[Session]:
+def transaction(database: str = DB_ACE) -> Iterator[Session]:
     """A private session on the named database's engine, committed on exit and rolled back on
     error. Private on purpose: the thread-shared get_db() session may be mid-transaction in the
     caller (an analysis module, a Flask request), and a CAS commit or rollback must not touch that
@@ -94,8 +92,9 @@ def _cutoff(grace_seconds: int):
 def _gc_eligible(t: IndexTables, older_than_seconds: int, touched_within_days: Optional[int]) -> list:
     """What makes an object collectable, given an outer reference to t.object: present, last held
     (or put) longer ago than older_than_seconds, no live hold, and for a ttl pool no touch within
-    touched_within_days. put() bumps last_held_at as well as touching, so for a ttl pool the age
-    test is what lets the scan use i_cas_objects_gc, and the touch test is the ttl itself."""
+    touched_within_days. The age test is what lets the scan use i_cas_objects_gc. While put() is the
+    only thing that touches, it also bumps last_held_at, so the touch test decides nothing; it is for
+    the read-side touch the analysis cache will add (docs/CAS.md, "Lifecycle")."""
     o, h = t.object, t.hold
     conditions = [
         o.state == STATE_PRESENT,

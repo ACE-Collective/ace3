@@ -254,9 +254,9 @@ reachable from every node (`shared: true`). The CAS ships only the `local` backe
 for a single-node instance. **Providing a shared backend is the site integrator's job**: an S3
 backend, whatever Azure offers, or any other `custom` class that declares `node_local = False`.
 ACE does not build one as an SVS prerequisite. Capture is enabled by default with a `local` pool,
-which is right for a single node. A multi-node site gives `svs_samples` a shared backend, or sets
-`analysis_module_svs_yara_sample_capture.enabled: false` until it has one; otherwise each node keeps
-the bytes it captured. The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
+which is right for a single node. A multi-node site gives `svs_samples` a shared backend; otherwise
+each node keeps the bytes it captured. A node-local backend means a single-node install whether or
+not capture runs (`docs/CAS.md`, "Sharing between nodes"). The `yara_qa` pool already works this way (`docs/YARA_QA.md`, *Nodes*): a
 site that has given it a shared backend gives `svs_samples` the same one. [FR-1, CAS-6]
 
 The YARA module is deliberately not cached (`docs/ANALYSIS_CACHING.md`): its filtered output

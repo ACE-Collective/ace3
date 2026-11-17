@@ -12,12 +12,10 @@ from saq.constants import DB_EMAIL_ARCHIVE
 from saq.database import get_db_connection
 from saq.email_archive import (
     archive_email,
-    email_is_archived,
     find_archived_email,
     get_email_archive_pool,
     get_recipients_by_message_id,
     index_email_history,
-    iter_archived_email,
     query_archive_hashes,
 )
 from saq.util.time import local_time
@@ -27,6 +25,11 @@ TEST_MESSAGE_ID = "<test-message-id>"
 TEST_RECIPIENT = "test@local"
 TEST_RECIPIENT_2 = "test2@local"
 TEST_EMAIL = b"Subject: test\r\n\r\ntest"
+
+
+def _read(digest: str) -> bytes:
+    with get_email_archive_pool().open(digest) as fp:
+        return fp.read()
 
 
 def _write(tmpdir, content: bytes, name: str = "email") -> str:
@@ -51,19 +54,12 @@ def test_archive_email_stores_the_email_in_the_pool(archived_email):
     assert stat.key_id is not None and stat.size == len(TEST_EMAIL)
 
     assert find_archived_email(TEST_MESSAGE_ID) == archived_email.hash
-    assert b"".join(iter_archived_email(archived_email.hash)) == TEST_EMAIL
-
-
-@pytest.mark.integration
-def test_iter_archived_email_in_chunks(archived_email):
-    assert list(iter_archived_email(archived_email.hash, chunk_size=8)) == [
-        TEST_EMAIL[i:i + 8] for i in range(0, len(TEST_EMAIL), 8)]
+    assert _read(archived_email.hash) == TEST_EMAIL
 
 
 @pytest.mark.integration
 def test_an_unknown_message_id_is_not_archived():
     assert find_archived_email("<unknown>") is None
-    assert not email_is_archived("<unknown>")
 
 
 @pytest.mark.integration
@@ -88,7 +84,7 @@ def test_the_newest_email_the_pool_still_has_is_found(tmpdir, caplog):
     # every email of the Message-ID has expired: its rows outlive it, and it is no longer archived
     pool.purge(older.hash, reason="test", actor="tester")
     with caplog.at_level(logging.INFO):
-        assert not email_is_archived(TEST_MESSAGE_ID)
+        assert find_archived_email(TEST_MESSAGE_ID) is None
 
     assert any("has expired from the archive" in r.getMessage() and getattr(r, "message_id", None) == TEST_MESSAGE_ID
                for r in caplog.records)
@@ -98,7 +94,7 @@ def test_the_newest_email_the_pool_still_has_is_found(tmpdir, caplog):
 def test_archiving_an_expired_email_again_stores_it_again(tmpdir, archived_email):
     pool = get_email_archive_pool()
     pool.purge(archived_email.hash, reason="test", actor="tester")
-    assert not email_is_archived(TEST_MESSAGE_ID)
+    assert find_archived_email(TEST_MESSAGE_ID) is None
 
     archive_email(_write(tmpdir, TEST_EMAIL, "again"), TEST_MESSAGE_ID, [TEST_RECIPIENT], local_time())
     assert find_archived_email(TEST_MESSAGE_ID) == archived_email.hash

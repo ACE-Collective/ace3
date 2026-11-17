@@ -51,7 +51,7 @@ does, every node except the primary keeps every email it archives until its disk
 while a node-local pool has more than one live node (`docs/CAS.md`, "Sharing between nodes").
 
 A multi-node site gives the pool a backend every node can reach, and `shared: true`, in its own
-configuration. The CAS has no object-store backend of its own; an integration provides one as a
+configuration, even if it disables the `email_archiver` module. The CAS has no object-store backend of its own; an integration provides one as a
 `custom` backend (`docs/CAS.md`, "Backends"):
 
 ```yaml

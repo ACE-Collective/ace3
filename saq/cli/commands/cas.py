@@ -12,6 +12,7 @@ import logging
 import os
 
 from saq.cli.cli_main import get_cli_subparsers
+from saq.constants import DB_ACE
 
 # NOTE the saq.cas / saq.database imports below are inside their command functions on purpose,
 # matching the convention in this package (see crash.py): this module is imported on every `ace`
@@ -78,7 +79,7 @@ def cli_pools(args):
     cas = get_cas()
     # every index database: the main one, and those a pool names (a ttl pool's lives in its own chain)
     summaries = {}
-    for database in sorted({index.MAIN_DATABASE} | {cas.config.pools[name].index_database for name in cas.pool_names()}):
+    for database in sorted({DB_ACE} | {cas.config.pools[name].index_database for name in cas.pool_names()}):
         with index.transaction(database) as session:
             for pool, count, size, stored in index.pool_summaries(session):
                 summaries[(database, pool)] = (count, size, stored)

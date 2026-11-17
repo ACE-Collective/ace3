@@ -20,6 +20,7 @@ from saq.cas import index
 from saq.cas.backend import LocalBackend
 from saq.cas.registry import CAS, get_cas
 from saq.configuration.config import get_engine_config
+from saq.constants import DB_ACE
 from saq.database.model import Nodes
 from saq.environment import get_global_runtime_settings
 
@@ -51,7 +52,7 @@ def pool_health(cas: Optional[CAS] = None) -> list[dict]:
     gc_overdue come from range scans of the GC index, which stay cheap however large it grows."""
     cas = cas or get_cas()
     pools = cas.pools()
-    databases = sorted({index.MAIN_DATABASE} | {pool.database for pool in pools})
+    databases = sorted({DB_ACE} | {pool.database for pool in pools})
     ttl_pools = {pool.name for pool in pools if pool.retention == "ttl"}
 
     records: dict[str, dict] = {}

@@ -1,7 +1,6 @@
 from saq.email_archive.archive import (
     ArchiveEmailResult,
     archive_email,
-    email_is_archived,
     find_archived_email,
     get_email_archive_local_server_name,
     get_email_archive_pool,
@@ -11,7 +10,6 @@ from saq.email_archive.archive import (
     index_email_history,
     initialize_email_archive,
     insert_email_archive,
-    iter_archived_email,
     query_archive_hashes,
     register_email_archive,
 )
@@ -19,7 +17,6 @@ from saq.email_archive.archive import (
 __all__ = [
     "ArchiveEmailResult",
     "archive_email",
-    "email_is_archived",
     "find_archived_email",
     "get_email_archive_local_server_name",
     "get_email_archive_pool",
@@ -29,7 +26,6 @@ __all__ = [
     "index_email_history",
     "initialize_email_archive",
     "insert_email_archive",
-    "iter_archived_email",
     "query_archive_hashes",
     "register_email_archive",
 ]

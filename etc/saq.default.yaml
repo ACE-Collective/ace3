@@ -198,10 +198,10 @@ cas:
       shared: false
     # the YARA samples SVS captures from dispositioned alerts, and their match records
     # (docs/SVS_SAMPLES.md). live malware, so encrypted; kept for as long as a capture record holds
-    # them. backend: local is enough for a single node. a multi-node site redefines this pool in its
+    # them. backend: local is for a single-node install. a multi-node site redefines this pool in its
     # own config with a backend every node can reach and shared: true (the same one it gives
-    # yara_qa), or disables analysis_module_svs_yara_sample_capture: captures happen on whichever
-    # node owns the alert, and SVS validation reads every sample from one node.
+    # yara_qa), whether or not capture is enabled: captures happen on whichever node owns the alert,
+    # and SVS validation reads every sample from one node (docs/CAS.md, "Sharing between nodes").
     svs_samples:
       backend: local
       encryption: system
@@ -2474,7 +2474,7 @@ analysis_module_alert_added_to_event:
 
 # captures every YARA-matched file of an alert dispositioned tp or fp into the svs_samples pool, for
 # SVS to check YARA rule changes against (docs/SVS_SAMPLES.md). runs in dispositioned mode. a
-# multi-node site gives svs_samples a shared backend first, or sets enabled: false
+# multi-node site gives svs_samples a shared backend first (docs/SVS_SAMPLES.md, "Nodes")
 analysis_module_svs_yara_sample_capture:
   name: svs_yara_sample_capture
   python_module: saq.modules.svs

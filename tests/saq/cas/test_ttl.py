@@ -84,7 +84,8 @@ def test_gc_collects_a_ttl_object_past_its_ttl(ttl_pool):
 
 
 def test_gc_keeps_a_ttl_object_touched_within_its_ttl(ttl_pool):
-    # last_held_at alone says it is old; the touch is what keeps it
+    # last_held_at alone says it is old; the touch is what keeps it. No put() produces this state
+    # today (every put bumps last_held_at too): it is what the read-side touch will (docs/CAS.md)
     digest = ttl_pool.put(COMPRESSIBLE)
     age_object(ttl_pool, digest, PAST_TTL_SECONDS)
     age_touches(ttl_pool, digest, TTL_DAYS)
@@ -122,7 +123,8 @@ def test_putting_an_expired_object_again_renews_it(ttl_pool):
 
 
 def test_gc_flip_rechecks_the_touch(ttl_pool, monkeypatch):
-    # a put between the candidate scan and the flip keeps the object
+    # a touch between the candidate scan and the flip keeps the object (with last_held_at aged again,
+    # as a read-side touch would leave it)
     digest = ttl_pool.put(COMPRESSIBLE)
     _expire(ttl_pool, digest)
     real = index.flip_to_deleting
@@ -230,6 +232,17 @@ def test_health_of_a_ttl_pool_skips_the_object_scan(ttl_pool):
     assert record["retention"] == "ttl"
     assert (record["objects_present"], record["size_bytes"], record["stored_bytes"]) == (None, None, None)
     assert (record["objects_deleting"], record["gc_overdue"]) == (0, 1)
+
+
+def test_health_of_a_ttl_pool_counts_its_stuck_deletions(ttl_pool):
+    # what a GC or purge that died between the flip and removing the bytes leaves behind
+    stuck = ttl_pool.put(COMPRESSIBLE)
+    ttl_pool.put(b"present")
+    with index.transaction(ttl_pool.database) as session:
+        index.set_deleting_forced(session, ttl_pool.name, stuck)
+
+    record = {r["pool"]: r for r in pool_health()}["test_ttl"]
+    assert record["objects_deleting"] == 1
 
 
 def test_pools_lists_the_ttl_and_the_index_database(ttl_pool, capsys):

@@ -17,7 +17,6 @@ from saq.email_archive import (
     get_email_archive_local_server_name,
     get_email_archive_pool,
     index_email_archive,
-    iter_archived_email,
     register_email_archive,
 )
 from saq.email_archive.migrate import get_legacy_archive_dir, migrate_legacy_archive
@@ -76,7 +75,8 @@ def test_migrate_moves_a_referenced_email_into_the_pool(legacy_dir):
     assert (stats.scanned, stats.migrated, stats.failed, stats.sources_removed) == (1, 1, 0, 1)
     assert stats.bytes_migrated == len(b"Subject: migrated\r\n\r\nbody")
     assert find_archived_email("<m1@local>") == sha256
-    assert b"".join(iter_archived_email(sha256)) == b"Subject: migrated\r\n\r\nbody"
+    with get_email_archive_pool().open(sha256) as fp:
+        assert fp.read() == b"Subject: migrated\r\n\r\nbody"
     assert not os.path.exists(path)
     # the emptied <hostname>/<xx> directories go; the archive directory itself stays
     assert os.listdir(legacy_dir) == []

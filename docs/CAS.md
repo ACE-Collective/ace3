@@ -170,19 +170,23 @@ its inode either way.
 For `ttl` pools, as built: a `put` records a touch for `CURDATE()` in the same transaction that
 takes the row lock, and bumps `last_held_at` as it does for every pool. A candidate is a `present`
 object with no live hold, no touch on or after `CURDATE() - ttl_days`, and `last_held_at` older than
-`ttl_days` plus grace. The touch test is the ttl itself. The age test is what lets the candidate
-scan use `(pool, state, last_held_at)` instead of reading every row, and it also gives every object
-its grace after the last put. The flip repeats both tests, so a put between the scan and the flip
-keeps the object. The rest is the same as for `held` pools: batches, resume, expired-hold pruning.
+`ttl_days` plus grace. The age test is what lets the candidate scan use `(pool, state,
+last_held_at)` instead of reading every row, and it gives every object its grace after the last put.
+The flip repeats both tests, so a put between the scan and the flip keeps the object. The rest is the same as for `held` pools: batches, resume, expired-hold pruning.
 `cas_touches` partitions older than the longest `ttl_days` of the pools indexed there are dropped
 by `ace partitions maintain` (`docs/DATABASE_PARTITIONS.md`). Dropping one sooner would delete
 objects that are still inside their ttl, so the retention is computed from the pools. A touch row
 whose object is gone is harmless and goes with its partition.
 
-Only puts touch today. A read does not, so reading an email does not extend its life. The analysis
-cache, whose hits would touch, will need a `touch()` that does not bump `last_held_at`. Its candidate
-scan would then re-read objects that are old by `last_held_at` but recently touched, a cost to
-measure in its load test.
+**The touch test decides nothing yet.** Only `put` touches, and every `put` also bumps
+`last_held_at`. So an object old enough to pass the age test (with a grace of a day or more) has no
+touch within `ttl_days` either, and the touch test only rounds the ttl up to a day boundary. The
+table is kept for the read-side `touch()` the analysis cache will need: one that records a use
+without bumping `last_held_at`, so that a cache hit never writes a shared row. From then on the
+touch test is what keeps a recently read object. Its candidate scan will also re-read objects that
+are old by `last_held_at` but recently touched, a cost to measure in its load test. Until then, a
+read does not extend an object's life: reading an email does not keep it. The tests that check the
+touch test build that future state by ageing `last_held_at` and leaving a touch in place.
 
 **Orphans.** `ace cas orphans` lists the backend occasionally and removes bytes that have no row,
 older than `cas.orphan_grace_seconds`. This is the only operation that lists a bucket. Keys the CAS
@@ -294,7 +298,9 @@ anyway; and `exists` was added for `put`'s check under the row lock. (`saq/cas/b
   (`ACE_IS_PRIMARY_NODE` defaults to `1`).
   - On a cluster of more than one node, every pool needs a backend every node can reach. Otherwise
     the primary's GC deletes the row of an object another node stored, finds no bytes of its own
-    to delete, and that node keeps the bytes until its disk fills.
+    to delete, and that node keeps the bytes until its disk fills. That includes a pool nothing
+    writes to: a config overlay cannot remove a pool, and disabling the module that fills it does
+    not make a local backend right for a cluster.
   - The `cas.pool` monitor reports `node_local` and `live_nodes` for each pool, and logs an ERROR
     every run for a node-local pool while more than one node is live. A node counts as live when
     its heartbeat (`nodes.last_update`) was written within two `engine.node_status_update_frequency`

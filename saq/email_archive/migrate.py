@@ -1,16 +1,5 @@
-"""Moving the archive from its old files into the CAS pool (docs/EMAIL_ARCHIVE.md, "Migrating").
-
-Before the CAS, each node kept the emails it archived as <archive_dir>/<hostname>/<sha[:2]>/<sha>.gz.e:
-gzip, then encrypted with the system key (saq.crypto v0). migrate_legacy_archive() walks that
-directory on this node and, for every file whose email still has an archive row, decrypts and
-decompresses it and puts the plaintext in the pool, which checks it against the sha256 in its name
-before storing anything. The file is removed once the pool has it. A file with no archive row is
-unreachable (its rows were dropped with their partition), so it is left for the daily archive cron
-task to delete.
-
-A migrated email is put today, so it lives for the pool's ttl_days from the migration, not from when
-it was first archived.
-"""
+"""`ace email-archive migrate`: moves the archive's files from before the CAS into the pool
+(docs/EMAIL_ARCHIVE.md, "Migrating from the old archive")."""
 
 import gzip
 import logging

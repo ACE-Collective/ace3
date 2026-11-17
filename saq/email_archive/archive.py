@@ -1,19 +1,11 @@
-"""The email archive (docs/EMAIL_ARCHIVE.md).
+"""The email archive: the bytes are in the email_archive CAS pool, the Message-ID and URL index in
+the email archive database (docs/EMAIL_ARCHIVE.md)."""
 
-The bytes of every archived email are an object in the email_archive CAS pool (docs/CAS.md), keyed
-by the sha256 of the email. The email archive database says which Message-ID (and which URLs)
-belong to which email and who received it: archive, archive_index and email_history, all
-partitioned by week and dropped by `ace partitions maintain`. The pool is a ttl pool, so an email
-lives for its ttl_days after the last time it was archived; a Message-ID whose email has expired is
-reported as not archived.
-"""
-
-import io
 import logging
 import socket
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, Optional
+from typing import TYPE_CHECKING, Optional
 
 from pymysql import IntegrityError
 
@@ -212,23 +204,6 @@ def find_archived_email(message_id: str) -> Optional[str]:
     logging.info("email %s has archive rows but its email has expired from the archive", message_id,
                  extra={"message_id": message_id})
     return None
-
-
-def email_is_archived(message_id: str) -> bool:
-    return find_archived_email(message_id) is not None
-
-
-def iter_archived_email(digest: str, chunk_size: Optional[int] = None) -> Iterator[bytes]:
-    """The archived email with this digest (from find_archived_email), in chunks. The pool
-    verifies it before the first chunk is produced."""
-    chunk_size = chunk_size or io.DEFAULT_BUFFER_SIZE
-    with get_email_archive_pool().open(digest) as fp:
-        while True:
-            data = fp.read(chunk_size)
-            if not data:
-                break
-
-            yield data
 
 
 def get_recipients_by_message_id(message_id: str) -> list[str]:
