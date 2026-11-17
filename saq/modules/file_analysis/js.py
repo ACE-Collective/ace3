@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import shutil
-import time
 
 from pydantic import Field
 
@@ -188,12 +187,6 @@ class JavaScriptDeobfuscationAnalyzerConfig(AnalysisModuleConfig):
     )
 
 
-# a result that does not come back in celery_timeout means no manager answered (it is down, or none reads the broker
-# this client sends to), and every JavaScript file fails the same way until one does: the first timeout in this
-# interval is logged with its traceback, which writes the error report, and the rest at WARNING
-RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS = 600
-
-
 class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
     """Runs obfuscated JavaScript in a throwaway scanner container whose
     sandbox harness traces every write to a browser global, and emits a
@@ -246,14 +239,12 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
 
         return None, None
 
-    _last_timeout_report: float | None = None
-
     def _log_extra(self, _file: FileObservable) -> dict:
         return {"path": _file.full_path, "root_uuid": self.get_root().uuid, "observable_uuid": _file.uuid}
 
     def _log_call_failure(self, e: Exception, _file: FileObservable):
         """Logs a failed deobfuscate_file() call by what failed: the broker or result backend could not be reached,
-        no manager answered in time, or the task or the copy of its results failed."""
+        no result came back in time, or the task or the copy of its results failed."""
         # imported here like the client's own celery imports, since only a failed call needs them
         import redis.exceptions  # local, see above
         from celery.exceptions import TimeoutError as ResultTimeoutError  # local, see above
@@ -261,13 +252,11 @@ class JavaScriptDeobfuscationAnalyzer(AnalysisModule):
 
         extra = self._log_extra(_file)
         if isinstance(e, ResultTimeoutError):
-            message = f"no js deobfuscator manager answered for {_file.full_path} in {self.config.celery_timeout} seconds"
-            now, last = time.monotonic(), self._last_timeout_report
-            if last is None or now - last >= RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS:
-                self._last_timeout_report = now
-                logging.exception(message, extra=extra)
-            else:
-                logging.warning(message, extra=extra)
+            # celery's timeout does not say why no result came back: the manager is down, none reads the broker this
+            # client sends to, or it is up and its queue is backed up
+            logging.exception(f"no result from the js deobfuscator for {_file.full_path} in "
+                              f"{self.config.celery_timeout} seconds (manager down, not reading this broker, "
+                              "or backlogged)", extra=extra)
             return
 
         if log_peer_unavailable(e, f"js deobfuscator for {_file.full_path}",

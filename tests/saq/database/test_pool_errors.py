@@ -142,7 +142,8 @@ def test_close_and_clear_survive_failures(monkeypatch, caplog):
         assert database_pool.available_count == 0
 
         database_pool.close_connection(in_use)
-        assert _logged(caplog, logging.WARNING, "unable to close database connection: nope")
+        assert _databases_logged(caplog, logging.WARNING, "unable to close database connection: nope") == [
+            database_pool.name]
 
         # the context manager returns it to a pool that no longer knows it
         database_pool.in_use.append(in_use)

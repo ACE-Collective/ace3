@@ -39,7 +39,6 @@ from saq.constants import (
 from saq.modules.adapter import AnalysisModuleAdapter
 from saq.modules.file_analysis.js import (
     DEOBFUSCATED_PREFIX,
-    RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS,
     JavaScriptDeobfuscationAnalysis,
     JavaScriptDeobfuscationAnalyzer,
 )
@@ -426,9 +425,9 @@ def test_an_unreachable_broker_is_logged_as_unavailable(tmpdir, monkeypatch, cap
 
 
 @pytest.mark.unit
-def test_result_timeouts_are_reported_once_per_interval(tmpdir, monkeypatch, caplog):
-    """No manager answering fails every file the same way, so only the first timeout in an interval writes an
-    error report, and the rest are logged at WARNING."""
+def test_every_result_timeout_is_an_error_with_its_traceback(tmpdir, monkeypatch, caplog):
+    """Repeats of one timeout are deduplicated by ErrorReportHandler, not by the module, so each one is logged at
+    ERROR and counted in the next report's skipped repeats."""
     def _no_answer(*args, **kwargs):
         raise ResultTimeoutError("The operation timed out.")
     monkeypatch.setattr("saq.modules.file_analysis.js.deobfuscate_file", _no_answer)
@@ -437,18 +436,16 @@ def test_result_timeouts_are_reported_once_per_interval(tmpdir, monkeypatch, cap
     analyzer = _build_analyzer(root)
     observables = [_js_observable(root, tmpdir, f"sample{i}.js") for i in range(3)]
 
-    analyzer.execute_analysis(observables[0])
-    analyzer.execute_analysis(observables[1])
-    # the interval has passed since the first one was reported
-    analyzer._module._last_timeout_report -= RESULT_TIMEOUT_REPORT_INTERVAL_SECONDS
-    analyzer.execute_analysis(observables[2])
+    for observable in observables:
+        analyzer.execute_analysis(observable)
 
-    def _level(observable):
-        (record,) = [r for r in caplog.records if getattr(r, "path", None) == observable.full_path]
-        return record.levelno
-
-    assert [_level(o) for o in observables] == [logging.ERROR, logging.WARNING, logging.ERROR]
-    the_error_with_traceback(caplog, path=observables[0].full_path)
+    for observable in observables:
+        record = the_error_with_traceback(caplog, path=observable.full_path)
+        assert record.observable_uuid == observable.uuid
+        # a manager that is up but backed up times out the same way as one that is down
+        assert record.getMessage() == (f"no result from the js deobfuscator for {observable.full_path} in 60 seconds "
+                                       "(manager down, not reading this broker, or backlogged)")
+    assert logged_with(caplog, logging.WARNING) == []
     assert observables[1].get_and_load_analysis(JavaScriptDeobfuscationAnalysis).error == (
         "js deobfuscator call failed: The operation timed out.")
 
