@@ -225,7 +225,7 @@ def cli_sync(args):
 
         # a report never uploaded, or uploaded until the upload died partway, is (re)uploaded,
         # which is idempotent
-        if is_replicated(crash_dir, replicated.get(crash_id, set())):
+        if is_replicated(crash_dir, crash_id, replicated.get(crash_id, set())):
             skipped += 1
             continue
 

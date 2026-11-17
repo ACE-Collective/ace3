@@ -24,6 +24,7 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.database.pool import get_db
+from tests.saq.test_crash_report import _crash_on_undecodable_file
 
 
 @pytest.fixture
@@ -84,12 +85,7 @@ def test_sync_skips_reports_already_replicated(root_analysis, shared_storage, mo
     # cli_sync sweeps every local crash report, and other tests in the same worker leave their own
     # behind in the shared data dir, so "nothing was uploaded at all" is not a property this test
     # can claim.
-    uploads = []
-    original = shared_storage.upload_file
-    monkeypatch.setattr(
-        shared_storage, "upload_file",
-        lambda *a, **k: (uploads.append(a[2]), original(*a, **k))[1],
-    )
+    uploads = _record_uploads(shared_storage, monkeypatch)
     cli_sync(Namespace(dry_run=False))
     assert not [key for key in uploads if key.startswith(f"{crash_id}/")]
 
@@ -493,3 +489,15 @@ def test_sync_uploads_what_an_incomplete_report_gained(private_root, root_analys
     assert cli_sync(Namespace(dry_run=False)) == 0
     assert f"{crash_id}/{METADATA_FILE}" in uploads
     assert remote_report_exists(crash_id) is True
+
+
+@pytest.mark.unit
+def test_sync_uploads_an_incomplete_report_with_an_undecodable_file_name_once(private_root, root_analysis, shared_storage, monkeypatch):
+    """The bucket holds such a file under its escaped key (object_key), not under its local name."""
+    crash_id = _crash_on_undecodable_file(root_analysis)
+    os.remove(os.path.join(find_crash_report_dir(crash_id), METADATA_FILE))
+    assert cli_sync(Namespace(dry_run=False)) == 0
+
+    uploads = _record_uploads(shared_storage, monkeypatch)
+    assert cli_sync(Namespace(dry_run=False)) == 0
+    assert uploads == []

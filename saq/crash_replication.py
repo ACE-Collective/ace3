@@ -336,19 +336,20 @@ def list_replicated_files() -> dict[str, set[str]]:
         return {}
 
 
-def is_replicated(crash_dir: str, remote_files: set[str]) -> bool:
+def is_replicated(crash_dir: str, crash_id: str, remote_files: set[str]) -> bool:
     """True if the report in ``crash_dir`` needs nothing uploaded, given the relative paths it has
     in the bucket (``list_replicated_files``).
 
     ``metadata.json`` is uploaded last, so a remote one means the whole report is there. A local
     report without one is never finished, since the worker writing it was killed, so it is there
-    once every file it has is; one that gains a file, such as a watchdog report still being
-    written when sync ran, is uploaded again.
+    once every file it has is, under the key ``object_key`` gave it; one that gains a file, such as
+    a watchdog report still being written when sync ran, is uploaded again.
     """
     if METADATA_FILE in remote_files:
         return True
 
-    return set(_iter_report_files(crash_dir)) <= remote_files
+    local_files = {object_key(crash_id, p).partition("/")[2] for p in _iter_report_files(crash_dir)}
+    return local_files <= remote_files
 
 
 def delete_report(crash_id: str) -> bool:
