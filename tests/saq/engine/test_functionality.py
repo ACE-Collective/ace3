@@ -2164,17 +2164,54 @@ def test_root_metric_event_emitted_when_analysis_fails(monkeypatch):
     orchestrator = create_test_orchestrator()
     context = EngineExecutionContext(root)
 
-    with patch.object(orchestrator.analysis_executor, "execute", side_effect=RuntimeError("module blew up")), \
+    def _module_ran_then_raised(context):
+        context.total_analysis_time["basic_test"] = 1.5
+        raise RuntimeError("module blew up")
+
+    with patch.object(orchestrator.analysis_executor, "execute", side_effect=_module_ran_then_raised), \
             patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
         mock_sender = MagicMock()
         mock_sender_class.return_value = mock_sender
         with pytest.raises(RuntimeError, match="module blew up"):
             orchestrator._execute_analysis(context)
 
-    (root_event,) = [call[0][1] for call in mock_sender.emit.call_args_list if call[0][1]["event_type"] == "root"]
+    events = [call[0][1] for call in mock_sender.emit.call_args_list]
+    (root_event,) = [e for e in events if e["event_type"] == "root"]
     assert root_event["outcome"] == "failed"
     assert root_event["root_uuid"] == root.uuid
     assert root_event["observable_count"] == 1
+
+    # the module events show which modules used the time on a work item that did not finish
+    (module_event,) = [e for e in events if e["event_type"] == "module"]
+    assert module_event["module"] == "basic_test"
+    assert module_event["analysis_time_seconds"] == 1.5
+    assert module_event["root_uuid"] == root.uuid
+    assert module_event["timestamp"] == root_event["timestamp"]
+
+
+@pytest.mark.integration
+def test_root_metric_event_outcome_cancelled(monkeypatch):
+    """A cancelled work item (shutdown, lost lock, a disposition stop) returns normally from the
+    executor, but its tree is unfinished, so it must not report as completed."""
+    _enable_fluent_metrics(monkeypatch)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, 'test_1')
+    root.save()
+
+    orchestrator = create_test_orchestrator()
+    context = EngineExecutionContext(root)
+    # what the worker's shutdown watcher and lost-lock handler do
+    context.cancel_analysis()
+
+    with patch("saq.engine.execution_context.UTF8SafeFluentSender") as mock_sender_class:
+        mock_sender = MagicMock()
+        mock_sender_class.return_value = mock_sender
+        orchestrator._execute_analysis(context)
+
+    (root_event,) = [call[0][1] for call in mock_sender.emit.call_args_list if call[0][1]["event_type"] == "root"]
+    assert root_event["outcome"] == "cancelled"
+    assert root_event["root_uuid"] == root.uuid
 
 
 @pytest.mark.unit

@@ -161,8 +161,9 @@ class EngineExecutionContext:
         Args:
             elapsed_time: The total elapsed time for the analysis.
             stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
-            outcome: "completed", "timed_out" or "failed". A failed work item still reports,
-                so the roots that grow past what analysis can finish are not missing from the metrics.
+            outcome: "completed", "cancelled" (shutdown, lost lock or a disposition stop), "timed_out"
+                or "failed". A work item that did not finish still reports, so the roots that grow past
+                what analysis can finish are not missing from the metrics.
         """
         try:
             engine_config = get_engine_config()
