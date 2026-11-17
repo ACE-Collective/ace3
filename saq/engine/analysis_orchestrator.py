@@ -268,6 +268,16 @@ class AnalysisOrchestrator:
             except Exception as save_error:
                 logging.error(f"unable to save failed analysis {execution_context.root}: {save_error}")
 
+            # the roots that time out are the biggest ones, so they must not be missing from the
+            # metrics. record_execution_statistics never raises, so the re-raise below still runs
+            engine_config = get_engine_config()
+            if engine_config.metrics_logging.enabled:
+                execution_context.record_execution_statistics(
+                    elapsed_time,
+                    get_global_runtime_settings().module_stats_dir,
+                    outcome="timed_out" if isinstance(e, AnalysisTimeoutError) else "failed",
+                )
+
             # analysis was aborted: the outstanding delayed-analysis requests are being
             # abandoned below, so the in-memory root.delayed flag is now stale and there
             # will be no follow-up pass to rebuild the observable index. Mark the context

@@ -33,7 +33,7 @@ from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
 from saq.util.uuid import get_storage_dir, workload_storage_dir
-from tests.saq.helpers import create_root_analysis, log_count, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, create_test_orchestrator, log_count, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
 
 @pytest.mark.system
 def test_signal_TERM():
@@ -2008,7 +2008,7 @@ def _record_metrics(context, elapsed_time, tmpdir):
 
 # the fields that describe the root, carried only by its root event
 ROOT_ONLY_METRIC_FIELDS = [
-    "total_analysis_time_seconds", "total_time_seconds", "alert_type", "is_alert",
+    "outcome", "total_analysis_time_seconds", "total_time_seconds", "alert_type", "is_alert",
     "queue", "observable_count", "observable_type_counts",
 ]
 
@@ -2035,6 +2035,7 @@ def test_record_execution_statistics_with_fluent_bit(tmpdir, monkeypatch):
     root_event, module_events = _record_metrics(context, 10.0, tmpdir)
 
     assert root_event["root_uuid"] == root.uuid
+    assert root_event["outcome"] == "completed"
     assert "timestamp" in root_event
     assert root_event["total_analysis_time_seconds"] == 4.0  # 2.5 + 1.5
     assert root_event["total_time_seconds"] == 10.0
@@ -2100,6 +2101,80 @@ def test_root_metric_event_emitted_when_no_module_ran(tmpdir, monkeypatch):
     assert root_event["total_time_seconds"] == 3.0
     assert root_event["observable_count"] == 1
     assert root_event["observable_type_counts"] == {F_IPV4: 1}
+
+
+def _engine_root_events(root: RootAnalysis) -> list[dict]:
+    """Runs one single shot engine pass over root with basic_test enabled and returns the root
+    metric events it emitted."""
+    with patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+        mock_sender = MagicMock()
+        mock_sender_class.return_value = mock_sender
+        engine = Engine()
+        engine.configuration_manager.enable_module('basic_test', 'test_groups')
+        engine.start_single_threaded(execution_mode=EngineExecutionMode.SINGLE_SHOT)
+
+    events = [call[0][1] for call in mock_sender.emit.call_args_list]
+    return [e for e in events if e["event_type"] == "root" and e["root_uuid"] == root.uuid]
+
+
+def _scheduled_root() -> RootAnalysis:
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, 'test_1')
+    root.add_observable_by_spec(F_IPV4, '1.2.3.4')
+    root.save()
+    root.schedule()
+    return root
+
+
+@pytest.mark.integration
+def test_root_metric_event_outcome_completed(monkeypatch):
+    _enable_fluent_metrics(monkeypatch)
+    root = _scheduled_root()
+
+    (root_event,) = _engine_root_events(root)
+
+    assert root_event["outcome"] == "completed"
+
+
+@pytest.mark.integration
+def test_root_metric_event_emitted_when_analysis_times_out(monkeypatch):
+    """The work items that hit the cumulative fail time are the ones on the biggest roots, so
+    they report their observable counts too."""
+    _enable_fluent_metrics(monkeypatch)
+    monkeypatch.setattr(get_config().global_settings, "maximum_cumulative_analysis_fail_time", 0)
+    root = _scheduled_root()
+
+    (root_event,) = _engine_root_events(root)
+
+    assert log_count('ACE took too long to analyze') > 0
+    assert root_event["outcome"] == "timed_out"
+    assert root_event["observable_count"] == 2
+    assert root_event["observable_type_counts"] == {F_TEST: 1, F_IPV4: 1}
+
+
+@pytest.mark.integration
+def test_root_metric_event_emitted_when_analysis_fails(monkeypatch):
+    _enable_fluent_metrics(monkeypatch)
+    root = create_root_analysis(uuid=str(uuid.uuid4()), analysis_mode='test_groups')
+    root.initialize_storage()
+    root.add_observable_by_spec(F_TEST, 'test_1')
+    root.save()
+
+    orchestrator = create_test_orchestrator()
+    context = EngineExecutionContext(root)
+
+    with patch.object(orchestrator.analysis_executor, "execute", side_effect=RuntimeError("module blew up")), \
+            patch("saq.engine.execution_context.sender.FluentSender") as mock_sender_class:
+        mock_sender = MagicMock()
+        mock_sender_class.return_value = mock_sender
+        with pytest.raises(RuntimeError, match="module blew up"):
+            orchestrator._execute_analysis(context)
+
+    (root_event,) = [call[0][1] for call in mock_sender.emit.call_args_list if call[0][1]["event_type"] == "root"]
+    assert root_event["outcome"] == "failed"
+    assert root_event["root_uuid"] == root.uuid
+    assert root_event["observable_count"] == 1
 
 
 @pytest.mark.unit

@@ -1556,7 +1556,7 @@ modules that are already gone.
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
-| Per-root metrics | one fluent-bit event per work item with `event_type` `root`: `root_uuid`, `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
+| Per-root metrics | one fluent-bit event per work item with `event_type` `root`, including a work item that timed out or failed: `root_uuid`, `outcome` (`completed`, `timed_out` or `failed`), `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
 | Per-`(root, module)` metrics | one fluent-bit event per module that did anything in the work item, with `event_type` `module`: `root_uuid`, `module`, `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums. It shares `root_uuid` and `timestamp` with its root event, and carries none of the root event's other fields |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |
