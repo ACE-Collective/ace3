@@ -524,11 +524,13 @@ otherwise-pointless alert re-sync in `_sync_alert_to_database`.
 
 ### 6.4 `_execute_analysis`
 
-Times the executor call, then `root.save()`, then emits the per-root and per-module metrics if
-`metrics_logging.enabled`.
+Times the executor call, then `root.save()`, then emits the per-root and per-module metrics
+with `outcome` `completed`, or `cancelled` when the context's cancel flag is set (a shutdown, a
+lost lock or a disposition stop, which all return normally from the executor).
 
-On any exception it saves whatever it has, sets `analysis_aborted = True`, clears
-every outstanding `delayed_analysis` row for the root, and re-raises.
+On any exception it saves whatever it has, emits the same metrics with `outcome` `timed_out`
+(an `AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every
+outstanding `delayed_analysis` row for the root, and re-raises.
 `analysis_aborted` matters because abandoning the delayed rows leaves
 `root.delayed` stale — without forcing an index rebuild, the alert's observables
 would never reach `observable_mapping` and the alert would be unsearchable by
