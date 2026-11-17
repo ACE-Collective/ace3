@@ -571,11 +571,16 @@ def get_address_list(email_obj, header_name):
 
 
 # the email body parts are the unnamed text parts EmailAnalyzer extracts
-BODY_PART_MARKERS = (".unknown_text_html", ".unknown_text_plain")
+HTML_BODY_PART_MARKER = ".unknown_text_html"
+BODY_PART_MARKERS = (HTML_BODY_PART_MARKER, ".unknown_text_plain")
 
 
 def is_body_part(observable) -> bool:
     return any(marker in (observable.file_name or "") for marker in BODY_PART_MARKERS)
+
+
+def is_html_body_part(observable) -> bool:
+    return HTML_BODY_PART_MARKER in (observable.file_name or "")
 
 
 class EmailAnalysis(Analysis):

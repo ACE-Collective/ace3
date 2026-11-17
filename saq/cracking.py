@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from html2text import html2text
 
 from saq.analysis.search import search_down
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import EmailAnalysis, is_html_body_part
 
 if TYPE_CHECKING:
     from saq.modules.base_module import AnalysisModule
@@ -36,7 +36,7 @@ def wordlist_from_email(file_observable, range_low: int, range_high: int, byte_l
         with open(part.full_path, 'r', errors='ignore') as fp:
             content = fp.read()
 
-        if '.unknown_text_html' in part.file_name:
+        if is_html_body_part(part):
             content = html2text(content)
 
         text = content.strip()[:byte_limit]

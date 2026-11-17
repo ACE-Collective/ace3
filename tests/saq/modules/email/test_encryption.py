@@ -754,19 +754,59 @@ def test_pdf_password_not_in_email(root_analysis, tmp_path):
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.pdf.decrypted")
 
 
+def _email_with_html(tmp_path: Path, attachment: Path, html: str, plain: str = "see attached") -> Path:
+    """An email whose body is a text/plain part and an html alternative to it."""
+    email_path = _email(tmp_path, attachment, body=plain, subtype="pdf")
+    message = message_from_bytes(email_path.read_bytes(), policy=policy.default)
+    message.get_body(("plain",)).add_alternative(html, subtype="html")
+    email_path.write_bytes(bytes(message))
+    return email_path
+
+
 @pytest.mark.integration
 def test_pdf_password_only_in_the_plain_text_body(root_analysis, tmp_path):
     # the html alternative is the part the email's body points at, and a sender can leave the password out of it
-    email_path = _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf")
-    message = message_from_bytes(email_path.read_bytes(), policy=policy.default)
-    message.get_body(("plain",)).add_alternative("<p>Your document is attached.</p>", subtype="html")
-    email_path.write_bytes(bytes(message))
+    email_path = _email_with_html(tmp_path, _encrypted_pdf(tmp_path), "<p>Your document is attached.</p>",
+                                  plain=f"The password for the attached invoice is {PASSWORD} thanks")
     _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
 
     assert email_observable.get_and_load_analysis(EmailAnalysis).body.file_name.endswith(".html")
     analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
     assert "Your document is attached." in analysis.email_body
     assert PASSWORD in analysis.email_body
+    assert analysis.password == PASSWORD
+
+
+@pytest.mark.integration
+def test_pdf_password_only_in_an_html_body_part(root_analysis, tmp_path):
+    # the html is turned into text, so the password is a word of its own rather than part of its markup
+    email_path = _email_with_html(tmp_path, _encrypted_pdf(tmp_path), f"<p>The password is <b>{PASSWORD}</b></p>")
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert "<b>" not in analysis.email_body
+    assert analysis.password == PASSWORD
+
+
+@pytest.mark.integration
+def test_pdf_html_part_repeating_the_plain_text_is_read_once(root_analysis, tmp_path):
+    text = f"The password for the attached invoice is {PASSWORD} thanks"
+    email_path = _email_with_html(tmp_path, _encrypted_pdf(tmp_path), f"<p>{text}</p>", plain=text)
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert analysis.email_body.count(text) == 1
+    assert analysis.password == PASSWORD
+
+
+@pytest.mark.integration
+def test_pdf_body_part_is_cut_at_byte_limit(root_analysis, tmp_path):
+    byte_limit = get_analysis_module_config(ANALYSIS_MODULE_PDF_ENCRYPTION_ANALYZER).byte_limit
+    body = f"The password for the attached invoice is {PASSWORD} thanks " + "filler " * byte_limit
+    _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_pdf(tmp_path), body=body, subtype="pdf"), PDF_MODULES)
+
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert len(analysis.email_body) == byte_limit
     assert analysis.password == PASSWORD
 
 

@@ -18,7 +18,7 @@ from saq.constants import DIRECTIVE_CRAWL, F_FILE, F_URL, AnalysisExecutionResul
 from saq.email import get_email_domain, normalize_email_address
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.rfc822 import EmailAnalysis, is_body_part
+from saq.modules.email.rfc822 import EmailAnalysis, is_body_part, is_html_body_part
 from saq.modules.file_analysis.html_js_extraction import parse_document
 from saq.modules.file_analysis.pdf import PDFLinkTextAnalysis
 from saq.modules.file_analysis.qrcode import QRCodeAnalysis
@@ -691,7 +691,7 @@ class CandidateCollector:
                     text_urls.update(body.text_urls)
                     if body.newest_text:
                         newest_text.append(body.newest_text)
-                    parsed_body = parsed_body or ".unknown_text_html" in part.file_name
+                    parsed_body = parsed_body or is_html_body_part(part)
                 self._walk(part, SOURCE_BODY, None, None, False)
             else:
                 self._walk(part, SOURCE_ATTACHMENT, part.file_name, None, False)
@@ -720,7 +720,7 @@ class CandidateCollector:
         if content is None:
             return None
         try:
-            if ".unknown_text_html" in part.file_name:
+            if is_html_body_part(part):
                 return parse_html_body(content, self.settings)
             return parse_text_body(content, self.settings)
         except Exception:
