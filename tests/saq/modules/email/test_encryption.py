@@ -163,7 +163,8 @@ def test_password_not_in_email(root_analysis, tmp_path):
     attachment = _attachment(email_observable, "invoice.zip")
     analysis = attachment.get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password is None
-    assert analysis.error == "ZipEncryptionAnalyzer was unable to crack the password"
+    assert analysis.error is None
+    assert analysis.generate_summary() == "Zip Encryption Analysis: password not available"
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.txt")
 
 
@@ -182,7 +183,8 @@ def test_encrypted_zip_without_an_email(root_analysis, tmp_path):
     analysis = root.get_observable(zip_observable.uuid).get_and_load_analysis(ZipEncryptionAnalysis)
     assert not analysis.email
     assert analysis.word_list == []
-    assert analysis.error == "ZipEncryptionAnalyzer was unable to crack the password"
+    assert analysis.error is None
+    assert analysis.generate_summary() == "Zip Encryption Analysis: no associated email detected"
 
 
 def _tool_runs_instead(monkeypatch, cls, tool_name: str, command: list[str]):
@@ -230,7 +232,7 @@ def test_wordlist_failure_is_recorded(root_analysis, tmp_path, monkeypatch, capl
     def _wordlist(*args, **kwargs):
         raise ValueError("bad range")
 
-    monkeypatch.setattr("saq.modules.email.encryption.zip.generate_wordlist", _wordlist)
+    monkeypatch.setattr("saq.cracking.generate_wordlist", _wordlist)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
     attachment = _attachment(email_observable, "invoice.zip")
@@ -352,7 +354,8 @@ def test_msoffice_password_not_found(root_analysis, tmp_path):
     assert analysis.password is None
     # the well known default passwords are always tried first
     assert analysis.word_list[:2] == ["VelvetSweatshop", "/01Hannes Ruescher/01"]
-    assert analysis.summary == "MSOffice Encryption Analysis: could not crack password"
+    assert analysis.error is None
+    assert analysis.summary == "MSOffice Encryption Analysis: password not available"
 
 
 @pytest.mark.integration
@@ -570,7 +573,7 @@ def test_rar_wordlist_failure_is_recorded(root_analysis, tmp_path, fake_rar, mon
     def _wordlist(*args, **kwargs):
         raise ValueError("bad range")
 
-    monkeypatch.setattr("saq.modules.email.encryption.rar.generate_wordlist", _wordlist)
+    monkeypatch.setattr("saq.cracking.generate_wordlist", _wordlist)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     attachment = _attachment(email_observable, "payload.rar")
@@ -620,7 +623,8 @@ def test_rar_password_not_found(root_analysis, tmp_path, fake_rar, monkeypatch):
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
     analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
-    assert analysis.error == "RarEncryptionAnalyzer could not crack password!"
+    assert analysis.error is None
+    assert analysis.generate_summary() == "Rar Encryption Analysis: password not available"
     assert _FakeRarFile.extracted_with == []
 
 
@@ -744,8 +748,26 @@ def test_pdf_password_not_in_email(root_analysis, tmp_path):
     assert attachment.has_tag("encrypted_pdf")
     analysis = attachment.get_and_load_analysis(PDFEncryptionAnalysis)
     assert analysis.password is None
-    assert analysis.error == "could not crack password"
+    # the module did its work: a password that is not in the email is a result, not an error
+    assert analysis.error is None
+    assert analysis.generate_summary() == "PDF Encryption Analysis: password not available"
     assert not analysis.find_observable(lambda o: o.type == F_FILE and o.file_name == "invoice.pdf.decrypted")
+
+
+@pytest.mark.integration
+def test_pdf_password_only_in_the_plain_text_body(root_analysis, tmp_path):
+    # the html alternative is the part the email's body points at, and a sender can leave the password out of it
+    email_path = _email(tmp_path, _encrypted_pdf(tmp_path), subtype="pdf")
+    message = message_from_bytes(email_path.read_bytes(), policy=policy.default)
+    message.get_body(("plain",)).add_alternative("<p>Your document is attached.</p>", subtype="html")
+    email_path.write_bytes(bytes(message))
+    _, email_observable = _analyze(root_analysis, email_path, PDF_MODULES)
+
+    assert email_observable.get_and_load_analysis(EmailAnalysis).body.file_name.endswith(".html")
+    analysis = _attachment(email_observable, "invoice.pdf").get_and_load_analysis(PDFEncryptionAnalysis)
+    assert "Your document is attached." in analysis.email_body
+    assert PASSWORD in analysis.email_body
+    assert analysis.password == PASSWORD
 
 
 @pytest.mark.integration

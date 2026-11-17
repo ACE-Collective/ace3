@@ -31,6 +31,16 @@ def test_generate_wordlist_list_limit():
 
 
 @pytest.mark.unit
+def test_generate_wordlist_list_limit_keeps_whole_words():
+    """list_limit drops the substrings of long words before it drops a word, wherever the word is."""
+    text_content = "abcdefghijklmnopqrstuvwxyz " * 4 + "**Secr3tPw**"
+
+    wordlist = generate_wordlist(text_content=text_content, range_low=4, range_high=26, list_limit=3)
+
+    assert wordlist == ["abcdefghijklmnopqrstuvwxyz", "**Secr3tPw**", "Secr3tPw"]
+
+
+@pytest.mark.unit
 def test_generate_wordlist_whitespace_filtering():
     """Every substring from range_low to range_high characters long, except those with whitespace in them."""
     wordlist = generate_wordlist(text_content="abc d\tef\rgh\nijk", range_low=2, range_high=3)

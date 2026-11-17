@@ -570,6 +570,14 @@ def get_address_list(email_obj, header_name):
     return [x[1] for x in addresses]
 
 
+# the email body parts are the unnamed text parts EmailAnalyzer extracts
+BODY_PART_MARKERS = (".unknown_text_html", ".unknown_text_plain")
+
+
+def is_body_part(observable) -> bool:
+    return any(marker in (observable.file_name or "") for marker in BODY_PART_MARKERS)
+
+
 class EmailAnalysis(Analysis):
     """What are all the contents of this email?"""
     def __init__(self, *args, **kwargs):
@@ -843,6 +851,13 @@ class EmailAnalysis(Analysis):
 
         return ''
     
+    @property
+    def body_parts(self) -> list[FileObservable]:
+        """Every text and html body part of the email, in the order they were extracted. An email can
+        have more than one, and they can differ: a mail gateway adds its banner as an html part of
+        its own, and the text/plain alternative can say what the html does not."""
+        return [o for o in self.observables if o.type == F_FILE and is_body_part(o)]
+
     @property
     def body(self):
         """Returns the file observable that should be considered the body of the email, or None if one cannot be found."""

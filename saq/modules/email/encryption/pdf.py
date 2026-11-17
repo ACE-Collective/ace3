@@ -112,8 +112,8 @@ class PDFEncryptionAnalyzer(EmailPasswordAnalyzer):
             # first ':', so a ':' in the attachment's name would keep it from loading the hash
             analysis.password = self.crack(b'pdf:' + p.stdout[p.stdout.index('$pdf$'):].encode(), analysis.word_list)
 
+            # none of the candidates was the password: the summary says so, and it is not an error
             if not analysis.password:
-                analysis.error = "could not crack password"
                 return AnalysisExecutionResult.COMPLETED
 
             # got the password! write out the decrypted copy
