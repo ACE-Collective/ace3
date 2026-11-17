@@ -524,11 +524,13 @@ otherwise-pointless alert re-sync in `_sync_alert_to_database`.
 
 ### 6.4 `_execute_analysis`
 
-Times the executor call, then `root.save()`, then emits the per-root and per-module metrics if
-`metrics_logging.enabled`.
+Times the executor call, then `root.save()`, then emits the per-root and per-module metrics
+with `outcome` `completed`, or `cancelled` when the context's cancel flag is set (a shutdown, a
+lost lock or a disposition stop, which all return normally from the executor).
 
-On any exception it saves whatever it has, sets `analysis_aborted = True`, clears
-every outstanding `delayed_analysis` row for the root, and re-raises.
+On any exception it saves whatever it has, emits the same metrics with `outcome` `timed_out`
+(an `AnalysisTimeoutError`) or `failed`, sets `analysis_aborted = True`, clears every
+outstanding `delayed_analysis` row for the root, and re-raises.
 `analysis_aborted` matters because abandoning the delayed rows leaves
 `root.delayed` stale — without forcing an index rebuild, the alert's observables
 would never reach `observable_mapping` and the alert would be unsearchable by
@@ -1550,7 +1552,7 @@ modules that are already gone.
 | Per-root log | `<storage_dir>/saq.log`, attached for the duration of the work item |
 | Log correlation | every line during a work item carries `transaction_id = root uuid` (`Worker.execute`) |
 | What a worker is doing right now | `data/var/tracking/<node>/worker-<name>.json`, written by the worker itself |
-| Per-root metrics | one fluent-bit event per work item with `event_type` `root`: `root_uuid`, `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`) |
+| Per-root metrics | one fluent-bit event per analyzed work item with `event_type` `root`, including one that was cancelled, timed out or failed: `root_uuid`, `outcome` (`completed`; `cancelled` for a shutdown, a lost lock or a disposition stop; `timed_out`; `failed`; absent on events from before the field existed, so `(outcome=completed OR NOT outcome=*)` selects finished work items across both), `total_analysis_time_seconds`, `total_time_seconds`, `alert_type`, `is_alert`, `queue`, `observable_count` and `observable_type_counts` (type → count) (`EngineExecutionContext.record_execution_statistics`). None is sent for a worker killed for a module timeout or its memory limit, a work item that fails before analysis starts, or an alert whose disposition skips analysis |
 | Per-`(root, module)` metrics | one fluent-bit event per module that did anything in the work item, with `event_type` `module`: `root_uuid`, `module`, `analysis_time_seconds`, `percentage`, `exec_count`, `cache_hit_count`, `cache_miss_count`, `cache_write_count_insert`, lookup/write latency sums and maxima, compressed/uncompressed byte sums. It shares `root_uuid` and `timestamp` with its root event, and carries none of the root event's other fields |
 | Module attribution | `root._module_executions` — one `ModuleExecutionDelta` per non-empty module run plus one per cache hit, persisted in `data.json` with `details` stripped |
 | Node health | `nodes.last_update`, `nodes.status` |

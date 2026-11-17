@@ -146,12 +146,12 @@ class EngineExecutionContext:
             self.cache_lookup_blob_ms_sum.get(module_name, 0) + result.blob_ms
         )
 
-    def record_execution_statistics(self, elapsed_time: float, stats_dir: str):
+    def record_execution_statistics(self, elapsed_time: float, stats_dir: str, outcome: str = "completed"):
         """Records the execution statistics for the analysis.
 
         Emits one fluent-bit event for the root (``event_type`` "root"): the
-        work item's timings, alert_type, is_alert, queue, observable_count and
-        observable_type_counts. Then one event per (root, module) pair where
+        work item's outcome, timings, alert_type, is_alert, queue,
+        observable_count and observable_type_counts. Then one event per (root, module) pair where
         the module had any activity in this execution context -- either live
         execution time, cache hits, cache misses, or cache writes
         (``event_type`` "module"), carrying only the per-module aggregates
@@ -161,6 +161,9 @@ class EngineExecutionContext:
         Args:
             elapsed_time: The total elapsed time for the analysis.
             stats_dir: The (base) directory to save the statistics to (typically g(G_MODULE_STATS_DIR)).
+            outcome: "completed", "cancelled" (shutdown, lost lock or a disposition stop), "timed_out"
+                or "failed". A work item that did not finish still reports, so the roots that grow past
+                what analysis can finish are not missing from the metrics.
         """
         try:
             engine_config = get_engine_config()
@@ -179,6 +182,7 @@ class EngineExecutionContext:
             observable_type_counts = dict(Counter(o.type for o in self.root.all_observables))
             fluent_bit_sender.emit(None, {
                 "event_type": "root",
+                "outcome": outcome,
                 "timestamp": current_time,
                 "root_uuid": self.root.uuid,
                 "total_analysis_time_seconds": sum(self.total_analysis_time.values()),
