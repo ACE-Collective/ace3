@@ -934,11 +934,7 @@ CONFIG_EMAIL_ARCHIVE_MODULE = "analysis_module_email_archiver"
 
 # email archive
 CONFIG_EMAIL_ARCHIVE = "email_archive"
-CONFIG_EMAIL_ARCHIVE_TARGET = "target"
 CONFIG_EMAIL_ARCHIVE_PRIMARY = "primary"
-CONFIG_EMAIL_ARCHIVE_S3_CONFIG = "s3_config"
-CONFIG_EMAIL_ARCHIVE_S3_REGION = "s3_region"
-CONFIG_EMAIL_ARCHIVE_S3_BUCKET = "s3_bucket"
 
 # timeline
 CONFIG_TIMELINE = "timeline"

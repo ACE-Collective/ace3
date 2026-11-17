@@ -339,8 +339,8 @@ def test_gc_batches_in_key_order(plain_pool, monkeypatch):
     calls = []
     real = index.gc_candidates
 
-    def spy(session, pool, grace, after, limit):
-        result = real(session, pool, grace, after, limit)
+    def spy(session, pool, grace, after, limit, touched_within_days):
+        result = real(session, pool, grace, after, limit, touched_within_days)
         calls.append((after, len(result)))
         return result
 
@@ -357,13 +357,13 @@ def test_gc_flip_is_conditional_on_holds(plain_pool, payload, monkeypatch):
 
     real = index.flip_to_deleting
 
-    def hold_then_flip(session, pool, digest_, grace):
+    def hold_then_flip(session, pool, digest_, grace, touched_within_days):
         # somebody takes a hold after the candidate scan and before the flip. taking it bumps
         # last_held_at, which alone would also stop the flip; ageing the object again leaves the
         # hold as the only thing that can
         plain_pool.hold(digest_, Hold("k", "late"))
         age_object(plain_pool, digest_, GRACE + 60)
-        return real(session, pool, digest_, grace)
+        return real(session, pool, digest_, grace, touched_within_days)
 
     monkeypatch.setattr(index, "flip_to_deleting", hold_then_flip)
     stats = plain_pool.gc()

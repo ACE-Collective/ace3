@@ -69,7 +69,7 @@ def log_entry(**overrides) -> dict:
     return entry
 
 
-def add_email(root, entry=None, email=True, urls=(), archive_path=None, name="test.email.rfc822"):
+def add_email(root, entry=None, email=True, urls=(), archive_hash=None, name="test.email.rfc822"):
     path = root.create_file_path(name)
     with open(path, "wb") as fp:
         fp.write(b"Subject: hello\n\nbody\n")
@@ -84,9 +84,9 @@ def add_email(root, entry=None, email=True, urls=(), archive_path=None, name="te
     for url in urls:
         analysis.add_observable_by_spec(F_URL, url)
 
-    if archive_path:
+    if archive_hash:
         archive = EmailArchiveResults()
-        archive.archive_path = archive_path
+        archive.hash = archive_hash
         observable.add_analysis(archive)
 
     return observable
@@ -116,9 +116,8 @@ def test_every_sender_uses_the_configured_port(root_analysis):
 
 @pytest.mark.unit
 def test_post_analysis_exports_each_original_email(root_analysis, emitted):
-    archive_path = os.path.join(get_base_dir(), "archive", "test.gz.e")
     add_email(root_analysis, log_entry(), urls=["http://a.example/", "http://b.example/", "http://a.example/"],
-              archive_path=archive_path)
+              archive_hash="ab" * 32)
     # an email that is not an original email (an attachment, say) is not logged
     other = add_email(root_analysis, log_entry(message_id="<attached@example.com>"), name="attached.email.rfc822")
     other.remove_directive(DIRECTIVE_ORIGINAL_EMAIL)
@@ -127,7 +126,9 @@ def test_post_analysis_exports_each_original_email(root_analysis, emitted):
 
     [main] = records_for(emitted, "main")
     assert main["message_id"] == "<test@example.com>"
-    assert main["archive_path"] == os.path.join("archive", "test.gz.e")
+    # the email's digest in the email archive pool
+    assert main["archive_hash"] == "ab" * 32
+    assert "archive_path" not in main
     assert main["timestamp"] == "1792929600.0"
     # urls and headers go to their own sources
     assert "extracted_urls" not in main
@@ -155,7 +156,7 @@ def test_entry_without_message_id_goes_to_the_main_source_only(root_analysis, em
     [main] = records_for(emitted, "main")
     assert main["extracted_urls"] == ["http://a.example/"]
     assert main["headers"] == ["From: sender@example.com", "Subject: hello"]
-    assert main["archive_path"] is None
+    assert main["archive_hash"] is None
     assert records_for(emitted, "urls") == []
     assert records_for(emitted, "headers") == []
     assert any(r.getMessage().startswith("missing message_id for") for r in caplog.records)

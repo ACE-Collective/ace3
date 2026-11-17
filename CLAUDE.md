@@ -295,7 +295,8 @@ separate mechanism; a module failure is logged at WARNING and gets only the cras
 `saq/cas/` stores immutable bytes by sha256 in *pools*, each a named policy for backend, encryption
 and retention (`docs/CAS.md`): `get_cas().pool(name).put(src, hold=Hold(kind, id))`, `open`,
 `materialize`, `release`, `purge`. The index tables `cas_objects`, `cas_holds` and `cas_purges`
-(main chain) are authoritative for what exists; backends (`local`, or a custom class) are dumb byte
+are authoritative for what exists, in the chain the pool's `index_database` names (the main chain
+by default); backends (`local`, or a custom class) are dumb byte
 stores that only the orphan sweep ever lists. `put` and `hold` lock the object row `FOR UPDATE`, and
 GC flips an unheld object to `deleting` with one conditional UPDATE before removing it, in batches
 of primary keys, never an unbounded DELETE. Only `saq/cas/index.py` writes the index tables, and
@@ -303,7 +304,20 @@ every CAS operation runs in its own private session, never on the caller's `get_
 Encrypted pools use the v1 `saq/crypto` file format (magic, key id, authenticated header); plain
 `encrypt()` still writes the v0 format because existing encrypted data is read across nodes.
 `ace cas gc|verify|orphans` run from `etc/cron/{hourly,weekly}/cas-*` on the primary node.
-`retention: ttl` and an S3 backend are designed but not built; the config rejects both.
+A `retention: ttl` pool keeps its index in its own chain (never the main one) with a day-partitioned
+`cas_touches` table that every `put` appends to; GC collects an object with no touch within
+`ttl_days` and `ace partitions maintain` drops old touch partitions. `compression: gzip` is per pool.
+There is no object-store backend in the tree; an integration provides one as a `custom` backend.
+
+#### Email archive
+
+Every email the `email_archiver` module archives is an object in the `email_archive` CAS pool (`ttl`,
+30 days, encrypted, gzip, indexed in the email archive database), keyed by its sha256; the email
+archive database's partitioned `archive`, `archive_index` and `email_history` tables map Message-IDs
+and URLs to it (`saq/email_archive/`, `docs/EMAIL_ARCHIVE.md`). `find_archived_email()` returns the
+newest one the pool still has. `ace email-archive migrate` moves each node's old
+`<archive_dir>/<host>/<xx>/<sha>.gz.e` files into the pool. S3 archiving (`email_archive.target: s3`)
+was removed and the config rejects it.
 
 #### YARA QA results
 
@@ -395,7 +409,7 @@ Every service, `ace` command, engine worker and API worker holds what its module
 
 - A package `__init__.py` runs whenever any one of its modules is imported, so it imports nothing heavier than that. A name from a module that loads more is re-exported through a PEP 562 `__getattr__` built by `saq.lazy_exports.lazy_getattr()` (`saq/analysis/__init__.py`), never under a name a submodule also has.
 - Core (`saq/`) never imports the web layer: Flask, FastAPI, `app/`, `aceapi_v2/`, `aceapi_ai/`, or `saq.gui.alert`. Integrations name their API router and GUI blueprint in their `integration_<name>:` block (`api_router`, `gui_blueprint`), which only the API and the GUI import.
-- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's S3 backend, phishkit's celery) is set up on first use.
+- `initialize_environment()` loads only what every process needs. A subsystem only some processes use (the ORM session, the email archive's CAS pool, phishkit's celery) is set up on first use.
 - An analysis module imports the libraries its analyzer runs (OCR, document parsers, network clients, celery) in the method that runs them. Reading an alert imports the module of every analysis in it, in processes that never analyze.
 - A name needed only for a type annotation is imported under `TYPE_CHECKING`.
 - A new service, entry point or heavy dependency gets a line in `tests/saq/test_imports.py`, which imports in fresh interpreters.

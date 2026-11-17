@@ -1,10 +1,9 @@
 # Content-Addressed Storage (CAS)
 
-> **Status: implemented in `saq/cas/`** for the `held` and `permanent` retention modes with the
-> `local` and `custom` backends. Deferred, and recorded below where they apply: the `ttl` mode
-> (the config schema accepts the word and rejects it as not implemented; no `cas_touches` table,
-> no partition task) and an object-store (S3) backend (`backend:` accepts `local | custom`). The
-> design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
+> **Status: implemented in `saq/cas/`** for the `held`, `ttl` and `permanent` retention modes with
+> the `local` and `custom` backends, and optional gzip compression. Deferred, and recorded below
+> where it applies: an object-store (S3) backend (`backend:` accepts `local | custom`; an
+> integration can provide one as `custom`). The design was settled during the SVS design review (`docs/SVS_REVIEW.md` §7); bracketed IDs such as
 > `[CAS-4]` point at the item there that records the reasoning. The first consumer is SVS
 > (`docs/SVS.md`).
 
@@ -16,7 +15,7 @@ own key scheme, retention mechanism and failure modes:
 |---|---|---|---|
 | Alert `hardcopies/` | `<storage_dir>/hardcopies/<sha256>` | no | life of the alert |
 | Analysis-cache blobs (`saq/analysis/blob_store.py`) | `<root>/<sha[:3]>/<sha>` + `blob_refs` | no | references expire with a ~35-day partition |
-| Email archive (`saq/email_archive/`) | `<sha[:2]>/<sha>.gz.e`; S3 key = sha | AES-GCM, system key | 30 days (S3 copies never deleted) |
+| Email archive (`saq/email_archive/`, before the `email_archive` pool) | `<sha[:2]>/<sha>.gz.e`; S3 key = sha | AES-GCM, system key | 30 days (S3 copies never deleted) |
 | Crash report bytes | per crash directory | no | 30 days |
 | YARA `qa_dir` (before the `yara_qa` pool) | `var/qa/<rule>/<file>-<sha>` | no | never cleaned |
 
@@ -93,7 +92,7 @@ roll back the caller's transaction.
 | Mode | An object lives while… | Churn | Index layout | Example |
 |---|---|---|---|---|
 | `held` | it has a live hold, plus `grace` | low | `cas_objects` + `cas_holds`, main DB | SVS samples |
-| `ttl` | it was *touched* within `ttl`; holds optional | high | `cas_objects` + day-partitioned `cas_touches`, in the pool's own DB | analysis cache (future). **Not implemented**: the config schema rejects `retention: ttl` until the load test below has run |
+| `ttl` | it was *touched* (put) within `ttl_days`, plus grace; holds optional | high | `cas_objects` + day-partitioned `cas_touches`, in the pool's own DB | the email archive (`docs/EMAIL_ARCHIVE.md`); the analysis cache later |
 | `permanent` | always; only `purge` deletes | — | `cas_objects` | reference sets, if ever needed |
 
 [CAS-4, CAS-7]
@@ -112,10 +111,17 @@ the shape:
   `PARTITION BY RANGE` on `day`.
   - Append-only (`INSERT IGNORE`). A use never updates a shared row.
   - A partitioned table can't have foreign keys, and every unique key must include `day`.
+  - The index `(pool, digest, day)` answers GC's "has this object been touched since day X".
 - **`cas_purges`** `(pool, digest, reason, actor, purged_at)`.
 
-`held` pools keep their index in the main ACE database. A `ttl` pool names its own database chain,
-so a high-churn index never shares locks with alert inserts. [CAS-7]
+A pool's index lives in the database its `index_database` names. `held` pools keep the default, the
+main ACE database. A `ttl` pool must name another chain (the config refuses `ace`), so a high-churn
+index never shares locks with alert inserts. [CAS-7] Each chain that can hold an index has its own
+copy of the tables: `CASObject`, `CASHold` and `CASPurge` in the main chain, and
+`EmailArchiveCASObject`, `EmailArchiveCASHold`, `EmailArchiveCASPurge` and `EmailArchiveCASTouch`
+in the email archive chain (migration `4864d6cc9c60`), built from shared column mixins in
+`saq/database/model.py`. `index.transaction(database)` opens a session on that chain and records
+which copy it is, so every statement in `saq/cas/index.py` works against either.
 
 As built (`saq/database/model.py`, migration `56cafaed6b55`): `cas_objects` has the index
 `(pool, state, last_held_at)` for the GC candidate scan; `cas_holds` has a composite foreign key
@@ -161,8 +167,22 @@ A reader that opens an object between the flip and the byte delete may find the 
 get `ObjectNotFound`. That is the accepted race; a hardlinked `materialize` destination keeps
 its inode either way.
 
-For `ttl` pools, expiry drops `cas_touches` partitions older than `ttl`, the same way the email
-archive and `blob_refs` are pruned. GC then removes `cas_objects` rows that have no touch left.
+For `ttl` pools, as built: a `put` records a touch for `CURDATE()` in the same transaction that
+takes the row lock, and bumps `last_held_at` as it does for every pool. A candidate is a `present`
+object with no live hold, no touch on or after `CURDATE() - ttl_days`, and `last_held_at` older than
+`ttl_days` plus grace. The touch test is the ttl itself. The age test is what lets the candidate
+scan use `(pool, state, last_held_at)` instead of reading every row, and it also gives every object
+its grace after the last put. The flip repeats both tests, so a put between the scan and the flip
+keeps the object. The rest is the same as for `held` pools: batches, resume, expired-hold pruning.
+`cas_touches` partitions older than the longest `ttl_days` of the pools indexed there are dropped
+by `ace partitions maintain` (`docs/DATABASE_PARTITIONS.md`). Dropping one sooner would delete
+objects that are still inside their ttl, so the retention is computed from the pools. A touch row
+whose object is gone is harmless and goes with its partition.
+
+Only puts touch today. A read does not, so reading an email does not extend its life. The analysis
+cache, whose hits would touch, will need a `touch()` that does not bump `last_held_at`. Its candidate
+scan would then re-read objects that are old by `last_held_at` but recently touched, a cost to
+measure in its load test.
 
 **Orphans.** `ace cas orphans` lists the backend occasionally and removes bytes that have no row,
 older than `cas.orphan_grace_seconds`. This is the only operation that lists a bucket. Keys the CAS
@@ -192,10 +212,23 @@ and blocks writes to the table while it runs, so the pattern only works while th
 partition new partitions are split from stays empty. Any new high-volume table in ACE should start from that pattern, not arrive
 at it after an incident.
 
-**The load test gates high-churn pools.** Before the first `ttl` pool (the analysis cache) goes
-live, a load test runs a synthetic pool at production volume (millions of objects, a day of churn),
-with GC running while a writer inserts at peak rate. Nothing migrates until insert latency is flat
-under GC. [CAS-7, CAS-8]
+**The load test gates high-churn pools.** A load test runs a synthetic pool at production volume
+(millions of objects, a day of churn), with GC running while a writer inserts at peak rate. Nothing
+migrates until insert latency is flat under GC. [CAS-7, CAS-8] The email archive moved without it.
+Its index is in its own database, so GC cannot block alert inserts. What the test would measure is
+its own archiving latency under GC, which the PR that moved it left to be checked on production
+volume.
+
+## Compression
+
+`compression: gzip` compresses each object before it is encrypted and stored. The digest stays that
+of the uncompressed plaintext, and `size` is the plaintext's size. `stored_size` is what the
+backend holds. The read path decompresses on its way to the hash check. A stream that does not
+decompress (bad data, truncated, trailing bytes) is reported as `digest_mismatch`. For an encrypted
+pool, that check runs only after the GCM tag has verified, so tampered ciphertext is still reported
+as `authentication`. A compressed pool is never read in place or hardlinked straight out of its
+backend: it goes through the read cache, like an encrypted pool. The email archive uses it, because
+mail compresses well.
 
 ## Encryption
 
@@ -283,7 +316,10 @@ cas:
     svs_samples:
       backend: local         # local | custom {python_module, python_class, config} under `custom`
       encryption: system     # none | system
-      retention: held        # held | permanent   (ttl is reserved and rejected)
+      compression: none      # none | gzip
+      retention: held        # held | ttl | permanent
+      ttl_days:              # ttl pools only, and required there
+      index_database: ace    # ace | email_archive; a ttl pool must not use ace
       grace_seconds: 86400
       shared: false          # true requires a backend that is not node-local
 ```
@@ -291,8 +327,9 @@ cas:
 The schema (`CASConfig`, `CASPoolConfig` in `saq/configuration/schema.py`) rejects unknown keys
 explicitly (`extra="forbid"`; most of the rest of the config silently ignores them). Paths are
 relative to the data directory, like `crash_reporting.directory`, which is what gives every test
-slot its own store. `etc/saq.default.yaml` carries the defaults and the two pools defined out of
-the box, `yara_qa` (`docs/YARA_QA.md`) and `svs_samples` (`docs/SVS_SAMPLES.md`). A site redefines a
+slot its own store. `etc/saq.default.yaml` carries the defaults and the three pools defined out of
+the box, `yara_qa` (`docs/YARA_QA.md`), `svs_samples` (`docs/SVS_SAMPLES.md`) and `email_archive`
+(`docs/EMAIL_ARCHIVE.md`). A site redefines a
 pool by overriding its keys in its own configuration, for example to give `yara_qa` and
 `svs_samples` a shared backend on a multi-node install.
 
@@ -311,8 +348,8 @@ pool by overriding its keys in its own configuration, for example to give `yara_
   - `etc/cron/hourly/cas-gc`;
   - `etc/cron/hourly/cas-node-stats`, which runs on **every** node (it describes the node);
   - `etc/cron/weekly/cas-verify` and `cas-orphans`;
-  - for `ttl` pools, when they exist, partition maintenance by adding the table to
-    `saq/database/partitions.py` (docs/DATABASE_PARTITIONS.md).
+  - for `ttl` pools, `cas_touches` partition maintenance in `etc/cron/daily/partitions`, which runs
+    `ace partitions maintain` (`saq/database/partitions.py`, docs/DATABASE_PARTITIONS.md).
 
   All the others run on the primary node only: the commands exit 0 without doing anything unless
   `ACE_IS_PRIMARY_NODE` is `1` (`is_primary_node()`), and `--force` overrides that for a dry run
@@ -338,10 +375,15 @@ message text, so the monitor records are the place to look. Definitions are in
   `never_verified`, `verified_last_7d`, `purges_last_24h`, `gc_overdue`, and the pool's
   `configured`/`backend`/`encryption`/`retention`. A pool that has rows but is no longer
   configured is reported with `configured: false`. The index is shared, so the record describes
-  the cluster and carries no `node`.
+  the cluster and carries no `node`. Each index database is read in turn.
+  - A **`ttl` pool** is too large for the grouped scan of `cas_objects` behind `objects_present`,
+    `size_bytes`, `stored_bytes`, `never_verified` and `verified_last_7d`, so those are `null` in
+    its record. `objects_deleting` and `gc_overdue` come from range scans of the GC index and are
+    reported. A pool that is no longer configured is reported only from a database that holds no
+    `ttl` pool.
   - **`gc_overdue`** is the one to alert on. It counts present, unheld objects further past their
-    grace than `cas.gc_overdue_seconds` (default two hourly runs), in held pools (`null`
-    otherwise). It stays above zero when GC keeps failing, and also when GC runs nowhere: the
+    grace (and ttl) than `cas.gc_overdue_seconds` (default two hourly runs), in held and ttl
+    pools (`null` for permanent ones). It stays above zero when GC keeps failing, and also when GC runs nowhere: the
     maintenance commands exit 0 on a node that is not the primary, so if no node has
     `ACE_IS_PRIMARY_NODE=1` every cron record says success.
   - `objects_deleting` that stays above zero across samples is a deletion GC keeps failing to
@@ -356,7 +398,7 @@ message text, so the monitor records are the place to look. Definitions are in
   `prune_seconds` and `pause_seconds`.
 - **Operation timings** (`saq/cas/metrics.py`) are per process, not a monitor record: every
   `put`, `hold`, `release`, `open` and `materialize` is timed as a whole (`total`) and by phase
-  (`put`: `spool`, `encrypt`, `index`, `lock`, `write`; reads: `row`, `verify`, `cache`), plus the
+  (`put`: `spool`, `compress`, `encrypt`, `index`, `lock`, `write`; reads: `row`, `verify`, `cache`), plus the
   read cache's budget check (`read_cache`/`evict`) and counters such as `put`/`deduplicated`, into
   fixed latency buckets keyed by (pool, operation, phase). `metrics.snapshot()` returns them; a
   forked worker starts from zero. Recording is always on (a `perf_counter()` pair and a locked
@@ -381,10 +423,10 @@ message text, so the monitor records are the place to look. Definitions are in
 | 2 | YARA `qa_dir` | `yara_qa` (`held`, encrypted, local by default) | **done** (`docs/YARA_QA.md`): the files and full match records of QA-mode rules, held for 30 days after the last match, capped per rule |
 | 3 | Analysis-cache blobs | `analysis_cache` (`ttl`, plaintext, local `link`) | gated on the load test |
 | 4 | Crash report bytes | `crash_files` | later |
-| 5 | Email archive | `email_archive` | later; has its own DB and retention semantics |
+| 5 | Email archive | `email_archive` (`ttl`, 30 days, encrypted, gzip, local by default, index in the email archive database) | **done** (`docs/EMAIL_ARCHIVE.md`): every archived email, kept for 30 days after it was last archived. `ace email-archive migrate` moves the old `.gz.e` files in. A site where more than one node archives email gives it a shared backend |
 | 6 | Alert hardcopies | `alert_files` | last; largest disk win and largest blast radius (node transfer, archive, hardlinks) |
 
-Steps 1 and 2 are built; the rest are not scheduled. [CAS-8]
+Steps 1, 2 and 5 are built; the rest are not scheduled. [CAS-8]
 
 ## Prerequisites (phase 0)
 
@@ -413,8 +455,9 @@ These were not design questions; the implementation picked them:
   either way.
 
 Still open, for the pools that need them:
-- the `ttl` mode (`cas_touches`, its own database chain, the partition task) and the load test
-  that gates it;
-- the S3 backend, needed before any pool can be `shared: true`;
+- the load test of a `ttl` pool at production volume, and a read-side `touch()` for the analysis
+  cache;
+- an object-store backend in the open-source tree. Until then a `shared: true` pool needs a custom
+  backend from an integration;
 - multi-key decryption once the system key is ever rotated (the key id in every v1 header and
   `cas_objects.key_id` is the hook).

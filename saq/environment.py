@@ -119,7 +119,6 @@ def initialize_data_dir():
 
     from saq.configuration import get_config
     from saq.local_locking import get_lock_directory
-    from saq.email_archive import get_email_archive_dir
 
     data_dir = get_data_dir()
 
@@ -132,7 +131,6 @@ def initialize_data_dir():
     for dir_path in [
         os.path.join(data_dir, "logs"),
         get_lock_directory(),
-        get_email_archive_dir(),
         os.path.join(data_dir, get_global_runtime_settings().saq_node),
         os.path.join(data_dir, "review", "rfc822"),
         os.path.join(data_dir, "review", "misc"),

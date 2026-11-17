@@ -257,6 +257,11 @@ def execute_global_db_setup(database_reset_information: Optional[DatabaseResetIn
         cursor.execute("DELETE FROM archive_index")
         cursor.execute("DELETE FROM archive_server")
         cursor.execute("DELETE FROM email_history")
+        # the CAS index of the pools indexed here (the email_archive pool, test_ttl)
+        cursor.execute("DELETE FROM cas_holds")
+        cursor.execute("DELETE FROM cas_purges")
+        cursor.execute("DELETE FROM cas_objects")
+        cursor.execute("DELETE FROM cas_touches")
 
         if database_reset_information is not None:
             for row in database_reset_information.existing_email_archive_server:

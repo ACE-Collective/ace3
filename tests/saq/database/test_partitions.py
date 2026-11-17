@@ -115,6 +115,27 @@ def test_email_history_has_its_own_retention(monkeypatch):
 
 
 @pytest.mark.unit
+def test_cas_touches_outlive_the_longest_ttl_indexed_there(monkeypatch):
+    # GC keeps a ttl object while it has a touch within ttl_days, so dropping a touch partition any
+    # sooner would delete objects that are still inside their ttl
+    pools = get_config().cas.pools
+    monkeypatch.setattr(pools["email_archive"], "ttl_days", 45)
+    tables = {t.key: t for t in get_managed_tables()}
+    touches = tables["email_archive.cas_touches"]
+    assert (touches.column, touches.granularity, touches.retention_days) == ("day", Granularity.DAY, 45)
+
+
+@pytest.mark.unit
+def test_cas_touches_fall_back_to_the_archive_retention_without_a_ttl_pool(monkeypatch):
+    for name, pool in get_config().cas.pools.items():
+        if pool.retention == "ttl":
+            monkeypatch.setattr(pool, "retention", "held")
+
+    monkeypatch.setattr(get_config().email_archive, "partition_retention_days", 40)
+    assert {t.key: t.retention_days for t in get_managed_tables()}["email_archive.cas_touches"] == 40
+
+
+@pytest.mark.unit
 def test_maintain_command_skips_on_a_node_that_is_not_the_primary(monkeypatch):
     monkeypatch.setenv("ACE_IS_PRIMARY_NODE", "0")
     monkeypatch.setattr(partitions, "maintain_all", lambda **kwargs: pytest.fail("maintenance ran"))
@@ -395,6 +416,8 @@ def restore_managed_tables():
         for table in ("archive", "archive_index", "email_history"):
             cursor.execute(f"ALTER TABLE `{table}` PARTITION BY RANGE COLUMNS(insert_date) "
                            f"(PARTITION {CATCHALL} VALUES LESS THAN (MAXVALUE))")
+        cursor.execute(f"ALTER TABLE `cas_touches` PARTITION BY RANGE COLUMNS(day) "
+                       f"(PARTITION {CATCHALL} VALUES LESS THAN (MAXVALUE))")
 
     with partition_connection(DB_ANALYSIS_RESULT_CACHE) as connection, connection.cursor() as cursor:
         for table in ("analysis_result_cache", "blob_refs"):
@@ -410,6 +433,9 @@ def test_maintain_all_manages_the_configured_tables(restore_managed_tables):
     assert all(r.ok for r in results), [r.problems for r in results]
     by_key = {r.key: r for r in results}
     assert by_key["email_archive.archive_index"].created[-1] == "p2026w46"
+    # a DATE column, partitioned by the migration: daily partitions over the longest ttl (email_archive's 30 days)
+    assert by_key["email_archive.cas_touches"].created[0] == "p20260912"
+    assert by_key["email_archive.cas_touches"].created[-1] == "p20261019"
     # the analysis cache tables are created unpartitioned and get partitioned on the first run
     assert by_key["analysis_result_cache.blob_refs"].created[:2] == [CATCHALL, "p20260907"]
     assert by_key["analysis_result_cache.blob_refs"].created[-1] == "p20261019"

@@ -48,6 +48,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import (
     Mapped,
     aliased,
+    declared_attr,
     mapped_column,
     reconstructor,
     relationship,
@@ -1464,7 +1465,7 @@ class AnalysisModuleCrash(Base):
     has_file: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('0'))
 
 
-class CASObject(Base):
+class _CASObjectColumns:
     """One object in a content-addressed storage pool (docs/CAS.md).
 
     This table is authoritative for which objects exist: backends are dumb byte stores, and GC and
@@ -1476,20 +1477,23 @@ class CASObject(Base):
     hold() lock the row FOR UPDATE, so taking a hold and the GC flip serialize on it. A put() that
     finds deleting waits for the row to go and re-uploads.
 
-    Only saq/cas/index.py writes this table.
+    The index of a pool lives in the database its index_database names: CASObject (main chain) or
+    EmailArchiveCASObject (email archive chain), the same table in two chains, so a high-churn ttl
+    pool never shares locks with alert inserts. Only saq/cas/index.py writes this table.
     """
 
     __tablename__ = 'cas_objects'
-    __table_args__ = (
+
+    @declared_attr.directive
+    def __table_args__(cls):
         # the GC candidate scan: present objects of one pool whose last hold activity is old
-        Index('i_cas_objects_gc', 'pool', 'state', 'last_held_at'),
-    )
+        return (Index('i_cas_objects_gc', 'pool', 'state', 'last_held_at'),)
 
     pool: Mapped[str] = mapped_column(String(64), primary_key=True)
     digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
     # plaintext bytes
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    # bytes in the backend (larger than size for encrypted pools: header + tag)
+    # bytes in the backend (smaller than size for a compressed pool, larger for an encrypted one)
     stored_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # saq.crypto key id the object was encrypted with; NULL for plaintext pools
     key_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -1508,7 +1512,7 @@ class CASObject(Base):
     verified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
-class CASHold(Base):
+class _CASHoldColumns:
     """An explicit reference that keeps a CAS object alive (docs/CAS.md).
 
     Keyed by (pool, digest, holder_kind, holder_id) with no timestamp in the key, so repeating a
@@ -1522,15 +1526,18 @@ class CASHold(Base):
     """
 
     __tablename__ = 'cas_holds'
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ['pool', 'digest'],
-            ['cas_objects.pool', 'cas_objects.digest'],
-            name='fk_cas_holds_object',
-            ondelete='CASCADE'),
-        # "everything held by this holder", e.g. releasing every hold of one capture record
-        Index('i_cas_holds_holder', 'pool', 'holder_kind', 'holder_id'),
-    )
+
+    @declared_attr.directive
+    def __table_args__(cls):
+        return (
+            ForeignKeyConstraint(
+                ['pool', 'digest'],
+                ['cas_objects.pool', 'cas_objects.digest'],
+                name='fk_cas_holds_object',
+                ondelete='CASCADE'),
+            # "everything held by this holder", e.g. releasing every hold of one capture record
+            Index('i_cas_holds_holder', 'pool', 'holder_kind', 'holder_id'),
+        )
 
     pool: Mapped[str] = mapped_column(String(64), primary_key=True)
     digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
@@ -1544,7 +1551,7 @@ class CASHold(Base):
     created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
-class CASPurge(Base):
+class _CASPurgeColumns:
     """Audit row for a forced deletion of a CAS object across its holds (docs/CAS.md).
 
     purge is the only way to delete an object that is still held. It records who did it and why;
@@ -1552,9 +1559,10 @@ class CASPurge(Base):
     """
 
     __tablename__ = 'cas_purges'
-    __table_args__ = (
-        Index('i_cas_purges_object', 'pool', 'digest'),
-    )
+
+    @declared_attr.directive
+    def __table_args__(cls):
+        return (Index('i_cas_purges_object', 'pool', 'digest'),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     pool: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1565,6 +1573,51 @@ class CASPurge(Base):
         TIMESTAMP,
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'))
+
+
+class CASObject(_CASObjectColumns, Base):
+    pass
+
+
+class CASHold(_CASHoldColumns, Base):
+    pass
+
+
+class CASPurge(_CASPurgeColumns, Base):
+    pass
+
+
+class EmailArchiveCASObject(_CASObjectColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASHold(_CASHoldColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASPurge(_CASPurgeColumns, EmailArchiveBase):
+    pass
+
+
+class EmailArchiveCASTouch(EmailArchiveBase):
+    """One use of an object in a ttl pool on one day (docs/CAS.md, "Retention modes and churn").
+
+    A ttl object lives while it has a touch within the pool's ttl_days. Append-only: a put writes
+    INSERT IGNORE (CURDATE(), pool, digest), so a use never updates a shared row, and expiry drops
+    whole day partitions (`ace partitions maintain`, docs/DATABASE_PARTITIONS.md) instead of
+    deleting rows. RANGE COLUMNS(day) partitioned, so it has no foreign key and day is in every
+    unique key. Only saq/cas/index.py writes this table.
+    """
+
+    __tablename__ = 'cas_touches'
+    __table_args__ = (
+        # GC asks "has this object a touch since day X", which the primary key (day first) cannot answer
+        Index('i_cas_touches_object', 'pool', 'digest', 'day'),
+    )
+
+    day: Mapped[date] = mapped_column(DATE, primary_key=True)
+    pool: Mapped[str] = mapped_column(String(64), primary_key=True)
+    digest: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
 
 
 class YaraQASignature(Base):

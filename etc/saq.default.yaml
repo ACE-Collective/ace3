@@ -208,6 +208,22 @@ cas:
       retention: held
       grace_seconds: 86400
       shared: false
+    # archived emails (docs/EMAIL_ARCHIVE.md). customer mail, so encrypted, and gzip because mail
+    # compresses well. ttl: an email lives for ttl_days after the last time it was archived. archive
+    # rows go a weekly partition at a time, so a message-id can outlive its email by up to a week;
+    # it is then reported as not archived. the index is high churn, so it lives in the email archive
+    # database, not the main one. backend: local keeps the bytes on the node that archived them; a
+    # site where more than one node archives email gives this pool a backend every node can reach
+    # (an integration's custom backend) and shared: true.
+    email_archive:
+      backend: local
+      encryption: system
+      compression: gzip
+      retention: ttl
+      ttl_days: 30
+      index_database: email_archive
+      grace_seconds: 86400
+      shared: false
 
 # files matched by YARA rules in QA mode (`modifiers = "qa"`), kept in the CAS pool below so analysts
 # can review them (Signatures -> Yara QA Results, /api/v2/signatures/yara-qa). docs/YARA_QA.md
@@ -959,20 +975,14 @@ observable_types:
     yara_string: "saq.observables.yara:YaraStringObservable"
 
 email_archive:
-  target: local # possible values: local, s3
   # if this system is archiving emails, this determines what section to use for the database config
   # NOTE this is the name of the section without the leading database_ (legacy issue)
   primary: email_archive
-  # the directory to contain the archived emails (relative to DATA_DIR)
+  # the CAS pool (cas.pools) archived emails are stored in (docs/EMAIL_ARCHIVE.md)
+  pool: email_archive
+  # where the archive kept its files before it moved to the CAS (relative to DATA_DIR). only
+  # `ace email-archive migrate` reads it
   archive_dir: archive/email
-
-  # s3 settings
-  # controls which section of the config to use for the s3 config
-  s3_config: s3
-  # the bucket to use for the email archive
-  s3_bucket: ace-email-archive
-  # the region to use for the email archive
-  s3_region:
   # days of archive and archive_index rows to keep. these tables are partitioned by week and
   # `ace partitions maintain` drops a week once all of it is older than this
   # (docs/DATABASE_PARTITIONS.md)

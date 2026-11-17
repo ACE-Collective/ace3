@@ -6,7 +6,6 @@ from sqlalchemy import func, text, update
 from saq.cas import CASPool, get_cas
 from saq.cas import index
 from saq.crypto import CHUNK_SIZE
-from saq.database.model import CASObject
 from saq.monitor import emit_monitor
 
 
@@ -32,11 +31,23 @@ def payload() -> bytes:
 
 def age_object(pool: CASPool, digest: str, seconds: int) -> None:
     """Move an object's last_held_at into the past, as the database sees time."""
-    with index.transaction() as session:
+    cas_object = index.TABLES[pool.database].object
+    with index.transaction(pool.database) as session:
         session.execute(
-            update(CASObject)
-            .where(CASObject.pool == pool.name, CASObject.digest == digest)
+            update(cas_object)
+            .where(cas_object.pool == pool.name, cas_object.digest == digest)
             .values(last_held_at=func.date_sub(func.now(), text(f"INTERVAL {int(seconds)} SECOND")))
+            .execution_options(synchronize_session=False))
+
+
+def age_touches(pool: CASPool, digest: str, days: int) -> None:
+    """Move every touch of a ttl object days into the past, as the database sees the date."""
+    touch = index.TABLES[pool.database].touch
+    with index.transaction(pool.database) as session:
+        session.execute(
+            update(touch)
+            .where(touch.pool == pool.name, touch.digest == digest)
+            .values(day=func.date_sub(func.curdate(), text(f"INTERVAL {int(days)} DAY")))
             .execution_options(synchronize_session=False))
 
 

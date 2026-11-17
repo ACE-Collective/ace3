@@ -61,6 +61,7 @@ def test_cli_subcommands_registered():
     assert {"start"} <= choices("gui")
     assert {"stats", "gc", "local-maintenance"} <= choices("cache")
     assert {"archive", "distribute"} <= choices("alert")
+    assert choices("email-archive") == {"migrate"}
     assert {"add", "delete", "list"} <= choices("company")
     assert {"list"} <= choices("modules")
     assert {"display"} <= choices("workload")

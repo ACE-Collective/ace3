@@ -45,8 +45,9 @@ def test_pools_lists_configured_and_unconfigured_pools(plain_pool, capsys):
     assert cli_pools(Namespace()) == 0
     out = capsys.readouterr().out
     lines = {line.split()[0]: line for line in out.splitlines()[1:]}
-    # yara_qa and svs_samples are the pools saq.default.yaml defines out of the box
-    assert set(lines) == {"test_plain", "test_encrypted", "test_permanent", "yara_qa", "svs_samples", "renamed_pool"}
+    # yara_qa, svs_samples and email_archive are the pools saq.default.yaml defines out of the box
+    assert set(lines) == {"test_plain", "test_encrypted", "test_permanent", "test_ttl", "yara_qa", "svs_samples",
+                          "email_archive", "renamed_pool"}
     assert "local" in lines["test_plain"] and str(len(PAYLOAD)) in lines["test_plain"]
     assert "system" in lines["test_encrypted"]
     assert "permanent" in lines["test_permanent"]
@@ -148,8 +149,9 @@ def test_node_stats(cas_emitted, capsys):
     assert "read cache" in out and "pool test_plain" in out
     records = records_for(cas_emitted, "cas.node")
     assert {record["kind"] for record in records} == {"read_cache", "pool"}
-    # the read cache, and the five local pools (three test pools and the default yara_qa and svs_samples)
-    assert len(records) == 6
+    # the read cache, and the seven local pools (four test pools and the default yara_qa, svs_samples and
+    # email_archive)
+    assert len(records) == 8
 
 
 def test_orphans(plain_pool, capsys):

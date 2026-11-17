@@ -1,3 +1,4 @@
+import gzip
 import logging
 import os
 import shutil
@@ -9,7 +10,8 @@ from saq.analysis.observable import Observable
 from saq.configuration.config import get_analysis_module_config
 from saq.database.pool import get_db_connection
 from saq.constants import ANALYSIS_MODULE_EMAIL_ARCHIVER, DB_EMAIL_ARCHIVE, DIRECTIVE_ARCHIVE, F_FILE, F_URL, TAG_DECRYPTED_EMAIL, AnalysisExecutionResult
-from saq.email_archive import archive_email, get_email_archive_dir, query_by_message_id
+from saq.crypto import FORMAT_V0, encrypt
+from saq.email_archive import find_archived_email, query_archive_hashes
 from saq.environment import get_global_runtime_settings
 from saq.environment import get_data_dir
 from saq.modules.email.constants import KEY_ENV_RCPT_TO, KEY_MESSAGE_ID
@@ -17,7 +19,6 @@ from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 from saq.modules.email.archive import EmailArchiveAction, EmailArchiveResults, EncryptedArchiveAnalysis, EncryptedArchiveAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_str
-from saq.util.time import local_time
 from tests.saq.helpers import inject_deadlock
 from tests.saq.test_util import create_test_context
 
@@ -25,11 +26,18 @@ TEST_MESSAGE_ID = "<test-message-id>"
 TEST_RECIPIENT = "test@local"
 
 @pytest.fixture
-def archived_email(tmpdir):
-    email = tmpdir / "email"
-    email.write_binary(b"test")
+def encrypted_archive_file(tmpdir) -> str:
+    """An email as the archive stored it before the CAS (and as an analyst may still add one): gzip,
+    then encrypted with the system key."""
+    sha256 = sha256_str("test")
+    compressed = str(tmpdir / f"{sha256}.gz")
+    with gzip.open(compressed, "wb") as fp:
+        fp.write(b"test")
 
-    return archive_email(str(email), TEST_MESSAGE_ID, [TEST_RECIPIENT], local_time())
+    target = f"{compressed}.e"
+    encrypt(compressed, target, format_version=FORMAT_V0)
+    os.remove(compressed)
+    return target
 
 @pytest.mark.unit
 def test_encrypted_archive_analysis(tmpdir):
@@ -41,7 +49,7 @@ def test_encrypted_archive_analysis(tmpdir):
     assert analysis.generate_summary()
 
 @pytest.mark.unit
-def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, tmpdir, caplog):
+def test_encrypted_archive_analyzer(root_analysis, encrypted_archive_file, monkeypatch, tmpdir, caplog):
     analyzer = EncryptedArchiveAnalyzer(
         context=create_test_context(root=root_analysis),
         config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
@@ -49,9 +57,9 @@ def test_encrypted_archive_analyzer(root_analysis, archived_email, monkeypatch, 
     assert analyzer.generated_analysis_type is EncryptedArchiveAnalysis
     assert analyzer.valid_observable_types == F_FILE
 
-    shutil.copy(archived_email.archive_path, root_analysis.storage_dir)
+    shutil.copy(encrypted_archive_file, root_analysis.storage_dir)
 
-    observable = root_analysis.add_file_observable(archived_email.archive_path)
+    observable = root_analysis.add_file_observable(encrypted_archive_file)
     assert isinstance(observable, Observable)
 
     with monkeypatch.context() as mp:
@@ -105,16 +113,14 @@ def test_email_archive_results(tmpdir):
     analysis.file_manager = create_file_manager(str(tmpdir))
     assert analysis.message_id is None
     assert analysis.archive_id is None
-    assert analysis.archive_path is None
     assert analysis.hash is None
     assert analysis.generate_summary() is None
 
     analysis.message_id = TEST_MESSAGE_ID
     analysis.archive_id = 1
-    analysis.archive_path = "/some/path"
     analysis.hash = sha256_str("test")
 
-    assert analysis.generate_summary()
+    assert analysis.generate_summary() == f"Archived Email: {sha256_str('test')}"
 
 def _email_file(root_analysis, name: str, message_id: str | None = TEST_MESSAGE_ID) -> FileObservable:
     """An email file with the EmailAnalysis the engine would have given it first (a declared
@@ -132,9 +138,9 @@ def _email_file(root_analysis, name: str, message_id: str | None = TEST_MESSAGE_
         file_observable.add_analysis(email_analysis)
     return file_observable
 
-def _archive_entries() -> list[str]:
-    archive_dir = get_email_archive_dir()
-    return os.listdir(archive_dir) if os.path.isdir(archive_dir) else []
+def _archived() -> list[str]:
+    """The emails archived under TEST_MESSAGE_ID."""
+    return query_archive_hashes(TEST_MESSAGE_ID)
 
 def _url_index_count(archive_id: int, url: str) -> int:
     with get_db_connection(DB_EMAIL_ARCHIVE) as db:
@@ -169,8 +175,7 @@ def test_email_archive_action_skips_files_it_should_not_archive(root_analysis, c
     assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
     assert file_observable.get_analysis(EmailArchiveResults) is None
-    assert _archive_entries() == []
-    assert not query_by_message_id(TEST_MESSAGE_ID)
+    assert _archived() == []
     if expected_log:
         assert any(expected_log in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
     else:
@@ -187,8 +192,11 @@ def test_an_email_tagged_whitelisted_is_still_archived(root_analysis):
 
     assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
-    assert isinstance(file_observable.get_analysis(EmailArchiveResults), EmailArchiveResults)
-    assert len(_archive_entries()) == 1
+    archive_results = file_observable.get_analysis(EmailArchiveResults)
+    assert isinstance(archive_results, EmailArchiveResults)
+    assert _archived() == [sha256_str(open(file_observable.full_path).read())]
+    # the email itself is in the pool, under the hash the analysis records
+    assert find_archived_email(TEST_MESSAGE_ID) == archive_results.hash
 
 @pytest.mark.integration
 def test_post_analysis_indexes_the_urls_found_under_each_archived_email(root_analysis):
@@ -198,7 +206,7 @@ def test_post_analysis_indexes_the_urls_found_under_each_archived_email(root_ana
 
     archived = _email_file(root_analysis, "archived.rfc822")
     assert analyzer.execute_analysis(archived) == AnalysisExecutionResult.COMPLETED
-    assert len(_archive_entries()) == 1
+    assert len(_archived()) == 1
     archive_results = archived.get_analysis(EmailArchiveResults)
     assert isinstance(archive_results, EmailArchiveResults)
 

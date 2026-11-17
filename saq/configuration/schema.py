@@ -346,11 +346,9 @@ class WikiConfig(BaseModel):
     event_link_enabled: bool = Field(..., description="enable wiki link next to event names on manage events page")
 
 class EmailArchiveConfig(BaseModel):
-    target: str = Field(..., description="possible values: local, s3")
     primary: str = Field(..., description="if this system is archiving emails, this determines what section to use for the database config")
-    archive_dir: str = Field(default="archive/email", description="the directory that holds the archived emails (relative to the data directory)")
-    s3_bucket: str = Field(..., description="the bucket to use for the email archive")
-    s3_region: Optional[str] = Field(default=None, description="the region to use for the email archive")
+    pool: str = Field(default="email_archive", description="the CAS pool archived emails are stored in (docs/EMAIL_ARCHIVE.md)")
+    archive_dir: str = Field(default="archive/email", description="the directory of the archive before it moved to the CAS (relative to the data directory); only `ace email-archive migrate` reads it")
     partition_retention_days: int = Field(default=30, description="days of archive and archive_index rows to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
     email_history_retention_days: int = Field(default=30, description="days of email_history rows (who received each message-id, which remediation looks up) to keep; `ace partitions maintain` drops a weekly partition once all of it is older than this (docs/DATABASE_PARTITIONS.md)")
 
@@ -743,14 +741,23 @@ class CASPoolConfig(BaseModel):
     root: Optional[str] = Field(default=None, description="local backend only: the pool's directory (relative to DATA_DIR). Defaults to <cas.local_root>/<pool name>")
     custom: Optional[CASBackendSpec] = Field(default=None, description="custom backend only: the class to load and its config")
     encryption: Literal["none", "system"] = Field(default="none", description="none stores plaintext; system encrypts every object with the system data key (saq/crypto, v1 format)")
-    retention: Literal["held", "ttl", "permanent"] = Field(default="held", description="held: an object lives while it has a live hold, plus grace. permanent: only purge deletes. ttl is reserved and not implemented yet (gated on the GC load test, docs/CAS.md)")
-    grace_seconds: Optional[int] = Field(default=None, ge=0, description="held pools: how long an object outlives its last hold before GC may delete it. Defaults to cas.default_grace_seconds")
+    compression: Literal["none", "gzip"] = Field(default="none", description="gzip compresses every object before it is encrypted and stored; the digest is still of the uncompressed plaintext")
+    retention: Literal["held", "ttl", "permanent"] = Field(default="held", description="held: an object lives while it has a live hold, plus grace. ttl: an object lives while it was put within ttl_days (or has a live hold), plus grace. permanent: only purge deletes")
+    ttl_days: Optional[int] = Field(default=None, ge=1, description="ttl pools only (and required there): an object outlives the last day it was put by this many days, plus grace")
+    index_database: Literal["ace", "email_archive"] = Field(default="ace", description="the database whose chain holds this pool's index tables (database_<name>). A ttl pool's index is high churn and never goes in the main database (ace)")
+    grace_seconds: Optional[int] = Field(default=None, ge=0, description="how long an object outlives its last hold (held) or its ttl (ttl) before GC may delete it. Defaults to cas.default_grace_seconds")
     shared: bool = Field(default=False, description="the bytes must be reachable from every node. A node-local backend (local, or a custom class that says node_local) is refused for a shared pool")
 
     @model_validator(mode="after")
     def _check(self):
         if self.retention == "ttl":
-            raise ValueError("retention 'ttl' is not implemented, gated on the GC load test (docs/CAS.md)")
+            if self.ttl_days is None:
+                raise ValueError("retention 'ttl' requires ttl_days")
+            if self.index_database == "ace":
+                raise ValueError("a ttl pool keeps its index in its own database chain, never the main database: "
+                                 "set index_database (docs/CAS.md)")
+        elif self.ttl_days is not None:
+            raise ValueError("ttl_days is only valid with retention 'ttl'")
         if self.backend == "custom" and self.custom is None:
             raise ValueError("backend 'custom' requires a 'custom' spec (python_module, python_class)")
         if self.backend != "custom" and self.custom is not None:
@@ -1077,6 +1084,19 @@ class ACEConfig(BaseModel):
                     f"{', '.join(removed)}: replaced by the dispositions: block (one entry per "
                     f"disposition with rank, css, show_save_to_event, analyst_selectable) and "
                     f"disposition_classification:; see etc/saq.default.yaml")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_email_archive_s3(cls, data):
+        # the archive is a CAS pool now; a site that archived to S3 would otherwise silently fall back
+        # to the local backend
+        if isinstance(data, dict):
+            archive = data.get("email_archive")
+            if isinstance(archive, dict) and archive.get("target", "local") != "local":
+                raise ValueError(f"email_archive.target: {archive.get('target')!r} was removed: archived emails are "
+                                 "stored in the email_archive CAS pool, which an integration can give a custom "
+                                 "backend; see docs/EMAIL_ARCHIVE.md")
         return data
 
     @model_validator(mode="before")
