@@ -1,6 +1,6 @@
 import pytest
 
-from saq.signatures.yara_meta import meta_enabled, meta_is_qa, meta_modifiers
+from saq.signatures.yara_meta import detection_blocker, meta_enabled, meta_is_qa, meta_modifiers
 
 
 @pytest.mark.unit
@@ -39,3 +39,17 @@ def test_meta_is_qa():
     # a modifier that merely contains the letters is not qa mode
     assert not meta_is_qa({"modifiers": "qa_later"})
     assert not meta_is_qa(None)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("meta, tags, expected", [
+    ({"enabled": False}, [], "enabled = false"),
+    ({"modifiers": "qa"}, [], "in QA mode"),
+    ({"modifiers": "directive=sandbox, no_alert"}, [], "no_alert"),
+    ({}, ["tag1", "whitelisted"], "tagged whitelisted"),
+    ({"modifiers": "directive=sandbox"}, ["whitelisted"], "tagged whitelisted"),
+    ({"modifiers": "directive=sandbox"}, ["tag1"], None),
+    (None, None, None),
+])
+def test_detection_blocker(meta, tags, expected):
+    assert detection_blocker(meta, tags) == expected

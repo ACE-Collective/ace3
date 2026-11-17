@@ -1093,6 +1093,19 @@ class ACEConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _reject_removed_email_whitelist_path(cls, data):
+        # the email analyzer's config is validated only when the engine loads the module, so a site
+        # overlay that still sets the removed key would fail there and leave the engine running
+        # without email analysis
+        if isinstance(data, dict):
+            analyzer = data.get("analysis_module_email_analyzer")
+            if isinstance(analyzer, dict) and "whitelist_path" in analyzer:
+                raise ValueError("analysis_module_email_analyzer.whitelist_path: the brotex whitelist was "
+                                 "removed; delete this setting")
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
     def _check_svs_service(cls, data):
         """service_svs is checked as the configuration is read, not only when the service starts
         (service configs are otherwise resolved lazily): a lease its heartbeat can't keep would

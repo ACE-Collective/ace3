@@ -27,7 +27,7 @@ from saq.observables.file import FileObservable
 from saq.signatures.builtin import SIGNATURE_VERSION_UNKNOWN, YARA_RULE_MATCH
 from saq.signatures.loaders.yara import attach_rule_details, compiled_rule_details
 from saq.signatures.model import SignatureType
-from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
+from saq.signatures.yara_meta import META_MODIFIERS, MODIFIER_QA, detection_blocker, meta_enabled, meta_modifiers
 from saq.svs.marker_rule import install_marker_rule
 from saq.util.filesystem import abs_path
 from saq.yara_scanning import client as yara_client
@@ -387,53 +387,35 @@ class YaraScanner_v3_4(AnalysisModule):
                 # directive=VALUE - add the given directive to the file being scanned where VALUE is the directive to add
                 # anything that matches a yara rule is considered suspect
 
-                alertable = False # initially set to False until we hit at least one rule that does NOT have the no_alert modifier
+                alertable = False # set once a rule's match makes a detection
                 for match_result in analysis.scan_results:
-                    if META_MODIFIERS in match_result['meta']:
-                        modifier_no_alert = False
-                        modifier_qa = False
+                    # a rule in QA mode, with no_alert, or tagged whitelisted (known-good content) makes no
+                    # detection of its own, but it never stops the other rules or modules from alerting.
+                    # SVS validation decides with the same function, so its "match" is a detection here
+                    if detection_blocker(match_result['meta'], match_result['tags']) is None:
+                        alertable = True
+                    else:
+                        no_alert_rules.add(match_result['rule'])
 
+                    if META_MODIFIERS in match_result['meta']:
                         modifiers = meta_modifiers(match_result['meta'])
                         logging.debug("yara rule {} has modifiers {}".format(match_result['rule'], ','.join(modifiers)))
 
+                        if MODIFIER_QA in modifiers:
+                            logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
+                            if scanned_locally and self.save_qa_scan_results:
+                                logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
+                                                "with the local yara scanner: the match is not recorded")
+
+                            # if we're running a rule in QA mode then we don't want to apply any other directives
+                            continue
+
                         for modifier in modifiers:
-                            if modifier == MODIFIER_QA:
-                                modifier_qa = True
-                                modifier_no_alert = True
-                                no_alert_rules.add(match_result['rule'])
-
-                                logging.info(f"yara rule {match_result['rule']} matched {_file} in QA mode")
-                                if scanned_locally and self.save_qa_scan_results:
-                                    logging.warning(f"yara rule {match_result['rule']} matched {_file} in QA mode "
-                                                    "with the local yara scanner: the match is not recorded")
-
-                                continue
-
-                            if modifier == MODIFIER_NO_ALERT:
-                                modifier_no_alert = True
-                                no_alert_rules.add(match_result['rule'])
-                                continue
-
-                        # if we're running a rule in QA mode then we don't want to apply any other directives
-                        if not modifier_qa:
-                            for modifier in modifiers:
-                                if modifier.startswith('directive'):
-                                    key, modifier_directive = modifier.split('=', 1)
-                                    #if modifier_directive not in VALID_DIRECTIVES:
-                                        #logging.warning("yara rule {} attempts to add invalid directive {}".format(match_result['rule'], modifier_directive))
-                                    #else:
-                                    logging.debug("assigned directive {} to {} by modifiers on yara rule {}".format(
-                                                  modifier_directive, _file, match_result['rule']))
-                                    _file.add_directive(modifier_directive)
-
-                                    continue
-
-                        # did at least one rule NOT have the no_alert modifier?
-                        if not modifier_no_alert:
-                            alertable = True
-                    else:
-                        # no modifiers at all?
-                        alertable = True
+                            if modifier.startswith('directive'):
+                                key, modifier_directive = modifier.split('=', 1)
+                                logging.debug("assigned directive {} to {} by modifiers on yara rule {}".format(
+                                              modifier_directive, _file, match_result['rule']))
+                                _file.add_directive(modifier_directive)
 
                 # if any rule matches (that does not have the no_alert modifier) then the whole thing becomes an alert
                 if alertable:
@@ -614,9 +596,6 @@ class YaraScanner_v3_4(AnalysisModule):
             for tag in yara_result['tags']:
                 #rule_observable.add_tag(tag)
                 _file.add_tag(tag)
-                # if the yara rule is whitelisted, we need to make sure the analysis is whitelisted in ACE
-                if tag == "whitelisted":
-                    _file.whitelist()
 
         return AnalysisExecutionResult.COMPLETED
 

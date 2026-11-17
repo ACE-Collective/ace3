@@ -144,7 +144,8 @@ catalog current (`docs/SVS_RUNS.md`).
   fingerprint** it ran with. The corpus version is a digest of the latest change time and the row
   count of the stored captures, the verdict history, the retirements, the sample deletions and the
   alerts the captures come from; the counts catch what bumps no change time (a cleared verdict, a
-  deleted alert). The engine fingerprint covers the replay's code, the YARA library versions, the
+  deleted alert). The engine fingerprint covers the replay's code, `saq/signatures/yara_meta.py` (what makes a
+  match a detection), the YARA library versions, the
   disposition classification, the per-file scan timeout and the repository's layout. A request for
   the same commits is answered from a completed validation while both are unchanged; a failed one is
   never reused.
@@ -213,8 +214,9 @@ repository that has such includes does not show what the service loads.
    `YaraScanner.scan()`, with the yara service's `default_timeout` per file and namespace, so the
    externals and the meta filters behave as in production.
 
-The scan applies the `enabled` meta and the `qa` and `no_alert` modifiers the way the YARA module
-does (`saq/signatures/yara_meta.py`): a **match** means the rule would make a detection. The raw
+The scan applies the `enabled` meta, the `qa` and `no_alert` modifiers and the `whitelisted` tag
+the way the YARA module does (`detection_blocker()` in `saq/signatures/yara_meta.py`, which both
+call): a **match** means the rule would make a detection. The raw
 match is kept too, so a rule that still matches but was switched to QA mode reads as what it is.
 
 ### The sandbox

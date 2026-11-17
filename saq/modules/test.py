@@ -173,10 +173,11 @@ class BasicTestAnalyzer(AnalysisModule):
         return AnalysisExecutionResult.COMPLETED
 
     def execute_analysis_8(self, test) -> AnalysisExecutionResult:
+        # tags what it analyzed whitelisted, the way the YARA scanner and the tagging modules can
         analysis = self.create_analysis(test)
         analysis.add_detection_point('test detection')
-        test.whitelist()
-        self.get_root().whitelisted = True
+        test.add_tag('whitelisted')
+        analysis.add_observable_by_spec(F_TEST, 'test_1')
         return AnalysisExecutionResult.COMPLETED
     
     def execute_analysis_test_action_counter(self, test) -> AnalysisExecutionResult:

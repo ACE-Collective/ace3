@@ -13,7 +13,7 @@ from saq.email_archive import archive_email, get_email_archive_dir, query_by_mes
 from saq.environment import get_global_runtime_settings
 from saq.environment import get_data_dir
 from saq.modules.email.constants import KEY_ENV_RCPT_TO, KEY_MESSAGE_ID
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 from saq.modules.email.archive import EmailArchiveAction, EmailArchiveResults, EncryptedArchiveAnalysis, EncryptedArchiveAnalyzer
 from saq.observables.file import FileObservable
 from saq.util.hashing import sha256_str
@@ -146,9 +146,10 @@ def _url_index_count(archive_id: int, url: str) -> int:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("case,expected_log", [
-    ("whitelisted", None),
     ("decrypted", "detected decrypted email"),
     ("no_email_analysis", "unable to obtain EmailAnalysis"),
+    # scan_inbound_only skipped its email analysis on purpose
+    ("outbound_not_analyzed", None),
 ])
 def test_email_archive_action_skips_files_it_should_not_archive(root_analysis, caplog, case, expected_log):
     analyzer = EmailArchiveAction(
@@ -157,12 +158,13 @@ def test_email_archive_action_skips_files_it_should_not_archive(root_analysis, c
     assert analyzer.valid_observable_types == [ F_FILE ]
     assert analyzer.required_directives == [ DIRECTIVE_ARCHIVE ]
 
-    # the first two have everything archiving needs, so only the check under test stops them
-    file_observable = _email_file(root_analysis, "email.rfc822", message_id=None if case == "no_email_analysis" else TEST_MESSAGE_ID)
-    if case == "whitelisted":
-        file_observable.whitelist()
-    elif case == "decrypted":
+    # the decrypted one has everything archiving needs, so only the check under test stops it
+    has_email_analysis = case == "decrypted"
+    file_observable = _email_file(root_analysis, "email.rfc822", message_id=TEST_MESSAGE_ID if has_email_analysis else None)
+    if case == "decrypted":
         file_observable.add_tag(TAG_DECRYPTED_EMAIL)
+    elif case == "outbound_not_analyzed":
+        file_observable.add_tag(TAG_OUTBOUND_EMAIL)
 
     assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
 
@@ -171,6 +173,22 @@ def test_email_archive_action_skips_files_it_should_not_archive(root_analysis, c
     assert not query_by_message_id(TEST_MESSAGE_ID)
     if expected_log:
         assert any(expected_log in r.getMessage() and r.levelname == "WARNING" for r in caplog.records)
+    else:
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+@pytest.mark.integration
+def test_an_email_tagged_whitelisted_is_still_archived(root_analysis):
+    analyzer = EmailArchiveAction(
+        context=create_test_context(root=root_analysis),
+        config=get_analysis_module_config(ANALYSIS_MODULE_EMAIL_ARCHIVER))
+
+    file_observable = _email_file(root_analysis, "email.rfc822")
+    file_observable.add_tag("whitelisted")
+
+    assert analyzer.execute_analysis(file_observable) == AnalysisExecutionResult.COMPLETED
+
+    assert isinstance(file_observable.get_analysis(EmailArchiveResults), EmailArchiveResults)
+    assert len(_archive_entries()) == 1
 
 @pytest.mark.integration
 def test_post_analysis_indexes_the_urls_found_under_each_archived_email(root_analysis):

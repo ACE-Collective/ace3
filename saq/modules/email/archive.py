@@ -17,7 +17,7 @@ from saq.email_archive import archive_email, index_email_archive
 from saq.environment import get_data_dir, get_global_runtime_settings
 from saq.modules import AnalysisModule
 from saq.modules.config import AnalysisModuleConfig
-from saq.modules.email.rfc822 import EmailAnalysis
+from saq.modules.email.rfc822 import TAG_OUTBOUND_EMAIL, EmailAnalysis
 from saq.observables.file import FileObservable
 from saq.util.time import local_time
 
@@ -168,11 +168,6 @@ class EmailArchiveAction(AnalysisModule):
     def execute_analysis(self, _file: Observable) -> AnalysisExecutionResult:
         assert isinstance(_file, FileObservable)
 
-        # has this been whitelisted?
-        if _file.whitelisted:
-            logging.debug(f"{_file} has been whitelisted - not archiving")
-            return AnalysisExecutionResult.COMPLETED
-
         # if this file has been decrypted from the archives then we obviously don't need to process any further
         if _file.has_tag(TAG_DECRYPTED_EMAIL):
             # this should not happen now
@@ -181,7 +176,11 @@ class EmailArchiveAction(AnalysisModule):
 
         email_analysis = _file.get_and_load_analysis(EmailAnalysis)
         if not email_analysis:
-            logging.warning(f"unable to obtain EmailAnalysis for {_file}")
+            # scan_inbound_only skips the email analysis of outbound mail on purpose
+            if _file.has_tag(TAG_OUTBOUND_EMAIL):
+                logging.debug(f"outbound email {_file} was not analyzed - not archiving")
+            else:
+                logging.warning(f"unable to obtain EmailAnalysis for {_file}")
             return AnalysisExecutionResult.COMPLETED
 
         missing_reason = None

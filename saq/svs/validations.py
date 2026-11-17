@@ -67,6 +67,8 @@ _RESULT_BATCH = 1000
 # the replay package (saq/svs/yara), whose code decides a validation's results: child.py, and so
 # its protocol version, included
 _ENGINE_SOURCES = Path(__file__).parent / "yara"
+# outside it, the rules that decide whether a match is a detection (detection_blocker())
+_DETECTION_RULES = Path(__file__).parent.parent / "signatures" / "yara_meta.py"
 
 # the distributions of the libraries the sandboxed child compiles and scans with
 _YARA_DISTRIBUTIONS = ("yara-python", "yara_scanner_v2")
@@ -123,7 +125,7 @@ def corpus_version() -> str:
 
 def _engine_sources_digest() -> str:
     digest = hashlib.sha256()
-    for path in sorted(_ENGINE_SOURCES.glob("*.py")):
+    for path in [*sorted(_ENGINE_SOURCES.glob("*.py")), _DETECTION_RULES]:
         digest.update(path.name.encode("utf-8"))
         digest.update(path.read_bytes())
 
@@ -140,8 +142,9 @@ def _installed_version(distribution: str) -> Optional[str]:
 
 def engine_fingerprint(repository: str) -> str:
     """A digest of what decides a validation's results besides the corpus and the commits: the
-    replay's code and protocol, the YARA libraries, how dispositions classify, the per-file scan
-    timeout and which directories of the repository are loaded. Raises LayoutError."""
+    replay's code and protocol, the rules for what a match is, the YARA libraries, how dispositions
+    classify, the per-file scan timeout and which directories of the repository are loaded. Raises
+    LayoutError."""
     return _digest({
         "libraries": {name: _installed_version(name) for name in _YARA_DISTRIBUTIONS},
         "sources": _engine_sources_digest(),

@@ -2,8 +2,9 @@
 
 The baseline is the set of labels. Every (sample, rule uuid) pair is decided under base and under
 head, and only a difference (or a TP that misses on both) is reported. A **match** means the rule
-would make a detection: it matched, it is enabled, and its modifiers do not include qa or no_alert
-(saq.signatures.yara_meta, as the YARA module reads them). The raw match is kept beside it, so a
+would make a detection: it matched, it is enabled, its modifiers do not include qa or no_alert, and
+it is not tagged whitelisted (saq.signatures.yara_meta.detection_blocker, which the YARA module
+decides with too). The raw match is kept beside it, so a
 rule that still matches but was switched to QA mode reads as what it is.
 
 | own label | base | head | category |
@@ -33,7 +34,7 @@ from enum import StrEnum
 from typing import Any, Optional
 
 from saq.detection_verdicts.constants import SOURCE_INHERITED_MULTI
-from saq.signatures.yara_meta import MODIFIER_NO_ALERT, MODIFIER_QA, meta_enabled, meta_modifiers
+from saq.signatures.yara_meta import detection_blocker
 from saq.svs.constants import LABEL_FP, LABEL_TP
 from saq.svs.yara.corpus import Corpus
 
@@ -83,8 +84,8 @@ class SideScan:
     loaded: dict[str, list[RuleInfo]] = field(default_factory=dict)
     # uuids of every rule in the commit's source, compiled or not
     source_uuids: set[str] = field(default_factory=set)
-    # unit id -> [(namespace, rule name, meta)] of every match
-    matches: dict[int, list[tuple[str, str, dict]]] = field(default_factory=dict)
+    # unit id -> [(namespace, rule name, meta, yara tags)] of every match
+    matches: dict[int, list[tuple[str, str, dict, list[str]]]] = field(default_factory=dict)
     # unit id -> namespaces whose scan of the unit failed
     errors: dict[int, set[str]] = field(default_factory=dict)
 
@@ -108,20 +109,6 @@ class ResultRow:
     note: Optional[str] = None
 
 
-def detection_blocker(meta: dict) -> Optional[str]:
-    """Why a match of a rule with this meta would make no detection, or None if it would."""
-    if not meta_enabled(meta):
-        return "enabled = false"
-
-    modifiers = meta_modifiers(meta)
-    if MODIFIER_QA in modifiers:
-        return "in QA mode"
-    if MODIFIER_NO_ALERT in modifiers:
-        return "no_alert"
-
-    return None
-
-
 def _uuid(meta: dict) -> Optional[str]:
     value = (meta or {}).get("uuid")
     return str(value).strip() if value else None
@@ -142,14 +129,14 @@ def _side_pairs(corpus: Corpus, side: SideScan) -> dict[tuple[str, str], _PairSt
         if unit is None:
             continue
 
-        for _, _, meta in matches:
+        for _, _, meta, tags in matches:
             rule_uuid = _uuid(meta)
             if rule_uuid is None:
                 continue
 
             state = result[(unit.sha256, rule_uuid)]
             state.raw = True
-            blocker = detection_blocker(meta)
+            blocker = detection_blocker(meta, tags)
             if blocker is None:
                 state.detects = True
             else:

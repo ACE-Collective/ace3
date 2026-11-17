@@ -77,9 +77,8 @@ The predicate moved from `o.sha256 = UNHEX(observable.sha256_hash)` to
 observable's value (the content hex) at construction, so the two agree even when
 the file is no longer on disk.
 
-Whitelisted observables are skipped, as in the per-observable form, and
-observables with no history are simply absent from the dict — the template
-renders nothing for either, exactly as before.
+Observables with no history are simply absent from the dict, and the template
+renders nothing for them, exactly as before.
 
 `Observable.disposition_history` is left in place for other callers.
 

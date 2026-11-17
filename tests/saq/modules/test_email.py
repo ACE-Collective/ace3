@@ -1,3 +1,4 @@
+import copy
 from datetime import datetime
 import email
 import logging
@@ -7,11 +8,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import pytest
 import pytz
+from pydantic import ValidationError
 
 import ace_api
 
 from saq.analysis.root import RootAnalysis, load_root
 from saq.configuration.config import get_config, get_analysis_module_config
+from saq.configuration.schema import ACEConfig
 from saq.constants import ANALYSIS_MODULE_EMAIL_LOGGER, ANALYSIS_TYPE_MAILBOX, DB_BROCESS, DB_EMAIL_ARCHIVE, FILE_SUBDIR, DIRECTIVE_ARCHIVE, DIRECTIVE_EXTRACT_URLS, DIRECTIVE_ORIGINAL_EMAIL, DIRECTIVE_PREVIEW, DIRECTIVE_REMEDIATE, DIRECTIVE_RENAME_ANALYSIS, DIRECTIVE_RENDER, EVENT_TIME_FORMAT_JSON_TZ, F_EMAIL_ADDRESS, F_EMAIL_CC, F_EMAIL_CONVERSATION, F_EMAIL_DELIVERY, F_EMAIL_DKIM_SIGNING_DOMAIN, F_EMAIL_FIRST_HOP_FROM, F_EMAIL_FIRST_HOP_HELO, F_EMAIL_FIRST_HOP_IP, F_EMAIL_SENDER_TENANT_ID, F_EMAIL_TO, F_FILE, F_IP, F_MESSAGE_ID, F_URL, create_email_delivery
 from saq.observables.type_hierarchy import get_type_hierarchy
 from saq.database.model import load_alert
@@ -181,14 +184,13 @@ def test_combined_buffer_value_is_its_hash(root_analysis, datadir):
 
 
 @pytest.mark.integration
-def test_mailbox_whitelisted(root_analysis, datadir):
-    # make sure that we do not process whitelisted emails
+def test_mailbox_analyzes_an_email_tagged_whitelisted(root_analysis, datadir):
     root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
     root_analysis.details = { 'hello': 'world' }
     root_analysis.analysis_mode = "test_groups"
     file_observable = root_analysis.add_file_observable(str(datadir / 'emails/splunk_logging.email.rfc822'))
     file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    file_observable.whitelist()
+    file_observable.add_tag("whitelisted")
     root_analysis.save()
     root_analysis.schedule()
 
@@ -199,13 +201,11 @@ def test_mailbox_whitelisted(root_analysis, datadir):
     engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
 
     root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    
-    # we should still have our old details
+
+    # the tag is only a tag: the email details are merged in next to the old ones
     assert 'hello' in root_analysis.details
-    # and we should NOT have the email details merged in since it's not a mailbox analysis
-    assert 'email' not in root_analysis.details
-    # and we should be whitelisted at this point
-    assert root_analysis.whitelisted
+    assert 'email' in root_analysis.details
+    assert root_analysis.description.startswith(MAILBOX_ALERT_PREFIX)
 
 @pytest.mark.integration
 def test_mailbox_submission(mock_api_call, root_analysis, datadir):
@@ -1466,40 +1466,12 @@ def test_nested_rfc822_bom_extraction(root_analysis, datadir):
     )
 
 
-@pytest.mark.parametrize("whitelist_item", [
-    "smtp_from:ap@someothercompany.com",
-    "smtp_to:lulu.zingzing@company.com",
-])
-@pytest.mark.integration
-def test_whitelisting(root_analysis, whitelist_item, datadir):
-
-    whitelist_path = os.path.join(get_temp_dir(), 'brotex.whitelist')
-    get_analysis_module_config('email_analyzer').whitelist_path = whitelist_path
-
-    if os.path.exists(whitelist_path):
-        os.remove(whitelist_path)
-
-    with open(whitelist_path, 'w') as fp:
-        fp.write(whitelist_item)
-
-    root_analysis.alert_type = ANALYSIS_TYPE_MAILBOX
-    root_analysis.analysis_mode = "test_groups"
-    file_observable = root_analysis.add_file_observable(str(datadir / 'emails/o365_journaled.email.rfc822'))
-    file_observable.add_directive(DIRECTIVE_ORIGINAL_EMAIL)
-    root_analysis.save()
-    root_analysis.schedule()
-
-    engine = Engine()
-    engine.configuration_manager.enable_module('file_type', 'test_groups')
-    engine.configuration_manager.enable_module('email_analyzer', 'test_groups')
-    engine.start_single_threaded(execution_mode=EngineExecutionMode.UNTIL_COMPLETE)
-
-    root_analysis = load_root(get_storage_dir(root_analysis.uuid))
-    
-    file_observable = root_analysis.get_observable(file_observable.uuid)
-    file_observable
-    email_analysis = file_observable.get_and_load_analysis(EmailAnalysis)
-    assert not email_analysis
+@pytest.mark.unit
+def test_the_removed_whitelist_path_fails_the_config_instead_of_the_module():
+    data = copy.deepcopy(get_config().raw._data)
+    data["analysis_module_email_analyzer"]["whitelist_path"] = "etc/brotex.whitelist"
+    with pytest.raises(ValidationError, match="analysis_module_email_analyzer.whitelist_path"):
+        ACEConfig.model_validate(data)
 
 
 def _analyze_outbound_journaled_email(root_analysis, datadir, tmp_path):
@@ -1535,7 +1507,6 @@ def test_outbound_email_is_tagged_and_analyzed(root_analysis, datadir, tmp_path)
     assert isinstance(email_analysis, EmailAnalysis)
     assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
     assert not file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
-    assert not file_observable.whitelisted
 
 
 @pytest.mark.integration
@@ -1549,7 +1520,8 @@ def test_scan_inbound_only_skips_outbound_email(root_analysis, datadir, tmp_path
 
     assert not email_analysis
     assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
-    assert file_observable.whitelisted
+    # only the email analysis is skipped: the skip no longer whitelists the root
+    assert not file_observable.has_tag("whitelisted")
     assert "skipping outbound office365 email" in caplog.text
 
 
@@ -1570,7 +1542,6 @@ def test_scan_inbound_only_analyzes_outbound_exceptions(root_analysis, datadir, 
     assert isinstance(email_analysis, EmailAnalysis)
     assert file_observable.has_tag(TAG_OUTBOUND_EMAIL)
     assert file_observable.has_tag(TAG_OUTBOUND_EXCEPTION_EMAIL)
-    assert not file_observable.whitelisted
 
 
 @pytest.mark.integration

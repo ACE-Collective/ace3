@@ -233,24 +233,24 @@ def test_batched_disposition_history_matches_per_observable():
 
 
 @pytest.mark.integration
-def test_batched_disposition_history_skips_whitelisted_and_unseen():
+def test_batched_disposition_history_skips_unseen():
     from saq.constants import DISPOSITION_FALSE_POSITIVE
     from saq.database.database_observable import (
         get_observable_disposition_histories,
         get_observable_disposition_history,
     )
 
-    whitelisted = create_observable("ipv4", "192.168.60.3")
+    tagged = create_observable("ipv4", "192.168.60.3")
     unseen = create_observable("ipv4", "192.168.60.4")
 
-    _alert_with_observables("fp alert", DISPOSITION_FALSE_POSITIVE, [whitelisted])
-    whitelisted.whitelist()
+    _alert_with_observables("fp alert", DISPOSITION_FALSE_POSITIVE, [tagged])
+    tagged.add_tag("whitelisted")
 
-    batched = get_observable_disposition_histories([whitelisted, unseen])
+    batched = get_observable_disposition_histories([tagged, unseen])
 
-    # whitelisted: the per-observable form returns None, the batched form omits it
-    assert get_observable_disposition_history(whitelisted) is None
-    assert whitelisted.uuid not in batched
+    # a whitelisted tag is only a tag: both forms still report the history
+    assert dict(get_observable_disposition_history(tagged).history) == {DISPOSITION_FALSE_POSITIVE: 1}
+    assert dict(batched[tagged.uuid].history) == {DISPOSITION_FALSE_POSITIVE: 1}
 
     # never seen in a dispositioned alert: the per-observable form returns an empty
     # (falsy) history, the batched form omits it -- the view renders nothing for either
