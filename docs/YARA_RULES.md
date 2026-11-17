@@ -104,6 +104,11 @@ conditions:
 | `extension` | the file extension                                 |
 | `filetype`  | reserved; **not currently populated** (empty)      |
 
+A file name that is not valid UTF-8 (an archive member, say) reaches YARA only as UTF-8, so in
+these variables each byte that does not decode is written as the six characters `\udcXX`: for
+the byte `0xe9` followed by `.doc`, the rule tests `filename == "\\udce9.doc"`. The `file_ext`, `file_name` and `full_path` meta
+directives below compare against the name itself.
+
 Example:
 
 ```yara

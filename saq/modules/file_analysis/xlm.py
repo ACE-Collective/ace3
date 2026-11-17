@@ -16,7 +16,7 @@ from saq.modules.config import AnalysisModuleConfig
 import yara
 
 from saq.observables.file import FileObservable
-from saq.util.filesystem import get_local_file_path
+from saq.util.filesystem import get_local_file_path, utf8_path
 
 
 class XLMMacroDeobfuscatorAnalysis(Analysis):
@@ -109,10 +109,11 @@ class XLMMacroDeobfuscatorAnalyzer(AnalysisModule):
 
         # ignore files we're not interested in
         xlm4 = False
-        for match in self.xlm_yara_context.match(local_file_path):
-            if 'xlm4' in match.tags:
-                xlm4 = True
-                break
+        with utf8_path(local_file_path) as yara_path:
+            for match in self.xlm_yara_context.match(yara_path):
+                if 'xlm4' in match.tags:
+                    xlm4 = True
+                    break
 
         # does this file or any file extracted from this file have any
         # of the yara rules we're looking for?
