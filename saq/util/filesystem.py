@@ -174,7 +174,8 @@ def map_mimetype_to_file_ext(target_mime_type: str, default="bin") -> str:
 
 def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAME_MAX_BYTES) -> str:
     """Return ``basename + suffix``, truncating ``basename`` so the result fits within
-    ``max_bytes`` when UTF-8 encoded.
+    ``max_bytes`` as the filesystem stores it (``os.fsencode``: a name read from the filesystem need not be UTF-8,
+    and strict UTF-8 refuses to encode the lone surrogates Python decodes its undecodable bytes to).
 
     When truncation is needed, an 8-char sha1 of the original basename is interpolated
     before the suffix so distinct inputs that share a truncated prefix do not collide.
@@ -183,17 +184,19 @@ def shorten_basename_for_suffix(basename: str, suffix: str, max_bytes: int = NAM
     assert os.sep not in basename, "shorten_basename_for_suffix expects a bare basename"
 
     combined = basename + suffix
-    if len(combined.encode("utf-8")) <= max_bytes:
+    if len(os.fsencode(combined)) <= max_bytes:
         return combined
 
-    digest = hashlib.sha1(basename.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha1(os.fsencode(basename)).hexdigest()[:8]
     tail = f".{digest}{suffix}"
-    available = max_bytes - len(tail.encode("utf-8"))
+    available = max_bytes - len(os.fsencode(tail))
     if available < 0:
         available = 0
 
-    truncated_bytes = basename.encode("utf-8")[:available]
-    truncated_stem = truncated_bytes.decode("utf-8", errors="ignore")
+    # a character cut in half decodes to lone surrogates that basename does not have there, so the
+    # common prefix ends before it
+    truncated = os.fsdecode(os.fsencode(basename)[:available])
+    truncated_stem = os.path.commonprefix([truncated, basename])
     return f"{truncated_stem}{tail}"
 
 def get_local_file_path(root, _file):

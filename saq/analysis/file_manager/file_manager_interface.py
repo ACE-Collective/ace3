@@ -1,6 +1,11 @@
 from typing import Any, Optional, Protocol, runtime_checkable
 
 
+class FileRefusedError(ValueError):
+    """A path the file manager refuses to write, because it would leave the files directory. Logged
+    where it is raised, so a caller that skips the file need not log it again."""
+
+
 @runtime_checkable
 class FileManagerInterface(Protocol):
     """
@@ -61,7 +66,7 @@ class FileManagerInterface(Protocol):
             Full path to the file
 
         Raises:
-            ValueError: If the path is not inside the file directory
+            FileRefusedError: If the path is not inside the file directory
         """
         ...
         
@@ -78,7 +83,7 @@ class FileManagerInterface(Protocol):
             Full path to the new, empty file
 
         Raises:
-            ValueError: If the path still resolves outside the file directory
+            FileRefusedError: If the path still resolves outside the file directory
         """
         ...
 
@@ -96,7 +101,7 @@ class FileManagerInterface(Protocol):
             
         Raises:
             FileNotFoundError: If source file doesn't exist
-            ValueError: If the target path is not inside the file directory
+            FileRefusedError: If the target path is not inside the file directory
             Exception: If file operations fail
         """
         ...

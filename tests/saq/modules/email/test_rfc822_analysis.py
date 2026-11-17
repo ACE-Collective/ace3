@@ -172,6 +172,20 @@ def test_headers_and_summary(root_analysis):
 
 
 @pytest.mark.integration
+def test_email_with_an_undecodable_name(root_analysis, unlogged):
+    """An email whose file name is not UTF-8 (an archive member, as os.listdir returns it) is parsed
+    like any other: its body parts and headers file are named after it."""
+    name = b"\xe9\xe9.eml".decode("utf-8", "surrogateescape")
+    _, analysis = _analyze(root_analysis, MULTIPART_EMAIL, file_name=name)
+
+    assert isinstance(analysis, EmailAnalysis)
+    assert analysis.body_text.strip() == "the plain text body"
+    assert "<p>the html body</p>" in analysis.body_html
+    assert analysis.attachment_names == ["invoice.txt"]
+    assert f"{name}.headers" in [o.file_path for o in analysis.observables if o.type == "file"]
+
+
+@pytest.mark.integration
 def test_office365_journal_without_meta_block(root_analysis, caplog):
     with caplog.at_level(logging.INFO):
         _, analysis = _analyze(root_analysis, JOURNAL_WITHOUT_META)
