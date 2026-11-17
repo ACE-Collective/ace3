@@ -3,6 +3,7 @@ import uuid as uuidlib
 import logging
 from flask import flash, redirect, request, url_for
 from flask_login import current_user
+from sqlalchemy.exc import NoResultFound
 from app.auth.permissions import current_user_auth, require_permission
 from app.blueprints import analysis
 from saq.constants import VALID_DIRECTIVES
@@ -67,8 +68,14 @@ def add_observable():
 
     try:
         alert = get_db().query(GUIAlert).filter(GUIAlert.uuid == uuid).one()
-    except Exception as e:
-        logging.error("unable to load alert {0} from database: {1}".format(uuid, str(e)))
+    except NoResultFound:
+        # the uuid is the client's: an alert deleted since the page was loaded, or a crafted request
+        logging.warning(f"user {current_user.username} added an observable to unknown alert {uuid}",
+                        extra={"alert_uuid": uuid, "user": current_user.username})
+        flash("unknown alert")
+        return redirection
+    except Exception:
+        logging.exception(f"unable to load alert {uuid} from database", extra={"alert_uuid": uuid})
         flash("internal error")
         return redirection
 
@@ -91,8 +98,8 @@ def add_observable():
     try:
         try:
             alert.load()
-        except Exception as e:
-            logging.error("unable to load alert {0} from filesystem: {1}".format(uuid, str(e)))
+        except Exception:
+            logging.exception(f"unable to load alert {uuid} from filesystem", extra={"alert_uuid": uuid})
             flash("internal error")
             return redirection
 
@@ -121,8 +128,8 @@ def add_observable():
 
         try:
             alert.sync()
-        except Exception as e:
-            logging.error("unable to sync alert: {0}".format(str(e)))
+        except Exception:
+            logging.exception(f"unable to sync alert {uuid}", extra={"alert_uuid": uuid})
             flash("internal error")
             return redirection
 
@@ -136,5 +143,6 @@ def add_observable():
             if alert.lock_uuid:
                 release_lock(str(alert.uuid), alert.lock_uuid)
         except Exception:
-            logging.error("unable to release lock {}: {}".format(alert.uuid, lock_uuid))
+            logging.exception(f"unable to release lock {lock_uuid} on alert {alert.uuid}",
+                              extra={"alert_uuid": alert.uuid, "lock_uuid": lock_uuid})
         

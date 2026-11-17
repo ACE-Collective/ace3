@@ -18,12 +18,20 @@ import uuid
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.parse import unquote, urlsplit
 
 import pytest
 
 from saq import crash_report
 from saq.configuration.config import get_config
 from saq.constants import F_FILE, HARDCOPY_SUBDIR
+from saq.crash_replication import (
+    delete_report,
+    fetch_report,
+    list_remote_files,
+    remote_file_sizes,
+    replicate_report,
+)
 from saq.crash_report import (
     CRASH_TYPE_EXCEPTION,
     CRASH_TYPE_KILLED,
@@ -55,6 +63,8 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.database.pool import get_db
+from saq.storage.adapter import StorageAdapter
+from saq.storage.s3 import S3Storage
 
 
 def _raise(message="boom"):
@@ -630,6 +640,134 @@ def test_replicate_report_round_trip(root_analysis, shared_storage, tmp_path):
         assert fp.read() == "payload"
 
 
+# the name of a file that is not UTF-8, as ACE's file observables carry it (surrogateescape)
+UNDECODABLE_NAME = b"\xe9\xe9.pdf".decode("utf-8", "surrogateescape")
+ESCAPED_NAME = "\\udce9\\udce9.pdf"
+
+
+@pytest.mark.unit
+def test_record_crash_for_an_exception_naming_an_undecodable_file(root_analysis):
+    root_analysis.save()
+
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        module_name="basic_test",
+        root=root_analysis,
+        exception=_raise(f"unable to parse {UNDECODABLE_NAME}"),
+        index=False,
+    )
+
+    assert crash_id is not None
+    crash_dir = find_crash_report_dir(crash_id)
+    with open(os.path.join(crash_dir, STACK_TRACE_FILE)) as fp:
+        assert f"unable to parse {ESCAPED_NAME}" in fp.read()
+
+    assert _read_metadata(crash_id)["exception_message"] == f"unable to parse {UNDECODABLE_NAME}"
+
+
+class _EmptyBody:
+    def stream(self, **kwargs):
+        return iter([b""])
+
+
+@pytest.fixture
+def s3_shared_storage(monkeypatch):
+    """Replication to an S3Storage whose real boto3 client serializes each request, as it does in
+    production, and gets an empty 200 at its before-send hook instead of a network round trip.
+    Returns the keys of the objects put, in order. The local backend takes any file name, so only
+    this reaches the UTF-8 requirement S3 keys have."""
+    # boto3 is optional (saq/storage/s3.py), so only this fixture's tests need it
+    AWSResponse = pytest.importorskip("botocore.awsrequest").AWSResponse
+    monkeypatch.setattr(get_config(), "s3", None)
+    storage = S3Storage(host="s3.invalid", port=9000, access_key="key", secret_key="secret")
+    put_keys = []
+
+    def answer(request, **kwargs):
+        bucket, _, key = unquote(urlsplit(request.url).path).lstrip("/").partition("/")
+        if request.method == "PUT":
+            put_keys.append(key)
+        return AWSResponse(request.url, 200, {}, _EmptyBody())
+
+    storage.client.meta.events.register("before-send", answer)
+    monkeypatch.setattr("saq.storage.factory.STORAGE_SYSTEM", StorageAdapter(storage))
+    monkeypatch.setattr(get_config().crash_reporting, "replicate", True)
+    return put_keys
+
+
+def _crash_on_undecodable_file(root_analysis):
+    os.makedirs(root_analysis.file_manager.file_dir, exist_ok=True)
+    path = os.path.join(root_analysis.file_manager.file_dir, UNDECODABLE_NAME)
+    with open(path, "w") as fp:
+        fp.write("payload")
+    observable = root_analysis.add_file_observable(path)
+    assert observable.file_name == UNDECODABLE_NAME
+    root_analysis.save()
+
+    return record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis, observable=observable, exception=_raise(), index=False,
+        replicate=False,
+    )
+
+
+@pytest.mark.unit
+def test_replicate_report_to_s3_with_an_undecodable_file_name(root_analysis, s3_shared_storage, unlogged):
+    """The report keeps the crashed file under its own name, which need not be UTF-8. An S3 key
+    must be: botocore refused to send the key, and the report never replicated."""
+    crash_id = _crash_on_undecodable_file(root_analysis)
+    assert os.path.exists(os.path.join(find_crash_report_dir(crash_id), FILE_DIR, UNDECODABLE_NAME))
+
+    assert replicate_report(find_crash_report_dir(crash_id), crash_id) is True
+    assert f"{crash_id}/{FILE_DIR}/{ESCAPED_NAME}" in s3_shared_storage
+    assert s3_shared_storage[-1] == f"{crash_id}/{METADATA_FILE}"
+
+
+@pytest.mark.unit
+def test_fetched_report_has_an_undecodable_file_under_its_escaped_name(root_analysis, shared_storage, tmp_path, unlogged):
+    crash_id = _crash_on_undecodable_file(root_analysis)
+    assert replicate_report(find_crash_report_dir(crash_id), crash_id) is True
+    shutil.rmtree(find_crash_report_dir(crash_id))
+
+    fetched = fetch_report(crash_id, str(tmp_path / "staging"))
+    assert os.listdir(os.path.join(fetched, FILE_DIR)) == [ESCAPED_NAME]
+    with open(os.path.join(fetched, FILE_DIR, ESCAPED_NAME)) as fp:
+        assert fp.read() == "payload"
+
+
+def _replicate_under_the_raw_name(shared_storage, root_analysis):
+    """A report replicated to the local backend before object_key() escaped keys: its file is
+    stored under the observable's raw, surrogateescape-decoded name."""
+    crash_id = _crash_on_undecodable_file(root_analysis)
+    crash_dir = find_crash_report_dir(crash_id)
+    for relative_path in (os.path.join(FILE_DIR, UNDECODABLE_NAME), METADATA_FILE):
+        shared_storage.upload_file(os.path.join(crash_dir, relative_path), _bucket_name(),
+                                   f"{crash_id}/{relative_path}")
+    shutil.rmtree(crash_dir)
+    return crash_id
+
+
+@pytest.mark.unit
+def test_delete_report_removes_a_file_replicated_under_its_raw_name(root_analysis, shared_storage, unlogged):
+    """Prune deletes the remote copy with the local one: a file left behind has no metadata.json,
+    so nothing ever looks at it again."""
+    crash_id = _replicate_under_the_raw_name(shared_storage, root_analysis)
+
+    assert delete_report(crash_id) is True
+    assert list_remote_files(crash_id) == []
+
+
+@pytest.mark.unit
+def test_fetch_report_reads_a_file_replicated_under_its_raw_name(root_analysis, shared_storage, tmp_path, unlogged):
+    crash_id = _replicate_under_the_raw_name(shared_storage, root_analysis)
+
+    assert remote_file_sizes(crash_id).get(f"{FILE_DIR}/{UNDECODABLE_NAME}") == len("payload")
+    fetched = fetch_report(crash_id, str(tmp_path / "staging"))
+    with open(os.path.join(fetched, FILE_DIR, UNDECODABLE_NAME)) as fp:
+        assert fp.read() == "payload"
+
+
 @pytest.mark.unit
 def test_metadata_json_is_uploaded_last(root_analysis, shared_storage, monkeypatch):
     """The invariant the whole remote-completeness story rests on.
@@ -868,6 +1006,32 @@ def test_watchdog_report_is_spooled_then_indexed(root_analysis, empty_spool):
     assert abs((rows[0].insert_date - crashed_at).total_seconds()) < 2
 
     assert crash_id not in _spooled()
+
+
+@pytest.mark.integration
+def test_report_naming_an_undecodable_file_is_indexed_and_does_not_block_the_spool(root_analysis, empty_spool):
+    root_analysis.save()
+    crash_id = record_module_crash(
+        crash_type=CRASH_TYPE_EXCEPTION,
+        module_path="saq.modules.test:BasicTestAnalysis",
+        root=root_analysis,
+        observable_type="file_name",
+        observable_value=UNDECODABLE_NAME,
+        exception=_raise(f"unable to parse {UNDECODABLE_NAME}"),
+        index=False,
+        replicate=False,
+    )
+    # spooled after it, so it is drained only if the first one does not stop the drain
+    timeout_crash_id = _timeout_crash(root_analysis)
+
+    assert {m.crash_id for m in drain_index_spool()} == {crash_id, timeout_crash_id}
+
+    rows = _rows(crash_id)
+    assert len(rows) == 1
+    assert rows[0].exception_message == f"unable to parse {ESCAPED_NAME}"
+    assert rows[0].observable_value == ESCAPED_NAME
+    assert len(_rows(timeout_crash_id)) == 1
+    assert _spooled() == set()
 
 
 @pytest.mark.integration

@@ -107,7 +107,8 @@ class UPXAnalyzer(AnalysisModule):
             analysis.details['output_file'] = os.path.basename(output_path)
         except Exception as e:
             analysis.error = str(e) or type(e).__name__
-            logging.error(f"upx failed for {local_file_path}: {e}")
+            logging.exception(f"upx failed for {local_file_path}",
+                              extra={"path": local_file_path, "root_uuid": self.get_root().uuid})
             return AnalysisExecutionResult.COMPLETED
 
         file_observable = analysis.add_file_observable(output_path, volatile=True)

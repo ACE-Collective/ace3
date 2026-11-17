@@ -81,7 +81,7 @@ def _new_session(engine) -> "scoped_session":
 
     return scoped_session(sessionmaker(bind=engine))
 
-def _log_pool_issue(message: str, e: Exception):
+def _log_pool_issue(database: str, message: str, e: Exception):
     """Log a connection-pool problem at a level that matches whether we expected it.
 
     While shutting down these are routine -- the database container is stopping at the
@@ -93,9 +93,9 @@ def _log_pool_issue(message: str, e: Exception):
     from saq.shutdown import is_shutting_down
 
     if is_shutting_down():
-        logging.debug("%s (shutting down): %s", message, e)
+        logging.debug("%s for database %s (shutting down): %s", message, database, e, extra={"database": database})
     else:
-        logging.warning("%s: %s", message, e)
+        logging.warning("%s for database %s: %s", message, database, e, extra={"database": database})
 
 
 def remove_all_sessions():
@@ -255,7 +255,7 @@ class _database_pool:
                     connection.rollback()
                 except Exception as e:
                     # if we can't rollback then toss this connection and get a new one
-                    _log_pool_issue("unable to rollback connection on get_connection", e)
+                    _log_pool_issue(self.name, "unable to rollback connection on get_connection", e)
                     self.close_connection(connection)
                     self.closed_broken += 1
                     connection = self.open_new_connection()
@@ -296,7 +296,7 @@ class _database_pool:
         try:
             connection.rollback()
         except Exception as e:
-            _log_pool_issue(f"unable to rollback connection {connection} on return to pool", e)
+            _log_pool_issue(self.name, f"unable to rollback connection {connection} on return to pool", e)
             self.destroy_connection(connection)
             return
 
@@ -331,7 +331,8 @@ class _database_pool:
         try:
             connection.close()
         except Exception as e:
-            logging.warning(f"unable to close database connection: {e} connection {connection}")
+            logging.warning(f"unable to close database connection: {e} connection {connection}",
+                            extra={"database": self.name})
 
     def destroy_connection(self, connection):
         self.close_connection(connection)
@@ -381,7 +382,7 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    _log_pool_issue("unable to close database connection", e)
+                    _log_pool_issue(self.name, "unable to close database connection", e)
 
             self.available.clear()
 
@@ -389,7 +390,7 @@ class _database_pool:
                 try:
                     c.close()
                 except Exception as e:
-                    _log_pool_issue("unable to close database connection", e)
+                    _log_pool_issue(self.name, "unable to close database connection", e)
 
             self.in_use.clear()
             self.peak_over_cap = 0

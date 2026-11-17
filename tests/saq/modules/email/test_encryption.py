@@ -40,6 +40,7 @@ from saq.modules.email.encryption.zip import ZipEncryptionAnalysis, ZipEncryptio
 from saq.sandbox.runner import SandboxResult
 from saq.signatures.builtin import EMAIL_ENCRYPTED_DECRYPTED
 from saq.util.uuid import get_storage_dir
+from tests.saq.helpers import the_error_with_traceback
 
 PASSWORD = "Secr3tPw"
 
@@ -215,10 +216,13 @@ def test_crack_failure_is_logged(root_analysis, tmp_path, monkeypatch, caplog):
     monkeypatch.setattr("saq.modules.email.encryption.zip.crack_password", _crack)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
-    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    attachment = _attachment(email_observable, "invoice.zip")
+    analysis = attachment.get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password is None
     assert analysis.error == "unable to crack the password: john binary not found"
-    assert any(r.levelno == logging.ERROR and "error encountered when trying to crack password" in r.getMessage() for r in caplog.records)
+    record = the_error_with_traceback(caplog, path=attachment.full_path)
+    assert record.root_uuid == root_analysis.uuid
+    assert record.getMessage().startswith("unable to crack the password for")
 
 
 @pytest.mark.integration
@@ -229,11 +233,13 @@ def test_wordlist_failure_is_recorded(root_analysis, tmp_path, monkeypatch, capl
     monkeypatch.setattr("saq.modules.email.encryption.zip.generate_wordlist", _wordlist)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, _encrypted_zip(tmp_path)))
 
-    analysis = _attachment(email_observable, "invoice.zip").get_and_load_analysis(ZipEncryptionAnalysis)
+    attachment = _attachment(email_observable, "invoice.zip")
+    analysis = attachment.get_and_load_analysis(ZipEncryptionAnalysis)
     assert analysis.password is None
     assert analysis.error == "unable to build the password wordlist: bad range"
-    assert any(r.levelno == logging.ERROR and "error encountered when building password wordlist" in r.getMessage()
-               for r in caplog.records)
+    record = the_error_with_traceback(caplog, path=attachment.full_path)
+    assert record.root_uuid == root_analysis.uuid
+    assert record.getMessage().startswith("unable to build the password wordlist for")
 
 
 @pytest.mark.integration
@@ -549,12 +555,14 @@ def test_rar_crack_failure_is_recorded(root_analysis, tmp_path, fake_rar, monkey
     monkeypatch.setattr("saq.modules.email.encryption.rar.crack_password", _crack)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
-    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    attachment = _attachment(email_observable, "payload.rar")
+    analysis = attachment.get_and_load_analysis(RarEncryptionAnalysis)
     assert analysis.password is None
     assert analysis.error == "unable to crack the password: john binary not found"
     assert _FakeRarFile.extracted_with == []
-    assert any(r.levelno == logging.ERROR and "Error encountered when trying to crack password" in r.getMessage()
-               for r in caplog.records)
+    record = the_error_with_traceback(caplog, path=attachment.full_path)
+    assert record.root_uuid == root_analysis.uuid
+    assert record.getMessage().startswith("unable to crack the password for")
 
 
 @pytest.mark.integration
@@ -565,11 +573,13 @@ def test_rar_wordlist_failure_is_recorded(root_analysis, tmp_path, fake_rar, mon
     monkeypatch.setattr("saq.modules.email.encryption.rar.generate_wordlist", _wordlist)
     _, email_observable = _analyze(root_analysis, _email(tmp_path, fake_rar, subtype="x-rar"), RAR_MODULES)
 
-    analysis = _attachment(email_observable, "payload.rar").get_and_load_analysis(RarEncryptionAnalysis)
+    attachment = _attachment(email_observable, "payload.rar")
+    analysis = attachment.get_and_load_analysis(RarEncryptionAnalysis)
     assert analysis.password is None
     assert analysis.error == "unable to build the password wordlist: bad range"
-    assert any(r.levelno == logging.ERROR and "Error encountered when building password wordlist" in r.getMessage()
-               for r in caplog.records)
+    record = the_error_with_traceback(caplog, path=attachment.full_path)
+    assert record.root_uuid == root_analysis.uuid
+    assert record.getMessage().startswith("unable to build the password wordlist for")
 
 
 @pytest.mark.integration

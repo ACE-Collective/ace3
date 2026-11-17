@@ -42,6 +42,7 @@ from tests import unittest_session
 from saq.util.uuid import get_storage_dir, workload_storage_dir
 
 import certifi
+import msgpack
 import psutil
 import pymysql
 import pymysql.cursors
@@ -524,6 +525,35 @@ def unconfigured_logging():
         root_logger.handlers[:] = handlers
         root_logger.setLevel(level)
 
+@contextmanager
+def fluent_receiver():
+    """A local socket standing in for fluent-bit. Yields ``(port, receive)``; ``receive()`` returns
+    the data dict of the next record a fluent sender delivered to the port. A sender connects on
+    its first send, which the listen backlog accepts before ``receive()`` does."""
+    server = socket.create_server(("127.0.0.1", 0))
+    server.settimeout(5)
+    connections = []
+    unpacker = msgpack.Unpacker(raw=False)
+
+    def receive() -> dict:
+        if not connections:
+            connection, _ = server.accept()
+            connection.settimeout(5)
+            connections.append(connection)
+        while True:
+            for _tag, _time, data in unpacker:
+                return data
+            chunk = connections[0].recv(65536)
+            assert chunk, "the fluent sender closed the connection without sending a record"
+            unpacker.feed(chunk)
+
+    try:
+        yield server.getsockname()[1], receive
+    finally:
+        for connection in connections:
+            connection.close()
+        server.close()
+
 # test comms pipe is used to communicate between test process and child processes
 test_comms_p = None
 test_comms_pid = None
@@ -747,6 +777,19 @@ def audit_actor_of(record: logging.LogRecord) -> tuple:
 def audit_actors(caplog: pytest.LogCaptureFixture, prefix: str) -> list[tuple]:
     """audit_actor_of() every AUDIT record whose message starts with "AUDIT: <prefix>", in order."""
     return [audit_actor_of(r) for r in caplog.records if r.getMessage().startswith(f"AUDIT: {prefix}")]
+
+
+def logged_with(caplog: pytest.LogCaptureFixture, level: int, **fields) -> list[logging.LogRecord]:
+    """The records caplog captured at level whose extra={} fields include fields."""
+    return [r for r in caplog.records
+            if r.levelno == level and all(getattr(r, key, None) == value for key, value in fields.items())]
+
+
+def the_error_with_traceback(caplog: pytest.LogCaptureFixture, **fields) -> logging.LogRecord:
+    """The one ERROR record with fields in its extra={}, which carries a traceback, as an error report needs."""
+    (record,) = logged_with(caplog, logging.ERROR, **fields)
+    assert record.exc_info is not None and record.exc_info[0] is not None
+    return record
 
 
 def _requests_error_from_local_server(handle) -> requests.exceptions.RequestException:

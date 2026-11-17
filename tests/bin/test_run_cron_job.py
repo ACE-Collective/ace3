@@ -47,7 +47,7 @@ def sender(runner):
 
     the wrapper imports fluent lazily inside emit(), so the patch target is the fluent
     package itself rather than an attribute on the wrapper (unlike tests/saq/test_monitor.py,
-    which patches saq.monitor.sender.FluentSender because that module imports it up top)
+    which patches saq.monitor.UTF8SafeFluentSender because that module imports it up top)
     """
     with patch("fluent.sender.FluentSender") as sender_class:
         instance = MagicMock()

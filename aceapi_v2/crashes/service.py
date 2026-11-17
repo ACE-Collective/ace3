@@ -41,6 +41,7 @@ from saq.crash_report import (
 )
 from saq.database.model import AnalysisModuleCrash
 from saq.environment import get_global_runtime_settings, get_temp_dir
+from saq.logging import utf8_safe
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,10 @@ async def get_crash_report(session: AsyncSession, crash_id: str) -> CrashReportD
 
         # indexed but the directory is gone: retention swept it, or it was never written
         raise HTTPException(status_code=404, detail="crash report not found")
+
+    # the report keeps the crashed file under its own name, which need not be UTF-8, and JSON must
+    # be: escaped the way shared storage keys it, so a local and a remote report name it alike
+    metadata = utf8_safe(metadata)
 
     detail = CrashReportDetail(
         crash_id=crash_id,
