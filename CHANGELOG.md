@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project (tries to) adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.141] - 2026-11-17
+
+- [Build attachment password candidates from every email body part](https://github.com/ACE-Collective/ace3/pull/1240)
+- [Emit the root metric event for work items that time out or fail](https://github.com/ACE-Collective/ace3/pull/1239)
+- [Store files whose names are not UTF-8](https://github.com/ACE-Collective/ace3/pull/1233)
+- [Scan files whose names are not UTF-8 with YARA](https://github.com/ACE-Collective/ace3/pull/1232)
+- [Resume an existing worktree in bin/enter-worktree.sh](https://github.com/ACE-Collective/ace3/pull/1231)
+- [Run one test suite at a time per container](https://github.com/ACE-Collective/ace3/pull/1229)
+- [Remove whitelisting: a whitelisted tag no longer suppresses an alert](https://github.com/ACE-Collective/ace3/pull/1228)
+- [Report each error cause once per window, not once per record](https://github.com/ACE-Collective/ace3/pull/1227)
+- [Stop ace crash sync from re-uploading incomplete crash reports every hour](https://github.com/ACE-Collective/ace3/pull/1226)
+- [Give core one actor value for who did a write (#1089)](https://github.com/ACE-Collective/ace3/pull/1224)
+- [Log caught exceptions with their traceback and identifiers](https://github.com/ACE-Collective/ace3/pull/1223)
+- [Keep logging and crash replication working when a file name is not UTF-8](https://github.com/ACE-Collective/ace3/pull/1222)
+- [Extract the apex domain of subdomain FQDNs, and run RDAP once per apex](https://github.com/ACE-Collective/ace3/pull/1221)
+
 ## [3.0.140] - 2026-11-16
 
 - [Give the loader tests' hand-built namespaces an include boundary](https://github.com/ACE-Collective/ace3/pull/1219)
