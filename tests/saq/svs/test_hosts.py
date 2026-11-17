@@ -20,6 +20,7 @@ from saq.svs.hosts import (
     normalize_username,
     split_hostname,
 )
+from tests.saq.helpers import person
 
 
 @pytest.mark.unit
@@ -78,9 +79,9 @@ def test_build_spec_rejects(kwargs, message):
 def lab():
     """A host that lists its users, one that doesn't, and one without an fqdn."""
     return [
-        hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\svc_art"], platform="windows"), None),
-        hosts.create_host(build_spec("ubuntu-01.corp.example", platform="linux"), None),
-        hosts.create_host(build_spec("mac-01"), None),
+        hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\svc_art"], platform="windows"), person(None)),
+        hosts.create_host(build_spec("ubuntu-01.corp.example", platform="linux"), person(None)),
+        hosts.create_host(build_spec("mac-01"), person(None)),
     ]
 
 
@@ -125,7 +126,7 @@ def test_create_update_delete_are_audited(caplog):
 
 @pytest.mark.integration
 def test_stored_fields():
-    host = hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\Alice"], ips=["10.0.0.5"]), None)
+    host = hosts.create_host(build_spec("win10-01.corp.example", usernames=["CORP\\Alice"], ips=["10.0.0.5"]), person(None))
     db = get_db()
     db.expire_all()
     row = db.get(SVSTestHost, host.id)
@@ -140,25 +141,25 @@ def test_a_host_is_never_created_after_it_was_updated(monkeypatch):
     up past the updated_at the server stamps on the same insert."""
     late_in_the_second = datetime.now().replace(microsecond=999_000)
     monkeypatch.setattr(hosts, "datetime", type("clock", (), {"now": staticmethod(lambda: late_in_the_second)}))
-    host = hosts.create_host(build_spec("win10-07"), None)
+    host = hosts.create_host(build_spec("win10-07"), person(None))
     assert host.created_at == late_in_the_second.replace(microsecond=0)
     assert host.created_at <= host.updated_at
 
 
 @pytest.mark.integration
 def test_a_short_name_is_one_host():
-    hosts.create_host(build_spec("win10-01.corp.example"), None)
+    hosts.create_host(build_spec("win10-01.corp.example"), person(None))
     with pytest.raises(DuplicateTestHost):
-        hosts.create_host(build_spec("WIN10-01.lab.example"), None)
+        hosts.create_host(build_spec("WIN10-01.lab.example"), person(None))
 
-    other = hosts.create_host(build_spec("win10-02"), None)
+    other = hosts.create_host(build_spec("win10-02"), person(None))
     with pytest.raises(DuplicateTestHost):
-        hosts.update_host(other.id, build_spec("win10-01"))
+        hosts.update_host(other.id, build_spec("win10-01"), person(None))
 
 
 @pytest.mark.integration
 def test_unknown_host():
     with pytest.raises(UnknownTestHost):
-        hosts.update_host(12345, build_spec("x"))
+        hosts.update_host(12345, build_spec("x"), person(None))
     with pytest.raises(UnknownTestHost):
-        hosts.delete_host(12345)
+        hosts.delete_host(12345, person(None))

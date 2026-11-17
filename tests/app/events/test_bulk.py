@@ -31,7 +31,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import set_dispositions
 from saq.database.util.locking import acquire_lock, release_lock
 from saq.database.util.user_management import add_user, delete_user
-from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated
+from tests.saq.helpers import audit_actor_of, audit_actors, audit_record, insert_alert, make_simulated, person
 
 pytestmark = pytest.mark.integration
 
@@ -238,7 +238,7 @@ def test_bulk_set_disposition_invalid_rejected(web_client):
 
 def test_bulk_review_disposition_correct(web_client):
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("events.bulk_review_disposition"), data={
         "event_id": EVENT_ID,
@@ -264,7 +264,7 @@ def test_bulk_review_disposition_correct(web_client):
 def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client, session_actor, caplog):
     caplog.set_level(logging.INFO)
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("events.bulk_review_disposition"), data={
         "event_id": EVENT_ID,
@@ -289,7 +289,7 @@ def test_bulk_review_disposition_incorrect_corrects_and_preserves(web_client, se
 
 def test_bulk_review_disposition_incorrect_requires_comment(web_client):
     alert = insert_alert()
-    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([alert.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("events.bulk_review_disposition"), data={
         "event_id": EVENT_ID,
@@ -389,7 +389,7 @@ def test_bulk_review_disposition_skips_and_reports_a_simulated_alert(web_client)
     simulated = insert_alert()
     make_simulated(simulated)
     other = insert_alert()
-    set_dispositions([other.uuid], DISPOSITION_FALSE_POSITIVE, 1)
+    set_dispositions([other.uuid], DISPOSITION_FALSE_POSITIVE, person(1))
 
     response = web_client.post(url_for("events.bulk_review_disposition"), data={
         "event_id": EVENT_ID,

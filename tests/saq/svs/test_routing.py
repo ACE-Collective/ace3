@@ -34,13 +34,13 @@ from saq.svs.refusals import Caller, refuse
 from saq.util.uuid import get_storage_dir
 from saq.yara_scanning import client as yara_client
 from saq.yara_scanning.client import YaraServiceUnavailable
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 from tests.saq.svs.conftest import add_catalog_test, add_test_host, started_run, sync_alert
 
 pytestmark = pytest.mark.integration
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
-CALLER = Caller(name="art-launcher", address="10.1.2.3")
+CALLER = Caller(person(None, "art-launcher"), address="10.1.2.3")
 
 
 @pytest.fixture(autouse=True)

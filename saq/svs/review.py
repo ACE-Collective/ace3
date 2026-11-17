@@ -102,15 +102,13 @@ def _owners(run_uuids: list[str]) -> dict[str, AlertOwner]:
             for run_uuid, owner_id, username, enabled in rows}
 
 
-def _take(run_uuid: str, owner: AlertOwner, user_id: int, actor: str, now: datetime,
-          auth: Optional[ApiAuthResult]) -> None:
+def _take(run_uuid: str, owner: AlertOwner, auth: ApiAuthResult, now: datetime) -> None:
     """Makes the person the run's owner, in the caller's transaction, and records it."""
     run = get_db().execute(select(SVSRun).where(SVSRun.uuid == run_uuid)).scalar_one()
-    run.owner_id = user_id
-    get_db().add(new_run_event(run.id, RunEventKind.OWNERSHIP_TAKEN, actor, actor_user_id=user_id, now=now,
+    run.owner_id = auth.auth_user_id
+    get_db().add(new_run_event(run.id, RunEventKind.OWNERSHIP_TAKEN, auth, now=now,
                                details={"from": owner.name if owner.user_id is not None else None}))
-    # actor and actor_user_id name the person even for a caller that passes no auth
-    log_audit("svs run ownership taken", auth=auth, **run_log_fields(run), actor=actor, actor_user_id=user_id,
+    log_audit("svs run ownership taken", auth=auth, **run_log_fields(run),
               previous_owner=owner.name if owner.user_id is not None else None)
 
 
@@ -125,12 +123,11 @@ class BulkResult:
     unknown: list[str] = field(default_factory=list)
 
 
-def take_ownership(run_uuids: list[str], user_id: int, actor: str,
-                   confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None, *,
-                   auth: Optional[ApiAuthResult] = None) -> BulkResult:
-    """Makes the person the owner of the runs, those owned by someone else only when the person
-    confirmed taking them (run uuid -> the owner's user id they agreed to take it from). auth is
-    who acted, for the AUDIT records."""
+def take_ownership(run_uuids: list[str], auth: ApiAuthResult, confirmed_takes: Optional[dict[str, int]] = None,
+                   now: Optional[datetime] = None) -> BulkResult:
+    """Makes the person (auth) the owner of the runs, those owned by someone else only when the
+    person confirmed taking them (run uuid -> the owner's user id they agreed to take it from)."""
+    user_id = auth.auth_user_id
     now = now or datetime.now()
     result = BulkResult()
     owners = _owners(run_uuids)
@@ -139,14 +136,13 @@ def take_ownership(run_uuids: list[str], user_id: int, actor: str,
     result.left_alone = dict(check.skipped)
     for run_uuid in check.permitted:
         if owners[run_uuid].user_id != user_id:
-            _take(run_uuid, owners[run_uuid], user_id, actor, now, auth)
+            _take(run_uuid, owners[run_uuid], auth, now)
         result.done.append(run_uuid)
     get_db().commit()
     return result
 
 
-def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int], now: datetime,
-           auth: Optional[ApiAuthResult]) -> None:
+def _claim(run_uuid: str, auth: ApiAuthResult, confirmed_from: Optional[int], now: datetime) -> None:
     """Checks that the person may act on the run, taking it from its owner when they confirmed it.
     Commits only a take; otherwise the run's row stays locked until the action that follows commits
     or rolls back, so nobody can take the run between this check and the action. Raises UnknownRun,
@@ -156,23 +152,23 @@ def _claim(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int
         get_db().rollback()
         raise runs.UnknownRun(f"run {run_uuid} not found")
     owner = owners[run_uuid]
-    check = check_alert_ownership([run_uuid], owners, user_id,
+    check = check_alert_ownership([run_uuid], owners, auth.auth_user_id,
                                   {run_uuid: confirmed_from} if confirmed_from is not None else None)
     if run_uuid in check.skipped:
         get_db().rollback()
         raise RunOwned(run_uuid, check.skipped[run_uuid], owner.user_id)
     if run_uuid in check.reassigned:
-        _take(run_uuid, owner, user_id, actor, now, auth)
+        _take(run_uuid, owner, auth, now)
         # taken from its owner, it is the person's now: anyone else must confirm taking it from them
         get_db().commit()
 
 
-def _bulk(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optional[dict[str, int]],
-          act: Callable[[str], object], now: datetime, auth: Optional[ApiAuthResult]) -> BulkResult:
+def _bulk(run_uuids: list[str], auth: ApiAuthResult, confirmed_takes: Optional[dict[str, int]],
+          act: Callable[[str], object], now: datetime) -> BulkResult:
     result = BulkResult()
     for run_uuid in dict.fromkeys(run_uuids):
         try:
-            _claim(run_uuid, user_id, actor, (confirmed_takes or {}).get(run_uuid), now, auth)
+            _claim(run_uuid, auth, (confirmed_takes or {}).get(run_uuid), now)
             act(run_uuid)
             result.done.append(run_uuid)
         except runs.UnknownRun:
@@ -185,32 +181,29 @@ def _bulk(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optio
     return result
 
 
-def cancel_runs(run_uuids: list[str], user_id: int, actor: str, confirmed_takes: Optional[dict[str, int]] = None,
-                now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> BulkResult:
+def cancel_runs(run_uuids: list[str], auth: ApiAuthResult, confirmed_takes: Optional[dict[str, int]] = None,
+                now: Optional[datetime] = None) -> BulkResult:
     """Cancels the runs (Created or Started), as the launcher would."""
     now = now or datetime.now()
-    return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.cancel_by_person(run_uuid, actor, user_id, now), now, auth)
+    return _bulk(run_uuids, auth, confirmed_takes, lambda run_uuid: runs.cancel_by_person(run_uuid, auth, now), now)
 
 
-def end_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[str] = None,
-             confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None, *,
-             auth: Optional[ApiAuthResult] = None) -> BulkResult:
+def end_runs(run_uuids: list[str], auth: ApiAuthResult, reason: Optional[str] = None,
+             confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None) -> BulkResult:
     """Ends the runs (Started) now, before their observation windows pass, for review. Needs the
     reason."""
     now = now or datetime.now()
-    return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.end_by_person(run_uuid, actor, user_id, reason, now), now, auth)
+    return _bulk(run_uuids, auth, confirmed_takes,
+                 lambda run_uuid: runs.end_by_person(run_uuid, auth, reason, now), now)
 
 
-def close_runs(run_uuids: list[str], user_id: int, actor: str, reason: Optional[str] = None,
-               confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None, *,
-               auth: Optional[ApiAuthResult] = None) -> BulkResult:
+def close_runs(run_uuids: list[str], auth: ApiAuthResult, reason: Optional[str] = None,
+               confirmed_takes: Optional[dict[str, int]] = None, now: Optional[datetime] = None) -> BulkResult:
     """Closes the runs (Ended, Canceled or Error): nothing is learned from them, and their alerts
     become SIMULATED. An Ended run needs the reason."""
     now = now or datetime.now()
-    return _bulk(run_uuids, user_id, actor, confirmed_takes,
-                 lambda run_uuid: runs.close_by_person(run_uuid, actor, user_id, reason, now, auth=auth), now, auth)
+    return _bulk(run_uuids, auth, confirmed_takes,
+                 lambda run_uuid: runs.close_by_person(run_uuid, auth, reason, now), now)
 
 
 #
@@ -256,7 +249,7 @@ def review_blockers(session, run: SVSRun, *, lock: bool = True) -> dict:
     return blockers
 
 
-def _sign_off(run: SVSRun, user_id: int, actor: str, now: datetime) -> tuple[bool, dict[str, int]]:
+def _sign_off(run: SVSRun, auth: ApiAuthResult, now: datetime) -> tuple[bool, dict[str, int]]:
     """Commits the run as reviewed and copies its live result to the reviewed columns. Raises
     RunStateConflict, ReviewBlocked."""
     db = get_db()
@@ -275,6 +268,7 @@ def _sign_off(run: SVSRun, user_id: int, actor: str, now: datetime) -> tuple[boo
         raise ReviewBlocked(run.uuid, blockers)
 
     unowned = run.owner_id is None
+    user_id = auth.auth_user_id
     reviewed = db.execute(
         update(SVSRun)
         .where(SVSRun.id == run.id, SVSRun.state == from_state)
@@ -286,8 +280,7 @@ def _sign_off(run: SVSRun, user_id: int, actor: str, now: datetime) -> tuple[boo
         raise runs.RunStateConflict(run.uuid, run.state, "review")
     if unowned:
         # reviewing a run takes it when nobody owns it
-        db.add(new_run_event(run.id, RunEventKind.OWNERSHIP_TAKEN, actor, actor_user_id=user_id, now=now,
-                             details={"from": None}))
+        db.add(new_run_event(run.id, RunEventKind.OWNERSHIP_TAKEN, auth, now=now, details={"from": None}))
 
     # what left the live result held only the earlier sign-off, which this one replaces
     db.execute(delete(SVSRunResult).where(SVSRunResult.run_id == run.id, SVSRunResult.status.is_(None)))
@@ -300,11 +293,11 @@ def _sign_off(run: SVSRun, user_id: int, actor: str, now: datetime) -> tuple[boo
         select(SVSRunResult.status).where(SVSRunResult.run_id == run.id)).scalars()).items()))
 
     re_review = from_state == RunState.REVIEWED
-    db.add(new_run_event(run.id, RunEventKind.REVIEWED, actor, actor_user_id=user_id, from_state=from_state,
+    db.add(new_run_event(run.id, RunEventKind.REVIEWED, auth, from_state=from_state,
                          to_state=RunState.REVIEWED.value, now=now, details={"counts": counts, "re_review": re_review}))
     db.commit()
     db.refresh(run)
-    runs.log_transition(run, from_state, RunState.REVIEWED.value, actor, "re-review" if re_review else None)
+    runs.log_transition(run, from_state, RunState.REVIEWED.value, auth, "re-review" if re_review else None)
     return re_review, counts
 
 
@@ -324,31 +317,31 @@ def ignored_detections(session, run: SVSRun) -> list[tuple[int, str]]:
         .order_by(Alert.id, SVSAttribution.content_hash))]
 
 
-def review(run_uuid: str, user_id: int, actor: str, confirmed_from: Optional[int] = None,
-           now: Optional[datetime] = None, *, auth: Optional[ApiAuthResult] = None) -> ReviewResult:
+def review(run_uuid: str, auth: ApiAuthResult, confirmed_from: Optional[int] = None,
+           now: Optional[datetime] = None) -> ReviewResult:
     """Signs the run's result off (Ended -> Reviewed, or Reviewed again), then closes its alerts
     as SIMULATED and gives its ignored detections an FP verdict. A failure after the sign-off never
     undoes it: the alerts stay open and keep the run in Needs attention, and reviewing it again
     finishes the job. Raises UnknownRun, RunOwned, RunStateConflict, ReviewBlocked."""
     now = now or datetime.now()
     # taking an unowned run happens with the sign-off, so a review that can't go through takes nothing
-    _claim(run_uuid, user_id, actor, confirmed_from, now, auth)
+    _claim(run_uuid, auth, confirmed_from, now)
     db = get_db()
     run = db.execute(select(SVSRun).where(SVSRun.uuid == run_uuid).with_for_update()).scalar_one()
-    re_review, counts = _sign_off(run, user_id, actor, now)
+    re_review, counts = _sign_off(run, auth, now)
 
     alerts_closed = fp_verdicts = 0
     try:
-        alerts_closed = runs.close_reviewed_run_alerts(run, actor, auth=auth)
+        alerts_closed = runs.close_reviewed_run_alerts(run, auth)
         targets = ignored_detections(db, run)
         if targets:
-            fp_verdicts = set_verdicts(targets, VERDICT_FP, user_id, analyst=False, auth=auth).changed
+            fp_verdicts = set_verdicts(targets, VERDICT_FP, auth, analyst=False).changed
     except Exception as e:
         db.rollback()
         logging.exception("unable to close the alerts of reviewed svs run %s: %s", run.uuid, e, extra=run_log_fields(run))
 
-    logging.info("svs run %s reviewed by %s: %d alerts closed, %d ignored detections FP", run.uuid, actor,
+    logging.info("svs run %s reviewed by %s: %d alerts closed, %d ignored detections FP", run.uuid, auth.auth_name,
                  alerts_closed, fp_verdicts,
-                 extra={**run_log_fields(run), "actor": actor, "counts": counts, "re_review": re_review,
+                 extra={**run_log_fields(run), "actor": auth.auth_name, "counts": counts, "re_review": re_review,
                         "alerts_closed": alerts_closed, "fp_verdicts": fp_verdicts})
     return ReviewResult(run, re_review, counts, alerts_closed, fp_verdicts)

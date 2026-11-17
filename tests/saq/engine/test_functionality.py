@@ -33,7 +33,7 @@ from saq.observables.file import FileObservable
 from saq.util.maintenance import cleanup_alerts
 from saq.util.time import parse_event_time
 from saq.util.uuid import get_storage_dir, workload_storage_dir
-from tests.saq.helpers import create_root_analysis, log_count, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
+from tests.saq.helpers import create_root_analysis, log_count, person, search_log, search_log_condition, search_log_regex, track_io, wait_for_log_count, wait_for_process
 
 @pytest.mark.system
 def test_signal_TERM():
@@ -3385,7 +3385,7 @@ def test_analysis_mode_dispositioned():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_FALSE_POSITIVE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # check the disposition
     get_db().close()
@@ -3455,7 +3455,7 @@ def test_analysis_mode_dispositioned_ignore():
     # set the disposition of this alert
     set_dispositions([root.uuid],
                         DISPOSITION_IGNORE, 
-                        get_db().query(User).first().id)
+                        person(get_db().query(User).first().id))
 
     # check the disposition
     get_db().close()

@@ -32,6 +32,7 @@ from saq.svs.worklist import (
     resolve_many,
 )
 from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, add_test_host, write_hunt
+from tests.saq.helpers import person
 
 GUID = "aaaaaaaa-1111-4111-8111-111111111111"
 SIGNATURE = "22222222-bbbb-4bbb-8bbb-222222222222"
@@ -173,7 +174,7 @@ def user_id() -> int:
 
 
 def _expect(guid: str, signature: str, user_id: int):
-    expectations.set_expectation(guid, signature, "expected", user_id, platform="windows")
+    expectations.set_expectation(guid, signature, "expected", person(user_id), platform="windows")
 
 
 def _worklist() -> dict[tuple[str, str], SVSTechniqueWorklist]:
@@ -225,8 +226,8 @@ class TestRefresh:
         refresh_coverage("test")
         assert _coverage("T1547").state == "manual"
 
-        row = resolve(SIGNATURE, "t1547", "remove", "it never fires on T1547", user_id,
-                      reference="https://git.example/rules/pull/7", actor="unittest", now=T0)
+        row = resolve(SIGNATURE, "t1547", "remove", "it never fires on T1547", person(user_id, "unittest"),
+                      reference="https://git.example/rules/pull/7", now=T0)
         assert (row.status, row.counts, row.resolution, row.reason, row.reference, row.resolved_by_user_id,
                 row.resolved_at, row.status_changed_at) == (
             "remove_pending", False, "remove", "it never fires on T1547", "https://git.example/rules/pull/7",
@@ -237,7 +238,7 @@ class TestRefresh:
         assert (_coverage("T1547").state, _coverage("T1547").manual_signatures) == ("none", 0)
         assert _statuses()[(SIGNATURE, "T1547")] == "remove_pending"
 
-        row = reopen(SIGNATURE, "T1547", user_id, actor="unittest")
+        row = reopen(SIGNATURE, "T1547", person(user_id, "unittest"))
         assert (row.status, row.counts, row.resolution, row.resolved_by_user_id) == ("open", True, None, None)
         refresh_coverage("test")
         assert _coverage("T1547").state == "manual"
@@ -258,7 +259,7 @@ class TestRefresh:
 
     def test_the_tag_goes_and_comes_back(self, measured, user_id, tag, caplog):
         refresh_coverage("test")
-        resolve(SIGNATURE, "T1547", "remove", "dropping it", user_id)
+        resolve(SIGNATURE, "T1547", "remove", "dropping it", person(user_id))
 
         tag(SIGNATURE)
         refresh_coverage("test")
@@ -283,8 +284,8 @@ class TestRefresh:
 
     def test_measurement_lost(self, measured, user_id):
         refresh_coverage("test")
-        resolve(SIGNATURE, "T1547", "remove", "dropping it", user_id)
-        expectations.remove_expectation(GUID, "windows", SIGNATURE, user_id)
+        resolve(SIGNATURE, "T1547", "remove", "dropping it", person(user_id))
+        expectations.remove_expectation(GUID, "windows", SIGNATURE, person(user_id))
         refresh_coverage("test")
         rows = _worklist()
         assert {key: row.status for key, row in rows.items()} == {
@@ -315,7 +316,7 @@ class TestRefresh:
         _expect(GUID, SIGNATURE, user_id)
         tag(SIGNATURE, "T1086")
         refresh_coverage("test")
-        resolve(SIGNATURE, "T1086", "remove", "wrong technique", user_id, reference="https://git.example/pull/1")
+        resolve(SIGNATURE, "T1086", "remove", "wrong technique", person(user_id), reference="https://git.example/pull/1")
 
         # the new release revoked T1086 to T1059.001
         use_catalog(attack_catalog)
@@ -335,7 +336,7 @@ class TestRefresh:
 
     def test_the_drill_down_says_removed(self, measured, user_id):
         refresh_coverage("test")
-        resolve(SIGNATURE, "T1547", "remove", "dropping it", user_id)
+        resolve(SIGNATURE, "T1547", "remove", "dropping it", person(user_id))
         with private_transaction() as session:
             detail = technique_detail(session, coverage.get_attack_catalog(), "T1547")
         (mapping,) = detail.manual
@@ -355,14 +356,14 @@ class TestResolutions:
 
     def test_only_unconfirmed_declarations_resolve(self, user_id):
         with pytest.raises(WorklistConflict) as e:
-            resolve(SIGNATURE, "T1059.001", "keep", "why", user_id)
+            resolve(SIGNATURE, "T1059.001", "keep", "why", person(user_id))
         assert e.value.status == "undeclared"
         with pytest.raises(UnknownWorklistRow):
-            resolve(SIGNATURE, "T1059.002", "keep", "why", user_id)
-        row = resolve(SIGNATURE, "T1547", "keep", "a test can't reach it", user_id)
+            resolve(SIGNATURE, "T1059.002", "keep", "why", person(user_id))
+        row = resolve(SIGNATURE, "T1547", "keep", "a test can't reach it", person(user_id))
         assert (row.status, row.counts) == ("kept", True)
         # deciding again replaces the decision
-        assert resolve(SIGNATURE, "T1547", "remove", "changed my mind", user_id).status == "remove_pending"
+        assert resolve(SIGNATURE, "T1547", "remove", "changed my mind", person(user_id)).status == "remove_pending"
 
     @pytest.mark.parametrize("resolution, reason, reference, message", [
         ("maybe", "why", None, "resolution must be one of keep, remove"),
@@ -372,18 +373,18 @@ class TestResolutions:
     ])
     def test_invalid_resolutions(self, user_id, resolution, reason, reference, message):
         with pytest.raises(InvalidResolution, match=message):
-            resolve(SIGNATURE, "T1547", resolution, reason, user_id, reference=reference)
+            resolve(SIGNATURE, "T1547", resolution, reason, person(user_id), reference=reference)
 
     def test_reopen(self, user_id):
         with pytest.raises(UnknownWorklistRow, match="no resolution"):
-            reopen(SIGNATURE, "T1547", user_id)
-        resolve(SIGNATURE, "T1547", "keep", "why", user_id)
-        assert reopen(SIGNATURE, "T1547", user_id).status == "open"
+            reopen(SIGNATURE, "T1547", person(user_id))
+        resolve(SIGNATURE, "T1547", "keep", "why", person(user_id))
+        assert reopen(SIGNATURE, "T1547", person(user_id)).status == "open"
 
     def test_audit_records(self, user_id, caplog):
         with caplog.at_level(logging.INFO):
-            resolve(SIGNATURE, "T1547", "remove", "why", user_id, reference="https://x.example/1", actor="unittest")
-            reopen(SIGNATURE, "T1547", user_id, actor="unittest")
+            resolve(SIGNATURE, "T1547", "remove", "why", person(user_id, "unittest"), reference="https://x.example/1")
+            reopen(SIGNATURE, "T1547", person(user_id, "unittest"))
         (set_record,) = [r for r in caplog.records if r.getMessage() == "AUDIT: svs worklist resolution set"]
         assert (set_record.signature_uuid, set_record.technique, set_record.resolution, set_record.reason,
                 set_record.reference, set_record.actor, set_record.actor_user_id) == (
@@ -394,14 +395,14 @@ class TestResolutions:
     def test_resolve_many(self, user_id, caplog):
         with caplog.at_level(logging.INFO):
             result = resolve_many([(SIGNATURE, "T1547"), (SIGNATURE, "T1059.001"), (OTHER_SIGNATURE, "T1547"),
-                                   (SIGNATURE, "T1547")], "keep", "bulk", user_id)
+                                   (SIGNATURE, "T1547")], "keep", "bulk", person(user_id))
         assert result.done == [(SIGNATURE, "T1547")]
         assert result.conflicts == {(SIGNATURE, "T1059.001"): "undeclared"}
         assert result.unknown == [(OTHER_SIGNATURE, "T1547")]
         assert _statuses()[(SIGNATURE, "T1547")] == "kept"
         assert len([r for r in caplog.records if r.getMessage() == "AUDIT: svs worklist resolution set"]) == 1
         with pytest.raises(InvalidResolution):
-            resolve_many([(SIGNATURE, "T1547")], "keep", "", user_id)
+            resolve_many([(SIGNATURE, "T1547")], "keep", "", person(user_id))
 
     def test_resolving_waits_for_a_refresh(self, user_id, monkeypatch):
         # a resolution holds the refresh lock while it reads and writes its row: it can't commit in
@@ -424,9 +425,9 @@ class TestResolutions:
             return read_row(session, signature_uuid, technique)
 
         monkeypatch.setattr(worklist, "_row", row_while_another_connection_tries_the_lock)
-        resolve(SIGNATURE, "T1547", "keep", "why", user_id)
-        reopen(SIGNATURE, "T1547", user_id)
-        resolve_many([(SIGNATURE, "T1547")], "keep", "why", user_id)
+        resolve(SIGNATURE, "T1547", "keep", "why", person(user_id))
+        reopen(SIGNATURE, "T1547", person(user_id))
+        resolve_many([(SIGNATURE, "T1547")], "keep", "why", person(user_id))
         assert locked == [True, True, True]
 
 

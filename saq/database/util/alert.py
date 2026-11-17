@@ -206,7 +206,7 @@ def _fetch_username(c, user_id: int) -> str | None:
     return row[0] if row else None
 
 
-def _log_disposition_changes(event: str, context: dict, changed_uuids: list, auth: ApiAuthResult | None, **fields):
+def _log_disposition_changes(event: str, context: dict, changed_uuids: list, auth: ApiAuthResult, **fields):
     """Emit one structured audit line per alert whose disposition actually changed.
 
     Per-alert rather than per-batch: a bulk disposition of 50 alerts needs 50
@@ -221,7 +221,7 @@ def _log_disposition_changes(event: str, context: dict, changed_uuids: list, aut
 
 
 def _log_ownership_taken(context: dict, taken_uuids: list, new_owner: str | None, changed_by: str | None,
-                         auth: ApiAuthResult | None):
+                         auth: ApiAuthResult):
     """Emit one audit line per alert taken from another analyst (or from a disabled account).
     The context's alert_owner is who had it; new_owner is who has it now (None when it was
     unassigned), and changed_by who made the change."""
@@ -267,7 +267,7 @@ def move_alert_to_queue(
     alert: Alert,
     queue: str,
     reason: str,
-    auth: ApiAuthResult | None = None,
+    auth: ApiAuthResult,
     *,
     router: str | None = None,
     root: RootAnalysis | None = None,
@@ -280,7 +280,7 @@ def move_alert_to_queue(
 
     Updates the passed Alert in its own session (so a caller holding it, like the engine, never
     writes the old queue back), rotates its version, records the move in alert_queue_changes
-    with who made it (a router, or the user auth names), commits, refreshes the alert's
+    with who made it (router, and auth's user when a person made it), commits, refreshes the alert's
     search payload and writes an audit line.
 
     The analysis tree carries the queue too. Pass the root when the caller owns it (the engine,
@@ -312,7 +312,7 @@ def move_alert_to_queue(
 
     session.add(AlertQueueChange(
         alert_id=alert.id, from_queue=from_queue, to_queue=queue, reason=reason,
-        router=router, actor_user_id=auth.auth_user_id if auth else None))
+        router=router, actor_user_id=auth.auth_user_id))
     session.commit()
 
     submit_payload_task(alert.uuid)
@@ -412,10 +412,14 @@ def _reassign_owner(c, alert_uuids: list, user_id: int | None) -> None:
                   WHERE uuid IN ( {uuid_placeholders} )""",
               [user_id, new_alert_version(), *alert_uuids])
 
-def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confirmed_takes=None,
+def _writer_id(auth: ApiAuthResult, system: bool) -> int | None:
+    """The user an alert change is written as: the automation user when ACE makes it (system),
+    since it owns what ACE dispositions, else whoever acted."""
+    return get_config().global_settings.automation_user_id if system else auth.auth_user_id
+
+def set_dispositions(alert_uuids, disposition, auth: ApiAuthResult, user_comment=None, confirmed_takes=None,
                      system: bool = False, expected_dispositions: Collection[str] | None = None,
-                     eligible: Callable[[list[str]], Collection[str]] | None = None,
-                     auth: ApiAuthResult | None = None) -> OwnershipCheck:
+                     eligible: Callable[[list[str]], Collection[str]] | None = None) -> OwnershipCheck:
     """Utility function to the set disposition of many Alerts at once.
 
     An alert owned by another analyst is left alone unless the user confirmed taking it, in
@@ -424,11 +428,14 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
 
        :param alert_uuids: A list of UUIDs of Alert objects to set.
        :param disposition: The disposition to set the Alerts.
-       :param user_id: The id of the User that is setting the disposition.
+       :param auth: who is setting the disposition: the alerts are written as their user, and
+           the AUDIT records name them.
        :param user_comment: Optional comment the User is providing as part of the disposition.
        :param confirmed_takes: alert uuid -> id of the analyst the User agreed to take it from.
        :param system: True when ACE sets the disposition rather than an analyst (SVS setting
-           SIMULATED): alerts with a frozen disposition are changed too.
+           SIMULATED): alerts with a frozen disposition are changed too, and the alerts are written
+           as the automation user, while the AUDIT records still name auth (the person who closed
+           the run, or the timer).
        :param expected_dispositions: when given, an alert whose disposition is not one of these
            (read under the row lock) is left alone: an analyst dispositioned it after the caller
            chose it.
@@ -436,9 +443,8 @@ def set_dispositions(alert_uuids, disposition, user_id, user_comment=None, confi
            locked, and returns those that still may: the caller's own condition, re-checked where
            nothing that takes the alert's row lock can change it. It reads on a connection of its
            own, which sees whatever was committed before the lock was granted.
-       :param auth: who made the change, for the AUDIT records: not always user_id's own
-           credential (SVS dispositions as the automation user for the analyst who acted).
        :returns: which alerts were dispositioned and which were left alone."""
+    user_id = _writer_id(auth, system)
 
     with get_db_connection() as db:
         c = db.cursor()
@@ -542,14 +548,15 @@ WHERE
 
     return ownership
 
-def change_alert_owner(alert_uuids, owner_id: int | None, acting_user_id: int, confirmed_takes=None,
-                       auth: ApiAuthResult | None = None) -> OwnershipCheck:
-    """Gives the alerts to owner_id, or unassigns them when it is None: the acting user takes them
-    when owner_id is their own id, and assigns them otherwise. An alert another analyst owns is
+def change_alert_owner(alert_uuids, owner_id: int | None, auth: ApiAuthResult, confirmed_takes=None, *,
+                       system: bool = False) -> OwnershipCheck:
+    """Gives the alerts to owner_id, or unassigns them when it is None: the acting user (auth) takes
+    them when owner_id is their own id, and assigns them otherwise. An alert another analyst owns is
     left alone unless the acting user confirmed taking it from them (see check_alert_ownership).
        :param confirmed_takes: alert uuid -> id of the analyst the acting user agreed to take it from.
-       :param auth: who made the change, for the AUDIT records.
+       :param system: ACE makes the change, as the automation user (see set_dispositions), for auth.
        :returns: which alerts now have that owner and which were left alone."""
+    acting_user_id = _writer_id(auth, system)
     with get_db_connection() as db:
         c = db.cursor()
 
@@ -568,20 +575,20 @@ def change_alert_owner(alert_uuids, owner_id: int | None, acting_user_id: int, c
     _log_ownership_taken(context, ownership.reassigned, new_owner, acting_username, auth)
     return ownership
 
-def set_disposition_reviews(alert_uuids, review_result, reviewer_id, corrected_disposition=None,
-                            review_comment=None, auth: ApiAuthResult | None = None) -> dict[str, str]:
+def set_disposition_reviews(alert_uuids, review_result, auth: ApiAuthResult, corrected_disposition=None,
+                            review_comment=None) -> dict[str, str]:
     """Utility function to record a senior analyst's review of the disposition of many Alerts at once.
 
     A correction never changes an alert whose current disposition only ACE sets (SIMULATED); a
     review that the disposition was correct changes nothing about it and is recorded.
        :param alert_uuids: A list of UUIDs of Alert objects to review.
        :param review_result: Either DISPOSITION_REVIEW_CORRECT or DISPOSITION_REVIEW_INCORRECT.
-       :param reviewer_id: The id of the User performing the review.
+       :param auth: who performs the review.
        :param corrected_disposition: When the review result is INCORRECT, the disposition to correct the alerts to.
        :param review_comment: Optional comment describing the review; stored as an alert comment prefixed with
                               REVIEW_COMMENT_PREFIX. Required by the caller when the result is INCORRECT.
-       :param auth: who made the review, for the AUDIT records.
        :returns: alert uuid -> disposition of the alerts left alone because their disposition is frozen."""
+    reviewer_id = auth.auth_user_id
 
     # build the prefixed review comment if one was provided
     prefixed_comment = None

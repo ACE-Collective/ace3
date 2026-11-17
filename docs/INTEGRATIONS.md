@@ -340,8 +340,8 @@ The contract:
 
 To move an alert yourself (an analyst action, an API), call
 `saq.database.util.alert.move_alert_to_queue(alert, queue, reason, auth, router=...)`, where `auth`
-is the caller's `ApiAuthResult` (None for a router). It updates the row, records the move with who
-made it, refreshes the alert's search payload and writes an AUDIT record with `log_audit()`; `get_last_queue_change(alert_id)` returns the newest move, which says what
+is the caller's `ApiAuthResult` (`ApiAuthResult.system(<router name>)` for a router, as the engine
+passes). It updates the row, records the move with who made it, refreshes the alert's search payload and writes an AUDIT record with `log_audit()`; `get_last_queue_change(alert_id)` returns the newest move, which says what
 queue the alert came from.
 
 **Tests.** Call `saq.alert_routing.register_alert_router()` in a test and

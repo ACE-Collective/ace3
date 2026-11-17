@@ -6,7 +6,7 @@ from saq.constants import ANALYSIS_MODULE_ALERT_ADDED_TO_EVENT, ANALYSIS_MODE_DI
 from saq.database import ALERT, Alert, EventMapping, User, Workload, get_db, set_dispositions
 from saq.modules.event import AlertAddedToEventAnalyzer
 from saq.modules.adapter import AnalysisModuleAdapter
-from tests.saq.helpers import create_root_analysis
+from tests.saq.helpers import create_root_analysis, person
 from tests.saq.test_util import create_test_context
 
 
@@ -27,7 +27,7 @@ def test_changing_to_event_analysis_mode(db_event):
     get_db().commit()
 
     # Disposition the alert, which will set it to dispositioned analysis mode
-    set_dispositions([root.uuid], DISPOSITION_DELIVERY, get_db().query(User).first().id)
+    set_dispositions([root.uuid], DISPOSITION_DELIVERY, person(get_db().query(User).first().id))
 
     # Get the workload entries from the database
     workload_entries = get_db().query(Workload).all()

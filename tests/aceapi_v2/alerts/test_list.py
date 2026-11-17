@@ -30,7 +30,7 @@ from saq.database.pool import get_db
 from saq.database.util.alert import ALERT, touch_alerts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key, v2_app
 from saq.detection_verdicts.store import confirm_alert
-from tests.saq.helpers import create_root_analysis, insert_alert, insert_alert_with_detections
+from tests.saq.helpers import create_root_analysis, insert_alert, insert_alert_with_detections, person
 from tests.saq.svs.conftest import SIGNATURE_UUID, attribute_to_run
 
 pytestmark = pytest.mark.integration
@@ -336,7 +336,7 @@ class TestFilters:
         insert_alert_with_detections(detections, disposition="FALSE_POSITIVE")
         insert_alert_with_detections(detections)
         user_id = get_db().query(User.id).filter(User.username == "unittest").scalar()
-        confirm_alert(confirmed.id, user_id)
+        confirm_alert(confirmed.id, person(user_id))
 
         rows = (await client.get("/alerts/", params={"f": "unconfirmed_detections:True"})).json()["data"]
         assert [row["uuid"] for row in rows] == [unconfirmed.uuid]

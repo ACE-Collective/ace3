@@ -22,7 +22,7 @@ from saq.svs import expectations
 from saq.svs.attack import load_attack_catalog
 from saq.svs.coverage import refresh_coverage
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actors
+from tests.saq.helpers import audit_actors, person
 from tests.saq.svs.conftest import ATTACK_EXTRACT, add_catalog_test, write_hunt
 
 pytestmark = pytest.mark.integration
@@ -290,7 +290,7 @@ class TestSignature:
                                                  unittest_user_id):
         write_hunt(hunt_dir, SIGNATURE, name="Hunt", tags=["mitre:T1547"])
         add_catalog_test(GUID, name="PowerShell download")
-        expectations.set_expectation(GUID, SIGNATURE, "expected", unittest_user_id, platform="windows")
+        expectations.set_expectation(GUID, SIGNATURE, "expected", person(unittest_user_id), platform="windows")
         refresh_coverage("test")
 
         detail = (await client.get(f"/svs/worklist/{SIGNATURE}")).json()

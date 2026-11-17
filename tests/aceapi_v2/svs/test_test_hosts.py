@@ -13,7 +13,7 @@ from saq.database.model import Alert
 from saq.database.pool import get_db
 from saq.svs import hosts
 from tests.aceapi_v2.conftest import api_key_client, make_api_key
-from tests.saq.helpers import audit_actors
+from tests.saq.helpers import audit_actors, person
 from tests.saq.svs.conftest import add_catalog_test
 
 pytestmark = pytest.mark.integration
@@ -73,7 +73,7 @@ async def test_errors(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_the_listing_pages_by_hostname(client: AsyncClient):
     for name in ("c-host", "a-host", "b-host"):
-        hosts.create_host(hosts.build_spec(name), None)
+        hosts.create_host(hosts.build_spec(name), person(None))
 
     first = (await client.get("/svs/test-hosts/", params={"limit": 2})).json()
     assert [row["hostname"] for row in first["data"]] == ["a-host", "b-host"]
@@ -87,7 +87,7 @@ async def test_the_listing_pages_by_hostname(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_exports(client: AsyncClient):
-    hosts.create_host(hosts.build_spec("win10-01", usernames=["a", "b"], ips=["10.0.0.5"]), None)
+    hosts.create_host(hosts.build_spec("win10-01", usernames=["a", "b"], ips=["10.0.0.5"]), person(None))
 
     lines = (await client.get("/svs/test-hosts/export/ndjson")).text.splitlines()
     assert [json.loads(line)["hostname"] for line in lines] == ["win10-01"]
@@ -98,7 +98,7 @@ async def test_exports(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_reading_needs_run_read_and_writing_needs_admin(_override_db_session, session: AsyncSession, test_user):
-    host = hosts.create_host(hosts.build_spec("win10-01"), None)
+    host = hosts.create_host(hosts.build_spec("win10-01"), person(None))
 
     reader = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
     async with api_key_client(reader) as client:
@@ -205,7 +205,7 @@ async def test_maintenance_listing_pages_by_window(client: AsyncClient, no_hunts
 
 @pytest.mark.asyncio
 async def test_maintenance_permissions(_override_db_session, session: AsyncSession, test_user):
-    hosts.create_host(hosts.build_spec("win10-01"), None)
+    hosts.create_host(hosts.build_spec("win10-01"), person(None))
     reader = await make_api_key(session, test_user.id, inherit=False, scope=[("svs", "run_read")])
     async with api_key_client(reader) as client:
         assert (await client.get("/svs/test-hosts/win10-01/maintenance")).status_code == 200
