@@ -23,7 +23,7 @@ from saq.util.hashing import sha256_file
 from saq.yara_scanning import client, protocol
 from saq.yara_scanning.client import YaraServiceUnavailable
 from saq.yara_scanning.qa import RECORDER_NICENESS
-from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker, scan_file
+from saq.yara_scanning.server import ScannerSettings, YaraScannerServer, _fork, _scan as _scan_in_worker, scan_path
 from saq.yara_scanning.service import YaraScannerService
 from tests.saq.helpers import wait_for_condition
 from tests.saq.yara_qa.conftest import QA_UUID, counter_row, match_rows
@@ -250,12 +250,33 @@ def test_scan_file_with_an_undecodable_name(make_server, rules_dir, tmp_path):
 
 
 @pytest.mark.unit
+def test_scan_file_with_an_undecodable_name_passes_the_timeout(tmp_path):
+    """scan_path matches such a name itself, so it bounds the match as scan does: a timeout of 0 or
+    none is the scanner's default."""
+    target = tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape")
+    target.write_bytes(b"MATCH_A")
+    timeouts = []
+
+    class _Rules:
+        def match(self, path, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            return []
+
+    scanner = YaraScanner(default_timeout=11)
+    scanner.rules = _Rules()
+    for timeout in (7, None, 0):
+        assert not scan_path(scanner, str(target), timeout=timeout)
+
+    assert timeouts == [7, 11, 11]
+
+
+@pytest.mark.unit
 def test_scan_file_with_an_undecodable_name_needs_loaded_rules(tmp_path):
     target = tmp_path / b"\xe9\xe9.combined".decode("utf-8", "surrogateescape")
     target.write_bytes(b"MATCH_A")
 
     with pytest.raises(RulesNotLoadedError):
-        scan_file(YaraScanner(), str(target))
+        scan_path(YaraScanner(), str(target))
 
 
 @pytest.mark.unit

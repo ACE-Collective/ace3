@@ -25,8 +25,9 @@ from saq.constants import (
     SERVICE_YARA_SCANNER,
     AnalysisExecutionResult,
 )
-from saq.database.model import ObservableDetection
+from saq.database.model import DetectionPoint, ObservableDetection
 from saq.database.pool import get_db
+from saq.database.util.alert import ALERT
 from saq.engine.core import Engine
 from saq.engine.enums import EngineExecutionMode
 from saq.modules.adapter import AnalysisModuleAdapter
@@ -171,6 +172,23 @@ class TestYaraScannerMetaTags:
 
         assert result == AnalysisExecutionResult.COMPLETED
         assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body", "meta_tagged_source_imap"}
+
+    @pytest.mark.integration
+    def test_meta_tags_passed_to_scanner_for_an_undecodable_name(self, yara_service, root_analysis, unlogged):
+        """A file whose name is not UTF-8 (an archive member, as os.listdir returns it) is matched by
+        the service's own path for it, which applies the meta tags too."""
+        yara_service(*META_TAGGED_RULES)
+        file_path = root_analysis.create_file_path(b"\xe9\xe9.txt".decode("utf-8", "surrogateescape"))
+        with open(file_path, "wb") as fp:
+            fp.write(b"Hello, world!\n")
+
+        observable = root_analysis.add_file_observable(file_path)
+        observable.add_yara_meta("content_type", "email_body")
+
+        result = self._create_module(root_analysis).execute_analysis(observable)
+
+        assert result == AnalysisExecutionResult.COMPLETED
+        assert self._matched_rules(observable) == {"always_match", "meta_tagged_email_body"}
 
     @pytest.mark.integration
     def test_no_meta_tags_passes_none(self, yara_service, root_analysis):
@@ -579,6 +597,19 @@ class TestYaraDetectionOnFile:
         assert not yara_rule.detections
         # the rules and their strings stay in the pruned alert view
         assert analysis.always_visible()
+
+    @pytest.mark.integration
+    def test_detection_on_a_file_with_an_undecodable_name_is_indexed(self, yara_service, root_analysis, unlogged):
+        """MySQL rejects the lone surrogates of a name that is not UTF-8 (an archive member, as
+        os.listdir returns it), so the detection names the file by its escaped form."""
+        yara_service(_rule("phish_rule"))
+        _scan(root_analysis, name=b"\xdb.doc".decode("utf-8", "surrogateescape"))
+        root_analysis.save()
+
+        alert = ALERT(root_analysis)
+
+        rows = get_db().query(DetectionPoint).filter(DetectionPoint.alert_id == alert.id).all()
+        assert [row.description for row in rows] == ["\\udcdb.doc matched yara rule phish_rule"]
 
     @pytest.mark.integration
     def test_rule_without_uuid_has_no_rule_uuid_and_the_builtin_family(self, yara_service, root_analysis):

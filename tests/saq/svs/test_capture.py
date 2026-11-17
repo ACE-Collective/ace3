@@ -149,6 +149,19 @@ def test_capture_stores_the_file_and_the_record(root_analysis, svs_pool: CASPool
 
 
 @pytest.mark.integration
+def test_capture_of_a_file_with_an_undecodable_name(root_analysis, svs_pool, unlogged):
+    """MySQL rejects the lone surrogates of a name that is not UTF-8 (an archive member, as
+    os.listdir returns it), so the capture names the file by its escaped form."""
+    _, candidate = _candidate(root_analysis, name=b"dir/\xdb.doc".decode("utf-8", "surrogateescape"))
+
+    result = capture(svs_pool, root_analysis.uuid, candidate)
+
+    assert result.status == CaptureStatus.STORED
+    (row,) = capture_rows()
+    assert row.file_path == "dir/\\udcdb.doc"
+
+
+@pytest.mark.integration
 def test_capture_is_idempotent(root_analysis, svs_pool):
     _, candidate = _candidate(root_analysis)
 

@@ -179,7 +179,7 @@ def _reap() -> list[tuple[int, int]]:
 # worker
 #
 
-def scan_file(scanner: YaraScanner, path: str, external_vars: Optional[dict] = None, timeout: Optional[int] = None,
+def scan_path(scanner: YaraScanner, path: str, external_vars: Optional[dict] = None, timeout: Optional[int] = None,
               meta_tags: Optional[list] = None) -> bool:
     """scanner.scan(path), also for a file whose name is not UTF-8, which yara-python takes neither as a
     path nor in a variable. Such a file is matched through utf8_path, the variables scan derives from
@@ -215,7 +215,7 @@ def _scan(scanner: YaraScanner, settings: ScannerSettings, rule_details: Compile
 
     try:
         if request["op"] == protocol.OP_SCAN_FILE:
-            matched = scan_file(scanner, request["path"], external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
+            matched = scan_path(scanner, request["path"], external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
         else:
             matched = scanner.scan_data(data, external_vars=ext_vars, timeout=timeout, meta_tags=meta_tags)
 
