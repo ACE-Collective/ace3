@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, name_bytes, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, is_path_under, shorten_basename_for_suffix
 
 
 class TestShortenBasenameForSuffix:
@@ -63,7 +63,7 @@ class TestShortenBasenameForSuffix:
         result = shorten_basename_for_suffix(long, ".headers")
         digest = hashlib.sha1(b"\xe9" * 300).hexdigest()[:8]
         assert result == long[:238] + f".{digest}.headers"
-        assert len(name_bytes(result)) == NAME_MAX_BYTES
+        assert len(os.fsencode(result)) == NAME_MAX_BYTES
 
 
 class TestIsPathUnder:

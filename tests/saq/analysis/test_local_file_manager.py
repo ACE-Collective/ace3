@@ -6,7 +6,7 @@ import pytest
 from pathlib import Path
 
 from saq.analysis.file_manager.local_file_manager import MAX_RELATIVE_PATH_BYTES, LocalFileManager, clean_file_name
-from saq.util.filesystem import NAME_MAX_BYTES, name_bytes
+from saq.util.filesystem import NAME_MAX_BYTES
 from saq.constants import FILE_SUBDIR
 
 # a name that is not UTF-8, as os.listdir returns it
@@ -415,7 +415,7 @@ def test_clean_file_name(name, expected):
 def test_clean_file_name_fits_the_filesystem(name):
     cleaned = clean_file_name(name)
     # with room for the suffix that tells same-named files apart
-    assert len(name_bytes(cleaned)) <= NAME_MAX_BYTES - 8
+    assert len(os.fsencode(cleaned)) <= NAME_MAX_BYTES - 8
     assert clean_file_name(cleaned) == cleaned
     if name.endswith(".txt"):
         assert cleaned.endswith(".txt")

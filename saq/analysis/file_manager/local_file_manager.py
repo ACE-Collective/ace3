@@ -7,7 +7,7 @@ from typing import Any, Optional
 from saq.analysis.file_manager.file_manager_interface import FileManagerInterface, FileRefusedError
 from saq.constants import FILE_SUBDIR, HARDCOPY_SUBDIR
 from saq.environment import get_base_dir
-from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, name_bytes, shorten_basename_for_suffix
+from saq.util.filesystem import NAME_MAX_BYTES, abs_path, is_path_under, shorten_basename_for_suffix
 from saq.util.hashing import sha256_file
 
 
@@ -21,7 +21,7 @@ MAX_EXTENSION_BYTES = 32
 MAX_RELATIVE_PATH_BYTES = 1024
 
 # a lone surrogate (half of a UTF-16 pair, as a name decoded from JSON can hold) has bytes on no
-# filesystem, except one in the range that stands for an undecodable byte (name_bytes)
+# filesystem, except one in the range that stands for an undecodable byte (os.fsencode)
 RE_UNSTORABLE = re.compile(r"[\ud800-\udc7f\udd00-\udfff]")
 
 
@@ -40,13 +40,13 @@ def clean_file_name(name: str) -> str:
 
         component = RE_UNSTORABLE.sub("_", component.replace("\\", "_").replace("\0", "_"))
         stem, ext = os.path.splitext(component)
-        if len(name_bytes(ext)) > MAX_EXTENSION_BYTES:
+        if len(os.fsencode(ext)) > MAX_EXTENSION_BYTES:
             stem, ext = component, ""
 
         components.append(shorten_basename_for_suffix(stem, ext, NAME_MAX_BYTES - UNIQUE_SUFFIX_BYTES))
 
     # the leading directories go first, since the file name is the part that says what the file is
-    while len(components) > 1 and len(name_bytes("/".join(components))) > MAX_RELATIVE_PATH_BYTES:
+    while len(components) > 1 and len(os.fsencode("/".join(components))) > MAX_RELATIVE_PATH_BYTES:
         components.pop(0)
 
     return os.path.join(*components) if components else "_"
