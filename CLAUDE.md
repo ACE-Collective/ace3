@@ -141,7 +141,7 @@ Helpers live in `tests/saq/helpers.py` (`wait_for_condition`, `wait_for_log_coun
 
 Test a GUI change in a browser through the Playwright MCP **only when the user specifically asks for it**. Do **not** add browser-based tests to the ACE pytest suite, even though `playwright` is installed in `/venv`. That may come later, but not now.
 
-The development image has a headless Chromium driven by the `playwright-mcp` server (or Python `playwright`). Run `ace gui start --port <port>` in the background in the `dev` container (add `--api-v2` to also run a private API v2 from the checkout, with reload, when the change touches `aceapi_v2/`), log in as analyst/analyst, and read the GUI's log alongside the page. See `docs/GUI_TESTING.md`.
+The headless Chromium is not in the ACE image: the `browser-mcp` (`playwright-mcp` at `http://localhost:8931/mcp`) and `browser-server` (for Python `playwright`, `ws://localhost:3000/`) compose services run it in `dev`'s network namespace, under the `browser` profile. Run `ace gui start --port <port>` in the background in the `dev` container (add `--api-v2` to also run a private API v2 from the checkout, with reload, when the change touches `aceapi_v2/`), log in as analyst/analyst, and read the GUI's log alongside the page. See `docs/GUI_TESTING.md`.
 
 ## Databases and migrations
 

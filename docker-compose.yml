@@ -10,6 +10,7 @@
 # ACE3_PHISHKIT_IMAGE_URL
 # ACE3_JS_DEOBFUSCATOR_MANAGER_IMAGE_URL
 # ACE3_JS_DEOBFUSCATOR_IMAGE_URL
+# ACE3_BROWSER_IMAGE_URL
 #
 # this allows you to pull every third party base image from somewhere other than docker hub
 # useful if you are using some kind of a pass through docker image registry
@@ -728,6 +729,45 @@ services:
       - "${ACE_BIND_ADDRESS:-127.0.0.1}:${ACE_PORT_DEV_GUI:-5001}:5000"
     networks:
       - ace
+
+  # headless Chromium for agent-driven GUI testing (docs/GUI_TESTING.md), started only with the
+  # browser profile (COMPOSE_PROFILES=browser), so that no browser is in the ACE image
+  browser-mcp: &browser
+    profiles:
+      - browser
+    build:
+      context: docker/browser
+      args:
+        DOCKER_IMAGE_PREFIX: ${DOCKER_IMAGE_PREFIX:-docker.io}
+    image: ${ACE3_BROWSER_IMAGE_URL:-ace-browser:latest}
+    # dev's network namespace: the browser reaches a GUI started in dev on localhost, and dev
+    # reaches the servers here on localhost. nothing is published to the host.
+    network_mode: service:dev
+    depends_on:
+      dev:
+        condition: service_started
+        # rejoin dev's network namespace whenever dev is recreated
+        restart: true
+    user: "${SAQ_USER_ID:-1000}:${SAQ_GROUP_ID:-1000}"
+    environment:
+      HOME: /tmp
+    # the checkout at the same path as in dev, so the files the MCP server writes under an agent's
+    # working directory, and the files an agent asks it to upload, are at the same paths on both sides
+    volumes:
+      - .:/opt/ace
+    working_dir: /opt/ace
+    shm_size: 1gb
+    init: true
+    restart: always
+    stop_grace_period: 10s
+    command: >-
+      playwright-mcp --port 8931 --headless --browser chromium --no-sandbox
+      --ignore-https-errors --isolated
+
+  # what the Python playwright package in dev connects to (ws://localhost:3000/)
+  browser-server:
+    <<: *browser
+    command: playwright run-server --host 127.0.0.1 --port 3000
 
   ace:
     environment:
