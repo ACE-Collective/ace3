@@ -492,7 +492,7 @@ def test_sync_uploads_what_an_incomplete_report_gained(private_root, root_analys
 
 
 @pytest.mark.unit
-def test_sync_uploads_an_incomplete_report_with_an_undecodable_file_name_once(private_root, root_analysis, shared_storage, monkeypatch):
+def test_sync_uploads_an_incomplete_report_with_an_undecodable_file_name_once(private_root, root_analysis, shared_storage, monkeypatch, unlogged):
     """The bucket holds such a file under its escaped key (object_key), not under its local name."""
     crash_id = _crash_on_undecodable_file(root_analysis)
     os.remove(os.path.join(find_crash_report_dir(crash_id), METADATA_FILE))
